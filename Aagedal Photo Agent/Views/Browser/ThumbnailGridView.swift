@@ -67,19 +67,19 @@ struct ThumbnailGridView: View {
             isGridFocused = true
         }
 
-        if viewModel.sortOrder == .manual {
-            baseCell
-                .onDrag {
-                    viewModel.draggedImageURL = image.url
-                    return NSItemProvider(object: image.url as NSURL)
+        baseCell
+            .onDrag {
+                if viewModel.sortOrder != .manual {
+                    viewModel.initializeManualOrder(from: viewModel.sortedImages)
+                    viewModel.sortOrder = .manual
                 }
-                .onDrop(of: [.fileURL], delegate: ImageReorderDelegate(
-                    targetURL: image.url,
-                    viewModel: viewModel
-                ))
-        } else {
-            baseCell
-        }
+                viewModel.draggedImageURL = image.url
+                return NSItemProvider(object: image.url as NSURL)
+            }
+            .onDrop(of: [.fileURL], delegate: ImageReorderDelegate(
+                targetURL: image.url,
+                viewModel: viewModel
+            ))
     }
 
     private func handleTap(image: ImageFile, modifiers: EventModifiers) {
@@ -147,6 +147,6 @@ struct ImageReorderDelegate: DropDelegate {
     }
 
     func validateDrop(info: DropInfo) -> Bool {
-        viewModel.sortOrder == .manual
+        true
     }
 }

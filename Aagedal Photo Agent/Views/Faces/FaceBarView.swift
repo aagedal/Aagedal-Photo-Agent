@@ -4,6 +4,7 @@ struct FaceBarView: View {
     @Bindable var viewModel: FaceRecognitionViewModel
     let folderURL: URL?
     let imageURLs: [URL]
+    var onSelectImages: ((Set<URL>) -> Void)?
 
     @State private var selectedGroup: FaceGroup?
 
@@ -13,7 +14,7 @@ struct FaceBarView: View {
             scanButton
 
             Divider()
-                .frame(height: 50)
+                .frame(height: 58)
 
             // Face group thumbnails
             ScrollView(.horizontal, showsIndicators: false) {
@@ -33,10 +34,10 @@ struct FaceBarView: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
-        .frame(height: 64)
+        .frame(height: 76)
         .background(.bar)
         .popover(item: $selectedGroup) { group in
-            FaceGroupDetailView(group: group, viewModel: viewModel)
+            FaceGroupDetailView(group: group, viewModel: viewModel, onSelectImages: onSelectImages)
         }
     }
 
@@ -51,7 +52,7 @@ struct FaceBarView: View {
                         .font(.system(size: 9))
                         .foregroundStyle(.secondary)
                 }
-                .frame(width: 48, height: 48)
+                .frame(width: 56, height: 56)
             } else {
                 Button {
                     guard let folderURL else { return }
@@ -64,7 +65,7 @@ struct FaceBarView: View {
                         Text("Scan")
                             .font(.system(size: 10))
                     }
-                    .frame(width: 48, height: 48)
+                    .frame(width: 56, height: 56)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)

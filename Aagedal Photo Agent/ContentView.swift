@@ -25,15 +25,33 @@ struct ContentView: View {
     var body: some View {
         NavigationSplitView {
             sidebar
-        } content: {
-            BrowserView(viewModel: browserViewModel, faceViewModel: faceRecognitionViewModel)
         } detail: {
-            MetadataPanel(
-                viewModel: metadataViewModel,
-                browserViewModel: browserViewModel,
-                onApplyPreset: { isShowingPresetPicker = true },
-                onSavePreset: { isShowingSavePresetName = true }
-            )
+            VStack(spacing: 0) {
+                if !browserViewModel.images.isEmpty {
+                    FaceBarView(
+                        viewModel: faceRecognitionViewModel,
+                        folderURL: browserViewModel.currentFolderURL,
+                        imageURLs: browserViewModel.images.map(\.url),
+                        onSelectImages: { urls in
+                            browserViewModel.selectedImageIDs = urls
+                        }
+                    )
+                    Divider()
+                }
+
+                HSplitView {
+                    BrowserView(viewModel: browserViewModel)
+                        .frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity)
+
+                    MetadataPanel(
+                        viewModel: metadataViewModel,
+                        browserViewModel: browserViewModel,
+                        onApplyPreset: { isShowingPresetPicker = true },
+                        onSavePreset: { isShowingSavePresetName = true }
+                    )
+                    .frame(minWidth: 280, idealWidth: 320, maxWidth: 400)
+                }
+            }
         }
         .toolbar {
             ToolbarItem(placement: .automatic) {
