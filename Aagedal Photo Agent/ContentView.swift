@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @State private var browserViewModel: BrowserViewModel
     @State private var metadataViewModel: MetadataViewModel
+    @State private var faceRecognitionViewModel: FaceRecognitionViewModel
     @State private var presetViewModel = PresetViewModel()
     @State private var ftpViewModel = FTPViewModel()
     @State private var settingsViewModel = SettingsViewModel()
@@ -18,13 +19,14 @@ struct ContentView: View {
         let browser = BrowserViewModel()
         _browserViewModel = State(initialValue: browser)
         _metadataViewModel = State(initialValue: MetadataViewModel(exifToolService: browser.exifToolService))
+        _faceRecognitionViewModel = State(initialValue: FaceRecognitionViewModel(exifToolService: browser.exifToolService))
     }
 
     var body: some View {
         NavigationSplitView {
             sidebar
         } content: {
-            BrowserView(viewModel: browserViewModel)
+            BrowserView(viewModel: browserViewModel, faceViewModel: faceRecognitionViewModel)
         } detail: {
             MetadataPanel(
                 viewModel: metadataViewModel,
@@ -73,6 +75,18 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .setLabel)) { notification in
             if let label = notification.object as? ColorLabel {
                 browserViewModel.setLabel(label)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .faceMetadataDidChange)) { _ in
+            let selected = browserViewModel.selectedImages
+            metadataViewModel.loadMetadata(for: selected)
+        }
+        .onChange(of: browserViewModel.currentFolderURL) {
+            if let folderURL = browserViewModel.currentFolderURL {
+                faceRecognitionViewModel.loadFaceData(
+                    for: folderURL,
+                    cleanupPolicy: settingsViewModel.faceCleanupPolicy
+                )
             }
         }
         .sheet(isPresented: $isShowingPresetPicker) {
