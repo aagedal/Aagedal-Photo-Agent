@@ -4,7 +4,9 @@ struct FaceBarView: View {
     @Bindable var viewModel: FaceRecognitionViewModel
     let folderURL: URL?
     let imageURLs: [URL]
+    var isExpanded: Bool = false
     var onSelectImages: ((Set<URL>) -> Void)?
+    var onToggleExpanded: (() -> Void)?
 
     @State private var selectedGroup: FaceGroup?
     @State private var multiSelectedGroupIDs: Set<UUID> = []
@@ -97,6 +99,26 @@ struct FaceBarView: View {
                 Text("\(multiSelectedGroupIDs.count)")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            // Expand/collapse button
+            if viewModel.scanComplete {
+                Button {
+                    onToggleExpanded?()
+                } label: {
+                    VStack(spacing: 2) {
+                        Image(systemName: isExpanded ? "rectangle.compress.vertical" : "rectangle.expand.vertical")
+                            .font(.system(size: 16))
+                        Text(isExpanded ? "Collapse" : "Expand")
+                            .font(.system(size: 9))
+                    }
+                    .frame(width: 52, height: 48)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(isExpanded ? "Collapse face manager" : "Expand face manager")
             }
         }
         .padding(.horizontal, 8)

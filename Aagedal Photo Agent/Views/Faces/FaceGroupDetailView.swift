@@ -6,6 +6,8 @@ struct FaceGroupDetailView: View {
     @State private var editingName: String = ""
     @State private var isApplying = false
     @State private var mergeTargetID: UUID?
+    @State private var selectedFaceIDs: Set<UUID> = []
+    @State private var moveTargetID: UUID?
     var onSelectImages: ((Set<URL>) -> Void)?
     @Environment(\.dismiss) private var dismiss
 
@@ -18,7 +20,7 @@ struct FaceGroupDetailView: View {
             Text("Face Group")
                 .font(.headline)
 
-            // Face grid with context menu for ungrouping
+            // Face grid with multi-select and context menu
             let faces = viewModel.faces(in: group)
             ScrollView {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 60))], spacing: 8) {
@@ -28,6 +30,51 @@ struct FaceGroupDetailView: View {
                 }
             }
             .frame(maxHeight: 200)
+
+            // Multi-select action bar
+            if !selectedFaceIDs.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Divider()
+
+                    Text("\(selectedFaceIDs.count) face\(selectedFaceIDs.count == 1 ? "" : "s") selected")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    HStack {
+                        Button("Remove \(selectedFaceIDs.count) from Group") {
+                            for faceID in selectedFaceIDs {
+                                viewModel.ungroupFace(faceID)
+                            }
+                            selectedFaceIDs.removeAll()
+                        }
+                        .disabled(faces.count <= 1)
+
+                        Spacer()
+                    }
+
+                    if !otherGroups.isEmpty {
+                        HStack {
+                            Text("Move to:")
+                                .font(.caption)
+                            Picker("", selection: $moveTargetID) {
+                                Text("Select group...").tag(nil as UUID?)
+                                ForEach(otherGroups) { other in
+                                    Text(other.name ?? "Unnamed (\(other.faceIDs.count))").tag(other.id as UUID?)
+                                }
+                            }
+                            .labelsHidden()
+                            .frame(maxWidth: .infinity)
+
+                            Button("Move") {
+                                guard let targetID = moveTargetID else { return }
+                                viewModel.moveFaces(selectedFaceIDs, toGroup: targetID)
+                                selectedFaceIDs.removeAll()
+                            }
+                            .disabled(moveTargetID == nil)
+                        }
+                    }
+                }
+            }
 
             Divider()
 
@@ -87,7 +134,7 @@ struct FaceGroupDetailView: View {
             }
         }
         .padding()
-        .frame(width: 320, height: 420)
+        .frame(width: 320, height: 480)
         .onAppear {
             editingName = group.name ?? ""
         }
@@ -95,6 +142,8 @@ struct FaceGroupDetailView: View {
 
     @ViewBuilder
     private func faceThumbnail(face: DetectedFace, canUngroup: Bool) -> some View {
+        let isSelected = selectedFaceIDs.contains(face.id)
+
         let thumbnail: some View = Group {
             if let image = viewModel.thumbnailImage(for: face.id) {
                 Image(nsImage: image)
@@ -108,12 +157,37 @@ struct FaceGroupDetailView: View {
                     .frame(width: 60, height: 60)
             }
         }
+        .overlay(
+            RoundedRectangle(cornerRadius: 4)
+                .strokeBorder(isSelected ? Color.accentColor : Color.clear, lineWidth: 2)
+        )
+        .overlay(alignment: .bottomTrailing) {
+            if isSelected {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.white, Color.accentColor)
+                    .padding(2)
+            }
+        }
+        .onTapGesture {
+            if NSEvent.modifierFlags.contains(.command) {
+                if selectedFaceIDs.contains(face.id) {
+                    selectedFaceIDs.remove(face.id)
+                } else {
+                    selectedFaceIDs.insert(face.id)
+                }
+            } else {
+                selectedFaceIDs.removeAll()
+                selectedFaceIDs.insert(face.id)
+            }
+        }
 
         if canUngroup {
             thumbnail
                 .contextMenu {
                     Button("Remove from Group") {
                         viewModel.ungroupFace(face.id)
+                        selectedFaceIDs.remove(face.id)
                     }
                 }
         } else {
