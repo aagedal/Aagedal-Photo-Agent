@@ -127,7 +127,7 @@ final class ExifToolService {
 
     /// Read full metadata for a single file.
     func readFullMetadata(url: URL) async throws -> IPTCMetadata {
-        let args = ["-json", "-IPTC:All", "-XMP:All", "-struct", url.path]
+        let args = ["-json", "-n", "-IPTC:All", "-XMP:All", "-EXIF:GPSLatitude", "-EXIF:GPSLongitude", "-struct", url.path]
         let output = try await execute(args)
         let results = parseJSON(output)
 
@@ -141,6 +141,8 @@ final class ExifToolService {
             keywords: parseStringOrArray(dict["Subject"] ?? dict["Keywords"]),
             personShown: parseStringOrArray(dict["PersonInImage"]),
             digitalSourceType: (dict["DigitalSourceType"] as? String).flatMap { DigitalSourceType(rawValue: $0) },
+            latitude: dict["GPSLatitude"] as? Double,
+            longitude: dict["GPSLongitude"] as? Double,
             creator: parseFirstString(dict["Creator"] ?? dict["By-line"]),
             credit: dict["Credit"] as? String,
             copyright: dict["Rights"] as? String ?? dict["CopyrightNotice"] as? String,
@@ -197,6 +199,26 @@ final class ExifToolService {
     /// Write color label to files.
     func writeLabel(_ label: ColorLabel, to urls: [URL]) async throws {
         try await writeFields(["XMP:Label": label.rawValue], to: urls)
+    }
+
+    /// Read technical/EXIF metadata for a single file.
+    func readTechnicalMetadata(url: URL) async throws -> TechnicalMetadata {
+        let args = [
+            "-json", "-n",
+            "-EXIF:Make", "-EXIF:Model", "-EXIF:LensModel",
+            "-EXIF:DateTimeOriginal", "-EXIF:FocalLength",
+            "-EXIF:FNumber", "-EXIF:ExposureTime", "-EXIF:ISO",
+            "-EXIF:ImageWidth", "-EXIF:ImageHeight",
+            "-EXIF:BitsPerSample", "-EXIF:ColorSpace",
+            "-File:ImageWidth", "-File:ImageHeight",
+            url.path
+        ]
+        let output = try await execute(args)
+        let results = parseJSON(output)
+        guard let dict = results.first else {
+            return TechnicalMetadata(from: [:])
+        }
+        return TechnicalMetadata(from: dict)
     }
 
     // MARK: - Parsing Helpers

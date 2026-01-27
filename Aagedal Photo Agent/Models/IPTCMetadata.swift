@@ -19,6 +19,10 @@ struct IPTCMetadata: Codable, Sendable, Equatable {
     var country: String?
     var event: String?
 
+    // GPS
+    var latitude: Double?
+    var longitude: Double?
+
     // XMP managed alongside
     var rating: Int?
     var label: String?
@@ -29,6 +33,8 @@ struct IPTCMetadata: Codable, Sendable, Equatable {
         keywords: [String] = [],
         personShown: [String] = [],
         digitalSourceType: DigitalSourceType? = nil,
+        latitude: Double? = nil,
+        longitude: Double? = nil,
         creator: String? = nil,
         credit: String? = nil,
         copyright: String? = nil,
@@ -44,6 +50,8 @@ struct IPTCMetadata: Codable, Sendable, Equatable {
         self.keywords = keywords
         self.personShown = personShown
         self.digitalSourceType = digitalSourceType
+        self.latitude = latitude
+        self.longitude = longitude
         self.creator = creator
         self.credit = credit
         self.copyright = copyright
