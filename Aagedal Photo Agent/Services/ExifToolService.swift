@@ -1,4 +1,7 @@
 import Foundation
+import os.log
+
+private let exifToolLog = Logger(subsystem: Bundle.main.bundleIdentifier ?? "AagedalPhotoAgent", category: "ExifToolService")
 
 /// Manages a persistent ExifTool process in `-stay_open` mode for fast batch operations.
 @Observable
@@ -10,6 +13,8 @@ final class ExifToolService {
     private var isRunning = false
     private var accumulatedOutput = ""
     private var pendingContinuation: CheckedContinuation<String, any Error>?
+    private var commandQueue: [() -> Void] = []
+    private var isExecuting = false
 
     var exifToolPath: String? {
         // Settings override → bundled → Homebrew → /usr/local
@@ -87,20 +92,43 @@ final class ExifToolService {
                 accumulatedOutput = String(accumulatedOutput[accumulatedOutput.index(after: newlineAfterReady)...])
                 pendingContinuation?.resume(returning: result)
                 pendingContinuation = nil
+                isExecuting = false
+                dequeueNext()
             }
         }
     }
 
+    private func dequeueNext() {
+        guard !isExecuting, !commandQueue.isEmpty else { return }
+        isExecuting = true
+        let next = commandQueue.removeFirst()
+        next()
+    }
+
     /// Execute an ExifTool command and return the response.
+    /// Commands are serialized to prevent concurrent access to the single ExifTool process.
     func execute(_ arguments: [String]) async throws -> String {
         if !isRunning {
             try start()
         }
 
+        let label = arguments.first(where: { $0.hasSuffix(".path") || !$0.hasPrefix("-") }) ?? arguments.prefix(3).joined(separator: " ")
+        exifToolLog.debug("Queuing command: \(label, privacy: .public) (queue depth: \(self.commandQueue.count))")
+
         return try await withCheckedThrowingContinuation { continuation in
-            self.accumulatedOutput = ""
-            self.pendingContinuation = continuation
-            self.sendCommand(arguments)
+            self.commandQueue.append { [weak self] in
+                guard let self else {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                exifToolLog.debug("Executing command: \(label, privacy: .public)")
+                self.accumulatedOutput = ""
+                self.pendingContinuation = continuation
+                self.sendCommand(arguments)
+            }
+            if !self.isExecuting {
+                self.dequeueNext()
+            }
         }
     }
 
@@ -127,8 +155,10 @@ final class ExifToolService {
 
     /// Read full metadata for a single file.
     func readFullMetadata(url: URL) async throws -> IPTCMetadata {
+        exifToolLog.debug("readFullMetadata: \(url.lastPathComponent, privacy: .public)")
         let args = ["-json", "-n", "-IPTC:All", "-XMP:All", "-EXIF:GPSLatitude", "-EXIF:GPSLongitude", "-struct", url.path]
         let output = try await execute(args)
+        exifToolLog.debug("readFullMetadata completed: \(url.lastPathComponent, privacy: .public)")
         let results = parseJSON(output)
 
         guard let dict = results.first else {
@@ -203,6 +233,7 @@ final class ExifToolService {
 
     /// Read technical/EXIF metadata for a single file.
     func readTechnicalMetadata(url: URL) async throws -> TechnicalMetadata {
+        exifToolLog.debug("readTechnicalMetadata: \(url.lastPathComponent, privacy: .public)")
         let args = [
             "-json", "-n",
             "-EXIF:Make", "-EXIF:Model", "-EXIF:LensModel",
@@ -214,8 +245,10 @@ final class ExifToolService {
             url.path
         ]
         let output = try await execute(args)
+        exifToolLog.debug("readTechnicalMetadata completed: \(url.lastPathComponent, privacy: .public)")
         let results = parseJSON(output)
         guard let dict = results.first else {
+            exifToolLog.warning("readTechnicalMetadata: no data returned for \(url.lastPathComponent, privacy: .public)")
             return TechnicalMetadata(from: [:])
         }
         return TechnicalMetadata(from: dict)
