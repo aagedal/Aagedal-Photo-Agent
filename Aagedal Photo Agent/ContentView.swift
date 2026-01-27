@@ -9,11 +9,13 @@ struct ContentView: View {
     @State private var presetViewModel = PresetViewModel()
     @State private var ftpViewModel = FTPViewModel()
     @State private var settingsViewModel = SettingsViewModel()
+    @State private var importViewModel: ImportViewModel
 
     @State private var isShowingPresetEditor = false
     @State private var isShowingPresetPicker = false
     @State private var isShowingFTPUpload = false
     @State private var isShowingSavePresetName = false
+    @State private var isShowingImport = false
     @State private var savePresetName = ""
     @State private var metadataPanelWidth: CGFloat = 320
     @State private var isFaceManagerExpanded = false
@@ -23,6 +25,7 @@ struct ContentView: View {
         _browserViewModel = State(initialValue: browser)
         _metadataViewModel = State(initialValue: MetadataViewModel(exifToolService: browser.exifToolService))
         _faceRecognitionViewModel = State(initialValue: FaceRecognitionViewModel(exifToolService: browser.exifToolService))
+        _importViewModel = State(initialValue: ImportViewModel(exifToolService: browser.exifToolService))
     }
 
     var body: some View {
@@ -141,6 +144,23 @@ struct ContentView: View {
                 filesToUpload: browserViewModel.selectedImages.map(\.url)
             )
         }
+        .sheet(isPresented: $isShowingImport) {
+            ImportView(
+                viewModel: importViewModel,
+                presets: presetViewModel.presets,
+                onDismiss: { isShowingImport = false }
+            )
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .showImport)) { _ in
+            isShowingImport = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .importCompleted)) { notification in
+            if let folderURL = notification.object as? URL,
+               importViewModel.configuration.openFolderAfterImport {
+                isShowingImport = false
+                browserViewModel.loadFolder(url: folderURL)
+            }
+        }
         .fullScreenImagePresenter(viewModel: browserViewModel)
         .onAppear {
             browserViewModel.loadFavorites()
@@ -189,6 +209,14 @@ struct ContentView: View {
                             Label("Add to Favorites", systemImage: "star")
                         }
                     }
+                }
+            }
+
+            Section {
+                Button {
+                    isShowingImport = true
+                } label: {
+                    Label("Import Photos...", systemImage: "square.and.arrow.down")
                 }
             }
 
