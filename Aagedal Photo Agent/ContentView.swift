@@ -268,10 +268,16 @@ struct ContentView: View {
             if browserViewModel.selectedImageIDs.count == 1,
                let selectedImage = browserViewModel.selectedImages.first {
                 Divider()
-                TechnicalMetadataView(
-                    metadata: technicalMetadata,
-                    fileSize: selectedImage.fileSize
-                )
+                VStack(alignment: .leading, spacing: 8) {
+                    if let meta = technicalMetadata, meta.hasC2PA {
+                        C2PAMetadataView(metadata: meta)
+                        Divider()
+                    }
+                    TechnicalMetadataView(
+                        metadata: technicalMetadata,
+                        fileSize: selectedImage.fileSize
+                    )
+                }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
             }

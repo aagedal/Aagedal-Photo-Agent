@@ -13,6 +13,12 @@ struct TechnicalMetadata {
     var bitDepth: Int?
     var colorSpace: String?
 
+    // C2PA
+    var hasC2PA: Bool
+    var c2paClaimGenerator: String?
+    var c2paAction: String?
+    var c2paHashAlgorithm: String?
+
     var resolution: String? {
         guard let w = imageWidth, let h = imageHeight else { return nil }
         return "\(w) x \(h)"
@@ -89,5 +95,22 @@ struct TechnicalMetadata {
         } else if let cs = dict["ColorSpace"] as? String {
             colorSpace = cs
         }
+
+        // C2PA — detect from JUMD/C2PA keys returned by -JUMBF:All
+        hasC2PA = dict.keys.contains { $0.hasPrefix("JUMD") || $0.hasPrefix("C2PA") || $0 == "Claim_generator" }
+
+        // Claim generator (ExifTool returns as "Claim_generator")
+        c2paClaimGenerator = dict["Claim_generator"] as? String
+            ?? dict["Claim_Generator_InfoName"] as? String
+
+        // Action (e.g. "c2pa.created" → "Created")
+        if let action = dict["ActionsAction"] as? String {
+            c2paAction = action
+                .replacingOccurrences(of: "c2pa.", with: "")
+                .capitalized
+        }
+
+        // Hash algorithm
+        c2paHashAlgorithm = dict["Alg"] as? String
     }
 }
