@@ -50,6 +50,13 @@ struct FaceGroupDetailView: View {
                         .disabled(faces.count <= 1)
 
                         Spacer()
+
+                        Button(role: .destructive) {
+                            viewModel.deleteFaces(selectedFaceIDs)
+                            selectedFaceIDs.removeAll()
+                        } label: {
+                            Label("Delete \(selectedFaceIDs.count)", systemImage: "trash")
+                        }
                     }
 
                     if !otherGroups.isEmpty {
@@ -188,6 +195,11 @@ struct FaceGroupDetailView: View {
                     Button("Remove from Group") {
                         viewModel.ungroupFace(face.id)
                         selectedFaceIDs.remove(face.id)
+                    }
+                    Divider()
+                    Button("Delete Face", role: .destructive) {
+                        selectedFaceIDs.remove(face.id)
+                        viewModel.deleteFaces([face.id])
                     }
                 }
         } else {

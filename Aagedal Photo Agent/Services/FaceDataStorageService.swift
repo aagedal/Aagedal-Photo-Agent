@@ -67,6 +67,11 @@ struct FaceDataStorageService: Sendable {
 
     // MARK: - Delete
 
+    func deleteThumbnail(for faceID: UUID, folderURL: URL) {
+        let url = thumbnailURL(for: faceID, folderURL: folderURL)
+        try? FileManager.default.removeItem(at: url)
+    }
+
     func deleteFaceData(for folderURL: URL) throws {
         let dir = faceDataDirectory(for: folderURL)
         if FileManager.default.fileExists(atPath: dir.path) {
