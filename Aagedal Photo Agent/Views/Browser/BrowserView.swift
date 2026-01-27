@@ -2,33 +2,45 @@ import SwiftUI
 
 struct BrowserView: View {
     @Bindable var viewModel: BrowserViewModel
+    @Bindable var faceViewModel: FaceRecognitionViewModel
 
     var body: some View {
-        Group {
-            if viewModel.isLoading {
-                ProgressView("Loading images...")
-            } else if viewModel.images.isEmpty {
-                ContentUnavailableView {
-                    Label("No Images", systemImage: "photo.on.rectangle.angled")
-                } description: {
-                    if viewModel.currentFolderURL == nil {
-                        Text("Open a folder to browse images")
-                    } else {
-                        Text("No supported images found in this folder")
+        VStack(spacing: 0) {
+            if !viewModel.images.isEmpty {
+                FaceBarView(
+                    viewModel: faceViewModel,
+                    folderURL: viewModel.currentFolderURL,
+                    imageURLs: viewModel.images.map(\.url)
+                )
+                Divider()
+            }
+
+            Group {
+                if viewModel.isLoading {
+                    ProgressView("Loading images...")
+                } else if viewModel.images.isEmpty {
+                    ContentUnavailableView {
+                        Label("No Images", systemImage: "photo.on.rectangle.angled")
+                    } description: {
+                        if viewModel.currentFolderURL == nil {
+                            Text("Open a folder to browse images")
+                        } else {
+                            Text("No supported images found in this folder")
+                        }
+                    } actions: {
+                        Button("Open Folder") {
+                            viewModel.openFolder()
+                        }
                     }
-                } actions: {
-                    Button("Open Folder") {
-                        viewModel.openFolder()
+                } else if let error = viewModel.errorMessage {
+                    ContentUnavailableView {
+                        Label("Error", systemImage: "exclamationmark.triangle")
+                    } description: {
+                        Text(error)
                     }
+                } else {
+                    ThumbnailGridView(viewModel: viewModel)
                 }
-            } else if let error = viewModel.errorMessage {
-                ContentUnavailableView {
-                    Label("Error", systemImage: "exclamationmark.triangle")
-                } description: {
-                    Text(error)
-                }
-            } else {
-                ThumbnailGridView(viewModel: viewModel)
             }
         }
         .toolbar {

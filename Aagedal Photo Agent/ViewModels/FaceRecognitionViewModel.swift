@@ -1,0 +1,256 @@
+import Foundation
+import AppKit
+
+@Observable
+final class FaceRecognitionViewModel {
+    var faceData: FolderFaceData?
+    var isScanning = false
+    var scanProgress: String = ""
+    var scanComplete = false
+    var errorMessage: String?
+
+    // Thumbnail cache: faceID -> NSImage
+    var thumbnailCache: [UUID: NSImage] = [:]
+
+    private let detectionService = FaceDetectionService()
+    private let storageService = FaceDataStorageService()
+    private let exifToolService: ExifToolService
+
+    init(exifToolService: ExifToolService) {
+        self.exifToolService = exifToolService
+    }
+
+    // MARK: - Sorted Groups
+
+    var sortedGroups: [FaceGroup] {
+        guard let groups = faceData?.groups else { return [] }
+        return groups.sorted { a, b in
+            // Named groups first (alphabetical), then unnamed (by size descending)
+            switch (a.name, b.name) {
+            case let (nameA?, nameB?):
+                return nameA.localizedCaseInsensitiveCompare(nameB) == .orderedAscending
+            case (_?, nil):
+                return true
+            case (nil, _?):
+                return false
+            case (nil, nil):
+                return a.faceIDs.count > b.faceIDs.count
+            }
+        }
+    }
+
+    // MARK: - Load Existing Data
+
+    func loadFaceData(for folderURL: URL, cleanupPolicy: FaceCleanupPolicy) {
+        // Apply cleanup policy first
+        try? storageService.applyCleanupIfNeeded(for: folderURL, policy: cleanupPolicy)
+
+        if let data = storageService.loadFaceData(for: folderURL) {
+            self.faceData = data
+            self.scanComplete = data.scanComplete
+            loadThumbnails(for: data)
+        } else {
+            self.faceData = nil
+            self.scanComplete = false
+            self.thumbnailCache = [:]
+        }
+    }
+
+    private func loadThumbnails(for data: FolderFaceData) {
+        thumbnailCache = [:]
+        for group in data.groups {
+            let faceID = group.representativeFaceID
+            if let thumbData = storageService.loadThumbnail(for: faceID, folderURL: data.folderURL),
+               let image = NSImage(data: thumbData) {
+                thumbnailCache[faceID] = image
+            }
+        }
+    }
+
+    // MARK: - Scan Folder
+
+    func scanFolder(imageURLs: [URL], folderURL: URL, rescan: Bool = false) {
+        guard !isScanning else { return }
+
+        if rescan {
+            try? storageService.deleteFaceData(for: folderURL)
+            faceData = nil
+            thumbnailCache = [:]
+            scanComplete = false
+        }
+
+        isScanning = true
+        scanProgress = "0/\(imageURLs.count)"
+        errorMessage = nil
+
+        Task {
+            var allFaces: [DetectedFace] = faceData?.faces ?? []
+            var allGroups: [FaceGroup] = faceData?.groups ?? []
+            let alreadyScanned = Set(allFaces.map(\.imageURL))
+
+            let toScan = imageURLs.filter { !alreadyScanned.contains($0) }
+            var processed = 0
+
+            // Process images concurrently, capped at 4
+            await withTaskGroup(of: [(face: DetectedFace, thumbnail: Data)].self) { taskGroup in
+                var pending = 0
+
+                for url in toScan {
+                    if pending >= 4 {
+                        if let results = await taskGroup.next() {
+                            for result in results {
+                                allFaces.append(result.face)
+                                try? storageService.saveThumbnail(result.thumbnail, for: result.face.id, folderURL: folderURL)
+                                let image = NSImage(data: result.thumbnail)
+                                if let image {
+                                    await MainActor.run {
+                                        thumbnailCache[result.face.id] = image
+                                    }
+                                }
+                            }
+                            processed += 1
+                            let current = processed
+                            let total = toScan.count
+                            await MainActor.run {
+                                scanProgress = "\(current)/\(total)"
+                            }
+                        }
+                        pending -= 1
+                    }
+
+                    taskGroup.addTask {
+                        (try? await self.detectionService.detectFaces(in: url)) ?? []
+                    }
+                    pending += 1
+                }
+
+                // Collect remaining
+                for await results in taskGroup {
+                    for result in results {
+                        allFaces.append(result.face)
+                        try? storageService.saveThumbnail(result.thumbnail, for: result.face.id, folderURL: folderURL)
+                        let image = NSImage(data: result.thumbnail)
+                        if let image {
+                            await MainActor.run {
+                                thumbnailCache[result.face.id] = image
+                            }
+                        }
+                    }
+                    processed += 1
+                    let current = processed
+                    let total = toScan.count
+                    await MainActor.run {
+                        scanProgress = "\(current)/\(total)"
+                    }
+                }
+            }
+
+            // Cluster faces
+            let unclustered = allFaces.filter { $0.groupID == nil }
+            allGroups = detectionService.clusterFaces(unclustered, existingGroups: allGroups)
+
+            // Assign group IDs to faces
+            for group in allGroups {
+                for faceID in group.faceIDs {
+                    if let index = allFaces.firstIndex(where: { $0.id == faceID }) {
+                        allFaces[index].groupID = group.id
+                    }
+                }
+            }
+
+            let folderData = FolderFaceData(
+                folderURL: folderURL,
+                faces: allFaces,
+                groups: allGroups,
+                lastScanDate: Date(),
+                scanComplete: true
+            )
+
+            try? storageService.saveFaceData(folderData)
+
+            await MainActor.run {
+                self.faceData = folderData
+                self.isScanning = false
+                self.scanComplete = true
+                self.scanProgress = ""
+                self.loadThumbnails(for: folderData)
+            }
+        }
+    }
+
+    // MARK: - Naming & Metadata
+
+    func nameGroup(_ groupID: UUID, name: String) {
+        guard var data = faceData,
+              let index = data.groups.firstIndex(where: { $0.id == groupID }) else { return }
+
+        data.groups[index].name = name.isEmpty ? nil : name
+        faceData = data
+        try? storageService.saveFaceData(data)
+    }
+
+    func applyNameToMetadata(groupID: UUID) {
+        guard let data = faceData,
+              let group = data.groups.first(where: { $0.id == groupID }),
+              let name = group.name, !name.isEmpty else { return }
+
+        let imageURLs = group.faceIDs.compactMap { faceID in
+            data.faces.first(where: { $0.id == faceID })?.imageURL
+        }
+        let uniqueURLs = Array(Set(imageURLs))
+
+        guard !uniqueURLs.isEmpty else { return }
+
+        Task {
+            for url in uniqueURLs {
+                do {
+                    // Read existing PersonInImage
+                    let existing = try await exifToolService.readFullMetadata(url: url)
+                    var persons = existing.personShown
+
+                    // Deduplicate: only add if not already present
+                    if !persons.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) {
+                        persons.append(name)
+                    }
+
+                    let value = persons.joined(separator: ", ")
+                    try await exifToolService.writeFields(["XMP-iptcExt:PersonInImage": value], to: [url])
+                } catch {
+                    // Continue with next image
+                }
+            }
+
+            // Post notification so MetadataPanel refreshes
+            await MainActor.run {
+                NotificationCenter.default.post(name: .faceMetadataDidChange, object: nil)
+            }
+        }
+    }
+
+    // MARK: - Delete Face Data
+
+    func deleteFaceData(for folderURL: URL) {
+        try? storageService.deleteFaceData(for: folderURL)
+        faceData = nil
+        thumbnailCache = [:]
+        scanComplete = false
+    }
+
+    // MARK: - Helper
+
+    func faces(in group: FaceGroup) -> [DetectedFace] {
+        guard let data = faceData else { return [] }
+        return group.faceIDs.compactMap { faceID in
+            data.faces.first { $0.id == faceID }
+        }
+    }
+
+    func thumbnailImage(for faceID: UUID) -> NSImage? {
+        if let cached = thumbnailCache[faceID] { return cached }
+        guard let folderURL = faceData?.folderURL,
+              let data = storageService.loadThumbnail(for: faceID, folderURL: folderURL),
+              let image = NSImage(data: data) else { return nil }
+        thumbnailCache[faceID] = image
+        return image
+    }
+}

@@ -64,6 +64,14 @@ struct SettingsView: View {
                 }
             }
 
+            Section("Face Recognition") {
+                Picker("Auto-delete face data", selection: $settingsViewModel.faceCleanupPolicy) {
+                    ForEach(FaceCleanupPolicy.allCases, id: \.self) { policy in
+                        Text(policy.displayName).tag(policy)
+                    }
+                }
+            }
+
             Section("External Editor") {
                 LabeledContent("Default Editor") {
                     HStack {

@@ -154,16 +154,38 @@ final class ExifToolService {
     }
 
     /// Write metadata fields to one or more files.
+    /// Multi-line values are written via temp files using exiftool's `-TAG<=FILE` syntax,
+    /// since the `-stay_open` argfile mode treats each line as a separate argument.
     func writeFields(_ fields: [String: String], to urls: [URL]) async throws {
         guard !urls.isEmpty, !fields.isEmpty else { return }
 
         var args = ["-overwrite_original"]
+        var tempFiles: [URL] = []
+
         for (key, value) in fields {
-            args.append("-\(key)=\(value)")
+            if value.contains("\n") || value.contains("\r") {
+                let tempURL = FileManager.default.temporaryDirectory
+                    .appendingPathComponent(UUID().uuidString + ".txt")
+                try value.write(to: tempURL, atomically: true, encoding: .utf8)
+                tempFiles.append(tempURL)
+                args.append("-\(key)<=\(tempURL.path)")
+            } else {
+                args.append("-\(key)=\(value)")
+            }
         }
         args += urls.map(\.path)
 
-        _ = try await execute(args)
+        do {
+            _ = try await execute(args)
+        } catch {
+            for file in tempFiles {
+                try? FileManager.default.removeItem(at: file)
+            }
+            throw error
+        }
+        for file in tempFiles {
+            try? FileManager.default.removeItem(at: file)
+        }
     }
 
     /// Write rating to files.

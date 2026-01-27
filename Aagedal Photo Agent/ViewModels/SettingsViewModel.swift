@@ -17,6 +17,16 @@ final class SettingsViewModel {
         return URL(fileURLWithPath: defaultExternalEditor).deletingPathExtension().lastPathComponent
     }
 
+    var faceCleanupPolicy: FaceCleanupPolicy {
+        get {
+            let raw = UserDefaults.standard.string(forKey: "faceCleanupPolicy") ?? "never"
+            return FaceCleanupPolicy(rawValue: raw) ?? .never
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: "faceCleanupPolicy")
+        }
+    }
+
     var detectedExifToolPath: String? {
         let paths = [
             "/opt/homebrew/bin/exiftool",

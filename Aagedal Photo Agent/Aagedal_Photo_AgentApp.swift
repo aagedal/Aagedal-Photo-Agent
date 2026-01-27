@@ -59,4 +59,5 @@ extension Notification.Name {
     static let openFolder = Notification.Name("openFolder")
     static let setRating = Notification.Name("setRating")
     static let setLabel = Notification.Name("setLabel")
+    static let faceMetadataDidChange = Notification.Name("faceMetadataDidChange")
 }
