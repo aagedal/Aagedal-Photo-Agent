@@ -16,8 +16,8 @@ struct TechnicalMetadata {
     // C2PA
     var hasC2PA: Bool
     var c2paClaimGenerator: String?
-    var c2paAction: String?
-    var c2paHashAlgorithm: String?
+    var c2paAuthor: String?
+    var c2paEdited: Bool
 
     var resolution: String? {
         guard let w = imageWidth, let h = imageHeight else { return nil }
@@ -99,18 +99,18 @@ struct TechnicalMetadata {
         // C2PA — detect from JUMD/C2PA keys returned by -JUMBF:All
         hasC2PA = dict.keys.contains { $0.hasPrefix("JUMD") || $0.hasPrefix("C2PA") || $0 == "Claim_generator" }
 
-        // Claim generator (ExifTool returns as "Claim_generator")
+        // Claim generator — ExifTool flattens multi-manifest C2PA data.
+        // When a file has been edited (has "Relationship" = "parentOf"),
+        // the flat "Claim_generator" is from the ingredient/original manifest.
+        // The active manifest's generator info is in Claim_Generator_InfoVersion etc.
         c2paClaimGenerator = dict["Claim_generator"] as? String
             ?? dict["Claim_Generator_InfoName"] as? String
 
-        // Action (e.g. "c2pa.created" → "Created")
-        if let action = dict["ActionsAction"] as? String {
-            c2paAction = action
-                .replacingOccurrences(of: "c2pa.", with: "")
-                .capitalized
-        }
+        // Author (from schema.org CreativeWork assertion)
+        c2paAuthor = dict["AuthorName"] as? String
 
-        // Hash algorithm
-        c2paHashAlgorithm = dict["Alg"] as? String
+        // Edited detection: "Relationship" = "parentOf" means the file has an
+        // ingredient (i.e. it was edited/re-signed by another tool)
+        c2paEdited = (dict["Relationship"] as? String) == "parentOf"
     }
 }
