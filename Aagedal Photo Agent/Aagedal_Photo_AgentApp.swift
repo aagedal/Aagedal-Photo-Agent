@@ -31,6 +31,13 @@ struct Aagedal_Photo_AgentApp: App {
                 }
             }
 
+            CommandGroup(after: .newItem) {
+                Button("Open in External Editor") {
+                    NotificationCenter.default.post(name: .openInExternalEditor, object: nil)
+                }
+                .keyboardShortcut("e", modifiers: .command)
+            }
+
             CommandMenu("Label") {
                 Button("No Label") {
                     NotificationCenter.default.post(name: .setLabel, object: ColorLabel.none)
@@ -60,4 +67,5 @@ extension Notification.Name {
     static let setRating = Notification.Name("setRating")
     static let setLabel = Notification.Name("setLabel")
     static let faceMetadataDidChange = Notification.Name("faceMetadataDidChange")
+    static let openInExternalEditor = Notification.Name("openInExternalEditor")
 }

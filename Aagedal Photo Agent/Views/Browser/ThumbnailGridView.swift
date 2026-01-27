@@ -22,19 +22,19 @@ struct ThumbnailGridView: View {
         .focused($isGridFocused)
         .focusEffectDisabled()
         .onKeyPress(.leftArrow) {
-            viewModel.selectPrevious()
+            viewModel.selectPrevious(extending: NSEvent.modifierFlags.contains(.shift))
             return .handled
         }
         .onKeyPress(.rightArrow) {
-            viewModel.selectNext()
+            viewModel.selectNext(extending: NSEvent.modifierFlags.contains(.shift))
             return .handled
         }
         .onKeyPress(.upArrow) {
-            viewModel.selectPrevious()
+            viewModel.selectPrevious(extending: NSEvent.modifierFlags.contains(.shift))
             return .handled
         }
         .onKeyPress(.downArrow) {
-            viewModel.selectNext()
+            viewModel.selectNext(extending: NSEvent.modifierFlags.contains(.shift))
             return .handled
         }
         .onKeyPress(.space) {

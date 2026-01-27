@@ -29,9 +29,11 @@ struct ImageFile: Identifiable, Hashable, Sendable {
         self.metadata = nil
     }
 
-    // Hashable conformance using URL only
     static func == (lhs: ImageFile, rhs: ImageFile) -> Bool {
         lhs.url == rhs.url
+            && lhs.starRating == rhs.starRating
+            && lhs.colorLabel == rhs.colorLabel
+            && lhs.hasC2PA == rhs.hasC2PA
     }
 
     func hash(into hasher: inout Hasher) {

@@ -7,6 +7,18 @@ struct FaceBarView: View {
     var onSelectImages: ((Set<URL>) -> Void)?
 
     @State private var selectedGroup: FaceGroup?
+    @State private var multiSelectedGroupIDs: Set<UUID> = []
+
+    private var isMultiSelecting: Bool {
+        multiSelectedGroupIDs.count >= 2
+    }
+
+    private var canUnmergeSelection: Bool {
+        guard let data = viewModel.faceData else { return false }
+        return multiSelectedGroupIDs.contains { id in
+            data.groups.first(where: { $0.id == id })?.faceIDs.count ?? 0 > 1
+        }
+    }
 
     var body: some View {
         HStack(spacing: 8) {
@@ -22,22 +34,82 @@ struct FaceBarView: View {
                     ForEach(viewModel.sortedGroups) { group in
                         FaceGroupThumbnail(
                             group: group,
-                            image: viewModel.thumbnailCache[group.representativeFaceID]
+                            image: viewModel.thumbnailCache[group.representativeFaceID],
+                            isMultiSelected: multiSelectedGroupIDs.contains(group.id)
                         )
                         .onTapGesture {
-                            selectedGroup = group
+                            if NSEvent.modifierFlags.contains(.command) {
+                                toggleMultiSelect(group.id)
+                            } else {
+                                multiSelectedGroupIDs.removeAll()
+                                selectedGroup = group
+                            }
+                        }
+                        .popover(isPresented: Binding<Bool>(
+                            get: { selectedGroup?.id == group.id },
+                            set: { newValue in if !newValue { selectedGroup = nil } }
+                        )) {
+                            FaceGroupDetailView(group: group, viewModel: viewModel, onSelectImages: onSelectImages)
                         }
                     }
                 }
                 .padding(.horizontal, 4)
+            }
+
+            // Multi-select action bar
+            if isMultiSelecting {
+                Divider()
+                    .frame(height: 58)
+
+                VStack(spacing: 4) {
+                    Button {
+                        viewModel.mergeMultipleGroups(multiSelectedGroupIDs)
+                        multiSelectedGroupIDs.removeAll()
+                    } label: {
+                        VStack(spacing: 1) {
+                            Image(systemName: "arrow.triangle.merge")
+                                .font(.system(size: 14))
+                            Text("Merge")
+                                .font(.system(size: 9))
+                        }
+                        .frame(width: 52, height: 28)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        viewModel.ungroupMultiple(multiSelectedGroupIDs)
+                        multiSelectedGroupIDs.removeAll()
+                    } label: {
+                        VStack(spacing: 1) {
+                            Image(systemName: "arrow.triangle.branch")
+                                .font(.system(size: 14))
+                            Text("Unmerge")
+                                .font(.system(size: 9))
+                        }
+                        .frame(width: 52, height: 28)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canUnmergeSelection)
+                }
+
+                Text("\(multiSelectedGroupIDs.count)")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
             }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
         .frame(height: 76)
         .background(.bar)
-        .popover(item: $selectedGroup) { group in
-            FaceGroupDetailView(group: group, viewModel: viewModel, onSelectImages: onSelectImages)
+    }
+
+    private func toggleMultiSelect(_ id: UUID) {
+        if multiSelectedGroupIDs.contains(id) {
+            multiSelectedGroupIDs.remove(id)
+        } else {
+            multiSelectedGroupIDs.insert(id)
         }
     }
 

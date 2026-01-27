@@ -283,6 +283,66 @@ final class FaceRecognitionViewModel {
         try? storageService.saveFaceData(data)
     }
 
+    /// Merge multiple groups into the first group in the set (by sort order).
+    func mergeMultipleGroups(_ groupIDs: Set<UUID>) {
+        guard groupIDs.count >= 2, var data = faceData else { return }
+
+        // Use sorted order so the "first" group (named or largest) becomes the target
+        let sorted = sortedGroups.filter { groupIDs.contains($0.id) }
+        guard let target = sorted.first else { return }
+        let sources = sorted.dropFirst()
+
+        for source in sources {
+            guard let sourceIndex = data.groups.firstIndex(where: { $0.id == source.id }),
+                  let targetIndex = data.groups.firstIndex(where: { $0.id == target.id }) else { continue }
+
+            let sourceFaceIDs = data.groups[sourceIndex].faceIDs
+            data.groups[targetIndex].faceIDs.append(contentsOf: sourceFaceIDs)
+
+            for faceID in sourceFaceIDs {
+                if let fi = data.faces.firstIndex(where: { $0.id == faceID }) {
+                    data.faces[fi].groupID = target.id
+                }
+            }
+
+            data.groups.remove(at: sourceIndex)
+        }
+
+        faceData = data
+        try? storageService.saveFaceData(data)
+    }
+
+    /// Ungroup all selected groups — split every face into its own solo group.
+    func ungroupMultiple(_ groupIDs: Set<UUID>) {
+        guard var data = faceData else { return }
+
+        for groupID in groupIDs {
+            guard let groupIndex = data.groups.firstIndex(where: { $0.id == groupID }) else { continue }
+            let group = data.groups[groupIndex]
+            guard group.faceIDs.count > 1 else { continue }
+
+            // Create solo groups for each face except the first (which stays as representative)
+            let remaining = Array(group.faceIDs.dropFirst())
+            data.groups[groupIndex].faceIDs = [group.faceIDs[0]]
+
+            for faceID in remaining {
+                let newGroup = FaceGroup(
+                    id: UUID(),
+                    name: nil,
+                    representativeFaceID: faceID,
+                    faceIDs: [faceID]
+                )
+                data.groups.append(newGroup)
+                if let fi = data.faces.firstIndex(where: { $0.id == faceID }) {
+                    data.faces[fi].groupID = newGroup.id
+                }
+            }
+        }
+
+        faceData = data
+        try? storageService.saveFaceData(data)
+    }
+
     // MARK: - Delete Face Data
 
     func deleteFaceData(for folderURL: URL) {
