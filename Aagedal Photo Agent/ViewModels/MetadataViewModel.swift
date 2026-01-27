@@ -34,6 +34,8 @@ final class MetadataViewModel {
         }
 
         if images.count == 1 {
+            metadata = nil
+            editingMetadata = IPTCMetadata()
             isLoading = true
             Task {
                 do {

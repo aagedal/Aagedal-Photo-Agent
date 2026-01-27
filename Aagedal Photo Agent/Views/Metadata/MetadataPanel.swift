@@ -10,10 +10,7 @@ struct MetadataPanel: View {
 
     var body: some View {
         Group {
-            if viewModel.isLoading {
-                ProgressView("Loading metadata...")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if viewModel.selectedCount == 0 {
+            if viewModel.selectedCount == 0 {
                 Text("No image selected")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -35,6 +32,13 @@ struct MetadataPanel: View {
                         actionButtons
                     }
                     .padding()
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    if viewModel.isLoading {
+                        ProgressView()
+                            .controlSize(.small)
+                            .padding(8)
+                    }
                 }
             }
         }

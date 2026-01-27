@@ -38,6 +38,13 @@ struct Aagedal_Photo_AgentApp: App {
                 .keyboardShortcut("e", modifiers: .command)
             }
 
+            CommandGroup(replacing: .pasteboard) {
+                Button("Move to Trash") {
+                    NotificationCenter.default.post(name: .deleteSelected, object: nil)
+                }
+                .keyboardShortcut(.delete, modifiers: .command)
+            }
+
             CommandMenu("Label") {
                 Button("No Label") {
                     NotificationCenter.default.post(name: .setLabel, object: ColorLabel.none)
@@ -68,4 +75,5 @@ extension Notification.Name {
     static let setLabel = Notification.Name("setLabel")
     static let faceMetadataDidChange = Notification.Name("faceMetadataDidChange")
     static let openInExternalEditor = Notification.Name("openInExternalEditor")
+    static let deleteSelected = Notification.Name("deleteSelected")
 }
