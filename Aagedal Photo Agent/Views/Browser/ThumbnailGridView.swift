@@ -49,7 +49,10 @@ struct ThumbnailGridView: View {
         let baseCell = ThumbnailCell(
             image: image,
             isSelected: viewModel.selectedImageIDs.contains(image.url),
-            thumbnailService: viewModel.thumbnailService
+            thumbnailService: viewModel.thumbnailService,
+            onDelete: {
+                viewModel.deleteSelectedImages()
+            }
         )
         .onTapGesture(count: 2) {
             viewModel.selectedImageIDs = [image.url]
@@ -73,7 +76,12 @@ struct ThumbnailGridView: View {
                     viewModel.initializeManualOrder(from: viewModel.sortedImages)
                     viewModel.sortOrder = .manual
                 }
-                viewModel.draggedImageURL = image.url
+                // If dragging a selected image, drag all selected images together
+                if viewModel.selectedImageIDs.contains(image.url) && viewModel.selectedImageIDs.count > 1 {
+                    viewModel.draggedImageURLs = viewModel.selectedImageIDs
+                } else {
+                    viewModel.draggedImageURLs = [image.url]
+                }
                 return NSItemProvider(object: image.url as NSURL)
             }
             .onDrop(of: [.fileURL], delegate: ImageReorderDelegate(
@@ -122,23 +130,41 @@ struct ImageReorderDelegate: DropDelegate {
     let viewModel: BrowserViewModel
 
     func performDrop(info: DropInfo) -> Bool {
-        viewModel.draggedImageURL = nil
+        viewModel.draggedImageURLs = []
         return true
     }
 
     func dropEntered(info: DropInfo) {
-        guard let draggedURL = viewModel.draggedImageURL,
-              draggedURL != targetURL else { return }
+        let draggedURLs = viewModel.draggedImageURLs
+        guard !draggedURLs.isEmpty,
+              !draggedURLs.contains(targetURL) else { return }
 
-        guard let fromIndex = viewModel.manualOrder.firstIndex(of: draggedURL),
-              let toIndex = viewModel.manualOrder.firstIndex(of: targetURL),
-              fromIndex != toIndex else { return }
+        guard let toIndex = viewModel.manualOrder.firstIndex(of: targetURL) else { return }
+
+        // Collect indices of all dragged items, sorted in their current order
+        let draggedIndices = viewModel.manualOrder.enumerated()
+            .filter { draggedURLs.contains($0.element) }
+            .map(\.offset)
+        guard !draggedIndices.isEmpty else { return }
 
         withAnimation(.default) {
-            viewModel.manualOrder.move(
-                fromOffsets: IndexSet(integer: fromIndex),
-                toOffset: toIndex > fromIndex ? toIndex + 1 : toIndex
-            )
+            // Remove dragged items from their current positions (back to front to preserve indices)
+            var draggedItems: [URL] = []
+            for index in draggedIndices.reversed() {
+                draggedItems.insert(viewModel.manualOrder.remove(at: index), at: 0)
+            }
+
+            // Find the new insertion point (target may have shifted after removals)
+            let insertionIndex: Int
+            if let newTargetIndex = viewModel.manualOrder.firstIndex(of: targetURL) {
+                // Insert after target if we were originally below it, before if above
+                let firstDraggedOriginalIndex = draggedIndices.first!
+                insertionIndex = firstDraggedOriginalIndex > toIndex ? newTargetIndex : newTargetIndex + 1
+            } else {
+                insertionIndex = viewModel.manualOrder.endIndex
+            }
+
+            viewModel.manualOrder.insert(contentsOf: draggedItems, at: insertionIndex)
         }
     }
 

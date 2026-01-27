@@ -5,6 +5,7 @@ struct ThumbnailCell: View {
     let image: ImageFile
     let isSelected: Bool
     let thumbnailService: ThumbnailService
+    var onDelete: (() -> Void)?
 
     @State private var thumbnail: NSImage?
 
@@ -118,6 +119,14 @@ struct ThumbnailCell: View {
                         NotificationCenter.default.post(name: .setLabel, object: label)
                     }
                 }
+            }
+
+            Divider()
+
+            Button(role: .destructive) {
+                onDelete?()
+            } label: {
+                Label("Move to Trash", systemImage: "trash")
             }
         }
         .task(id: image.url) {

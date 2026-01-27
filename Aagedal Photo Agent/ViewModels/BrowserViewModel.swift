@@ -14,7 +14,7 @@ final class BrowserViewModel {
     var sortOrder: SortOrder = .name
     var favoriteFolders: [FavoriteFolder] = []
     var manualOrder: [URL] = []
-    var draggedImageURL: URL?
+    var draggedImageURLs: Set<URL> = []
 
     let fileSystemService = FileSystemService()
     let thumbnailService = ThumbnailService()
@@ -41,6 +41,15 @@ final class BrowserViewModel {
             return images.sorted { $0.starRating.rawValue > $1.starRating.rawValue }
         case .label:
             return images.sorted { ($0.colorLabel.shortcutIndex ?? 0) < ($1.colorLabel.shortcutIndex ?? 0) }
+        case .fileType:
+            return images.sorted {
+                let ext0 = $0.url.pathExtension.lowercased()
+                let ext1 = $1.url.pathExtension.lowercased()
+                if ext0 != ext1 {
+                    return ext0.localizedStandardCompare(ext1) == .orderedAscending
+                }
+                return $0.filename.localizedStandardCompare($1.filename) == .orderedAscending
+            }
         case .manual:
             guard !manualOrder.isEmpty else { return images }
             let imagesByURL = Dictionary(uniqueKeysWithValues: images.map { ($0.url, $0) })
@@ -239,6 +248,27 @@ final class BrowserViewModel {
         return favoriteFolders.contains { $0.url == url }
     }
 
+    // MARK: - Delete
+
+    func deleteSelectedImages() {
+        let urlsToDelete = selectedImageIDs
+        guard !urlsToDelete.isEmpty else { return }
+
+        for url in urlsToDelete {
+            do {
+                try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+            } catch {
+                // Skip files that can't be trashed
+                continue
+            }
+        }
+
+        images.removeAll { urlsToDelete.contains($0.url) }
+        manualOrder.removeAll { urlsToDelete.contains($0) }
+        selectedImageIDs.removeAll()
+        lastClickedImageURL = nil
+    }
+
     // MARK: - Manual Sort
 
     func initializeManualOrder(from currentSorted: [ImageFile]) {
@@ -250,6 +280,7 @@ final class BrowserViewModel {
         case dateModified = "Date Modified"
         case rating = "Rating"
         case label = "Label"
+        case fileType = "File Type"
         case manual = "Manual"
     }
 }

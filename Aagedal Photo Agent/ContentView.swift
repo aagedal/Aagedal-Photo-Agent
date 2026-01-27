@@ -102,6 +102,9 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .openInExternalEditor)) { _ in
             openSelectedInExternalEditor()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .deleteSelected)) { _ in
+            browserViewModel.deleteSelectedImages()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .faceMetadataDidChange)) { _ in
             let selected = browserViewModel.selectedImages
             metadataViewModel.loadMetadata(for: selected)
