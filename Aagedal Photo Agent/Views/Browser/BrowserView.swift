@@ -50,9 +50,11 @@ struct BrowserView: View {
             }
 
             ToolbarItem(placement: .automatic) {
-                Text("\(viewModel.images.count) images")
+                Text("\(viewModel.images.count) images in folder")
                     .foregroundStyle(.secondary)
                     .font(.caption)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 5)
             }
         }
     }
