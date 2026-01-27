@@ -16,6 +16,7 @@ struct ContentView: View {
     @State private var isShowingSavePresetName = false
     @State private var savePresetName = ""
     @State private var metadataPanelWidth: CGFloat = 320
+    @State private var isFaceManagerExpanded = false
 
     init() {
         let browser = BrowserViewModel()
@@ -34,26 +35,37 @@ struct ContentView: View {
                         viewModel: faceRecognitionViewModel,
                         folderURL: browserViewModel.currentFolderURL,
                         imageURLs: browserViewModel.images.map(\.url),
+                        isExpanded: isFaceManagerExpanded,
                         onSelectImages: { urls in
                             browserViewModel.selectedImageIDs = urls
+                        },
+                        onToggleExpanded: {
+                            isFaceManagerExpanded.toggle()
                         }
                     )
                     Divider()
                 }
 
-                HStack(spacing: 0) {
-                    BrowserView(viewModel: browserViewModel)
-                        .frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity)
-
-                    MetadataPanelDivider(panelWidth: $metadataPanelWidth)
-
-                    MetadataPanel(
-                        viewModel: metadataViewModel,
-                        browserViewModel: browserViewModel,
-                        onApplyPreset: { isShowingPresetPicker = true },
-                        onSavePreset: { isShowingSavePresetName = true }
+                if isFaceManagerExpanded {
+                    ExpandedFaceManagementView(
+                        viewModel: faceRecognitionViewModel,
+                        onClose: { isFaceManagerExpanded = false }
                     )
-                    .frame(width: metadataPanelWidth)
+                } else {
+                    HStack(spacing: 0) {
+                        BrowserView(viewModel: browserViewModel)
+                            .frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity)
+
+                        MetadataPanelDivider(panelWidth: $metadataPanelWidth)
+
+                        MetadataPanel(
+                            viewModel: metadataViewModel,
+                            browserViewModel: browserViewModel,
+                            onApplyPreset: { isShowingPresetPicker = true },
+                            onSavePreset: { isShowingSavePresetName = true }
+                        )
+                        .frame(width: metadataPanelWidth)
+                    }
                 }
             }
         }

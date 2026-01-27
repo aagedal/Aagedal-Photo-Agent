@@ -341,6 +341,103 @@ final class FaceRecognitionViewModel {
         try? storageService.saveFaceData(data)
     }
 
+    // MARK: - Move Faces Between Groups
+
+    /// Move a single face from its current group to a target group.
+    func moveFace(_ faceID: UUID, toGroup targetGroupID: UUID) {
+        guard var data = faceData,
+              let faceIndex = data.faces.firstIndex(where: { $0.id == faceID }),
+              let oldGroupID = data.faces[faceIndex].groupID,
+              let oldGroupIndex = data.groups.firstIndex(where: { $0.id == oldGroupID }),
+              let targetGroupIndex = data.groups.firstIndex(where: { $0.id == targetGroupID }),
+              oldGroupID != targetGroupID else { return }
+
+        // Remove from old group
+        data.groups[oldGroupIndex].faceIDs.removeAll { $0 == faceID }
+
+        // Clean up empty group or update representative
+        if data.groups[oldGroupIndex].faceIDs.isEmpty {
+            data.groups.remove(at: oldGroupIndex)
+        } else if data.groups[oldGroupIndex].representativeFaceID == faceID {
+            data.groups[oldGroupIndex].representativeFaceID = data.groups[oldGroupIndex].faceIDs[0]
+        }
+
+        // Re-fetch target index (may have shifted after removal)
+        guard let newTargetIndex = data.groups.firstIndex(where: { $0.id == targetGroupID }) else { return }
+
+        // Add to target group
+        data.groups[newTargetIndex].faceIDs.append(faceID)
+        data.faces[faceIndex].groupID = targetGroupID
+
+        faceData = data
+        try? storageService.saveFaceData(data)
+    }
+
+    /// Move multiple faces to a target group (single mutation + single save).
+    func moveFaces(_ faceIDs: Set<UUID>, toGroup targetGroupID: UUID) {
+        guard var data = faceData, !faceIDs.isEmpty else { return }
+
+        // Remove faces from their source groups
+        removeFacesFromGroups(faceIDs, in: &data)
+
+        // Add all faces to the target group
+        guard let targetIndex = data.groups.firstIndex(where: { $0.id == targetGroupID }) else { return }
+        for faceID in faceIDs {
+            data.groups[targetIndex].faceIDs.append(faceID)
+            if let fi = data.faces.firstIndex(where: { $0.id == faceID }) {
+                data.faces[fi].groupID = targetGroupID
+            }
+        }
+
+        faceData = data
+        try? storageService.saveFaceData(data)
+    }
+
+    /// Remove faces from their current groups and create a new group with them (single mutation + single save).
+    func createNewGroup(withFaces faceIDs: Set<UUID>) {
+        guard var data = faceData, !faceIDs.isEmpty else { return }
+
+        // Remove faces from their source groups
+        removeFacesFromGroups(faceIDs, in: &data)
+
+        // Create new group
+        let faceIDArray = Array(faceIDs)
+        let newGroup = FaceGroup(
+            id: UUID(),
+            name: nil,
+            representativeFaceID: faceIDArray[0],
+            faceIDs: faceIDArray
+        )
+        data.groups.append(newGroup)
+
+        for faceID in faceIDs {
+            if let fi = data.faces.firstIndex(where: { $0.id == faceID }) {
+                data.faces[fi].groupID = newGroup.id
+            }
+        }
+
+        faceData = data
+        try? storageService.saveFaceData(data)
+    }
+
+    /// Remove faces from whatever groups they belong to, cleaning up empties and representatives.
+    /// Mutates `data` in place without assigning to `faceData` or saving — caller is responsible.
+    private func removeFacesFromGroups(_ faceIDs: Set<UUID>, in data: inout FolderFaceData) {
+        for faceID in faceIDs {
+            guard let faceIndex = data.faces.firstIndex(where: { $0.id == faceID }),
+                  let oldGroupID = data.faces[faceIndex].groupID,
+                  let oldGroupIndex = data.groups.firstIndex(where: { $0.id == oldGroupID }) else { continue }
+
+            data.groups[oldGroupIndex].faceIDs.removeAll { $0 == faceID }
+
+            if data.groups[oldGroupIndex].faceIDs.isEmpty {
+                data.groups.remove(at: oldGroupIndex)
+            } else if data.groups[oldGroupIndex].representativeFaceID == faceID {
+                data.groups[oldGroupIndex].representativeFaceID = data.groups[oldGroupIndex].faceIDs[0]
+            }
+        }
+    }
+
     // MARK: - Delete Face Data
 
     func deleteFaceData(for folderURL: URL) {
