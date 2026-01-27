@@ -15,30 +15,40 @@ struct MetadataPanel: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
-                        if viewModel.isBatchEdit {
-                            BatchEditBanner(count: viewModel.selectedCount)
-                        }
+                VStack(spacing: 0) {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 16) {
+                            if viewModel.isBatchEdit {
+                                BatchEditBanner(count: viewModel.selectedCount)
+                            }
 
-                        ratingAndLabelSection
-                        Divider()
-                        priorityFieldsSection
-                        Divider()
-                        classificationSection
-                        Divider()
-                        additionalFieldsSection
-                        Divider()
-                        actionButtons
+                            ratingAndLabelSection
+                            presetButtons
+                            Divider()
+                            priorityFieldsSection
+                            Divider()
+                            classificationSection
+                            Divider()
+                            additionalFieldsSection
+                            Divider()
+                            writeButtons
+                        }
+                        .padding()
+                    }
+                    .overlay(alignment: .bottomTrailing) {
+                        if viewModel.isLoading {
+                            ProgressView()
+                                .controlSize(.small)
+                                .padding(8)
+                        }
+                    }
+
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        gpsSection
                     }
                     .padding()
-                }
-                .overlay(alignment: .bottomTrailing) {
-                    if viewModel.isLoading {
-                        ProgressView()
-                            .controlSize(.small)
-                            .padding(8)
-                    }
                 }
             }
         }
@@ -245,16 +255,27 @@ struct MetadataPanel: View {
         }
     }
 
-    // MARK: - Action Buttons
+    // MARK: - GPS
 
     @ViewBuilder
-    private var actionButtons: some View {
-        if let error = viewModel.saveError {
-            Text(error)
-                .font(.caption)
-                .foregroundStyle(.red)
-        }
+    private var gpsSection: some View {
+        GPSSectionView(
+            latitude: Binding(
+                get: { viewModel.editingMetadata.latitude },
+                set: { viewModel.editingMetadata.latitude = $0 }
+            ),
+            longitude: Binding(
+                get: { viewModel.editingMetadata.longitude },
+                set: { viewModel.editingMetadata.longitude = $0 }
+            ),
+            onChanged: { viewModel.markChanged() }
+        )
+    }
 
+    // MARK: - Preset Buttons
+
+    @ViewBuilder
+    private var presetButtons: some View {
         HStack {
             if let onApplyPreset {
                 Button("Apply Preset") { onApplyPreset() }
@@ -263,6 +284,17 @@ struct MetadataPanel: View {
                 Button("Save as Preset") { onSavePreset() }
             }
             Spacer()
+        }
+    }
+
+    // MARK: - Write Buttons
+
+    @ViewBuilder
+    private var writeButtons: some View {
+        if let error = viewModel.saveError {
+            Text(error)
+                .font(.caption)
+                .foregroundStyle(.red)
         }
 
         HStack {

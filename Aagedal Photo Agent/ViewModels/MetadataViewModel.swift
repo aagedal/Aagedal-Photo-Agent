@@ -77,6 +77,12 @@ final class MetadataViewModel {
                     if !edited.keywords.isEmpty { fields["XMP:Subject"] = edited.keywords.joined(separator: ", ") }
                     if !edited.personShown.isEmpty { fields["XMP-iptcExt:PersonInImage"] = edited.personShown.joined(separator: ", ") }
                     if let v = edited.digitalSourceType { fields["XMP-iptcExt:DigitalSourceType"] = v.rawValue }
+                    if let lat = edited.latitude, let lon = edited.longitude {
+                        fields["EXIF:GPSLatitude"] = String(abs(lat))
+                        fields["EXIF:GPSLatitudeRef"] = lat >= 0 ? "N" : "S"
+                        fields["EXIF:GPSLongitude"] = String(abs(lon))
+                        fields["EXIF:GPSLongitudeRef"] = lon >= 0 ? "E" : "W"
+                    }
                     if let v = edited.creator, !v.isEmpty { fields["XMP:Creator"] = v }
                     if let v = edited.credit, !v.isEmpty { fields["XMP-photoshop:Credit"] = v }
                     if let v = edited.copyright, !v.isEmpty { fields["XMP:Rights"] = v }
@@ -97,6 +103,19 @@ final class MetadataViewModel {
                     }
                     if edited.digitalSourceType != original?.digitalSourceType {
                         fields["XMP-iptcExt:DigitalSourceType"] = edited.digitalSourceType?.rawValue ?? ""
+                    }
+                    if edited.latitude != original?.latitude || edited.longitude != original?.longitude {
+                        if let lat = edited.latitude, let lon = edited.longitude {
+                            fields["EXIF:GPSLatitude"] = String(abs(lat))
+                            fields["EXIF:GPSLatitudeRef"] = lat >= 0 ? "N" : "S"
+                            fields["EXIF:GPSLongitude"] = String(abs(lon))
+                            fields["EXIF:GPSLongitudeRef"] = lon >= 0 ? "E" : "W"
+                        } else {
+                            fields["EXIF:GPSLatitude"] = ""
+                            fields["EXIF:GPSLatitudeRef"] = ""
+                            fields["EXIF:GPSLongitude"] = ""
+                            fields["EXIF:GPSLongitudeRef"] = ""
+                        }
                     }
                     if edited.creator != original?.creator { fields["XMP:Creator"] = edited.creator ?? "" }
                     if edited.credit != original?.credit { fields["XMP-photoshop:Credit"] = edited.credit ?? "" }

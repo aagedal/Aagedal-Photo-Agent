@@ -19,6 +19,9 @@ struct ContentView: View {
     @State private var savePresetName = ""
     @State private var metadataPanelWidth: CGFloat = 320
     @State private var isFaceManagerExpanded = false
+    @State private var technicalMetadata: TechnicalMetadata?
+    @State private var technicalMetadataCache: [URL: TechnicalMetadata] = [:]
+    @State private var technicalMetadataTask: Task<Void, Never>?
 
     init() {
         let browser = BrowserViewModel()
@@ -105,6 +108,7 @@ struct ContentView: View {
         .onChange(of: browserViewModel.selectedImageIDs) {
             let selected = browserViewModel.selectedImages
             metadataViewModel.loadMetadata(for: selected)
+            loadTechnicalMetadata()
         }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             handleDrop(providers: providers)
@@ -133,6 +137,8 @@ struct ContentView: View {
             metadataViewModel.loadMetadata(for: selected)
         }
         .onChange(of: browserViewModel.currentFolderURL) {
+            technicalMetadataCache.removeAll()
+            technicalMetadata = nil
             if let folderURL = browserViewModel.currentFolderURL {
                 faceRecognitionViewModel.loadFaceData(
                     for: folderURL,
@@ -183,80 +189,93 @@ struct ContentView: View {
 
     @ViewBuilder
     private var sidebar: some View {
-        List {
-            Section {
-                Button {
-                    browserViewModel.openFolder()
-                } label: {
-                    Label("Open Folder", systemImage: "folder.badge.plus")
+        VStack(spacing: 0) {
+            List {
+                Section {
+                    Button {
+                        browserViewModel.openFolder()
+                    } label: {
+                        Label("Open Folder", systemImage: "folder.badge.plus")
+                    }
                 }
-            }
 
-            if !browserViewModel.favoriteFolders.isEmpty {
-                Section("Favorites") {
-                    ForEach(browserViewModel.favoriteFolders) { favorite in
-                        Button {
-                            browserViewModel.loadFolder(url: favorite.url)
-                        } label: {
-                            Label(favorite.name, systemImage: "folder.fill")
-                        }
-                        .contextMenu {
-                            Button("Remove from Favorites", role: .destructive) {
-                                browserViewModel.removeFavorite(favorite)
+                if !browserViewModel.favoriteFolders.isEmpty {
+                    Section("Favorites") {
+                        ForEach(browserViewModel.favoriteFolders) { favorite in
+                            Button {
+                                browserViewModel.loadFolder(url: favorite.url)
+                            } label: {
+                                Label(favorite.name, systemImage: "folder.fill")
+                            }
+                            .contextMenu {
+                                Button("Remove from Favorites", role: .destructive) {
+                                    browserViewModel.removeFavorite(favorite)
+                                }
                             }
                         }
                     }
                 }
-            }
 
-            if let folderName = browserViewModel.currentFolderName {
-                Section("Current Folder") {
-                    Label(folderName, systemImage: "folder.fill")
-                    if !browserViewModel.isCurrentFolderFavorited {
-                        Button {
-                            browserViewModel.addCurrentFolderToFavorites()
-                        } label: {
-                            Label("Add to Favorites", systemImage: "star")
+                if let folderName = browserViewModel.currentFolderName {
+                    Section("Current Folder") {
+                        Label(folderName, systemImage: "folder.fill")
+                        if !browserViewModel.isCurrentFolderFavorited {
+                            Button {
+                                browserViewModel.addCurrentFolderToFavorites()
+                            } label: {
+                                Label("Add to Favorites", systemImage: "star")
+                            }
                         }
                     }
-                }
-            }
-
-            Section {
-                Button {
-                    isShowingImport = true
-                } label: {
-                    Label("Import Photos...", systemImage: "square.and.arrow.down")
-                }
-            }
-
-            if !browserViewModel.images.isEmpty {
-                Section("Info") {
-                    LabeledContent("Images", value: "\(browserViewModel.images.count)")
-                    LabeledContent("Selected", value: "\(browserViewModel.selectedImageIDs.count)")
                 }
 
                 Section {
                     Button {
-                        isShowingFTPUpload = true
+                        isShowingImport = true
                     } label: {
-                        Label("Upload Selected...", systemImage: "arrow.up.to.line")
+                        Label("Import Photos...", systemImage: "square.and.arrow.down")
                     }
-                    .disabled(browserViewModel.selectedImageIDs.isEmpty)
+                }
+
+                if !browserViewModel.images.isEmpty {
+                    Section("Info") {
+                        LabeledContent("Images", value: "\(browserViewModel.images.count)")
+                        LabeledContent("Selected", value: "\(browserViewModel.selectedImageIDs.count)")
+                    }
+
+                    Section {
+                        Button {
+                            isShowingFTPUpload = true
+                        } label: {
+                            Label("Upload Selected...", systemImage: "arrow.up.to.line")
+                        }
+                        .disabled(browserViewModel.selectedImageIDs.isEmpty)
+                    }
+                }
+
+                if !browserViewModel.exifToolService.isAvailable {
+                    Section {
+                        Label("ExifTool not found", systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                        Text("Install ExifTool via Homebrew:\nbrew install exiftool")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
+            .listStyle(.sidebar)
 
-            if !browserViewModel.exifToolService.isAvailable {
-                Section {
-                    Label("ExifTool not found", systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.orange)
-                    Text("Install ExifTool via Homebrew:\nbrew install exiftool")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+            if browserViewModel.selectedImageIDs.count == 1,
+               let selectedImage = browserViewModel.selectedImages.first {
+                Divider()
+                TechnicalMetadataView(
+                    metadata: technicalMetadata,
+                    fileSize: selectedImage.fileSize
+                )
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
             }
         }
-        .listStyle(.sidebar)
         .frame(minWidth: 180)
     }
 
@@ -355,6 +374,36 @@ struct ContentView: View {
             raw[field.fieldKey] = field.templateValue
         }
         metadataViewModel.applyPresetFields(raw)
+    }
+
+    private func loadTechnicalMetadata() {
+        technicalMetadataTask?.cancel()
+        technicalMetadataTask = nil
+
+        guard browserViewModel.selectedImageIDs.count == 1,
+              let image = browserViewModel.selectedImages.first else {
+            technicalMetadata = nil
+            return
+        }
+
+        if let cached = technicalMetadataCache[image.url] {
+            technicalMetadata = cached
+            return
+        }
+
+        let url = image.url
+        let service = browserViewModel.exifToolService
+        technicalMetadataTask = Task {
+            do {
+                let result = try await service.readTechnicalMetadata(url: url)
+                guard !Task.isCancelled else { return }
+                technicalMetadataCache[url] = result
+                technicalMetadata = result
+            } catch {
+                guard !Task.isCancelled else { return }
+                technicalMetadata = nil
+            }
+        }
     }
 
     private func openSelectedInExternalEditor() {
