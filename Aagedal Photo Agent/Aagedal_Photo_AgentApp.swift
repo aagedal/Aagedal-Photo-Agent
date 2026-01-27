@@ -12,6 +12,11 @@ struct Aagedal_Photo_AgentApp: App {
                     NotificationCenter.default.post(name: .openFolder, object: nil)
                 }
                 .keyboardShortcut("o", modifiers: .command)
+
+                Button("Import Photos...") {
+                    NotificationCenter.default.post(name: .showImport, object: nil)
+                }
+                .keyboardShortcut("i", modifiers: [.command, .shift])
             }
 
             CommandMenu("Rating") {
@@ -76,4 +81,6 @@ extension Notification.Name {
     static let faceMetadataDidChange = Notification.Name("faceMetadataDidChange")
     static let openInExternalEditor = Notification.Name("openInExternalEditor")
     static let deleteSelected = Notification.Name("deleteSelected")
+    static let showImport = Notification.Name("showImport")
+    static let importCompleted = Notification.Name("importCompleted")
 }
