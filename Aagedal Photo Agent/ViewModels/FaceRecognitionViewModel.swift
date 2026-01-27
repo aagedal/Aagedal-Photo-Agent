@@ -69,26 +69,24 @@ final class FaceRecognitionViewModel {
 
     // MARK: - Scan Folder
 
-    func scanFolder(imageURLs: [URL], folderURL: URL, rescan: Bool = false) {
+    func scanFolder(imageURLs: [URL], folderURL: URL) {
         guard !isScanning else { return }
 
-        if rescan {
-            try? storageService.deleteFaceData(for: folderURL)
-            faceData = nil
-            thumbnailCache = [:]
-            scanComplete = false
-        }
+        // Always start fresh — delete any previous face data
+        try? storageService.deleteFaceData(for: folderURL)
+        faceData = nil
+        thumbnailCache = [:]
+        scanComplete = false
 
         isScanning = true
         scanProgress = "0/\(imageURLs.count)"
         errorMessage = nil
 
         Task {
-            var allFaces: [DetectedFace] = faceData?.faces ?? []
-            var allGroups: [FaceGroup] = faceData?.groups ?? []
-            let alreadyScanned = Set(allFaces.map(\.imageURL))
+            var allFaces: [DetectedFace] = []
+            var allGroups: [FaceGroup] = []
 
-            let toScan = imageURLs.filter { !alreadyScanned.contains($0) }
+            let toScan = imageURLs
             var processed = 0
 
             // Process images concurrently, capped at 4
@@ -147,7 +145,7 @@ final class FaceRecognitionViewModel {
 
             // Cluster faces
             let unclustered = allFaces.filter { $0.groupID == nil }
-            allGroups = detectionService.clusterFaces(unclustered, existingGroups: allGroups)
+            allGroups = detectionService.clusterFaces(unclustered, allFaces: allFaces, existingGroups: allGroups)
 
             // Assign group IDs to faces
             for group in allGroups {

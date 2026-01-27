@@ -20,7 +20,7 @@ struct FaceDetectionService: Sendable {
         var results: [(face: DetectedFace, thumbnail: Data)] = []
 
         for observation in faceObservations {
-            let expandedRect = expandBoundingBox(observation.boundingBox, by: 0.3, imageSize: CGSize(width: cgImage.width, height: cgImage.height))
+            let expandedRect = expandBoundingBox(observation.boundingBox, by: 0.15, imageSize: CGSize(width: cgImage.width, height: cgImage.height))
 
             guard let croppedImage = cropFace(from: cgImage, normalizedRect: expandedRect) else { continue }
 
@@ -46,19 +46,31 @@ struct FaceDetectionService: Sendable {
     }
 
     /// Cluster faces into groups based on feature print distance.
-    func clusterFaces(_ faces: [DetectedFace], existingGroups: [FaceGroup], threshold: Float = 0.5) -> [FaceGroup] {
+    /// - Parameters:
+    ///   - faces: Only the unclustered faces to assign to groups.
+    ///   - allFaces: All known faces (including already-grouped ones) so representative lookups succeed.
+    ///   - existingGroups: Previously formed groups to match against.
+    ///   - threshold: Maximum average distance to consider a face part of a group.
+    func clusterFaces(_ faces: [DetectedFace], allFaces: [DetectedFace], existingGroups: [FaceGroup], threshold: Float = 0.55) -> [FaceGroup] {
         var groups = existingGroups
+        let faceLookup = Dictionary(uniqueKeysWithValues: allFaces.map { ($0.id, $0) })
 
         for face in faces where face.groupID == nil {
             var bestGroupIndex: Int?
             var bestDistance: Float = threshold
 
             for (index, group) in groups.enumerated() {
-                guard let representativeFace = faces.first(where: { $0.id == group.representativeFaceID }) ?? findFace(id: group.representativeFaceID, in: faces) else { continue }
+                // Compare against all members of the group and use the average distance
+                let memberFaces = group.faceIDs.compactMap { faceLookup[$0] }
+                guard !memberFaces.isEmpty else { continue }
 
-                if let distance = computeDistance(face.featurePrintData, representativeFace.featurePrintData),
-                   distance < bestDistance {
-                    bestDistance = distance
+                let distances = memberFaces.compactMap { computeDistance(face.featurePrintData, $0.featurePrintData) }
+                guard !distances.isEmpty else { continue }
+
+                let avgDistance = distances.reduce(0, +) / Float(distances.count)
+
+                if avgDistance < bestDistance {
+                    bestDistance = avgDistance
                     bestGroupIndex = index
                 }
             }
@@ -209,9 +221,6 @@ struct FaceDetectionService: Sendable {
         }
     }
 
-    private func findFace(id: UUID, in faces: [DetectedFace]) -> DetectedFace? {
-        faces.first { $0.id == id }
-    }
 }
 
 // MARK: - VNFaceObservation Helpers
