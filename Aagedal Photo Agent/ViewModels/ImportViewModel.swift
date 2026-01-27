@@ -20,6 +20,7 @@ final class ImportViewModel {
     var errorMessage: String?
 
     private let exifToolService: ExifToolService
+    private let interpolator = PresetVariableInterpolator()
 
     init(exifToolService: ExifToolService) {
         self.exifToolService = exifToolService
@@ -177,15 +178,32 @@ final class ImportViewModel {
                 if configuration.applyMetadata {
                     importPhase = .applyingMetadata
 
-                    let fields = buildMetadataFields()
-                    if !fields.isEmpty {
-                        try exifToolService.start()
+                    // Sync import title as metadata title
+                    let trimmedTitle = configuration.importTitle.trimmingCharacters(in: .whitespaces)
+                    if !trimmedTitle.isEmpty {
+                        configuration.metadata.title = trimmedTitle
+                    }
 
-                        let batchSize = 20
-                        for batchStart in stride(from: 0, to: copiedURLs.count, by: batchSize) {
-                            let batchEnd = min(batchStart + batchSize, copiedURLs.count)
-                            let batch = Array(copiedURLs[batchStart..<batchEnd])
-                            try await exifToolService.writeFields(fields, to: batch)
+                    try exifToolService.start()
+
+                    if configuration.processVariables {
+                        // Per-file resolution: variables like {filename} differ per file
+                        for url in copiedURLs {
+                            let resolved = resolveMetadataForFile(url)
+                            let fields = buildMetadataFields(from: resolved)
+                            if !fields.isEmpty {
+                                try await exifToolService.writeFields(fields, to: [url])
+                            }
+                        }
+                    } else {
+                        let fields = buildMetadataFields(from: configuration.metadata)
+                        if !fields.isEmpty {
+                            let batchSize = 20
+                            for batchStart in stride(from: 0, to: copiedURLs.count, by: batchSize) {
+                                let batchEnd = min(batchStart + batchSize, copiedURLs.count)
+                                let batch = Array(copiedURLs[batchStart..<batchEnd])
+                                try await exifToolService.writeFields(fields, to: batch)
+                            }
                         }
                     }
                 }
@@ -203,9 +221,32 @@ final class ImportViewModel {
         }
     }
 
-    private func buildMetadataFields() -> [String: String] {
-        var fields: [String: String] = [:]
+    private func resolveMetadataForFile(_ url: URL) -> IPTCMetadata {
+        let filename = url.lastPathComponent
         let meta = configuration.metadata
+        var resolved = meta
+
+        resolved.title = resolveField(meta.title, filename: filename, ref: meta)
+        resolved.description = resolveField(meta.description, filename: filename, ref: meta)
+        resolved.creator = resolveField(meta.creator, filename: filename, ref: meta)
+        resolved.credit = resolveField(meta.credit, filename: filename, ref: meta)
+        resolved.copyright = resolveField(meta.copyright, filename: filename, ref: meta)
+        resolved.dateCreated = resolveField(meta.dateCreated, filename: filename, ref: meta)
+        resolved.city = resolveField(meta.city, filename: filename, ref: meta)
+        resolved.country = resolveField(meta.country, filename: filename, ref: meta)
+        resolved.event = resolveField(meta.event, filename: filename, ref: meta)
+
+        return resolved
+    }
+
+    private func resolveField(_ value: String?, filename: String, ref: IPTCMetadata) -> String? {
+        guard let value, !value.isEmpty else { return value }
+        let resolved = interpolator.resolve(value, filename: filename, existingMetadata: ref)
+        return resolved.isEmpty ? nil : resolved
+    }
+
+    private func buildMetadataFields(from meta: IPTCMetadata) -> [String: String] {
+        var fields: [String: String] = [:]
 
         if let v = meta.title, !v.isEmpty { fields["XMP:Title"] = v }
         if let v = meta.description, !v.isEmpty { fields["XMP:Description"] = v }

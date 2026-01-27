@@ -13,6 +13,7 @@ struct ImportConfiguration {
     var fileTypeFilter: ImportFileTypeFilter = .both
     var createSubFolders: Bool = true
     var applyMetadata: Bool = false
+    var processVariables: Bool = false
     var metadata: IPTCMetadata = IPTCMetadata()
     var openFolderAfterImport: Bool = true
 

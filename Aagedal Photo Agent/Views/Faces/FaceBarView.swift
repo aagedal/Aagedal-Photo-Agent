@@ -6,6 +6,7 @@ struct FaceBarView: View {
     let imageURLs: [URL]
     var isExpanded: Bool = false
     var onSelectImages: ((Set<URL>) -> Void)?
+    var onPhotosDeleted: ((Set<URL>) -> Void)?
     var onToggleExpanded: (() -> Void)?
 
     @State private var selectedGroup: FaceGroup?
@@ -51,7 +52,7 @@ struct FaceBarView: View {
                             get: { selectedGroup?.id == group.id },
                             set: { newValue in if !newValue { selectedGroup = nil } }
                         )) {
-                            FaceGroupDetailView(group: group, viewModel: viewModel, onSelectImages: onSelectImages)
+                            FaceGroupDetailView(group: group, viewModel: viewModel, onSelectImages: onSelectImages, onPhotosDeleted: onPhotosDeleted)
                         }
                     }
                 }

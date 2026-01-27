@@ -42,6 +42,10 @@ struct ContentView: View {
                         onSelectImages: { urls in
                             browserViewModel.selectedImageIDs = urls
                         },
+                        onPhotosDeleted: { trashedURLs in
+                            browserViewModel.images.removeAll { trashedURLs.contains($0.url) }
+                            browserViewModel.selectedImageIDs.subtract(trashedURLs)
+                        },
                         onToggleExpanded: {
                             isFaceManagerExpanded.toggle()
                         }
@@ -52,7 +56,11 @@ struct ContentView: View {
                 if isFaceManagerExpanded {
                     ExpandedFaceManagementView(
                         viewModel: faceRecognitionViewModel,
-                        onClose: { isFaceManagerExpanded = false }
+                        onClose: { isFaceManagerExpanded = false },
+                        onPhotosDeleted: { trashedURLs in
+                            browserViewModel.images.removeAll { trashedURLs.contains($0.url) }
+                            browserViewModel.selectedImageIDs.subtract(trashedURLs)
+                        }
                     )
                 } else {
                     HStack(spacing: 0) {
@@ -141,7 +149,9 @@ struct ContentView: View {
         .sheet(isPresented: $isShowingFTPUpload) {
             FTPUploadView(
                 viewModel: ftpViewModel,
-                filesToUpload: browserViewModel.selectedImages.map(\.url)
+                selectedFiles: browserViewModel.selectedImages.map(\.url),
+                allFiles: browserViewModel.images.map(\.url),
+                exifToolService: browserViewModel.exifToolService
             )
         }
         .sheet(isPresented: $isShowingImport) {

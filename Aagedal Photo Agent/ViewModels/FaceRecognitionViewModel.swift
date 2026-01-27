@@ -460,6 +460,48 @@ final class FaceRecognitionViewModel {
         try? storageService.saveFaceData(data)
     }
 
+    /// Delete an entire group: removes all face data and optionally trashes the source photos.
+    /// Returns the set of photo URLs that were trashed (empty if `includePhotos` is false).
+    @discardableResult
+    func deleteGroup(_ groupID: UUID, includePhotos: Bool) -> Set<URL> {
+        guard var data = faceData,
+              let group = data.groups.first(where: { $0.id == groupID }) else { return [] }
+
+        let faceIDs = Set(group.faceIDs)
+
+        // Collect photo URLs before removing face data
+        var trashedURLs: Set<URL> = []
+        if includePhotos {
+            let urls = Set(group.faceIDs.compactMap { faceID in
+                data.faces.first(where: { $0.id == faceID })?.imageURL
+            })
+            for url in urls {
+                do {
+                    try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+                    trashedURLs.insert(url)
+                } catch {
+                    // Skip files that can't be trashed
+                }
+            }
+        }
+
+        // Remove from groups
+        removeFacesFromGroups(faceIDs, in: &data)
+
+        // Remove from the face list
+        data.faces.removeAll { faceIDs.contains($0.id) }
+
+        // Clean up thumbnails
+        for faceID in faceIDs {
+            thumbnailCache.removeValue(forKey: faceID)
+            storageService.deleteThumbnail(for: faceID, folderURL: data.folderURL)
+        }
+
+        faceData = data
+        try? storageService.saveFaceData(data)
+        return trashedURLs
+    }
+
     // MARK: - Delete Face Data
 
     func deleteFaceData(for folderURL: URL) {
