@@ -124,9 +124,9 @@ final class BrowserViewModel {
                            let colorLabel = ColorLabel(rawValue: label) {
                             images[index].colorLabel = colorLabel
                         }
-                        // C2PA detection: any JUMBF data present
-                        let hasJUMBF = dict.keys.contains { $0.hasPrefix("JUMBF") || $0.contains("JUMBF") }
-                        images[index].hasC2PA = hasJUMBF
+                        // C2PA detection: look for JUMD/C2PA keys from -JUMBF:All output
+                        let hasC2PA = dict.keys.contains { $0.hasPrefix("JUMD") || $0.hasPrefix("C2PA") || $0 == "Claim_generator" }
+                        images[index].hasC2PA = hasC2PA
                     }
                 }
             } catch {

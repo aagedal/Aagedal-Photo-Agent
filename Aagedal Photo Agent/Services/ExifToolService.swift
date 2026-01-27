@@ -242,6 +242,7 @@ final class ExifToolService {
             "-EXIF:ImageWidth", "-EXIF:ImageHeight",
             "-EXIF:BitsPerSample", "-EXIF:ColorSpace",
             "-File:ImageWidth", "-File:ImageHeight",
+            "-JUMBF:All",
             url.path
         ]
         let output = try await execute(args)
