@@ -58,6 +58,7 @@ struct FullScreenImageView: View {
     @State private var currentImage: NSImage?
     @State private var isLoading = false
     @State private var fullLoadTask: Task<Void, Never>?
+    @State private var showLabelPicker = false
     @FocusState private var isFocused: Bool
 
     private var currentImageFile: ImageFile? {
@@ -293,44 +294,70 @@ struct FullScreenImageView: View {
     }
 
     private func colorLabelOverlay(for file: ImageFile) -> some View {
-        Menu {
-            ForEach(ColorLabel.allCases, id: \.self) { label in
-                Button {
-                    viewModel.setLabel(label)
-                } label: {
-                    HStack {
-                        if let c = label.color {
-                            Image(systemName: "circle.fill")
-                                .foregroundStyle(c)
+        VStack(alignment: .leading, spacing: 0) {
+            if showLabelPicker {
+                HStack(spacing: 6) {
+                    ForEach(ColorLabel.allCases, id: \.self) { label in
+                        Button {
+                            viewModel.setLabel(label)
+                            showLabelPicker = false
+                        } label: {
+                            if let c = label.color {
+                                Circle()
+                                    .fill(c)
+                                    .frame(width: 20, height: 20)
+                                    .overlay(
+                                        Circle()
+                                            .strokeBorder(.white, lineWidth: file.colorLabel == label ? 2 : 0)
+                                    )
+                            } else {
+                                Circle()
+                                    .strokeBorder(.white.opacity(0.5), lineWidth: 1)
+                                    .frame(width: 20, height: 20)
+                                    .overlay(
+                                        file.colorLabel == .none
+                                            ? Image(systemName: "xmark")
+                                                .font(.caption2)
+                                                .foregroundStyle(.white)
+                                            : nil
+                                    )
+                            }
                         }
-                        Text(label.displayName)
+                        .buttonStyle(.plain)
                     }
                 }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(.black.opacity(0.6), in: Capsule())
+                .padding(.bottom, 6)
             }
-        } label: {
-            HStack(spacing: 4) {
-                if let color = file.colorLabel.color {
-                    Circle()
-                        .fill(color)
-                        .frame(width: 12, height: 12)
-                    Text(file.colorLabel.displayName)
-                        .font(.caption)
-                        .foregroundStyle(.white)
-                } else {
-                    Circle()
-                        .strokeBorder(.white.opacity(0.5), lineWidth: 1)
-                        .frame(width: 12, height: 12)
-                    Text("Label")
-                        .font(.caption)
-                        .foregroundStyle(.white.opacity(0.5))
+
+            Button {
+                showLabelPicker.toggle()
+            } label: {
+                HStack(spacing: 4) {
+                    if let color = file.colorLabel.color {
+                        Circle()
+                            .fill(color)
+                            .frame(width: 12, height: 12)
+                        Text(file.colorLabel.displayName)
+                            .font(.caption)
+                            .foregroundStyle(.white)
+                    } else {
+                        Circle()
+                            .strokeBorder(.white.opacity(0.5), lineWidth: 1)
+                            .frame(width: 12, height: 12)
+                        Text("Label")
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.5))
+                    }
                 }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(.black.opacity(0.6), in: Capsule())
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(.black.opacity(0.6), in: Capsule())
+            .buttonStyle(.plain)
         }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
     }
 
     private func starRatingOverlay(for file: ImageFile) -> some View {
