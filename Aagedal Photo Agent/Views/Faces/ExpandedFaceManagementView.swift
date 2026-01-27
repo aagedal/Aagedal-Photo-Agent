@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 struct ExpandedFaceManagementView: View {
     @Bindable var viewModel: FaceRecognitionViewModel
     var onClose: () -> Void
+    var onPhotosDeleted: ((Set<URL>) -> Void)?
 
     @State private var selectedFaceIDs: Set<UUID> = []
     @State private var draggedFaceIDs: Set<UUID> = []
@@ -11,6 +12,8 @@ struct ExpandedFaceManagementView: View {
     @State private var highlightNewGroup = false
     @State private var editingGroupID: UUID?
     @State private var editingName: String = ""
+    @State private var groupToDelete: FaceGroup?
+    @State private var showDeleteGroupAlert = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -66,6 +69,30 @@ struct ExpandedFaceManagementView: View {
                 .padding()
             }
         }
+        .alert(
+            "Delete Group & Photos",
+            isPresented: $showDeleteGroupAlert,
+            presenting: groupToDelete
+        ) { group in
+            Button("Delete Faces Only") {
+                let faceIDs = Set(group.faceIDs)
+                viewModel.deleteFaces(faceIDs)
+                groupToDelete = nil
+            }
+            Button("Move Photos to Trash", role: .destructive) {
+                let trashed = viewModel.deleteGroup(group.id, includePhotos: true)
+                onPhotosDeleted?(trashed)
+                groupToDelete = nil
+            }
+            Button("Cancel", role: .cancel) {
+                groupToDelete = nil
+            }
+        } message: { group in
+            let photoCount = Set(group.faceIDs.compactMap { faceID in
+                viewModel.faceData?.faces.first(where: { $0.id == faceID })?.imageURL
+            }).count
+            Text("This will delete \(group.faceIDs.count) face(s) across \(photoCount) photo(s). Moving photos to Trash cannot be undone from this app.")
+        }
     }
 
     // MARK: - Group Card
@@ -114,10 +141,18 @@ struct ExpandedFaceManagementView: View {
                         }
                     }
                     Divider()
-                    Button("Ungroup All", role: .destructive) {
+                    Button("Ungroup All") {
                         viewModel.ungroupMultiple([group.id])
                     }
                     .disabled(faces.count <= 1)
+                    Button("Delete Group Faces", role: .destructive) {
+                        let faceIDs = Set(group.faceIDs)
+                        viewModel.deleteFaces(faceIDs)
+                    }
+                    Button("Delete Group & Photos", role: .destructive) {
+                        groupToDelete = group
+                        showDeleteGroupAlert = true
+                    }
                 } label: {
                     Image(systemName: "ellipsis.circle")
                         .font(.system(size: 14))

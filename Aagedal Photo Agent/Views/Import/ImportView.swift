@@ -155,6 +155,11 @@ struct ImportView: View {
                 Toggle("Apply metadata on import", isOn: $viewModel.configuration.applyMetadata)
 
                 if viewModel.configuration.applyMetadata {
+                    Toggle("Process {variables} per file", isOn: $viewModel.configuration.processVariables)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .help("Resolve {date}, {filename}, and other variables individually for each imported file")
+
                     if !presets.isEmpty {
                         HStack {
                             Text("Preset:")
@@ -183,22 +188,28 @@ struct ImportView: View {
     @ViewBuilder
     private var metadataFields: some View {
         VStack(alignment: .leading, spacing: 6) {
-            // Priority fields
-            EditableTextField(
-                label: "Title",
-                text: Binding(
-                    get: { viewModel.configuration.metadata.title ?? "" },
-                    set: { viewModel.configuration.metadata.title = $0.isEmpty ? nil : $0 }
-                )
-            )
+            // Title reuses the import title from the Destination section
+            HStack(spacing: 4) {
+                Text("Title")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("(uses import title)")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
 
-            EditableTextField(
-                label: "Description",
-                text: Binding(
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Description")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TextEditor(text: Binding(
                     get: { viewModel.configuration.metadata.description ?? "" },
                     set: { viewModel.configuration.metadata.description = $0.isEmpty ? nil : $0 }
-                )
-            )
+                ))
+                .font(.body)
+                .frame(height: 56)
+                .overlay(RoundedRectangle(cornerRadius: 5).stroke(.quaternary))
+            }
 
             KeywordsEditor(
                 label: "Keywords",

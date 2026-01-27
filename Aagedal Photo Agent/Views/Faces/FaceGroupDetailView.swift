@@ -8,7 +8,9 @@ struct FaceGroupDetailView: View {
     @State private var mergeTargetID: UUID?
     @State private var selectedFaceIDs: Set<UUID> = []
     @State private var moveTargetID: UUID?
+    @State private var showDeleteGroupAlert = false
     var onSelectImages: ((Set<URL>) -> Void)?
+    var onPhotosDeleted: ((Set<URL>) -> Void)?
     @Environment(\.dismiss) private var dismiss
 
     private var otherGroups: [FaceGroup] {
@@ -127,6 +129,13 @@ struct FaceGroupDetailView: View {
                     dismiss()
                 }
 
+                Button(role: .destructive) {
+                    showDeleteGroupAlert = true
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .help("Delete group & photos")
+
                 Spacer()
 
                 Button("Cancel") {
@@ -144,6 +153,24 @@ struct FaceGroupDetailView: View {
         .frame(width: 320, height: 480)
         .onAppear {
             editingName = group.name ?? ""
+        }
+        .alert(
+            "Delete Group & Photos",
+            isPresented: $showDeleteGroupAlert
+        ) {
+            Button("Delete Faces Only") {
+                viewModel.deleteFaces(Set(group.faceIDs))
+                dismiss()
+            }
+            Button("Move Photos to Trash", role: .destructive) {
+                let trashed = viewModel.deleteGroup(group.id, includePhotos: true)
+                onPhotosDeleted?(trashed)
+                dismiss()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            let photoCount = viewModel.imageURLs(for: group).count
+            Text("This will delete \(group.faceIDs.count) face(s) across \(photoCount) photo(s). Moving photos to Trash cannot be undone from this app.")
         }
     }
 
