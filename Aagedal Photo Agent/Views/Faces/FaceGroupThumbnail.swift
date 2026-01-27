@@ -3,6 +3,7 @@ import SwiftUI
 struct FaceGroupThumbnail: View {
     let group: FaceGroup
     let image: NSImage?
+    var isMultiSelected: Bool = false
 
     var body: some View {
         VStack(spacing: 3) {
@@ -34,8 +35,21 @@ struct FaceGroupThumbnail: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                         .padding(2)
                 }
+
+                // Multi-select checkmark
+                if isMultiSelected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 16))
+                        .foregroundStyle(.white, Color.accentColor)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                        .padding(2)
+                }
             }
             .frame(width: 56, height: 56)
+            .overlay(
+                RoundedRectangle(cornerRadius: 7)
+                    .strokeBorder(isMultiSelected ? Color.accentColor : Color.clear, lineWidth: 2)
+            )
 
             Text(group.name ?? "?")
                 .font(.system(size: 11))

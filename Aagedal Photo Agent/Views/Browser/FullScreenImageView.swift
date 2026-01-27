@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 // MARK: - Custom NSWindow that intercepts Escape and Space
 
@@ -52,6 +53,7 @@ private class FullScreenWindow: NSWindow {
 struct FullScreenImageView: View {
     @Bindable var viewModel: BrowserViewModel
     @State private var currentImage: NSImage?
+    @State private var fullLoadTask: Task<Void, Never>?
     @FocusState private var isFocused: Bool
 
     private var currentImageFile: ImageFile? {
@@ -121,19 +123,74 @@ struct FullScreenImageView: View {
             return .handled
         }
         .task(id: currentImageFile?.url) {
-            await loadFullImage()
+            await loadImage()
         }
     }
 
-    private func loadFullImage() async {
+    private func loadImage() async {
+        // Cancel any in-flight full-resolution decode from the previous image
+        fullLoadTask?.cancel()
+        fullLoadTask = nil
+
         guard let url = currentImageFile?.url else {
             currentImage = nil
             return
         }
-        let image = await Task.detached {
-            NSImage(contentsOf: url)
-        }.value
-        currentImage = image
+
+        // Phase 1: For RAW files, instantly show the embedded JPEG preview
+        if isRAWFile(url) {
+            if let preview = Self.extractEmbeddedPreview(from: url) {
+                currentImage = preview
+            } else {
+                currentImage = nil
+            }
+        } else {
+            currentImage = nil
+        }
+
+        // Phase 2: Load full-resolution image without blocking navigation.
+        // This is an unstructured Task so it doesn't block the .task(id:) modifier;
+        // we cancel it explicitly at the top of this function on each navigation.
+        fullLoadTask = Task {
+            let image = await Task.detached {
+                NSImage(contentsOf: url)
+            }.value
+            guard !Task.isCancelled else { return }
+            if currentImageFile?.url == url {
+                currentImage = image
+            }
+        }
+    }
+
+    private func isRAWFile(_ url: URL) -> Bool {
+        let rawExtensions: Set<String> = [
+            "raw", "cr2", "cr3", "nef", "nrw", "arw", "raf",
+            "dng", "rw2", "orf", "pef", "srw"
+        ]
+        return rawExtensions.contains(url.pathExtension.lowercased())
+    }
+
+    private static func extractEmbeddedPreview(from url: URL) -> NSImage? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+
+        // First try to get the embedded JPEG thumbnail (fastest)
+        let thumbOptions: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageIfAbsent: false,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 3840,
+        ]
+        if let cgThumb = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbOptions as CFDictionary) {
+            return NSImage(cgImage: cgThumb, size: NSSize(width: cgThumb.width, height: cgThumb.height))
+        }
+
+        // Fallback: check for additional images in the source (many RAW formats
+        // store a full-size JPEG as a secondary image)
+        let imageCount = CGImageSourceGetCount(source)
+        if imageCount > 1, let cgImage = CGImageSourceCreateImageAtIndex(source, 1, nil) {
+            return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+        }
+
+        return nil
     }
 
     private func colorLabelOverlay(for file: ImageFile) -> some View {

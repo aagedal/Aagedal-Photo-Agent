@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -14,6 +15,7 @@ struct ContentView: View {
     @State private var isShowingFTPUpload = false
     @State private var isShowingSavePresetName = false
     @State private var savePresetName = ""
+    @State private var metadataPanelWidth: CGFloat = 320
 
     init() {
         let browser = BrowserViewModel()
@@ -39,9 +41,11 @@ struct ContentView: View {
                     Divider()
                 }
 
-                HSplitView {
+                HStack(spacing: 0) {
                     BrowserView(viewModel: browserViewModel)
                         .frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity)
+
+                    MetadataPanelDivider(panelWidth: $metadataPanelWidth)
 
                     MetadataPanel(
                         viewModel: metadataViewModel,
@@ -49,7 +53,7 @@ struct ContentView: View {
                         onApplyPreset: { isShowingPresetPicker = true },
                         onSavePreset: { isShowingSavePresetName = true }
                     )
-                    .frame(minWidth: 280, idealWidth: 320, maxWidth: 400)
+                    .frame(width: metadataPanelWidth)
                 }
             }
         }
@@ -94,6 +98,9 @@ struct ContentView: View {
             if let label = notification.object as? ColorLabel {
                 browserViewModel.setLabel(label)
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openInExternalEditor)) { _ in
+            openSelectedInExternalEditor()
         }
         .onReceive(NotificationCenter.default.publisher(for: .faceMetadataDidChange)) { _ in
             let selected = browserViewModel.selectedImages
@@ -297,6 +304,21 @@ struct ContentView: View {
         metadataViewModel.applyPresetFields(raw)
     }
 
+    private func openSelectedInExternalEditor() {
+        guard let editorPath = UserDefaults.standard.string(forKey: "defaultExternalEditor"),
+              !editorPath.isEmpty else { return }
+        let urls = browserViewModel.selectedImages.map(\.url)
+        guard !urls.isEmpty else { return }
+        NSWorkspace.shared.open(
+            urls,
+            withApplicationAt: URL(fileURLWithPath: editorPath),
+            configuration: NSWorkspace.OpenConfiguration()
+        )
+    }
+
+    private static let minPanelWidth: CGFloat = 280
+    private static let maxPanelWidth: CGFloat = 500
+
     private func handleDrop(providers: [NSItemProvider]) -> Bool {
         for provider in providers {
             _ = provider.loadObject(ofClass: URL.self) { url, _ in
@@ -310,5 +332,40 @@ struct ContentView: View {
             }
         }
         return true
+    }
+}
+
+struct MetadataPanelDivider: View {
+    @Binding var panelWidth: CGFloat
+    @State private var isDragging = false
+    @State private var dragStartWidth: CGFloat = 0
+
+    var body: some View {
+        Rectangle()
+            .fill(isDragging ? Color.accentColor.opacity(0.5) : Color.clear)
+            .frame(width: 5)
+            .background(Divider())
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                if hovering {
+                    NSCursor.resizeLeftRight.push()
+                } else {
+                    NSCursor.pop()
+                }
+            }
+            .gesture(
+                DragGesture(coordinateSpace: .global)
+                    .onChanged { value in
+                        if !isDragging {
+                            isDragging = true
+                            dragStartWidth = panelWidth
+                        }
+                        let newWidth = dragStartWidth - value.translation.width
+                        panelWidth = min(max(newWidth, 280), 500)
+                    }
+                    .onEnded { _ in
+                        isDragging = false
+                    }
+            )
     }
 }

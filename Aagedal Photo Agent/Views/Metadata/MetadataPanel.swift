@@ -38,7 +38,7 @@ struct MetadataPanel: View {
                 }
             }
         }
-        .frame(minWidth: 280, idealWidth: 320)
+        .frame(maxWidth: .infinity)
     }
 
     // MARK: - Rating & Label
@@ -110,7 +110,7 @@ struct MetadataPanel: View {
                         set: { viewModel.editingMetadata.description = $0.isEmpty ? nil : $0; viewModel.markChanged() }
                     ))
                     .font(.body)
-                    .frame(minHeight: 60, maxHeight: 120)
+                    .frame(minHeight: 90, maxHeight: 160)
                     .scrollContentBackground(.hidden)
                     .padding(4)
                     .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))

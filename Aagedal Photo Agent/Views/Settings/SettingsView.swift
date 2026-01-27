@@ -73,25 +73,30 @@ struct SettingsView: View {
             }
 
             Section("External Editor") {
-                LabeledContent("Default Editor") {
-                    HStack {
-                        Text(settingsViewModel.defaultExternalEditorName)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Choose...") {
-                            let panel = NSOpenPanel()
-                            panel.canChooseFiles = true
-                            panel.canChooseDirectories = false
-                            panel.allowsMultipleSelection = false
-                            panel.allowedContentTypes = [.application]
-                            if panel.runModal() == .OK, let url = panel.url {
-                                settingsViewModel.defaultExternalEditor = url.path
-                            }
+                Picker("Default Editor", selection: $settingsViewModel.defaultExternalEditor) {
+                    Text("Not set").tag("")
+                    if !settingsViewModel.detectedEditors.isEmpty {
+                        Divider()
+                        ForEach(settingsViewModel.detectedEditors) { editor in
+                            Text(editor.name).tag(editor.path)
                         }
-                        if !settingsViewModel.defaultExternalEditor.isEmpty {
-                            Button("Clear") {
-                                settingsViewModel.defaultExternalEditor = ""
-                            }
+                    }
+                    if !settingsViewModel.defaultExternalEditor.isEmpty,
+                       !settingsViewModel.detectedEditors.contains(where: { $0.path == settingsViewModel.defaultExternalEditor }) {
+                        Divider()
+                        Text(settingsViewModel.defaultExternalEditorName).tag(settingsViewModel.defaultExternalEditor)
+                    }
+                }
+                HStack {
+                    Spacer()
+                    Button("Browse...") {
+                        let panel = NSOpenPanel()
+                        panel.canChooseFiles = true
+                        panel.canChooseDirectories = false
+                        panel.allowsMultipleSelection = false
+                        panel.allowedContentTypes = [.application]
+                        if panel.runModal() == .OK, let url = panel.url {
+                            settingsViewModel.defaultExternalEditor = url.path
                         }
                     }
                 }

@@ -1,13 +1,25 @@
 import SwiftUI
 
 struct FTPUploadView: View {
+    @Environment(\.dismiss) private var dismiss
     @Bindable var viewModel: FTPViewModel
     let filesToUpload: [URL]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Upload Files")
-                .font(.headline)
+            HStack {
+                Text("Upload Files")
+                    .font(.headline)
+                Spacer()
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                        .font(.title2)
+                }
+                .buttonStyle(.plain)
+            }
 
             Text("\(filesToUpload.count) file(s) selected for upload")
                 .font(.subheadline)

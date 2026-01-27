@@ -128,28 +128,48 @@ final class BrowserViewModel {
 
     // MARK: - Arrow Key Navigation
 
-    func selectNext() {
+    func selectNext(extending: Bool = false) {
         let sorted = sortedImages
         guard !sorted.isEmpty else { return }
-        guard let currentURL = selectedImageIDs.first,
-              let currentIndex = sorted.firstIndex(where: { $0.url == currentURL }) else {
+        let anchor = lastClickedImageURL ?? selectedImageIDs.first
+        guard let anchorURL = anchor,
+              let currentIndex = sorted.firstIndex(where: { $0.url == anchorURL }) else {
             selectedImageIDs = [sorted[0].url]
+            lastClickedImageURL = sorted[0].url
             return
         }
         let nextIndex = min(currentIndex + 1, sorted.count - 1)
-        selectedImageIDs = [sorted[nextIndex].url]
+        let nextURL = sorted[nextIndex].url
+        if extending {
+            var updated = selectedImageIDs
+            updated.insert(nextURL)
+            selectedImageIDs = updated
+        } else {
+            selectedImageIDs = [nextURL]
+        }
+        lastClickedImageURL = nextURL
     }
 
-    func selectPrevious() {
+    func selectPrevious(extending: Bool = false) {
         let sorted = sortedImages
         guard !sorted.isEmpty else { return }
-        guard let currentURL = selectedImageIDs.first,
-              let currentIndex = sorted.firstIndex(where: { $0.url == currentURL }) else {
+        let anchor = lastClickedImageURL ?? selectedImageIDs.first
+        guard let anchorURL = anchor,
+              let currentIndex = sorted.firstIndex(where: { $0.url == anchorURL }) else {
             selectedImageIDs = [sorted[0].url]
+            lastClickedImageURL = sorted[0].url
             return
         }
         let prevIndex = max(currentIndex - 1, 0)
-        selectedImageIDs = [sorted[prevIndex].url]
+        let prevURL = sorted[prevIndex].url
+        if extending {
+            var updated = selectedImageIDs
+            updated.insert(prevURL)
+            selectedImageIDs = updated
+        } else {
+            selectedImageIDs = [prevURL]
+        }
+        lastClickedImageURL = prevURL
     }
 
     // MARK: - Rating & Labels
