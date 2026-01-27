@@ -255,6 +255,17 @@ final class ExifToolService {
         return TechnicalMetadata(from: dict)
     }
 
+    /// Read detailed C2PA metadata using -G3 to separate multi-manifest chains.
+    func readC2PAMetadata(url: URL) async throws -> C2PAMetadata {
+        let args = ["-json", "-G3", "-JUMBF:All", url.path]
+        let output = try await execute(args)
+        let results = parseJSON(output)
+        guard let dict = results.first else {
+            return C2PAMetadata(from: [:])
+        }
+        return C2PAMetadata(from: dict)
+    }
+
     // MARK: - Parsing Helpers
 
     private func parseJSON(_ string: String) -> [[String: Any]] {

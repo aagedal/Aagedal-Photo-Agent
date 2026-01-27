@@ -16,6 +16,8 @@ struct ContentView: View {
     @State private var isShowingFTPUpload = false
     @State private var isShowingSavePresetName = false
     @State private var isShowingImport = false
+    @State private var isShowingC2PADetail = false
+    @State private var c2paMetadata: C2PAMetadata?
     @State private var savePresetName = ""
     @State private var metadataPanelWidth: CGFloat = 320
     @State private var isFaceManagerExpanded = false
@@ -167,6 +169,11 @@ struct ContentView: View {
                 onDismiss: { isShowingImport = false }
             )
         }
+        .sheet(isPresented: $isShowingC2PADetail) {
+            if let c2paMetadata {
+                C2PADetailSheet(metadata: c2paMetadata)
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .showImport)) { _ in
             isShowingImport = true
         }
@@ -270,7 +277,9 @@ struct ContentView: View {
                 Divider()
                 VStack(alignment: .leading, spacing: 8) {
                     if let meta = technicalMetadata, meta.hasC2PA {
-                        C2PAMetadataView(metadata: meta)
+                        C2PAMetadataView(metadata: meta) {
+                            loadC2PADetail()
+                        }
                         Divider()
                     }
                     TechnicalMetadataView(
@@ -408,6 +417,20 @@ struct ContentView: View {
             } catch {
                 guard !Task.isCancelled else { return }
                 technicalMetadata = nil
+            }
+        }
+    }
+
+    private func loadC2PADetail() {
+        guard let image = browserViewModel.selectedImages.first else { return }
+        let service = browserViewModel.exifToolService
+        Task {
+            do {
+                let result = try await service.readC2PAMetadata(url: image.url)
+                c2paMetadata = result
+                isShowingC2PADetail = true
+            } catch {
+                c2paMetadata = nil
             }
         }
     }
