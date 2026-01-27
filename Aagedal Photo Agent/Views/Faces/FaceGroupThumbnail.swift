@@ -5,18 +5,18 @@ struct FaceGroupThumbnail: View {
     let image: NSImage?
 
     var body: some View {
-        VStack(spacing: 2) {
+        VStack(spacing: 3) {
             ZStack {
                 if let image {
                     Image(nsImage: image)
                         .resizable()
                         .scaledToFill()
-                        .frame(width: 48, height: 48)
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .frame(width: 56, height: 56)
+                        .clipShape(RoundedRectangle(cornerRadius: 7))
                 } else {
-                    RoundedRectangle(cornerRadius: 6)
+                    RoundedRectangle(cornerRadius: 7)
                         .fill(.quaternary)
-                        .frame(width: 48, height: 48)
+                        .frame(width: 56, height: 56)
                         .overlay {
                             Image(systemName: "person.fill")
                                 .foregroundStyle(.secondary)
@@ -35,12 +35,12 @@ struct FaceGroupThumbnail: View {
                         .padding(2)
                 }
             }
-            .frame(width: 48, height: 48)
+            .frame(width: 56, height: 56)
 
             Text(group.name ?? "?")
-                .font(.system(size: 10))
+                .font(.system(size: 11))
                 .lineLimit(1)
-                .frame(width: 48)
+                .frame(width: 64)
                 .foregroundStyle(group.name != nil ? .primary : .secondary)
         }
     }

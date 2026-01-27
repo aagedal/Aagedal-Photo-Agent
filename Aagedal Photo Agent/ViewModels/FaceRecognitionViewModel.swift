@@ -227,6 +227,62 @@ final class FaceRecognitionViewModel {
         }
     }
 
+    // MARK: - Merge & Ungroup
+
+    /// Merge sourceGroup into targetGroup. All faces move to target; source is deleted.
+    func mergeGroups(sourceID: UUID, into targetID: UUID) {
+        guard var data = faceData,
+              let sourceIndex = data.groups.firstIndex(where: { $0.id == sourceID }),
+              let targetIndex = data.groups.firstIndex(where: { $0.id == targetID }),
+              sourceIndex != targetIndex else { return }
+
+        let sourceFaceIDs = data.groups[sourceIndex].faceIDs
+        data.groups[targetIndex].faceIDs.append(contentsOf: sourceFaceIDs)
+
+        // Update face groupIDs
+        for faceID in sourceFaceIDs {
+            if let fi = data.faces.firstIndex(where: { $0.id == faceID }) {
+                data.faces[fi].groupID = targetID
+            }
+        }
+
+        data.groups.remove(at: sourceIndex)
+        faceData = data
+        try? storageService.saveFaceData(data)
+    }
+
+    /// Remove a single face from its group and place it in a new solo group.
+    func ungroupFace(_ faceID: UUID) {
+        guard var data = faceData,
+              let faceIndex = data.faces.firstIndex(where: { $0.id == faceID }),
+              let oldGroupID = data.faces[faceIndex].groupID,
+              let groupIndex = data.groups.firstIndex(where: { $0.id == oldGroupID }) else { return }
+
+        // Don't ungroup if it's the only face in the group
+        guard data.groups[groupIndex].faceIDs.count > 1 else { return }
+
+        // Remove from old group
+        data.groups[groupIndex].faceIDs.removeAll { $0 == faceID }
+
+        // If the representative was removed, pick a new one
+        if data.groups[groupIndex].representativeFaceID == faceID {
+            data.groups[groupIndex].representativeFaceID = data.groups[groupIndex].faceIDs[0]
+        }
+
+        // Create new solo group
+        let newGroup = FaceGroup(
+            id: UUID(),
+            name: nil,
+            representativeFaceID: faceID,
+            faceIDs: [faceID]
+        )
+        data.groups.append(newGroup)
+        data.faces[faceIndex].groupID = newGroup.id
+
+        faceData = data
+        try? storageService.saveFaceData(data)
+    }
+
     // MARK: - Delete Face Data
 
     func deleteFaceData(for folderURL: URL) {
@@ -243,6 +299,11 @@ final class FaceRecognitionViewModel {
         return group.faceIDs.compactMap { faceID in
             data.faces.first { $0.id == faceID }
         }
+    }
+
+    func imageURLs(for group: FaceGroup) -> Set<URL> {
+        let faces = faces(in: group)
+        return Set(faces.map(\.imageURL))
     }
 
     func thumbnailImage(for faceID: UUID) -> NSImage? {
