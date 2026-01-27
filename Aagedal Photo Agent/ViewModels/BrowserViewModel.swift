@@ -5,6 +5,7 @@ import AppKit
 final class BrowserViewModel {
     var images: [ImageFile] = []
     var selectedImageIDs: Set<URL> = []
+    var lastClickedImageURL: URL?
     var currentFolderURL: URL?
     var currentFolderName: String?
     var isLoading = false
@@ -12,6 +13,8 @@ final class BrowserViewModel {
     var errorMessage: String?
     var sortOrder: SortOrder = .name
     var favoriteFolders: [FavoriteFolder] = []
+    var manualOrder: [URL] = []
+    var draggedImageURL: URL?
 
     let fileSystemService = FileSystemService()
     let thumbnailService = ThumbnailService()
@@ -38,6 +41,13 @@ final class BrowserViewModel {
             return images.sorted { $0.starRating.rawValue > $1.starRating.rawValue }
         case .label:
             return images.sorted { ($0.colorLabel.shortcutIndex ?? 0) < ($1.colorLabel.shortcutIndex ?? 0) }
+        case .manual:
+            guard !manualOrder.isEmpty else { return images }
+            let imagesByURL = Dictionary(uniqueKeysWithValues: images.map { ($0.url, $0) })
+            var result = manualOrder.compactMap { imagesByURL[$0] }
+            let manualSet = Set(manualOrder)
+            result.append(contentsOf: images.filter { !manualSet.contains($0.url) })
+            return result
         }
     }
 
@@ -57,6 +67,8 @@ final class BrowserViewModel {
         isLoading = true
         errorMessage = nil
         selectedImageIDs.removeAll()
+        lastClickedImageURL = nil
+        manualOrder.removeAll()
 
         Task {
             do {
@@ -207,10 +219,17 @@ final class BrowserViewModel {
         return favoriteFolders.contains { $0.url == url }
     }
 
+    // MARK: - Manual Sort
+
+    func initializeManualOrder(from currentSorted: [ImageFile]) {
+        manualOrder = currentSorted.map(\.url)
+    }
+
     enum SortOrder: String, CaseIterable {
         case name = "Name"
         case dateModified = "Date Modified"
         case rating = "Rating"
         case label = "Label"
+        case manual = "Manual"
     }
 }

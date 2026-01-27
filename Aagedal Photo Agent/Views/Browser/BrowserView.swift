@@ -33,7 +33,15 @@ struct BrowserView: View {
         }
         .toolbar {
             ToolbarItem(placement: .automatic) {
-                Picker("Sort", selection: $viewModel.sortOrder) {
+                Picker("Sort", selection: Binding(
+                    get: { viewModel.sortOrder },
+                    set: { newValue in
+                        if newValue == .manual && viewModel.sortOrder != .manual {
+                            viewModel.initializeManualOrder(from: viewModel.sortedImages)
+                        }
+                        viewModel.sortOrder = newValue
+                    }
+                )) {
                     ForEach(BrowserViewModel.SortOrder.allCases, id: \.self) { order in
                         Text(order.rawValue).tag(order)
                     }
