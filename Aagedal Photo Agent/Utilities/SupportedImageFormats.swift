@@ -30,7 +30,24 @@ enum SupportedImageFormats {
         "dng", "rw2", "orf", "pef", "srw",
     ]
 
+    static let rawExtensions: Set<String> = [
+        "raw", "cr2", "cr3", "nef", "nrw", "arw", "raf",
+        "dng", "rw2", "orf", "pef", "srw",
+    ]
+
+    static let jpegExtensions: Set<String> = [
+        "jpg", "jpeg",
+    ]
+
     static func isSupported(url: URL) -> Bool {
         fileExtensions.contains(url.pathExtension.lowercased())
+    }
+
+    static func isRaw(url: URL) -> Bool {
+        rawExtensions.contains(url.pathExtension.lowercased())
+    }
+
+    static func isJPEG(url: URL) -> Bool {
+        jpegExtensions.contains(url.pathExtension.lowercased())
     }
 }

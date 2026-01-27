@@ -438,6 +438,28 @@ final class FaceRecognitionViewModel {
         }
     }
 
+    // MARK: - Delete Individual Faces
+
+    /// Permanently delete faces from the data set (removes from groups, face list, thumbnail cache, and disk).
+    func deleteFaces(_ faceIDs: Set<UUID>) {
+        guard var data = faceData, !faceIDs.isEmpty else { return }
+
+        // Remove from groups (cleans up empties)
+        removeFacesFromGroups(faceIDs, in: &data)
+
+        // Remove from the face list
+        data.faces.removeAll { faceIDs.contains($0.id) }
+
+        // Remove thumbnails from cache and disk
+        for faceID in faceIDs {
+            thumbnailCache.removeValue(forKey: faceID)
+            storageService.deleteThumbnail(for: faceID, folderURL: data.folderURL)
+        }
+
+        faceData = data
+        try? storageService.saveFaceData(data)
+    }
+
     // MARK: - Delete Face Data
 
     func deleteFaceData(for folderURL: URL) {

@@ -27,6 +27,13 @@ struct ExpandedFaceManagementView: View {
                 Spacer()
 
                 if !selectedFaceIDs.isEmpty {
+                    Button(role: .destructive) {
+                        viewModel.deleteFaces(selectedFaceIDs)
+                        selectedFaceIDs.removeAll()
+                    } label: {
+                        Label("Delete \(selectedFaceIDs.count)", systemImage: "trash")
+                    }
+
                     Text("\(selectedFaceIDs.count) face\(selectedFaceIDs.count == 1 ? "" : "s") selected")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -195,6 +202,12 @@ struct ExpandedFaceManagementView: View {
             } else {
                 selectedFaceIDs.removeAll()
                 selectedFaceIDs.insert(face.id)
+            }
+        }
+        .contextMenu {
+            Button("Delete Face", role: .destructive) {
+                selectedFaceIDs.remove(face.id)
+                viewModel.deleteFaces([face.id])
             }
         }
         .onDrag {
