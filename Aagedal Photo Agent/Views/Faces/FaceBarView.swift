@@ -144,7 +144,7 @@ struct FaceBarView: View {
                 .contextMenu {
                     Button("Rescan Folder") {
                         guard let folderURL else { return }
-                        viewModel.scanFolder(imageURLs: imageURLs, folderURL: folderURL, rescan: true)
+                        viewModel.scanFolder(imageURLs: imageURLs, folderURL: folderURL)
                     }
                     Button("Delete Face Data", role: .destructive) {
                         guard let folderURL else { return }
