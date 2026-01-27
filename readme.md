@@ -7,12 +7,11 @@ This includes variables and metadata presets, star rating and color labels.
 
 The plan is also to include folder specific face recognition so that the user only needs to write the name of a person once to tag all images of that person.
 
-This app is currently in a pre-beta state.
-
-
 
 
 ## Installation
+_Note that the current version of the app has performance issue._
+
 ```bash
 brew install aagedal/casks/aagedal-photo-agent
 ```
