@@ -1,9 +1,9 @@
 # TODO
 
 ## Priority
-[] Improve face recognition. Change backend?
 [] Add reverse Geocoding: Use GPS metadata to add name of country and city. Add a variable for these. (The DD GPS coordinates seems to work in Apple Maps, maybe also MapKit?)
 [] Add keyboard shortcuts: Process variable, process all variables in folder, write all pending metadata in folder.
+[] App becomes very slow when scanning for faces, this should happen on a background thread and not block the main app UI.
 
 
 
