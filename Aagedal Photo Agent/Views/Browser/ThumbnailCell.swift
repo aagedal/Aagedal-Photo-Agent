@@ -15,7 +15,7 @@ struct ThumbnailCell: View, Equatable {
 
     var body: some View {
         VStack(spacing: 4) {
-            ZStack(alignment: .topTrailing) {
+            ZStack {
                 // Thumbnail image
                 Group {
                     if let thumbnail {
@@ -35,14 +35,36 @@ struct ThumbnailCell: View, Equatable {
                 .frame(width: 180, height: 140)
                 .clipShape(RoundedRectangle(cornerRadius: 4))
 
-                // C2PA badge
+                // C2PA badge (top right)
                 if image.hasC2PA {
-                    Image(systemName: "checkmark.seal.fill")
-                        .font(.caption)
-                        .foregroundStyle(.white)
-                        .padding(3)
-                        .background(.blue, in: Circle())
-                        .padding(4)
+                    VStack {
+                        HStack {
+                            Spacer()
+                            Image(systemName: "checkmark.seal.fill")
+                                .font(.caption)
+                                .foregroundStyle(.white)
+                                .padding(3)
+                                .background(.blue, in: Circle())
+                                .padding(4)
+                        }
+                        Spacer()
+                    }
+                }
+
+                // Pending metadata indicator (top left)
+                if image.hasPendingMetadataChanges {
+                    VStack {
+                        HStack {
+                            Circle()
+                                .fill(.yellow)
+                                .frame(width: 10, height: 10)
+                                .overlay(Circle().strokeBorder(.white.opacity(0.5), lineWidth: 1))
+                                .padding(4)
+                                .help("Pending metadata changes")
+                            Spacer()
+                        }
+                        Spacer()
+                    }
                 }
             }
 

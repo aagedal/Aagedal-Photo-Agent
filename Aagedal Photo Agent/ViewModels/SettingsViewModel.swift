@@ -47,13 +47,11 @@ final class SettingsViewModel {
     var detectedEditors: [DetectedEditor] = []
 
     var bundledExifToolPath: String? {
+        // Try ExifTool folder first, then direct resource
         if let bundledDir = Bundle.main.path(forResource: "ExifTool", ofType: nil) {
-            let path = (bundledDir as NSString).appendingPathComponent("exiftool")
-            if FileManager.default.isExecutableFile(atPath: path) {
-                return path
-            }
+            return (bundledDir as NSString).appendingPathComponent("exiftool")
         }
-        return nil
+        return Bundle.main.path(forResource: "exiftool", ofType: nil)
     }
 
     var homebrewExifToolPath: String? {

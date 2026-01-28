@@ -34,68 +34,130 @@ struct ContentView: View {
     }
 
     var body: some View {
+        mainContent
+            .toolbar { toolbarContent }
+            .navigationTitle(browserViewModel.currentFolderName ?? "Aagedal Photo Agent")
+            .modifier(ContentViewModifiers(
+                browserViewModel: browserViewModel,
+                metadataViewModel: metadataViewModel,
+                faceRecognitionViewModel: faceRecognitionViewModel,
+                settingsViewModel: settingsViewModel,
+                importViewModel: importViewModel,
+                loadTechnicalMetadata: loadTechnicalMetadata,
+                technicalMetadataCache: $technicalMetadataCache,
+                technicalMetadata: $technicalMetadata
+            ))
+            .sheet(isPresented: $isShowingPresetPicker) { presetPickerSheet }
+            .sheet(isPresented: $isShowingSavePresetName) { savePresetSheet }
+            .sheet(isPresented: $isShowingFTPUpload) { ftpUploadSheet }
+            .sheet(isPresented: $isShowingImport) { importSheet }
+            .sheet(isPresented: $isShowingC2PADetail) { c2paSheet }
+            .onReceive(NotificationCenter.default.publisher(for: .showImport)) { _ in
+                isShowingImport = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .importCompleted)) { notification in
+                handleImportCompleted(notification)
+            }
+            .fullScreenImagePresenter(viewModel: browserViewModel)
+            .onAppear {
+                browserViewModel.loadFavorites()
+                presetViewModel.loadPresets()
+                ftpViewModel.loadConnections()
+            }
+    }
+
+    @ViewBuilder
+    private var mainContent: some View {
         NavigationSplitView {
             sidebar
         } detail: {
-            VStack(spacing: 0) {
-                if !browserViewModel.images.isEmpty {
-                    FaceBarView(
-                        viewModel: faceRecognitionViewModel,
-                        folderURL: browserViewModel.currentFolderURL,
-                        imageURLs: browserViewModel.images.map(\.url),
-                        isExpanded: isFaceManagerExpanded,
-                        onSelectImages: { urls in
-                            browserViewModel.selectedImageIDs = urls
-                        },
-                        onPhotosDeleted: { trashedURLs in
-                            browserViewModel.images.removeAll { trashedURLs.contains($0.url) }
-                            browserViewModel.selectedImageIDs.subtract(trashedURLs)
-                        },
-                        onToggleExpanded: {
-                            isFaceManagerExpanded.toggle()
-                        }
-                    )
-                    Divider()
-                }
+            detailContent
+        }
+    }
 
-                if isFaceManagerExpanded {
-                    ExpandedFaceManagementView(
-                        viewModel: faceRecognitionViewModel,
-                        onClose: { isFaceManagerExpanded = false },
-                        onPhotosDeleted: { trashedURLs in
-                            browserViewModel.images.removeAll { trashedURLs.contains($0.url) }
-                            browserViewModel.selectedImageIDs.subtract(trashedURLs)
-                        }
-                    )
-                } else {
-                    HStack(spacing: 0) {
-                        BrowserView(viewModel: browserViewModel)
-                            .frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity)
-
-                        MetadataPanelDivider(panelWidth: $metadataPanelWidth)
-
-                        MetadataPanel(
-                            viewModel: metadataViewModel,
-                            browserViewModel: browserViewModel,
-                            onApplyPreset: { isShowingPresetPicker = true },
-                            onSavePreset: { isShowingSavePresetName = true }
-                        )
-                        .frame(width: metadataPanelWidth)
+    @ViewBuilder
+    private var detailContent: some View {
+        VStack(spacing: 0) {
+            if !browserViewModel.images.isEmpty {
+                FaceBarView(
+                    viewModel: faceRecognitionViewModel,
+                    folderURL: browserViewModel.currentFolderURL,
+                    imageURLs: browserViewModel.images.map(\.url),
+                    isExpanded: isFaceManagerExpanded,
+                    onSelectImages: { urls in
+                        browserViewModel.selectedImageIDs = urls
+                    },
+                    onPhotosDeleted: { trashedURLs in
+                        browserViewModel.images.removeAll { trashedURLs.contains($0.url) }
+                        browserViewModel.selectedImageIDs.subtract(trashedURLs)
+                    },
+                    onToggleExpanded: {
+                        isFaceManagerExpanded.toggle()
                     }
-                }
+                )
+                Divider()
+            }
+
+            if isFaceManagerExpanded {
+                ExpandedFaceManagementView(
+                    viewModel: faceRecognitionViewModel,
+                    onClose: { isFaceManagerExpanded = false },
+                    onPhotosDeleted: { trashedURLs in
+                        browserViewModel.images.removeAll { trashedURLs.contains($0.url) }
+                        browserViewModel.selectedImageIDs.subtract(trashedURLs)
+                    }
+                )
+            } else {
+                browserAndMetadataPanel
             }
         }
-        .toolbar {
-            ToolbarItem(placement: .automatic) {
-                if metadataViewModel.isProcessingFolder {
-                    HStack(spacing: 4) {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text(metadataViewModel.folderProcessProgress)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+    }
+
+    @ViewBuilder
+    private var browserAndMetadataPanel: some View {
+        HStack(spacing: 0) {
+            BrowserView(viewModel: browserViewModel)
+                .frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity)
+
+            MetadataPanelDivider(panelWidth: $metadataPanelWidth)
+
+            MetadataPanel(
+                viewModel: metadataViewModel,
+                browserViewModel: browserViewModel,
+                onApplyPreset: { isShowingPresetPicker = true },
+                onSavePreset: { isShowingSavePresetName = true },
+                onPendingStatusChanged: {
+                    browserViewModel.refreshPendingStatus()
+                }
+            )
+            .frame(width: metadataPanelWidth)
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .automatic) {
+            if metadataViewModel.isProcessingFolder {
+                HStack(spacing: 4) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text(metadataViewModel.folderProcessProgress)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                HStack {
+                    Button {
+                        metadataViewModel.writeAllPendingChanges(
+                            in: browserViewModel.currentFolderURL,
+                            images: browserViewModel.images
+                        )
+                    } label: {
+                        Label("Write All Pending", systemImage: "square.and.arrow.down.on.square")
                     }
-                } else {
+                    .help("Write all pending sidecar changes to image files")
+                    .disabled(browserViewModel.images.isEmpty)
+
                     Button {
                         metadataViewModel.processVariablesInFolder(images: browserViewModel.images)
                     } label: {
@@ -106,89 +168,39 @@ struct ContentView: View {
                 }
             }
         }
-        .navigationTitle(browserViewModel.currentFolderName ?? "Aagedal Photo Agent")
-        .onChange(of: browserViewModel.selectedImageIDs) {
-            let selected = browserViewModel.selectedImages
-            metadataViewModel.loadMetadata(for: selected)
-            loadTechnicalMetadata()
+    }
+
+    @ViewBuilder
+    private var ftpUploadSheet: some View {
+        FTPUploadView(
+            viewModel: ftpViewModel,
+            selectedFiles: browserViewModel.selectedImages.map(\.url),
+            allFiles: browserViewModel.images.map(\.url),
+            exifToolService: browserViewModel.exifToolService
+        )
+    }
+
+    @ViewBuilder
+    private var importSheet: some View {
+        ImportView(
+            viewModel: importViewModel,
+            presets: presetViewModel.presets,
+            onDismiss: { isShowingImport = false }
+        )
+    }
+
+    @ViewBuilder
+    private var c2paSheet: some View {
+        if let c2paMetadata {
+            C2PADetailSheet(metadata: c2paMetadata)
         }
-        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
-            handleDrop(providers: providers)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .openFolder)) { _ in
-            browserViewModel.openFolder()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .setRating)) { notification in
-            if let rating = notification.object as? StarRating {
-                browserViewModel.setRating(rating)
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .setLabel)) { notification in
-            if let label = notification.object as? ColorLabel {
-                browserViewModel.setLabel(label)
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .openInExternalEditor)) { _ in
-            openSelectedInExternalEditor()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .deleteSelected)) { _ in
-            browserViewModel.deleteSelectedImages()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .faceMetadataDidChange)) { _ in
-            let selected = browserViewModel.selectedImages
-            metadataViewModel.loadMetadata(for: selected)
-        }
-        .onChange(of: browserViewModel.currentFolderURL) {
-            technicalMetadataCache.removeAll()
-            technicalMetadata = nil
-            if let folderURL = browserViewModel.currentFolderURL {
-                faceRecognitionViewModel.loadFaceData(
-                    for: folderURL,
-                    cleanupPolicy: settingsViewModel.faceCleanupPolicy
-                )
-            }
-        }
-        .sheet(isPresented: $isShowingPresetPicker) {
-            presetPickerSheet
-        }
-        .sheet(isPresented: $isShowingSavePresetName) {
-            savePresetSheet
-        }
-        .sheet(isPresented: $isShowingFTPUpload) {
-            FTPUploadView(
-                viewModel: ftpViewModel,
-                selectedFiles: browserViewModel.selectedImages.map(\.url),
-                allFiles: browserViewModel.images.map(\.url),
-                exifToolService: browserViewModel.exifToolService
-            )
-        }
-        .sheet(isPresented: $isShowingImport) {
-            ImportView(
-                viewModel: importViewModel,
-                presets: presetViewModel.presets,
-                onDismiss: { isShowingImport = false }
-            )
-        }
-        .sheet(isPresented: $isShowingC2PADetail) {
-            if let c2paMetadata {
-                C2PADetailSheet(metadata: c2paMetadata)
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .showImport)) { _ in
-            isShowingImport = true
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .importCompleted)) { notification in
-            if let folderURL = notification.object as? URL,
-               importViewModel.configuration.openFolderAfterImport {
-                isShowingImport = false
-                browserViewModel.loadFolder(url: folderURL)
-            }
-        }
-        .fullScreenImagePresenter(viewModel: browserViewModel)
-        .onAppear {
-            browserViewModel.loadFavorites()
-            presetViewModel.loadPresets()
-            ftpViewModel.loadConnections()
+    }
+
+    private func handleImportCompleted(_ notification: NotificationCenter.Publisher.Output) {
+        if let folderURL = notification.object as? URL,
+           importViewModel.configuration.openFolderAfterImport {
+            isShowingImport = false
+            browserViewModel.loadFolder(url: folderURL)
         }
     }
 
@@ -435,20 +447,77 @@ struct ContentView: View {
         }
     }
 
-    private func openSelectedInExternalEditor() {
-        guard let editorPath = UserDefaults.standard.string(forKey: "defaultExternalEditor"),
-              !editorPath.isEmpty else { return }
-        let urls = browserViewModel.selectedImages.map(\.url)
-        guard !urls.isEmpty else { return }
-        NSWorkspace.shared.open(
-            urls,
-            withApplicationAt: URL(fileURLWithPath: editorPath),
-            configuration: NSWorkspace.OpenConfiguration()
-        )
-    }
+}
 
-    private static let minPanelWidth: CGFloat = 280
-    private static let maxPanelWidth: CGFloat = 500
+struct ContentViewModifiers: ViewModifier {
+    let browserViewModel: BrowserViewModel
+    let metadataViewModel: MetadataViewModel
+    let faceRecognitionViewModel: FaceRecognitionViewModel
+    let settingsViewModel: SettingsViewModel
+    let importViewModel: ImportViewModel
+    let loadTechnicalMetadata: () -> Void
+    @Binding var technicalMetadataCache: [URL: TechnicalMetadata]
+    @Binding var technicalMetadata: TechnicalMetadata?
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: browserViewModel.selectedImageIDs) { oldValue, _ in
+                if !oldValue.isEmpty && metadataViewModel.hasChanges {
+                    metadataViewModel.saveToSidecar()
+                }
+                let selected = browserViewModel.selectedImages
+                metadataViewModel.loadMetadata(for: selected, folderURL: browserViewModel.currentFolderURL)
+                loadTechnicalMetadata()
+            }
+            .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                handleDrop(providers: providers)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .openFolder)) { _ in
+                browserViewModel.openFolder()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .setRating)) { notification in
+                if let rating = notification.object as? StarRating {
+                    browserViewModel.setRating(rating)
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .setLabel)) { notification in
+                if let label = notification.object as? ColorLabel {
+                    browserViewModel.setLabel(label)
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .openInExternalEditor)) { _ in
+                openSelectedInExternalEditor()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .deleteSelected)) { _ in
+                browserViewModel.deleteSelectedImages()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .selectPreviousImage)) { _ in
+                browserViewModel.selectPrevious()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .selectNextImage)) { _ in
+                browserViewModel.selectNext()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .faceMetadataDidChange)) { _ in
+                let selected = browserViewModel.selectedImages
+                metadataViewModel.loadMetadata(for: selected, folderURL: browserViewModel.currentFolderURL)
+            }
+            .onChange(of: browserViewModel.currentFolderURL) {
+                technicalMetadataCache.removeAll()
+                technicalMetadata = nil
+                if let folderURL = browserViewModel.currentFolderURL {
+                    faceRecognitionViewModel.loadFaceData(
+                        for: folderURL,
+                        cleanupPolicy: settingsViewModel.faceCleanupPolicy
+                    )
+                    metadataViewModel.currentFolderURL = folderURL
+                }
+            }
+            .onChange(of: metadataViewModel.isProcessingFolder) { _, isProcessing in
+                if !isProcessing {
+                    browserViewModel.refreshPendingStatus()
+                }
+            }
+    }
 
     private func handleDrop(providers: [NSItemProvider]) -> Bool {
         for provider in providers {
@@ -463,6 +532,18 @@ struct ContentView: View {
             }
         }
         return true
+    }
+
+    private func openSelectedInExternalEditor() {
+        guard let editorPath = UserDefaults.standard.string(forKey: "defaultExternalEditor"),
+              !editorPath.isEmpty else { return }
+        let urls = browserViewModel.selectedImages.map(\.url)
+        guard !urls.isEmpty else { return }
+        NSWorkspace.shared.open(
+            urls,
+            withApplicationAt: URL(fileURLWithPath: editorPath),
+            configuration: NSWorkspace.OpenConfiguration()
+        )
     }
 }
 
