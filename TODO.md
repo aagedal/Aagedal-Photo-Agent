@@ -1,11 +1,11 @@
 # TODO
 
 ## Priority
-1. Copy and paste with keyboard shortcuts doesn't seem to work in the metadata fields, this is very annoying. There are also some inconsistent design between the different fields.
-2. Add exiftool to the app bundle, or at least make the app download its own version, in case a Homebrew version isn't installed
+~~Add exiftool to the app bundle~~ DONE - ExifTool 13.47 bundled in Resources/ExifTool/
 
 ## Future plans - after priority issues are fixed
 [] Improve face recognition. Change backend?
+[] Add reverse Geocoding: Use GPS metadata to add name of country and city. Add a variable for these. (The DD GPS coordinates seems to work in Apple Maps, maybe also MapKit?)
 
 ## Nice to have
 [] Improve performance when selecting with mouse or using shift select in the thumbnail grid view.

@@ -10,8 +10,11 @@ The plan is also to include folder specific face recognition so that the user on
 
 
 ## Installation
-_Note that the current version of the app has performance issue._
 
 ```bash
 brew install aagedal/casks/aagedal-photo-agent
 ```
+
+## Acknowledgments
+
+This application bundles [ExifTool](https://exiftool.org/) by Phil Harvey for reading and writing image metadata. ExifTool is distributed under the same terms as Perl itself (Perl Artistic License or GPL).
