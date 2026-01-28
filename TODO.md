@@ -1,9 +1,8 @@
 # TODO
 
 ## Priority
-1. Make sure that comma (,) and semicolon (;) can never be a part of a Keyword or Person. Pressing these keys should always trigger separation, but never be part of the item iteself. This must also be correct when applying names using the Face Group feature.
-2. Copy and paste with keyboard shortcuts doesn't seem to work in the metadata fields, this is very annoying. There are also some inconsistent design between the different fields.
-3. Add exiftool to the app bundle, or at least make the app download its own version, in case a Homebrew version isn't installed
+1. Copy and paste with keyboard shortcuts doesn't seem to work in the metadata fields, this is very annoying. There are also some inconsistent design between the different fields.
+2. Add exiftool to the app bundle, or at least make the app download its own version, in case a Homebrew version isn't installed
 
 ## Future plans - after priority issues are fixed
 [] Improve face recognition. Change backend?

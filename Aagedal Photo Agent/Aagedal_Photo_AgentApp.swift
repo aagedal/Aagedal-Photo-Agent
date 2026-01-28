@@ -43,7 +43,8 @@ struct Aagedal_Photo_AgentApp: App {
                 .keyboardShortcut("e", modifiers: .command)
             }
 
-            CommandGroup(replacing: .pasteboard) {
+            CommandGroup(after: .pasteboard) {
+                Divider()
                 Button("Move to Trash") {
                     NotificationCenter.default.post(name: .deleteSelected, object: nil)
                 }
