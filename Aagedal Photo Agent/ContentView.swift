@@ -6,19 +6,20 @@ struct ContentView: View {
     @State private var browserViewModel: BrowserViewModel
     @State private var metadataViewModel: MetadataViewModel
     @State private var faceRecognitionViewModel: FaceRecognitionViewModel
-    @State private var presetViewModel = PresetViewModel()
+    @State private var templateViewModel = TemplateViewModel()
     @State private var ftpViewModel = FTPViewModel()
     @State private var settingsViewModel = SettingsViewModel()
     @State private var importViewModel: ImportViewModel
 
-    @State private var isShowingPresetEditor = false
-    @State private var isShowingPresetPicker = false
+    @State private var isShowingTemplateEditor = false
+    @State private var isShowingTemplatePicker = false
+    @State private var isShowingTemplatePalette = false
     @State private var isShowingFTPUpload = false
-    @State private var isShowingSavePresetName = false
+    @State private var isShowingSaveTemplateName = false
     @State private var isShowingImport = false
     @State private var isShowingC2PADetail = false
     @State private var c2paMetadata: C2PAMetadata?
-    @State private var savePresetName = ""
+    @State private var saveTemplateName = ""
     @State private var metadataPanelWidth: CGFloat = 320
     @State private var isFaceManagerExpanded = false
     @State private var technicalMetadata: TechnicalMetadata?
@@ -47,21 +48,62 @@ struct ContentView: View {
                 technicalMetadataCache: $technicalMetadataCache,
                 technicalMetadata: $technicalMetadata
             ))
-            .sheet(isPresented: $isShowingPresetPicker) { presetPickerSheet }
-            .sheet(isPresented: $isShowingSavePresetName) { savePresetSheet }
+            .sheet(isPresented: $isShowingTemplatePicker) { templatePickerSheet }
+            .sheet(isPresented: $isShowingSaveTemplateName) { saveTemplateSheet }
             .sheet(isPresented: $isShowingFTPUpload) { ftpUploadSheet }
             .sheet(isPresented: $isShowingImport) { importSheet }
             .sheet(isPresented: $isShowingC2PADetail) { c2paSheet }
+            .overlay {
+                if isShowingTemplatePalette {
+                    Color.black.opacity(0.3)
+                        .ignoresSafeArea()
+                        .onTapGesture {
+                            isShowingTemplatePalette = false
+                        }
+                    TemplatePaletteView(
+                        templates: templateViewModel.templates,
+                        onApply: { template in
+                            applyTemplate(template)
+                            isShowingTemplatePalette = false
+                        },
+                        onDismiss: {
+                            isShowingTemplatePalette = false
+                        }
+                    )
+                }
+            }
             .onReceive(NotificationCenter.default.publisher(for: .showImport)) { _ in
                 isShowingImport = true
             }
             .onReceive(NotificationCenter.default.publisher(for: .importCompleted)) { notification in
                 handleImportCompleted(notification)
             }
+            .onReceive(NotificationCenter.default.publisher(for: .processVariablesSelected)) { _ in
+                let selectedURLs = browserViewModel.selectedImages.map(\.url)
+                if !selectedURLs.isEmpty {
+                    metadataViewModel.processVariablesForImages(selectedURLs)
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .processVariablesAll)) { _ in
+                metadataViewModel.processVariablesInFolder(images: browserViewModel.images)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .showTemplatePalette)) { _ in
+                isShowingTemplatePalette = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .uploadSelected)) { _ in
+                if !browserViewModel.selectedImageIDs.isEmpty {
+                    isShowingFTPUpload = true
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .uploadAll)) { _ in
+                if !browserViewModel.images.isEmpty {
+                    isShowingFTPUpload = true
+                }
+            }
             .fullScreenImagePresenter(viewModel: browserViewModel)
             .onAppear {
                 browserViewModel.loadFavorites()
-                presetViewModel.loadPresets()
+                templateViewModel.loadTemplates()
                 ftpViewModel.loadConnections()
             }
     }
@@ -124,8 +166,8 @@ struct ContentView: View {
             MetadataPanel(
                 viewModel: metadataViewModel,
                 browserViewModel: browserViewModel,
-                onApplyPreset: { isShowingPresetPicker = true },
-                onSavePreset: { isShowingSavePresetName = true },
+                onApplyTemplate: { isShowingTemplatePicker = true },
+                onSaveTemplate: { isShowingSaveTemplateName = true },
                 onPendingStatusChanged: {
                     browserViewModel.refreshPendingStatus()
                 }
@@ -184,7 +226,7 @@ struct ContentView: View {
     private var importSheet: some View {
         ImportView(
             viewModel: importViewModel,
-            presets: presetViewModel.presets,
+            templates: templateViewModel.templates,
             onDismiss: { isShowingImport = false }
         )
     }
@@ -306,27 +348,27 @@ struct ContentView: View {
         .frame(minWidth: 180)
     }
 
-    // MARK: - Preset Picker Sheet
+    // MARK: - Template Picker Sheet
 
     @ViewBuilder
-    private var presetPickerSheet: some View {
+    private var templatePickerSheet: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Apply Preset")
+            Text("Apply Template")
                 .font(.headline)
 
-            if presetViewModel.presets.isEmpty {
-                Text("No presets available. Create one first.")
+            if templateViewModel.templates.isEmpty {
+                Text("No templates available. Create one first.")
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(presetViewModel.presets) { preset in
+                ForEach(templateViewModel.templates) { template in
                     HStack {
                         Button {
-                            applyPreset(preset)
-                            isShowingPresetPicker = false
+                            applyTemplate(template)
+                            isShowingTemplatePicker = false
                         } label: {
                             VStack(alignment: .leading) {
-                                Text(preset.name)
-                                Text("\(preset.fields.count) fields")
+                                Text(template.name)
+                                Text("\(template.fields.count) fields")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -337,13 +379,13 @@ struct ContentView: View {
                         Spacer()
 
                         Button(role: .destructive) {
-                            presetViewModel.deletePreset(preset)
+                            templateViewModel.deleteTemplate(template)
                         } label: {
                             Image(systemName: "trash")
                                 .foregroundStyle(.red)
                         }
                         .buttonStyle(.plain)
-                        .help("Delete preset")
+                        .help("Delete template")
                     }
                     .padding(.vertical, 2)
                 }
@@ -352,7 +394,7 @@ struct ContentView: View {
             HStack {
                 Spacer()
                 Button("Cancel") {
-                    isShowingPresetPicker = false
+                    isShowingTemplatePicker = false
                 }
             }
         }
@@ -360,31 +402,31 @@ struct ContentView: View {
         .frame(minWidth: 300)
     }
 
-    // MARK: - Save Preset Sheet
+    // MARK: - Save Template Sheet
 
     @ViewBuilder
-    private var savePresetSheet: some View {
+    private var saveTemplateSheet: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Save as Preset")
+            Text("Save as Template")
                 .font(.headline)
-            TextField("Preset Name", text: $savePresetName)
+            TextField("Template Name", text: $saveTemplateName)
                 .textFieldStyle(.roundedBorder)
             HStack {
                 Spacer()
                 Button("Cancel") {
-                    isShowingSavePresetName = false
-                    savePresetName = ""
+                    isShowingSaveTemplateName = false
+                    saveTemplateName = ""
                 }
                 Button("Save") {
-                    presetViewModel.createPresetFromMetadata(
+                    templateViewModel.createTemplateFromMetadata(
                         metadataViewModel.editingMetadata,
-                        name: savePresetName
+                        name: saveTemplateName
                     )
-                    isShowingSavePresetName = false
-                    savePresetName = ""
+                    isShowingSaveTemplateName = false
+                    saveTemplateName = ""
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(savePresetName.isEmpty)
+                .disabled(saveTemplateName.isEmpty)
             }
         }
         .padding()
@@ -393,14 +435,14 @@ struct ContentView: View {
 
     // MARK: - Helpers
 
-    private func applyPreset(_ preset: MetadataPreset) {
+    private func applyTemplate(_ template: MetadataTemplate) {
         // Apply raw template values — variables like {date} and {persons}
         // stay as-is until the user clicks "Process Variables"
         var raw: [String: String] = [:]
-        for field in preset.fields {
+        for field in template.fields {
             raw[field.fieldKey] = field.templateValue
         }
-        metadataViewModel.applyPresetFields(raw)
+        metadataViewModel.applyTemplateFields(raw)
     }
 
     private func loadTechnicalMetadata() {

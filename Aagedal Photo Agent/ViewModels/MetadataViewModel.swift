@@ -172,8 +172,8 @@ final class MetadataViewModel {
         }
     }
 
-    func applyPresetFields(_ preset: [String: String]) {
-        for (key, value) in preset {
+    func applyTemplateFields(_ template: [String: String]) {
+        for (key, value) in template {
             switch key {
             case "title": editingMetadata.title = value
             case "description": editingMetadata.description = value
@@ -236,6 +236,66 @@ final class MetadataViewModel {
         guard let value, !value.isEmpty else { return value }
         let resolved = interpolator.resolve(value, filename: filename, existingMetadata: ref)
         return resolved.isEmpty ? nil : resolved
+    }
+
+    /// Process variables for specific images: reads each image's metadata,
+    /// resolves any variable placeholders, and writes back.
+    func processVariablesForImages(_ imageURLs: [URL]) {
+        guard !imageURLs.isEmpty else { return }
+        isProcessingFolder = true
+        folderProcessProgress = "0/\(imageURLs.count)"
+        saveError = nil
+
+        Task {
+            let interpolator = PresetVariableInterpolator()
+            var processed = 0
+
+            for url in imageURLs {
+                let filename = url.deletingPathExtension().lastPathComponent
+                do {
+                    let meta = try await exifToolService.readFullMetadata(url: url)
+                    let snapshot = meta
+
+                    var changed = false
+                    var resolved = meta
+
+                    resolved.title = resolveIfChanged(meta.title, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolved.description = resolveIfChanged(meta.description, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolved.creator = resolveIfChanged(meta.creator, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolved.credit = resolveIfChanged(meta.credit, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolved.copyright = resolveIfChanged(meta.copyright, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolved.dateCreated = resolveIfChanged(meta.dateCreated, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolved.city = resolveIfChanged(meta.city, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolved.country = resolveIfChanged(meta.country, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolved.event = resolveIfChanged(meta.event, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+
+                    if changed {
+                        var fields: [String: String] = [:]
+                        if resolved.title != meta.title { fields["XMP:Title"] = resolved.title ?? "" }
+                        if resolved.description != meta.description { fields["XMP:Description"] = resolved.description ?? "" }
+                        if resolved.creator != meta.creator { fields["XMP:Creator"] = resolved.creator ?? "" }
+                        if resolved.credit != meta.credit { fields["XMP-photoshop:Credit"] = resolved.credit ?? "" }
+                        if resolved.copyright != meta.copyright { fields["XMP:Rights"] = resolved.copyright ?? "" }
+                        if resolved.dateCreated != meta.dateCreated { fields["XMP:DateCreated"] = resolved.dateCreated ?? "" }
+                        if resolved.city != meta.city { fields["XMP-photoshop:City"] = resolved.city ?? "" }
+                        if resolved.country != meta.country { fields["XMP-photoshop:Country"] = resolved.country ?? "" }
+                        if resolved.event != meta.event { fields["XMP-iptcExt:Event"] = resolved.event ?? "" }
+
+                        if !fields.isEmpty {
+                            try await exifToolService.writeFields(fields, to: [url])
+                        }
+                    }
+                } catch {
+                    // Continue with next image
+                }
+
+                processed += 1
+                self.folderProcessProgress = "\(processed)/\(imageURLs.count)"
+            }
+
+            self.isProcessingFolder = false
+            self.folderProcessProgress = ""
+        }
     }
 
     /// Process variables for all images in a folder: reads each image's metadata,

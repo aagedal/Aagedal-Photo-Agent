@@ -2,7 +2,7 @@ import SwiftUI
 
 struct ImportView: View {
     @Bindable var viewModel: ImportViewModel
-    var presets: [MetadataPreset]
+    var templates: [MetadataTemplate]
     var onDismiss: () -> Void
 
     @State private var showAdditionalFields = false
@@ -160,19 +160,19 @@ struct ImportView: View {
                         .foregroundStyle(.secondary)
                         .help("Resolve {date}, {filename}, and other variables individually for each imported file")
 
-                    if !presets.isEmpty {
+                    if !templates.isEmpty {
                         HStack {
-                            Text("Preset:")
+                            Text("Template:")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                             Menu {
-                                ForEach(presets) { preset in
-                                    Button(preset.name) {
-                                        viewModel.applyPreset(preset)
+                                ForEach(templates) { template in
+                                    Button(template.name) {
+                                        viewModel.applyTemplate(template)
                                     }
                                 }
                             } label: {
-                                Text("Choose Preset...")
+                                Text("Choose Template...")
                                     .font(.caption)
                             }
                         }

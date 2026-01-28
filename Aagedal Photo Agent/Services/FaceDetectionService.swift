@@ -7,6 +7,32 @@ import Accelerate
 
 struct FaceDetectionService: Sendable {
 
+    /// Cache for VNFeaturePrintObservation objects during clustering operations.
+    /// Reduces NSKeyedUnarchiver calls from O(N³) to O(N) by deserializing each feature print only once.
+    final class FeaturePrintCache: @unchecked Sendable {
+        private var cache: [UUID: VNFeaturePrintObservation] = [:]
+
+        func getFeaturePrint(for face: DetectedFace) -> VNFeaturePrintObservation? {
+            if let cached = cache[face.id] { return cached }
+            guard let fp = try? NSKeyedUnarchiver.unarchivedObject(
+                ofClass: VNFeaturePrintObservation.self,
+                from: face.featurePrintData
+            ) else { return nil }
+            cache[face.id] = fp
+            return fp
+        }
+
+        func getFeaturePrint(for faceID: UUID, data: Data) -> VNFeaturePrintObservation? {
+            if let cached = cache[faceID] { return cached }
+            guard let fp = try? NSKeyedUnarchiver.unarchivedObject(
+                ofClass: VNFeaturePrintObservation.self,
+                from: data
+            ) else { return nil }
+            cache[faceID] = fp
+            return fp
+        }
+    }
+
     /// Configuration for face detection quality filtering
     struct DetectionConfig: Sendable {
         var minConfidence: Float = 0.7
@@ -175,9 +201,13 @@ struct FaceDetectionService: Sendable {
     ///   - allFaces: All known faces (including already-grouped ones) so representative lookups succeed.
     ///   - existingGroups: Previously formed groups to match against.
     ///   - threshold: Maximum average distance to consider faces part of the same group.
-    func clusterFaces(_ faces: [DetectedFace], allFaces: [DetectedFace], existingGroups: [FaceGroup], threshold: Float = 0.55) -> [FaceGroup] {
+    ///   - cache: Optional pre-populated feature print cache for performance.
+    func clusterFaces(_ faces: [DetectedFace], allFaces: [DetectedFace], existingGroups: [FaceGroup], threshold: Float = 0.55, cache: FeaturePrintCache? = nil) -> [FaceGroup] {
         let unclusteredFaces = faces.filter { $0.groupID == nil }
         guard !unclusteredFaces.isEmpty else { return existingGroups }
+
+        // Use provided cache or create a new one for this clustering operation
+        let fpCache = cache ?? FeaturePrintCache()
 
         var groups = existingGroups
         let faceLookup = Dictionary(uniqueKeysWithValues: allFaces.map { ($0.id, $0) })
@@ -186,6 +216,11 @@ struct FaceDetectionService: Sendable {
         var remainingFaces: [DetectedFace] = []
 
         for face in unclusteredFaces {
+            guard let faceFP = fpCache.getFeaturePrint(for: face) else {
+                remainingFaces.append(face)
+                continue
+            }
+
             var bestGroupIndex: Int?
             var bestDistance: Float = threshold
 
@@ -193,10 +228,18 @@ struct FaceDetectionService: Sendable {
                 let memberFaces = group.faceIDs.compactMap { faceLookup[$0] }
                 guard !memberFaces.isEmpty else { continue }
 
-                let distances = memberFaces.compactMap { computeDistance(face.featurePrintData, $0.featurePrintData) }
-                guard !distances.isEmpty else { continue }
+                var totalDistance: Float = 0
+                var count = 0
+                for memberFace in memberFaces {
+                    if let memberFP = fpCache.getFeaturePrint(for: memberFace),
+                       let distance = computeDistanceCached(faceFP, memberFP) {
+                        totalDistance += distance
+                        count += 1
+                    }
+                }
+                guard count > 0 else { continue }
 
-                let avgDistance = distances.reduce(0, +) / Float(distances.count)
+                let avgDistance = totalDistance / Float(count)
 
                 if avgDistance < bestDistance {
                     bestDistance = avgDistance
@@ -213,7 +256,7 @@ struct FaceDetectionService: Sendable {
 
         // For remaining faces, use hierarchical agglomerative clustering
         if !remainingFaces.isEmpty {
-            let newGroups = clusterFacesHierarchical(remainingFaces, threshold: threshold)
+            let newGroups = clusterFacesHierarchical(remainingFaces, threshold: threshold, cache: fpCache)
             groups.append(contentsOf: newGroups)
         }
 
@@ -222,14 +265,17 @@ struct FaceDetectionService: Sendable {
 
     /// Hierarchical agglomerative clustering with average linkage.
     /// Produces deterministic, order-independent results.
-    private func clusterFacesHierarchical(_ faces: [DetectedFace], threshold: Float) -> [FaceGroup] {
+    private func clusterFacesHierarchical(_ faces: [DetectedFace], threshold: Float, cache: FeaturePrintCache? = nil) -> [FaceGroup] {
         guard !faces.isEmpty else { return [] }
+
+        // Use provided cache or create a new one
+        let fpCache = cache ?? FeaturePrintCache()
 
         // Start with each face in its own cluster
         var clusters: [[DetectedFace]] = faces.map { [$0] }
 
-        // Build initial distance matrix
-        var distanceMatrix = buildDistanceMatrix(faces)
+        // Build initial distance matrix using the cache
+        var distanceMatrix = buildDistanceMatrix(faces, cache: fpCache)
 
         // Iteratively merge closest clusters until all distances exceed threshold
         while clusters.count > 1 {
@@ -265,7 +311,7 @@ struct FaceDetectionService: Sendable {
             var newDistances: [String: Float] = [:]
             for (k, cluster) in clusters.enumerated() {
                 // Average linkage: average of all pairwise distances
-                let distance = computeAverageLinkageDistance(mergedCluster, cluster)
+                let distance = computeAverageLinkageDistance(mergedCluster, cluster, cache: fpCache)
                 newDistances[distanceKey(k, clusters.count)] = distance
             }
 
@@ -273,7 +319,7 @@ struct FaceDetectionService: Sendable {
             clusters.append(mergedCluster)
 
             // Rebuild distance matrix with new indices
-            distanceMatrix = rebuildDistanceMatrix(clusters: clusters, previousMatrix: distanceMatrix, newDistances: newDistances)
+            distanceMatrix = rebuildDistanceMatrix(clusters: clusters, previousMatrix: distanceMatrix, newDistances: newDistances, cache: fpCache)
         }
 
         // Convert clusters to FaceGroups
@@ -291,11 +337,13 @@ struct FaceDetectionService: Sendable {
         }
     }
 
-    private func buildDistanceMatrix(_ faces: [DetectedFace]) -> [String: Float] {
+    private func buildDistanceMatrix(_ faces: [DetectedFace], cache: FeaturePrintCache) -> [String: Float] {
         var matrix: [String: Float] = [:]
         for i in 0..<faces.count {
             for j in (i + 1)..<faces.count {
-                if let distance = computeDistance(faces[i].featurePrintData, faces[j].featurePrintData) {
+                if let fp1 = cache.getFeaturePrint(for: faces[i]),
+                   let fp2 = cache.getFeaturePrint(for: faces[j]),
+                   let distance = computeDistanceCached(fp1, fp2) {
                     matrix[distanceKey(i, j)] = distance
                 }
             }
@@ -303,14 +351,14 @@ struct FaceDetectionService: Sendable {
         return matrix
     }
 
-    private func rebuildDistanceMatrix(clusters: [[DetectedFace]], previousMatrix: [String: Float], newDistances: [String: Float]) -> [String: Float] {
+    private func rebuildDistanceMatrix(clusters: [[DetectedFace]], previousMatrix: [String: Float], newDistances: [String: Float], cache: FeaturePrintCache) -> [String: Float] {
         var matrix: [String: Float] = [:]
 
         // For existing clusters (all except the last one), compute pairwise distances
         for i in 0..<(clusters.count - 1) {
             for j in (i + 1)..<(clusters.count - 1) {
                 // Average linkage between clusters i and j
-                let distance = computeAverageLinkageDistance(clusters[i], clusters[j])
+                let distance = computeAverageLinkageDistance(clusters[i], clusters[j], cache: cache)
                 matrix[distanceKey(i, j)] = distance
             }
         }
@@ -323,13 +371,15 @@ struct FaceDetectionService: Sendable {
         return matrix
     }
 
-    private func computeAverageLinkageDistance(_ cluster1: [DetectedFace], _ cluster2: [DetectedFace]) -> Float {
+    private func computeAverageLinkageDistance(_ cluster1: [DetectedFace], _ cluster2: [DetectedFace], cache: FeaturePrintCache) -> Float {
         var totalDistance: Float = 0
         var count = 0
 
         for face1 in cluster1 {
+            guard let fp1 = cache.getFeaturePrint(for: face1) else { continue }
             for face2 in cluster2 {
-                if let distance = computeDistance(face1.featurePrintData, face2.featurePrintData) {
+                guard let fp2 = cache.getFeaturePrint(for: face2) else { continue }
+                if let distance = computeDistanceCached(fp1, fp2) {
                     totalDistance += distance
                     count += 1
                 }
@@ -337,6 +387,12 @@ struct FaceDetectionService: Sendable {
         }
 
         return count > 0 ? totalDistance / Float(count) : .infinity
+    }
+
+    /// Convenience overload that creates a temporary cache for one-off distance calculations.
+    private func computeAverageLinkageDistance(_ cluster1: [DetectedFace], _ cluster2: [DetectedFace]) -> Float {
+        let cache = FeaturePrintCache()
+        return computeAverageLinkageDistance(cluster1, cluster2, cache: cache)
     }
 
     private func distanceKey(_ i: Int, _ j: Int) -> String {
@@ -348,6 +404,7 @@ struct FaceDetectionService: Sendable {
     /// Returns pairs of groups that might be the same person but didn't quite meet the threshold.
     func computeMergeSuggestions(groups: [FaceGroup], faces: [DetectedFace], threshold: Float, marginPercent: Float = 0.15) -> [MergeSuggestion] {
         let faceLookup = Dictionary(uniqueKeysWithValues: faces.map { ($0.id, $0) })
+        let cache = FeaturePrintCache()
         var suggestions: [MergeSuggestion] = []
 
         // Check pairs of groups
@@ -358,7 +415,7 @@ struct FaceDetectionService: Sendable {
 
                 guard !group1Faces.isEmpty, !group2Faces.isEmpty else { continue }
 
-                let avgDistance = computeAverageLinkageDistance(group1Faces, group2Faces)
+                let avgDistance = computeAverageLinkageDistance(group1Faces, group2Faces, cache: cache)
 
                 // If distance is within margin of threshold, suggest merge
                 let margin = threshold * marginPercent
@@ -381,7 +438,7 @@ struct FaceDetectionService: Sendable {
     // MARK: - Vision Requests
 
     /// Detect faces with landmarks for better quality filtering
-    private func detectFaceLandmarks(in cgImage: CGImage) async throws -> [VNFaceObservation] {
+    private nonisolated func detectFaceLandmarks(in cgImage: CGImage) async throws -> [VNFaceObservation] {
         try await withCheckedThrowingContinuation { continuation in
             let request = VNDetectFaceLandmarksRequest { request, error in
                 if let error {
@@ -395,7 +452,8 @@ struct FaceDetectionService: Sendable {
                     // Require at least one eye to be detected
                     return landmarks.leftEye != nil || landmarks.rightEye != nil
                 }
-                continuation.resume(returning: validFaces)
+                nonisolated(unsafe) let result = validFaces
+                continuation.resume(returning: result)
             }
             let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
             do {
@@ -406,7 +464,7 @@ struct FaceDetectionService: Sendable {
         }
     }
 
-    private func detectFaceRectangles(in cgImage: CGImage) async throws -> [VNFaceObservation] {
+    private nonisolated func detectFaceRectangles(in cgImage: CGImage) async throws -> [VNFaceObservation] {
         try await withCheckedThrowingContinuation { continuation in
             let request = VNDetectFaceRectanglesRequest { request, error in
                 if let error {
@@ -414,7 +472,8 @@ struct FaceDetectionService: Sendable {
                     return
                 }
                 let faces = request.results as? [VNFaceObservation] ?? []
-                continuation.resume(returning: faces)
+                nonisolated(unsafe) let result = faces
+                continuation.resume(returning: result)
             }
             let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
             do {
@@ -525,6 +584,17 @@ struct FaceDetectionService: Sendable {
             return nil
         }
 
+        var distance: Float = 0
+        do {
+            try fp1.computeDistance(&distance, to: fp2)
+            return distance
+        } catch {
+            return nil
+        }
+    }
+
+    /// Compute distance between two already-deserialized feature prints (avoids NSKeyedUnarchiver overhead).
+    func computeDistanceCached(_ fp1: VNFeaturePrintObservation, _ fp2: VNFeaturePrintObservation) -> Float? {
         var distance: Float = 0
         do {
             try fp1.computeDistance(&distance, to: fp2)

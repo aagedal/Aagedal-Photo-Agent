@@ -1,5 +1,5 @@
 import Foundation
-import MapKit
+@preconcurrency import MapKit
 
 struct GeocodingResult: Sendable {
     let city: String?
@@ -27,6 +27,45 @@ enum GeocodingError: LocalizedError, Sendable {
 }
 
 struct GeocodingService: Sendable {
+    private static let countryNames: Set<String> = {
+        var names = Set<String>()
+        let locales = [Locale.current, Locale(identifier: "en_US")]
+        for region in Locale.Region.isoRegions {
+            for locale in locales {
+                if let name = locale.localizedString(forRegionCode: region.identifier) {
+                    names.insert(name)
+                }
+            }
+        }
+        return names
+    }()
+
+    private static func countryFromAddress(_ address: String?) -> String? {
+        guard let address, !address.isEmpty else {
+            return nil
+        }
+
+        let separators = CharacterSet(charactersIn: ",\n")
+        let parts = address
+            .components(separatedBy: separators)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        for part in parts.reversed() {
+            if countryNames.contains(part) {
+                return part
+            }
+        }
+
+        for part in parts.reversed() {
+            for name in countryNames where part.hasSuffix(name) {
+                return name
+            }
+        }
+
+        return nil
+    }
+
     @MainActor
     func reverseGeocode(latitude: Double, longitude: Double) async throws -> GeocodingResult {
         let location = CLLocation(latitude: latitude, longitude: longitude)
@@ -40,11 +79,10 @@ struct GeocodingService: Sendable {
             guard let mapItem = mapItems.first else {
                 throw GeocodingError.noResults
             }
-            // Use addressRepresentations.cityName for city (non-deprecated)
-            // Fall back to placemark.country for country as MKAddressRepresentations
-            // doesn't expose a country property
             let city = mapItem.addressRepresentations?.cityName
-            let country = mapItem.placemark.country
+            let country = mapItem.addressRepresentations?.regionName
+                ?? Self.countryFromAddress(mapItem.address?.fullAddress)
+                ?? Self.countryFromAddress(mapItem.address?.shortAddress)
 
             return GeocodingResult(city: city, country: country)
         } catch let error as GeocodingError {

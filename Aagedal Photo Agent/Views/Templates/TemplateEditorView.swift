@@ -1,21 +1,21 @@
 import SwiftUI
 
-struct PresetEditorView: View {
-    @Bindable var viewModel: PresetViewModel
+struct TemplateEditorView: View {
+    @Bindable var viewModel: TemplateViewModel
 
     @State private var isShowingVariableReference = false
     @State private var activeFieldID: UUID?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(viewModel.editingPreset.id == UUID() ? "New Preset" : "Edit Preset")
+            Text(viewModel.editingTemplate.id == UUID() ? "New Template" : "Edit Template")
                 .font(.headline)
 
-            TextField("Preset Name", text: $viewModel.editingPreset.name)
+            TextField("Template Name", text: $viewModel.editingTemplate.name)
                 .textFieldStyle(.roundedBorder)
 
-            Picker("Type", selection: $viewModel.editingPreset.presetType) {
-                ForEach(MetadataPreset.PresetType.allCases, id: \.self) { type in
+            Picker("Type", selection: $viewModel.editingTemplate.templateType) {
+                ForEach(MetadataTemplate.TemplateType.allCases, id: \.self) { type in
                     Text(type.rawValue).tag(type)
                 }
             }
@@ -37,10 +37,10 @@ struct PresetEditorView: View {
                 .foregroundStyle(.secondary)
             }
 
-            ForEach($viewModel.editingPreset.fields) { $field in
+            ForEach($viewModel.editingTemplate.fields) { $field in
                 HStack {
                     Picker("", selection: $field.fieldKey) {
-                        ForEach(PresetField.availableFields, id: \.key) { f in
+                        ForEach(TemplateField.availableFields, id: \.key) { f in
                             Text(f.label).tag(f.key)
                         }
                     }
@@ -53,7 +53,7 @@ struct PresetEditorView: View {
                     variableMenu(for: $field)
 
                     Button {
-                        viewModel.editingPreset.fields.removeAll { $0.id == field.id }
+                        viewModel.editingTemplate.fields.removeAll { $0.id == field.id }
                     } label: {
                         Image(systemName: "minus.circle")
                             .foregroundStyle(.red)
@@ -63,9 +63,9 @@ struct PresetEditorView: View {
             }
 
             Button {
-                let firstAvailable = PresetField.availableFields.first?.key ?? "title"
-                viewModel.editingPreset.fields.append(
-                    PresetField(fieldKey: firstAvailable, templateValue: "")
+                let firstAvailable = TemplateField.availableFields.first?.key ?? "title"
+                viewModel.editingTemplate.fields.append(
+                    TemplateField(fieldKey: firstAvailable, templateValue: "")
                 )
             } label: {
                 Label("Add Field", systemImage: "plus")
@@ -80,10 +80,10 @@ struct PresetEditorView: View {
                     viewModel.cancelEditing()
                 }
                 Button("Save") {
-                    viewModel.saveEditingPreset()
+                    viewModel.saveEditingTemplate()
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(viewModel.editingPreset.name.isEmpty)
+                .disabled(viewModel.editingTemplate.name.isEmpty)
             }
         }
         .padding()
@@ -93,7 +93,7 @@ struct PresetEditorView: View {
         }
     }
 
-    private func variableMenu(for field: Binding<PresetField>) -> some View {
+    private func variableMenu(for field: Binding<TemplateField>) -> some View {
         Menu {
             Section("Date") {
                 Button("{date} — medium format") {
@@ -126,7 +126,7 @@ struct PresetEditorView: View {
             }
 
             Section("Field Reference") {
-                ForEach(PresetField.availableFields, id: \.key) { f in
+                ForEach(TemplateField.availableFields, id: \.key) { f in
                     Button("{field:\(f.key)}") {
                         field.wrappedValue.templateValue += "{field:\(f.key)}"
                     }

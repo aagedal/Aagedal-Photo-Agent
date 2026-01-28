@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 struct SettingsView: View {
     @State private var settingsViewModel = SettingsViewModel()
     @State private var ftpViewModel = FTPViewModel()
-    @State private var presetViewModel = PresetViewModel()
+    @State private var templateViewModel = TemplateViewModel()
 
     var body: some View {
         TabView {
@@ -24,15 +24,15 @@ struct SettingsView: View {
                     Label("FTP", systemImage: "arrow.up.to.line")
                 }
 
-            presetsTab
+            templatesTab
                 .tabItem {
-                    Label("Presets", systemImage: "doc.on.clipboard")
+                    Label("Templates", systemImage: "doc.on.clipboard")
                 }
         }
         .frame(width: 500, height: 400)
         .onAppear {
             ftpViewModel.loadConnections()
-            presetViewModel.loadPresets()
+            templateViewModel.loadTemplates()
         }
     }
 
@@ -237,16 +237,16 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - Presets Tab
+    // MARK: - Templates Tab
 
     @ViewBuilder
-    private var presetsTab: some View {
+    private var templatesTab: some View {
         VStack(alignment: .leading, spacing: 12) {
-            PresetListView(viewModel: presetViewModel)
+            TemplateListView(viewModel: templateViewModel)
         }
         .padding()
-        .sheet(isPresented: $presetViewModel.isEditing) {
-            PresetEditorView(viewModel: presetViewModel)
+        .sheet(isPresented: $templateViewModel.isEditing) {
+            TemplateEditorView(viewModel: templateViewModel)
         }
     }
 }

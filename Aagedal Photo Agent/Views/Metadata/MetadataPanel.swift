@@ -3,8 +3,8 @@ import SwiftUI
 struct MetadataPanel: View {
     @Bindable var viewModel: MetadataViewModel
     let browserViewModel: BrowserViewModel
-    var onApplyPreset: (() -> Void)?
-    var onSavePreset: (() -> Void)?
+    var onApplyTemplate: (() -> Void)?
+    var onSaveTemplate: (() -> Void)?
     var onPendingStatusChanged: (() -> Void)?
 
     @State private var isShowingVariableReference = false
@@ -26,7 +26,7 @@ struct MetadataPanel: View {
                             }
 
                             ratingAndLabelSection
-                            presetButtons
+                            templateButtons
                             Divider()
                             priorityFieldsSection
                             Divider()
@@ -328,16 +328,16 @@ struct MetadataPanel: View {
         )
     }
 
-    // MARK: - Preset Buttons
+    // MARK: - Template Buttons
 
     @ViewBuilder
-    private var presetButtons: some View {
+    private var templateButtons: some View {
         HStack {
-            if let onApplyPreset {
-                Button("Apply Preset") { onApplyPreset() }
+            if let onApplyTemplate {
+                Button("Apply Template") { onApplyTemplate() }
             }
-            if let onSavePreset {
-                Button("Save as Preset") { onSavePreset() }
+            if let onSaveTemplate {
+                Button("Save as Template") { onSaveTemplate() }
             }
             Spacer()
         }
