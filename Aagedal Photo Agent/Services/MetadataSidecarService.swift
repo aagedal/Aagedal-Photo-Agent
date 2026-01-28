@@ -65,6 +65,28 @@ struct MetadataSidecarService: Sendable {
         return Set(sidecars.filter { $0.value.pendingChanges }.keys)
     }
 
+    func pendingFieldNames(for imageURL: URL, in folderURL: URL) -> [String] {
+        guard let sidecar = loadSidecar(for: imageURL, in: folderURL),
+              sidecar.pendingChanges,
+              let original = sidecar.imageMetadataSnapshot else {
+            return []
+        }
+        let edited = sidecar.metadata
+        var names: [String] = []
+        if edited.title != original.title { names.append("Title") }
+        if edited.description != original.description { names.append("Description") }
+        if edited.keywords != original.keywords { names.append("Keywords") }
+        if edited.personShown != original.personShown { names.append("Person Shown") }
+        if edited.copyright != original.copyright { names.append("Copyright") }
+        if edited.creator != original.creator { names.append("Creator") }
+        if edited.credit != original.credit { names.append("Credit") }
+        if edited.city != original.city { names.append("City") }
+        if edited.country != original.country { names.append("Country") }
+        if edited.event != original.event { names.append("Event") }
+        if edited.digitalSourceType != original.digitalSourceType { names.append("Digital Source Type") }
+        return names
+    }
+
     // MARK: - Save
 
     func saveSidecar(_ sidecar: MetadataSidecar, for imageURL: URL, in folderURL: URL) throws {

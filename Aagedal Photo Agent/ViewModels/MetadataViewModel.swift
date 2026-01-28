@@ -682,6 +682,23 @@ final class MetadataViewModel {
         return editingMetadata.latitude != original.latitude || editingMetadata.longitude != original.longitude
     }
 
+    var pendingFieldNames: [String] {
+        guard let original = originalImageMetadata else { return [] }
+        var names: [String] = []
+        if editingMetadata.title != original.title { names.append("Title") }
+        if editingMetadata.description != original.description { names.append("Description") }
+        if editingMetadata.keywords != original.keywords { names.append("Keywords") }
+        if editingMetadata.personShown != original.personShown { names.append("Person Shown") }
+        if editingMetadata.copyright != original.copyright { names.append("Copyright") }
+        if editingMetadata.creator != original.creator { names.append("Creator") }
+        if editingMetadata.credit != original.credit { names.append("Credit") }
+        if editingMetadata.city != original.city { names.append("City") }
+        if editingMetadata.country != original.country { names.append("Country") }
+        if editingMetadata.event != original.event { names.append("Event") }
+        if editingMetadata.digitalSourceType != original.digitalSourceType { names.append("Digital Source Type") }
+        return names
+    }
+
     func clear() {
         metadata = nil
         editingMetadata = IPTCMetadata()
