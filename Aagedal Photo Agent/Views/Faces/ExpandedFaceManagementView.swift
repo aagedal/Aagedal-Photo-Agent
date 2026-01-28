@@ -1,5 +1,8 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import os.log
+
+private let logger = Logger(subsystem: "com.aagedal.photoagent", category: "ExpandedFaceView")
 
 struct ExpandedFaceManagementView: View {
     @Bindable var viewModel: FaceRecognitionViewModel
@@ -8,14 +11,21 @@ struct ExpandedFaceManagementView: View {
 
     @State private var selectedFaceIDs: Set<UUID> = []
     @State private var draggedFaceIDs: Set<UUID> = []
+    @State private var draggedGroupID: UUID?
     @State private var highlightedGroupID: UUID?
     @State private var highlightNewGroup = false
     @State private var editingGroupID: UUID?
     @State private var editingName: String = ""
+    @FocusState private var isEditingFocused: Bool
     @State private var groupToDelete: FaceGroup?
     @State private var showDeleteGroupAlert = false
+    @State private var expandedGroupIDs: Set<UUID> = []
+
+    private let maxVisibleFaces = 12
 
     var body: some View {
+        let _ = logger.debug("body evaluated - groups: \(viewModel.sortedGroups.count), editing: \(editingGroupID?.uuidString ?? "none"), selected: \(selectedFaceIDs.count)")
+
         VStack(spacing: 0) {
             // Toolbar
             HStack {
@@ -95,77 +105,138 @@ struct ExpandedFaceManagementView: View {
         }
     }
 
+    // MARK: - Group Card Header
+
+    @ViewBuilder
+    private func groupCardHeader(group: FaceGroup, faceCount: Int) -> some View {
+        HStack {
+            if editingGroupID == group.id {
+                groupNameTextField(group: group)
+            } else {
+                Text(group.name ?? "Unnamed")
+                    .font(.headline)
+                    .foregroundStyle(group.name != nil ? .primary : .secondary)
+                    .onTapGesture(count: 2) {
+                        editingName = group.name ?? ""
+                        editingGroupID = group.id
+                    }
+            }
+
+            Text("\(faceCount)")
+                .font(.caption)
+                .foregroundStyle(.white)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(.secondary, in: Capsule())
+
+            Spacer()
+
+            groupCardMenu(group: group, faceCount: faceCount)
+        }
+    }
+
+    @ViewBuilder
+    private func groupNameTextField(group: FaceGroup) -> some View {
+        TextField("Name", text: $editingName, onCommit: {
+            viewModel.nameGroup(group.id, name: editingName)
+            editingGroupID = nil
+        })
+        .textFieldStyle(.roundedBorder)
+        .frame(maxWidth: 180)
+        .focused($isEditingFocused)
+        .onExitCommand {
+            editingGroupID = nil
+        }
+        .onChange(of: isEditingFocused) { _, focused in
+            if !focused {
+                editingGroupID = nil
+            }
+        }
+        .onAppear {
+            isEditingFocused = true
+        }
+    }
+
+    @ViewBuilder
+    private func groupCardMenu(group: FaceGroup, faceCount: Int) -> some View {
+        Menu {
+            Button("Rename") {
+                editingName = group.name ?? ""
+                editingGroupID = group.id
+            }
+            if group.name != nil {
+                Button("Apply Name to Metadata") {
+                    viewModel.applyNameToMetadata(groupID: group.id)
+                }
+            }
+            Divider()
+            Button("Ungroup All") {
+                viewModel.ungroupMultiple([group.id])
+            }
+            .disabled(faceCount <= 1)
+            Button("Delete Group Faces", role: .destructive) {
+                let faceIDs = Set(group.faceIDs)
+                viewModel.deleteFaces(faceIDs)
+            }
+            Button("Delete Group & Photos", role: .destructive) {
+                groupToDelete = group
+                showDeleteGroupAlert = true
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+                .font(.system(size: 14))
+        }
+        .menuStyle(.borderlessButton)
+        .frame(width: 24)
+    }
+
     // MARK: - Group Card
 
     @ViewBuilder
     private func groupCard(group: FaceGroup) -> some View {
-        let faces = viewModel.faces(in: group)
+        let allFaces = viewModel.faces(in: group)
+        let isExpanded = expandedGroupIDs.contains(group.id)
+        let visibleFaces = isExpanded ? allFaces : Array(allFaces.prefix(maxVisibleFaces))
+        let hiddenCount = allFaces.count - visibleFaces.count
 
         VStack(alignment: .leading, spacing: 8) {
             // Header
-            HStack {
-                if editingGroupID == group.id {
-                    TextField("Name", text: $editingName, onCommit: {
-                        viewModel.nameGroup(group.id, name: editingName)
-                        editingGroupID = nil
-                    })
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 180)
-                } else {
-                    Text(group.name ?? "Unnamed")
-                        .font(.headline)
-                        .foregroundStyle(group.name != nil ? .primary : .secondary)
-                        .onTapGesture(count: 2) {
-                            editingName = group.name ?? ""
-                            editingGroupID = group.id
-                        }
+            groupCardHeader(group: group, faceCount: allFaces.count)
+
+            // Face thumbnails grid - use fixed grid columns for better performance
+            let columns = [GridItem(.adaptive(minimum: 90), spacing: 6)]
+            FlowGrid(columns: columns, spacing: 6) {
+                ForEach(visibleFaces) { face in
+                    expandedFaceThumbnail(face: face, groupID: group.id, groupFaceCount: allFaces.count)
                 }
+            }
+            .drawingGroup()
 
-                Text("\(faces.count)")
-                    .font(.caption)
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(.secondary, in: Capsule())
-
-                Spacer()
-
-                Menu {
-                    Button("Rename") {
-                        editingName = group.name ?? ""
-                        editingGroupID = group.id
-                    }
-                    if group.name != nil {
-                        Button("Apply Name to Metadata") {
-                            viewModel.applyNameToMetadata(groupID: group.id)
+            // Show more/less button
+            if hiddenCount > 0 || isExpanded {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        if isExpanded {
+                            expandedGroupIDs.remove(group.id)
+                        } else {
+                            expandedGroupIDs.insert(group.id)
                         }
-                    }
-                    Divider()
-                    Button("Ungroup All") {
-                        viewModel.ungroupMultiple([group.id])
-                    }
-                    .disabled(faces.count <= 1)
-                    Button("Delete Group Faces", role: .destructive) {
-                        let faceIDs = Set(group.faceIDs)
-                        viewModel.deleteFaces(faceIDs)
-                    }
-                    Button("Delete Group & Photos", role: .destructive) {
-                        groupToDelete = group
-                        showDeleteGroupAlert = true
                     }
                 } label: {
-                    Image(systemName: "ellipsis.circle")
-                        .font(.system(size: 14))
+                    HStack {
+                        Spacer()
+                        Text(isExpanded ? "Show less" : "Show \(hiddenCount) more")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                    .padding(.vertical, 4)
+                    .contentShape(Rectangle())
                 }
-                .menuStyle(.borderlessButton)
-                .frame(width: 24)
-            }
-
-            // Face thumbnails grid
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 90))], spacing: 6) {
-                ForEach(faces) { face in
-                    expandedFaceThumbnail(face: face)
-                }
+                .buttonStyle(.plain)
             }
         }
         .padding(12)
@@ -181,11 +252,17 @@ struct ExpandedFaceManagementView: View {
                     lineWidth: highlightedGroupID == group.id ? 2 : 1
                 )
         )
+        .onDrag {
+            draggedGroupID = group.id
+            return NSItemProvider(object: "group:\(group.id.uuidString)" as NSString)
+        }
+        .opacity(draggedGroupID == group.id ? 0.5 : 1.0)
         .onDrop(of: [.text], delegate: FaceGroupDropDelegate(
             targetGroupID: group.id,
             viewModel: viewModel,
             selectedFaceIDs: $selectedFaceIDs,
             draggedFaceIDs: $draggedFaceIDs,
+            draggedGroupID: $draggedGroupID,
             highlightedGroupID: $highlightedGroupID
         ))
     }
@@ -193,10 +270,34 @@ struct ExpandedFaceManagementView: View {
     // MARK: - Face Thumbnail
 
     @ViewBuilder
-    private func expandedFaceThumbnail(face: DetectedFace) -> some View {
+    private func expandedFaceThumbnail(face: DetectedFace, groupID: UUID, groupFaceCount: Int) -> some View {
         let isSelected = selectedFaceIDs.contains(face.id)
         let isDragged = draggedFaceIDs.contains(face.id)
+        // Determine which faces the context menu applies to
+        let affectedFaceIDs: Set<UUID> = isSelected ? selectedFaceIDs : [face.id]
+        let affectedCount = affectedFaceIDs.count
 
+        faceThumbnailImage(face: face, isSelected: isSelected, isDragged: isDragged)
+            .onTapGesture {
+                handleFaceTap(faceID: face.id)
+            }
+            .contextMenu {
+                faceContextMenu(
+                    affectedFaceIDs: affectedFaceIDs,
+                    affectedCount: affectedCount,
+                    groupFaceCount: groupFaceCount
+                )
+            }
+            .onDrag {
+                let ids: Set<UUID> = isSelected ? selectedFaceIDs : [face.id]
+                draggedFaceIDs = ids
+                let idString = ids.map(\.uuidString).joined(separator: ",")
+                return NSItemProvider(object: idString as NSString)
+            }
+    }
+
+    @ViewBuilder
+    private func faceThumbnailImage(face: DetectedFace, isSelected: Bool, isDragged: Bool) -> some View {
         Group {
             if let image = viewModel.thumbnailImage(for: face.id) {
                 Image(nsImage: image)
@@ -227,35 +328,43 @@ struct ExpandedFaceManagementView: View {
             }
         }
         .opacity(isDragged ? 0.4 : 1.0)
-        .onTapGesture {
-            if NSEvent.modifierFlags.contains(.command) {
-                if selectedFaceIDs.contains(face.id) {
-                    selectedFaceIDs.remove(face.id)
-                } else {
-                    selectedFaceIDs.insert(face.id)
-                }
+    }
+
+    private func handleFaceTap(faceID: UUID) {
+        if NSEvent.modifierFlags.contains(.command) {
+            if selectedFaceIDs.contains(faceID) {
+                selectedFaceIDs.remove(faceID)
             } else {
-                selectedFaceIDs.removeAll()
-                selectedFaceIDs.insert(face.id)
+                selectedFaceIDs.insert(faceID)
             }
+        } else {
+            selectedFaceIDs.removeAll()
+            selectedFaceIDs.insert(faceID)
         }
-        .contextMenu {
-            Button("Delete Face", role: .destructive) {
-                selectedFaceIDs.remove(face.id)
-                viewModel.deleteFaces([face.id])
-            }
+    }
+
+    @ViewBuilder
+    private func faceContextMenu(affectedFaceIDs: Set<UUID>, affectedCount: Int, groupFaceCount: Int) -> some View {
+        let label = affectedCount > 1 ? "\(affectedCount) Faces" : "Face"
+
+        Button("Move to New Group") {
+            viewModel.createNewGroup(withFaces: affectedFaceIDs)
+            selectedFaceIDs.removeAll()
         }
-        .onDrag {
-            // If this face is selected, drag all selected; otherwise just this one
-            let ids: Set<UUID>
-            if selectedFaceIDs.contains(face.id) {
-                ids = selectedFaceIDs
-            } else {
-                ids = [face.id]
+
+        Button("Remove from Group") {
+            for faceID in affectedFaceIDs {
+                viewModel.ungroupFace(faceID)
             }
-            draggedFaceIDs = ids
-            let idString = ids.map(\.uuidString).joined(separator: ",")
-            return NSItemProvider(object: idString as NSString)
+            selectedFaceIDs.removeAll()
+        }
+        .disabled(groupFaceCount <= affectedCount)
+
+        Divider()
+
+        Button("Delete \(label)", role: .destructive) {
+            viewModel.deleteFaces(affectedFaceIDs)
+            selectedFaceIDs.subtract(affectedFaceIDs)
         }
     }
 
@@ -296,10 +405,14 @@ struct FaceGroupDropDelegate: DropDelegate {
     let viewModel: FaceRecognitionViewModel
     @Binding var selectedFaceIDs: Set<UUID>
     @Binding var draggedFaceIDs: Set<UUID>
+    @Binding var draggedGroupID: UUID?
     @Binding var highlightedGroupID: UUID?
 
     func dropEntered(info: DropInfo) {
-        highlightedGroupID = targetGroupID
+        // Don't highlight if dragging onto self
+        if draggedGroupID != targetGroupID {
+            highlightedGroupID = targetGroupID
+        }
     }
 
     func dropExited(info: DropInfo) {
@@ -309,7 +422,11 @@ struct FaceGroupDropDelegate: DropDelegate {
     }
 
     func validateDrop(info: DropInfo) -> Bool {
-        info.hasItemsConforming(to: [.text])
+        // Don't allow dropping a group onto itself
+        if draggedGroupID == targetGroupID {
+            return false
+        }
+        return info.hasItemsConforming(to: [.text])
     }
 
     func performDrop(info: DropInfo) -> Bool {
@@ -317,29 +434,40 @@ struct FaceGroupDropDelegate: DropDelegate {
 
         guard let item = info.itemProviders(for: [.text]).first else { return false }
 
-        // Capture values needed in the async closure
         let targetID = targetGroupID
         let vm = viewModel
 
         item.loadObject(ofClass: NSString.self) { object, _ in
             guard let string = object as? String else { return }
-            let ids = Set(string.split(separator: ",").compactMap { UUID(uuidString: String($0)) })
-            guard !ids.isEmpty else { return }
-
-            // Filter out faces already in this group
-            let facesToMove: Set<UUID>
-            if let data = vm.faceData {
-                facesToMove = ids.filter { faceID in
-                    data.faces.first(where: { $0.id == faceID })?.groupID != targetID
-                }
-            } else {
-                facesToMove = ids
-            }
 
             Task { @MainActor in
-                vm.moveFaces(facesToMove, toGroup: targetID)
-                selectedFaceIDs.removeAll()
-                draggedFaceIDs.removeAll()
+                // Check if this is a group drag (format: "group:UUID")
+                if string.hasPrefix("group:") {
+                    let groupIDString = String(string.dropFirst(6))
+                    if let sourceGroupID = UUID(uuidString: groupIDString),
+                       sourceGroupID != targetID {
+                        vm.mergeGroups(sourceID: sourceGroupID, into: targetID)
+                    }
+                    draggedGroupID = nil
+                } else {
+                    // Face drag (format: "UUID,UUID,...")
+                    let ids = Set(string.split(separator: ",").compactMap { UUID(uuidString: String($0)) })
+                    guard !ids.isEmpty else { return }
+
+                    // Filter out faces already in this group
+                    let facesToMove: Set<UUID>
+                    if let data = vm.faceData {
+                        facesToMove = ids.filter { faceID in
+                            data.faces.first(where: { $0.id == faceID })?.groupID != targetID
+                        }
+                    } else {
+                        facesToMove = ids
+                    }
+
+                    vm.moveFaces(facesToMove, toGroup: targetID)
+                    selectedFaceIDs.removeAll()
+                    draggedFaceIDs.removeAll()
+                }
             }
         }
 
@@ -385,5 +513,22 @@ struct NewGroupDropDelegate: DropDelegate {
         }
 
         return true
+    }
+}
+
+// MARK: - Flow Grid (non-lazy for better scroll performance)
+
+/// A simple non-lazy grid that renders all items immediately.
+/// Better for scroll performance when inside a lazy container.
+struct FlowGrid<Content: View>: View {
+    let columns: [GridItem]
+    let spacing: CGFloat
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        // Use a standard Grid for non-lazy rendering
+        LazyVGrid(columns: columns, spacing: spacing) {
+            content
+        }
     }
 }

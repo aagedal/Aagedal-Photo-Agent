@@ -12,6 +12,21 @@ final class FaceRecognitionViewModel {
     // Thumbnail cache: faceID -> NSImage
     var thumbnailCache: [UUID: NSImage] = [:]
 
+    // Merge suggestions for similar groups
+    var mergeSuggestions: [MergeSuggestion] = []
+
+    // Detection configuration from settings
+    var detectionConfig: FaceDetectionService.DetectionConfig {
+        var config = FaceDetectionService.DetectionConfig()
+        let threshold = UserDefaults.standard.object(forKey: "faceClusteringThreshold") as? Double
+        config.clusteringThreshold = Float(threshold ?? 0.55)
+        let confidence = UserDefaults.standard.object(forKey: "faceMinConfidence") as? Double
+        config.minConfidence = Float(confidence ?? 0.7)
+        let minSize = UserDefaults.standard.object(forKey: "faceMinFaceSize") as? Int
+        config.minFaceSize = minSize ?? 50
+        return config
+    }
+
     private let detectionService = FaceDetectionService()
     private let storageService = FaceDataStorageService()
     private let exifToolService: ExifToolService
@@ -69,33 +84,101 @@ final class FaceRecognitionViewModel {
 
     // MARK: - Scan Folder
 
-    func scanFolder(imageURLs: [URL], folderURL: URL) {
+    /// Scan folder for faces with incremental support.
+    /// - Parameters:
+    ///   - imageURLs: All image URLs in the folder
+    ///   - folderURL: The folder being scanned
+    ///   - forceFullScan: If true, deletes existing data and rescans all images
+    func scanFolder(imageURLs: [URL], folderURL: URL, forceFullScan: Bool = false) {
         guard !isScanning else { return }
 
-        // Always start fresh — delete any previous face data
-        try? storageService.deleteFaceData(for: folderURL)
-        faceData = nil
-        thumbnailCache = [:]
-        scanComplete = false
+        let config = detectionConfig
+
+        if forceFullScan {
+            // Full rescan: delete all existing data
+            try? storageService.deleteFaceData(for: folderURL)
+            faceData = nil
+            thumbnailCache = [:]
+            scanComplete = false
+            mergeSuggestions = []
+        }
 
         isScanning = true
-        scanProgress = "0/\(imageURLs.count)"
         errorMessage = nil
 
         Task {
-            var allFaces: [DetectedFace] = []
-            var allGroups: [FaceGroup] = []
+            // Load existing data for incremental scan
+            let existingData = forceFullScan ? nil : storageService.loadFaceData(for: folderURL)
 
-            let toScan = imageURLs
+            // Determine which files need scanning
+            let (toScan, toRemove, unchangedFiles) = await categorizeFiles(
+                imageURLs: imageURLs,
+                existingData: existingData
+            )
+
+            // Start with existing faces (excluding those from removed/modified files)
+            var allFaces: [DetectedFace] = existingData?.faces.filter { face in
+                unchangedFiles.contains(face.imageURL.path)
+            } ?? []
+
+            var allGroups: [FaceGroup] = existingData?.groups ?? []
+            var scannedFiles = existingData?.scannedFiles ?? [:]
+
+            // Remove faces from deleted/modified files
+            let removedFaceIDs = Set(existingData?.faces.filter { face in
+                toRemove.contains(face.imageURL.path)
+            }.map(\.id) ?? [])
+
+            // Clean up groups
+            if !removedFaceIDs.isEmpty {
+                for i in allGroups.indices {
+                    allGroups[i].faceIDs.removeAll { removedFaceIDs.contains($0) }
+                }
+                allGroups.removeAll { $0.faceIDs.isEmpty }
+
+                // Update representatives
+                for i in allGroups.indices {
+                    if removedFaceIDs.contains(allGroups[i].representativeFaceID) {
+                        if let newRep = allGroups[i].faceIDs.first {
+                            allGroups[i].representativeFaceID = newRep
+                        }
+                    }
+                }
+            }
+
+            // Remove old file signatures
+            for path in toRemove {
+                scannedFiles.removeValue(forKey: path)
+            }
+
+            await MainActor.run {
+                scanProgress = "0/\(toScan.count)"
+            }
+
+            if toScan.isEmpty {
+                // Nothing new to scan
+                await MainActor.run {
+                    self.isScanning = false
+                    self.scanComplete = true
+                    self.scanProgress = ""
+                    if let existingData {
+                        self.faceData = existingData
+                        self.loadThumbnails(for: existingData)
+                        self.updateMergeSuggestions()
+                    }
+                }
+                return
+            }
+
             var processed = 0
 
             // Process images concurrently, capped at 4
-            await withTaskGroup(of: [(face: DetectedFace, thumbnail: Data)].self) { taskGroup in
+            await withTaskGroup(of: (URL, [(face: DetectedFace, thumbnail: Data)]).self) { taskGroup in
                 var pending = 0
 
                 for url in toScan {
                     if pending >= 4 {
-                        if let results = await taskGroup.next() {
+                        if let (scannedURL, results) = await taskGroup.next() {
                             for result in results {
                                 allFaces.append(result.face)
                                 try? storageService.saveThumbnail(result.thumbnail, for: result.face.id, folderURL: folderURL)
@@ -105,6 +188,10 @@ final class FaceRecognitionViewModel {
                                         thumbnailCache[result.face.id] = image
                                     }
                                 }
+                            }
+                            // Record file signature
+                            if let sig = self.getFileSignature(for: scannedURL) {
+                                scannedFiles[scannedURL.path] = sig
                             }
                             processed += 1
                             let current = processed
@@ -117,13 +204,14 @@ final class FaceRecognitionViewModel {
                     }
 
                     taskGroup.addTask {
-                        (try? await self.detectionService.detectFaces(in: url)) ?? []
+                        let results = (try? await self.detectionService.detectFaces(in: url, config: config)) ?? []
+                        return (url, results)
                     }
                     pending += 1
                 }
 
                 // Collect remaining
-                for await results in taskGroup {
+                for await (scannedURL, results) in taskGroup {
                     for result in results {
                         allFaces.append(result.face)
                         try? storageService.saveThumbnail(result.thumbnail, for: result.face.id, folderURL: folderURL)
@@ -133,6 +221,10 @@ final class FaceRecognitionViewModel {
                                 thumbnailCache[result.face.id] = image
                             }
                         }
+                    }
+                    // Record file signature
+                    if let sig = self.getFileSignature(for: scannedURL) {
+                        scannedFiles[scannedURL.path] = sig
                     }
                     processed += 1
                     let current = processed
@@ -145,7 +237,7 @@ final class FaceRecognitionViewModel {
 
             // Cluster faces
             let unclustered = allFaces.filter { $0.groupID == nil }
-            allGroups = detectionService.clusterFaces(unclustered, allFaces: allFaces, existingGroups: allGroups)
+            allGroups = detectionService.clusterFaces(unclustered, allFaces: allFaces, existingGroups: allGroups, threshold: config.clusteringThreshold)
 
             // Assign group IDs to faces
             for group in allGroups {
@@ -161,7 +253,8 @@ final class FaceRecognitionViewModel {
                 faces: allFaces,
                 groups: allGroups,
                 lastScanDate: Date(),
-                scanComplete: true
+                scanComplete: true,
+                scannedFiles: scannedFiles
             )
 
             try? storageService.saveFaceData(folderData)
@@ -172,8 +265,79 @@ final class FaceRecognitionViewModel {
                 self.scanComplete = true
                 self.scanProgress = ""
                 self.loadThumbnails(for: folderData)
+                self.updateMergeSuggestions()
             }
         }
+    }
+
+    // MARK: - Incremental Scan Helpers
+
+    /// Categorize files into: need scanning, removed/modified, unchanged
+    private func categorizeFiles(imageURLs: [URL], existingData: FolderFaceData?) async -> (toScan: [URL], toRemove: Set<String>, unchanged: Set<String>) {
+        guard let existingData else {
+            return (imageURLs, [], [])
+        }
+
+        let currentPaths = Set(imageURLs.map(\.path))
+        let existingPaths = Set(existingData.scannedFiles.keys)
+
+        var toScan: [URL] = []
+        var unchanged: Set<String> = []
+
+        for url in imageURLs {
+            let path = url.path
+            if let existingSig = existingData.scannedFiles[path],
+               let currentSig = getFileSignature(for: url),
+               existingSig == currentSig {
+                // File unchanged
+                unchanged.insert(path)
+            } else {
+                // New or modified file
+                toScan.append(url)
+            }
+        }
+
+        // Files in existing data but not in current folder = deleted
+        let toRemove = existingPaths.subtracting(currentPaths).union(
+            // Also include modified files (they need faces removed before re-scanning)
+            Set(toScan.map(\.path)).intersection(existingPaths)
+        )
+
+        return (toScan, toRemove, unchanged)
+    }
+
+    private func getFileSignature(for url: URL) -> FileSignature? {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let modDate = attrs[.modificationDate] as? Date,
+              let size = attrs[.size] as? Int64 else {
+            return nil
+        }
+        return FileSignature(modificationDate: modDate, fileSize: size)
+    }
+
+    // MARK: - Merge Suggestions
+
+    func updateMergeSuggestions() {
+        guard let data = faceData else {
+            mergeSuggestions = []
+            return
+        }
+
+        let config = detectionConfig
+        mergeSuggestions = detectionService.computeMergeSuggestions(
+            groups: data.groups,
+            faces: data.faces,
+            threshold: config.clusteringThreshold
+        )
+    }
+
+    func dismissMergeSuggestion(_ suggestion: MergeSuggestion) {
+        mergeSuggestions.removeAll { $0.id == suggestion.id }
+    }
+
+    func applyMergeSuggestion(_ suggestion: MergeSuggestion) {
+        mergeGroups(sourceID: suggestion.group2ID, into: suggestion.group1ID)
+        dismissMergeSuggestion(suggestion)
     }
 
     // MARK: - Naming & Metadata
@@ -357,7 +521,7 @@ final class FaceRecognitionViewModel {
               let faceIndex = data.faces.firstIndex(where: { $0.id == faceID }),
               let oldGroupID = data.faces[faceIndex].groupID,
               let oldGroupIndex = data.groups.firstIndex(where: { $0.id == oldGroupID }),
-              let targetGroupIndex = data.groups.firstIndex(where: { $0.id == targetGroupID }),
+              data.groups.contains(where: { $0.id == targetGroupID }),
               oldGroupID != targetGroupID else { return }
 
         // Remove from old group
