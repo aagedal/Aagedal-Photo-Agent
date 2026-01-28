@@ -16,8 +16,8 @@ final class FaceRecognitionViewModel {
     var scanComplete = false
     var errorMessage: String?
 
-    // Thumbnail cache: faceID -> NSImage
-    var thumbnailCache: [UUID: NSImage] = [:]
+    // Thumbnail cache: faceID -> NSImage (not observed to avoid re-render loops during lazy loading)
+    @ObservationIgnored var thumbnailCache: [UUID: NSImage] = [:]
 
     // Merge suggestions for similar groups
     var mergeSuggestions: [MergeSuggestion] = []
@@ -31,10 +31,12 @@ final class FaceRecognitionViewModel {
     private(set) var sortedGroups: [FaceGroup] = []
 
     // Fast face lookup by ID (invalidated when faceData changes)
-    private var faceLookup: [UUID: DetectedFace] = [:]
+    // Not observed - always rebuilt alongside sortedGroups
+    @ObservationIgnored private var faceLookup: [UUID: DetectedFace] = [:]
 
     // Fast group lookup by ID (invalidated when faceData changes)
-    private var groupLookup: [UUID: FaceGroup] = [:]
+    // Not observed - always rebuilt alongside sortedGroups
+    @ObservationIgnored private var groupLookup: [UUID: FaceGroup] = [:]
 
     // Detection configuration from settings
     var detectionConfig: FaceDetectionService.DetectionConfig {
