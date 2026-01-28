@@ -12,6 +12,7 @@ struct ImageFile: Identifiable, Hashable, Sendable {
     var starRating: StarRating
     var colorLabel: ColorLabel
     var hasC2PA: Bool
+    var hasPendingMetadataChanges: Bool
     var metadata: IPTCMetadata?
 
     init(url: URL) {
@@ -26,6 +27,7 @@ struct ImageFile: Identifiable, Hashable, Sendable {
         self.starRating = .none
         self.colorLabel = .none
         self.hasC2PA = false
+        self.hasPendingMetadataChanges = false
         self.metadata = nil
     }
 
@@ -34,6 +36,7 @@ struct ImageFile: Identifiable, Hashable, Sendable {
             && lhs.starRating == rhs.starRating
             && lhs.colorLabel == rhs.colorLabel
             && lhs.hasC2PA == rhs.hasC2PA
+            && lhs.hasPendingMetadataChanges == rhs.hasPendingMetadataChanges
     }
 
     func hash(into hasher: inout Hasher) {

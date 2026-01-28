@@ -3,7 +3,7 @@ import SwiftUI
 @main
 struct Aagedal_Photo_AgentApp: App {
     var body: some Scene {
-        WindowGroup {
+        Window("Aagedal Photo Agent", id: "main") {
             ContentView()
         }
         .commands {
@@ -67,6 +67,18 @@ struct Aagedal_Photo_AgentApp: App {
                     )
                 }
             }
+
+            CommandMenu("Navigation") {
+                Button("Previous Image") {
+                    NotificationCenter.default.post(name: .selectPreviousImage, object: nil)
+                }
+                .keyboardShortcut("b", modifiers: .command)
+
+                Button("Next Image") {
+                    NotificationCenter.default.post(name: .selectNextImage, object: nil)
+                }
+                .keyboardShortcut("n", modifiers: .command)
+            }
         }
 
         Settings {
@@ -84,4 +96,6 @@ extension Notification.Name {
     static let deleteSelected = Notification.Name("deleteSelected")
     static let showImport = Notification.Name("showImport")
     static let importCompleted = Notification.Name("importCompleted")
+    static let selectPreviousImage = Notification.Name("selectPreviousImage")
+    static let selectNextImage = Notification.Name("selectNextImage")
 }

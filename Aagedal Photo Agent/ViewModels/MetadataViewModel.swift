@@ -13,7 +13,13 @@ final class MetadataViewModel {
     var hasChanges = false
     var saveError: String?
 
+    var originalImageMetadata: IPTCMetadata?
+    var sidecarHistory: [MetadataHistoryEntry] = []
+    var currentFolderURL: URL?
+
     private let exifToolService: ExifToolService
+    private let sidecarService = MetadataSidecarService()
+    private var previousEditingMetadata: IPTCMetadata?
 
     init(exifToolService: ExifToolService) {
         self.exifToolService = exifToolService
@@ -21,37 +27,59 @@ final class MetadataViewModel {
 
     var isBatchEdit: Bool { selectedCount > 1 }
 
-    func loadMetadata(for images: [ImageFile]) {
+    func loadMetadata(for images: [ImageFile], folderURL: URL? = nil) {
         selectedCount = images.count
         selectedURLs = images.map(\.url)
         hasChanges = false
         saveError = nil
+        sidecarHistory = []
+        originalImageMetadata = nil
+
+        if let folderURL {
+            currentFolderURL = folderURL
+        }
 
         guard !images.isEmpty else {
             metadata = nil
             editingMetadata = IPTCMetadata()
+            previousEditingMetadata = nil
             return
         }
 
         if images.count == 1 {
+            let imageURL = images[0].url
             metadata = nil
             editingMetadata = IPTCMetadata()
+            previousEditingMetadata = nil
             isLoading = true
+
             Task {
                 do {
-                    let meta = try await exifToolService.readFullMetadata(url: images[0].url)
-                    self.metadata = meta
-                    self.editingMetadata = meta
+                    let imageMeta = try await exifToolService.readFullMetadata(url: imageURL)
+                    self.metadata = imageMeta
+                    self.originalImageMetadata = imageMeta
+
+                    if let folder = self.currentFolderURL,
+                       let sidecar = sidecarService.loadSidecar(for: imageURL, in: folder),
+                       sidecar.pendingChanges {
+                        self.editingMetadata = sidecar.metadata
+                        self.sidecarHistory = sidecar.history
+                        self.hasChanges = true
+                    } else {
+                        self.editingMetadata = imageMeta
+                    }
+                    self.previousEditingMetadata = self.editingMetadata
                 } catch {
                     self.metadata = nil
                     self.editingMetadata = IPTCMetadata()
+                    self.previousEditingMetadata = nil
                 }
                 self.isLoading = false
             }
         } else {
-            // Batch: start with empty fields, user fills in what they want to apply
             metadata = nil
             editingMetadata = IPTCMetadata()
+            previousEditingMetadata = nil
         }
     }
 
@@ -270,11 +298,254 @@ final class MetadataViewModel {
         return resolved.isEmpty ? nil : resolved
     }
 
+    // MARK: - Sidecar Management
+
+    func saveToSidecar() {
+        guard selectedCount == 1,
+              let imageURL = selectedURLs.first,
+              let folderURL = currentFolderURL else {
+            return
+        }
+
+        var newHistory = sidecarHistory
+        let prev = previousEditingMetadata ?? IPTCMetadata()
+        let now = Date()
+
+        func recordChange(_ fieldName: String, old: String?, new: String?) {
+            if old != new {
+                newHistory.append(MetadataHistoryEntry(
+                    timestamp: now,
+                    fieldName: fieldName,
+                    oldValue: old,
+                    newValue: new
+                ))
+            }
+        }
+
+        func recordArrayChange(_ fieldName: String, old: [String], new: [String]) {
+            let oldVal = old.isEmpty ? nil : old.joined(separator: ", ")
+            let newVal = new.isEmpty ? nil : new.joined(separator: ", ")
+            if oldVal != newVal {
+                newHistory.append(MetadataHistoryEntry(
+                    timestamp: now,
+                    fieldName: fieldName,
+                    oldValue: oldVal,
+                    newValue: newVal
+                ))
+            }
+        }
+
+        recordChange("Title", old: prev.title, new: editingMetadata.title)
+        recordChange("Description", old: prev.description, new: editingMetadata.description)
+        recordArrayChange("Keywords", old: prev.keywords, new: editingMetadata.keywords)
+        recordArrayChange("Person Shown", old: prev.personShown, new: editingMetadata.personShown)
+        recordChange("Copyright", old: prev.copyright, new: editingMetadata.copyright)
+        recordChange("Creator", old: prev.creator, new: editingMetadata.creator)
+        recordChange("Credit", old: prev.credit, new: editingMetadata.credit)
+        recordChange("Date Created", old: prev.dateCreated, new: editingMetadata.dateCreated)
+        recordChange("City", old: prev.city, new: editingMetadata.city)
+        recordChange("Country", old: prev.country, new: editingMetadata.country)
+        recordChange("Event", old: prev.event, new: editingMetadata.event)
+        recordChange("Digital Source Type", old: prev.digitalSourceType?.rawValue, new: editingMetadata.digitalSourceType?.rawValue)
+
+        let sidecar = MetadataSidecar(
+            sourceFile: imageURL.lastPathComponent,
+            lastModified: now,
+            pendingChanges: true,
+            metadata: editingMetadata,
+            imageMetadataSnapshot: originalImageMetadata,
+            history: newHistory
+        )
+
+        do {
+            try sidecarService.saveSidecar(sidecar, for: imageURL, in: folderURL)
+            sidecarHistory = newHistory
+            previousEditingMetadata = editingMetadata
+            hasChanges = true
+        } catch {
+            saveError = "Failed to save sidecar: \(error.localizedDescription)"
+        }
+    }
+
+    func writeMetadataAndClearSidecar() {
+        guard selectedCount == 1,
+              let imageURL = selectedURLs.first,
+              let folderURL = currentFolderURL else {
+            writeMetadata()
+            return
+        }
+
+        isSaving = true
+        saveError = nil
+
+        Task {
+            do {
+                var fields: [String: String] = [:]
+                let edited = editingMetadata
+                let original = originalImageMetadata
+
+                if edited.title != original?.title { fields["XMP:Title"] = edited.title ?? "" }
+                if edited.description != original?.description { fields["XMP:Description"] = edited.description ?? "" }
+                if edited.keywords != original?.keywords {
+                    fields["XMP:Subject"] = edited.keywords.joined(separator: ", ")
+                }
+                if edited.personShown != original?.personShown {
+                    fields["XMP-iptcExt:PersonInImage"] = edited.personShown.joined(separator: ", ")
+                }
+                if edited.digitalSourceType != original?.digitalSourceType {
+                    fields["XMP-iptcExt:DigitalSourceType"] = edited.digitalSourceType?.rawValue ?? ""
+                }
+                if edited.latitude != original?.latitude || edited.longitude != original?.longitude {
+                    if let lat = edited.latitude, let lon = edited.longitude {
+                        fields["EXIF:GPSLatitude"] = String(abs(lat))
+                        fields["EXIF:GPSLatitudeRef"] = lat >= 0 ? "N" : "S"
+                        fields["EXIF:GPSLongitude"] = String(abs(lon))
+                        fields["EXIF:GPSLongitudeRef"] = lon >= 0 ? "E" : "W"
+                    } else {
+                        fields["EXIF:GPSLatitude"] = ""
+                        fields["EXIF:GPSLatitudeRef"] = ""
+                        fields["EXIF:GPSLongitude"] = ""
+                        fields["EXIF:GPSLongitudeRef"] = ""
+                    }
+                }
+                if edited.creator != original?.creator { fields["XMP:Creator"] = edited.creator ?? "" }
+                if edited.credit != original?.credit { fields["XMP-photoshop:Credit"] = edited.credit ?? "" }
+                if edited.copyright != original?.copyright { fields["XMP:Rights"] = edited.copyright ?? "" }
+                if edited.dateCreated != original?.dateCreated { fields["XMP:DateCreated"] = edited.dateCreated ?? "" }
+                if edited.city != original?.city { fields["XMP-photoshop:City"] = edited.city ?? "" }
+                if edited.country != original?.country { fields["XMP-photoshop:Country"] = edited.country ?? "" }
+                if edited.event != original?.event { fields["XMP-iptcExt:Event"] = edited.event ?? "" }
+
+                if !fields.isEmpty {
+                    try await exifToolService.writeFields(fields, to: [imageURL])
+                }
+
+                try? sidecarService.deleteSidecar(for: imageURL, in: folderURL)
+                self.metadata = edited
+                self.originalImageMetadata = edited
+                self.sidecarHistory = []
+                self.hasChanges = false
+                self.previousEditingMetadata = edited
+            } catch {
+                self.saveError = error.localizedDescription
+            }
+            self.isSaving = false
+        }
+    }
+
+    func writeAllPendingChanges(in folderURL: URL?, images: [ImageFile], skipC2PA: Bool = true) {
+        guard let folderURL else { return }
+
+        isProcessingFolder = true
+        folderProcessProgress = "0/?"
+        saveError = nil
+
+        Task {
+            let sidecars = sidecarService.loadAllSidecars(in: folderURL)
+            let pendingSidecars = sidecars.filter { $0.value.pendingChanges }
+
+            var processed = 0
+            let total = pendingSidecars.count
+            self.folderProcessProgress = "0/\(total)"
+
+            for (imageURL, sidecar) in pendingSidecars {
+                if skipC2PA {
+                    if let image = images.first(where: { $0.url == imageURL }), image.hasC2PA {
+                        processed += 1
+                        self.folderProcessProgress = "\(processed)/\(total)"
+                        continue
+                    }
+                }
+
+                let edited = sidecar.metadata
+                let original = sidecar.imageMetadataSnapshot
+
+                var fields: [String: String] = [:]
+                if edited.title != original?.title { fields["XMP:Title"] = edited.title ?? "" }
+                if edited.description != original?.description { fields["XMP:Description"] = edited.description ?? "" }
+                if edited.keywords != original?.keywords {
+                    fields["XMP:Subject"] = edited.keywords.joined(separator: ", ")
+                }
+                if edited.personShown != original?.personShown {
+                    fields["XMP-iptcExt:PersonInImage"] = edited.personShown.joined(separator: ", ")
+                }
+                if edited.digitalSourceType != original?.digitalSourceType {
+                    fields["XMP-iptcExt:DigitalSourceType"] = edited.digitalSourceType?.rawValue ?? ""
+                }
+                if edited.latitude != original?.latitude || edited.longitude != original?.longitude {
+                    if let lat = edited.latitude, let lon = edited.longitude {
+                        fields["EXIF:GPSLatitude"] = String(abs(lat))
+                        fields["EXIF:GPSLatitudeRef"] = lat >= 0 ? "N" : "S"
+                        fields["EXIF:GPSLongitude"] = String(abs(lon))
+                        fields["EXIF:GPSLongitudeRef"] = lon >= 0 ? "E" : "W"
+                    } else {
+                        fields["EXIF:GPSLatitude"] = ""
+                        fields["EXIF:GPSLatitudeRef"] = ""
+                        fields["EXIF:GPSLongitude"] = ""
+                        fields["EXIF:GPSLongitudeRef"] = ""
+                    }
+                }
+                if edited.creator != original?.creator { fields["XMP:Creator"] = edited.creator ?? "" }
+                if edited.credit != original?.credit { fields["XMP-photoshop:Credit"] = edited.credit ?? "" }
+                if edited.copyright != original?.copyright { fields["XMP:Rights"] = edited.copyright ?? "" }
+                if edited.dateCreated != original?.dateCreated { fields["XMP:DateCreated"] = edited.dateCreated ?? "" }
+                if edited.city != original?.city { fields["XMP-photoshop:City"] = edited.city ?? "" }
+                if edited.country != original?.country { fields["XMP-photoshop:Country"] = edited.country ?? "" }
+                if edited.event != original?.event { fields["XMP-iptcExt:Event"] = edited.event ?? "" }
+
+                do {
+                    if !fields.isEmpty {
+                        try await exifToolService.writeFields(fields, to: [imageURL])
+                    }
+                    try? sidecarService.deleteSidecar(for: imageURL, in: folderURL)
+                } catch {
+                    // Continue with next image
+                }
+
+                processed += 1
+                self.folderProcessProgress = "\(processed)/\(total)"
+            }
+
+            self.isProcessingFolder = false
+            self.folderProcessProgress = ""
+        }
+    }
+
+    // MARK: - Diff Helpers
+
+    func fieldDiffers(_ keyPath: KeyPath<IPTCMetadata, String?>) -> Bool {
+        guard let original = originalImageMetadata else { return false }
+        return editingMetadata[keyPath: keyPath] != original[keyPath: keyPath]
+    }
+
+    func keywordsDiffer() -> Bool {
+        guard let original = originalImageMetadata else { return false }
+        return editingMetadata.keywords != original.keywords
+    }
+
+    func personShownDiffer() -> Bool {
+        guard let original = originalImageMetadata else { return false }
+        return editingMetadata.personShown != original.personShown
+    }
+
+    func digitalSourceTypeDiffers() -> Bool {
+        guard let original = originalImageMetadata else { return false }
+        return editingMetadata.digitalSourceType != original.digitalSourceType
+    }
+
+    func gpsDiffers() -> Bool {
+        guard let original = originalImageMetadata else { return false }
+        return editingMetadata.latitude != original.latitude || editingMetadata.longitude != original.longitude
+    }
+
     func clear() {
         metadata = nil
         editingMetadata = IPTCMetadata()
         selectedCount = 0
         selectedURLs = []
         hasChanges = false
+        sidecarHistory = []
+        originalImageMetadata = nil
+        previousEditingMetadata = nil
     }
 }

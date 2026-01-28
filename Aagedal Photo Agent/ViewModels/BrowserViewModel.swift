@@ -27,6 +27,7 @@ final class BrowserViewModel {
     let fileSystemService = FileSystemService()
     let thumbnailService = ThumbnailService()
     let exifToolService = ExifToolService()
+    private let sidecarService = MetadataSidecarService()
 
     private let favoritesKey = "favoriteFolders"
 
@@ -98,7 +99,13 @@ final class BrowserViewModel {
 
         Task {
             do {
-                let files = try fileSystemService.scanFolder(at: url)
+                var files = try fileSystemService.scanFolder(at: url)
+                let pendingURLs = sidecarService.imagesWithPendingChanges(in: url)
+                for i in files.indices {
+                    if pendingURLs.contains(files[i].url) {
+                        files[i].hasPendingMetadataChanges = true
+                    }
+                }
                 self.images = files
                 self.isLoading = false
                 await loadBasicMetadata()
@@ -261,6 +268,22 @@ final class BrowserViewModel {
     var isCurrentFolderFavorited: Bool {
         guard let url = currentFolderURL else { return false }
         return favoriteFolders.contains { $0.url == url }
+    }
+
+    // MARK: - Pending Status
+
+    func refreshPendingStatus() {
+        guard let folderURL = currentFolderURL else { return }
+        let pendingURLs = sidecarService.imagesWithPendingChanges(in: folderURL)
+        for i in images.indices {
+            images[i].hasPendingMetadataChanges = pendingURLs.contains(images[i].url)
+        }
+    }
+
+    func updatePendingStatus(for url: URL, hasPending: Bool) {
+        if let index = images.firstIndex(where: { $0.url == url }) {
+            images[index].hasPendingMetadataChanges = hasPending
+        }
     }
 
     // MARK: - Delete

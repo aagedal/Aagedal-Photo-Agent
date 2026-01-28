@@ -5,8 +5,11 @@ struct MetadataPanel: View {
     let browserViewModel: BrowserViewModel
     var onApplyPreset: (() -> Void)?
     var onSavePreset: (() -> Void)?
+    var onPendingStatusChanged: (() -> Void)?
 
     @State private var isShowingVariableReference = false
+    @State private var showingHistoryPopover = false
+    @State private var showingC2PAWarning = false
 
     var body: some View {
         Group {
@@ -53,6 +56,15 @@ struct MetadataPanel: View {
             }
         }
         .frame(maxWidth: .infinity)
+        .alert("C2PA Protected Image", isPresented: $showingC2PAWarning) {
+            Button("Cancel", role: .cancel) { }
+            Button("Write Anyway") {
+                viewModel.writeMetadataAndClearSidecar()
+                onPendingStatusChanged?()
+            }
+        } message: {
+            Text("This image has C2PA content credentials. Writing metadata will invalidate the authenticity chain.")
+        }
     }
 
     // MARK: - Rating & Label
@@ -99,7 +111,9 @@ struct MetadataPanel: View {
                     get: { viewModel.editingMetadata.title ?? "" },
                     set: { viewModel.editingMetadata.title = $0.isEmpty ? nil : $0; viewModel.markChanged() }
                 ),
-                placeholder: viewModel.isBatchEdit ? "Leave empty to skip" : "Enter title"
+                placeholder: viewModel.isBatchEdit ? "Leave empty to skip" : "Enter title",
+                onCommit: { viewModel.saveToSidecar(); onPendingStatusChanged?() },
+                showsDifference: viewModel.fieldDiffers(\.title)
             )
 
             VStack(alignment: .leading, spacing: 2) {
@@ -107,6 +121,7 @@ struct MetadataPanel: View {
                     Text("Description")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    DifferenceIndicator(differs: viewModel.fieldDiffers(\.description))
                     Spacer()
                     Button {
                         isShowingVariableReference = true
@@ -129,6 +144,10 @@ struct MetadataPanel: View {
                 .lineLimit(4...8)
                 .textFieldStyle(.roundedBorder)
                 .font(.body)
+                .onSubmit {
+                    viewModel.saveToSidecar()
+                    onPendingStatusChanged?()
+                }
             }
             .sheet(isPresented: $isShowingVariableReference) {
                 VariableReferenceView(
@@ -141,16 +160,20 @@ struct MetadataPanel: View {
                 )
             }
 
-            KeywordsEditor(
+            KeywordsEditorWithDiff(
                 label: "Keywords",
                 keywords: $viewModel.editingMetadata.keywords,
-                onChange: { viewModel.markChanged() }
+                differs: viewModel.keywordsDiffer(),
+                onChange: { viewModel.markChanged() },
+                onCommit: { viewModel.saveToSidecar(); onPendingStatusChanged?() }
             )
 
-            KeywordsEditor(
+            KeywordsEditorWithDiff(
                 label: "Person Shown",
                 keywords: $viewModel.editingMetadata.personShown,
-                onChange: { viewModel.markChanged() }
+                differs: viewModel.personShownDiffer(),
+                onChange: { viewModel.markChanged() },
+                onCommit: { viewModel.saveToSidecar(); onPendingStatusChanged?() }
             )
 
             EditableTextField(
@@ -159,11 +182,29 @@ struct MetadataPanel: View {
                     get: { viewModel.editingMetadata.copyright ?? "" },
                     set: { viewModel.editingMetadata.copyright = $0.isEmpty ? nil : $0; viewModel.markChanged() }
                 ),
-                placeholder: viewModel.isBatchEdit ? "Leave empty to skip" : "Enter copyright"
+                placeholder: viewModel.isBatchEdit ? "Leave empty to skip" : "Enter copyright",
+                onCommit: { viewModel.saveToSidecar(); onPendingStatusChanged?() },
+                showsDifference: viewModel.fieldDiffers(\.copyright)
             )
         } header: {
-            Text("Priority Fields")
-                .font(.headline)
+            HStack {
+                Text("Priority Fields")
+                    .font(.headline)
+                Spacer()
+                if !viewModel.sidecarHistory.isEmpty {
+                    Button {
+                        showingHistoryPopover = true
+                    } label: {
+                        Image(systemName: "clock.arrow.circlepath")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.plain)
+                    .help("View editing history")
+                    .popover(isPresented: $showingHistoryPopover) {
+                        MetadataHistoryView(history: viewModel.sidecarHistory)
+                    }
+                }
+            }
         }
     }
 
@@ -206,42 +247,54 @@ struct MetadataPanel: View {
                     text: Binding(
                         get: { viewModel.editingMetadata.creator ?? "" },
                         set: { viewModel.editingMetadata.creator = $0.isEmpty ? nil : $0; viewModel.markChanged() }
-                    )
+                    ),
+                    onCommit: { viewModel.saveToSidecar(); onPendingStatusChanged?() },
+                    showsDifference: viewModel.fieldDiffers(\.creator)
                 )
                 EditableTextField(
                     label: "Credit",
                     text: Binding(
                         get: { viewModel.editingMetadata.credit ?? "" },
                         set: { viewModel.editingMetadata.credit = $0.isEmpty ? nil : $0; viewModel.markChanged() }
-                    )
+                    ),
+                    onCommit: { viewModel.saveToSidecar(); onPendingStatusChanged?() },
+                    showsDifference: viewModel.fieldDiffers(\.credit)
                 )
                 EditableTextField(
                     label: "Date Created",
                     text: Binding(
                         get: { viewModel.editingMetadata.dateCreated ?? "" },
                         set: { viewModel.editingMetadata.dateCreated = $0.isEmpty ? nil : $0; viewModel.markChanged() }
-                    )
+                    ),
+                    onCommit: { viewModel.saveToSidecar(); onPendingStatusChanged?() },
+                    showsDifference: viewModel.fieldDiffers(\.dateCreated)
                 )
                 EditableTextField(
                     label: "City",
                     text: Binding(
                         get: { viewModel.editingMetadata.city ?? "" },
                         set: { viewModel.editingMetadata.city = $0.isEmpty ? nil : $0; viewModel.markChanged() }
-                    )
+                    ),
+                    onCommit: { viewModel.saveToSidecar(); onPendingStatusChanged?() },
+                    showsDifference: viewModel.fieldDiffers(\.city)
                 )
                 EditableTextField(
                     label: "Country",
                     text: Binding(
                         get: { viewModel.editingMetadata.country ?? "" },
                         set: { viewModel.editingMetadata.country = $0.isEmpty ? nil : $0; viewModel.markChanged() }
-                    )
+                    ),
+                    onCommit: { viewModel.saveToSidecar(); onPendingStatusChanged?() },
+                    showsDifference: viewModel.fieldDiffers(\.country)
                 )
                 EditableTextField(
                     label: "Event",
                     text: Binding(
                         get: { viewModel.editingMetadata.event ?? "" },
                         set: { viewModel.editingMetadata.event = $0.isEmpty ? nil : $0; viewModel.markChanged() }
-                    )
+                    ),
+                    onCommit: { viewModel.saveToSidecar(); onPendingStatusChanged?() },
+                    showsDifference: viewModel.fieldDiffers(\.event)
                 )
             }
         }
@@ -302,7 +355,12 @@ struct MetadataPanel: View {
             Spacer()
 
             Button("Write") {
-                viewModel.writeMetadata()
+                if browserViewModel.firstSelectedImage?.hasC2PA == true {
+                    showingC2PAWarning = true
+                } else {
+                    viewModel.writeMetadataAndClearSidecar()
+                    onPendingStatusChanged?()
+                }
             }
             .buttonStyle(.borderedProminent)
             .disabled(!viewModel.hasChanges || viewModel.isSaving)
@@ -315,21 +373,99 @@ struct MetadataPanel: View {
     }
 }
 
+// MARK: - Keywords Editor With Diff
+
+struct KeywordsEditorWithDiff: View {
+    let label: String
+    @Binding var keywords: [String]
+    var differs: Bool = false
+    var onChange: (() -> Void)? = nil
+    var onCommit: (() -> Void)? = nil
+
+    @State private var inputText = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 4) {
+                Text(label)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                DifferenceIndicator(differs: differs)
+            }
+
+            FlowLayout(spacing: 4) {
+                ForEach(keywords, id: \.self) { keyword in
+                    HStack(spacing: 2) {
+                        Text(keyword)
+                            .font(.caption)
+                        Button {
+                            keywords.removeAll { $0 == keyword }
+                            onChange?()
+                            onCommit?()
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.caption2)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(.secondary.opacity(0.2), in: Capsule())
+                }
+            }
+
+            TextField("Add keyword", text: $inputText)
+                .textFieldStyle(.roundedBorder)
+                .font(.body)
+                .onSubmit {
+                    let trimmed = inputText.trimmingCharacters(in: .whitespaces)
+                    if !trimmed.isEmpty && !keywords.contains(trimmed) {
+                        keywords.append(trimmed)
+                        onChange?()
+                        onCommit?()
+                    }
+                    inputText = ""
+                }
+        }
+    }
+}
+
 // MARK: - Reusable Field Components
+
+struct DifferenceIndicator: View {
+    let differs: Bool
+
+    var body: some View {
+        if differs {
+            Image(systemName: "exclamationmark.circle.fill")
+                .foregroundStyle(.orange)
+                .font(.caption)
+                .help("Value differs from image file. Changes pending.")
+        }
+    }
+}
 
 struct EditableTextField: View {
     let label: String
     @Binding var text: String
     var placeholder: String = ""
+    var onCommit: (() -> Void)? = nil
+    var showsDifference: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            HStack(spacing: 4) {
+                Text(label)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                DifferenceIndicator(differs: showsDifference)
+            }
             TextField(placeholder, text: $text)
                 .textFieldStyle(.roundedBorder)
                 .font(.body)
+                .onSubmit {
+                    onCommit?()
+                }
         }
     }
 }

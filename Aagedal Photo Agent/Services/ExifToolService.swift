@@ -11,6 +11,7 @@ final class ExifToolService {
     private var stdoutPipe: Pipe?
     private var stderrPipe: Pipe?
     private var isRunning = false
+    private var runningPath: String?
     private var accumulatedOutput = ""
     private var pendingContinuation: CheckedContinuation<String, any Error>?
     private var commandQueue: [() -> Void] = []
@@ -36,12 +37,17 @@ final class ExifToolService {
     }
 
     private var bundledExifToolPath: String? {
+        // Try ExifTool folder first, then direct resource
         if let bundledDir = Bundle.main.path(forResource: "ExifTool", ofType: nil) {
             let path = (bundledDir as NSString).appendingPathComponent("exiftool")
-            if FileManager.default.isExecutableFile(atPath: path) {
-                return path
-            }
+            exifToolLog.info("Found bundled ExifTool folder at: \(bundledDir, privacy: .public)")
+            return path
         }
+        if let path = Bundle.main.path(forResource: "exiftool", ofType: nil) {
+            exifToolLog.info("Found bundled exiftool directly at: \(path, privacy: .public)")
+            return path
+        }
+        exifToolLog.warning("No bundled ExifTool found")
         return nil
     }
 
@@ -53,7 +59,12 @@ final class ExifToolService {
     var isAvailable: Bool { exifToolPath != nil }
 
     func start() throws {
-        guard !isRunning, let path = exifToolPath else { return }
+        guard !isRunning, let path = exifToolPath else {
+            exifToolLog.error("Cannot start: isRunning=\(self.isRunning), path=\(self.exifToolPath ?? "nil", privacy: .public)")
+            return
+        }
+
+        exifToolLog.info("Starting ExifTool at: \(path, privacy: .public)")
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: path)
@@ -83,16 +94,21 @@ final class ExifToolService {
 
         try proc.run()
         isRunning = true
+        runningPath = path
     }
 
     func stop() {
         guard isRunning else { return }
-        sendCommand(["-stay_open", "False"])
-        stdinPipe?.fileHandleForWriting.closeFile()
+        // Only try to send stop command if process is still running
+        if process?.isRunning == true {
+            sendCommand(["-stay_open", "False"])
+        }
+        try? stdinPipe?.fileHandleForWriting.close()
         process?.waitUntilExit()
         stdoutPipe?.fileHandleForReading.readabilityHandler = nil
         process = nil
         isRunning = false
+        runningPath = nil
     }
 
     private func handleOutput(_ str: String) {
@@ -122,6 +138,10 @@ final class ExifToolService {
     /// Execute an ExifTool command and return the response.
     /// Commands are serialized to prevent concurrent access to the single ExifTool process.
     func execute(_ arguments: [String]) async throws -> String {
+        // Restart if path changed (user changed settings)
+        if isRunning, let current = exifToolPath, current != runningPath {
+            stop()
+        }
         if !isRunning {
             try start()
         }
