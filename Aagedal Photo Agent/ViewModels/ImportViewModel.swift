@@ -98,10 +98,10 @@ final class ImportViewModel {
         configuration.destinationBaseURL = url
     }
 
-    // MARK: - Preset Application
+    // MARK: - Template Application
 
-    func applyPreset(_ preset: MetadataPreset) {
-        for field in preset.fields {
+    func applyTemplate(_ template: MetadataTemplate) {
+        for field in template.fields {
             let value = field.templateValue
             switch field.fieldKey {
             case "title": configuration.metadata.title = value

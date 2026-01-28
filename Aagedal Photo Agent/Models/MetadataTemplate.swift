@@ -1,25 +1,25 @@
 import Foundation
 
-struct MetadataPreset: Codable, Identifiable, Sendable {
+struct MetadataTemplate: Codable, Identifiable, Sendable {
     var id: UUID
     var name: String
-    var presetType: PresetType
-    var fields: [PresetField]
+    var templateType: TemplateType
+    var fields: [TemplateField]
 
-    init(id: UUID = UUID(), name: String = "", presetType: PresetType = .full, fields: [PresetField] = []) {
+    init(id: UUID = UUID(), name: String = "", templateType: TemplateType = .full, fields: [TemplateField] = []) {
         self.id = id
         self.name = name
-        self.presetType = presetType
+        self.templateType = templateType
         self.fields = fields
     }
 
-    enum PresetType: String, Codable, CaseIterable, Sendable {
+    enum TemplateType: String, Codable, CaseIterable, Sendable {
         case full = "Full"
         case perField = "Per Field"
     }
 }
 
-struct PresetField: Codable, Identifiable, Sendable, Hashable {
+struct TemplateField: Codable, Identifiable, Sendable, Hashable {
     var id: UUID
     var fieldKey: String
     var templateValue: String

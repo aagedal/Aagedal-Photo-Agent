@@ -1,9 +1,9 @@
 import Foundation
 
-struct PresetStorageService: Sendable {
-    private var directory: URL { AppPaths.presetsDirectory }
+struct TemplateStorageService: Sendable {
+    private var directory: URL { AppPaths.templatesDirectory }
 
-    func loadAll() throws -> [MetadataPreset] {
+    func loadAll() throws -> [MetadataTemplate] {
         let files = try FileManager.default.contentsOfDirectory(
             at: directory,
             includingPropertiesForKeys: nil,
@@ -12,19 +12,19 @@ struct PresetStorageService: Sendable {
 
         return files.compactMap { url in
             guard let data = try? Data(contentsOf: url) else { return nil }
-            return try? JSONDecoder().decode(MetadataPreset.self, from: data)
+            return try? JSONDecoder().decode(MetadataTemplate.self, from: data)
         }
         .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
-    func save(_ preset: MetadataPreset) throws {
-        let data = try JSONEncoder().encode(preset)
-        let url = directory.appendingPathComponent("\(preset.id.uuidString).json")
+    func save(_ template: MetadataTemplate) throws {
+        let data = try JSONEncoder().encode(template)
+        let url = directory.appendingPathComponent("\(template.id.uuidString).json")
         try data.write(to: url, options: .atomic)
     }
 
-    func delete(_ preset: MetadataPreset) throws {
-        let url = directory.appendingPathComponent("\(preset.id.uuidString).json")
+    func delete(_ template: MetadataTemplate) throws {
+        let url = directory.appendingPathComponent("\(template.id.uuidString).json")
         try FileManager.default.removeItem(at: url)
     }
 }

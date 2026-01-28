@@ -1,13 +1,13 @@
 import SwiftUI
 
-struct PresetListView: View {
-    @Bindable var viewModel: PresetViewModel
-    var onApply: ((MetadataPreset) -> Void)?
+struct TemplateListView: View {
+    @Bindable var viewModel: TemplateViewModel
+    var onApply: ((MetadataTemplate) -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Presets")
+                Text("Templates")
                     .font(.headline)
                 Spacer()
                 Button {
@@ -18,19 +18,19 @@ struct PresetListView: View {
                 .buttonStyle(.plain)
             }
 
-            if viewModel.presets.isEmpty {
-                Text("No presets saved")
+            if viewModel.templates.isEmpty {
+                Text("No templates saved")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .center)
                     .padding(.vertical, 8)
             } else {
-                ForEach(viewModel.presets) { preset in
+                ForEach(viewModel.templates) { template in
                     HStack {
                         VStack(alignment: .leading) {
-                            Text(preset.name)
+                            Text(template.name)
                                 .font(.body)
-                            Text("\(preset.fields.count) fields \u{2022} \(preset.presetType.rawValue)")
+                            Text("\(template.fields.count) fields \u{2022} \(template.templateType.rawValue)")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -38,17 +38,17 @@ struct PresetListView: View {
                         Spacer()
 
                         Button("Apply") {
-                            onApply?(preset)
+                            onApply?(template)
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
 
                         Menu {
                             Button("Edit") {
-                                viewModel.startEditing(preset)
+                                viewModel.startEditing(template)
                             }
                             Button("Delete", role: .destructive) {
-                                viewModel.deletePreset(preset)
+                                viewModel.deleteTemplate(template)
                             }
                         } label: {
                             Image(systemName: "ellipsis.circle")

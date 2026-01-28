@@ -203,6 +203,70 @@ final class FaceRecognitionViewModel {
             }
 
             var processed = 0
+            var batchesSinceLastSave = 0
+            let saveInterval = 10 // Save progress every 10 batches
+
+            // Create a shared feature print cache for incremental clustering
+            let fpCache = FaceDetectionService.FeaturePrintCache()
+
+            // Helper to process a completed batch and cluster incrementally
+            func processBatch(scannedURL: URL, results: [(face: DetectedFace, thumbnail: Data)]) async {
+                var newFaces: [DetectedFace] = []
+
+                for result in results {
+                    allFaces.append(result.face)
+                    newFaces.append(result.face)
+                    try? storageService.saveThumbnail(result.thumbnail, for: result.face.id, folderURL: folderURL)
+                    let image = NSImage(data: result.thumbnail)
+                    if let image {
+                        await MainActor.run {
+                            thumbnailCache[result.face.id] = image
+                        }
+                    }
+                }
+
+                // Incremental clustering: cluster new faces immediately against existing groups
+                if !newFaces.isEmpty {
+                    allGroups = detectionService.clusterFaces(newFaces, allFaces: allFaces, existingGroups: allGroups, threshold: config.clusteringThreshold, cache: fpCache)
+
+                    // Assign group IDs to the newly clustered faces
+                    for group in allGroups {
+                        for faceID in group.faceIDs {
+                            if let index = allFaces.firstIndex(where: { $0.id == faceID && $0.groupID == nil }) {
+                                allFaces[index].groupID = group.id
+                            }
+                        }
+                    }
+                }
+
+                // Record file signature
+                if let sig = self.getFileSignature(for: scannedURL) {
+                    scannedFiles[scannedURL.path] = sig
+                }
+
+                processed += 1
+                batchesSinceLastSave += 1
+
+                // Periodic save to preserve progress
+                if batchesSinceLastSave >= saveInterval {
+                    let progressData = FolderFaceData(
+                        folderURL: folderURL,
+                        faces: allFaces,
+                        groups: allGroups,
+                        lastScanDate: Date(),
+                        scanComplete: false,
+                        scannedFiles: scannedFiles
+                    )
+                    try? storageService.saveFaceData(progressData)
+                    batchesSinceLastSave = 0
+                }
+
+                let current = processed
+                let total = toScan.count
+                await MainActor.run {
+                    scanProgress = "\(current)/\(total)"
+                }
+            }
 
             // Process images concurrently, capped at 4
             await withTaskGroup(of: (URL, [(face: DetectedFace, thumbnail: Data)]).self) { taskGroup in
@@ -211,26 +275,7 @@ final class FaceRecognitionViewModel {
                 for url in toScan {
                     if pending >= 4 {
                         if let (scannedURL, results) = await taskGroup.next() {
-                            for result in results {
-                                allFaces.append(result.face)
-                                try? storageService.saveThumbnail(result.thumbnail, for: result.face.id, folderURL: folderURL)
-                                let image = NSImage(data: result.thumbnail)
-                                if let image {
-                                    await MainActor.run {
-                                        thumbnailCache[result.face.id] = image
-                                    }
-                                }
-                            }
-                            // Record file signature
-                            if let sig = self.getFileSignature(for: scannedURL) {
-                                scannedFiles[scannedURL.path] = sig
-                            }
-                            processed += 1
-                            let current = processed
-                            let total = toScan.count
-                            await MainActor.run {
-                                scanProgress = "\(current)/\(total)"
-                            }
+                            await processBatch(scannedURL: scannedURL, results: results)
                         }
                         pending -= 1
                     }
@@ -244,39 +289,7 @@ final class FaceRecognitionViewModel {
 
                 // Collect remaining
                 for await (scannedURL, results) in taskGroup {
-                    for result in results {
-                        allFaces.append(result.face)
-                        try? storageService.saveThumbnail(result.thumbnail, for: result.face.id, folderURL: folderURL)
-                        let image = NSImage(data: result.thumbnail)
-                        if let image {
-                            await MainActor.run {
-                                thumbnailCache[result.face.id] = image
-                            }
-                        }
-                    }
-                    // Record file signature
-                    if let sig = self.getFileSignature(for: scannedURL) {
-                        scannedFiles[scannedURL.path] = sig
-                    }
-                    processed += 1
-                    let current = processed
-                    let total = toScan.count
-                    await MainActor.run {
-                        scanProgress = "\(current)/\(total)"
-                    }
-                }
-            }
-
-            // Cluster faces
-            let unclustered = allFaces.filter { $0.groupID == nil }
-            allGroups = detectionService.clusterFaces(unclustered, allFaces: allFaces, existingGroups: allGroups, threshold: config.clusteringThreshold)
-
-            // Assign group IDs to faces
-            for group in allGroups {
-                for faceID in group.faceIDs {
-                    if let index = allFaces.firstIndex(where: { $0.id == faceID }) {
-                        allFaces[index].groupID = group.id
-                    }
+                    await processBatch(scannedURL: scannedURL, results: results)
                 }
             }
 

@@ -8,8 +8,8 @@ enum AppPaths {
         return url
     }
 
-    static var presetsDirectory: URL {
-        let url = applicationSupport.appendingPathComponent("Presets", isDirectory: true)
+    static var templatesDirectory: URL {
+        let url = applicationSupport.appendingPathComponent("Templates", isDirectory: true)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
     }

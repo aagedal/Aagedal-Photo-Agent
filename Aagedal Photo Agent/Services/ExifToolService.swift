@@ -323,10 +323,4 @@ final class ExifToolService {
         return nil
     }
 
-    deinit {
-        if isRunning {
-            sendCommand(["-stay_open", "False"])
-            stdinPipe?.fileHandleForWriting.closeFile()
-        }
-    }
 }

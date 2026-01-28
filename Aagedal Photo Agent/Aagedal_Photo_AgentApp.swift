@@ -79,6 +79,37 @@ struct Aagedal_Photo_AgentApp: App {
                 }
                 .keyboardShortcut("n", modifiers: .command)
             }
+
+            CommandMenu("Metadata") {
+                Button("Process Variables") {
+                    NotificationCenter.default.post(name: .processVariablesSelected, object: nil)
+                }
+                .keyboardShortcut("p", modifiers: .command)
+
+                Button("Process Variables in All Images") {
+                    NotificationCenter.default.post(name: .processVariablesAll, object: nil)
+                }
+                .keyboardShortcut("p", modifiers: [.command, .shift])
+
+                Divider()
+
+                Button("Apply Template...") {
+                    NotificationCenter.default.post(name: .showTemplatePalette, object: nil)
+                }
+                .keyboardShortcut("t", modifiers: .command)
+            }
+
+            CommandMenu("Upload") {
+                Button("Upload Selected") {
+                    NotificationCenter.default.post(name: .uploadSelected, object: nil)
+                }
+                .keyboardShortcut("u", modifiers: .command)
+
+                Button("Upload All") {
+                    NotificationCenter.default.post(name: .uploadAll, object: nil)
+                }
+                .keyboardShortcut("u", modifiers: [.command, .shift])
+            }
         }
 
         Settings {
@@ -98,4 +129,9 @@ extension Notification.Name {
     static let importCompleted = Notification.Name("importCompleted")
     static let selectPreviousImage = Notification.Name("selectPreviousImage")
     static let selectNextImage = Notification.Name("selectNextImage")
+    static let processVariablesSelected = Notification.Name("processVariablesSelected")
+    static let processVariablesAll = Notification.Name("processVariablesAll")
+    static let showTemplatePalette = Notification.Name("showTemplatePalette")
+    static let uploadSelected = Notification.Name("uploadSelected")
+    static let uploadAll = Notification.Name("uploadAll")
 }
