@@ -191,7 +191,7 @@ final class ExifToolService {
     func writeFields(_ fields: [String: String], to urls: [URL]) async throws {
         guard !urls.isEmpty, !fields.isEmpty else { return }
 
-        var args = ["-overwrite_original"]
+        var args = ["-overwrite_original", "-sep", ", "]
         var tempFiles: [URL] = []
 
         for (key, value) in fields {

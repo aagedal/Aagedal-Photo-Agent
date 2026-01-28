@@ -206,9 +206,17 @@ final class FaceRecognitionViewModel {
                     let existing = try await exifToolService.readFullMetadata(url: url)
                     var persons = existing.personShown
 
+                    // Split name on comma/semicolon to support multiple person names
+                    let names = name
+                        .components(separatedBy: CharacterSet(charactersIn: ",;"))
+                        .map { $0.trimmingCharacters(in: .whitespaces) }
+                        .filter { !$0.isEmpty }
+
                     // Deduplicate: only add if not already present
-                    if !persons.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) {
-                        persons.append(name)
+                    for n in names {
+                        if !persons.contains(where: { $0.caseInsensitiveCompare(n) == .orderedSame }) {
+                            persons.append(n)
+                        }
                     }
 
                     let value = persons.joined(separator: ", ")
