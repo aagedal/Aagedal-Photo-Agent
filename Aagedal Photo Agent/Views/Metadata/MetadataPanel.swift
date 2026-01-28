@@ -55,6 +55,13 @@ struct MetadataPanel: View {
             }
         }
         .frame(maxWidth: .infinity)
+        .onKeyPress("m") {
+            guard !viewModel.isBatchEdit, viewModel.originalImageMetadata != nil else {
+                return .ignored
+            }
+            showingEmbeddedValues.toggle()
+            return .handled
+        }
         .alert("C2PA Protected Image", isPresented: $showingC2PAWarning) {
             Button("Cancel", role: .cancel) { }
             Button("Write Anyway") {
@@ -106,11 +113,12 @@ struct MetadataPanel: View {
         Section {
             // Toggle between Embedded and Pending views
             if !viewModel.isBatchEdit {
-                Picker("View", selection: $showingEmbeddedValues) {
+                Picker("", selection: $showingEmbeddedValues) {
                     Text("Pending").tag(false)
                     Text("Embedded").tag(true)
                 }
                 .pickerStyle(.segmented)
+                .labelsHidden()
                 .disabled(viewModel.originalImageMetadata == nil)
             }
 
@@ -135,7 +143,18 @@ struct MetadataPanel: View {
                 .disabled(viewModel.sidecarHistory.isEmpty)
                 .help(viewModel.sidecarHistory.isEmpty ? "No editing history" : "View editing history")
                 .popover(isPresented: $showingHistoryPopover) {
-                    MetadataHistoryView(history: viewModel.sidecarHistory)
+                    MetadataHistoryView(
+                        history: viewModel.sidecarHistory,
+                        onRestoreToPoint: { index in
+                            viewModel.restoreToHistoryPoint(at: index)
+                            showingHistoryPopover = false
+                            onPendingStatusChanged?()
+                        },
+                        onClearHistory: {
+                            viewModel.clearHistory()
+                            showingHistoryPopover = false
+                        }
+                    )
                 }
             }
         }
@@ -345,28 +364,51 @@ struct MetadataPanel: View {
 
     @ViewBuilder
     private var gpsSection: some View {
-        GPSSectionView(
-            latitude: Binding(
-                get: { viewModel.editingMetadata.latitude },
-                set: { viewModel.editingMetadata.latitude = $0 }
-            ),
-            longitude: Binding(
-                get: { viewModel.editingMetadata.longitude },
-                set: { viewModel.editingMetadata.longitude = $0 }
-            ),
-            onChanged: { viewModel.markChanged() },
-            isBatchMode: viewModel.isBatchEdit,
-            isReverseGeocoding: viewModel.isReverseGeocoding,
-            geocodingError: viewModel.geocodingError,
-            geocodingProgress: viewModel.geocodingProgress,
-            onReverseGeocode: {
-                if viewModel.isBatchEdit {
-                    viewModel.reverseGeocodeSelectedImages()
-                } else {
-                    viewModel.reverseGeocodeCurrentLocation()
+        if showingEmbeddedValues && !viewModel.isBatchEdit {
+            embeddedGPSView
+        } else {
+            GPSSectionView(
+                latitude: Binding(
+                    get: { viewModel.editingMetadata.latitude },
+                    set: { viewModel.editingMetadata.latitude = $0 }
+                ),
+                longitude: Binding(
+                    get: { viewModel.editingMetadata.longitude },
+                    set: { viewModel.editingMetadata.longitude = $0 }
+                ),
+                onChanged: { viewModel.markChanged() },
+                isBatchMode: viewModel.isBatchEdit,
+                isReverseGeocoding: viewModel.isReverseGeocoding,
+                geocodingError: viewModel.geocodingError,
+                geocodingProgress: viewModel.geocodingProgress,
+                onReverseGeocode: {
+                    if viewModel.isBatchEdit {
+                        viewModel.reverseGeocodeSelectedImages()
+                    } else {
+                        viewModel.reverseGeocodeCurrentLocation()
+                    }
                 }
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var embeddedGPSView: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("GPS Location")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if let original = viewModel.originalImageMetadata,
+               let lat = original.latitude,
+               let lon = original.longitude {
+                Text(String(format: "%.6f, %.6f", lat, lon))
+                    .font(.body)
+            } else {
+                Text("No GPS data")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
             }
-        )
+        }
     }
 
     // MARK: - Action Buttons
@@ -414,6 +456,15 @@ struct MetadataPanel: View {
                     ProgressView()
                         .controlSize(.small)
                 }
+
+                Button {
+                    viewModel.discardPendingChanges()
+                    onPendingStatusChanged?()
+                } label: {
+                    Image(systemName: "arrow.uturn.backward")
+                }
+                .disabled(!viewModel.hasChanges || viewModel.isSaving)
+                .help("Discard pending changes")
 
                 Button {
                     if browserViewModel.firstSelectedImage?.hasC2PA == true {

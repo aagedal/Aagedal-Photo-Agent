@@ -45,13 +45,17 @@ struct TemplatePaletteView: View {
             return .handled
         }
         .onKeyPress(.downArrow) {
-            if selectedIndex < templates.count - 1 {
+            // Allow selecting up to templates.count (the save button)
+            if selectedIndex < templates.count {
                 selectedIndex += 1
             }
             return .handled
         }
         .onKeyPress(.return) {
-            if !templates.isEmpty && selectedIndex < templates.count {
+            if selectedIndex == templates.count {
+                // Save button selected
+                onSaveNew()
+            } else if !templates.isEmpty && selectedIndex < templates.count {
                 onApply(templates[selectedIndex])
             }
             return .handled
@@ -102,6 +106,10 @@ struct TemplatePaletteView: View {
 
     // MARK: - Save New Button
 
+    private var isSaveButtonSelected: Bool {
+        selectedIndex == templates.count
+    }
+
     private var saveNewButton: some View {
         Button {
             onSaveNew()
@@ -109,13 +117,24 @@ struct TemplatePaletteView: View {
             HStack {
                 Image(systemName: "plus.circle")
                 Text("Save Current as Template")
+                Spacer()
+                if isSaveButtonSelected {
+                    Image(systemName: "return")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 8)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(isSaveButtonSelected ? Color.accentColor.opacity(0.15) : Color.clear)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 4)
+        .onHover { hovering in
+            if hovering {
+                selectedIndex = templates.count
+            }
+        }
     }
 
     // MARK: - Template List

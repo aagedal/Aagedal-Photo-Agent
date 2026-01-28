@@ -1,6 +1,11 @@
 import Foundation
 import AppKit
 
+enum FaceGroupSortMode: String, CaseIterable {
+    case manual = "Insertion Order"
+    case bySize = "Largest First"
+}
+
 @Observable
 final class FaceRecognitionViewModel {
     var faceData: FolderFaceData? {
@@ -16,6 +21,11 @@ final class FaceRecognitionViewModel {
 
     // Merge suggestions for similar groups
     var mergeSuggestions: [MergeSuggestion] = []
+
+    // Sort mode for face groups
+    var sortMode: FaceGroupSortMode = .manual {
+        didSet { invalidateCaches() }
+    }
 
     // Cached sorted groups (invalidated when faceData changes)
     private(set) var sortedGroups: [FaceGroup] = []
@@ -57,18 +67,28 @@ final class FaceRecognitionViewModel {
             return
         }
 
-        sortedGroups = groups.sorted { a, b in
+        switch sortMode {
+        case .bySize:
             // Named groups first (alphabetical), then unnamed (by size descending)
-            switch (a.name, b.name) {
-            case let (nameA?, nameB?):
-                return nameA.localizedCaseInsensitiveCompare(nameB) == .orderedAscending
-            case (_?, nil):
-                return true
-            case (nil, _?):
-                return false
-            case (nil, nil):
-                return a.faceIDs.count > b.faceIDs.count
+            sortedGroups = groups.sorted { a, b in
+                switch (a.name, b.name) {
+                case let (nameA?, nameB?):
+                    return nameA.localizedCaseInsensitiveCompare(nameB) == .orderedAscending
+                case (_?, nil):
+                    return true
+                case (nil, _?):
+                    return false
+                case (nil, nil):
+                    return a.faceIDs.count > b.faceIDs.count
+                }
             }
+        case .manual:
+            // Named groups first (alphabetical), then unnamed in array order (insertion order)
+            let named = groups.filter { $0.name != nil }.sorted {
+                $0.name!.localizedCaseInsensitiveCompare($1.name!) == .orderedAscending
+            }
+            let unnamed = groups.filter { $0.name == nil }
+            sortedGroups = named + unnamed
         }
 
         // Rebuild group lookup
@@ -575,8 +595,23 @@ final class FaceRecognitionViewModel {
     }
 
     /// Remove faces from their current groups and create a new group with them (single mutation + single save).
+    /// The new group is inserted after the source groups to keep it visually close when in manual sort mode.
     func createNewGroup(withFaces faceIDs: Set<UUID>) {
         guard var data = faceData, !faceIDs.isEmpty else { return }
+
+        // Find source group IDs before removal (to determine insertion position)
+        let sourceGroupIDs = Set(faceIDs.compactMap { faceID -> UUID? in
+            guard let faceIndex = data.faces.firstIndex(where: { $0.id == faceID }) else { return nil }
+            return data.faces[faceIndex].groupID
+        })
+
+        // Find the highest index among source groups (for insertion position)
+        var maxSourceIndex = -1
+        for (index, group) in data.groups.enumerated() {
+            if sourceGroupIDs.contains(group.id) {
+                maxSourceIndex = max(maxSourceIndex, index)
+            }
+        }
 
         // Remove faces from their source groups
         removeFacesFromGroups(faceIDs, in: &data)
@@ -589,7 +624,25 @@ final class FaceRecognitionViewModel {
             representativeFaceID: faceIDArray[0],
             faceIDs: faceIDArray
         )
-        data.groups.append(newGroup)
+
+        // Insert after the last source group (accounting for potential removal of empty groups)
+        // We need to find the appropriate insertion index after removals
+        let insertionIndex: Int
+        if maxSourceIndex >= 0 {
+            // Count how many source groups were removed (became empty)
+            var removedCount = 0
+            for groupID in sourceGroupIDs {
+                if !data.groups.contains(where: { $0.id == groupID }) {
+                    removedCount += 1
+                }
+            }
+            // Adjust index: after the remaining source groups
+            insertionIndex = min(maxSourceIndex - removedCount + 1, data.groups.count)
+        } else {
+            insertionIndex = data.groups.count
+        }
+
+        data.groups.insert(newGroup, at: max(0, insertionIndex))
 
         for faceID in faceIDs {
             if let fi = data.faces.firstIndex(where: { $0.id == faceID }) {

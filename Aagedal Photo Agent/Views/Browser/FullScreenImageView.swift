@@ -5,12 +5,38 @@ import os.log
 
 nonisolated private let imageLogger = Logger(subsystem: "com.aagedal.photo-agent", category: "ImageLoading")
 
+// MARK: - CGFloat Clamping Extension
+
+private extension CGFloat {
+    func clamped(to range: ClosedRange<CGFloat>) -> CGFloat {
+        return Swift.min(Swift.max(self, range.lowerBound), range.upperBound)
+    }
+}
+
+// MARK: - Zoom Controller (bridges window events to view)
+
+@Observable
+fileprivate class ZoomController {
+    var toggleZoomAction: (() -> Void)?
+    var scrollZoomAction: ((CGFloat) -> Void)?
+
+    func toggleZoom() {
+        toggleZoomAction?()
+    }
+
+    func scrollZoom(_ delta: CGFloat) {
+        scrollZoomAction?(delta)
+    }
+}
+
 // MARK: - Custom NSWindow that intercepts Escape and Space
 
 private class FullScreenWindow: NSWindow {
     var onDismiss: (() -> Void)?
     var onSetRating: ((Int) -> Void)?
     var onSetLabel: ((Int) -> Void)?
+    var onToggleZoom: (() -> Void)?
+    var onScrollZoom: ((CGFloat) -> Void)?
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
@@ -24,6 +50,12 @@ private class FullScreenWindow: NSWindow {
         // Escape or Space → dismiss
         if keyCode == 53 || keyCode == 49 {
             onDismiss?()
+            return
+        }
+
+        // Z key (keyCode 6) → toggle zoom
+        if keyCode == 6 && !hasCmd && !hasOption {
+            onToggleZoom?()
             return
         }
 
@@ -46,6 +78,14 @@ private class FullScreenWindow: NSWindow {
         super.keyDown(with: event)
     }
 
+    override func scrollWheel(with event: NSEvent) {
+        // Use scroll wheel for zooming (deltaY)
+        let delta = event.scrollingDeltaY
+        if abs(delta) > 0.01 {
+            onScrollZoom?(delta)
+        }
+    }
+
     override func cancelOperation(_ sender: Any?) {
         onDismiss?()
     }
@@ -55,62 +95,151 @@ private class FullScreenWindow: NSWindow {
 
 struct FullScreenImageView: View {
     @Bindable var viewModel: BrowserViewModel
+    fileprivate var zoomController: ZoomController?
+
     @State private var currentImage: NSImage?
     @State private var isLoading = false
     @State private var fullLoadTask: Task<Void, Never>?
     @State private var showLabelPicker = false
     @FocusState private var isFocused: Bool
 
+    // Zoom state
+    @State private var zoomScale: CGFloat = 1.0
+    @State private var lastZoomScale: CGFloat = 1.0
+    @State private var offset: CGSize = .zero
+    @State private var lastOffset: CGSize = .zero
+    @State private var isZoomedTo100: Bool = false
+
+    private let minZoom: CGFloat = 1.0
+    private let maxZoom: CGFloat = 10.0
+
     private var currentImageFile: ImageFile? {
         viewModel.firstSelectedImage
     }
 
+    /// Calculate the scale factor for 100% zoom (1:1 pixel mapping)
+    private func calculateZoomTo100() -> CGFloat {
+        guard let image = currentImage,
+              let screen = NSScreen.main else { return 1.0 }
+
+        let imageSize = image.size
+        let screenSize = screen.frame.size
+
+        // Calculate the fit scale (how much the image is scaled down to fit)
+        let fitScaleX = screenSize.width / imageSize.width
+        let fitScaleY = screenSize.height / imageSize.height
+        let fitScale = min(fitScaleX, fitScaleY)
+
+        // 100% zoom means 1:1 pixel ratio, so we need to counteract the fit scale
+        // If fitScale < 1, image was scaled down, so zoom100 = 1/fitScale
+        // If fitScale >= 1, image already fits at 100% or smaller, just use 1.0
+        if fitScale < 1.0 {
+            return 1.0 / fitScale
+        }
+        return 1.0
+    }
+
+    func toggleZoom() {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            if isZoomedTo100 {
+                // Zoom to fit
+                zoomScale = 1.0
+                offset = .zero
+                isZoomedTo100 = false
+            } else {
+                // Zoom to 100%
+                zoomScale = calculateZoomTo100()
+                offset = .zero
+                isZoomedTo100 = true
+            }
+            lastZoomScale = zoomScale
+            lastOffset = offset
+        }
+    }
+
+    func handleScrollZoom(_ delta: CGFloat) {
+        let zoomFactor: CGFloat = 1.0 + (delta * 0.02)
+        let newScale = (zoomScale * zoomFactor).clamped(to: minZoom...maxZoom)
+
+        withAnimation(.easeOut(duration: 0.1)) {
+            zoomScale = newScale
+            lastZoomScale = newScale
+
+            // Reset offset if zoomed back to fit
+            if newScale <= 1.0 {
+                offset = .zero
+                lastOffset = .zero
+            }
+
+            // Update isZoomedTo100 state
+            let zoom100 = calculateZoomTo100()
+            isZoomedTo100 = abs(zoomScale - zoom100) < 0.01
+        }
+    }
+
     var body: some View {
-        ZStack {
-            Color.black
+        GeometryReader { geometry in
+            ZStack {
+                Color.black
 
-            if let currentImage {
-                Image(nsImage: currentImage)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-            }
-
-            if isLoading {
-                VStack {
-                    HStack {
-                        ProgressView()
-                            .scaleEffect(0.5)
-                            .tint(.white)
-                            .padding(12)
-                        Spacer()
-                    }
-                    Spacer()
-                }
-            }
-
-            if let file = currentImageFile {
-                // Bottom-left: star rating + color label
-                VStack {
-                    Spacer()
-                    HStack(spacing: 8) {
-                        starRatingOverlay(for: file)
-                        colorLabelOverlay(for: file)
-                        Spacer()
-                    }
-                    .padding(.leading, 20)
-                    .padding(.bottom, 20)
+                if let currentImage {
+                    Image(nsImage: currentImage)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .scaleEffect(zoomScale)
+                        .offset(offset)
+                        .gesture(magnifyGesture)
+                        .gesture(dragGesture(in: geometry.size))
+                        .onTapGesture(count: 2) {
+                            toggleZoom()
+                        }
                 }
 
-                // Bottom-center: filename
-                VStack {
-                    Spacer()
-                    Text(file.filename)
-                        .font(.caption)
-                        .foregroundStyle(.white)
+                if isLoading {
+                    VStack {
+                        HStack {
+                            ProgressView()
+                                .scaleEffect(0.5)
+                                .tint(.white)
+                                .padding(12)
+                            Spacer()
+                        }
+                        Spacer()
+                    }
+                }
+
+                if let file = currentImageFile {
+                    // Bottom-left: star rating + color label
+                    VStack {
+                        Spacer()
+                        HStack(spacing: 8) {
+                            starRatingOverlay(for: file)
+                            colorLabelOverlay(for: file)
+                            Spacer()
+                        }
+                        .padding(.leading, 20)
+                        .padding(.bottom, 20)
+                    }
+
+                    // Bottom-center: filename + zoom indicator
+                    VStack {
+                        Spacer()
+                        HStack(spacing: 12) {
+                            Text(file.filename)
+                                .font(.caption)
+                                .foregroundStyle(.white)
+
+                            if zoomScale > 1.01 {
+                                Text("\(Int(zoomScale * 100))%")
+                                    .font(.caption)
+                                    .foregroundStyle(.white.opacity(0.7))
+                            }
+                        }
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)
                         .background(.black.opacity(0.6), in: Capsule())
                         .padding(.bottom, 16)
+                    }
                 }
             }
         }
@@ -120,6 +249,13 @@ struct FullScreenImageView: View {
         .focusEffectDisabled()
         .onAppear {
             isFocused = true
+            // Register zoom actions with the controller
+            zoomController?.toggleZoomAction = { [self] in
+                toggleZoom()
+            }
+            zoomController?.scrollZoomAction = { [self] delta in
+                handleScrollZoom(delta)
+            }
         }
         .onKeyPress(.leftArrow) {
             viewModel.selectPrevious()
@@ -138,7 +274,89 @@ struct FullScreenImageView: View {
             return .handled
         }
         .task(id: currentImageFile?.url) {
+            // Reset zoom when changing images
+            zoomScale = 1.0
+            lastZoomScale = 1.0
+            offset = .zero
+            lastOffset = .zero
+            isZoomedTo100 = false
             await loadImage()
+        }
+    }
+
+    // MARK: - Gestures
+
+    private var magnifyGesture: some Gesture {
+        MagnifyGesture()
+            .onChanged { value in
+                let newScale = (lastZoomScale * value.magnification).clamped(to: minZoom...maxZoom)
+                zoomScale = newScale
+            }
+            .onEnded { value in
+                lastZoomScale = zoomScale
+                // Reset offset if zoomed back to fit
+                if zoomScale <= 1.0 {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        zoomScale = 1.0
+                        offset = .zero
+                        lastOffset = .zero
+                    }
+                }
+                // Update isZoomedTo100 state
+                let zoom100 = calculateZoomTo100()
+                isZoomedTo100 = abs(zoomScale - zoom100) < 0.01
+            }
+    }
+
+    private func dragGesture(in size: CGSize) -> some Gesture {
+        DragGesture()
+            .onChanged { value in
+                guard zoomScale > 1.0 else { return }
+                offset = CGSize(
+                    width: lastOffset.width + value.translation.width,
+                    height: lastOffset.height + value.translation.height
+                )
+            }
+            .onEnded { value in
+                guard zoomScale > 1.0 else {
+                    offset = .zero
+                    lastOffset = .zero
+                    return
+                }
+                lastOffset = offset
+                // Constrain offset to prevent panning too far
+                constrainOffset(in: size)
+            }
+    }
+
+    private func constrainOffset(in size: CGSize) {
+        guard let image = currentImage else { return }
+
+        // Calculate the visible image size when fitted
+        let imageAspect = image.size.width / image.size.height
+        let screenAspect = size.width / size.height
+
+        let fittedSize: CGSize
+        if imageAspect > screenAspect {
+            // Image is wider than screen
+            fittedSize = CGSize(width: size.width, height: size.width / imageAspect)
+        } else {
+            // Image is taller than screen
+            fittedSize = CGSize(width: size.height * imageAspect, height: size.height)
+        }
+
+        let scaledWidth = fittedSize.width * zoomScale
+        let scaledHeight = fittedSize.height * zoomScale
+
+        let maxOffsetX = max(0, (scaledWidth - size.width) / 2)
+        let maxOffsetY = max(0, (scaledHeight - size.height) / 2)
+
+        withAnimation(.easeOut(duration: 0.2)) {
+            offset = CGSize(
+                width: offset.width.clamped(to: -maxOffsetX...maxOffsetX),
+                height: offset.height.clamped(to: -maxOffsetY...maxOffsetY)
+            )
+            lastOffset = offset
         }
     }
 
@@ -385,6 +603,7 @@ struct FullScreenImageView: View {
 struct FullScreenPresenter: ViewModifier {
     @Bindable var viewModel: BrowserViewModel
     @State private var fullScreenWindow: FullScreenWindow?
+    @State private var zoomController: ZoomController?
 
     func body(content: Content) -> some View {
         content
@@ -400,6 +619,10 @@ struct FullScreenPresenter: ViewModifier {
     private func openFullScreen() {
         guard fullScreenWindow == nil,
               let screen = NSScreen.main else { return }
+
+        // Create zoom controller to bridge window events to the view
+        let controller = ZoomController()
+        zoomController = controller
 
         let window = FullScreenWindow(
             contentRect: screen.frame,
@@ -423,9 +646,15 @@ struct FullScreenPresenter: ViewModifier {
             guard let label = ColorLabel.fromShortcutIndex(index) else { return }
             viewModel?.setLabel(label)
         }
+        window.onToggleZoom = { [weak controller] in
+            controller?.toggleZoom()
+        }
+        window.onScrollZoom = { [weak controller] delta in
+            controller?.scrollZoom(delta)
+        }
 
         let hostingView = NSHostingView(
-            rootView: FullScreenImageView(viewModel: viewModel)
+            rootView: FullScreenImageView(viewModel: viewModel, zoomController: controller)
         )
         window.contentView = hostingView
         window.setFrame(screen.frame, display: true)
@@ -437,6 +666,7 @@ struct FullScreenPresenter: ViewModifier {
     private func closeFullScreen() {
         fullScreenWindow?.orderOut(nil)
         fullScreenWindow = nil
+        zoomController = nil
     }
 }
 

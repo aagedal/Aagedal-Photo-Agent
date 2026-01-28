@@ -262,6 +262,45 @@ struct ContentView: View {
                     } label: {
                         Label("Open Folder", systemImage: "folder.badge.plus")
                     }
+                    Button {
+                        isShowingImport = true
+                    } label: {
+                        Label("Import...", systemImage: "square.and.arrow.down")
+                    }
+                }
+
+                if !browserViewModel.openFolders.isEmpty {
+                    Section("Open Folders") {
+                        ForEach(browserViewModel.openFolders, id: \.self) { folderURL in
+                            Button {
+                                browserViewModel.loadFolder(url: folderURL)
+                            } label: {
+                                HStack {
+                                    Label(folderURL.lastPathComponent, systemImage: "folder.fill")
+                                    Spacer()
+                                    if folderURL == browserViewModel.currentFolderURL {
+                                        Image(systemName: "checkmark")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                            .contextMenu {
+                                Button {
+                                    browserViewModel.addCurrentFolderToFavorites()
+                                } label: {
+                                    Label("Add to Favorites", systemImage: "star")
+                                }
+                                .disabled(browserViewModel.favoriteFolders.contains { $0.url == folderURL })
+
+                                Divider()
+
+                                Button("Close", role: .destructive) {
+                                    browserViewModel.closeOpenFolder(folderURL)
+                                }
+                            }
+                        }
+                    }
                 }
 
                 if !browserViewModel.favoriteFolders.isEmpty {
@@ -281,29 +320,10 @@ struct ContentView: View {
                     }
                 }
 
-                if let folderName = browserViewModel.currentFolderName {
-                    Section("Current Folder") {
-                        Label(folderName, systemImage: "folder.fill")
-                        if !browserViewModel.isCurrentFolderFavorited {
-                            Button {
-                                browserViewModel.addCurrentFolderToFavorites()
-                            } label: {
-                                Label("Add to Favorites", systemImage: "star")
-                            }
-                        }
-                    }
-                }
-
-                Section {
-                    Button {
-                        isShowingImport = true
-                    } label: {
-                        Label("Import Photos...", systemImage: "square.and.arrow.down")
-                    }
-                }
-
                 if !browserViewModel.images.isEmpty {
-                    Section("Info") {
+                    Divider()
+
+                    Section("Folder Info") {
                         LabeledContent("Images", value: "\(browserViewModel.images.count)")
                         LabeledContent("Selected", value: "\(browserViewModel.selectedImageIDs.count)")
                     }
@@ -312,9 +332,8 @@ struct ContentView: View {
                         Button {
                             isShowingFTPUpload = true
                         } label: {
-                            Label("Upload Selected...", systemImage: "arrow.up.to.line")
+                            Label("Upload...", systemImage: "arrow.up.to.line")
                         }
-                        .disabled(browserViewModel.selectedImageIDs.isEmpty)
                     }
                 }
 

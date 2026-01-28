@@ -17,6 +17,7 @@ final class BrowserViewModel {
         didSet { rebuildSortedCache() }
     }
     var favoriteFolders: [FavoriteFolder] = []
+    var openFolders: [URL] = []
     var manualOrder: [URL] = [] {
         didSet {
             if sortOrder == .manual { rebuildSortedCache() }
@@ -96,6 +97,11 @@ final class BrowserViewModel {
         selectedImageIDs.removeAll()
         lastClickedImageURL = nil
         manualOrder.removeAll()
+
+        // Add to open folders if not already there
+        if !openFolders.contains(url) {
+            openFolders.append(url)
+        }
 
         Task {
             do {
@@ -269,6 +275,21 @@ final class BrowserViewModel {
     var isCurrentFolderFavorited: Bool {
         guard let url = currentFolderURL else { return false }
         return favoriteFolders.contains { $0.url == url }
+    }
+
+    func closeOpenFolder(_ url: URL) {
+        openFolders.removeAll { $0 == url }
+        // If we closed the current folder, switch to another open folder or clear
+        if currentFolderURL == url {
+            if let nextFolder = openFolders.first {
+                loadFolder(url: nextFolder)
+            } else {
+                currentFolderURL = nil
+                currentFolderName = nil
+                images = []
+                selectedImageIDs.removeAll()
+            }
+        }
     }
 
     // MARK: - Pending Status
