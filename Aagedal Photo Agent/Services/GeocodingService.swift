@@ -40,13 +40,13 @@ struct GeocodingService: Sendable {
             guard let mapItem = mapItems.first else {
                 throw GeocodingError.noResults
             }
-            // Note: MKAddress only provides fullAddress/shortAddress strings, not structured
-            // components. Using deprecated placemark property until Apple provides structured
-            // address data in the new API.
-            return GeocodingResult(
-                city: mapItem.placemark.locality,
-                country: mapItem.placemark.country
-            )
+            // Use addressRepresentations.cityName for city (non-deprecated)
+            // Fall back to placemark.country for country as MKAddressRepresentations
+            // doesn't expose a country property
+            let city = mapItem.addressRepresentations?.cityName
+            let country = mapItem.placemark.country
+
+            return GeocodingResult(city: city, country: country)
         } catch let error as GeocodingError {
             throw error
         } catch {
