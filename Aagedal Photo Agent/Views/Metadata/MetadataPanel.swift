@@ -118,25 +118,17 @@ struct MetadataPanel: View {
                     .buttonStyle(.plain)
                     .help("Variable Reference")
                 }
-                ZStack(alignment: .topLeading) {
-                    TextEditor(text: Binding(
+                TextField(
+                    viewModel.isBatchEdit ? "Leave empty to skip" : "Enter description",
+                    text: Binding(
                         get: { viewModel.editingMetadata.description ?? "" },
                         set: { viewModel.editingMetadata.description = $0.isEmpty ? nil : $0; viewModel.markChanged() }
-                    ))
-                    .font(.body)
-                    .frame(minHeight: 90, maxHeight: 160)
-                    .scrollContentBackground(.hidden)
-                    .padding(4)
-                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
-                    if (viewModel.editingMetadata.description ?? "").isEmpty {
-                        Text(viewModel.isBatchEdit ? "Leave empty to skip" : "Enter description")
-                            .font(.body)
-                            .foregroundStyle(.tertiary)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 12)
-                            .allowsHitTesting(false)
-                    }
-                }
+                    ),
+                    axis: .vertical
+                )
+                .lineLimit(4...8)
+                .textFieldStyle(.roundedBorder)
+                .font(.body)
             }
             .sheet(isPresented: $isShowingVariableReference) {
                 VariableReferenceView(
@@ -352,22 +344,10 @@ struct EditableTextEditor: View {
             Text(label)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            ZStack(alignment: .topLeading) {
-                TextEditor(text: $text)
-                    .font(.body)
-                    .frame(minHeight: 60, maxHeight: 120)
-                    .scrollContentBackground(.hidden)
-                    .padding(4)
-                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
-                if text.isEmpty {
-                    Text(placeholder)
-                        .font(.body)
-                        .foregroundStyle(.tertiary)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 12)
-                        .allowsHitTesting(false)
-                }
-            }
+            TextField(placeholder, text: $text, axis: .vertical)
+                .lineLimit(3...6)
+                .textFieldStyle(.roundedBorder)
+                .font(.body)
         }
     }
 }

@@ -22,8 +22,11 @@ final class ExifToolService {
            FileManager.default.isExecutableFile(atPath: override) {
             return override
         }
-        if let bundled = Bundle.main.path(forResource: "exiftool", ofType: nil) {
-            return bundled
+        if let bundledDir = Bundle.main.path(forResource: "ExifTool", ofType: nil) {
+            let bundledPath = (bundledDir as NSString).appendingPathComponent("exiftool")
+            if FileManager.default.isExecutableFile(atPath: bundledPath) {
+                return bundledPath
+            }
         }
         let homebrewPath = "/opt/homebrew/bin/exiftool"
         if FileManager.default.isExecutableFile(atPath: homebrewPath) {
