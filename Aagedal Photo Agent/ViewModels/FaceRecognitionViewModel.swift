@@ -3,7 +3,9 @@ import AppKit
 
 @Observable
 final class FaceRecognitionViewModel {
-    var faceData: FolderFaceData?
+    var faceData: FolderFaceData? {
+        didSet { invalidateCaches() }
+    }
     var isScanning = false
     var scanProgress: String = ""
     var scanComplete = false
@@ -14,6 +16,15 @@ final class FaceRecognitionViewModel {
 
     // Merge suggestions for similar groups
     var mergeSuggestions: [MergeSuggestion] = []
+
+    // Cached sorted groups (invalidated when faceData changes)
+    private(set) var sortedGroups: [FaceGroup] = []
+
+    // Fast face lookup by ID (invalidated when faceData changes)
+    private var faceLookup: [UUID: DetectedFace] = [:]
+
+    // Fast group lookup by ID (invalidated when faceData changes)
+    private var groupLookup: [UUID: FaceGroup] = [:]
 
     // Detection configuration from settings
     var detectionConfig: FaceDetectionService.DetectionConfig {
@@ -35,11 +46,18 @@ final class FaceRecognitionViewModel {
         self.exifToolService = exifToolService
     }
 
-    // MARK: - Sorted Groups
+    // MARK: - Cache Management
 
-    var sortedGroups: [FaceGroup] {
-        guard let groups = faceData?.groups else { return [] }
-        return groups.sorted { a, b in
+    private func invalidateCaches() {
+        // Rebuild sorted groups
+        guard let groups = faceData?.groups else {
+            sortedGroups = []
+            faceLookup = [:]
+            groupLookup = [:]
+            return
+        }
+
+        sortedGroups = groups.sorted { a, b in
             // Named groups first (alphabetical), then unnamed (by size descending)
             switch (a.name, b.name) {
             case let (nameA?, nameB?):
@@ -50,6 +68,20 @@ final class FaceRecognitionViewModel {
                 return false
             case (nil, nil):
                 return a.faceIDs.count > b.faceIDs.count
+            }
+        }
+
+        // Rebuild group lookup
+        groupLookup = [:]
+        for group in groups {
+            groupLookup[group.id] = group
+        }
+
+        // Rebuild face lookup
+        faceLookup = [:]
+        if let faces = faceData?.faces {
+            for face in faces {
+                faceLookup[face.id] = face
             }
         }
     }
@@ -686,10 +718,16 @@ final class FaceRecognitionViewModel {
     // MARK: - Helper
 
     func faces(in group: FaceGroup) -> [DetectedFace] {
-        guard let data = faceData else { return [] }
-        return group.faceIDs.compactMap { faceID in
-            data.faces.first { $0.id == faceID }
-        }
+        // Use lookup dictionary for O(1) access per face instead of O(n)
+        return group.faceIDs.compactMap { faceLookup[$0] }
+    }
+
+    func face(byID faceID: UUID) -> DetectedFace? {
+        faceLookup[faceID]
+    }
+
+    func group(byID groupID: UUID) -> FaceGroup? {
+        groupLookup[groupID]
     }
 
     func imageURLs(for group: FaceGroup) -> Set<URL> {
@@ -699,9 +737,12 @@ final class FaceRecognitionViewModel {
 
     func thumbnailImage(for faceID: UUID) -> NSImage? {
         if let cached = thumbnailCache[faceID] { return cached }
+
         guard let folderURL = faceData?.folderURL,
               let data = storageService.loadThumbnail(for: faceID, folderURL: folderURL),
-              let image = NSImage(data: data) else { return nil }
+              let image = NSImage(data: data) else {
+            return nil
+        }
         thumbnailCache[faceID] = image
         return image
     }
