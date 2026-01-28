@@ -5,7 +5,7 @@ import CoreGraphics
 import ImageIO
 import Accelerate
 
-struct FaceDetectionService: Sendable {
+nonisolated struct FaceDetectionService: Sendable {
 
     /// Cache for VNFeaturePrintObservation objects during clustering operations.
     /// Reduces NSKeyedUnarchiver calls from O(N³) to O(N) by deserializing each feature print only once.
@@ -609,5 +609,5 @@ struct FaceDetectionService: Sendable {
 // MARK: - VNFaceObservation Helpers
 
 private extension CGRect {
-    var asCGRect: CGRect { self }
+    nonisolated var asCGRect: CGRect { self }
 }

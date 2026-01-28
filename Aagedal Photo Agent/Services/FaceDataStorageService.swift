@@ -1,6 +1,6 @@
 import Foundation
 
-struct FaceDataStorageService: Sendable {
+nonisolated struct FaceDataStorageService: Sendable {
 
     private static let faceDataDirectoryName = ".face_data"
     private static let dataFileName = "face_data.json"
