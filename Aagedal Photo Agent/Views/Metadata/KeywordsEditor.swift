@@ -40,6 +40,11 @@ struct KeywordsEditor: View {
                     .onSubmit {
                         addKeyword()
                     }
+                    .onChange(of: newKeyword) { _, newValue in
+                        if newValue.contains(",") || newValue.contains(";") {
+                            addKeyword()
+                        }
+                    }
 
                 Button {
                     addKeyword()
@@ -56,9 +61,15 @@ struct KeywordsEditor: View {
     }
 
     private func addKeyword() {
-        let trimmed = newKeyword.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty, !keywords.contains(trimmed) else { return }
-        keywords.append(trimmed)
+        let parts = newKeyword
+            .components(separatedBy: CharacterSet(charactersIn: ",;"))
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !keywords.contains($0) }
+        guard !parts.isEmpty else {
+            newKeyword = ""
+            return
+        }
+        keywords.append(contentsOf: parts)
         newKeyword = ""
         onChange()
     }
