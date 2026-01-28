@@ -13,6 +13,13 @@ struct ThumbnailCell: View, Equatable {
         lhs.image == rhs.image && lhs.isSelected == rhs.isSelected
     }
 
+    private var pendingFieldsTooltip: String {
+        if image.pendingFieldNames.isEmpty {
+            return "Pending metadata changes"
+        }
+        return "Pending: " + image.pendingFieldNames.joined(separator: ", ")
+    }
+
     var body: some View {
         VStack(spacing: 4) {
             ZStack {
@@ -60,7 +67,7 @@ struct ThumbnailCell: View, Equatable {
                                 .frame(width: 10, height: 10)
                                 .overlay(Circle().strokeBorder(.white.opacity(0.5), lineWidth: 1))
                                 .padding(4)
-                                .help("Pending metadata changes")
+                                .help(pendingFieldsTooltip)
                             Spacer()
                         }
                         Spacer()

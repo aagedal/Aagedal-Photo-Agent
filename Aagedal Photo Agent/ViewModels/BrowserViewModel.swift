@@ -104,6 +104,7 @@ final class BrowserViewModel {
                 for i in files.indices {
                     if pendingURLs.contains(files[i].url) {
                         files[i].hasPendingMetadataChanges = true
+                        files[i].pendingFieldNames = sidecarService.pendingFieldNames(for: files[i].url, in: url)
                     }
                 }
                 self.images = files
@@ -276,7 +277,13 @@ final class BrowserViewModel {
         guard let folderURL = currentFolderURL else { return }
         let pendingURLs = sidecarService.imagesWithPendingChanges(in: folderURL)
         for i in images.indices {
-            images[i].hasPendingMetadataChanges = pendingURLs.contains(images[i].url)
+            let hasPending = pendingURLs.contains(images[i].url)
+            images[i].hasPendingMetadataChanges = hasPending
+            if hasPending {
+                images[i].pendingFieldNames = sidecarService.pendingFieldNames(for: images[i].url, in: folderURL)
+            } else {
+                images[i].pendingFieldNames = []
+            }
         }
     }
 

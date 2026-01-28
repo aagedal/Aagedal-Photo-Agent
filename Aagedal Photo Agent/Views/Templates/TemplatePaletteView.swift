@@ -3,10 +3,18 @@ import SwiftUI
 struct TemplatePaletteView: View {
     let templates: [MetadataTemplate]
     let onApply: (MetadataTemplate) -> Void
+    let onSaveNew: () -> Void
     let onDismiss: () -> Void
 
     @State private var selectedIndex: Int = 0
     @FocusState private var isFocused: Bool
+
+    private var calculatedHeight: CGFloat {
+        if templates.isEmpty {
+            return 180
+        }
+        return min(CGFloat(templates.count * 52 + 100), 400)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -17,8 +25,10 @@ struct TemplatePaletteView: View {
             } else {
                 templateList
             }
+            Divider()
+            saveNewButton
         }
-        .frame(width: 320, height: min(CGFloat(templates.count * 52 + 60), 400))
+        .frame(width: 320, height: calculatedHeight)
         .background(.regularMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .shadow(color: .black.opacity(0.2), radius: 20, x: 0, y: 10)
@@ -79,15 +89,33 @@ struct TemplatePaletteView: View {
             Image(systemName: "doc.on.clipboard")
                 .font(.largeTitle)
                 .foregroundStyle(.secondary)
-            Text("No templates")
+            Text("No templates yet")
                 .font(.headline)
                 .foregroundStyle(.secondary)
-            Text("Create a template in Settings")
+            Text("Save the current metadata as a template")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding()
+    }
+
+    // MARK: - Save New Button
+
+    private var saveNewButton: some View {
+        Button {
+            onSaveNew()
+        } label: {
+            HStack {
+                Image(systemName: "plus.circle")
+                Text("Save Current as Template")
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 4)
     }
 
     // MARK: - Template List

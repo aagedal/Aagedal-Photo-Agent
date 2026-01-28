@@ -66,6 +66,10 @@ struct ContentView: View {
                             applyTemplate(template)
                             isShowingTemplatePalette = false
                         },
+                        onSaveNew: {
+                            isShowingTemplatePalette = false
+                            isShowingSaveTemplateName = true
+                        },
                         onDismiss: {
                             isShowingTemplatePalette = false
                         }

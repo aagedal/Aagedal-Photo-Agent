@@ -66,45 +66,49 @@ struct GPSSectionView: View {
 
     @ViewBuilder
     private var mapView: some View {
-        MapReader { proxy in
-            Map(position: $mapPosition) {
-                if let coord = coordinate {
-                    Marker("", coordinate: coord)
+        GeometryReader { geometry in
+            MapReader { proxy in
+                Map(position: $mapPosition) {
+                    if let coord = coordinate {
+                        Marker("", coordinate: coord)
+                    }
                 }
-            }
-            .mapStyle(.standard)
-            .frame(height: 200)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay {
-                if !hasGPS {
-                    // Crosshair in center
+                .mapStyle(.standard)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay {
+                    // Crosshair in center (always visible)
                     Image(systemName: "plus")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .allowsHitTesting(false)
 
-                    // Button in bottom left
+                    // Set location button in bottom left
                     VStack {
                         Spacer()
                         HStack {
-                            Text("Click to set location")
-                                .font(.caption)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
-                                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
+                            Button {
+                                let center = CGPoint(x: geometry.size.width / 2, y: geometry.size.height / 2)
+                                if let coord = proxy.convert(center, from: .local) {
+                                    latitude = coord.latitude
+                                    longitude = coord.longitude
+                                    onChanged()
+                                }
+                            } label: {
+                                Label("Set location", systemImage: "mappin.and.ellipse")
+                                    .font(.caption)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
+                            }
+                            .buttonStyle(.plain)
                             Spacer()
                         }
                         .padding(8)
                     }
                 }
             }
-            .onTapGesture { point in
-                if let tapped = proxy.convert(point, from: .local) {
-                    latitude = tapped.latitude
-                    longitude = tapped.longitude
-                    onChanged()
-                }
-            }
         }
+        .frame(height: 200)
     }
 
     // MARK: - Coordinate Display
