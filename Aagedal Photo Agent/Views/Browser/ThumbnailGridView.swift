@@ -54,6 +54,7 @@ struct ThumbnailGridView: View {
                 viewModel.deleteSelectedImages()
             }
         )
+        .equatable()
         .onTapGesture(count: 2) {
             viewModel.selectedImageIDs = [image.url]
             viewModel.isFullScreen = true
@@ -105,12 +106,13 @@ struct ThumbnailGridView: View {
             // SHIFT-click: Range selection from last clicked anchor
             let anchor = viewModel.lastClickedImageURL ?? viewModel.selectedImageIDs.first
             if let anchor,
-               let anchorIndex = viewModel.sortedImages.firstIndex(where: { $0.url == anchor }),
-               let currentIndex = viewModel.sortedImages.firstIndex(where: { $0.url == image.url }) {
+               let anchorIndex = viewModel.urlToSortedIndex[anchor],
+               let currentIndex = viewModel.urlToSortedIndex[image.url] {
+                let sorted = viewModel.sortedImages
                 var updated = viewModel.selectedImageIDs
                 let range = min(anchorIndex, currentIndex)...max(anchorIndex, currentIndex)
                 for i in range {
-                    updated.insert(viewModel.sortedImages[i].url)
+                    updated.insert(sorted[i].url)
                 }
                 viewModel.selectedImageIDs = updated
             }

@@ -3,7 +3,9 @@ import AppKit
 
 @Observable
 final class BrowserViewModel {
-    var images: [ImageFile] = []
+    var images: [ImageFile] = [] {
+        didSet { rebuildSortedCache() }
+    }
     var selectedImageIDs: Set<URL> = []
     var lastClickedImageURL: URL?
     var currentFolderURL: URL?
@@ -11,9 +13,15 @@ final class BrowserViewModel {
     var isLoading = false
     var isFullScreen = false
     var errorMessage: String?
-    var sortOrder: SortOrder = .name
+    var sortOrder: SortOrder = .name {
+        didSet { rebuildSortedCache() }
+    }
     var favoriteFolders: [FavoriteFolder] = []
-    var manualOrder: [URL] = []
+    var manualOrder: [URL] = [] {
+        didSet {
+            if sortOrder == .manual { rebuildSortedCache() }
+        }
+    }
     var draggedImageURLs: Set<URL> = []
 
     let fileSystemService = FileSystemService()
@@ -21,6 +29,9 @@ final class BrowserViewModel {
     let exifToolService = ExifToolService()
 
     private let favoritesKey = "favoriteFolders"
+
+    private(set) var sortedImages: [ImageFile] = []
+    private(set) var urlToSortedIndex: [URL: Int] = [:]
 
     var selectedImages: [ImageFile] {
         images.filter { selectedImageIDs.contains($0.url) }
@@ -31,18 +42,19 @@ final class BrowserViewModel {
         return images.first { $0.url == firstID }
     }
 
-    var sortedImages: [ImageFile] {
+    private func rebuildSortedCache() {
+        let sorted: [ImageFile]
         switch sortOrder {
         case .name:
-            return images.sorted { $0.filename.localizedStandardCompare($1.filename) == .orderedAscending }
+            sorted = images.sorted { $0.filename.localizedStandardCompare($1.filename) == .orderedAscending }
         case .dateModified:
-            return images.sorted { $0.dateModified > $1.dateModified }
+            sorted = images.sorted { $0.dateModified > $1.dateModified }
         case .rating:
-            return images.sorted { $0.starRating.rawValue > $1.starRating.rawValue }
+            sorted = images.sorted { $0.starRating.rawValue > $1.starRating.rawValue }
         case .label:
-            return images.sorted { ($0.colorLabel.shortcutIndex ?? 0) < ($1.colorLabel.shortcutIndex ?? 0) }
+            sorted = images.sorted { ($0.colorLabel.shortcutIndex ?? 0) < ($1.colorLabel.shortcutIndex ?? 0) }
         case .fileType:
-            return images.sorted {
+            sorted = images.sorted {
                 let ext0 = $0.url.pathExtension.lowercased()
                 let ext1 = $1.url.pathExtension.lowercased()
                 if ext0 != ext1 {
@@ -51,13 +63,18 @@ final class BrowserViewModel {
                 return $0.filename.localizedStandardCompare($1.filename) == .orderedAscending
             }
         case .manual:
-            guard !manualOrder.isEmpty else { return images }
-            let imagesByURL = Dictionary(uniqueKeysWithValues: images.map { ($0.url, $0) })
-            var result = manualOrder.compactMap { imagesByURL[$0] }
-            let manualSet = Set(manualOrder)
-            result.append(contentsOf: images.filter { !manualSet.contains($0.url) })
-            return result
+            if manualOrder.isEmpty {
+                sorted = images
+            } else {
+                let imagesByURL = Dictionary(uniqueKeysWithValues: images.map { ($0.url, $0) })
+                var result = manualOrder.compactMap { imagesByURL[$0] }
+                let manualSet = Set(manualOrder)
+                result.append(contentsOf: images.filter { !manualSet.contains($0.url) })
+                sorted = result
+            }
         }
+        sortedImages = sorted
+        urlToSortedIndex = Dictionary(uniqueKeysWithValues: sorted.enumerated().map { ($1.url, $0) })
     }
 
     func openFolder() {
@@ -138,17 +155,16 @@ final class BrowserViewModel {
     // MARK: - Arrow Key Navigation
 
     func selectNext(extending: Bool = false) {
-        let sorted = sortedImages
-        guard !sorted.isEmpty else { return }
+        guard !sortedImages.isEmpty else { return }
         let anchor = lastClickedImageURL ?? selectedImageIDs.first
         guard let anchorURL = anchor,
-              let currentIndex = sorted.firstIndex(where: { $0.url == anchorURL }) else {
-            selectedImageIDs = [sorted[0].url]
-            lastClickedImageURL = sorted[0].url
+              let currentIndex = urlToSortedIndex[anchorURL] else {
+            selectedImageIDs = [sortedImages[0].url]
+            lastClickedImageURL = sortedImages[0].url
             return
         }
-        let nextIndex = min(currentIndex + 1, sorted.count - 1)
-        let nextURL = sorted[nextIndex].url
+        let nextIndex = min(currentIndex + 1, sortedImages.count - 1)
+        let nextURL = sortedImages[nextIndex].url
         if extending {
             var updated = selectedImageIDs
             updated.insert(nextURL)
@@ -160,17 +176,16 @@ final class BrowserViewModel {
     }
 
     func selectPrevious(extending: Bool = false) {
-        let sorted = sortedImages
-        guard !sorted.isEmpty else { return }
+        guard !sortedImages.isEmpty else { return }
         let anchor = lastClickedImageURL ?? selectedImageIDs.first
         guard let anchorURL = anchor,
-              let currentIndex = sorted.firstIndex(where: { $0.url == anchorURL }) else {
-            selectedImageIDs = [sorted[0].url]
-            lastClickedImageURL = sorted[0].url
+              let currentIndex = urlToSortedIndex[anchorURL] else {
+            selectedImageIDs = [sortedImages[0].url]
+            lastClickedImageURL = sortedImages[0].url
             return
         }
         let prevIndex = max(currentIndex - 1, 0)
-        let prevURL = sorted[prevIndex].url
+        let prevURL = sortedImages[prevIndex].url
         if extending {
             var updated = selectedImageIDs
             updated.insert(prevURL)

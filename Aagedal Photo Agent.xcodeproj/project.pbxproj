@@ -8,11 +8,13 @@
 
 /* Begin PBXBuildFile section */
 		8E0557422F29099400BCFB49 /* readme.md in Resources */ = {isa = PBXBuildFile; fileRef = 8E0557412F29098D00BCFB49 /* readme.md */; };
+		8E05576E2F2A149800BCFB49 /* TODO.md in Resources */ = {isa = PBXBuildFile; fileRef = 8E05576D2F2A149800BCFB49 /* TODO.md */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		8E0556B32F28C3F600BCFB49 /* Aagedal Photo Agent.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Aagedal Photo Agent.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		8E0557412F29098D00BCFB49 /* readme.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = readme.md; sourceTree = "<group>"; };
+		8E05576D2F2A149800BCFB49 /* TODO.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = TODO.md; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -38,6 +40,7 @@
 			isa = PBXGroup;
 			children = (
 				8E0557412F29098D00BCFB49 /* readme.md */,
+				8E05576D2F2A149800BCFB49 /* TODO.md */,
 				8E0556B52F28C3F600BCFB49 /* Aagedal Photo Agent */,
 				8E0556B42F28C3F600BCFB49 /* Products */,
 			);
@@ -115,6 +118,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				8E05576E2F2A149800BCFB49 /* TODO.md in Resources */,
 				8E0557422F29099400BCFB49 /* readme.md in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
