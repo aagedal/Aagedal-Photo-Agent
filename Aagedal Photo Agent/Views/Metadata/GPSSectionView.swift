@@ -28,8 +28,8 @@ struct GPSSectionView: View {
     }
 
     private static let defaultRegion = MKCoordinateRegion(
-        center: CLLocationCoordinate2D(latitude: 20, longitude: 0),
-        span: MKCoordinateSpan(latitudeDelta: 140, longitudeDelta: 360)
+        center: CLLocationCoordinate2D(latitude: 50, longitude: 10),
+        span: MKCoordinateSpan(latitudeDelta: 30, longitudeDelta: 40)
     )
 
     var body: some View {
@@ -77,11 +77,24 @@ struct GPSSectionView: View {
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay {
                 if !hasGPS {
-                    Text("Click to set location")
+                    // Crosshair in center
+                    Image(systemName: "plus")
                         .font(.caption)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
+                        .foregroundStyle(.secondary)
+
+                    // Button in bottom left
+                    VStack {
+                        Spacer()
+                        HStack {
+                            Text("Click to set location")
+                                .font(.caption)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
+                            Spacer()
+                        }
+                        .padding(8)
+                    }
                 }
             }
             .onTapGesture { point in
