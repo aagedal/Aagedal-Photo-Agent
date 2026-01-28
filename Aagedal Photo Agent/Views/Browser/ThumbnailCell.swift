@@ -1,13 +1,17 @@
 import SwiftUI
 import AppKit
 
-struct ThumbnailCell: View {
+struct ThumbnailCell: View, Equatable {
     let image: ImageFile
     let isSelected: Bool
     let thumbnailService: ThumbnailService
     var onDelete: (() -> Void)?
 
     @State private var thumbnail: NSImage?
+
+    static func == (lhs: ThumbnailCell, rhs: ThumbnailCell) -> Bool {
+        lhs.image == rhs.image && lhs.isSelected == rhs.isSelected
+    }
 
     var body: some View {
         VStack(spacing: 4) {
