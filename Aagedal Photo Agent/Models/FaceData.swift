@@ -1,7 +1,7 @@
 import Foundation
 import CoreGraphics
 
-struct DetectedFace: Codable, Identifiable {
+nonisolated struct DetectedFace: Codable, Identifiable {
     let id: UUID
     let imageURL: URL
     let faceRect: CGRect
@@ -40,7 +40,7 @@ struct DetectedFace: Codable, Identifiable {
     }
 }
 
-struct FaceGroup: Codable, Identifiable {
+nonisolated struct FaceGroup: Codable, Identifiable {
     let id: UUID
     var name: String?
     var representativeFaceID: UUID
@@ -48,20 +48,20 @@ struct FaceGroup: Codable, Identifiable {
 }
 
 /// Tracks a file's identity for incremental scanning
-struct FileSignature: Codable, Equatable {
+nonisolated struct FileSignature: Codable, Equatable {
     let modificationDate: Date
     let fileSize: Int64
 }
 
 /// Represents a suggestion to merge two similar face groups
-struct MergeSuggestion: Identifiable {
+nonisolated struct MergeSuggestion: Identifiable {
     let id = UUID()
     let group1ID: UUID
     let group2ID: UUID
     let similarity: Float  // 0.0-1.0, higher = more similar
 }
 
-struct FolderFaceData: Codable {
+nonisolated struct FolderFaceData: Codable {
     var folderURL: URL
     var faces: [DetectedFace]
     var groups: [FaceGroup]
