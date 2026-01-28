@@ -1,5 +1,29 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import AppKit
+
+// MARK: - Simple Fullscreen Image Window for Face View
+
+private class FaceFullScreenWindow: NSWindow {
+    var onDismiss: (() -> Void)?
+
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+
+    override func keyDown(with event: NSEvent) {
+        let keyCode = Int(event.keyCode)
+        // Escape (53) or Space (49) → dismiss
+        if keyCode == 53 || keyCode == 49 {
+            onDismiss?()
+            return
+        }
+        super.keyDown(with: event)
+    }
+
+    override func cancelOperation(_ sender: Any?) {
+        onDismiss?()
+    }
+}
 
 // MARK: - Selection State (Observable for fine-grained updates)
 
@@ -8,6 +32,8 @@ final class FaceSelectionState {
     var selectedFaceIDs: Set<UUID> = []
     var draggedFaceIDs: Set<UUID> = []
     var draggedGroupID: UUID?
+    var focusedFaceID: UUID?
+    var selectionAnchorID: UUID?  // For shift-selection
 
     func isSelected(_ faceID: UUID) -> Bool {
         selectedFaceIDs.contains(faceID)
@@ -15,6 +41,10 @@ final class FaceSelectionState {
 
     func isDragged(_ faceID: UUID) -> Bool {
         draggedFaceIDs.contains(faceID)
+    }
+
+    func isFocused(_ faceID: UUID) -> Bool {
+        focusedFaceID == faceID
     }
 
     func toggleSelection(_ faceID: UUID, commandKey: Bool) {
@@ -28,6 +58,28 @@ final class FaceSelectionState {
             selectedFaceIDs.removeAll()
             selectedFaceIDs.insert(faceID)
         }
+        focusedFaceID = faceID
+        selectionAnchorID = faceID
+    }
+
+    func selectFace(_ faceID: UUID) {
+        selectedFaceIDs.removeAll()
+        selectedFaceIDs.insert(faceID)
+        focusedFaceID = faceID
+        selectionAnchorID = faceID
+    }
+
+    func extendSelection(to faceID: UUID, allFaces: [UUID]) {
+        guard let anchorID = selectionAnchorID,
+              let anchorIndex = allFaces.firstIndex(of: anchorID),
+              let targetIndex = allFaces.firstIndex(of: faceID) else {
+            selectFace(faceID)
+            return
+        }
+
+        let range = min(anchorIndex, targetIndex)...max(anchorIndex, targetIndex)
+        selectedFaceIDs = Set(allFaces[range])
+        focusedFaceID = faceID
     }
 }
 
@@ -47,8 +99,25 @@ struct ExpandedFaceManagementView: View {
     @State private var groupToDelete: FaceGroup?
     @State private var showDeleteGroupAlert = false
     @State private var expandedGroupIDs: Set<UUID> = []
+    @State private var fullscreenImageURL: URL?
+    @State private var fullscreenWindow: FaceFullScreenWindow?
 
     private let maxVisibleFaces = 12
+
+    // Flat list of all visible face IDs for keyboard navigation
+    private var allVisibleFaceIDs: [UUID] {
+        var faceIDs: [UUID] = []
+        for group in viewModel.sortedGroups {
+            let faces = viewModel.faces(in: group)
+            let isExpanded = expandedGroupIDs.contains(group.id)
+            let visibleFaces = isExpanded ? faces : Array(faces.prefix(maxVisibleFaces))
+            faceIDs.append(contentsOf: visibleFaces.map(\.id))
+        }
+        return faceIDs
+    }
+
+    // Approximate columns in the grid (based on 90px face + spacing in ~300px cards)
+    private let columnsPerGroup = 3
 
     var body: some View {
 
@@ -56,6 +125,38 @@ struct ExpandedFaceManagementView: View {
             toolbar
             Divider()
             groupCardsScrollView
+        }
+        .focusable()
+        .onKeyPress(.space) {
+            openFullscreenForSelectedFace()
+            return .handled
+        }
+        .onKeyPress(.leftArrow) {
+            let shift = NSEvent.modifierFlags.contains(.shift)
+            navigateFace(direction: .left, shift: shift)
+            return .handled
+        }
+        .onKeyPress(.rightArrow) {
+            let shift = NSEvent.modifierFlags.contains(.shift)
+            navigateFace(direction: .right, shift: shift)
+            return .handled
+        }
+        .onKeyPress(.upArrow) {
+            let shift = NSEvent.modifierFlags.contains(.shift)
+            navigateFace(direction: .up, shift: shift)
+            return .handled
+        }
+        .onKeyPress(.downArrow) {
+            let shift = NSEvent.modifierFlags.contains(.shift)
+            navigateFace(direction: .down, shift: shift)
+            return .handled
+        }
+        .onKeyPress(keys: [KeyEquivalent("g")]) { press in
+            if press.modifiers.contains(.command) {
+                createGroupFromSelection()
+                return .handled
+            }
+            return .ignored
         }
         .alert(
             "Delete Group & Photos",
@@ -83,6 +184,99 @@ struct ExpandedFaceManagementView: View {
         }
     }
 
+    // MARK: - Fullscreen Image
+
+    private func openFullscreenForSelectedFace() {
+        // Only open if exactly one face is selected
+        guard selectionState.selectedFaceIDs.count == 1,
+              let faceID = selectionState.selectedFaceIDs.first,
+              let face = viewModel.face(byID: faceID) else { return }
+
+        openFullscreenWindow(for: face.imageURL)
+    }
+
+    private func openFullscreenWindow(for url: URL) {
+        guard fullscreenWindow == nil,
+              let screen = NSScreen.main else { return }
+
+        let window = FaceFullScreenWindow(
+            contentRect: screen.frame,
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.level = .mainMenu + 1
+        window.isOpaque = true
+        window.backgroundColor = .black
+        window.collectionBehavior = [.fullScreenPrimary, .ignoresCycle]
+        window.hasShadow = false
+        window.onDismiss = { [self] in
+            closeFullscreenWindow()
+        }
+
+        let hostingView = NSHostingView(
+            rootView: FaceFullScreenImageView(imageURL: url)
+        )
+        window.contentView = hostingView
+        window.setFrame(screen.frame, display: true)
+        window.makeKeyAndOrderFront(nil)
+
+        fullscreenWindow = window
+        fullscreenImageURL = url
+    }
+
+    private func closeFullscreenWindow() {
+        fullscreenWindow?.orderOut(nil)
+        fullscreenWindow = nil
+        fullscreenImageURL = nil
+    }
+
+    // MARK: - Keyboard Navigation
+
+    private enum NavigationDirection {
+        case left, right, up, down
+    }
+
+    private func navigateFace(direction: NavigationDirection, shift: Bool) {
+        let allFaces = allVisibleFaceIDs
+        guard !allFaces.isEmpty else { return }
+
+        // If no focus, start from first face or first selected
+        let currentFocusID = selectionState.focusedFaceID ?? selectionState.selectedFaceIDs.first ?? allFaces[0]
+        guard let currentIndex = allFaces.firstIndex(of: currentFocusID) else {
+            // Focus not in visible list, select first face
+            selectionState.selectFace(allFaces[0])
+            return
+        }
+
+        let newIndex: Int
+        switch direction {
+        case .left:
+            newIndex = max(0, currentIndex - 1)
+        case .right:
+            newIndex = min(allFaces.count - 1, currentIndex + 1)
+        case .up:
+            newIndex = max(0, currentIndex - columnsPerGroup)
+        case .down:
+            newIndex = min(allFaces.count - 1, currentIndex + columnsPerGroup)
+        }
+
+        let newFaceID = allFaces[newIndex]
+
+        if shift {
+            selectionState.extendSelection(to: newFaceID, allFaces: allFaces)
+        } else {
+            selectionState.selectFace(newFaceID)
+        }
+    }
+
+    private func createGroupFromSelection() {
+        guard !selectionState.selectedFaceIDs.isEmpty else { return }
+        viewModel.createNewGroup(withFaces: selectionState.selectedFaceIDs)
+        selectionState.selectedFaceIDs.removeAll()
+        selectionState.focusedFaceID = nil
+    }
+
     // MARK: - Toolbar
 
     @ViewBuilder
@@ -95,6 +289,29 @@ struct ExpandedFaceManagementView: View {
                 Label("New Group", systemImage: "plus")
             }
             .disabled(selectionState.selectedFaceIDs.isEmpty)
+
+            Divider()
+                .frame(height: 16)
+
+            Menu {
+                ForEach(FaceGroupSortMode.allCases, id: \.self) { mode in
+                    Button {
+                        viewModel.sortMode = mode
+                    } label: {
+                        HStack {
+                            Text(mode.rawValue)
+                            if viewModel.sortMode == mode {
+                                Spacer()
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            } label: {
+                Label("Sort", systemImage: "arrow.up.arrow.down")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
 
             Spacer()
 
@@ -440,6 +657,7 @@ struct FacesGridView: View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 90), spacing: 6)], spacing: 6) {
             ForEach(faces) { face in
                 let isSelected = selectionState.selectedFaceIDs.contains(face.id)
+                let isFocused = selectionState.focusedFaceID == face.id
                 let isDragged = selectionState.draggedFaceIDs.contains(face.id)
                 let thumbnail = viewModel.thumbnailImage(for: face.id)
 
@@ -447,6 +665,7 @@ struct FacesGridView: View {
                     faceID: face.id,
                     image: thumbnail,
                     isSelected: isSelected,
+                    isFocused: isFocused,
                     isDragged: isDragged,
                     groupFaceCount: groupFaceCount,
                     onTap: { commandKey in
@@ -496,6 +715,7 @@ struct FaceThumbnailView: View {
     let faceID: UUID
     let image: NSImage?
     let isSelected: Bool
+    let isFocused: Bool
     let isDragged: Bool
     let groupFaceCount: Int
     let onTap: (Bool) -> Void
@@ -510,6 +730,16 @@ struct FaceThumbnailView: View {
                 let ids = onDragStart()
                 return NSItemProvider(object: ids.map(\.uuidString).joined(separator: ",") as NSString)
             }
+    }
+
+    private var borderColor: Color {
+        if isSelected {
+            return Color.accentColor
+        } else if isFocused {
+            return Color.secondary
+        } else {
+            return Color.clear
+        }
     }
 
     @ViewBuilder
@@ -533,7 +763,7 @@ struct FaceThumbnailView: View {
         }
         .overlay(
             RoundedRectangle(cornerRadius: 4)
-                .strokeBorder(isSelected ? Color.accentColor : Color.clear, lineWidth: 2)
+                .strokeBorder(borderColor, lineWidth: isSelected ? 2 : (isFocused ? 1 : 0))
         )
         .overlay(alignment: .bottomTrailing) {
             if isSelected {
@@ -654,5 +884,97 @@ struct NewGroupDropDelegate: DropDelegate {
         }
 
         return true
+    }
+}
+
+// MARK: - Face Fullscreen Image View
+
+struct FaceFullScreenImageView: View {
+    let imageURL: URL
+    @State private var image: NSImage?
+    @State private var isLoading = true
+
+    var body: some View {
+        ZStack {
+            Color.black
+
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+            }
+
+            if isLoading {
+                VStack {
+                    HStack {
+                        ProgressView()
+                            .scaleEffect(0.5)
+                            .tint(.white)
+                            .padding(12)
+                        Spacer()
+                    }
+                    Spacer()
+                }
+            }
+
+            // Bottom-center: filename
+            VStack {
+                Spacer()
+                Text(imageURL.lastPathComponent)
+                    .font(.caption)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(.black.opacity(0.6), in: Capsule())
+                    .padding(.bottom, 16)
+            }
+        }
+        .ignoresSafeArea()
+        .task {
+            await loadImage()
+        }
+    }
+
+    private func loadImage() async {
+        let screenScale = NSScreen.main?.backingScaleFactor ?? 2.0
+        let screenMaxPx = max(NSScreen.main?.frame.width ?? 3840, NSScreen.main?.frame.height ?? 2160) * screenScale
+
+        let loaded = await Task.detached(priority: .userInitiated) {
+            Self.loadDownsampled(from: imageURL, maxPixelSize: screenMaxPx)
+        }.value
+
+        await MainActor.run {
+            image = loaded
+            isLoading = false
+        }
+    }
+
+    nonisolated private static func loadDownsampled(from url: URL, maxPixelSize: CGFloat) -> NSImage? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+
+        // Check source dimensions to decide whether downsampling is worthwhile
+        let needsDownsample: Bool
+        if let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+           let pw = props[kCGImagePropertyPixelWidth] as? Int,
+           let ph = props[kCGImagePropertyPixelHeight] as? Int {
+            let longest = max(pw, ph)
+            needsDownsample = CGFloat(longest) > maxPixelSize * 1.5
+        } else {
+            needsDownsample = true
+        }
+
+        if needsDownsample {
+            let options: [CFString: Any] = [
+                kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceShouldCacheImmediately: true,
+            ]
+            if let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) {
+                return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+            }
+        }
+
+        return NSImage(contentsOf: url)
     }
 }

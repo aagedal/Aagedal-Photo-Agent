@@ -699,6 +699,98 @@ final class MetadataViewModel {
         return names
     }
 
+    func discardPendingChanges() {
+        guard let original = originalImageMetadata,
+              let imageURL = selectedURLs.first,
+              let folderURL = currentFolderURL else { return }
+
+        editingMetadata = original
+        hasChanges = false
+        sidecarHistory = []
+        previousEditingMetadata = original
+
+        try? sidecarService.deleteSidecar(for: imageURL, in: folderURL)
+    }
+
+    func clearHistory() {
+        guard let imageURL = selectedURLs.first,
+              let folderURL = currentFolderURL else { return }
+
+        sidecarHistory = []
+
+        let sidecar = MetadataSidecar(
+            sourceFile: imageURL.lastPathComponent,
+            lastModified: Date(),
+            pendingChanges: hasChanges,
+            metadata: editingMetadata,
+            imageMetadataSnapshot: originalImageMetadata,
+            history: []
+        )
+        try? sidecarService.saveSidecar(sidecar, for: imageURL, in: folderURL)
+    }
+
+    func restoreToHistoryPoint(at index: Int) {
+        guard let original = originalImageMetadata else { return }
+
+        // Start from original and replay history up to (and including) the given index
+        var restored = original
+        let historyToApply = Array(sidecarHistory.prefix(index + 1))
+
+        for entry in historyToApply {
+            applyHistoryEntry(entry, to: &restored)
+        }
+
+        editingMetadata = restored
+        previousEditingMetadata = restored
+
+        // Trim history to only include entries up to this point
+        sidecarHistory = historyToApply
+        hasChanges = editingMetadata != original
+
+        // Save the updated sidecar
+        if let imageURL = selectedURLs.first,
+           let folderURL = currentFolderURL {
+            let sidecar = MetadataSidecar(
+                sourceFile: imageURL.lastPathComponent,
+                lastModified: Date(),
+                pendingChanges: hasChanges,
+                metadata: editingMetadata,
+                imageMetadataSnapshot: originalImageMetadata,
+                history: sidecarHistory
+            )
+            try? sidecarService.saveSidecar(sidecar, for: imageURL, in: folderURL)
+        }
+    }
+
+    private func applyHistoryEntry(_ entry: MetadataHistoryEntry, to metadata: inout IPTCMetadata) {
+        switch entry.fieldName {
+        case "Title":
+            metadata.title = entry.newValue
+        case "Description":
+            metadata.description = entry.newValue
+        case "Keywords":
+            metadata.keywords = entry.newValue?.components(separatedBy: ", ") ?? []
+        case "Person Shown":
+            metadata.personShown = entry.newValue?.components(separatedBy: ", ") ?? []
+        case "Copyright":
+            metadata.copyright = entry.newValue
+        case "Creator":
+            metadata.creator = entry.newValue
+        case "Credit":
+            metadata.credit = entry.newValue
+        case "City":
+            metadata.city = entry.newValue
+        case "Country":
+            metadata.country = entry.newValue
+        case "Event":
+            metadata.event = entry.newValue
+        case "Digital Source Type":
+            metadata.digitalSourceType = entry.newValue.flatMap { DigitalSourceType(rawValue: $0) }
+        default:
+            break
+        }
+    }
+
     func clear() {
         metadata = nil
         editingMetadata = IPTCMetadata()
