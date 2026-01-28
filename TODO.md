@@ -1,14 +1,15 @@
 # TODO
 
 ## Priority
-~~Add exiftool to the app bundle~~ DONE - ExifTool 13.47 bundled in Resources/ExifTool/
-
-## Future plans - after priority issues are fixed
 [] Improve face recognition. Change backend?
 [] Add reverse Geocoding: Use GPS metadata to add name of country and city. Add a variable for these. (The DD GPS coordinates seems to work in Apple Maps, maybe also MapKit?)
+[] Add keyboard shortcuts: Process variable, process all variables in folder, write all pending metadata in folder.
+
+
 
 ## Nice to have
 [] Improve performance when selecting with mouse or using shift select in the thumbnail grid view.
+[] Reduce time for hover help text
 [] Create a warning that writing Metadata with the app will break C2PA validation.
 [] Make the additional fields visible without having to click to open the section.
 [] Move Creator next to Copyright

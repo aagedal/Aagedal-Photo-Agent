@@ -44,6 +44,21 @@ final class SettingsViewModel {
         didSet { UserDefaults.standard.set(faceCleanupPolicy.rawValue, forKey: "faceCleanupPolicy") }
     }
 
+    /// Clustering sensitivity threshold (0.3 = strict, 0.8 = loose). Default: 0.55
+    var faceClusteringThreshold: Double {
+        didSet { UserDefaults.standard.set(faceClusteringThreshold, forKey: "faceClusteringThreshold") }
+    }
+
+    /// Minimum detection confidence (0.5 - 0.95). Default: 0.7
+    var faceMinConfidence: Double {
+        didSet { UserDefaults.standard.set(faceMinConfidence, forKey: "faceMinConfidence") }
+    }
+
+    /// Minimum face size in pixels (30 - 150). Default: 50
+    var faceMinFaceSize: Int {
+        didSet { UserDefaults.standard.set(faceMinFaceSize, forKey: "faceMinFaceSize") }
+    }
+
     var detectedEditors: [DetectedEditor] = []
 
     var bundledExifToolPath: String? {
@@ -81,6 +96,17 @@ final class SettingsViewModel {
         self.defaultExternalEditor = UserDefaults.standard.string(forKey: "defaultExternalEditor") ?? ""
         let raw = UserDefaults.standard.string(forKey: "faceCleanupPolicy") ?? "never"
         self.faceCleanupPolicy = FaceCleanupPolicy(rawValue: raw) ?? .never
+
+        // Face recognition settings with defaults
+        let storedThreshold = UserDefaults.standard.object(forKey: "faceClusteringThreshold") as? Double
+        self.faceClusteringThreshold = storedThreshold ?? 0.55
+
+        let storedConfidence = UserDefaults.standard.object(forKey: "faceMinConfidence") as? Double
+        self.faceMinConfidence = storedConfidence ?? 0.7
+
+        let storedMinSize = UserDefaults.standard.object(forKey: "faceMinFaceSize") as? Int
+        self.faceMinFaceSize = storedMinSize ?? 50
+
         self.detectedEditors = Self.detectEditors()
     }
 

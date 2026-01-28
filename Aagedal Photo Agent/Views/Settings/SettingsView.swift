@@ -14,6 +14,11 @@ struct SettingsView: View {
                     Label("General", systemImage: "gear")
                 }
 
+            facesTab
+                .tabItem {
+                    Label("Faces", systemImage: "person.crop.rectangle.stack")
+                }
+
             ftpTab
                 .tabItem {
                     Label("FTP", systemImage: "arrow.up.to.line")
@@ -77,14 +82,6 @@ struct SettingsView: View {
                 }
             }
 
-            Section("Face Recognition") {
-                Picker("Auto-delete face data", selection: $settingsViewModel.faceCleanupPolicy) {
-                    ForEach(FaceCleanupPolicy.allCases, id: \.self) { policy in
-                        Text(policy.displayName).tag(policy)
-                    }
-                }
-            }
-
             Section("External Editor") {
                 Picker("Default Editor", selection: $settingsViewModel.defaultExternalEditor) {
                     Text("Not set").tag("")
@@ -111,6 +108,78 @@ struct SettingsView: View {
                         if panel.runModal() == .OK, let url = panel.url {
                             settingsViewModel.defaultExternalEditor = url.path
                         }
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
+    }
+
+    // MARK: - Faces Tab
+
+    @ViewBuilder
+    private var facesTab: some View {
+        Form {
+            Section("Detection") {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Min Detection Confidence")
+                        Spacer()
+                        Text(String(format: "%.2f", settingsViewModel.faceMinConfidence))
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                    Slider(value: $settingsViewModel.faceMinConfidence, in: 0.5...0.95, step: 0.01)
+                    Text("Higher values filter out uncertain detections")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Min Face Size (pixels)")
+                        Spacer()
+                        Text("\(settingsViewModel.faceMinFaceSize)")
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                    Slider(value: Binding(
+                        get: { Double(settingsViewModel.faceMinFaceSize) },
+                        set: { settingsViewModel.faceMinFaceSize = Int($0) }
+                    ), in: 30...150, step: 5)
+                    Text("Faces smaller than this will be ignored")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Section("Clustering") {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Clustering Sensitivity")
+                        Spacer()
+                        Text(String(format: "%.2f", settingsViewModel.faceClusteringThreshold))
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                    Slider(value: $settingsViewModel.faceClusteringThreshold, in: 0.3...0.8, step: 0.01)
+                    HStack {
+                        Text("Strict (fewer matches)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text("Loose (more matches)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            Section("Data Management") {
+                Picker("Auto-delete face data", selection: $settingsViewModel.faceCleanupPolicy) {
+                    ForEach(FaceCleanupPolicy.allCases, id: \.self) { policy in
+                        Text(policy.displayName).tag(policy)
                     }
                 }
             }
