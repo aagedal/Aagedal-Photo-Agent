@@ -313,7 +313,18 @@ struct MetadataPanel: View {
                 get: { viewModel.editingMetadata.longitude },
                 set: { viewModel.editingMetadata.longitude = $0 }
             ),
-            onChanged: { viewModel.markChanged() }
+            onChanged: { viewModel.markChanged() },
+            isBatchMode: viewModel.isBatchEdit,
+            isReverseGeocoding: viewModel.isReverseGeocoding,
+            geocodingError: viewModel.geocodingError,
+            geocodingProgress: viewModel.geocodingProgress,
+            onReverseGeocode: {
+                if viewModel.isBatchEdit {
+                    viewModel.reverseGeocodeSelectedImages()
+                } else {
+                    viewModel.reverseGeocodeCurrentLocation()
+                }
+            }
         )
     }
 
