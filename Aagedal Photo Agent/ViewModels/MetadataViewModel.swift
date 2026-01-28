@@ -17,8 +17,14 @@ final class MetadataViewModel {
     var sidecarHistory: [MetadataHistoryEntry] = []
     var currentFolderURL: URL?
 
+    // Geocoding state
+    var isReverseGeocoding = false
+    var geocodingError: String?
+    var geocodingProgress = ""
+
     private let exifToolService: ExifToolService
     private let sidecarService = MetadataSidecarService()
+    private let geocodingService = GeocodingService()
     private var previousEditingMetadata: IPTCMetadata?
 
     init(exifToolService: ExifToolService) {
@@ -296,6 +302,84 @@ final class MetadataViewModel {
         let resolved = interpolator.resolve(value, filename: filename, existingMetadata: ref)
         if resolved != value { changed = true }
         return resolved.isEmpty ? nil : resolved
+    }
+
+    // MARK: - Reverse Geocoding
+
+    /// Reverse geocodes the current image's GPS coordinates to fill City and Country fields.
+    func reverseGeocodeCurrentLocation() {
+        guard let lat = editingMetadata.latitude,
+              let lon = editingMetadata.longitude else {
+            geocodingError = "No GPS coordinates available"
+            return
+        }
+
+        isReverseGeocoding = true
+        geocodingError = nil
+
+        Task { @MainActor in
+            do {
+                let result = try await geocodingService.reverseGeocode(latitude: lat, longitude: lon)
+                if let city = result.city { editingMetadata.city = city }
+                if let country = result.country { editingMetadata.country = country }
+                hasChanges = true
+            } catch {
+                geocodingError = error.localizedDescription
+            }
+            isReverseGeocoding = false
+        }
+    }
+
+    /// Reverse geocodes GPS coordinates for all selected images and writes City/Country directly to each file.
+    func reverseGeocodeSelectedImages() {
+        guard !selectedURLs.isEmpty else { return }
+
+        isReverseGeocoding = true
+        geocodingError = nil
+        geocodingProgress = "0/\(selectedURLs.count)"
+
+        Task { @MainActor in
+            var processed = 0
+            var skipped = 0
+
+            for url in selectedURLs {
+                do {
+                    let meta = try await exifToolService.readFullMetadata(url: url)
+                    guard let lat = meta.latitude, let lon = meta.longitude else {
+                        skipped += 1
+                        processed += 1
+                        geocodingProgress = "\(processed)/\(selectedURLs.count)"
+                        continue
+                    }
+
+                    let result = try await geocodingService.reverseGeocode(latitude: lat, longitude: lon)
+
+                    var fields: [String: String] = [:]
+                    if let city = result.city { fields["XMP-photoshop:City"] = city }
+                    if let country = result.country { fields["XMP-photoshop:Country"] = country }
+
+                    if !fields.isEmpty {
+                        try await exifToolService.writeFields(fields, to: [url])
+                    }
+
+                    // Rate limit: ~0.5s delay between requests
+                    try await Task.sleep(for: .milliseconds(500))
+
+                } catch {
+                    // Continue with next image
+                }
+
+                processed += 1
+                geocodingProgress = "\(processed)/\(selectedURLs.count)"
+            }
+
+            if skipped > 0 {
+                geocodingError = "\(skipped) image(s) had no GPS data"
+            }
+
+            isReverseGeocoding = false
+            geocodingProgress = ""
+        }
     }
 
     // MARK: - Sidecar Management

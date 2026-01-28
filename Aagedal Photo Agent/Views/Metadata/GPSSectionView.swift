@@ -6,6 +6,13 @@ struct GPSSectionView: View {
     @Binding var longitude: Double?
     var onChanged: () -> Void
 
+    // Reverse geocoding parameters
+    var isBatchMode: Bool = false
+    var isReverseGeocoding: Bool = false
+    var geocodingError: String? = nil
+    var geocodingProgress: String = ""
+    var onReverseGeocode: (() -> Void)? = nil
+
     @State private var coordinateInput = ""
     @State private var parseError: String?
     @State private var displayFormat: CoordinateFormat = .decimalDegrees
@@ -42,6 +49,12 @@ struct GPSSectionView: View {
                 Text(error)
                     .font(.caption)
                     .foregroundStyle(.red)
+            }
+
+            if let error = geocodingError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
             }
         }
         .onChange(of: latitude) { updateMapPosition() }
@@ -131,6 +144,24 @@ struct GPSSectionView: View {
             }
             .disabled(coordinateInput.trimmingCharacters(in: .whitespaces).isEmpty)
             .help("Set coordinates")
+
+            if let onReverseGeocode {
+                Button { onReverseGeocode() } label: {
+                    if isReverseGeocoding {
+                        if !geocodingProgress.isEmpty {
+                            Text(geocodingProgress)
+                                .font(.caption2)
+                        } else {
+                            ProgressView()
+                                .controlSize(.mini)
+                        }
+                    } else {
+                        Image(systemName: "location.fill")
+                    }
+                }
+                .disabled((!hasGPS && !isBatchMode) || isReverseGeocoding)
+                .help(isBatchMode ? "Auto-fill City/Country for all selected images" : "Auto-fill City and Country from GPS")
+            }
 
             if hasGPS {
                 Button(role: .destructive) {
