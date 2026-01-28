@@ -1,10 +1,9 @@
 # TODO
 
 ## Priority
-[] Add reverse Geocoding: Use GPS metadata to add name of country and city. Add a variable for these. (The DD GPS coordinates seems to work in Apple Maps, maybe also MapKit?)
 [] Add keyboard shortcuts: Process variable, process all variables in folder, write all pending metadata in folder.
 [] App becomes very slow when scanning for faces, this should happen on a background thread and not block the main app UI.
-
+[] Make scrolling follow selection on selection change outside the visible view area.
 
 
 ## Nice to have
@@ -17,4 +16,5 @@
 [] Make it possible to sync and export presets. JSON in iCloud?
 [] Add reverse sorting order button-toggle next to the sort mode drop down
 [] Add an option to write metadata automatically when changing focus from the metadata field or moving to the next image
-
+[] Add option to discard metadata changes that aren't written to file. Both on individual photos and all photos in folder.
+[] Add view to see metadata history.
