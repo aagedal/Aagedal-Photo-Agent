@@ -7,10 +7,28 @@ struct DetectedEditor: Identifiable, Hashable {
     var id: String { path }
 }
 
+enum ExifToolSource: String, CaseIterable {
+    case bundled = "bundled"
+    case homebrew = "homebrew"
+    case custom = "custom"
+
+    var displayName: String {
+        switch self {
+        case .bundled: return "Bundled"
+        case .homebrew: return "Homebrew"
+        case .custom: return "Custom"
+        }
+    }
+}
+
 @Observable
 final class SettingsViewModel {
-    var exifToolPathOverride: String {
-        didSet { UserDefaults.standard.set(exifToolPathOverride.isEmpty ? nil : exifToolPathOverride, forKey: "exifToolPath") }
+    var exifToolSource: ExifToolSource {
+        didSet { UserDefaults.standard.set(exifToolSource.rawValue, forKey: "exifToolSource") }
+    }
+
+    var exifToolCustomPath: String {
+        didSet { UserDefaults.standard.set(exifToolCustomPath.isEmpty ? nil : exifToolCustomPath, forKey: "exifToolCustomPath") }
     }
 
     var defaultExternalEditor: String {
@@ -28,7 +46,17 @@ final class SettingsViewModel {
 
     var detectedEditors: [DetectedEditor] = []
 
-    var detectedExifToolPath: String? {
+    var bundledExifToolPath: String? {
+        if let bundledDir = Bundle.main.path(forResource: "ExifTool", ofType: nil) {
+            let path = (bundledDir as NSString).appendingPathComponent("exiftool")
+            if FileManager.default.isExecutableFile(atPath: path) {
+                return path
+            }
+        }
+        return nil
+    }
+
+    var homebrewExifToolPath: String? {
         let paths = [
             "/opt/homebrew/bin/exiftool",
             "/usr/local/bin/exiftool",
@@ -36,8 +64,22 @@ final class SettingsViewModel {
         return paths.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
+    var selectedExifToolPath: String? {
+        switch exifToolSource {
+        case .bundled:
+            return bundledExifToolPath
+        case .homebrew:
+            return homebrewExifToolPath
+        case .custom:
+            let path = exifToolCustomPath
+            return FileManager.default.isExecutableFile(atPath: path) ? path : nil
+        }
+    }
+
     init() {
-        self.exifToolPathOverride = UserDefaults.standard.string(forKey: "exifToolPath") ?? ""
+        let sourceRaw = UserDefaults.standard.string(forKey: "exifToolSource") ?? "bundled"
+        self.exifToolSource = ExifToolSource(rawValue: sourceRaw) ?? .bundled
+        self.exifToolCustomPath = UserDefaults.standard.string(forKey: "exifToolCustomPath") ?? ""
         self.defaultExternalEditor = UserDefaults.standard.string(forKey: "defaultExternalEditor") ?? ""
         let raw = UserDefaults.standard.string(forKey: "faceCleanupPolicy") ?? "never"
         self.faceCleanupPolicy = FaceCleanupPolicy(rawValue: raw) ?? .never

@@ -17,26 +17,37 @@ final class ExifToolService {
     private var isExecuting = false
 
     var exifToolPath: String? {
-        // Settings override → bundled → Homebrew → /usr/local
-        if let override = UserDefaults.standard.string(forKey: "exifToolPath"),
-           FileManager.default.isExecutableFile(atPath: override) {
-            return override
+        let sourceRaw = UserDefaults.standard.string(forKey: "exifToolSource") ?? "bundled"
+
+        switch sourceRaw {
+        case "bundled":
+            return bundledExifToolPath
+        case "homebrew":
+            return homebrewExifToolPath
+        case "custom":
+            if let customPath = UserDefaults.standard.string(forKey: "exifToolCustomPath"),
+               FileManager.default.isExecutableFile(atPath: customPath) {
+                return customPath
+            }
+            return nil
+        default:
+            return bundledExifToolPath
         }
+    }
+
+    private var bundledExifToolPath: String? {
         if let bundledDir = Bundle.main.path(forResource: "ExifTool", ofType: nil) {
-            let bundledPath = (bundledDir as NSString).appendingPathComponent("exiftool")
-            if FileManager.default.isExecutableFile(atPath: bundledPath) {
-                return bundledPath
+            let path = (bundledDir as NSString).appendingPathComponent("exiftool")
+            if FileManager.default.isExecutableFile(atPath: path) {
+                return path
             }
         }
-        let homebrewPath = "/opt/homebrew/bin/exiftool"
-        if FileManager.default.isExecutableFile(atPath: homebrewPath) {
-            return homebrewPath
-        }
-        let usrLocalPath = "/usr/local/bin/exiftool"
-        if FileManager.default.isExecutableFile(atPath: usrLocalPath) {
-            return usrLocalPath
-        }
         return nil
+    }
+
+    private var homebrewExifToolPath: String? {
+        let paths = ["/opt/homebrew/bin/exiftool", "/usr/local/bin/exiftool"]
+        return paths.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
     var isAvailable: Bool { exifToolPath != nil }

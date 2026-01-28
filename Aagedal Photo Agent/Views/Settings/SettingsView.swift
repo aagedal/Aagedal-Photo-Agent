@@ -37,29 +37,42 @@ struct SettingsView: View {
     private var generalTab: some View {
         Form {
             Section("ExifTool") {
-                LabeledContent("Auto-detected") {
-                    if let path = settingsViewModel.detectedExifToolPath {
-                        Text(path)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text("Not found")
-                            .foregroundStyle(.orange)
+                Picker("Source", selection: $settingsViewModel.exifToolSource) {
+                    ForEach(ExifToolSource.allCases, id: \.self) { source in
+                        Text(source.displayName).tag(source)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                if settingsViewModel.exifToolSource == .custom {
+                    LabeledContent("Path") {
+                        HStack {
+                            TextField("Path to exiftool", text: $settingsViewModel.exifToolCustomPath)
+                                .textFieldStyle(.roundedBorder)
+                            Button("Browse...") {
+                                let panel = NSOpenPanel()
+                                panel.canChooseFiles = true
+                                panel.canChooseDirectories = false
+                                panel.allowsMultipleSelection = false
+                                if panel.runModal() == .OK, let url = panel.url {
+                                    settingsViewModel.exifToolCustomPath = url.path
+                                }
+                            }
+                        }
                     }
                 }
 
-                LabeledContent("Override Path") {
-                    HStack {
-                        TextField("Leave empty for auto-detect", text: $settingsViewModel.exifToolPathOverride)
-                            .textFieldStyle(.roundedBorder)
-                        Button("Browse...") {
-                            let panel = NSOpenPanel()
-                            panel.canChooseFiles = true
-                            panel.canChooseDirectories = false
-                            panel.allowsMultipleSelection = false
-                            if panel.runModal() == .OK, let url = panel.url {
-                                settingsViewModel.exifToolPathOverride = url.path
-                            }
-                        }
+                if let path = settingsViewModel.selectedExifToolPath {
+                    LabeledContent("Active") {
+                        Text(path)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                } else {
+                    LabeledContent("Status") {
+                        Text("Not found")
+                            .foregroundStyle(.orange)
                     }
                 }
             }
