@@ -18,6 +18,11 @@ final class MetadataViewModel {
     var currentFolderURL: URL?
     var showingEmbeddedValues = false
 
+    // Batch metadata state - stores common values across selected images
+    var batchCommonMetadata: IPTCMetadata?
+    var batchDifferingFields: Set<String> = []
+    var isLoadingBatchMetadata = false
+
     // Geocoding state
     var isReverseGeocoding = false
     var geocodingError: String?
@@ -53,6 +58,8 @@ final class MetadataViewModel {
         sidecarHistory = []
         originalImageMetadata = nil
         showingEmbeddedValues = false
+        batchCommonMetadata = nil
+        batchDifferingFields = []
 
         if let folderURL {
             currentFolderURL = folderURL
@@ -96,10 +103,159 @@ final class MetadataViewModel {
                 self.isLoading = false
             }
         } else {
+            // Batch mode: load metadata for all selected images and find common values
             metadata = nil
             editingMetadata = IPTCMetadata()
             previousEditingMetadata = nil
+            isLoadingBatchMetadata = true
+
+            Task {
+                await loadBatchMetadata(for: images)
+                self.isLoadingBatchMetadata = false
+            }
         }
+    }
+
+    /// Load metadata for all selected images and compute common values
+    private func loadBatchMetadata(for images: [ImageFile]) async {
+        var allMetadata: [IPTCMetadata] = []
+
+        for image in images {
+            do {
+                let meta = try await exifToolService.readFullMetadata(url: image.url)
+                allMetadata.append(meta)
+            } catch {
+                // Continue with other images
+            }
+        }
+
+        guard !allMetadata.isEmpty else { return }
+
+        // Compute common values and differing fields
+        var common = IPTCMetadata()
+        var differing = Set<String>()
+
+        // Title
+        let titles = allMetadata.compactMap(\.title)
+        if titles.count == allMetadata.count, let first = titles.first, titles.allSatisfy({ $0 == first }) {
+            common.title = first
+        } else if !titles.isEmpty {
+            differing.insert("title")
+        }
+
+        // Description
+        let descriptions = allMetadata.compactMap(\.description)
+        if descriptions.count == allMetadata.count, let first = descriptions.first, descriptions.allSatisfy({ $0 == first }) {
+            common.description = first
+        } else if !descriptions.isEmpty {
+            differing.insert("description")
+        }
+
+        // Keywords
+        let keywordSets = allMetadata.map { Set($0.keywords) }
+        if let first = keywordSets.first, keywordSets.allSatisfy({ $0 == first }) {
+            common.keywords = allMetadata.first?.keywords ?? []
+        } else {
+            differing.insert("keywords")
+        }
+
+        // Person Shown
+        let personSets = allMetadata.map { Set($0.personShown) }
+        if let first = personSets.first, personSets.allSatisfy({ $0 == first }) {
+            common.personShown = allMetadata.first?.personShown ?? []
+        } else {
+            differing.insert("personShown")
+        }
+
+        // Copyright
+        let copyrights = allMetadata.compactMap(\.copyright)
+        if copyrights.count == allMetadata.count, let first = copyrights.first, copyrights.allSatisfy({ $0 == first }) {
+            common.copyright = first
+        } else if !copyrights.isEmpty {
+            differing.insert("copyright")
+        }
+
+        // Creator
+        let creators = allMetadata.compactMap(\.creator)
+        if creators.count == allMetadata.count, let first = creators.first, creators.allSatisfy({ $0 == first }) {
+            common.creator = first
+        } else if !creators.isEmpty {
+            differing.insert("creator")
+        }
+
+        // Credit
+        let credits = allMetadata.compactMap(\.credit)
+        if credits.count == allMetadata.count, let first = credits.first, credits.allSatisfy({ $0 == first }) {
+            common.credit = first
+        } else if !credits.isEmpty {
+            differing.insert("credit")
+        }
+
+        // City
+        let cities = allMetadata.compactMap(\.city)
+        if cities.count == allMetadata.count, let first = cities.first, cities.allSatisfy({ $0 == first }) {
+            common.city = first
+        } else if !cities.isEmpty {
+            differing.insert("city")
+        }
+
+        // Country
+        let countries = allMetadata.compactMap(\.country)
+        if countries.count == allMetadata.count, let first = countries.first, countries.allSatisfy({ $0 == first }) {
+            common.country = first
+        } else if !countries.isEmpty {
+            differing.insert("country")
+        }
+
+        // Event
+        let events = allMetadata.compactMap(\.event)
+        if events.count == allMetadata.count, let first = events.first, events.allSatisfy({ $0 == first }) {
+            common.event = first
+        } else if !events.isEmpty {
+            differing.insert("event")
+        }
+
+        // Digital Source Type
+        let sourceTypes = allMetadata.compactMap(\.digitalSourceType)
+        if sourceTypes.count == allMetadata.count, let first = sourceTypes.first, sourceTypes.allSatisfy({ $0 == first }) {
+            common.digitalSourceType = first
+        } else if !sourceTypes.isEmpty {
+            differing.insert("digitalSourceType")
+        }
+
+        // GPS - check if all have the same coordinates
+        let latitudes = allMetadata.compactMap(\.latitude)
+        let longitudes = allMetadata.compactMap(\.longitude)
+        if latitudes.count == allMetadata.count,
+           longitudes.count == allMetadata.count,
+           let firstLat = latitudes.first,
+           let firstLon = longitudes.first,
+           latitudes.allSatisfy({ abs($0 - firstLat) < 0.000001 }),
+           longitudes.allSatisfy({ abs($0 - firstLon) < 0.000001 }) {
+            common.latitude = firstLat
+            common.longitude = firstLon
+        } else if !latitudes.isEmpty || !longitudes.isEmpty {
+            differing.insert("gps")
+        }
+
+        self.batchCommonMetadata = common
+        self.batchDifferingFields = differing
+        // Pre-populate editing metadata with common values
+        self.editingMetadata = common
+        self.previousEditingMetadata = common
+    }
+
+    /// Returns the placeholder text for a batch field that has differing values
+    func batchPlaceholder(for field: String) -> String {
+        if batchDifferingFields.contains(field) {
+            return "Multiple values"
+        }
+        return "Leave empty to skip"
+    }
+
+    /// Returns true if a field has differing values across the batch selection
+    func fieldHasMultipleValues(_ field: String) -> Bool {
+        batchDifferingFields.contains(field)
     }
 
     func markChanged() {

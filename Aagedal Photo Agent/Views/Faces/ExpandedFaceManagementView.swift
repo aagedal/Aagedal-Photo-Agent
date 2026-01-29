@@ -87,6 +87,7 @@ final class FaceSelectionState {
 
 struct ExpandedFaceManagementView: View {
     @Bindable var viewModel: FaceRecognitionViewModel
+    let settingsViewModel: SettingsViewModel
     var onClose: () -> Void
     var onPhotosDeleted: ((Set<URL>) -> Void)?
 
@@ -101,6 +102,7 @@ struct ExpandedFaceManagementView: View {
     @State private var expandedGroupIDs: Set<UUID> = []
     @State private var fullscreenImageURL: URL?
     @State private var fullscreenWindow: FaceFullScreenWindow?
+    @State private var showingNameListFilePicker = false
 
     private let maxVisibleFaces = 12
 
@@ -181,6 +183,15 @@ struct ExpandedFaceManagementView: View {
                 viewModel.face(byID: faceID)?.imageURL
             }).count
             Text("This will delete \(group.faceIDs.count) face(s) across \(photoCount) photo(s). Moving photos to Trash cannot be undone from this app.")
+        }
+        .fileImporter(
+            isPresented: $showingNameListFilePicker,
+            allowedContentTypes: [.plainText],
+            allowsMultipleSelection: false
+        ) { result in
+            if case .success(let urls) = result, let url = urls.first {
+                settingsViewModel.setPersonShownListURL(url)
+            }
         }
     }
 
@@ -338,6 +349,7 @@ struct ExpandedFaceManagementView: View {
                     GroupCardContainer(
                         groupID: group.id,
                         viewModel: viewModel,
+                        settingsViewModel: settingsViewModel,
                         selectionState: selectionState,
                         maxVisibleFaces: maxVisibleFaces,
                         expandedGroupIDs: $expandedGroupIDs,
@@ -348,7 +360,8 @@ struct ExpandedFaceManagementView: View {
                         onDeleteGroup: { g in
                             groupToDelete = g
                             showDeleteGroupAlert = true
-                        }
+                        },
+                        onChooseListFile: { showingNameListFilePicker = true }
                     )
                     .id(group.id)
                 }
@@ -417,6 +430,7 @@ struct SelectionInfoView: View {
 struct GroupCardContainer: View {
     let groupID: UUID
     let viewModel: FaceRecognitionViewModel
+    let settingsViewModel: SettingsViewModel
     let selectionState: FaceSelectionState
     let maxVisibleFaces: Int
     @Binding var expandedGroupIDs: Set<UUID>
@@ -425,6 +439,7 @@ struct GroupCardContainer: View {
     @Binding var editingName: String
     var isEditingFocused: FocusState<Bool>.Binding
     let onDeleteGroup: (FaceGroup) -> Void
+    let onChooseListFile: () -> Void
 
     private var group: FaceGroup? {
         viewModel.group(byID: groupID)
@@ -435,6 +450,7 @@ struct GroupCardContainer: View {
             GroupCardContent(
                 group: group,
                 viewModel: viewModel,
+                settingsViewModel: settingsViewModel,
                 selectionState: selectionState,
                 maxVisibleFaces: maxVisibleFaces,
                 isExpanded: expandedGroupIDs.contains(groupID),
@@ -463,6 +479,7 @@ struct GroupCardContainer: View {
                     editingGroupID = nil
                 },
                 onDeleteGroup: { onDeleteGroup(group) },
+                onChooseListFile: onChooseListFile,
                 onHighlight: { highlighted in
                     if highlighted {
                         highlightedGroupID = groupID
@@ -480,6 +497,7 @@ struct GroupCardContainer: View {
 struct GroupCardContent: View {
     let group: FaceGroup
     let viewModel: FaceRecognitionViewModel
+    let settingsViewModel: SettingsViewModel
     let selectionState: FaceSelectionState
     let maxVisibleFaces: Int
     let isExpanded: Bool
@@ -492,6 +510,7 @@ struct GroupCardContent: View {
     let onEndEditing: () -> Void
     let onSaveEdit: () -> Void
     let onDeleteGroup: () -> Void
+    let onChooseListFile: () -> Void
     let onHighlight: (Bool) -> Void
 
     var body: some View {
@@ -508,10 +527,12 @@ struct GroupCardContent: View {
                 isEditing: isEditing,
                 editingName: $editingName,
                 isEditingFocused: isEditingFocused,
+                settingsViewModel: settingsViewModel,
                 onStartEditing: onStartEditing,
                 onEndEditing: onEndEditing,
                 onSaveEdit: onSaveEdit,
                 onDeleteGroup: onDeleteGroup,
+                onChooseListFile: onChooseListFile,
                 viewModel: viewModel
             )
 
@@ -563,10 +584,12 @@ struct GroupCardHeader: View {
     let isEditing: Bool
     @Binding var editingName: String
     var isEditingFocused: FocusState<Bool>.Binding
+    let settingsViewModel: SettingsViewModel
     let onStartEditing: () -> Void
     let onEndEditing: () -> Void
     let onSaveEdit: () -> Void
     let onDeleteGroup: () -> Void
+    let onChooseListFile: () -> Void
     let viewModel: FaceRecognitionViewModel
 
     var body: some View {
@@ -574,13 +597,33 @@ struct GroupCardHeader: View {
             if isEditing {
                 TextField("Name", text: $editingName, onCommit: onSaveEdit)
                     .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 180)
+                    .frame(maxWidth: 150)
                     .focused(isEditingFocused)
                     .onExitCommand { onEndEditing() }
                     .onChange(of: isEditingFocused.wrappedValue) { _, focused in
                         if !focused { onEndEditing() }
                     }
                     .onAppear { isEditingFocused.wrappedValue = true }
+
+                let presetNames = settingsViewModel.loadPersonShownList()
+                Menu {
+                    if !presetNames.isEmpty {
+                        ForEach(presetNames, id: \.self) { name in
+                            Button(name) {
+                                editingName = name
+                            }
+                        }
+                        Divider()
+                    }
+                    Button("Choose List File...") {
+                        onChooseListFile()
+                    }
+                } label: {
+                    Image(systemName: "list.bullet")
+                        .foregroundStyle(presetNames.isEmpty ? .secondary : .primary)
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
             } else {
                 Text(group.name ?? "Unnamed")
                     .font(.headline)
