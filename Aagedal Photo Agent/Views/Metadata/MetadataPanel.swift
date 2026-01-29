@@ -31,7 +31,10 @@ struct MetadataPanel: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 10) {
                             if viewModel.isBatchEdit {
-                                BatchEditBanner(count: viewModel.selectedCount)
+                                BatchEditBanner(
+                                    count: viewModel.selectedCount,
+                                    isLoading: viewModel.isLoadingBatchMetadata
+                                )
                             }
 
                             ratingAndLabelSection
@@ -192,9 +195,10 @@ struct MetadataPanel: View {
                 get: { viewModel.editingMetadata.title ?? "" },
                 set: { viewModel.editingMetadata.title = $0.isEmpty ? nil : $0; viewModel.markChanged() }
             ),
-            placeholder: viewModel.isBatchEdit ? "Leave empty to skip" : "Enter title",
+            placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "title") : "Enter title",
             onCommit: { viewModel.saveToSidecar(); onPendingStatusChanged?() },
-            showsDifference: viewModel.fieldDiffers(\.title)
+            showsDifference: viewModel.fieldDiffers(\.title),
+            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("title")
         )
 
         VStack(alignment: .leading, spacing: 2) {
@@ -203,6 +207,9 @@ struct MetadataPanel: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 DifferenceIndicator(differs: viewModel.fieldDiffers(\.description))
+                if viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("description") {
+                    MultipleValuesIndicator()
+                }
                 Spacer()
                 Button {
                     isShowingVariableReference = true
@@ -215,7 +222,7 @@ struct MetadataPanel: View {
                 .help("Variable Reference")
             }
             TextField(
-                viewModel.isBatchEdit ? "Leave empty to skip" : "Enter description",
+                viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "description") : "Enter description",
                 text: Binding(
                     get: { viewModel.editingMetadata.description ?? "" },
                     set: { viewModel.editingMetadata.description = $0.isEmpty ? nil : $0; viewModel.markChanged() }
@@ -245,6 +252,7 @@ struct MetadataPanel: View {
             label: "Keywords",
             keywords: $viewModel.editingMetadata.keywords,
             differs: viewModel.keywordsDiffer(),
+            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("keywords"),
             onChange: { viewModel.markChanged() },
             onCommit: { viewModel.saveToSidecar(); onPendingStatusChanged?() },
             presetList: settingsViewModel.loadKeywordsList(),
@@ -258,6 +266,7 @@ struct MetadataPanel: View {
             label: "Person Shown",
             keywords: $viewModel.editingMetadata.personShown,
             differs: viewModel.personShownDiffer(),
+            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("personShown"),
             placeholder: "Add name",
             onChange: { viewModel.markChanged() },
             onCommit: { viewModel.saveToSidecar(); onPendingStatusChanged?() },
@@ -274,9 +283,10 @@ struct MetadataPanel: View {
                 get: { viewModel.editingMetadata.copyright ?? "" },
                 set: { viewModel.editingMetadata.copyright = $0.isEmpty ? nil : $0; viewModel.markChanged() }
             ),
-            placeholder: viewModel.isBatchEdit ? "Leave empty to skip" : "Enter copyright",
+            placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "copyright") : "Enter copyright",
             onCommit: { viewModel.saveToSidecar(); onPendingStatusChanged?() },
-            showsDifference: viewModel.fieldDiffers(\.copyright)
+            showsDifference: viewModel.fieldDiffers(\.copyright),
+            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("copyright")
         )
     }
 
@@ -343,8 +353,10 @@ struct MetadataPanel: View {
                 get: { viewModel.editingMetadata.creator ?? "" },
                 set: { viewModel.editingMetadata.creator = $0.isEmpty ? nil : $0; viewModel.markChanged() }
             ),
+            placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "creator") : "",
             onCommit: { viewModel.saveToSidecar(); onPendingStatusChanged?() },
-            showsDifference: viewModel.fieldDiffers(\.creator)
+            showsDifference: viewModel.fieldDiffers(\.creator),
+            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("creator")
         )
         EditableTextField(
             label: "Credit",
@@ -352,8 +364,10 @@ struct MetadataPanel: View {
                 get: { viewModel.editingMetadata.credit ?? "" },
                 set: { viewModel.editingMetadata.credit = $0.isEmpty ? nil : $0; viewModel.markChanged() }
             ),
+            placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "credit") : "",
             onCommit: { viewModel.saveToSidecar(); onPendingStatusChanged?() },
-            showsDifference: viewModel.fieldDiffers(\.credit)
+            showsDifference: viewModel.fieldDiffers(\.credit),
+            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("credit")
         )
         EditableTextField(
             label: "City",
@@ -361,8 +375,10 @@ struct MetadataPanel: View {
                 get: { viewModel.editingMetadata.city ?? "" },
                 set: { viewModel.editingMetadata.city = $0.isEmpty ? nil : $0; viewModel.markChanged() }
             ),
+            placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "city") : "",
             onCommit: { viewModel.saveToSidecar(); onPendingStatusChanged?() },
-            showsDifference: viewModel.fieldDiffers(\.city)
+            showsDifference: viewModel.fieldDiffers(\.city),
+            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("city")
         )
         EditableTextField(
             label: "Country",
@@ -370,8 +386,10 @@ struct MetadataPanel: View {
                 get: { viewModel.editingMetadata.country ?? "" },
                 set: { viewModel.editingMetadata.country = $0.isEmpty ? nil : $0; viewModel.markChanged() }
             ),
+            placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "country") : "",
             onCommit: { viewModel.saveToSidecar(); onPendingStatusChanged?() },
-            showsDifference: viewModel.fieldDiffers(\.country)
+            showsDifference: viewModel.fieldDiffers(\.country),
+            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("country")
         )
         EditableTextField(
             label: "Event",
@@ -379,8 +397,10 @@ struct MetadataPanel: View {
                 get: { viewModel.editingMetadata.event ?? "" },
                 set: { viewModel.editingMetadata.event = $0.isEmpty ? nil : $0; viewModel.markChanged() }
             ),
+            placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "event") : "",
             onCommit: { viewModel.saveToSidecar(); onPendingStatusChanged?() },
-            showsDifference: viewModel.fieldDiffers(\.event)
+            showsDifference: viewModel.fieldDiffers(\.event),
+            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("event")
         )
     }
 
@@ -525,6 +545,7 @@ struct KeywordsEditorWithDiff: View {
     let label: String
     @Binding var keywords: [String]
     var differs: Bool = false
+    var hasMultipleValues: Bool = false
     var placeholder: String = "Add keyword"
     var onChange: (() -> Void)? = nil
     var onCommit: (() -> Void)? = nil
@@ -540,6 +561,9 @@ struct KeywordsEditorWithDiff: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 DifferenceIndicator(differs: differs)
+                if hasMultipleValues {
+                    MultipleValuesIndicator()
+                }
                 Spacer()
                 if onChooseListFile != nil {
                     Menu {
@@ -635,12 +659,25 @@ struct DifferenceIndicator: View {
     }
 }
 
+struct MultipleValuesIndicator: View {
+    var body: some View {
+        Text("Multiple")
+            .font(.caption2)
+            .foregroundStyle(.white)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 1)
+            .background(.secondary, in: Capsule())
+            .help("Selected images have different values for this field")
+    }
+}
+
 struct EditableTextField: View {
     let label: String
     @Binding var text: String
     var placeholder: String = ""
     var onCommit: (() -> Void)? = nil
     var showsDifference: Bool = false
+    var hasMultipleValues: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -649,6 +686,9 @@ struct EditableTextField: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 DifferenceIndicator(differs: showsDifference)
+                if hasMultipleValues {
+                    MultipleValuesIndicator()
+                }
             }
             TextField(placeholder, text: $text)
                 .textFieldStyle(.roundedBorder)
@@ -680,6 +720,7 @@ struct EditableTextEditor: View {
 
 struct BatchEditBanner: View {
     let count: Int
+    var isLoading: Bool = false
 
     var body: some View {
         HStack {
@@ -687,6 +728,13 @@ struct BatchEditBanner: View {
             Text("Editing \(count) images")
                 .font(.subheadline.weight(.medium))
             Spacer()
+            if isLoading {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Loading...")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(8)
         .background(.blue.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))

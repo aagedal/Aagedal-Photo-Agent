@@ -158,6 +158,7 @@ struct ContentView: View {
             if isFaceManagerExpanded {
                 ExpandedFaceManagementView(
                     viewModel: faceRecognitionViewModel,
+                    settingsViewModel: settingsViewModel,
                     onClose: { isFaceManagerExpanded = false },
                     onPhotosDeleted: { trashedURLs in
                         browserViewModel.images.removeAll { trashedURLs.contains($0.url) }

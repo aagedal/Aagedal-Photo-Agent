@@ -210,6 +210,66 @@ final class BrowserViewModel {
         lastClickedImageURL = prevURL
     }
 
+    /// Navigate down one row in a grid layout
+    func selectDown(columns: Int, extending: Bool = false) {
+        guard !sortedImages.isEmpty, columns > 0 else { return }
+        let anchor = lastClickedImageURL ?? selectedImageIDs.first
+        guard let anchorURL = anchor,
+              let currentIndex = urlToSortedIndex[anchorURL] else {
+            selectedImageIDs = [sortedImages[0].url]
+            lastClickedImageURL = sortedImages[0].url
+            return
+        }
+        let targetIndex = min(currentIndex + columns, sortedImages.count - 1)
+        let targetURL = sortedImages[targetIndex].url
+        if extending {
+            // Select all images between current and target
+            var updated = selectedImageIDs
+            for i in (currentIndex + 1)...targetIndex {
+                updated.insert(sortedImages[i].url)
+            }
+            selectedImageIDs = updated
+        } else {
+            selectedImageIDs = [targetURL]
+        }
+        lastClickedImageURL = targetURL
+    }
+
+    /// Navigate up one row in a grid layout
+    func selectUp(columns: Int, extending: Bool = false) {
+        guard !sortedImages.isEmpty, columns > 0 else { return }
+        let anchor = lastClickedImageURL ?? selectedImageIDs.first
+        guard let anchorURL = anchor,
+              let currentIndex = urlToSortedIndex[anchorURL] else {
+            selectedImageIDs = [sortedImages[0].url]
+            lastClickedImageURL = sortedImages[0].url
+            return
+        }
+        let targetIndex = max(currentIndex - columns, 0)
+        let targetURL = sortedImages[targetIndex].url
+        if extending {
+            // Select all images between target and current
+            var updated = selectedImageIDs
+            for i in targetIndex..<currentIndex {
+                updated.insert(sortedImages[i].url)
+            }
+            selectedImageIDs = updated
+        } else {
+            selectedImageIDs = [targetURL]
+        }
+        lastClickedImageURL = targetURL
+    }
+
+    /// Select all images in the current folder
+    func selectAll() {
+        guard !sortedImages.isEmpty else { return }
+        selectedImageIDs = Set(sortedImages.map(\.url))
+        // Keep the anchor at the first image or current anchor
+        if lastClickedImageURL == nil {
+            lastClickedImageURL = sortedImages.first?.url
+        }
+    }
+
     // MARK: - Rating & Labels
 
     func setRating(_ rating: StarRating) {

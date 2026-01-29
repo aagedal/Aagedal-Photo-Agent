@@ -4,19 +4,42 @@ import UniformTypeIdentifiers
 struct ThumbnailGridView: View {
     @Bindable var viewModel: BrowserViewModel
     @FocusState private var isGridFocused: Bool
+    @State private var gridWidth: CGFloat = 0
 
     private let columns = [
         GridItem(.adaptive(minimum: 190, maximum: 250), spacing: 8)
     ]
 
+    private let itemMinWidth: CGFloat = 190
+    private let itemMaxWidth: CGFloat = 250
+    private let itemSpacing: CGFloat = 8
+    private let gridPadding: CGFloat = 16 // .padding() default
+
+    /// Calculate the number of columns based on the current grid width
+    private var columnCount: Int {
+        guard gridWidth > 0 else { return 1 }
+        let availableWidth = gridWidth - gridPadding * 2
+        // With adaptive columns, SwiftUI fits as many items as possible with minimum width
+        let count = Int((availableWidth + itemSpacing) / (itemMinWidth + itemSpacing))
+        return max(count, 1)
+    }
+
     var body: some View {
-        ScrollView {
-            LazyVGrid(columns: columns, spacing: 8) {
-                ForEach(viewModel.sortedImages) { image in
-                    makeThumbnailCell(for: image)
+        GeometryReader { geometry in
+            ScrollView {
+                LazyVGrid(columns: columns, spacing: 8) {
+                    ForEach(viewModel.sortedImages) { image in
+                        makeThumbnailCell(for: image)
+                    }
                 }
+                .padding()
             }
-            .padding()
+            .onAppear {
+                gridWidth = geometry.size.width
+            }
+            .onChange(of: geometry.size.width) { _, newWidth in
+                gridWidth = newWidth
+            }
         }
         .focusable()
         .focused($isGridFocused)
@@ -30,16 +53,21 @@ struct ThumbnailGridView: View {
             return .handled
         }
         .onKeyPress(.upArrow) {
-            viewModel.selectPrevious(extending: NSEvent.modifierFlags.contains(.shift))
+            viewModel.selectUp(columns: columnCount, extending: NSEvent.modifierFlags.contains(.shift))
             return .handled
         }
         .onKeyPress(.downArrow) {
-            viewModel.selectNext(extending: NSEvent.modifierFlags.contains(.shift))
+            viewModel.selectDown(columns: columnCount, extending: NSEvent.modifierFlags.contains(.shift))
             return .handled
         }
         .onKeyPress(.space) {
             guard viewModel.firstSelectedImage != nil else { return .ignored }
             viewModel.isFullScreen = true
+            return .handled
+        }
+        .onKeyPress("a") {
+            guard NSEvent.modifierFlags.contains(.command) else { return .ignored }
+            viewModel.selectAll()
             return .handled
         }
     }
