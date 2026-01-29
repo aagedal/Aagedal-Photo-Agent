@@ -18,6 +18,7 @@ struct ContentView: View {
     @State private var isShowingSaveTemplateName = false
     @State private var isShowingImport = false
     @State private var isShowingC2PADetail = false
+    @State private var isShowingDiscardAllConfirmation = false
     @State private var c2paMetadata: C2PAMetadata?
     @State private var saveTemplateName = ""
     @State private var metadataPanelWidth: CGFloat = 320
@@ -53,6 +54,15 @@ struct ContentView: View {
             .sheet(isPresented: $isShowingFTPUpload) { ftpUploadSheet }
             .sheet(isPresented: $isShowingImport) { importSheet }
             .sheet(isPresented: $isShowingC2PADetail) { c2paSheet }
+            .alert("Discard All Pending Changes?", isPresented: $isShowingDiscardAllConfirmation) {
+                Button("Cancel", role: .cancel) { }
+                Button("Discard All", role: .destructive) {
+                    metadataViewModel.discardAllPendingInFolder()
+                    browserViewModel.refreshPendingStatus()
+                }
+            } message: {
+                Text("This will discard all pending metadata changes for every image in the current folder. This cannot be undone.")
+            }
             .overlay {
                 if isShowingTemplatePalette {
                     Color.black.opacity(0.3)
@@ -62,8 +72,8 @@ struct ContentView: View {
                         }
                     TemplatePaletteView(
                         templates: templateViewModel.templates,
-                        onApply: { template in
-                            applyTemplate(template)
+                        onApply: { template, append in
+                            applyTemplate(template, append: append)
                             isShowingTemplatePalette = false
                         },
                         onSaveNew: {
@@ -129,6 +139,7 @@ struct ContentView: View {
                     viewModel: faceRecognitionViewModel,
                     folderURL: browserViewModel.currentFolderURL,
                     imageURLs: browserViewModel.images.map(\.url),
+                    settingsViewModel: settingsViewModel,
                     isExpanded: isFaceManagerExpanded,
                     onSelectImages: { urls in
                         browserViewModel.selectedImageIDs = urls
@@ -164,13 +175,23 @@ struct ContentView: View {
         HStack(spacing: 0) {
             BrowserView(viewModel: browserViewModel)
                 .frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity)
+                .onKeyPress("m") {
+                    guard NSEvent.modifierFlags.contains(.option),
+                          !metadataViewModel.isBatchEdit,
+                          metadataViewModel.originalImageMetadata != nil else {
+                        return .ignored
+                    }
+                    metadataViewModel.showingEmbeddedValues.toggle()
+                    return .handled
+                }
 
             MetadataPanelDivider(panelWidth: $metadataPanelWidth)
 
             MetadataPanel(
                 viewModel: metadataViewModel,
                 browserViewModel: browserViewModel,
-                onApplyTemplate: { isShowingTemplatePicker = true },
+                settingsViewModel: settingsViewModel,
+                onApplyTemplate: { isShowingTemplatePalette = true },
                 onSaveTemplate: { isShowingSaveTemplateName = true },
                 onPendingStatusChanged: {
                     browserViewModel.refreshPendingStatus()
@@ -202,6 +223,14 @@ struct ContentView: View {
                         Label("Write All Pending", systemImage: "square.and.arrow.down.on.square")
                     }
                     .help("Write all pending sidecar changes to image files")
+                    .disabled(browserViewModel.images.isEmpty)
+
+                    Button {
+                        isShowingDiscardAllConfirmation = true
+                    } label: {
+                        Label("Discard All Pending", systemImage: "arrow.uturn.backward.square")
+                    }
+                    .help("Discard all pending metadata changes in folder")
                     .disabled(browserViewModel.images.isEmpty)
 
                     Button {
@@ -458,14 +487,14 @@ struct ContentView: View {
 
     // MARK: - Helpers
 
-    private func applyTemplate(_ template: MetadataTemplate) {
+    private func applyTemplate(_ template: MetadataTemplate, append: Bool = false) {
         // Apply raw template values — variables like {date} and {persons}
         // stay as-is until the user clicks "Process Variables"
         var raw: [String: String] = [:]
         for field in template.fields {
             raw[field.fieldKey] = field.templateValue
         }
-        metadataViewModel.applyTemplateFields(raw)
+        metadataViewModel.applyTemplateFields(raw, append: append)
     }
 
     private func loadTechnicalMetadata() {

@@ -44,6 +44,45 @@ final class SettingsViewModel {
         didSet { UserDefaults.standard.set(faceCleanupPolicy.rawValue, forKey: "faceCleanupPolicy") }
     }
 
+    var keywordsListPath: String = ""
+    var personShownListPath: String = ""
+
+    func setKeywordsListURL(_ url: URL) {
+        saveBookmark(for: url, key: "keywordsListBookmark")
+        keywordsListPath = url.path
+    }
+
+    func setPersonShownListURL(_ url: URL) {
+        saveBookmark(for: url, key: "personShownListBookmark")
+        personShownListPath = url.path
+    }
+
+    private func saveBookmark(for url: URL, key: String) {
+        guard url.startAccessingSecurityScopedResource() else { return }
+        defer { url.stopAccessingSecurityScopedResource() }
+        do {
+            let bookmarkData = try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
+            UserDefaults.standard.set(bookmarkData, forKey: key)
+        } catch {
+            // Bookmark creation failed
+        }
+    }
+
+    private func resolveBookmark(key: String) -> URL? {
+        guard let bookmarkData = UserDefaults.standard.data(forKey: key) else { return nil }
+        var isStale = false
+        do {
+            let url = try URL(resolvingBookmarkData: bookmarkData, options: .withSecurityScope, relativeTo: nil, bookmarkDataIsStale: &isStale)
+            if isStale {
+                // Re-save the bookmark
+                saveBookmark(for: url, key: key)
+            }
+            return url
+        } catch {
+            return nil
+        }
+    }
+
     /// Clustering sensitivity threshold (0.3 = strict, 0.8 = loose). Default: 0.55
     var faceClusteringThreshold: Double {
         didSet { UserDefaults.standard.set(faceClusteringThreshold, forKey: "faceClusteringThreshold") }
@@ -108,6 +147,38 @@ final class SettingsViewModel {
         self.faceMinFaceSize = storedMinSize ?? 50
 
         self.detectedEditors = Self.detectEditors()
+
+        // Restore paths from bookmarks (must be after all properties are initialized)
+        if let url = resolveBookmark(key: "keywordsListBookmark") {
+            self.keywordsListPath = url.path
+        }
+        if let url = resolveBookmark(key: "personShownListBookmark") {
+            self.personShownListPath = url.path
+        }
+    }
+
+    func loadKeywordsList() -> [String] {
+        loadListFromBookmark(key: "keywordsListBookmark")
+    }
+
+    func loadPersonShownList() -> [String] {
+        loadListFromBookmark(key: "personShownListBookmark")
+    }
+
+    private func loadListFromBookmark(key: String) -> [String] {
+        guard let url = resolveBookmark(key: key) else { return [] }
+        guard url.startAccessingSecurityScopedResource() else { return [] }
+        defer { url.stopAccessingSecurityScopedResource() }
+
+        do {
+            let content = try String(contentsOf: url, encoding: .utf8)
+            return content
+                .components(separatedBy: .newlines)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+        } catch {
+            return []
+        }
     }
 
     static func detectEditors() -> [DetectedEditor] {

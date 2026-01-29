@@ -16,6 +16,7 @@ final class MetadataViewModel {
     var originalImageMetadata: IPTCMetadata?
     var sidecarHistory: [MetadataHistoryEntry] = []
     var currentFolderURL: URL?
+    var showingEmbeddedValues = false
 
     // Geocoding state
     var isReverseGeocoding = false
@@ -33,6 +34,17 @@ final class MetadataViewModel {
 
     var isBatchEdit: Bool { selectedCount > 1 }
 
+    var selectedHavePendingSidecars: Bool {
+        guard let folderURL = currentFolderURL else { return false }
+        for url in selectedURLs {
+            if let sidecar = sidecarService.loadSidecar(for: url, in: folderURL),
+               sidecar.pendingChanges {
+                return true
+            }
+        }
+        return false
+    }
+
     func loadMetadata(for images: [ImageFile], folderURL: URL? = nil) {
         selectedCount = images.count
         selectedURLs = images.map(\.url)
@@ -40,6 +52,7 @@ final class MetadataViewModel {
         saveError = nil
         sidecarHistory = []
         originalImageMetadata = nil
+        showingEmbeddedValues = false
 
         if let folderURL {
             currentFolderURL = folderURL
@@ -172,25 +185,55 @@ final class MetadataViewModel {
         }
     }
 
-    func applyTemplateFields(_ template: [String: String]) {
+    func applyTemplateFields(_ template: [String: String], append: Bool = false) {
         for (key, value) in template {
             switch key {
-            case "title": editingMetadata.title = value
-            case "description": editingMetadata.description = value
-            case "keywords": editingMetadata.keywords = value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-            case "personShown": editingMetadata.personShown = value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-            case "digitalSourceType": editingMetadata.digitalSourceType = DigitalSourceType(rawValue: value)
-            case "creator": editingMetadata.creator = value
-            case "credit": editingMetadata.credit = value
-            case "copyright": editingMetadata.copyright = value
-            case "dateCreated": editingMetadata.dateCreated = value
-            case "city": editingMetadata.city = value
-            case "country": editingMetadata.country = value
-            case "event": editingMetadata.event = value
+            case "title":
+                editingMetadata.title = append ? appendString(editingMetadata.title, value) : value
+            case "description":
+                editingMetadata.description = append ? appendString(editingMetadata.description, value) : value
+            case "keywords":
+                let newKeywords = value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+                if append {
+                    let existing = Set(editingMetadata.keywords)
+                    editingMetadata.keywords += newKeywords.filter { !existing.contains($0) }
+                } else {
+                    editingMetadata.keywords = newKeywords
+                }
+            case "personShown":
+                let newPersons = value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+                if append {
+                    let existing = Set(editingMetadata.personShown)
+                    editingMetadata.personShown += newPersons.filter { !existing.contains($0) }
+                } else {
+                    editingMetadata.personShown = newPersons
+                }
+            case "digitalSourceType":
+                editingMetadata.digitalSourceType = DigitalSourceType(rawValue: value)
+            case "creator":
+                editingMetadata.creator = append ? appendString(editingMetadata.creator, value) : value
+            case "credit":
+                editingMetadata.credit = append ? appendString(editingMetadata.credit, value) : value
+            case "copyright":
+                editingMetadata.copyright = append ? appendString(editingMetadata.copyright, value) : value
+            case "dateCreated":
+                editingMetadata.dateCreated = append ? appendString(editingMetadata.dateCreated, value) : value
+            case "city":
+                editingMetadata.city = append ? appendString(editingMetadata.city, value) : value
+            case "country":
+                editingMetadata.country = append ? appendString(editingMetadata.country, value) : value
+            case "event":
+                editingMetadata.event = append ? appendString(editingMetadata.event, value) : value
             default: break
             }
         }
         hasChanges = true
+    }
+
+    private func appendString(_ existing: String?, _ new: String) -> String {
+        guard let existing, !existing.isEmpty else { return new }
+        guard !new.isEmpty else { return existing }
+        return existing + " " + new
     }
 
     /// Checks whether any text field in editingMetadata contains variable placeholders.
@@ -445,12 +488,18 @@ final class MetadataViewModel {
     // MARK: - Sidecar Management
 
     func saveToSidecar() {
-        guard selectedCount == 1,
-              let imageURL = selectedURLs.first,
-              let folderURL = currentFolderURL else {
-            return
-        }
+        guard let folderURL = currentFolderURL else { return }
 
+        if selectedCount == 1, let imageURL = selectedURLs.first {
+            // Single image mode - save with full history tracking
+            saveSingleImageSidecar(imageURL: imageURL, folderURL: folderURL)
+        } else if selectedCount > 1 {
+            // Batch mode - merge edits into each image's sidecar
+            saveBatchSidecars(folderURL: folderURL)
+        }
+    }
+
+    private func saveSingleImageSidecar(imageURL: URL, folderURL: URL) {
         var newHistory = sidecarHistory
         let prev = previousEditingMetadata ?? IPTCMetadata()
         let now = Date()
@@ -509,6 +558,78 @@ final class MetadataViewModel {
         } catch {
             saveError = "Failed to save sidecar: \(error.localizedDescription)"
         }
+    }
+
+    private func saveBatchSidecars(folderURL: URL) {
+        let now = Date()
+        let batchMeta = editingMetadata
+
+        for imageURL in selectedURLs {
+            // Load existing sidecar or create base metadata
+            var existingMeta: IPTCMetadata
+            var existingHistory: [MetadataHistoryEntry] = []
+            var snapshot: IPTCMetadata? = nil
+
+            if let existing = sidecarService.loadSidecar(for: imageURL, in: folderURL) {
+                existingMeta = existing.metadata
+                existingHistory = existing.history
+                snapshot = existing.imageMetadataSnapshot
+            } else {
+                existingMeta = IPTCMetadata()
+            }
+
+            // Merge batch edits - only apply non-empty fields
+            if let title = batchMeta.title, !title.isEmpty {
+                existingMeta.title = title
+            }
+            if let desc = batchMeta.description, !desc.isEmpty {
+                existingMeta.description = desc
+            }
+            if !batchMeta.keywords.isEmpty {
+                // Append keywords without duplicates
+                let existing = Set(existingMeta.keywords)
+                existingMeta.keywords += batchMeta.keywords.filter { !existing.contains($0) }
+            }
+            if !batchMeta.personShown.isEmpty {
+                // Append persons without duplicates
+                let existing = Set(existingMeta.personShown)
+                existingMeta.personShown += batchMeta.personShown.filter { !existing.contains($0) }
+            }
+            if let copyright = batchMeta.copyright, !copyright.isEmpty {
+                existingMeta.copyright = copyright
+            }
+            if let creator = batchMeta.creator, !creator.isEmpty {
+                existingMeta.creator = creator
+            }
+            if let credit = batchMeta.credit, !credit.isEmpty {
+                existingMeta.credit = credit
+            }
+            if let city = batchMeta.city, !city.isEmpty {
+                existingMeta.city = city
+            }
+            if let country = batchMeta.country, !country.isEmpty {
+                existingMeta.country = country
+            }
+            if let event = batchMeta.event, !event.isEmpty {
+                existingMeta.event = event
+            }
+            if batchMeta.digitalSourceType != nil {
+                existingMeta.digitalSourceType = batchMeta.digitalSourceType
+            }
+
+            let sidecar = MetadataSidecar(
+                sourceFile: imageURL.lastPathComponent,
+                lastModified: now,
+                pendingChanges: true,
+                metadata: existingMeta,
+                imageMetadataSnapshot: snapshot,
+                history: existingHistory
+            )
+
+            try? sidecarService.saveSidecar(sidecar, for: imageURL, in: folderURL)
+        }
+
+        hasChanges = true
     }
 
     func writeMetadataAndClearSidecar() {
@@ -700,16 +821,40 @@ final class MetadataViewModel {
     }
 
     func discardPendingChanges() {
-        guard let original = originalImageMetadata,
-              let imageURL = selectedURLs.first,
-              let folderURL = currentFolderURL else { return }
+        guard let folderURL = currentFolderURL else { return }
 
-        editingMetadata = original
+        // Single image: restore from original and delete sidecar
+        if selectedURLs.count == 1, let original = originalImageMetadata {
+            editingMetadata = original
+            hasChanges = false
+            sidecarHistory = []
+            previousEditingMetadata = original
+            try? sidecarService.deleteSidecar(for: selectedURLs[0], in: folderURL)
+        } else {
+            // Multiple images: delete sidecars for all selected
+            for imageURL in selectedURLs {
+                try? sidecarService.deleteSidecar(for: imageURL, in: folderURL)
+            }
+            // Reset state since we're in batch mode
+            hasChanges = false
+            editingMetadata = IPTCMetadata()
+        }
+    }
+
+    func discardAllPendingInFolder() {
+        guard let folderURL = currentFolderURL else { return }
+
+        try? sidecarService.deleteAllSidecars(in: folderURL)
+
+        // Reset current editing state
+        if let original = originalImageMetadata {
+            editingMetadata = original
+            previousEditingMetadata = original
+        } else {
+            editingMetadata = IPTCMetadata()
+        }
         hasChanges = false
         sidecarHistory = []
-        previousEditingMetadata = original
-
-        try? sidecarService.deleteSidecar(for: imageURL, in: folderURL)
     }
 
     func clearHistory() {

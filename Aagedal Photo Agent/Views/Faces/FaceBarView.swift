@@ -4,6 +4,7 @@ struct FaceBarView: View {
     @Bindable var viewModel: FaceRecognitionViewModel
     let folderURL: URL?
     let imageURLs: [URL]
+    let settingsViewModel: SettingsViewModel
     var isExpanded: Bool = false
     var onSelectImages: ((Set<URL>) -> Void)?
     var onPhotosDeleted: ((Set<URL>) -> Void)?
@@ -53,7 +54,7 @@ struct FaceBarView: View {
                             get: { selectedGroup?.id == group.id },
                             set: { newValue in if !newValue { selectedGroup = nil } }
                         )) {
-                            FaceGroupDetailView(group: group, viewModel: viewModel, onSelectImages: onSelectImages, onPhotosDeleted: onPhotosDeleted)
+                            FaceGroupDetailView(group: group, viewModel: viewModel, settingsViewModel: settingsViewModel, onSelectImages: onSelectImages, onPhotosDeleted: onPhotosDeleted)
                         }
                     }
                 }

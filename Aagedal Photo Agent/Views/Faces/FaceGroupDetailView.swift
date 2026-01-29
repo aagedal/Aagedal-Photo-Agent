@@ -1,14 +1,17 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct FaceGroupDetailView: View {
     let group: FaceGroup
     @Bindable var viewModel: FaceRecognitionViewModel
+    let settingsViewModel: SettingsViewModel
     @State private var editingName: String = ""
     @State private var isApplying = false
     @State private var mergeTargetID: UUID?
     @State private var selectedFaceIDs: Set<UUID> = []
     @State private var moveTargetID: UUID?
     @State private var showDeleteGroupAlert = false
+    @State private var showingNameListFilePicker = false
     var onSelectImages: ((Set<URL>) -> Void)?
     var onPhotosDeleted: ((Set<URL>) -> Void)?
     @Environment(\.dismiss) private var dismiss
@@ -87,12 +90,35 @@ struct FaceGroupDetailView: View {
 
             Divider()
 
-            // Name field
-            TextField("Person name", text: $editingName)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit {
-                    applyName()
+            // Name field with preset picker
+            HStack {
+                TextField("Person name", text: $editingName)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit {
+                        applyName()
+                    }
+
+                let presetNames = settingsViewModel.loadPersonShownList()
+                Menu {
+                    if !presetNames.isEmpty {
+                        ForEach(presetNames, id: \.self) { name in
+                            Button(name) {
+                                editingName = name
+                            }
+                        }
+                        Divider()
+                    }
+                    Button("Choose List File...") {
+                        showingNameListFilePicker = true
+                    }
+                } label: {
+                    Image(systemName: "list.bullet")
+                        .foregroundStyle(presetNames.isEmpty ? .secondary : .primary)
                 }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help(presetNames.isEmpty ? "Choose a list file to load names" : "Choose from preset names")
+            }
 
             Text("\(faces.count) face\(faces.count == 1 ? "" : "s") in \(Set(faces.map(\.imageURL)).count) image\(Set(faces.map(\.imageURL)).count == 1 ? "" : "s")")
                 .font(.caption)
@@ -171,6 +197,15 @@ struct FaceGroupDetailView: View {
         } message: {
             let photoCount = viewModel.imageURLs(for: group).count
             Text("This will delete \(group.faceIDs.count) face(s) across \(photoCount) photo(s). Moving photos to Trash cannot be undone from this app.")
+        }
+        .fileImporter(
+            isPresented: $showingNameListFilePicker,
+            allowedContentTypes: [.plainText],
+            allowsMultipleSelection: false
+        ) { result in
+            if case .success(let urls) = result, let url = urls.first {
+                settingsViewModel.setPersonShownListURL(url)
+            }
         }
     }
 
