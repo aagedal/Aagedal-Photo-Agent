@@ -1,8 +1,10 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct MetadataPanel: View {
     @Bindable var viewModel: MetadataViewModel
     let browserViewModel: BrowserViewModel
+    let settingsViewModel: SettingsViewModel
     var onApplyTemplate: (() -> Void)?
     var onSaveTemplate: (() -> Void)?
     var onPendingStatusChanged: (() -> Void)?
@@ -10,7 +12,13 @@ struct MetadataPanel: View {
     @State private var isShowingVariableReference = false
     @State private var showingHistoryPopover = false
     @State private var showingC2PAWarning = false
-    @State private var showingEmbeddedValues = false
+    @State private var showingListFilePicker = false
+    @State private var listFilePickerTarget: ListFileTarget = .keywords
+
+    enum ListFileTarget {
+        case keywords
+        case personShown
+    }
 
     var body: some View {
         Group {
@@ -56,10 +64,12 @@ struct MetadataPanel: View {
         }
         .frame(maxWidth: .infinity)
         .onKeyPress("m") {
-            guard !viewModel.isBatchEdit, viewModel.originalImageMetadata != nil else {
+            guard NSEvent.modifierFlags.contains(.option),
+                  !viewModel.isBatchEdit,
+                  viewModel.originalImageMetadata != nil else {
                 return .ignored
             }
-            showingEmbeddedValues.toggle()
+            viewModel.showingEmbeddedValues.toggle()
             return .handled
         }
         .alert("C2PA Protected Image", isPresented: $showingC2PAWarning) {
@@ -70,6 +80,20 @@ struct MetadataPanel: View {
             }
         } message: {
             Text("This image has C2PA content credentials. Writing metadata will invalidate the authenticity chain.")
+        }
+        .fileImporter(
+            isPresented: $showingListFilePicker,
+            allowedContentTypes: [.plainText],
+            allowsMultipleSelection: false
+        ) { result in
+            if case .success(let urls) = result, let url = urls.first {
+                switch listFilePickerTarget {
+                case .keywords:
+                    settingsViewModel.setKeywordsListURL(url)
+                case .personShown:
+                    settingsViewModel.setPersonShownListURL(url)
+                }
+            }
         }
     }
 
@@ -113,7 +137,7 @@ struct MetadataPanel: View {
         Section {
             // Toggle between Embedded and Pending views
             if !viewModel.isBatchEdit {
-                Picker("", selection: $showingEmbeddedValues) {
+                Picker("", selection: $viewModel.showingEmbeddedValues) {
                     Text("Pending").tag(false)
                     Text("Embedded").tag(true)
                 }
@@ -122,7 +146,7 @@ struct MetadataPanel: View {
                 .disabled(viewModel.originalImageMetadata == nil)
             }
 
-            if showingEmbeddedValues && !viewModel.isBatchEdit {
+            if viewModel.showingEmbeddedValues && !viewModel.isBatchEdit {
                 embeddedMetadataView
             } else {
                 editableMetadataFields
@@ -222,15 +246,26 @@ struct MetadataPanel: View {
             keywords: $viewModel.editingMetadata.keywords,
             differs: viewModel.keywordsDiffer(),
             onChange: { viewModel.markChanged() },
-            onCommit: { viewModel.saveToSidecar(); onPendingStatusChanged?() }
+            onCommit: { viewModel.saveToSidecar(); onPendingStatusChanged?() },
+            presetList: settingsViewModel.loadKeywordsList(),
+            onChooseListFile: {
+                listFilePickerTarget = .keywords
+                showingListFilePicker = true
+            }
         )
 
         KeywordsEditorWithDiff(
             label: "Person Shown",
             keywords: $viewModel.editingMetadata.personShown,
             differs: viewModel.personShownDiffer(),
+            placeholder: "Add name",
             onChange: { viewModel.markChanged() },
-            onCommit: { viewModel.saveToSidecar(); onPendingStatusChanged?() }
+            onCommit: { viewModel.saveToSidecar(); onPendingStatusChanged?() },
+            presetList: settingsViewModel.loadPersonShownList(),
+            onChooseListFile: {
+                listFilePickerTarget = .personShown
+                showingListFilePicker = true
+            }
         )
 
         EditableTextField(
@@ -288,7 +323,7 @@ struct MetadataPanel: View {
     @ViewBuilder
     private var additionalFieldsSection: some View {
         Section {
-            if showingEmbeddedValues && !viewModel.isBatchEdit {
+            if viewModel.showingEmbeddedValues && !viewModel.isBatchEdit {
                 embeddedAdditionalFieldsView
             } else {
                 editableAdditionalFields
@@ -364,7 +399,7 @@ struct MetadataPanel: View {
 
     @ViewBuilder
     private var gpsSection: some View {
-        if showingEmbeddedValues && !viewModel.isBatchEdit {
+        if viewModel.showingEmbeddedValues && !viewModel.isBatchEdit {
             embeddedGPSView
         } else {
             GPSSectionView(
@@ -463,7 +498,7 @@ struct MetadataPanel: View {
                 } label: {
                     Image(systemName: "arrow.uturn.backward")
                 }
-                .disabled(!viewModel.hasChanges || viewModel.isSaving)
+                .disabled((!viewModel.hasChanges && !viewModel.selectedHavePendingSidecars) || viewModel.isSaving)
                 .help("Discard pending changes")
 
                 Button {
@@ -490,8 +525,11 @@ struct KeywordsEditorWithDiff: View {
     let label: String
     @Binding var keywords: [String]
     var differs: Bool = false
+    var placeholder: String = "Add keyword"
     var onChange: (() -> Void)? = nil
     var onCommit: (() -> Void)? = nil
+    var presetList: [String] = []
+    var onChooseListFile: (() -> Void)? = nil
 
     @State private var inputText = ""
 
@@ -502,6 +540,33 @@ struct KeywordsEditorWithDiff: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 DifferenceIndicator(differs: differs)
+                Spacer()
+                if onChooseListFile != nil {
+                    Menu {
+                        if !presetList.isEmpty {
+                            ForEach(presetList, id: \.self) { item in
+                                Button(item) {
+                                    if !keywords.contains(item) {
+                                        keywords.append(item)
+                                        onChange?()
+                                        onCommit?()
+                                    }
+                                }
+                            }
+                            Divider()
+                        }
+                        Button("Choose List File...") {
+                            onChooseListFile?()
+                        }
+                    } label: {
+                        Image(systemName: "list.bullet")
+                            .font(.caption)
+                            .foregroundStyle(presetList.isEmpty ? .secondary : .primary)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .help(presetList.isEmpty ? "Choose a list file to load presets" : "Add from preset list")
+                }
             }
 
             FlowLayout(spacing: 4) {
@@ -525,19 +590,33 @@ struct KeywordsEditorWithDiff: View {
                 }
             }
 
-            TextField("Add keyword", text: $inputText)
+            TextField(placeholder, text: $inputText)
                 .textFieldStyle(.roundedBorder)
                 .font(.body)
                 .onSubmit {
-                    let trimmed = inputText.trimmingCharacters(in: .whitespaces)
-                    if !trimmed.isEmpty && !keywords.contains(trimmed) {
-                        keywords.append(trimmed)
-                        onChange?()
-                        onCommit?()
+                    addKeywords()
+                }
+                .onChange(of: inputText) { _, newValue in
+                    if newValue.contains(",") || newValue.contains(";") {
+                        addKeywords()
                     }
-                    inputText = ""
                 }
         }
+    }
+
+    private func addKeywords() {
+        let parts = inputText
+            .components(separatedBy: CharacterSet(charactersIn: ",;"))
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !keywords.contains($0) }
+        guard !parts.isEmpty else {
+            inputText = ""
+            return
+        }
+        keywords.append(contentsOf: parts)
+        inputText = ""
+        onChange?()
+        onCommit?()
     }
 }
 

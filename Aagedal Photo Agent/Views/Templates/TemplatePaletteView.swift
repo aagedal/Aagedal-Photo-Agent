@@ -2,7 +2,7 @@ import SwiftUI
 
 struct TemplatePaletteView: View {
     let templates: [MetadataTemplate]
-    let onApply: (MetadataTemplate) -> Void
+    let onApply: (MetadataTemplate, Bool) -> Void  // (template, append)
     let onSaveNew: () -> Void
     let onDismiss: () -> Void
 
@@ -52,11 +52,12 @@ struct TemplatePaletteView: View {
             return .handled
         }
         .onKeyPress(.return) {
+            let appendMode = NSEvent.modifierFlags.contains(.option)
             if selectedIndex == templates.count {
                 // Save button selected
                 onSaveNew()
             } else if !templates.isEmpty && selectedIndex < templates.count {
-                onApply(templates[selectedIndex])
+                onApply(templates[selectedIndex], appendMode)
             }
             return .handled
         }
@@ -69,18 +70,23 @@ struct TemplatePaletteView: View {
     // MARK: - Header
 
     private var header: some View {
-        HStack {
-            Label("Apply Template", systemImage: "doc.on.clipboard")
-                .font(.headline)
-            Spacer()
-            Button {
-                onDismiss()
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Label("Apply Template", systemImage: "doc.on.clipboard")
+                    .font(.headline)
+                Spacer()
+                Button {
+                    onDismiss()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut(.cancelAction)
             }
-            .buttonStyle(.plain)
-            .keyboardShortcut(.cancelAction)
+            Text("⌥↩ to append instead of replace")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
@@ -159,7 +165,7 @@ struct TemplatePaletteView: View {
 
     private func templateRow(_ template: MetadataTemplate, index: Int) -> some View {
         Button {
-            onApply(template)
+            onApply(template, false)
         } label: {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
