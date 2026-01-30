@@ -14,6 +14,7 @@ struct FaceGroupDetailView: View {
     @State private var showingNameListFilePicker = false
     @State private var isAddingToKnownPeople = false
     @State private var knownPeopleMessage: String?
+    @AppStorage("knownPeopleMode") private var knownPeopleMode: String = "off"
     var onSelectImages: ((Set<URL>) -> Void)?
     var onPhotosDeleted: ((Set<URL>) -> Void)?
     @Environment(\.dismiss) private var dismiss
@@ -156,40 +157,13 @@ struct FaceGroupDetailView: View {
                     .foregroundStyle(.green)
             }
 
-            // Actions
+            // Primary actions
             HStack {
-                Button("Select Images") {
-                    let urls = viewModel.imageURLs(for: group)
-                    onSelectImages?(urls)
-                    dismiss()
-                }
-
-                Button(role: .destructive) {
-                    showDeleteGroupAlert = true
-                } label: {
-                    Image(systemName: "trash")
-                }
-                .help("Delete group & photos")
-
-                Spacer()
-
                 Button("Cancel") {
                     dismiss()
                 }
 
-                // Add to Known People button (only when mode is enabled and group is named)
-                if settingsViewModel.knownPeopleMode != .off {
-                    Button {
-                        addToKnownPeople()
-                    } label: {
-                        Label("Add to Known", systemImage: "person.badge.plus")
-                    }
-                    .disabled(
-                        editingName.trimmingCharacters(in: .whitespaces).isEmpty ||
-                        isAddingToKnownPeople
-                    )
-                    .help("Add this person to the global Known People database")
-                }
+                Spacer()
 
                 Button("Apply Name") {
                     applyName()
@@ -197,9 +171,49 @@ struct FaceGroupDetailView: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(editingName.trimmingCharacters(in: .whitespaces).isEmpty || isApplying)
             }
+
+            // Secondary actions
+            HStack {
+                Button {
+                    let urls = viewModel.imageURLs(for: group)
+                    onSelectImages?(urls)
+                    dismiss()
+                } label: {
+                    Label("Select Images", systemImage: "photo.on.rectangle")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                // Add to Known People button (only when mode is enabled)
+                if knownPeopleMode != "off" {
+                    Button {
+                        addToKnownPeople()
+                    } label: {
+                        Label("Add to Known", systemImage: "person.badge.plus")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(
+                        editingName.trimmingCharacters(in: .whitespaces).isEmpty ||
+                        isAddingToKnownPeople
+                    )
+                    .help("Add to Known People database")
+                }
+
+                Spacer()
+
+                Button(role: .destructive) {
+                    showDeleteGroupAlert = true
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("Delete group & photos")
+            }
         }
         .padding()
-        .frame(width: 320, height: 480)
+        .frame(width: 360, height: 500)
         .onAppear {
             editingName = group.name ?? ""
         }

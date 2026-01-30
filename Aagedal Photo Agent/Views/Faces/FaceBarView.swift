@@ -16,6 +16,8 @@ struct FaceBarView: View {
     @State private var showClusteringSettings = false
     @State private var isCheckingKnownPeople = false
     @State private var knownPeopleMatchCount = 0
+    @State private var refinementCount = 0
+    @AppStorage("knownPeopleMode") private var knownPeopleMode: String = "off"
 
     private var isMultiSelecting: Bool {
         multiSelectedGroupIDs.count >= 2
@@ -158,8 +160,52 @@ struct FaceBarView: View {
                 .help("Review merge suggestions for similar face groups")
             }
 
+            // Refine button (when there are named and unnamed groups)
+            if viewModel.canRefine {
+                Divider()
+                    .frame(height: 58)
+
+                Button {
+                    refinementCount = viewModel.refineWithNamedGroups()
+                    // Clear the badge after a delay
+                    if refinementCount > 0 {
+                        Task {
+                            try? await Task.sleep(for: .seconds(5))
+                            await MainActor.run {
+                                refinementCount = 0
+                            }
+                        }
+                    }
+                } label: {
+                    ZStack(alignment: .topTrailing) {
+                        VStack(spacing: 2) {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                                .font(.system(size: 16))
+                            Text("Refine")
+                                .font(.system(size: 9))
+                        }
+                        .frame(width: 52, height: 48)
+
+                        // Badge showing new suggestions found
+                        if refinementCount > 0 {
+                            Text("\(refinementCount)")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .background(Color.blue)
+                                .clipShape(Capsule())
+                                .offset(x: 4, y: -2)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Find matches for unnamed groups using named groups as reference")
+            }
+
             // Check Known People button (On Demand mode)
-            if settingsViewModel.knownPeopleMode == .onDemand && viewModel.scanComplete {
+            if knownPeopleMode == "onDemand" && viewModel.scanComplete {
                 Divider()
                     .frame(height: 58)
 

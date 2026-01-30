@@ -904,6 +904,60 @@ nonisolated struct FaceDetectionService: Sendable {
         return suggestions.sorted { $0.similarity > $1.similarity }
     }
 
+    /// Compute refinement suggestions using named groups as anchors.
+    /// Compares unnamed groups against named groups and suggests merges for close matches.
+    /// This leverages user corrections to improve clustering accuracy.
+    func computeRefinementSuggestions(
+        groups: [FaceGroup],
+        faces: [DetectedFace],
+        threshold: Float
+    ) -> [MergeSuggestion] {
+        let namedGroups = groups.filter { $0.name != nil }
+        let unnamedGroups = groups.filter { $0.name == nil }
+
+        guard !namedGroups.isEmpty, !unnamedGroups.isEmpty else { return [] }
+
+        let faceLookup = Dictionary(uniqueKeysWithValues: faces.map { ($0.id, $0) })
+        let cache = FeaturePrintCache()
+        var suggestions: [MergeSuggestion] = []
+
+        // For each unnamed group, find the best matching named group
+        for unnamedGroup in unnamedGroups {
+            let unnamedFaces = unnamedGroup.faceIDs.compactMap { faceLookup[$0] }
+            guard !unnamedFaces.isEmpty else { continue }
+
+            var bestMatch: (namedGroup: FaceGroup, distance: Float)?
+
+            for namedGroup in namedGroups {
+                let namedFaces = namedGroup.faceIDs.compactMap { faceLookup[$0] }
+                guard !namedFaces.isEmpty else { continue }
+
+                let avgDistance = computeAverageLinkageDistance(unnamedFaces, namedFaces, cache: cache)
+
+                // Use a slightly relaxed threshold for refinement (user has provided context)
+                let refinementThreshold = threshold * 1.15
+
+                if avgDistance <= refinementThreshold {
+                    if bestMatch == nil || avgDistance < bestMatch!.distance {
+                        bestMatch = (namedGroup, avgDistance)
+                    }
+                }
+            }
+
+            if let match = bestMatch {
+                let similarity = max(0, 1 - match.distance)
+                suggestions.append(MergeSuggestion(
+                    group1ID: match.namedGroup.id,  // Named group first
+                    group2ID: unnamedGroup.id,
+                    similarity: similarity
+                ))
+            }
+        }
+
+        // Sort by similarity descending (best matches first)
+        return suggestions.sorted { $0.similarity > $1.similarity }
+    }
+
     // MARK: - Vision Requests
 
     /// Detect faces with landmarks for better quality filtering

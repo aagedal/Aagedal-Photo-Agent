@@ -109,8 +109,10 @@ struct ExpandedFaceManagementView: View {
     @State private var fullscreenFaceIndex: Int = 0
     @State private var fullscreenWindow: FaceFullScreenWindow?
     @State private var showingNameListFilePicker = false
+    @State private var showSuggestionsPanel = true
 
     private let maxVisibleFaces = 12
+    private let suggestionsPanelWidth: CGFloat = 320
 
     // Flat list of all visible face IDs for keyboard navigation
     private var allVisibleFaceIDs: [UUID] {
@@ -128,11 +130,23 @@ struct ExpandedFaceManagementView: View {
     private let columnsPerGroup = 3
 
     var body: some View {
+        HStack(spacing: 0) {
+            // Main face management area
+            VStack(spacing: 0) {
+                toolbar
+                Divider()
+                groupCardsScrollView
+            }
 
-        VStack(spacing: 0) {
-            toolbar
-            Divider()
-            groupCardsScrollView
+            // Suggestions panel on the right
+            if showSuggestionsPanel {
+                Divider()
+                FaceSuggestionsPanel(
+                    viewModel: viewModel,
+                    onClose: { showSuggestionsPanel = false }
+                )
+                .frame(width: suggestionsPanelWidth)
+            }
         }
         .focusable()
         .onKeyPress(.space) {
@@ -385,6 +399,19 @@ struct ExpandedFaceManagementView: View {
             Spacer()
 
             SelectionInfoView(selectionState: selectionState, viewModel: viewModel)
+
+            // Toggle suggestions panel
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    showSuggestionsPanel.toggle()
+                }
+            } label: {
+                Label(
+                    showSuggestionsPanel ? "Hide Suggestions" : "Show Suggestions",
+                    systemImage: showSuggestionsPanel ? "sidebar.trailing" : "sidebar.trailing"
+                )
+            }
+            .help(showSuggestionsPanel ? "Hide suggestions panel" : "Show suggestions panel")
 
             Button {
                 onClose()
@@ -718,12 +745,30 @@ struct GroupCardMenu: View {
     let onDeleteGroup: () -> Void
     let viewModel: FaceRecognitionViewModel
 
+    @AppStorage("knownPeopleMode") private var knownPeopleMode: String = "off"
+    @State private var isAddingToKnown = false
+    @State private var addedToKnownMessage: String?
+
     var body: some View {
         Menu {
             Button("Rename") { onStartEditing() }
             if group.name != nil {
                 Button("Apply Name to Metadata") {
                     viewModel.applyNameToMetadata(groupID: group.id)
+                }
+
+                // Add to Known People option
+                if knownPeopleMode != "off" {
+                    Button {
+                        addToKnownPeople()
+                    } label: {
+                        if isAddingToKnown {
+                            Label("Adding...", systemImage: "hourglass")
+                        } else {
+                            Label("Add to Known People", systemImage: "person.badge.plus")
+                        }
+                    }
+                    .disabled(isAddingToKnown)
                 }
             }
             Divider()
@@ -738,11 +783,66 @@ struct GroupCardMenu: View {
                 onDeleteGroup()
             }
         } label: {
-            Image(systemName: "ellipsis.circle")
-                .font(.system(size: 14))
+            HStack(spacing: 4) {
+                if let message = addedToKnownMessage {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                }
+                Image(systemName: "ellipsis.circle")
+                    .font(.system(size: 14))
+            }
         }
         .menuStyle(.borderlessButton)
-        .frame(width: 24)
+        .frame(minWidth: 24)
+    }
+
+    private func addToKnownPeople() {
+        guard let name = group.name, !name.isEmpty else { return }
+
+        isAddingToKnown = true
+        addedToKnownMessage = nil
+
+        Task {
+            do {
+                let faces = viewModel.faces(in: group)
+                let embeddings = faces.map { face in
+                    PersonEmbedding(
+                        featurePrintData: face.featurePrintData,
+                        sourceDescription: face.imageURL.lastPathComponent,
+                        recognitionMode: face.embeddingMode
+                    )
+                }
+
+                var thumbnailData: Data?
+                if let thumbImage = viewModel.thumbnailImage(for: group.representativeFaceID),
+                   let tiffData = thumbImage.tiffRepresentation,
+                   let bitmap = NSBitmapImageRep(data: tiffData) {
+                    thumbnailData = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.85])
+                }
+
+                let _ = try await KnownPeopleService.shared.addPerson(
+                    name: name,
+                    embeddings: embeddings,
+                    thumbnailData: thumbnailData
+                )
+
+                await MainActor.run {
+                    isAddingToKnown = false
+                    addedToKnownMessage = "Added"
+                }
+
+                try? await Task.sleep(for: .seconds(2))
+                await MainActor.run {
+                    addedToKnownMessage = nil
+                }
+            } catch {
+                await MainActor.run {
+                    isAddingToKnown = false
+                    addedToKnownMessage = "Failed"
+                }
+            }
+        }
     }
 }
 
@@ -1201,5 +1301,274 @@ struct FaceFullScreenImageView: View {
         }
 
         return NSImage(contentsOf: url)
+    }
+}
+
+// MARK: - Face Suggestions Panel
+
+struct FaceSuggestionsPanel: View {
+    @Bindable var viewModel: FaceRecognitionViewModel
+    var onClose: () -> Void
+
+    @AppStorage("knownPeopleMode") private var knownPeopleMode: String = "off"
+    @State private var isRefining = false
+    @State private var isCheckingKnown = false
+    @State private var lastRefinementCount = 0
+    @State private var lastKnownCount = 0
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                Text("Suggestions")
+                    .font(.headline)
+                Spacer()
+                Button {
+                    onClose()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding()
+            .background(.bar)
+
+            Divider()
+
+            // Action buttons
+            VStack(spacing: 12) {
+                // Refine button
+                if viewModel.canRefine {
+                    Button {
+                        isRefining = true
+                        lastRefinementCount = viewModel.refineWithNamedGroups()
+                        isRefining = false
+                    } label: {
+                        HStack {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Refine with Named Groups")
+                                    .font(.subheadline)
+                                Text("Match unnamed groups against named ones")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if lastRefinementCount > 0 {
+                                Text("+\(lastRefinementCount)")
+                                    .font(.caption)
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(.blue, in: Capsule())
+                            }
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isRefining)
+                }
+
+                // Known People button
+                if knownPeopleMode != "off" {
+                    Button {
+                        checkKnownPeople()
+                    } label: {
+                        HStack {
+                            Image(systemName: "person.text.rectangle")
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Check Known People")
+                                    .font(.subheadline)
+                                Text("Match against global database")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if isCheckingKnown {
+                                ProgressView()
+                                    .controlSize(.small)
+                            } else if lastKnownCount > 0 {
+                                Text("+\(lastKnownCount)")
+                                    .font(.caption)
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(.green, in: Capsule())
+                            }
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isCheckingKnown)
+                }
+            }
+            .padding()
+
+            Divider()
+
+            // Merge suggestions list
+            if viewModel.mergeSuggestions.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "checkmark.circle")
+                        .font(.system(size: 32))
+                        .foregroundStyle(.secondary)
+                    Text("No suggestions")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Text("Name some groups and click Refine to find matches")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding()
+            } else {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Merge Suggestions")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal)
+                        .padding(.top, 8)
+
+                    ScrollView {
+                        LazyVStack(spacing: 8) {
+                            ForEach(viewModel.mergeSuggestions) { suggestion in
+                                SuggestionRow(suggestion: suggestion, viewModel: viewModel)
+                            }
+                        }
+                        .padding(.horizontal)
+                        .padding(.bottom)
+                    }
+                }
+            }
+        }
+        .background(.background)
+    }
+
+    private func checkKnownPeople() {
+        guard let faceData = viewModel.faceData else { return }
+
+        isCheckingKnown = true
+        lastKnownCount = 0
+
+        Task {
+            var matchCount = 0
+            let unnamedGroups = faceData.groups.filter { $0.name == nil }
+
+            for group in unnamedGroups {
+                guard let face = faceData.faces.first(where: { $0.id == group.representativeFaceID }) else {
+                    continue
+                }
+
+                let matches = await KnownPeopleService.shared.matchFace(
+                    featurePrintData: face.featurePrintData,
+                    threshold: 0.45,
+                    maxResults: 1
+                )
+
+                if let bestMatch = matches.first {
+                    await MainActor.run {
+                        viewModel.nameGroup(group.id, name: bestMatch.person.name)
+                    }
+                    matchCount += 1
+                }
+            }
+
+            await MainActor.run {
+                isCheckingKnown = false
+                lastKnownCount = matchCount
+            }
+        }
+    }
+}
+
+// MARK: - Suggestion Row
+
+struct SuggestionRow: View {
+    let suggestion: MergeSuggestion
+    @Bindable var viewModel: FaceRecognitionViewModel
+
+    private var group1: FaceGroup? {
+        viewModel.group(byID: suggestion.group1ID)
+    }
+
+    private var group2: FaceGroup? {
+        viewModel.group(byID: suggestion.group2ID)
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            // Group 1
+            groupPreview(group1)
+
+            // Similarity indicator
+            VStack(spacing: 2) {
+                Image(systemName: "arrow.left.arrow.right")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                Text("\(Int(suggestion.similarity * 100))%")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(width: 36)
+
+            // Group 2
+            groupPreview(group2)
+
+            Spacer()
+
+            // Actions
+            VStack(spacing: 4) {
+                Button {
+                    viewModel.applyMergeSuggestion(suggestion)
+                } label: {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                }
+                .buttonStyle(.plain)
+                .help("Merge groups")
+
+                Button {
+                    viewModel.dismissMergeSuggestion(suggestion)
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Dismiss suggestion")
+            }
+        }
+        .padding(8)
+        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    @ViewBuilder
+    private func groupPreview(_ group: FaceGroup?) -> some View {
+        VStack(spacing: 4) {
+            if let group,
+               let image = viewModel.thumbnailCache[group.representativeFaceID] {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 48, height: 48)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+            } else {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(.quaternary)
+                    .frame(width: 48, height: 48)
+            }
+
+            Text(group?.name ?? "Unnamed")
+                .font(.system(size: 10))
+                .lineLimit(1)
+                .frame(maxWidth: 60)
+        }
     }
 }
