@@ -4,6 +4,7 @@
 [] Add keyboard shortcuts: Process variable, process all variables in folder, write all pending metadata in folder.
 [x] App becomes very slow when scanning for faces, this should happen on a background thread and not block the main app UI.
 [] Make scrolling follow selection on selection change outside the visible view area.
+[] Add option to filter images: Hide images with less than n-stars, or with specific color labels, or with/without Person Shown data
 
 
 ## Nice to have

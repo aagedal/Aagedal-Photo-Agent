@@ -121,6 +121,41 @@ struct SettingsView: View {
     @ViewBuilder
     private var facesTab: some View {
         Form {
+            Section("Recognition Mode") {
+                Picker("Mode", selection: $settingsViewModel.faceRecognitionMode) {
+                    ForEach(FaceRecognitionMode.allCases, id: \.self) { mode in
+                        Text(mode.displayName).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Text(settingsViewModel.faceRecognitionMode.description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if settingsViewModel.faceRecognitionMode == .faceAndClothing {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("Face Weight")
+                            Spacer()
+                            Text(String(format: "%.0f%%", settingsViewModel.faceFaceWeight * 100))
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        }
+                        Slider(value: $settingsViewModel.faceFaceWeight, in: 0.3...0.9, step: 0.05)
+                        HStack {
+                            Text("Face: \(Int(settingsViewModel.faceFaceWeight * 100))%")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text("Clothing: \(Int(settingsViewModel.faceClothingWeight * 100))%")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+
             Section("Detection") {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
@@ -155,21 +190,59 @@ struct SettingsView: View {
             }
 
             Section("Clustering") {
+                Picker("Algorithm", selection: $settingsViewModel.faceClusteringAlgorithm) {
+                    ForEach(FaceClusteringAlgorithm.allCases, id: \.self) { algorithm in
+                        Text(algorithm.displayName).tag(algorithm)
+                    }
+                }
+
+                Text(settingsViewModel.faceClusteringAlgorithm.description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
-                        Text("Clustering Sensitivity")
+                        Text("Clustering Sensitivity (\(settingsViewModel.faceRecognitionMode.displayName))")
                         Spacer()
-                        Text(String(format: "%.2f", settingsViewModel.faceClusteringThreshold))
+                        Text(String(format: "%.2f", settingsViewModel.effectiveClusteringThreshold))
                             .foregroundStyle(.secondary)
                             .monospacedDigit()
                     }
-                    Slider(value: $settingsViewModel.faceClusteringThreshold, in: 0.3...0.8, step: 0.01)
+                    if settingsViewModel.faceRecognitionMode == .visionFeaturePrint {
+                        Slider(value: $settingsViewModel.visionClusteringThreshold, in: 0.3...0.8, step: 0.01)
+                    } else {
+                        Slider(value: $settingsViewModel.faceClothingClusteringThreshold, in: 0.3...0.8, step: 0.01)
+                    }
                     HStack {
                         Text("Strict (fewer matches)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Spacer()
                         Text("Loose (more matches)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if settingsViewModel.faceClusteringAlgorithm == .chineseWhispers ||
+                   settingsViewModel.faceClusteringAlgorithm == .qualityGatedTwoPass {
+                    Toggle("Quality-weighted edges", isOn: $settingsViewModel.faceUseQualityWeightedEdges)
+                    Text("Higher quality faces have more influence on clustering")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if settingsViewModel.faceClusteringAlgorithm == .qualityGatedTwoPass {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("Quality Gate Threshold")
+                            Spacer()
+                            Text(String(format: "%.2f", settingsViewModel.faceQualityGateThreshold))
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        }
+                        Slider(value: $settingsViewModel.faceQualityGateThreshold, in: 0.3...0.9, step: 0.05)
+                        Text("Faces below this quality are assigned after initial clustering")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

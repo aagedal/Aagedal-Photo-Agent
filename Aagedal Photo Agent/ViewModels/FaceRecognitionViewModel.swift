@@ -41,13 +41,55 @@ final class FaceRecognitionViewModel {
     // Detection configuration from settings
     var detectionConfig: FaceDetectionService.DetectionConfig {
         var config = FaceDetectionService.DetectionConfig()
-        let threshold = UserDefaults.standard.object(forKey: "faceClusteringThreshold") as? Double
-        config.clusteringThreshold = Float(threshold ?? 0.55)
+
+        // Recognition mode settings
+        let modeRaw = UserDefaults.standard.string(forKey: "faceRecognitionMode") ?? "vision"
+        config.recognitionMode = FaceRecognitionMode(rawValue: modeRaw) ?? .visionFeaturePrint
+
+        // Mode-specific clustering thresholds
+        let threshold: Double
+        switch config.recognitionMode {
+        case .visionFeaturePrint:
+            threshold = UserDefaults.standard.object(forKey: "visionClusteringThreshold") as? Double ?? 0.40
+        case .faceAndClothing:
+            threshold = UserDefaults.standard.object(forKey: "faceClothingClusteringThreshold") as? Double ?? 0.48
+        }
+        config.clusteringThreshold = Float(threshold)
+
         let confidence = UserDefaults.standard.object(forKey: "faceMinConfidence") as? Double
         config.minConfidence = Float(confidence ?? 0.7)
         let minSize = UserDefaults.standard.object(forKey: "faceMinFaceSize") as? Int
         config.minFaceSize = minSize ?? 50
+
+        let faceWeight = UserDefaults.standard.object(forKey: "faceFaceWeight") as? Double
+        config.faceWeight = Float(faceWeight ?? 0.7)
+        config.clothingWeight = 1.0 - config.faceWeight
+
+        // Clustering algorithm settings
+        let algorithmRaw = UserDefaults.standard.string(forKey: "faceClusteringAlgorithm") ?? "chineseWhispers"
+        config.clusteringAlgorithm = FaceClusteringAlgorithm(rawValue: algorithmRaw) ?? .chineseWhispers
+
+        let qualityGate = UserDefaults.standard.object(forKey: "faceQualityGateThreshold") as? Double
+        config.qualityGateThreshold = Float(qualityGate ?? 0.6)
+
+        let useQualityWeighted = UserDefaults.standard.object(forKey: "faceUseQualityWeightedEdges") as? Bool
+        config.useQualityWeightedEdges = useQualityWeighted ?? true
+
         return config
+    }
+
+    /// Current recognition mode from settings
+    var recognitionMode: FaceRecognitionMode {
+        let modeRaw = UserDefaults.standard.string(forKey: "faceRecognitionMode") ?? "vision"
+        return FaceRecognitionMode(rawValue: modeRaw) ?? .visionFeaturePrint
+    }
+
+    /// Check if loaded face data was scanned with a different mode than current settings
+    var needsRescanForModeChange: Bool {
+        guard let data = faceData else { return false }
+        // Legacy data (nil mode) is compatible with Vision mode
+        let dataMode = data.recognitionMode ?? .visionFeaturePrint
+        return dataMode != recognitionMode
     }
 
     private let detectionService = FaceDetectionService()
@@ -236,8 +278,8 @@ final class FaceRecognitionViewModel {
                 var batchesSinceLastSave = 0
                 let saveInterval = 10 // Save progress every 10 batches
 
-                // Create a shared feature print cache for incremental clustering
-                let fpCache = FaceDetectionService.FeaturePrintCache()
+                // Determine clustering approach based on recognition mode
+                let useModeAwareClustering = config.recognitionMode != .visionFeaturePrint
 
                 // Helper to process a completed batch and cluster incrementally
                 func processBatch(scannedURL: URL, results: [(face: DetectedFace, thumbnail: Data)]) async {
@@ -257,7 +299,13 @@ final class FaceRecognitionViewModel {
 
                     // Incremental clustering: cluster new faces immediately against existing groups
                     if !newFaces.isEmpty {
-                        allGroups = detectionService.clusterFaces(newFaces, allFaces: allFaces, existingGroups: allGroups, threshold: config.clusteringThreshold, cache: fpCache)
+                        if useModeAwareClustering {
+                            // Use mode-aware clustering for ArcFace and Face+Clothing modes
+                            allGroups = detectionService.clusterFacesModeAware(newFaces, allFaces: allFaces, existingGroups: allGroups, config: config)
+                        } else {
+                            // Use algorithm-aware clustering with selected algorithm
+                            allGroups = detectionService.clusterFacesWithAlgorithm(newFaces, allFaces: allFaces, existingGroups: allGroups, config: config)
+                        }
 
                         // Assign group IDs to the newly clustered faces
                         for group in allGroups {
@@ -285,7 +333,8 @@ final class FaceRecognitionViewModel {
                             groups: allGroups,
                             lastScanDate: Date(),
                             scanComplete: false,
-                            scannedFiles: scannedFiles
+                            scannedFiles: scannedFiles,
+                            recognitionMode: config.recognitionMode
                         )
                         try? storageService.saveFaceData(progressData)
                         batchesSinceLastSave = 0
@@ -330,7 +379,8 @@ final class FaceRecognitionViewModel {
                 groups: allGroups,
                 lastScanDate: Date(),
                 scanComplete: true,
-                scannedFiles: scannedFiles
+                scannedFiles: scannedFiles,
+                recognitionMode: config.recognitionMode
             )
 
             try? storageService.saveFaceData(folderData)
