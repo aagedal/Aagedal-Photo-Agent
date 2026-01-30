@@ -398,7 +398,7 @@ final class FaceRecognitionViewModel {
             let modeRaw = UserDefaults.standard.string(forKey: "knownPeopleMode") ?? "off"
             let mode = KnownPeopleMode(rawValue: modeRaw) ?? .off
             if mode == .alwaysOn {
-                await self.matchKnownPeople()
+                self.matchKnownPeople()
             }
         }
     }
@@ -407,7 +407,7 @@ final class FaceRecognitionViewModel {
 
     /// Match unnamed face groups against the Known People database.
     /// Automatically names groups that match known people.
-    func matchKnownPeople() async {
+    func matchKnownPeople() {
         guard let data = faceData else { return }
 
         let unnamedGroups = data.groups.filter { $0.name == nil }
@@ -418,16 +418,14 @@ final class FaceRecognitionViewModel {
                 continue
             }
 
-            let matches = await KnownPeopleService.shared.matchFace(
+            let matches = KnownPeopleService.shared.matchFace(
                 featurePrintData: face.featurePrintData,
                 threshold: 0.45,
                 maxResults: 1
             )
 
             if let bestMatch = matches.first {
-                await MainActor.run {
-                    self.nameGroup(group.id, name: bestMatch.person.name)
-                }
+                self.nameGroup(group.id, name: bestMatch.person.name)
             }
         }
     }

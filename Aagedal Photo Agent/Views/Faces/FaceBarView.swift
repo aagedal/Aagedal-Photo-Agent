@@ -288,45 +288,39 @@ struct FaceBarView: View {
         isCheckingKnownPeople = true
         knownPeopleMatchCount = 0
 
-        Task {
-            var matchCount = 0
+        var matchCount = 0
 
-            // Get unnamed groups only
-            let unnamedGroups = faceData.groups.filter { $0.name == nil }
+        // Get unnamed groups only
+        let unnamedGroups = faceData.groups.filter { $0.name == nil }
 
-            for group in unnamedGroups {
-                // Get the representative face's embedding
-                guard let face = faceData.faces.first(where: { $0.id == group.representativeFaceID }) else {
-                    continue
-                }
-
-                // Match against known people
-                let matches = await KnownPeopleService.shared.matchFace(
-                    featurePrintData: face.featurePrintData,
-                    threshold: 0.45,
-                    maxResults: 1
-                )
-
-                if let bestMatch = matches.first {
-                    // Auto-name the group with the matched person's name
-                    await MainActor.run {
-                        viewModel.nameGroup(group.id, name: bestMatch.person.name)
-                    }
-                    matchCount += 1
-                }
+        for group in unnamedGroups {
+            // Get the representative face's embedding
+            guard let face = faceData.faces.first(where: { $0.id == group.representativeFaceID }) else {
+                continue
             }
 
-            await MainActor.run {
-                isCheckingKnownPeople = false
-                knownPeopleMatchCount = matchCount
-            }
+            // Match against known people
+            let matches = KnownPeopleService.shared.matchFace(
+                featurePrintData: face.featurePrintData,
+                threshold: 0.45,
+                maxResults: 1
+            )
 
-            // Clear the badge after a delay
-            if matchCount > 0 {
+            if let bestMatch = matches.first {
+                // Auto-name the group with the matched person's name
+                viewModel.nameGroup(group.id, name: bestMatch.person.name)
+                matchCount += 1
+            }
+        }
+
+        isCheckingKnownPeople = false
+        knownPeopleMatchCount = matchCount
+
+        // Clear the badge after a delay
+        if matchCount > 0 {
+            Task {
                 try? await Task.sleep(for: .seconds(5))
-                await MainActor.run {
-                    knownPeopleMatchCount = 0
-                }
+                knownPeopleMatchCount = 0
             }
         }
     }

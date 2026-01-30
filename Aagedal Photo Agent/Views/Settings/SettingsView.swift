@@ -348,12 +348,7 @@ struct SettingsView: View {
     // MARK: - Known People Actions
 
     private func refreshKnownPeopleStats() {
-        Task {
-            let stats = await KnownPeopleService.shared.getStatistics()
-            await MainActor.run {
-                knownPeopleStats = stats
-            }
-        }
+        knownPeopleStats = KnownPeopleService.shared.getStatistics()
     }
 
     private func importKnownPeople() {
@@ -369,26 +364,20 @@ struct SettingsView: View {
         isImporting = true
         knownPeopleMessage = nil
 
-        Task {
-            do {
-                let count = try await KnownPeopleService.shared.importFromZip(sourceURL: url)
-                await MainActor.run {
-                    isImporting = false
-                    knownPeopleMessage = "Imported \(count) people"
-                    refreshKnownPeopleStats()
-                }
+        do {
+            let count = try KnownPeopleService.shared.importFromZip(sourceURL: url)
+            isImporting = false
+            knownPeopleMessage = "Imported \(count) people"
+            refreshKnownPeopleStats()
 
-                // Clear message after delay
+            // Clear message after delay
+            Task {
                 try? await Task.sleep(for: .seconds(3))
-                await MainActor.run {
-                    knownPeopleMessage = nil
-                }
-            } catch {
-                await MainActor.run {
-                    isImporting = false
-                    knownPeopleMessage = "Import failed: \(error.localizedDescription)"
-                }
+                knownPeopleMessage = nil
             }
+        } catch {
+            isImporting = false
+            knownPeopleMessage = "Import failed: \(error.localizedDescription)"
         }
     }
 
@@ -403,48 +392,36 @@ struct SettingsView: View {
         isExporting = true
         knownPeopleMessage = nil
 
-        Task {
-            do {
-                try await KnownPeopleService.shared.exportToZip(destinationURL: url)
-                await MainActor.run {
-                    isExporting = false
-                    knownPeopleMessage = "Export complete"
-                    refreshKnownPeopleStats()
-                }
+        do {
+            try KnownPeopleService.shared.exportToZip(destinationURL: url)
+            isExporting = false
+            knownPeopleMessage = "Export complete"
+            refreshKnownPeopleStats()
 
-                // Clear message after delay
+            // Clear message after delay
+            Task {
                 try? await Task.sleep(for: .seconds(3))
-                await MainActor.run {
-                    knownPeopleMessage = nil
-                }
-            } catch {
-                await MainActor.run {
-                    isExporting = false
-                    knownPeopleMessage = "Export failed: \(error.localizedDescription)"
-                }
+                knownPeopleMessage = nil
             }
+        } catch {
+            isExporting = false
+            knownPeopleMessage = "Export failed: \(error.localizedDescription)"
         }
     }
 
     private func clearKnownPeopleDatabase() {
-        Task {
-            do {
-                try await KnownPeopleService.shared.clearDatabase()
-                await MainActor.run {
-                    refreshKnownPeopleStats()
-                    knownPeopleMessage = "Database cleared"
-                }
+        do {
+            try KnownPeopleService.shared.clearDatabase()
+            refreshKnownPeopleStats()
+            knownPeopleMessage = "Database cleared"
 
-                // Clear message after delay
+            // Clear message after delay
+            Task {
                 try? await Task.sleep(for: .seconds(3))
-                await MainActor.run {
-                    knownPeopleMessage = nil
-                }
-            } catch {
-                await MainActor.run {
-                    knownPeopleMessage = "Clear failed: \(error.localizedDescription)"
-                }
+                knownPeopleMessage = nil
             }
+        } catch {
+            knownPeopleMessage = "Clear failed: \(error.localizedDescription)"
         }
     }
 
