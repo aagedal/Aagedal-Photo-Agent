@@ -151,6 +151,13 @@ final class SettingsViewModel {
         }
     }
 
+    /// Known People database mode. Default: off
+    var knownPeopleMode: KnownPeopleMode {
+        didSet {
+            UserDefaults.standard.set(knownPeopleMode.rawValue, forKey: "knownPeopleMode")
+        }
+    }
+
     var detectedEditors: [DetectedEditor] = []
 
     var bundledExifToolPath: String? {
@@ -217,6 +224,9 @@ final class SettingsViewModel {
 
         let storedQualityWeighted = UserDefaults.standard.object(forKey: "faceUseQualityWeightedEdges") as? Bool
         self.faceUseQualityWeightedEdges = storedQualityWeighted ?? true
+
+        let storedKnownPeopleMode = UserDefaults.standard.string(forKey: "knownPeopleMode") ?? "off"
+        self.knownPeopleMode = KnownPeopleMode(rawValue: storedKnownPeopleMode) ?? .off
 
         self.detectedEditors = Self.detectEditors()
 

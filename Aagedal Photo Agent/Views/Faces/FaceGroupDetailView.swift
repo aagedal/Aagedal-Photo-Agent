@@ -12,6 +12,8 @@ struct FaceGroupDetailView: View {
     @State private var moveTargetID: UUID?
     @State private var showDeleteGroupAlert = false
     @State private var showingNameListFilePicker = false
+    @State private var isAddingToKnownPeople = false
+    @State private var knownPeopleMessage: String?
     var onSelectImages: ((Set<URL>) -> Void)?
     var onPhotosDeleted: ((Set<URL>) -> Void)?
     @Environment(\.dismiss) private var dismiss
@@ -147,6 +149,13 @@ struct FaceGroupDetailView: View {
                 }
             }
 
+            // Known People feedback
+            if let message = knownPeopleMessage {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.green)
+            }
+
             // Actions
             HStack {
                 Button("Select Images") {
@@ -166,6 +175,20 @@ struct FaceGroupDetailView: View {
 
                 Button("Cancel") {
                     dismiss()
+                }
+
+                // Add to Known People button (only when mode is enabled and group is named)
+                if settingsViewModel.knownPeopleMode != .off {
+                    Button {
+                        addToKnownPeople()
+                    } label: {
+                        Label("Add to Known", systemImage: "person.badge.plus")
+                    }
+                    .disabled(
+                        editingName.trimmingCharacters(in: .whitespaces).isEmpty ||
+                        isAddingToKnownPeople
+                    )
+                    .help("Add this person to the global Known People database")
                 }
 
                 Button("Apply Name") {
@@ -278,5 +301,61 @@ struct FaceGroupDetailView: View {
         viewModel.applyNameToMetadata(groupID: group.id)
         isApplying = false
         dismiss()
+    }
+
+    private func addToKnownPeople() {
+        let trimmed = editingName.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+
+        isAddingToKnownPeople = true
+        knownPeopleMessage = nil
+
+        // First apply the name to the group
+        viewModel.nameGroup(group.id, name: trimmed)
+
+        Task {
+            do {
+                // Collect embeddings from all faces in the group
+                let faces = viewModel.faces(in: group)
+                let embeddings = faces.map { face in
+                    PersonEmbedding(
+                        featurePrintData: face.featurePrintData,
+                        sourceDescription: face.imageURL.lastPathComponent,
+                        recognitionMode: face.embeddingMode
+                    )
+                }
+
+                // Get thumbnail data for the representative face
+                var thumbnailData: Data?
+                if let thumbImage = viewModel.thumbnailImage(for: group.representativeFaceID),
+                   let tiffData = thumbImage.tiffRepresentation,
+                   let bitmap = NSBitmapImageRep(data: tiffData) {
+                    thumbnailData = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.85])
+                }
+
+                // Add to known people database
+                let _ = try await KnownPeopleService.shared.addPerson(
+                    name: trimmed,
+                    embeddings: embeddings,
+                    thumbnailData: thumbnailData
+                )
+
+                await MainActor.run {
+                    isAddingToKnownPeople = false
+                    knownPeopleMessage = "Added \(trimmed) with \(embeddings.count) sample(s)"
+                }
+
+                // Clear message after delay
+                try? await Task.sleep(for: .seconds(2))
+                await MainActor.run {
+                    knownPeopleMessage = nil
+                }
+            } catch {
+                await MainActor.run {
+                    isAddingToKnownPeople = false
+                    knownPeopleMessage = "Failed: \(error.localizedDescription)"
+                }
+            }
+        }
     }
 }

@@ -6,6 +6,23 @@ struct TemplateEditorView: View {
     @State private var isShowingVariableReference = false
     @State private var activeFieldID: UUID?
 
+    /// Returns field keys that are already used in the template
+    private var usedFieldKeys: Set<String> {
+        Set(viewModel.editingTemplate.fields.map { $0.fieldKey })
+    }
+
+    /// Returns available fields that haven't been added to the template yet
+    private var unusedFields: [(key: String, label: String)] {
+        TemplateField.availableFields.filter { !usedFieldKeys.contains($0.key) }
+    }
+
+    /// Returns fields available for a picker, including the current field's key plus all unused fields
+    private func availableFieldsForPicker(currentKey: String) -> [(key: String, label: String)] {
+        TemplateField.availableFields.filter { field in
+            field.key == currentKey || !usedFieldKeys.contains(field.key)
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(viewModel.editingTemplate.id == UUID() ? "New Template" : "Edit Template")
@@ -40,7 +57,7 @@ struct TemplateEditorView: View {
             ForEach($viewModel.editingTemplate.fields) { $field in
                 HStack {
                     Picker("", selection: $field.fieldKey) {
-                        ForEach(TemplateField.availableFields, id: \.key) { f in
+                        ForEach(availableFieldsForPicker(currentKey: field.fieldKey), id: \.key) { f in
                             Text(f.label).tag(f.key)
                         }
                     }
@@ -63,14 +80,16 @@ struct TemplateEditorView: View {
             }
 
             Button {
-                let firstAvailable = TemplateField.availableFields.first?.key ?? "title"
-                viewModel.editingTemplate.fields.append(
-                    TemplateField(fieldKey: firstAvailable, templateValue: "")
-                )
+                if let firstUnused = unusedFields.first {
+                    viewModel.editingTemplate.fields.append(
+                        TemplateField(fieldKey: firstUnused.key, templateValue: "")
+                    )
+                }
             } label: {
                 Label("Add Field", systemImage: "plus")
             }
             .buttonStyle(.plain)
+            .disabled(unusedFields.isEmpty)
 
             Divider()
 

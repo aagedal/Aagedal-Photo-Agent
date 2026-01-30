@@ -14,6 +14,8 @@ struct FaceBarView: View {
     @State private var multiSelectedGroupIDs: Set<UUID> = []
     @State private var showMergeSuggestions = false
     @State private var showClusteringSettings = false
+    @State private var isCheckingKnownPeople = false
+    @State private var knownPeopleMatchCount = 0
 
     private var isMultiSelecting: Bool {
         multiSelectedGroupIDs.count >= 2
@@ -156,6 +158,47 @@ struct FaceBarView: View {
                 .help("Review merge suggestions for similar face groups")
             }
 
+            // Check Known People button (On Demand mode)
+            if settingsViewModel.knownPeopleMode == .onDemand && viewModel.scanComplete {
+                Divider()
+                    .frame(height: 58)
+
+                Button {
+                    checkKnownPeople()
+                } label: {
+                    ZStack(alignment: .topTrailing) {
+                        VStack(spacing: 2) {
+                            if isCheckingKnownPeople {
+                                ProgressView()
+                                    .controlSize(.small)
+                            } else {
+                                Image(systemName: "person.text.rectangle")
+                                    .font(.system(size: 16))
+                            }
+                            Text("Known")
+                                .font(.system(size: 9))
+                        }
+                        .frame(width: 52, height: 48)
+
+                        // Badge showing match count
+                        if knownPeopleMatchCount > 0 {
+                            Text("\(knownPeopleMatchCount)")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .background(Color.green)
+                                .clipShape(Capsule())
+                                .offset(x: 4, y: -2)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(isCheckingKnownPeople)
+                .help("Match faces against Known People database")
+            }
+
             Spacer()
 
             // Expand/collapse button
@@ -190,6 +233,55 @@ struct FaceBarView: View {
             multiSelectedGroupIDs.remove(id)
         } else {
             multiSelectedGroupIDs.insert(id)
+        }
+    }
+
+    private func checkKnownPeople() {
+        guard let faceData = viewModel.faceData else { return }
+
+        isCheckingKnownPeople = true
+        knownPeopleMatchCount = 0
+
+        Task {
+            var matchCount = 0
+
+            // Get unnamed groups only
+            let unnamedGroups = faceData.groups.filter { $0.name == nil }
+
+            for group in unnamedGroups {
+                // Get the representative face's embedding
+                guard let face = faceData.faces.first(where: { $0.id == group.representativeFaceID }) else {
+                    continue
+                }
+
+                // Match against known people
+                let matches = await KnownPeopleService.shared.matchFace(
+                    featurePrintData: face.featurePrintData,
+                    threshold: 0.45,
+                    maxResults: 1
+                )
+
+                if let bestMatch = matches.first {
+                    // Auto-name the group with the matched person's name
+                    await MainActor.run {
+                        viewModel.nameGroup(group.id, name: bestMatch.person.name)
+                    }
+                    matchCount += 1
+                }
+            }
+
+            await MainActor.run {
+                isCheckingKnownPeople = false
+                knownPeopleMatchCount = matchCount
+            }
+
+            // Clear the badge after a delay
+            if matchCount > 0 {
+                try? await Task.sleep(for: .seconds(5))
+                await MainActor.run {
+                    knownPeopleMatchCount = 0
+                }
+            }
         }
     }
 
