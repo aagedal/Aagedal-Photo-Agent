@@ -7,6 +7,13 @@ struct SettingsView: View {
     @State private var ftpViewModel = FTPViewModel()
     @State private var templateViewModel = TemplateViewModel()
 
+    // Known People state
+    @State private var knownPeopleStats: (peopleCount: Int, embeddingCount: Int) = (0, 0)
+    @State private var isImporting = false
+    @State private var isExporting = false
+    @State private var showClearConfirmation = false
+    @State private var knownPeopleMessage: String?
+
     var body: some View {
         TabView {
             generalTab
@@ -29,7 +36,7 @@ struct SettingsView: View {
                     Label("Templates", systemImage: "doc.on.clipboard")
                 }
         }
-        .frame(width: 500, height: 400)
+        .frame(width: 500, height: 520)
         .onAppear {
             ftpViewModel.loadConnections()
             templateViewModel.loadTemplates()
@@ -256,9 +263,176 @@ struct SettingsView: View {
                     }
                 }
             }
+
+            Section("Known People Database") {
+                Picker("Mode", selection: $settingsViewModel.knownPeopleMode) {
+                    ForEach(KnownPeopleMode.allCases, id: \.self) { mode in
+                        Text(mode.displayName).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Text(settingsViewModel.knownPeopleMode.description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if settingsViewModel.knownPeopleMode != .off {
+                    LabeledContent("Database") {
+                        if knownPeopleStats.peopleCount == 0 {
+                            Text("Empty")
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("\(knownPeopleStats.peopleCount) people, \(knownPeopleStats.embeddingCount) samples")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    HStack {
+                        Button("Import...") {
+                            importKnownPeople()
+                        }
+                        .disabled(isImporting)
+
+                        Button("Export...") {
+                            exportKnownPeople()
+                        }
+                        .disabled(isExporting || knownPeopleStats.peopleCount == 0)
+
+                        Spacer()
+
+                        Button("Clear Database", role: .destructive) {
+                            showClearConfirmation = true
+                        }
+                        .disabled(knownPeopleStats.peopleCount == 0)
+                    }
+
+                    if let message = knownPeopleMessage {
+                        Text(message)
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    }
+                }
+            }
         }
         .formStyle(.grouped)
         .padding()
+        .onAppear {
+            refreshKnownPeopleStats()
+        }
+        .onChange(of: settingsViewModel.knownPeopleMode) {
+            refreshKnownPeopleStats()
+        }
+        .alert("Clear Known People Database?", isPresented: $showClearConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Clear", role: .destructive) {
+                clearKnownPeopleDatabase()
+            }
+        } message: {
+            Text("This will permanently delete all \(knownPeopleStats.peopleCount) known people and their reference images. This cannot be undone.")
+        }
+    }
+
+    // MARK: - Known People Actions
+
+    private func refreshKnownPeopleStats() {
+        Task {
+            let stats = await KnownPeopleService.shared.getStatistics()
+            await MainActor.run {
+                knownPeopleStats = stats
+            }
+        }
+    }
+
+    private func importKnownPeople() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.zip]
+        panel.message = "Select a Known People database (.zip)"
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        isImporting = true
+        knownPeopleMessage = nil
+
+        Task {
+            do {
+                let count = try await KnownPeopleService.shared.importFromZip(sourceURL: url)
+                await MainActor.run {
+                    isImporting = false
+                    knownPeopleMessage = "Imported \(count) people"
+                    refreshKnownPeopleStats()
+                }
+
+                // Clear message after delay
+                try? await Task.sleep(for: .seconds(3))
+                await MainActor.run {
+                    knownPeopleMessage = nil
+                }
+            } catch {
+                await MainActor.run {
+                    isImporting = false
+                    knownPeopleMessage = "Import failed: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    private func exportKnownPeople() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.zip]
+        panel.nameFieldStringValue = "KnownPeople.zip"
+        panel.message = "Export Known People database"
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        isExporting = true
+        knownPeopleMessage = nil
+
+        Task {
+            do {
+                try await KnownPeopleService.shared.exportToZip(destinationURL: url)
+                await MainActor.run {
+                    isExporting = false
+                    knownPeopleMessage = "Export complete"
+                    refreshKnownPeopleStats()
+                }
+
+                // Clear message after delay
+                try? await Task.sleep(for: .seconds(3))
+                await MainActor.run {
+                    knownPeopleMessage = nil
+                }
+            } catch {
+                await MainActor.run {
+                    isExporting = false
+                    knownPeopleMessage = "Export failed: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    private func clearKnownPeopleDatabase() {
+        Task {
+            do {
+                try await KnownPeopleService.shared.clearDatabase()
+                await MainActor.run {
+                    refreshKnownPeopleStats()
+                    knownPeopleMessage = "Database cleared"
+                }
+
+                // Clear message after delay
+                try? await Task.sleep(for: .seconds(3))
+                await MainActor.run {
+                    knownPeopleMessage = nil
+                }
+            } catch {
+                await MainActor.run {
+                    knownPeopleMessage = "Clear failed: \(error.localizedDescription)"
+                }
+            }
+        }
     }
 
     // MARK: - FTP Tab

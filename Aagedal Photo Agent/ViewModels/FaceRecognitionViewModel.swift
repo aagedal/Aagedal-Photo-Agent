@@ -393,6 +393,42 @@ final class FaceRecognitionViewModel {
                 self.loadThumbnails(for: folderData)
                 self.updateMergeSuggestions()
             }
+
+            // Auto-match known people if Always On mode
+            let modeRaw = UserDefaults.standard.string(forKey: "knownPeopleMode") ?? "off"
+            let mode = KnownPeopleMode(rawValue: modeRaw) ?? .off
+            if mode == .alwaysOn {
+                await self.matchKnownPeople()
+            }
+        }
+    }
+
+    // MARK: - Known People Matching
+
+    /// Match unnamed face groups against the Known People database.
+    /// Automatically names groups that match known people.
+    func matchKnownPeople() async {
+        guard let data = faceData else { return }
+
+        let unnamedGroups = data.groups.filter { $0.name == nil }
+        guard !unnamedGroups.isEmpty else { return }
+
+        for group in unnamedGroups {
+            guard let face = data.faces.first(where: { $0.id == group.representativeFaceID }) else {
+                continue
+            }
+
+            let matches = await KnownPeopleService.shared.matchFace(
+                featurePrintData: face.featurePrintData,
+                threshold: 0.45,
+                maxResults: 1
+            )
+
+            if let bestMatch = matches.first {
+                await MainActor.run {
+                    self.nameGroup(group.id, name: bestMatch.person.name)
+                }
+            }
         }
     }
 
