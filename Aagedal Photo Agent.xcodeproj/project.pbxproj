@@ -7,8 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		8E0557422F29099400BCFB49 /* readme.md in Resources */ = {isa = PBXBuildFile; fileRef = 8E0557412F29098D00BCFB49 /* readme.md */; };
-		8E05576E2F2A149800BCFB49 /* TODO.md in Resources */ = {isa = PBXBuildFile; fileRef = 8E05576D2F2A149800BCFB49 /* TODO.md */; };
 		8E0557702F49A00000BCFB49 /* ExifTool in Resources */ = {isa = PBXBuildFile; fileRef = 8E0557712F49A00000BCFB49 /* ExifTool */; };
 /* End PBXBuildFile section */
 
@@ -121,8 +119,6 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				8E05576E2F2A149800BCFB49 /* TODO.md in Resources */,
-				8E0557422F29099400BCFB49 /* readme.md in Resources */,
 				8E0557702F49A00000BCFB49 /* ExifTool in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -268,7 +264,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 42;
+				CURRENT_PROJECT_VERSION = 45;
 				DEVELOPMENT_TEAM = 3R5QGG9DW6;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -281,7 +277,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.2.0;
+				MARKETING_VERSION = 1.2.1;
 				PRODUCT_BUNDLE_IDENTIFIER = "aagedal.Aagedal-Photo-Agent";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -301,7 +297,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 42;
+				CURRENT_PROJECT_VERSION = 45;
 				DEVELOPMENT_TEAM = 3R5QGG9DW6;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -314,7 +310,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.2.0;
+				MARKETING_VERSION = 1.2.1;
 				PRODUCT_BUNDLE_IDENTIFIER = "aagedal.Aagedal-Photo-Agent";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;

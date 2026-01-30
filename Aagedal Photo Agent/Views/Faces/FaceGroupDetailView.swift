@@ -327,49 +327,43 @@ struct FaceGroupDetailView: View {
         // First apply the name to the group
         viewModel.nameGroup(group.id, name: trimmed)
 
-        Task {
-            do {
-                // Collect embeddings from all faces in the group
-                let faces = viewModel.faces(in: group)
-                let embeddings = faces.map { face in
-                    PersonEmbedding(
-                        featurePrintData: face.featurePrintData,
-                        sourceDescription: face.imageURL.lastPathComponent,
-                        recognitionMode: face.embeddingMode
-                    )
-                }
-
-                // Get thumbnail data for the representative face
-                var thumbnailData: Data?
-                if let thumbImage = viewModel.thumbnailImage(for: group.representativeFaceID),
-                   let tiffData = thumbImage.tiffRepresentation,
-                   let bitmap = NSBitmapImageRep(data: tiffData) {
-                    thumbnailData = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.85])
-                }
-
-                // Add to known people database
-                let _ = try await KnownPeopleService.shared.addPerson(
-                    name: trimmed,
-                    embeddings: embeddings,
-                    thumbnailData: thumbnailData
+        do {
+            // Collect embeddings from all faces in the group
+            let faces = viewModel.faces(in: group)
+            let embeddings = faces.map { face in
+                PersonEmbedding(
+                    featurePrintData: face.featurePrintData,
+                    sourceDescription: face.imageURL.lastPathComponent,
+                    recognitionMode: face.embeddingMode
                 )
-
-                await MainActor.run {
-                    isAddingToKnownPeople = false
-                    knownPeopleMessage = "Added \(trimmed) with \(embeddings.count) sample(s)"
-                }
-
-                // Clear message after delay
-                try? await Task.sleep(for: .seconds(2))
-                await MainActor.run {
-                    knownPeopleMessage = nil
-                }
-            } catch {
-                await MainActor.run {
-                    isAddingToKnownPeople = false
-                    knownPeopleMessage = "Failed: \(error.localizedDescription)"
-                }
             }
+
+            // Get thumbnail data for the representative face
+            var thumbnailData: Data?
+            if let thumbImage = viewModel.thumbnailImage(for: group.representativeFaceID),
+               let tiffData = thumbImage.tiffRepresentation,
+               let bitmap = NSBitmapImageRep(data: tiffData) {
+                thumbnailData = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.85])
+            }
+
+            // Add to known people database
+            let _ = try KnownPeopleService.shared.addPerson(
+                name: trimmed,
+                embeddings: embeddings,
+                thumbnailData: thumbnailData
+            )
+
+            isAddingToKnownPeople = false
+            knownPeopleMessage = "Added \(trimmed) with \(embeddings.count) sample(s)"
+
+            // Clear message after delay
+            Task {
+                try? await Task.sleep(for: .seconds(2))
+                knownPeopleMessage = nil
+            }
+        } catch {
+            isAddingToKnownPeople = false
+            knownPeopleMessage = "Failed: \(error.localizedDescription)"
         }
     }
 }

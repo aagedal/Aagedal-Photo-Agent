@@ -803,45 +803,40 @@ struct GroupCardMenu: View {
         isAddingToKnown = true
         addedToKnownMessage = nil
 
-        Task {
-            do {
-                let faces = viewModel.faces(in: group)
-                let embeddings = faces.map { face in
-                    PersonEmbedding(
-                        featurePrintData: face.featurePrintData,
-                        sourceDescription: face.imageURL.lastPathComponent,
-                        recognitionMode: face.embeddingMode
-                    )
-                }
-
-                var thumbnailData: Data?
-                if let thumbImage = viewModel.thumbnailImage(for: group.representativeFaceID),
-                   let tiffData = thumbImage.tiffRepresentation,
-                   let bitmap = NSBitmapImageRep(data: tiffData) {
-                    thumbnailData = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.85])
-                }
-
-                let _ = try await KnownPeopleService.shared.addPerson(
-                    name: name,
-                    embeddings: embeddings,
-                    thumbnailData: thumbnailData
+        do {
+            let faces = viewModel.faces(in: group)
+            let embeddings = faces.map { face in
+                PersonEmbedding(
+                    featurePrintData: face.featurePrintData,
+                    sourceDescription: face.imageURL.lastPathComponent,
+                    recognitionMode: face.embeddingMode
                 )
-
-                await MainActor.run {
-                    isAddingToKnown = false
-                    addedToKnownMessage = "Added"
-                }
-
-                try? await Task.sleep(for: .seconds(2))
-                await MainActor.run {
-                    addedToKnownMessage = nil
-                }
-            } catch {
-                await MainActor.run {
-                    isAddingToKnown = false
-                    addedToKnownMessage = "Failed"
-                }
             }
+
+            var thumbnailData: Data?
+            if let thumbImage = viewModel.thumbnailImage(for: group.representativeFaceID),
+               let tiffData = thumbImage.tiffRepresentation,
+               let bitmap = NSBitmapImageRep(data: tiffData) {
+                thumbnailData = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.85])
+            }
+
+            let _ = try KnownPeopleService.shared.addPerson(
+                name: name,
+                embeddings: embeddings,
+                thumbnailData: thumbnailData
+            )
+
+            isAddingToKnown = false
+            addedToKnownMessage = "Added"
+
+            // Clear message after delay
+            Task {
+                try? await Task.sleep(for: .seconds(2))
+                addedToKnownMessage = nil
+            }
+        } catch {
+            isAddingToKnown = false
+            addedToKnownMessage = "Failed"
         }
     }
 }
@@ -1458,34 +1453,28 @@ struct FaceSuggestionsPanel: View {
         isCheckingKnown = true
         lastKnownCount = 0
 
-        Task {
-            var matchCount = 0
-            let unnamedGroups = faceData.groups.filter { $0.name == nil }
+        var matchCount = 0
+        let unnamedGroups = faceData.groups.filter { $0.name == nil }
 
-            for group in unnamedGroups {
-                guard let face = faceData.faces.first(where: { $0.id == group.representativeFaceID }) else {
-                    continue
-                }
-
-                let matches = await KnownPeopleService.shared.matchFace(
-                    featurePrintData: face.featurePrintData,
-                    threshold: 0.45,
-                    maxResults: 1
-                )
-
-                if let bestMatch = matches.first {
-                    await MainActor.run {
-                        viewModel.nameGroup(group.id, name: bestMatch.person.name)
-                    }
-                    matchCount += 1
-                }
+        for group in unnamedGroups {
+            guard let face = faceData.faces.first(where: { $0.id == group.representativeFaceID }) else {
+                continue
             }
 
-            await MainActor.run {
-                isCheckingKnown = false
-                lastKnownCount = matchCount
+            let matches = KnownPeopleService.shared.matchFace(
+                featurePrintData: face.featurePrintData,
+                threshold: 0.45,
+                maxResults: 1
+            )
+
+            if let bestMatch = matches.first {
+                viewModel.nameGroup(group.id, name: bestMatch.person.name)
+                matchCount += 1
             }
         }
+
+        isCheckingKnown = false
+        lastKnownCount = matchCount
     }
 }
 

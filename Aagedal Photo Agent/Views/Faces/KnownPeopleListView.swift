@@ -102,37 +102,22 @@ struct KnownPeopleListView: View {
     }
 
     private func loadPeople() {
-        Task {
-            let loaded = await KnownPeopleService.shared.getAllPeople()
-            await MainActor.run {
-                people = loaded
-            }
-        }
+        people = KnownPeopleService.shared.getAllPeople()
     }
 
     private func savePerson(_ person: KnownPerson) {
-        Task {
-            do {
-                try await KnownPeopleService.shared.updatePerson(person)
-            } catch {
-                // Handle error silently for now
-            }
-        }
+        try? KnownPeopleService.shared.updatePerson(person)
     }
 
     private func deletePerson(_ person: KnownPerson) {
-        Task {
-            do {
-                try await KnownPeopleService.shared.removePerson(id: person.id)
-                await MainActor.run {
-                    people.removeAll { $0.id == person.id }
-                    if selectedPersonID == person.id {
-                        selectedPersonID = nil
-                    }
-                }
-            } catch {
-                // Handle error silently for now
+        do {
+            try KnownPeopleService.shared.removePerson(id: person.id)
+            people.removeAll { $0.id == person.id }
+            if selectedPersonID == person.id {
+                selectedPersonID = nil
             }
+        } catch {
+            // Handle error silently for now
         }
     }
 }
@@ -193,12 +178,7 @@ struct KnownPersonRow: View {
     }
 
     private func loadThumbnail() {
-        Task {
-            let image = await KnownPeopleService.shared.loadThumbnail(for: person.id)
-            await MainActor.run {
-                thumbnail = image
-            }
-        }
+        thumbnail = KnownPeopleService.shared.loadThumbnail(for: person.id)
     }
 }
 
@@ -331,12 +311,7 @@ struct KnownPersonDetailView: View {
     }
 
     private func loadThumbnail() {
-        Task {
-            let image = await KnownPeopleService.shared.loadThumbnail(for: person.id)
-            await MainActor.run {
-                thumbnail = image
-            }
-        }
+        thumbnail = KnownPeopleService.shared.loadThumbnail(for: person.id)
     }
 
     private func resetFields() {
