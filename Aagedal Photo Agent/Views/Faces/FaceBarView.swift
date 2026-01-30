@@ -13,6 +13,7 @@ struct FaceBarView: View {
     @State private var selectedGroup: FaceGroup?
     @State private var multiSelectedGroupIDs: Set<UUID> = []
     @State private var showMergeSuggestions = false
+    @State private var showClusteringSettings = false
 
     private var isMultiSelecting: Bool {
         multiSelectedGroupIDs.count >= 2
@@ -27,8 +28,23 @@ struct FaceBarView: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            // Scan button
-            scanButton
+            // Scan button with settings
+            HStack(spacing: 4) {
+                scanButton
+
+                Button {
+                    showClusteringSettings.toggle()
+                } label: {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Clustering settings")
+                .popover(isPresented: $showClusteringSettings) {
+                    ClusteringSettingsPopover(settingsViewModel: settingsViewModel)
+                }
+            }
 
             Divider()
                 .frame(height: 58)
@@ -326,5 +342,74 @@ struct MergeSuggestionRow: View {
                 .fill(Color.gray.opacity(0.3))
                 .frame(width: 40, height: 40)
         }
+    }
+}
+
+// MARK: - Clustering Settings Popover
+
+struct ClusteringSettingsPopover: View {
+    @Bindable var settingsViewModel: SettingsViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Face Clustering")
+                .font(.headline)
+
+            // Recognition mode picker
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Mode")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Picker("Mode", selection: $settingsViewModel.faceRecognitionMode) {
+                    ForEach(FaceRecognitionMode.allCases, id: \.self) { mode in
+                        Text(mode.displayName).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+
+                Text(settingsViewModel.faceRecognitionMode.description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Divider()
+
+            // Clustering threshold slider
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("Sensitivity")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(String(format: "%.2f", settingsViewModel.effectiveClusteringThreshold))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+
+                if settingsViewModel.faceRecognitionMode == .visionFeaturePrint {
+                    Slider(value: $settingsViewModel.visionClusteringThreshold, in: 0.3...0.8, step: 0.01)
+                } else {
+                    Slider(value: $settingsViewModel.faceClothingClusteringThreshold, in: 0.3...0.8, step: 0.01)
+                }
+
+                HStack {
+                    Text("Strict")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                    Spacer()
+                    Text("Loose")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+
+            Text("Changes apply to new scans. Option+click Scan to rescan.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding()
+        .frame(width: 260)
     }
 }

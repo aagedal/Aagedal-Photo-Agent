@@ -2,6 +2,8 @@ import SwiftUI
 
 struct BrowserView: View {
     @Bindable var viewModel: BrowserViewModel
+    var faceCount: Int = 0
+    var faceGroupCount: Int = 0
 
     var body: some View {
         Group {
@@ -50,11 +52,20 @@ struct BrowserView: View {
             }
 
             ToolbarItem(placement: .automatic) {
-                Text("\(viewModel.images.count) images in folder")
-                    .foregroundStyle(.secondary)
-                    .font(.caption)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 5)
+                HStack(spacing: 12) {
+                    Text("\(viewModel.images.count) images")
+                    if faceCount > 0 {
+                        if faceGroupCount > 0 {
+                            Text("\(faceCount) faces in \(faceGroupCount) groups")
+                        } else {
+                            Text("\(faceCount) faces")
+                        }
+                    }
+                }
+                .foregroundStyle(.secondary)
+                .font(.caption)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 5)
             }
         }
     }

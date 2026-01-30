@@ -174,7 +174,11 @@ struct ContentView: View {
     @ViewBuilder
     private var browserAndMetadataPanel: some View {
         HStack(spacing: 0) {
-            BrowserView(viewModel: browserViewModel)
+            BrowserView(
+                viewModel: browserViewModel,
+                faceCount: faceRecognitionViewModel.faceData?.faces.count ?? 0,
+                faceGroupCount: faceRecognitionViewModel.faceData?.groups.count ?? 0
+            )
                 .frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity)
                 .onKeyPress("m") {
                     guard NSEvent.modifierFlags.contains(.option),

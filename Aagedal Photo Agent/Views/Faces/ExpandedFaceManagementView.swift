@@ -2,22 +2,27 @@ import SwiftUI
 import UniformTypeIdentifiers
 import AppKit
 
-// MARK: - Simple Fullscreen Image Window for Face View
+// MARK: - Fullscreen Image Window for Face View
 
 private class FaceFullScreenWindow: NSWindow {
     var onDismiss: (() -> Void)?
+    var onNavigate: ((Int) -> Void)?  // -1 for previous, +1 for next
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
 
     override func keyDown(with event: NSEvent) {
         let keyCode = Int(event.keyCode)
-        // Escape (53) or Space (49) → dismiss
-        if keyCode == 53 || keyCode == 49 {
+        switch keyCode {
+        case 53, 49:  // Escape or Space → dismiss
             onDismiss?()
-            return
+        case 123:  // Left arrow → previous
+            onNavigate?(-1)
+        case 124:  // Right arrow → next
+            onNavigate?(1)
+        default:
+            super.keyDown(with: event)
         }
-        super.keyDown(with: event)
     }
 
     override func cancelOperation(_ sender: Any?) {
@@ -100,7 +105,8 @@ struct ExpandedFaceManagementView: View {
     @State private var groupToDelete: FaceGroup?
     @State private var showDeleteGroupAlert = false
     @State private var expandedGroupIDs: Set<UUID> = []
-    @State private var fullscreenImageURL: URL?
+    @State private var fullscreenFaces: [DetectedFace] = []
+    @State private var fullscreenFaceIndex: Int = 0
     @State private var fullscreenWindow: FaceFullScreenWindow?
     @State private var showingNameListFilePicker = false
 
@@ -201,14 +207,24 @@ struct ExpandedFaceManagementView: View {
         // Only open if exactly one face is selected
         guard selectionState.selectedFaceIDs.count == 1,
               let faceID = selectionState.selectedFaceIDs.first,
-              let face = viewModel.face(byID: faceID) else { return }
+              let face = viewModel.face(byID: faceID),
+              let groupID = face.groupID,
+              let group = viewModel.group(byID: groupID) else { return }
 
-        openFullscreenWindow(for: face.imageURL)
+        // Collect all faces in this group for navigation
+        let groupFaces = viewModel.faces(in: group)
+        let currentIndex = groupFaces.firstIndex(where: { $0.id == faceID }) ?? 0
+
+        openFullscreenWindow(faces: groupFaces, startIndex: currentIndex)
     }
 
-    private func openFullscreenWindow(for url: URL) {
+    private func openFullscreenWindow(faces: [DetectedFace], startIndex: Int) {
         guard fullscreenWindow == nil,
-              let screen = NSScreen.main else { return }
+              let screen = NSScreen.main,
+              !faces.isEmpty else { return }
+
+        fullscreenFaces = faces
+        fullscreenFaceIndex = min(startIndex, faces.count - 1)
 
         let window = FaceFullScreenWindow(
             contentRect: screen.frame,
@@ -224,22 +240,55 @@ struct ExpandedFaceManagementView: View {
         window.onDismiss = { [self] in
             closeFullscreenWindow()
         }
+        window.onNavigate = { [self] direction in
+            navigateFullscreen(direction: direction)
+        }
 
-        let hostingView = NSHostingView(
-            rootView: FaceFullScreenImageView(imageURL: url)
-        )
-        window.contentView = hostingView
+        updateFullscreenContent(window: window)
         window.setFrame(screen.frame, display: true)
         window.makeKeyAndOrderFront(nil)
 
         fullscreenWindow = window
-        fullscreenImageURL = url
+    }
+
+    private func navigateFullscreen(direction: Int) {
+        let newIndex = fullscreenFaceIndex + direction
+        guard newIndex >= 0, newIndex < fullscreenFaces.count else { return }
+        fullscreenFaceIndex = newIndex
+
+        if let window = fullscreenWindow {
+            updateFullscreenContent(window: window)
+        }
+    }
+
+    private func updateFullscreenContent(window: NSWindow) {
+        guard fullscreenFaceIndex < fullscreenFaces.count else { return }
+        let currentFace = fullscreenFaces[fullscreenFaceIndex]
+        let url = currentFace.imageURL
+        let total = fullscreenFaces.count
+        let current = fullscreenFaceIndex + 1
+
+        let hostingView = NSHostingView(
+            rootView: FaceFullScreenImageView(
+                imageURL: url,
+                currentIndex: current,
+                totalCount: total
+            )
+        )
+        window.contentView = hostingView
     }
 
     private func closeFullscreenWindow() {
+        // Select the last viewed face before closing
+        if fullscreenFaceIndex < fullscreenFaces.count {
+            let lastViewedFace = fullscreenFaces[fullscreenFaceIndex]
+            selectionState.selectFace(lastViewedFace.id)
+        }
+
         fullscreenWindow?.orderOut(nil)
         fullscreenWindow = nil
-        fullscreenImageURL = nil
+        fullscreenFaces = []
+        fullscreenFaceIndex = 0
     }
 
     // MARK: - Keyboard Navigation
@@ -323,6 +372,15 @@ struct ExpandedFaceManagementView: View {
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
+
+            Divider()
+                .frame(height: 16)
+
+            if let faceData = viewModel.faceData {
+                Text("\(faceData.faces.count) faces in \(faceData.groups.count) groups")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             Spacer()
 
@@ -697,6 +755,7 @@ struct FacesGridView: View {
     let groupFaceCount: Int
 
     var body: some View {
+        let faceIDs = faces.map(\.id)
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 90), spacing: 6)], spacing: 6) {
             ForEach(faces) { face in
                 let isSelected = selectionState.selectedFaceIDs.contains(face.id)
@@ -711,8 +770,12 @@ struct FacesGridView: View {
                     isFocused: isFocused,
                     isDragged: isDragged,
                     groupFaceCount: groupFaceCount,
-                    onTap: { commandKey in
-                        selectionState.toggleSelection(face.id, commandKey: commandKey)
+                    onTap: { commandKey, shiftKey in
+                        if shiftKey {
+                            selectionState.extendSelection(to: face.id, allFaces: faceIDs)
+                        } else {
+                            selectionState.toggleSelection(face.id, commandKey: commandKey)
+                        }
                     },
                     onDragStart: {
                         let ids: Set<UUID> = isSelected ? selectionState.selectedFaceIDs : [face.id]
@@ -761,13 +824,14 @@ struct FaceThumbnailView: View {
     let isFocused: Bool
     let isDragged: Bool
     let groupFaceCount: Int
-    let onTap: (Bool) -> Void
+    let onTap: (_ commandKey: Bool, _ shiftKey: Bool) -> Void
     let onDragStart: () -> Set<UUID>
 
     var body: some View {
         thumbnailImage
             .onTapGesture {
-                onTap(NSEvent.modifierFlags.contains(.command))
+                let modifiers = NSEvent.modifierFlags
+                onTap(modifiers.contains(.command), modifiers.contains(.shift))
             }
             .onDrag {
                 let ids = onDragStart()
@@ -934,56 +998,175 @@ struct NewGroupDropDelegate: DropDelegate {
 
 struct FaceFullScreenImageView: View {
     let imageURL: URL
+    var currentIndex: Int = 1
+    var totalCount: Int = 1
+
     @State private var image: NSImage?
     @State private var isLoading = true
+    @State private var scale: CGFloat = 1.0
+    @State private var lastScale: CGFloat = 1.0
+    @State private var offset: CGSize = .zero
+    @State private var lastOffset: CGSize = .zero
+
+    private let minScale: CGFloat = 1.0
+    private let maxScale: CGFloat = 5.0
 
     var body: some View {
-        ZStack {
-            Color.black
+        GeometryReader { geometry in
+            ZStack {
+                Color.black
 
-            if let image {
-                Image(nsImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-            }
+                if let image {
+                    Image(nsImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .scaleEffect(scale)
+                        .offset(offset)
+                        .gesture(magnificationGesture)
+                        .gesture(dragGesture(in: geometry.size))
+                        .onTapGesture(count: 2) {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                if scale > 1.0 {
+                                    // Reset to fit
+                                    scale = 1.0
+                                    lastScale = 1.0
+                                    offset = .zero
+                                    lastOffset = .zero
+                                } else {
+                                    // Zoom to 2x
+                                    scale = 2.0
+                                    lastScale = 2.0
+                                }
+                            }
+                        }
+                }
 
-            if isLoading {
-                VStack {
-                    HStack {
-                        ProgressView()
-                            .scaleEffect(0.5)
-                            .tint(.white)
-                            .padding(12)
+                // Loading indicator
+                if isLoading {
+                    VStack {
+                        HStack {
+                            ProgressView()
+                                .scaleEffect(0.5)
+                                .tint(.white)
+                                .padding(12)
+                            Spacer()
+                        }
                         Spacer()
                     }
-                    Spacer()
                 }
-            }
 
-            // Bottom-center: filename
-            VStack {
-                Spacer()
-                Text(imageURL.lastPathComponent)
-                    .font(.caption)
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(.black.opacity(0.6), in: Capsule())
+                // Overlay info
+                VStack {
+                    Spacer()
+                    HStack(spacing: 16) {
+                        // Navigation info
+                        if totalCount > 1 {
+                            Text("\(currentIndex) / \(totalCount)")
+                                .font(.caption)
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(.black.opacity(0.6), in: Capsule())
+                        }
+
+                        // Filename
+                        Text(imageURL.lastPathComponent)
+                            .font(.caption)
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(.black.opacity(0.6), in: Capsule())
+
+                        // Zoom indicator
+                        if scale > 1.0 {
+                            Text("\(Int(scale * 100))%")
+                                .font(.caption)
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(.black.opacity(0.6), in: Capsule())
+                        }
+                    }
                     .padding(.bottom, 16)
+                }
+
+                // Navigation hints
+                if totalCount > 1 {
+                    HStack {
+                        if currentIndex > 1 {
+                            Image(systemName: "chevron.left")
+                                .font(.title)
+                                .foregroundStyle(.white.opacity(0.5))
+                                .padding(.leading, 20)
+                        }
+                        Spacer()
+                        if currentIndex < totalCount {
+                            Image(systemName: "chevron.right")
+                                .font(.title)
+                                .foregroundStyle(.white.opacity(0.5))
+                                .padding(.trailing, 20)
+                        }
+                    }
+                }
             }
         }
         .ignoresSafeArea()
-        .task {
+        .task(id: imageURL) {
             await loadImage()
         }
     }
 
+    private var magnificationGesture: some Gesture {
+        MagnificationGesture()
+            .onChanged { value in
+                let newScale = lastScale * value
+                scale = min(max(newScale, minScale), maxScale)
+            }
+            .onEnded { _ in
+                lastScale = scale
+                if scale <= minScale {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        offset = .zero
+                        lastOffset = .zero
+                    }
+                }
+            }
+    }
+
+    private func dragGesture(in size: CGSize) -> some Gesture {
+        DragGesture()
+            .onChanged { value in
+                guard scale > 1.0 else { return }
+                offset = CGSize(
+                    width: lastOffset.width + value.translation.width,
+                    height: lastOffset.height + value.translation.height
+                )
+            }
+            .onEnded { _ in
+                lastOffset = offset
+                // Clamp offset to prevent image from going too far off-screen
+                let maxOffset = size.width * (scale - 1) / 2
+                withAnimation(.easeOut(duration: 0.2)) {
+                    offset.width = min(max(offset.width, -maxOffset), maxOffset)
+                    offset.height = min(max(offset.height, -maxOffset), maxOffset)
+                }
+                lastOffset = offset
+            }
+    }
+
     private func loadImage() async {
+        isLoading = true
+        scale = 1.0
+        lastScale = 1.0
+        offset = .zero
+        lastOffset = .zero
+
         let screenScale = NSScreen.main?.backingScaleFactor ?? 2.0
         let screenMaxPx = max(NSScreen.main?.frame.width ?? 3840, NSScreen.main?.frame.height ?? 2160) * screenScale
 
+        let url = imageURL
         let loaded = await Task.detached(priority: .userInitiated) {
-            Self.loadDownsampled(from: imageURL, maxPixelSize: screenMaxPx)
+            Self.loadDownsampled(from: url, maxPixelSize: screenMaxPx)
         }.value
 
         await MainActor.run {
@@ -995,7 +1178,6 @@ struct FaceFullScreenImageView: View {
     nonisolated private static func loadDownsampled(from url: URL, maxPixelSize: CGFloat) -> NSImage? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
 
-        // Check source dimensions to decide whether downsampling is worthwhile
         let needsDownsample: Bool
         if let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
            let pw = props[kCGImagePropertyPixelWidth] as? Int,

@@ -83,9 +83,24 @@ final class SettingsViewModel {
         }
     }
 
-    /// Clustering sensitivity threshold (0.3 = strict, 0.8 = loose). Default: 0.55
-    var faceClusteringThreshold: Double {
-        didSet { UserDefaults.standard.set(faceClusteringThreshold, forKey: "faceClusteringThreshold") }
+    /// Clustering sensitivity threshold for Vision mode. Default: 0.40
+    var visionClusteringThreshold: Double {
+        didSet { UserDefaults.standard.set(visionClusteringThreshold, forKey: "visionClusteringThreshold") }
+    }
+
+    /// Clustering sensitivity threshold for Face+Clothing mode. Default: 0.48
+    var faceClothingClusteringThreshold: Double {
+        didSet { UserDefaults.standard.set(faceClothingClusteringThreshold, forKey: "faceClothingClusteringThreshold") }
+    }
+
+    /// Returns the effective clustering threshold for the current recognition mode
+    var effectiveClusteringThreshold: Double {
+        switch faceRecognitionMode {
+        case .visionFeaturePrint:
+            return visionClusteringThreshold
+        case .faceAndClothing:
+            return faceClothingClusteringThreshold
+        }
     }
 
     /// Minimum detection confidence (0.5 - 0.95). Default: 0.7
@@ -96,6 +111,44 @@ final class SettingsViewModel {
     /// Minimum face size in pixels (30 - 150). Default: 50
     var faceMinFaceSize: Int {
         didSet { UserDefaults.standard.set(faceMinFaceSize, forKey: "faceMinFaceSize") }
+    }
+
+    /// Face recognition mode (vision, arcface, faceClothing). Default: vision
+    var faceRecognitionMode: FaceRecognitionMode {
+        didSet { UserDefaults.standard.set(faceRecognitionMode.rawValue, forKey: "faceRecognitionMode") }
+    }
+
+    /// Face weight for Face+Clothing mode (0.3 - 0.9). Default: 0.7
+    var faceFaceWeight: Double {
+        didSet {
+            UserDefaults.standard.set(faceFaceWeight, forKey: "faceFaceWeight")
+        }
+    }
+
+    /// Clothing weight for Face+Clothing mode (auto-calculated as 1 - faceWeight)
+    var faceClothingWeight: Double {
+        return 1.0 - faceFaceWeight
+    }
+
+    /// Clustering algorithm. Default: chineseWhispers (most accurate)
+    var faceClusteringAlgorithm: FaceClusteringAlgorithm {
+        didSet {
+            UserDefaults.standard.set(faceClusteringAlgorithm.rawValue, forKey: "faceClusteringAlgorithm")
+        }
+    }
+
+    /// Quality gate threshold for quality-gated clustering (0.3 - 0.9). Default: 0.6
+    var faceQualityGateThreshold: Double {
+        didSet {
+            UserDefaults.standard.set(faceQualityGateThreshold, forKey: "faceQualityGateThreshold")
+        }
+    }
+
+    /// Whether to use quality-weighted edges in Chinese Whispers. Default: true
+    var faceUseQualityWeightedEdges: Bool {
+        didSet {
+            UserDefaults.standard.set(faceUseQualityWeightedEdges, forKey: "faceUseQualityWeightedEdges")
+        }
     }
 
     var detectedEditors: [DetectedEditor] = []
@@ -137,14 +190,33 @@ final class SettingsViewModel {
         self.faceCleanupPolicy = FaceCleanupPolicy(rawValue: raw) ?? .never
 
         // Face recognition settings with defaults
-        let storedThreshold = UserDefaults.standard.object(forKey: "faceClusteringThreshold") as? Double
-        self.faceClusteringThreshold = storedThreshold ?? 0.55
+        // Mode-specific thresholds with optimized defaults
+        let storedVisionThreshold = UserDefaults.standard.object(forKey: "visionClusteringThreshold") as? Double
+        self.visionClusteringThreshold = storedVisionThreshold ?? 0.40
+
+        let storedFaceClothingThreshold = UserDefaults.standard.object(forKey: "faceClothingClusteringThreshold") as? Double
+        self.faceClothingClusteringThreshold = storedFaceClothingThreshold ?? 0.48
 
         let storedConfidence = UserDefaults.standard.object(forKey: "faceMinConfidence") as? Double
         self.faceMinConfidence = storedConfidence ?? 0.7
 
         let storedMinSize = UserDefaults.standard.object(forKey: "faceMinFaceSize") as? Int
         self.faceMinFaceSize = storedMinSize ?? 50
+
+        let storedMode = UserDefaults.standard.string(forKey: "faceRecognitionMode") ?? "faceClothing"
+        self.faceRecognitionMode = FaceRecognitionMode(rawValue: storedMode) ?? .faceAndClothing
+
+        let storedFaceWeight = UserDefaults.standard.object(forKey: "faceFaceWeight") as? Double
+        self.faceFaceWeight = storedFaceWeight ?? 0.7
+
+        let storedAlgorithm = UserDefaults.standard.string(forKey: "faceClusteringAlgorithm") ?? "chineseWhispers"
+        self.faceClusteringAlgorithm = FaceClusteringAlgorithm(rawValue: storedAlgorithm) ?? .chineseWhispers
+
+        let storedQualityGate = UserDefaults.standard.object(forKey: "faceQualityGateThreshold") as? Double
+        self.faceQualityGateThreshold = storedQualityGate ?? 0.6
+
+        let storedQualityWeighted = UserDefaults.standard.object(forKey: "faceUseQualityWeightedEdges") as? Bool
+        self.faceUseQualityWeightedEdges = storedQualityWeighted ?? true
 
         self.detectedEditors = Self.detectEditors()
 

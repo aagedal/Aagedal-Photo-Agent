@@ -15,6 +15,13 @@ nonisolated struct DetectedFace: Codable, Identifiable {
     let faceSize: Int?
     let blurScore: Float?
 
+    // Clothing/torso features (optional, only populated in Face+Clothing mode)
+    var clothingFeaturePrintData: Data?
+    var clothingRect: CGRect?
+
+    // The recognition mode used when this face was detected
+    var embeddingMode: FaceRecognitionMode?
+
     init(
         id: UUID,
         imageURL: URL,
@@ -25,7 +32,10 @@ nonisolated struct DetectedFace: Codable, Identifiable {
         qualityScore: Float? = nil,
         confidence: Float? = nil,
         faceSize: Int? = nil,
-        blurScore: Float? = nil
+        blurScore: Float? = nil,
+        clothingFeaturePrintData: Data? = nil,
+        clothingRect: CGRect? = nil,
+        embeddingMode: FaceRecognitionMode? = nil
     ) {
         self.id = id
         self.imageURL = imageURL
@@ -37,6 +47,9 @@ nonisolated struct DetectedFace: Codable, Identifiable {
         self.confidence = confidence
         self.faceSize = faceSize
         self.blurScore = blurScore
+        self.clothingFeaturePrintData = clothingFeaturePrintData
+        self.clothingRect = clothingRect
+        self.embeddingMode = embeddingMode
     }
 }
 
@@ -71,13 +84,17 @@ nonisolated struct FolderFaceData: Codable {
     /// File signatures for incremental scanning (URL string -> signature)
     var scannedFiles: [String: FileSignature]
 
+    /// The recognition mode used for this dataset (nil = legacy Vision mode)
+    var recognitionMode: FaceRecognitionMode?
+
     init(
         folderURL: URL,
         faces: [DetectedFace],
         groups: [FaceGroup],
         lastScanDate: Date,
         scanComplete: Bool,
-        scannedFiles: [String: FileSignature] = [:]
+        scannedFiles: [String: FileSignature] = [:],
+        recognitionMode: FaceRecognitionMode? = nil
     ) {
         self.folderURL = folderURL
         self.faces = faces
@@ -85,5 +102,6 @@ nonisolated struct FolderFaceData: Codable {
         self.lastScanDate = lastScanDate
         self.scanComplete = scanComplete
         self.scannedFiles = scannedFiles
+        self.recognitionMode = recognitionMode
     }
 }
