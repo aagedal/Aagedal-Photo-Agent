@@ -1,7 +1,7 @@
 import Foundation
 
 /// Defines the algorithm used for face recognition and clustering.
-enum FaceRecognitionMode: String, Codable, CaseIterable, Sendable {
+nonisolated enum FaceRecognitionMode: String, Codable, CaseIterable, Sendable {
     /// Apple Vision VNFeaturePrint (current default behavior)
     case visionFeaturePrint = "vision"
     /// Combined face and torso/clothing features for red carpet scenarios

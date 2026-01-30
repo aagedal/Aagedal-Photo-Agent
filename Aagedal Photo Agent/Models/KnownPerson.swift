@@ -33,6 +33,7 @@ nonisolated struct KnownPerson: Codable, Identifiable, Sendable {
     let id: UUID
     var name: String
     var role: String?
+    var notes: String?
     var embeddings: [PersonEmbedding]
     var representativeThumbnailID: UUID?
     var createdAt: Date
@@ -42,6 +43,7 @@ nonisolated struct KnownPerson: Codable, Identifiable, Sendable {
         id: UUID = UUID(),
         name: String,
         role: String? = nil,
+        notes: String? = nil,
         embeddings: [PersonEmbedding] = [],
         representativeThumbnailID: UUID? = nil,
         createdAt: Date = Date(),
@@ -50,10 +52,17 @@ nonisolated struct KnownPerson: Codable, Identifiable, Sendable {
         self.id = id
         self.name = name
         self.role = role
+        self.notes = notes
         self.embeddings = embeddings
         self.representativeThumbnailID = representativeThumbnailID
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+    }
+
+    /// Display subtitle combining role and notes
+    var subtitle: String? {
+        let parts = [role, notes].compactMap { $0 }.filter { !$0.isEmpty }
+        return parts.isEmpty ? nil : parts.joined(separator: " • ")
     }
 }
 

@@ -13,6 +13,7 @@ struct SettingsView: View {
     @State private var isExporting = false
     @State private var showClearConfirmation = false
     @State private var knownPeopleMessage: String?
+    @State private var showKnownPeopleList = false
 
     var body: some View {
         TabView {
@@ -278,12 +279,19 @@ struct SettingsView: View {
 
                 if settingsViewModel.knownPeopleMode != .off {
                     LabeledContent("Database") {
-                        if knownPeopleStats.peopleCount == 0 {
-                            Text("Empty")
-                                .foregroundStyle(.secondary)
-                        } else {
-                            Text("\(knownPeopleStats.peopleCount) people, \(knownPeopleStats.embeddingCount) samples")
-                                .foregroundStyle(.secondary)
+                        HStack {
+                            if knownPeopleStats.peopleCount == 0 {
+                                Text("Empty")
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                Text("\(knownPeopleStats.peopleCount) people, \(knownPeopleStats.embeddingCount) samples")
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            Button("Browse...") {
+                                showKnownPeopleList = true
+                            }
+                            .disabled(knownPeopleStats.peopleCount == 0)
                         }
                     }
 
@@ -329,6 +337,11 @@ struct SettingsView: View {
             }
         } message: {
             Text("This will permanently delete all \(knownPeopleStats.peopleCount) known people and their reference images. This cannot be undone.")
+        }
+        .sheet(isPresented: $showKnownPeopleList) {
+            refreshKnownPeopleStats()
+        } content: {
+            KnownPeopleListView()
         }
     }
 

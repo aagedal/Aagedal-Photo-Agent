@@ -448,6 +448,44 @@ final class FaceRecognitionViewModel {
         )
     }
 
+    /// Refine clustering using named groups as anchors.
+    /// Compares unnamed groups against named groups and returns merge suggestions.
+    /// Returns the number of suggestions found.
+    @discardableResult
+    func refineWithNamedGroups() -> Int {
+        guard let data = faceData else { return 0 }
+
+        let namedCount = data.groups.filter { $0.name != nil }.count
+        guard namedCount > 0 else { return 0 }
+
+        let config = detectionConfig
+        let refinementSuggestions = detectionService.computeRefinementSuggestions(
+            groups: data.groups,
+            faces: data.faces,
+            threshold: config.clusteringThreshold
+        )
+
+        // Add refinement suggestions to the existing merge suggestions
+        // Filter out duplicates (same pair of groups)
+        let existingPairs = Set(mergeSuggestions.map { Set([$0.group1ID, $0.group2ID]) })
+        let newSuggestions = refinementSuggestions.filter { suggestion in
+            !existingPairs.contains(Set([suggestion.group1ID, suggestion.group2ID]))
+        }
+
+        mergeSuggestions.append(contentsOf: newSuggestions)
+        mergeSuggestions.sort { $0.similarity > $1.similarity }
+
+        return newSuggestions.count
+    }
+
+    /// Check if refinement is available (at least one named group and one unnamed group)
+    var canRefine: Bool {
+        guard let data = faceData else { return false }
+        let hasNamed = data.groups.contains { $0.name != nil }
+        let hasUnnamed = data.groups.contains { $0.name == nil }
+        return hasNamed && hasUnnamed
+    }
+
     func dismissMergeSuggestion(_ suggestion: MergeSuggestion) {
         mergeSuggestions.removeAll { $0.id == suggestion.id }
     }
