@@ -7,6 +7,7 @@ import AppKit
 private class FaceFullScreenWindow: NSWindow {
     var onDismiss: (() -> Void)?
     var onNavigate: ((Int) -> Void)?  // -1 for previous, +1 for next
+    var onToggleUI: (() -> Void)?     // Toggle overlay visibility
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
@@ -20,6 +21,8 @@ private class FaceFullScreenWindow: NSWindow {
             onNavigate?(-1)
         case 124:  // Right arrow → next
             onNavigate?(1)
+        case 4:  // 'H' key → toggle UI
+            onToggleUI?()
         default:
             super.keyDown(with: event)
         }
@@ -108,11 +111,22 @@ struct ExpandedFaceManagementView: View {
     @State private var fullscreenFaces: [DetectedFace] = []
     @State private var fullscreenFaceIndex: Int = 0
     @State private var fullscreenWindow: FaceFullScreenWindow?
+    @State private var fullscreenState: FaceFullScreenState?
     @State private var showingNameListFilePicker = false
     @State private var showSuggestionsPanel = true
 
     private let maxVisibleFaces = 12
     private let suggestionsPanelWidth: CGFloat = 320
+
+    /// Generate a distinct color for a face group based on its UUID
+    private func colorForGroup(_ groupID: UUID?) -> Color {
+        guard let groupID else {
+            return Color.gray  // Ungrouped faces
+        }
+        // Use first bytes of UUID for deterministic hue
+        let hue = Double(groupID.uuid.0 ^ groupID.uuid.1) / 256.0
+        return Color(hue: hue, saturation: 0.8, brightness: 0.9)
+    }
 
     // Flat list of all visible face IDs for keyboard navigation
     private var allVisibleFaceIDs: [UUID] {
@@ -239,6 +253,7 @@ struct ExpandedFaceManagementView: View {
 
         fullscreenFaces = faces
         fullscreenFaceIndex = min(startIndex, faces.count - 1)
+        fullscreenState = FaceFullScreenState()
 
         let window = FaceFullScreenWindow(
             contentRect: screen.frame,
@@ -256,6 +271,9 @@ struct ExpandedFaceManagementView: View {
         }
         window.onNavigate = { [self] direction in
             navigateFullscreen(direction: direction)
+        }
+        window.onToggleUI = { [self] in
+            fullscreenState?.hideOverlays.toggle()
         }
 
         updateFullscreenContent(window: window)
@@ -282,9 +300,16 @@ struct ExpandedFaceManagementView: View {
         let total = fullscreenFaces.count
         let current = fullscreenFaceIndex + 1
 
+        // Get ALL faces in this specific image (may include faces from other groups)
+        let facesInThisImage = viewModel.faceData?.faces.filter { $0.imageURL == url } ?? []
+
         let hostingView = NSHostingView(
             rootView: FaceFullScreenImageView(
                 imageURL: url,
+                facesInImage: facesInThisImage,
+                selectedFaceID: currentFace.id,
+                colorForGroup: colorForGroup,
+                fullscreenState: fullscreenState,
                 currentIndex: current,
                 totalCount: total
             )
@@ -303,6 +328,7 @@ struct ExpandedFaceManagementView: View {
         fullscreenWindow = nil
         fullscreenFaces = []
         fullscreenFaceIndex = 0
+        fullscreenState = nil
     }
 
     // MARK: - Keyboard Navigation
@@ -1089,12 +1115,27 @@ struct NewGroupDropDelegate: DropDelegate {
     }
 }
 
+// MARK: - Face Fullscreen State (shared observable for UI toggles without view recreation)
+
+@Observable
+final class FaceFullScreenState {
+    var hideOverlays: Bool = false
+}
+
 // MARK: - Face Fullscreen Image View
 
 struct FaceFullScreenImageView: View {
     let imageURL: URL
+    var facesInImage: [DetectedFace] = []
+    var selectedFaceID: UUID?
+    var colorForGroup: ((UUID?) -> Color)?
+    var fullscreenState: FaceFullScreenState?
     var currentIndex: Int = 1
     var totalCount: Int = 1
+
+    private var hideOverlays: Bool {
+        fullscreenState?.hideOverlays ?? false
+    }
 
     @State private var image: NSImage?
     @State private var isLoading = true
@@ -1134,72 +1175,81 @@ struct FaceFullScreenImageView: View {
                                 }
                             }
                         }
+
+                    // Face rectangles as sibling with same transforms
+                    if !hideOverlays {
+                        faceRectanglesView(imageSize: image.size, containerSize: geometry.size)
+                            .scaleEffect(scale)
+                            .offset(offset)
+                    }
                 }
 
-                // Loading indicator
-                if isLoading {
-                    VStack {
-                        HStack {
-                            ProgressView()
-                                .scaleEffect(0.5)
-                                .tint(.white)
-                                .padding(12)
+                if !hideOverlays {
+                    // Loading indicator
+                    if isLoading {
+                        VStack {
+                            HStack {
+                                ProgressView()
+                                    .scaleEffect(0.5)
+                                    .tint(.white)
+                                    .padding(12)
+                                Spacer()
+                            }
                             Spacer()
                         }
-                        Spacer()
                     }
-                }
 
-                // Overlay info
-                VStack {
-                    Spacer()
-                    HStack(spacing: 16) {
-                        // Navigation info
-                        if totalCount > 1 {
-                            Text("\(currentIndex) / \(totalCount)")
+                    // Overlay info
+                    VStack {
+                        Spacer()
+                        HStack(spacing: 16) {
+                            // Navigation info
+                            if totalCount > 1 {
+                                Text("\(currentIndex) / \(totalCount)")
+                                    .font(.caption)
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 6)
+                                    .background(.black.opacity(0.6), in: Capsule())
+                            }
+
+                            // Filename
+                            Text(imageURL.lastPathComponent)
                                 .font(.caption)
                                 .foregroundStyle(.white)
-                                .padding(.horizontal, 10)
+                                .padding(.horizontal, 12)
                                 .padding(.vertical, 6)
                                 .background(.black.opacity(0.6), in: Capsule())
-                        }
 
-                        // Filename
-                        Text(imageURL.lastPathComponent)
-                            .font(.caption)
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .background(.black.opacity(0.6), in: Capsule())
-
-                        // Zoom indicator
-                        if scale > 1.0 {
-                            Text("\(Int(scale * 100))%")
-                                .font(.caption)
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 6)
-                                .background(.black.opacity(0.6), in: Capsule())
+                            // Zoom indicator
+                            if scale > 1.0 {
+                                Text("\(Int(scale * 100))%")
+                                    .font(.caption)
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 6)
+                                    .background(.black.opacity(0.6), in: Capsule())
+                            }
                         }
+                        .padding(.bottom, 16)
                     }
-                    .padding(.bottom, 16)
-                }
 
-                // Navigation hints
-                if totalCount > 1 {
-                    HStack {
-                        if currentIndex > 1 {
-                            Image(systemName: "chevron.left")
-                                .font(.title)
-                                .foregroundStyle(.white.opacity(0.5))
-                                .padding(.leading, 20)
-                        }
-                        Spacer()
-                        if currentIndex < totalCount {
-                            Image(systemName: "chevron.right")
-                                .font(.title)
-                                .foregroundStyle(.white.opacity(0.5))
-                                .padding(.trailing, 20)
+                    // Navigation hints
+                    if totalCount > 1 {
+                        HStack {
+                            if currentIndex > 1 {
+                                Image(systemName: "chevron.left")
+                                    .font(.title)
+                                    .foregroundStyle(.white.opacity(0.5))
+                                    .padding(.leading, 20)
+                            }
+                            Spacer()
+                            if currentIndex < totalCount {
+                                Image(systemName: "chevron.right")
+                                    .font(.title)
+                                    .foregroundStyle(.white.opacity(0.5))
+                                    .padding(.trailing, 20)
+                            }
                         }
                     }
                 }
@@ -1209,6 +1259,70 @@ struct FaceFullScreenImageView: View {
         .task(id: imageURL) {
             await loadImage()
         }
+    }
+
+    // MARK: - Face Rectangles View
+
+    /// Calculate where the image content is displayed within a container using aspect-fit
+    private func calculateImageDisplayRect(imageSize: CGSize, in containerSize: CGSize) -> CGRect {
+        guard imageSize.width > 0, imageSize.height > 0,
+              containerSize.width > 0, containerSize.height > 0 else {
+            return .zero
+        }
+
+        let imageAspect = imageSize.width / imageSize.height
+        let containerAspect = containerSize.width / containerSize.height
+
+        if imageAspect > containerAspect {
+            // Image is wider - fills width, letterboxed vertically
+            let displayHeight = containerSize.width / imageAspect
+            let yOffset = (containerSize.height - displayHeight) / 2
+            return CGRect(x: 0, y: yOffset, width: containerSize.width, height: displayHeight)
+        } else {
+            // Image is taller - fills height, pillarboxed horizontally
+            let displayWidth = containerSize.height * imageAspect
+            let xOffset = (containerSize.width - displayWidth) / 2
+            return CGRect(x: xOffset, y: 0, width: displayWidth, height: containerSize.height)
+        }
+    }
+
+    /// Convert Vision face rect (normalized, bottom-left origin) to display rect (pixels, top-left origin)
+    private func convertFaceRect(_ faceRect: CGRect, toDisplayIn imageDisplayRect: CGRect) -> CGRect {
+        // Vision: x,y is bottom-left corner of face, normalized 0-1
+        // SwiftUI: x,y is top-left corner, in pixels
+        let displayX = imageDisplayRect.minX + faceRect.origin.x * imageDisplayRect.width
+        let displayY = imageDisplayRect.minY + (1.0 - faceRect.origin.y - faceRect.height) * imageDisplayRect.height
+        let displayW = faceRect.width * imageDisplayRect.width
+        let displayH = faceRect.height * imageDisplayRect.height
+        return CGRect(x: displayX, y: displayY, width: displayW, height: displayH)
+    }
+
+    /// Face rectangles view - draws rectangles at face positions
+    /// Zoom/pan transforms are applied via SwiftUI modifiers on this view
+    @ViewBuilder
+    private func faceRectanglesView(imageSize: CGSize, containerSize: CGSize) -> some View {
+        let imageDisplayRect = calculateImageDisplayRect(imageSize: imageSize, in: containerSize)
+
+        Canvas { context, _ in
+            guard !facesInImage.isEmpty else { return }
+
+            for face in facesInImage {
+                let isSelected = face.id == selectedFaceID
+
+                // Convert face coordinates to display coordinates
+                let faceDisplayRect = convertFaceRect(face.faceRect, toDisplayIn: imageDisplayRect)
+
+                // Style based on selection
+                let groupColor = colorForGroup?(face.groupID) ?? .gray
+                let lineWidth: CGFloat = isSelected ? 4 : 2
+                let opacity: CGFloat = isSelected ? 1.0 : 0.5
+
+                // Draw rounded rectangle
+                let path = Path(roundedRect: faceDisplayRect, cornerRadius: 4)
+                context.stroke(path, with: .color(groupColor.opacity(opacity)), lineWidth: lineWidth)
+            }
+        }
+        .allowsHitTesting(false)
     }
 
     private var magnificationGesture: some Gesture {
