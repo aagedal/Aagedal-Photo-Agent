@@ -36,50 +36,82 @@ struct FaceBarView: View {
             HStack(spacing: 4) {
                 scanButton
 
-                Button {
-                    showClusteringSettings.toggle()
-                } label: {
-                    Image(systemName: "gearshape")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .help("Clustering settings")
-                .popover(isPresented: $showClusteringSettings) {
-                    ClusteringSettingsPopover(settingsViewModel: settingsViewModel)
+                VStack(spacing: 2) {
+                    // Reset/rescan button on top
+                    Button {
+                        guard let folderURL else { return }
+                        viewModel.scanFolder(imageURLs: imageURLs, folderURL: folderURL, forceFullScan: true)
+                    } label: {
+                        Image(systemName: "arrow.counterclockwise")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(.white)
+                            .padding(3)
+                            .background(Color.orange)
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Force full rescan")
+
+                    // Cog button below
+                    Button {
+                        showClusteringSettings.toggle()
+                    } label: {
+                        Image(systemName: "gearshape")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Clustering settings")
+                    .popover(isPresented: $showClusteringSettings) {
+                        ClusteringSettingsPopover(settingsViewModel: settingsViewModel)
+                    }
                 }
             }
 
             Divider()
                 .frame(height: 58)
 
-            // Face group thumbnails
+            // Face group thumbnails (show in-progress groups during scanning)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
-                    ForEach(viewModel.sortedGroups) { group in
-                        FaceGroupThumbnail(
-                            group: group,
-                            image: viewModel.thumbnailCache[group.representativeFaceID],
-                            isMultiSelected: multiSelectedGroupIDs.contains(group.id)
-                        )
-                        .onTapGesture {
-                            if NSEvent.modifierFlags.contains(.command) {
-                                toggleMultiSelect(group.id)
-                            } else {
-                                multiSelectedGroupIDs.removeAll()
-                                selectedGroup = group
-                            }
+                    if viewModel.isScanning {
+                        // During scanning: show intermediate groups (non-interactive)
+                        ForEach(viewModel.scanningGroups) { group in
+                            FaceGroupThumbnail(
+                                group: group,
+                                image: viewModel.thumbnailCache[group.representativeFaceID],
+                                isMultiSelected: false
+                            )
+                            .opacity(0.7)
                         }
-                        .popover(isPresented: Binding<Bool>(
-                            get: { selectedGroup?.id == group.id },
-                            set: { newValue in if !newValue { selectedGroup = nil } }
-                        )) {
-                            FaceGroupDetailView(group: group, viewModel: viewModel, settingsViewModel: settingsViewModel, onSelectImages: onSelectImages, onPhotosDeleted: onPhotosDeleted)
+                    } else {
+                        // After scanning: show final groups (interactive)
+                        ForEach(viewModel.sortedGroups) { group in
+                            FaceGroupThumbnail(
+                                group: group,
+                                image: viewModel.thumbnailCache[group.representativeFaceID],
+                                isMultiSelected: multiSelectedGroupIDs.contains(group.id)
+                            )
+                            .onTapGesture {
+                                if NSEvent.modifierFlags.contains(.command) {
+                                    toggleMultiSelect(group.id)
+                                } else {
+                                    multiSelectedGroupIDs.removeAll()
+                                    selectedGroup = group
+                                }
+                            }
+                            .popover(isPresented: Binding<Bool>(
+                                get: { selectedGroup?.id == group.id },
+                                set: { newValue in if !newValue { selectedGroup = nil } }
+                            )) {
+                                FaceGroupDetailView(group: group, viewModel: viewModel, settingsViewModel: settingsViewModel, onSelectImages: onSelectImages, onPhotosDeleted: onPhotosDeleted)
+                            }
                         }
                     }
                 }
                 .padding(.horizontal, 4)
             }
+            .allowsHitTesting(!viewModel.isScanning)
 
             // Multi-select action bar
             if isMultiSelecting {

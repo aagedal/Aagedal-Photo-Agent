@@ -22,6 +22,9 @@ final class FaceRecognitionViewModel {
     // Merge suggestions for similar groups
     var mergeSuggestions: [MergeSuggestion] = []
 
+    // Intermediate groups shown during active scan (for live UI feedback)
+    var scanningGroups: [FaceGroup] = []
+
     // Sort mode for face groups
     var sortMode: FaceGroupSortMode = .manual {
         didSet { invalidateCaches() }
@@ -203,6 +206,7 @@ final class FaceRecognitionViewModel {
 
         isScanning = true
         errorMessage = nil
+        scanningGroups = []
 
         Task {
             // Load existing data for incremental scan
@@ -325,7 +329,7 @@ final class FaceRecognitionViewModel {
                     processed += 1
                     batchesSinceLastSave += 1
 
-                    // Periodic save to preserve progress
+                    // Periodic save to preserve progress and update live UI
                     if batchesSinceLastSave >= saveInterval {
                         let progressData = FolderFaceData(
                             folderURL: folderURL,
@@ -338,6 +342,12 @@ final class FaceRecognitionViewModel {
                         )
                         try? storageService.saveFaceData(progressData)
                         batchesSinceLastSave = 0
+
+                        // Update intermediate UI state for live face bar
+                        let groupsSnapshot = allGroups
+                        await MainActor.run {
+                            self.scanningGroups = groupsSnapshot
+                        }
                     }
 
                     let current = processed
@@ -390,6 +400,7 @@ final class FaceRecognitionViewModel {
                 self.isScanning = false
                 self.scanComplete = true
                 self.scanProgress = ""
+                self.scanningGroups = []
                 self.loadThumbnails(for: folderData)
                 self.updateMergeSuggestions()
             }

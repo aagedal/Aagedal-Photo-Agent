@@ -55,7 +55,7 @@ struct Aagedal_Photo_AgentApp: App {
                 Button("No Label") {
                     NotificationCenter.default.post(name: .setLabel, object: ColorLabel.none)
                 }
-                .keyboardShortcut("0", modifiers: [.command, .option])
+                .keyboardShortcut("0", modifiers: .option)
 
                 ForEach(Array(ColorLabel.allCases.dropFirst().enumerated()), id: \.element) { index, label in
                     Button(label.displayName) {
@@ -63,7 +63,7 @@ struct Aagedal_Photo_AgentApp: App {
                     }
                     .keyboardShortcut(
                         KeyEquivalent(Character(String(index + 1))),
-                        modifiers: [.command, .option]
+                        modifiers: .option
                     )
                 }
             }
