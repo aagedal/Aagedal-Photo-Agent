@@ -1039,10 +1039,53 @@ nonisolated struct FaceDetectionService: Sendable {
     /// Apply EXIF orientation to a CGImage to get the correctly oriented image.
     /// This ensures faces are detected and cropped from the visually correct orientation.
     private func applyEXIFOrientation(to cgImage: CGImage, from imageSource: CGImageSource) -> CGImage {
-        // Get EXIF orientation from image properties
-        guard let properties = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [CFString: Any],
-              let orientationValue = properties[kCGImagePropertyOrientation] as? UInt32,
-              orientationValue != 1 else {  // 1 = normal orientation, no transform needed
+        // Get EXIF orientation from image properties - check multiple locations for different formats
+        guard let properties = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [CFString: Any] else {
+            return cgImage
+        }
+
+        // Try to get orientation from multiple locations (different formats store it differently)
+        var orientationValue: UInt32 = 1
+
+        // 1. Root level kCGImagePropertyOrientation (most common)
+        if let value = properties[kCGImagePropertyOrientation] {
+            if let uint32 = value as? UInt32 {
+                orientationValue = uint32
+            } else if let int = value as? Int {
+                orientationValue = UInt32(int)
+            } else if let number = value as? NSNumber {
+                orientationValue = number.uint32Value
+            }
+        }
+
+        // 2. TIFF dictionary (some formats including HEIC)
+        if orientationValue == 1,
+           let tiffDict = properties[kCGImagePropertyTIFFDictionary] as? [CFString: Any],
+           let value = tiffDict[kCGImagePropertyTIFFOrientation] {
+            if let uint32 = value as? UInt32 {
+                orientationValue = uint32
+            } else if let int = value as? Int {
+                orientationValue = UInt32(int)
+            } else if let number = value as? NSNumber {
+                orientationValue = number.uint32Value
+            }
+        }
+
+        // 3. HEIF/HEIC specific dictionary
+        if orientationValue == 1,
+           let heifDict = properties[kCGImagePropertyHEICSDictionary] as? [CFString: Any],
+           let value = heifDict[kCGImagePropertyOrientation] {
+            if let uint32 = value as? UInt32 {
+                orientationValue = uint32
+            } else if let int = value as? Int {
+                orientationValue = UInt32(int)
+            } else if let number = value as? NSNumber {
+                orientationValue = number.uint32Value
+            }
+        }
+
+        // No rotation needed for normal orientation
+        guard orientationValue != 1 else {
             return cgImage
         }
 
@@ -1061,38 +1104,55 @@ nonisolated struct FaceDetectionService: Sendable {
             transform = CGAffineTransform(translationX: CGFloat(width), y: CGFloat(height)).rotated(by: .pi)
         case 4: // Flip vertical
             transform = CGAffineTransform(scaleX: 1, y: -1).translatedBy(x: 0, y: CGFloat(-height))
-        case 5: // Rotate 90° CCW + flip horizontal
-            newWidth = height
-            newHeight = width
-            transform = CGAffineTransform(scaleX: -1, y: 1).rotated(by: .pi / 2)
-        case 6: // Rotate 90° CW
-            newWidth = height
-            newHeight = width
-            transform = CGAffineTransform(translationX: CGFloat(newWidth), y: 0).rotated(by: .pi / 2)
-        case 7: // Rotate 90° CW + flip horizontal
+        case 5: // Rotate 90° CCW + flip horizontal (transpose)
             newWidth = height
             newHeight = width
             transform = CGAffineTransform(translationX: CGFloat(newWidth), y: CGFloat(newHeight))
                 .rotated(by: .pi / 2).scaledBy(x: -1, y: 1)
-        case 8: // Rotate 90° CCW
+        case 6: // Rotate 90° CW (image was stored rotated 90° CCW)
             newWidth = height
             newHeight = width
             transform = CGAffineTransform(translationX: 0, y: CGFloat(newHeight)).rotated(by: -.pi / 2)
+        case 7: // Rotate 90° CW + flip horizontal (transverse)
+            newWidth = height
+            newHeight = width
+            transform = CGAffineTransform(rotationAngle: -.pi / 2).scaledBy(x: -1, y: 1).translatedBy(x: CGFloat(-newWidth), y: 0)
+        case 8: // Rotate 90° CCW (image was stored rotated 90° CW)
+            newWidth = height
+            newHeight = width
+            transform = CGAffineTransform(translationX: CGFloat(newWidth), y: 0).rotated(by: .pi / 2)
         default:
             return cgImage
         }
 
         // Create a new bitmap context with the correct orientation
-        guard let colorSpace = cgImage.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB),
-              let context = CGContext(
-                  data: nil,
-                  width: newWidth,
-                  height: newHeight,
-                  bitsPerComponent: cgImage.bitsPerComponent,
-                  bytesPerRow: 0,
-                  space: colorSpace,
-                  bitmapInfo: cgImage.bitmapInfo.rawValue
-              ) else {
+        // Try original format first, fall back to standard 8-bit RGBA for compatibility
+        // (HEIC 10-bit images may not be supported by CGContext)
+        let colorSpace = cgImage.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!
+        var context = CGContext(
+            data: nil,
+            width: newWidth,
+            height: newHeight,
+            bitsPerComponent: cgImage.bitsPerComponent,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: cgImage.bitmapInfo.rawValue
+        )
+
+        // Fallback to standard 8-bit RGBA if original format isn't supported
+        if context == nil {
+            context = CGContext(
+                data: nil,
+                width: newWidth,
+                height: newHeight,
+                bitsPerComponent: 8,
+                bytesPerRow: 0,
+                space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )
+        }
+
+        guard let context else {
             return cgImage
         }
 

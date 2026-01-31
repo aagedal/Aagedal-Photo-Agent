@@ -61,12 +61,14 @@ struct ThumbnailGridView: View {
             return .handled
         }
         .onKeyPress(.space) {
-            guard viewModel.firstSelectedImage != nil else { return .ignored }
+            // Only handle space when grid is focused (not when a text field has focus)
+            guard isGridFocused, viewModel.firstSelectedImage != nil else { return .ignored }
             viewModel.isFullScreen = true
             return .handled
         }
         .onKeyPress("a") {
-            guard NSEvent.modifierFlags.contains(.command) else { return .ignored }
+            // Only handle Cmd+A when grid is focused (not when a text field has focus)
+            guard isGridFocused, NSEvent.modifierFlags.contains(.command) else { return .ignored }
             viewModel.selectAll()
             return .handled
         }
