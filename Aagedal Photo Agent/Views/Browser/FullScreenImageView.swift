@@ -19,6 +19,7 @@ private extension CGFloat {
 fileprivate class ZoomController {
     var toggleZoomAction: (() -> Void)?
     var scrollZoomAction: ((CGFloat) -> Void)?
+    var toggleUIAction: (() -> Void)?
 
     func toggleZoom() {
         toggleZoomAction?()
@@ -26,6 +27,10 @@ fileprivate class ZoomController {
 
     func scrollZoom(_ delta: CGFloat) {
         scrollZoomAction?(delta)
+    }
+
+    func toggleUI() {
+        toggleUIAction?()
     }
 }
 
@@ -37,6 +42,7 @@ private class FullScreenWindow: NSWindow {
     var onSetLabel: ((Int) -> Void)?
     var onToggleZoom: (() -> Void)?
     var onScrollZoom: ((CGFloat) -> Void)?
+    var onToggleUI: (() -> Void)?
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
@@ -56,6 +62,12 @@ private class FullScreenWindow: NSWindow {
         // Z key (keyCode 6) → toggle zoom
         if keyCode == 6 && !hasCmd && !hasOption {
             onToggleZoom?()
+            return
+        }
+
+        // H key (keyCode 4) → toggle UI visibility
+        if keyCode == 4 && !hasCmd && !hasOption {
+            onToggleUI?()
             return
         }
 
@@ -101,6 +113,7 @@ struct FullScreenImageView: View {
     @State private var isLoading = false
     @State private var fullLoadTask: Task<Void, Never>?
     @State private var showLabelPicker = false
+    @State private var hideOverlays = false
     @FocusState private var isFocused: Bool
 
     // Zoom state
@@ -177,6 +190,10 @@ struct FullScreenImageView: View {
         }
     }
 
+    func toggleUI() {
+        hideOverlays.toggle()
+    }
+
     var body: some View {
         GeometryReader { geometry in
             ZStack {
@@ -195,50 +212,52 @@ struct FullScreenImageView: View {
                         }
                 }
 
-                if isLoading {
-                    VStack {
-                        HStack {
-                            ProgressView()
-                                .scaleEffect(0.5)
-                                .tint(.white)
-                                .padding(12)
-                            Spacer()
-                        }
-                        Spacer()
-                    }
-                }
-
-                if let file = currentImageFile {
-                    // Bottom-left: star rating + color label
-                    VStack {
-                        Spacer()
-                        HStack(spacing: 8) {
-                            starRatingOverlay(for: file)
-                            colorLabelOverlay(for: file)
-                            Spacer()
-                        }
-                        .padding(.leading, 20)
-                        .padding(.bottom, 20)
-                    }
-
-                    // Bottom-center: filename + zoom indicator
-                    VStack {
-                        Spacer()
-                        HStack(spacing: 12) {
-                            Text(file.filename)
-                                .font(.caption)
-                                .foregroundStyle(.white)
-
-                            if zoomScale > 1.01 {
-                                Text("\(Int(zoomScale * 100))%")
-                                    .font(.caption)
-                                    .foregroundStyle(.white.opacity(0.7))
+                if !hideOverlays {
+                    if isLoading {
+                        VStack {
+                            HStack {
+                                ProgressView()
+                                    .scaleEffect(0.5)
+                                    .tint(.white)
+                                    .padding(12)
+                                Spacer()
                             }
+                            Spacer()
                         }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .background(.black.opacity(0.6), in: Capsule())
-                        .padding(.bottom, 16)
+                    }
+
+                    if let file = currentImageFile {
+                        // Bottom-left: star rating + color label
+                        VStack {
+                            Spacer()
+                            HStack(spacing: 8) {
+                                starRatingOverlay(for: file)
+                                colorLabelOverlay(for: file)
+                                Spacer()
+                            }
+                            .padding(.leading, 20)
+                            .padding(.bottom, 20)
+                        }
+
+                        // Bottom-center: filename + zoom indicator
+                        VStack {
+                            Spacer()
+                            HStack(spacing: 12) {
+                                Text(file.filename)
+                                    .font(.caption)
+                                    .foregroundStyle(.white)
+
+                                if zoomScale > 1.01 {
+                                    Text("\(Int(zoomScale * 100))%")
+                                        .font(.caption)
+                                        .foregroundStyle(.white.opacity(0.7))
+                                }
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(.black.opacity(0.6), in: Capsule())
+                            .padding(.bottom, 16)
+                        }
                     }
                 }
             }
@@ -249,12 +268,15 @@ struct FullScreenImageView: View {
         .focusEffectDisabled()
         .onAppear {
             isFocused = true
-            // Register zoom actions with the controller
+            // Register actions with the controller
             zoomController?.toggleZoomAction = { [self] in
                 toggleZoom()
             }
             zoomController?.scrollZoomAction = { [self] delta in
                 handleScrollZoom(delta)
+            }
+            zoomController?.toggleUIAction = { [self] in
+                toggleUI()
             }
         }
         .onKeyPress(.leftArrow) {
@@ -651,6 +673,9 @@ struct FullScreenPresenter: ViewModifier {
         }
         window.onScrollZoom = { [weak controller] delta in
             controller?.scrollZoom(delta)
+        }
+        window.onToggleUI = { [weak controller] in
+            controller?.toggleUI()
         }
 
         let hostingView = NSHostingView(

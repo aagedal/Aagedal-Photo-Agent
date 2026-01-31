@@ -61,8 +61,10 @@ struct ThumbnailGridView: View {
             return .handled
         }
         .onKeyPress(.space) {
-            // Only handle space when grid is focused (not when a text field has focus)
-            guard isGridFocused, viewModel.firstSelectedImage != nil else { return .ignored }
+            // Only handle space when grid is focused and no text field is active
+            guard isGridFocused,
+                  viewModel.firstSelectedImage != nil,
+                  !isTextFieldActive() else { return .ignored }
             viewModel.isFullScreen = true
             return .handled
         }
@@ -119,6 +121,16 @@ struct ThumbnailGridView: View {
                 targetURL: image.url,
                 viewModel: viewModel
             ))
+    }
+
+    /// Check if a text field currently has keyboard focus
+    private func isTextFieldActive() -> Bool {
+        guard let window = NSApp.keyWindow else { return false }
+        // Check if the first responder is a text editing view
+        if let responder = window.firstResponder {
+            return responder is NSText || responder is NSTextView
+        }
+        return false
     }
 
     private func handleTap(image: ImageFile, modifiers: EventModifiers) {
