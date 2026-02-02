@@ -30,6 +30,13 @@ final class FaceRecognitionViewModel {
         didSet { invalidateCaches() }
     }
 
+    // Track matches between groups and known people
+    // Maps groupID -> (knownPersonID, matchConfidence)
+    var knownPersonMatchByGroup: [UUID: (personID: UUID, confidence: Float)] = [:]
+
+    // The currently selected group for thumbnail replacement (only one at a time)
+    var selectedThumbnailReplacementGroupID: UUID?
+
     // Cached sorted groups (invalidated when faceData changes)
     private(set) var sortedGroups: [FaceGroup] = []
 
@@ -77,6 +84,9 @@ final class FaceRecognitionViewModel {
 
         let useQualityWeighted = UserDefaults.standard.object(forKey: "faceUseQualityWeightedEdges") as? Bool
         config.useQualityWeightedEdges = useQualityWeighted ?? true
+
+        let attachSecondPass = UserDefaults.standard.object(forKey: "faceClothingSecondPassAttachToExisting") as? Bool
+        config.faceClothingSecondPassAttachToExisting = attachSecondPass ?? false
 
         return config
     }
@@ -192,6 +202,8 @@ final class FaceRecognitionViewModel {
         guard !isScanning else { return }
 
         let config = detectionConfig
+        let visionThreshold = UserDefaults.standard.object(forKey: "visionClusteringThreshold") as? Double ?? 0.40
+        let visionClusteringThreshold = Float(visionThreshold)
         let storageService = self.storageService
         let detectionService = self.detectionService
 
@@ -305,7 +317,13 @@ final class FaceRecognitionViewModel {
                     if !newFaces.isEmpty {
                         if useModeAwareClustering {
                             // Use mode-aware clustering for ArcFace and Face+Clothing modes
-                            allGroups = detectionService.clusterFacesModeAware(newFaces, allFaces: allFaces, existingGroups: allGroups, config: config)
+                            allGroups = detectionService.clusterFacesModeAware(
+                                newFaces,
+                                allFaces: allFaces,
+                                existingGroups: allGroups,
+                                config: config,
+                                visionClusteringThreshold: visionClusteringThreshold
+                            )
                         } else {
                             // Use algorithm-aware clustering with selected algorithm
                             allGroups = detectionService.clusterFacesWithAlgorithm(newFaces, allFaces: allFaces, existingGroups: allGroups, config: config)
@@ -409,21 +427,110 @@ final class FaceRecognitionViewModel {
             let modeRaw = UserDefaults.standard.string(forKey: "knownPeopleMode") ?? "off"
             let mode = KnownPeopleMode(rawValue: modeRaw) ?? .off
             if mode == .alwaysOn {
-                self.matchKnownPeople()
+                await self.matchKnownPeopleIntegrated()
             }
         }
+    }
+
+    // MARK: - Integrated Known People Matching
+
+    /// Enhanced Known People matching that runs during/after scanning.
+    /// This version integrates with clustering by:
+    /// 1. Matching each unnamed group's representative face against Known People
+    /// 2. If multiple groups match the same known person, merging them together
+    /// 3. Recording matches for the "Replace Thumbnail" feature
+    private func matchKnownPeopleIntegrated() async {
+        guard var data = faceData else { return }
+
+        let stats = KnownPeopleService.shared.getStatistics()
+        guard stats.peopleCount > 0 else { return }
+
+        // Build a map: knownPersonID -> [groupIDs that matched this person]
+        var matchesByPerson: [UUID: [(groupID: UUID, confidence: Float)]] = [:]
+
+        for group in data.groups where group.name == nil {
+            guard let face = data.faces.first(where: { $0.id == group.representativeFaceID }) else {
+                continue
+            }
+
+            let matches = KnownPeopleService.shared.matchFace(
+                featurePrintData: face.featurePrintData,
+                threshold: 0.45,
+                maxResults: 1
+            )
+
+            if let bestMatch = matches.first {
+                // Record the match for "Replace Thumbnail" feature
+                knownPersonMatchByGroup[group.id] = (personID: bestMatch.person.id, confidence: bestMatch.confidence)
+
+                // Track for potential merging
+                if matchesByPerson[bestMatch.person.id] == nil {
+                    matchesByPerson[bestMatch.person.id] = []
+                }
+                matchesByPerson[bestMatch.person.id]?.append((groupID: group.id, confidence: bestMatch.confidence))
+            }
+        }
+
+        // For each known person with matches, merge multiple groups and name them
+        for (personID, groupMatches) in matchesByPerson {
+            guard let knownPerson = KnownPeopleService.shared.person(byID: personID) else { continue }
+
+            // Sort by confidence (highest first) - the best match becomes the target
+            let sorted = groupMatches.sorted { $0.confidence > $1.confidence }
+            guard let targetGroupID = sorted.first?.groupID,
+                  let targetIndex = data.groups.firstIndex(where: { $0.id == targetGroupID }) else { continue }
+
+            // Name the target group
+            data.groups[targetIndex].name = knownPerson.name
+
+            // Merge other matching groups into the target
+            for match in sorted.dropFirst() {
+                guard let sourceIndex = data.groups.firstIndex(where: { $0.id == match.groupID }),
+                      sourceIndex != targetIndex else { continue }
+
+                // Move faces from source to target
+                let sourceFaceIDs = data.groups[sourceIndex].faceIDs
+                data.groups[targetIndex].faceIDs.append(contentsOf: sourceFaceIDs)
+
+                // Update face groupIDs
+                for faceID in sourceFaceIDs {
+                    if let fi = data.faces.firstIndex(where: { $0.id == faceID }) {
+                        data.faces[fi].groupID = targetGroupID
+                    }
+                }
+
+                // Update the match tracking to point to merged group
+                knownPersonMatchByGroup[match.groupID] = nil
+                knownPersonMatchByGroup[targetGroupID] = (personID: personID, confidence: sorted.first!.confidence)
+
+                // Remove source group (need to re-find index as it may have shifted)
+                if let currentSourceIndex = data.groups.firstIndex(where: { $0.id == match.groupID }) {
+                    data.groups.remove(at: currentSourceIndex)
+                }
+            }
+        }
+
+        // Save updated data
+        faceData = data
+        try? storageService.saveFaceData(data)
     }
 
     // MARK: - Known People Matching
 
     /// Match unnamed face groups against the Known People database.
     /// Automatically names groups that match known people.
+    /// If multiple groups match the same known person, they are merged together.
+    /// Also records matches in knownPersonMatchByGroup for the "Replace Thumbnail" feature.
     func matchKnownPeople() {
-        guard let data = faceData else { return }
+        guard var data = faceData else { return }
+
+        let stats = KnownPeopleService.shared.getStatistics()
+        guard stats.peopleCount > 0 else { return }
+
+        // Build a map: knownPersonID -> [groupIDs that matched this person]
+        var matchesByPerson: [UUID: [(groupID: UUID, confidence: Float)]] = [:]
 
         let unnamedGroups = data.groups.filter { $0.name == nil }
-        guard !unnamedGroups.isEmpty else { return }
-
         for group in unnamedGroups {
             guard let face = data.faces.first(where: { $0.id == group.representativeFaceID }) else {
                 continue
@@ -436,9 +543,102 @@ final class FaceRecognitionViewModel {
             )
 
             if let bestMatch = matches.first {
-                self.nameGroup(group.id, name: bestMatch.person.name)
+                // Record the match
+                knownPersonMatchByGroup[group.id] = (personID: bestMatch.person.id, confidence: bestMatch.confidence)
+
+                // Track for potential merging
+                if matchesByPerson[bestMatch.person.id] == nil {
+                    matchesByPerson[bestMatch.person.id] = []
+                }
+                matchesByPerson[bestMatch.person.id]?.append((groupID: group.id, confidence: bestMatch.confidence))
             }
         }
+
+        // For each known person with matches, merge multiple groups and name them
+        for (personID, groupMatches) in matchesByPerson {
+            guard let knownPerson = KnownPeopleService.shared.person(byID: personID) else { continue }
+
+            // Sort by confidence (highest first) - the best match becomes the target
+            let sorted = groupMatches.sorted { $0.confidence > $1.confidence }
+            guard let targetGroupID = sorted.first?.groupID,
+                  let targetIndex = data.groups.firstIndex(where: { $0.id == targetGroupID }) else { continue }
+
+            // Name the target group
+            data.groups[targetIndex].name = knownPerson.name
+
+            // Merge other matching groups into the target
+            for match in sorted.dropFirst() {
+                guard let sourceIndex = data.groups.firstIndex(where: { $0.id == match.groupID }),
+                      sourceIndex != targetIndex else { continue }
+
+                // Move faces from source to target
+                let sourceFaceIDs = data.groups[sourceIndex].faceIDs
+                data.groups[targetIndex].faceIDs.append(contentsOf: sourceFaceIDs)
+
+                // Update face groupIDs
+                for faceID in sourceFaceIDs {
+                    if let fi = data.faces.firstIndex(where: { $0.id == faceID }) {
+                        data.faces[fi].groupID = targetGroupID
+                    }
+                }
+
+                // Update match tracking to point to merged group
+                knownPersonMatchByGroup[match.groupID] = nil
+                knownPersonMatchByGroup[targetGroupID] = (personID: personID, confidence: sorted.first!.confidence)
+
+                // Remove source group
+                if let currentSourceIndex = data.groups.firstIndex(where: { $0.id == match.groupID }) {
+                    data.groups.remove(at: currentSourceIndex)
+                }
+            }
+        }
+
+        // Save updated data
+        faceData = data
+        try? storageService.saveFaceData(data)
+    }
+
+    /// Match a specific group against Known People and track the match.
+    /// Returns the matched person ID if found.
+    @discardableResult
+    func matchGroupToKnownPeople(_ groupID: UUID) -> UUID? {
+        guard let data = faceData,
+              let group = data.groups.first(where: { $0.id == groupID }),
+              let face = data.faces.first(where: { $0.id == group.representativeFaceID }) else {
+            return nil
+        }
+
+        let matches = KnownPeopleService.shared.matchFace(
+            featurePrintData: face.featurePrintData,
+            threshold: 0.45,
+            maxResults: 1
+        )
+
+        if let bestMatch = matches.first {
+            // Record the match for "Replace Thumbnail" feature
+            knownPersonMatchByGroup[groupID] = (personID: bestMatch.person.id, confidence: bestMatch.confidence)
+            return bestMatch.person.id
+        }
+
+        return nil
+    }
+
+    /// Select a group for thumbnail replacement. Only shows in suggestions panel if the group
+    /// is named and has a known person match.
+    func selectGroupForThumbnailReplacement(_ groupID: UUID?) {
+        guard let groupID,
+              let group = group(byID: groupID),
+              group.name != nil,
+              knownPersonMatchByGroup[groupID] != nil else {
+            selectedThumbnailReplacementGroupID = nil
+            return
+        }
+        selectedThumbnailReplacementGroupID = groupID
+    }
+
+    /// Clear the thumbnail replacement selection (e.g., after replacing or dismissing)
+    func clearThumbnailReplacementSelection() {
+        selectedThumbnailReplacementGroupID = nil
     }
 
     // MARK: - Merge Suggestions
@@ -808,6 +1008,29 @@ final class FaceRecognitionViewModel {
     }
 
     // MARK: - Delete Individual Faces
+
+    /// Delete all faces that belong to the provided image URLs.
+    func deleteFaces(forImageURLs imageURLs: Set<URL>) {
+        guard !imageURLs.isEmpty else { return }
+
+        let targetFolder = imageURLs.first?.deletingLastPathComponent()
+        if faceData == nil, let targetFolder {
+            if let loaded = storageService.loadFaceData(for: targetFolder) {
+                faceData = loaded
+                scanComplete = loaded.scanComplete
+                loadThumbnails(for: loaded)
+            }
+        }
+
+        guard let data = faceData,
+              targetFolder == nil || data.folderURL == targetFolder else { return }
+
+        let faceIDs = Set(data.faces.compactMap { face in
+            imageURLs.contains(face.imageURL) ? face.id : nil
+        })
+
+        deleteFaces(faceIDs)
+    }
 
     /// Permanently delete faces from the data set (removes from groups, face list, thumbnail cache, and disk).
     func deleteFaces(_ faceIDs: Set<UUID>) {

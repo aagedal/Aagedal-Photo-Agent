@@ -44,6 +44,14 @@ final class SettingsViewModel {
         didSet { UserDefaults.standard.set(faceCleanupPolicy.rawValue, forKey: "faceCleanupPolicy") }
     }
 
+    var metadataWriteModeNonC2PA: MetadataWriteMode {
+        didSet { UserDefaults.standard.set(metadataWriteModeNonC2PA.rawValue, forKey: "metadataWriteModeNonC2PA") }
+    }
+
+    var metadataWriteModeC2PA: MetadataWriteMode {
+        didSet { UserDefaults.standard.set(metadataWriteModeC2PA.rawValue, forKey: "metadataWriteModeC2PA") }
+    }
+
     var keywordsListPath: String = ""
     var personShownListPath: String = ""
 
@@ -151,6 +159,13 @@ final class SettingsViewModel {
         }
     }
 
+    /// For Face+Clothing mode: allow the second pass to match leftovers to existing groups. Default: false
+    var faceClothingSecondPassAttachToExisting: Bool {
+        didSet {
+            UserDefaults.standard.set(faceClothingSecondPassAttachToExisting, forKey: "faceClothingSecondPassAttachToExisting")
+        }
+    }
+
     /// Known People database mode. Default: off
     var knownPeopleMode: KnownPeopleMode {
         didSet {
@@ -195,6 +210,21 @@ final class SettingsViewModel {
         self.defaultExternalEditor = UserDefaults.standard.string(forKey: "defaultExternalEditor") ?? ""
         let raw = UserDefaults.standard.string(forKey: "faceCleanupPolicy") ?? "never"
         self.faceCleanupPolicy = FaceCleanupPolicy(rawValue: raw) ?? .never
+        let legacyWriteModeRaw = UserDefaults.standard.string(forKey: "metadataWriteMode")
+        let nonC2PARaw = UserDefaults.standard.string(forKey: "metadataWriteModeNonC2PA")
+            ?? legacyWriteModeRaw
+            ?? MetadataWriteMode.historyOnly.rawValue
+        self.metadataWriteModeNonC2PA = MetadataWriteMode(rawValue: nonC2PARaw) ?? .historyOnly
+
+        if UserDefaults.standard.object(forKey: "metadataWriteModeC2PA") != nil {
+            let c2paRaw = UserDefaults.standard.string(forKey: "metadataWriteModeC2PA")
+                ?? MetadataWriteMode.historyOnly.rawValue
+            self.metadataWriteModeC2PA = MetadataWriteMode(rawValue: c2paRaw) ?? .historyOnly
+        } else {
+            let c2paRaw = legacyWriteModeRaw ?? MetadataWriteMode.historyOnly.rawValue
+            let c2paMode = MetadataWriteMode(rawValue: c2paRaw) ?? .historyOnly
+            self.metadataWriteModeC2PA = c2paMode == .writeToFile ? .historyOnly : c2paMode
+        }
 
         // Face recognition settings with defaults
         // Mode-specific thresholds with optimized defaults
@@ -224,6 +254,9 @@ final class SettingsViewModel {
 
         let storedQualityWeighted = UserDefaults.standard.object(forKey: "faceUseQualityWeightedEdges") as? Bool
         self.faceUseQualityWeightedEdges = storedQualityWeighted ?? true
+
+        let storedSecondPassAttach = UserDefaults.standard.object(forKey: "faceClothingSecondPassAttachToExisting") as? Bool
+        self.faceClothingSecondPassAttachToExisting = storedSecondPassAttach ?? false
 
         let storedKnownPeopleMode = UserDefaults.standard.string(forKey: "knownPeopleMode") ?? "off"
         self.knownPeopleMode = KnownPeopleMode(rawValue: storedKnownPeopleMode) ?? .off

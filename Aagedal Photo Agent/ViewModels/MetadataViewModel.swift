@@ -30,6 +30,7 @@ final class MetadataViewModel {
 
     private let exifToolService: ExifToolService
     private let sidecarService = MetadataSidecarService()
+    private let xmpSidecarService = XMPSidecarService()
     private let geocodingService = GeocodingService()
     private var previousEditingMetadata: IPTCMetadata?
 
@@ -81,16 +82,23 @@ final class MetadataViewModel {
 
             Task {
                 do {
-                    let imageMeta = try await exifToolService.readFullMetadata(url: imageURL)
+                    var imageMeta = try await exifToolService.readFullMetadata(url: imageURL)
+                    if MetadataWriteMode.current(forC2PA: images[0].hasC2PA) == .writeToXMPSidecar,
+                       let xmpMeta = xmpSidecarService.loadSidecar(for: imageURL) {
+                        imageMeta = imageMeta.merged(preferring: xmpMeta)
+                    }
                     self.metadata = imageMeta
                     self.originalImageMetadata = imageMeta
 
                     if let folder = self.currentFolderURL,
-                       let sidecar = sidecarService.loadSidecar(for: imageURL, in: folder),
-                       sidecar.pendingChanges {
-                        self.editingMetadata = sidecar.metadata
+                       let sidecar = sidecarService.loadSidecar(for: imageURL, in: folder) {
                         self.sidecarHistory = sidecar.history
-                        self.hasChanges = true
+                        if sidecar.pendingChanges {
+                            self.editingMetadata = sidecar.metadata
+                            self.hasChanges = true
+                        } else {
+                            self.editingMetadata = imageMeta
+                        }
                     } else {
                         self.editingMetadata = imageMeta
                     }
@@ -122,7 +130,11 @@ final class MetadataViewModel {
 
         for image in images {
             do {
-                let meta = try await exifToolService.readFullMetadata(url: image.url)
+                var meta = try await exifToolService.readFullMetadata(url: image.url)
+                if MetadataWriteMode.current(forC2PA: image.hasC2PA) == .writeToXMPSidecar,
+                   let xmpMeta = xmpSidecarService.loadSidecar(for: image.url) {
+                    meta = meta.merged(preferring: xmpMeta)
+                }
                 allMetadata.append(meta)
             } catch {
                 // Continue with other images
@@ -262,18 +274,46 @@ final class MetadataViewModel {
         hasChanges = true
     }
 
+    func commitEdits(
+        mode: MetadataWriteMode,
+        hasC2PA: Bool,
+        allowC2PAOverwrite: Bool = false,
+        onComplete: (() -> Void)? = nil
+    ) {
+        switch mode {
+        case .historyOnly:
+            saveToSidecar()
+            onComplete?()
+        case .writeToXMPSidecar:
+            saveToSidecar()
+            writeXMPSidecar()
+            onComplete?()
+        case .writeToFile:
+            if hasC2PA && !allowC2PAOverwrite {
+                saveToSidecar()
+                saveError = "C2PA-protected image. Changes were saved to history only."
+                onComplete?()
+                return
+            }
+            writeMetadataAndPreserveHistory(onComplete: onComplete)
+        }
+    }
+
     func writeMetadata() {
-        guard !selectedURLs.isEmpty else { return }
+        let urls = selectedURLs
+        guard !urls.isEmpty else { return }
+        let selectionSnapshot = Set(urls)
+        let edited = editingMetadata
+        let original = metadata
+        let isBatch = isBatchEdit
         isSaving = true
         saveError = nil
 
         Task {
             do {
                 var fields: [String: String] = [:]
-                let edited = editingMetadata
-                let original = metadata
 
-                if isBatchEdit {
+                if isBatch {
                     // Batch: only write non-empty fields
                     if let v = edited.title, !v.isEmpty { fields["XMP:Title"] = v }
                     if let v = edited.description, !v.isEmpty { fields["XMP:Description"] = v }
@@ -330,14 +370,125 @@ final class MetadataViewModel {
                 }
 
                 if !fields.isEmpty {
-                    try await exifToolService.writeFields(fields, to: selectedURLs)
+                    try await exifToolService.writeFields(fields, to: urls)
                 }
-                self.metadata = edited
-                self.hasChanges = false
+                if Set(self.selectedURLs) == selectionSnapshot {
+                    self.metadata = edited
+                    self.hasChanges = false
+                }
             } catch {
                 self.saveError = error.localizedDescription
             }
             self.isSaving = false
+        }
+    }
+
+    private func writeXMPSidecar() {
+        guard !selectedURLs.isEmpty else { return }
+
+        if selectedCount == 1, let imageURL = selectedURLs.first {
+            do {
+                try xmpSidecarService.saveSidecar(metadata: editingMetadata, for: imageURL)
+            } catch {
+                saveError = "Failed to write XMP sidecar: \(error.localizedDescription)"
+            }
+            return
+        }
+
+        let batchMeta = editingMetadata
+        for imageURL in selectedURLs {
+            var existing = xmpSidecarService.loadSidecar(for: imageURL) ?? IPTCMetadata()
+            applyBatchEdits(batchMeta, to: &existing)
+            try? xmpSidecarService.saveSidecar(metadata: existing, for: imageURL)
+        }
+    }
+
+    private func writeMetadataAndPreserveHistory(onComplete: (() -> Void)? = nil) {
+        guard selectedCount == 1,
+              let imageURL = selectedURLs.first,
+              let folderURL = currentFolderURL else {
+            writeMetadata()
+            onComplete?()
+            return
+        }
+
+        let edited = editingMetadata
+        let original = originalImageMetadata
+        let previous = previousEditingMetadata
+        let existingHistory = sidecarHistory
+
+        isSaving = true
+        saveError = nil
+
+        Task {
+            do {
+                var fields: [String: String] = [:]
+                if edited.title != original?.title { fields["XMP:Title"] = edited.title ?? "" }
+                if edited.description != original?.description { fields["XMP:Description"] = edited.description ?? "" }
+                if edited.keywords != original?.keywords {
+                    fields["XMP:Subject"] = edited.keywords.joined(separator: ", ")
+                }
+                if edited.personShown != original?.personShown {
+                    fields["XMP-iptcExt:PersonInImage"] = edited.personShown.joined(separator: ", ")
+                }
+                if edited.digitalSourceType != original?.digitalSourceType {
+                    fields["XMP-iptcExt:DigitalSourceType"] = edited.digitalSourceType?.rawValue ?? ""
+                }
+                if edited.latitude != original?.latitude || edited.longitude != original?.longitude {
+                    if let lat = edited.latitude, let lon = edited.longitude {
+                        fields["EXIF:GPSLatitude"] = String(abs(lat))
+                        fields["EXIF:GPSLatitudeRef"] = lat >= 0 ? "N" : "S"
+                        fields["EXIF:GPSLongitude"] = String(abs(lon))
+                        fields["EXIF:GPSLongitudeRef"] = lon >= 0 ? "E" : "W"
+                    } else {
+                        fields["EXIF:GPSLatitude"] = ""
+                        fields["EXIF:GPSLatitudeRef"] = ""
+                        fields["EXIF:GPSLongitude"] = ""
+                        fields["EXIF:GPSLongitudeRef"] = ""
+                    }
+                }
+                if edited.creator != original?.creator { fields["XMP:Creator"] = edited.creator ?? "" }
+                if edited.credit != original?.credit { fields["XMP-photoshop:Credit"] = edited.credit ?? "" }
+                if edited.copyright != original?.copyright { fields["XMP:Rights"] = edited.copyright ?? "" }
+                if edited.dateCreated != original?.dateCreated { fields["XMP:DateCreated"] = edited.dateCreated ?? "" }
+                if edited.city != original?.city { fields["XMP-photoshop:City"] = edited.city ?? "" }
+                if edited.country != original?.country { fields["XMP-photoshop:Country"] = edited.country ?? "" }
+                if edited.event != original?.event { fields["XMP-iptcExt:Event"] = edited.event ?? "" }
+
+                if !fields.isEmpty {
+                    try await exifToolService.writeFields(fields, to: [imageURL])
+                }
+
+                let now = Date()
+                let history = buildHistory(
+                    previous: previous ?? IPTCMetadata(),
+                    edited: edited,
+                    timestamp: now,
+                    existing: existingHistory
+                )
+                let sidecar = MetadataSidecar(
+                    sourceFile: imageURL.lastPathComponent,
+                    lastModified: now,
+                    pendingChanges: false,
+                    metadata: edited,
+                    imageMetadataSnapshot: edited,
+                    history: history
+                )
+                try sidecarService.saveSidecar(sidecar, for: imageURL, in: folderURL)
+
+                let isStillSelected = self.selectedCount == 1 && self.selectedURLs.first == imageURL
+                if isStillSelected {
+                    self.sidecarHistory = history
+                    self.previousEditingMetadata = edited
+                    self.metadata = edited
+                    self.originalImageMetadata = edited
+                    self.hasChanges = false
+                }
+            } catch {
+                self.saveError = error.localizedDescription
+            }
+            self.isSaving = false
+            onComplete?()
         }
     }
 
@@ -648,22 +799,59 @@ final class MetadataViewModel {
 
         if selectedCount == 1, let imageURL = selectedURLs.first {
             // Single image mode - save with full history tracking
-            saveSingleImageSidecar(imageURL: imageURL, folderURL: folderURL)
+            saveSingleImageSidecar(imageURL: imageURL, folderURL: folderURL, pendingChanges: true, snapshot: originalImageMetadata)
         } else if selectedCount > 1 {
             // Batch mode - merge edits into each image's sidecar
             saveBatchSidecars(folderURL: folderURL)
         }
     }
 
-    private func saveSingleImageSidecar(imageURL: URL, folderURL: URL) {
-        var newHistory = sidecarHistory
-        let prev = previousEditingMetadata ?? IPTCMetadata()
+    private func saveSingleImageSidecar(
+        imageURL: URL,
+        folderURL: URL,
+        pendingChanges: Bool,
+        snapshot: IPTCMetadata?
+    ) {
         let now = Date()
+        let prev = previousEditingMetadata ?? IPTCMetadata()
+        let newHistory = buildHistory(
+            previous: prev,
+            edited: editingMetadata,
+            timestamp: now,
+            existing: sidecarHistory
+        )
+
+        let sidecar = MetadataSidecar(
+            sourceFile: imageURL.lastPathComponent,
+            lastModified: now,
+            pendingChanges: pendingChanges,
+            metadata: editingMetadata,
+            imageMetadataSnapshot: snapshot,
+            history: newHistory
+        )
+
+        do {
+            try sidecarService.saveSidecar(sidecar, for: imageURL, in: folderURL)
+            sidecarHistory = newHistory
+            previousEditingMetadata = editingMetadata
+            hasChanges = pendingChanges
+        } catch {
+            saveError = "Failed to save sidecar: \(error.localizedDescription)"
+        }
+    }
+
+    private func buildHistory(
+        previous: IPTCMetadata,
+        edited: IPTCMetadata,
+        timestamp: Date,
+        existing: [MetadataHistoryEntry]
+    ) -> [MetadataHistoryEntry] {
+        var history = existing
 
         func recordChange(_ fieldName: String, old: String?, new: String?) {
             if old != new {
-                newHistory.append(MetadataHistoryEntry(
-                    timestamp: now,
+                history.append(MetadataHistoryEntry(
+                    timestamp: timestamp,
                     fieldName: fieldName,
                     oldValue: old,
                     newValue: new
@@ -675,8 +863,8 @@ final class MetadataViewModel {
             let oldVal = old.isEmpty ? nil : old.joined(separator: ", ")
             let newVal = new.isEmpty ? nil : new.joined(separator: ", ")
             if oldVal != newVal {
-                newHistory.append(MetadataHistoryEntry(
-                    timestamp: now,
+                history.append(MetadataHistoryEntry(
+                    timestamp: timestamp,
                     fieldName: fieldName,
                     oldValue: oldVal,
                     newValue: newVal
@@ -684,36 +872,24 @@ final class MetadataViewModel {
             }
         }
 
-        recordChange("Title", old: prev.title, new: editingMetadata.title)
-        recordChange("Description", old: prev.description, new: editingMetadata.description)
-        recordArrayChange("Keywords", old: prev.keywords, new: editingMetadata.keywords)
-        recordArrayChange("Person Shown", old: prev.personShown, new: editingMetadata.personShown)
-        recordChange("Copyright", old: prev.copyright, new: editingMetadata.copyright)
-        recordChange("Creator", old: prev.creator, new: editingMetadata.creator)
-        recordChange("Credit", old: prev.credit, new: editingMetadata.credit)
-        recordChange("Date Created", old: prev.dateCreated, new: editingMetadata.dateCreated)
-        recordChange("City", old: prev.city, new: editingMetadata.city)
-        recordChange("Country", old: prev.country, new: editingMetadata.country)
-        recordChange("Event", old: prev.event, new: editingMetadata.event)
-        recordChange("Digital Source Type", old: prev.digitalSourceType?.rawValue, new: editingMetadata.digitalSourceType?.rawValue)
-
-        let sidecar = MetadataSidecar(
-            sourceFile: imageURL.lastPathComponent,
-            lastModified: now,
-            pendingChanges: true,
-            metadata: editingMetadata,
-            imageMetadataSnapshot: originalImageMetadata,
-            history: newHistory
+        recordChange("Title", old: previous.title, new: edited.title)
+        recordChange("Description", old: previous.description, new: edited.description)
+        recordArrayChange("Keywords", old: previous.keywords, new: edited.keywords)
+        recordArrayChange("Person Shown", old: previous.personShown, new: edited.personShown)
+        recordChange("Copyright", old: previous.copyright, new: edited.copyright)
+        recordChange("Creator", old: previous.creator, new: edited.creator)
+        recordChange("Credit", old: previous.credit, new: edited.credit)
+        recordChange("Date Created", old: previous.dateCreated, new: edited.dateCreated)
+        recordChange("City", old: previous.city, new: edited.city)
+        recordChange("Country", old: previous.country, new: edited.country)
+        recordChange("Event", old: previous.event, new: edited.event)
+        recordChange(
+            "Digital Source Type",
+            old: previous.digitalSourceType?.rawValue,
+            new: edited.digitalSourceType?.rawValue
         )
 
-        do {
-            try sidecarService.saveSidecar(sidecar, for: imageURL, in: folderURL)
-            sidecarHistory = newHistory
-            previousEditingMetadata = editingMetadata
-            hasChanges = true
-        } catch {
-            saveError = "Failed to save sidecar: \(error.localizedDescription)"
-        }
+        return history
     }
 
     private func saveBatchSidecars(folderURL: URL) {
@@ -734,44 +910,7 @@ final class MetadataViewModel {
                 existingMeta = IPTCMetadata()
             }
 
-            // Merge batch edits - only apply non-empty fields
-            if let title = batchMeta.title, !title.isEmpty {
-                existingMeta.title = title
-            }
-            if let desc = batchMeta.description, !desc.isEmpty {
-                existingMeta.description = desc
-            }
-            if !batchMeta.keywords.isEmpty {
-                // Append keywords without duplicates
-                let existing = Set(existingMeta.keywords)
-                existingMeta.keywords += batchMeta.keywords.filter { !existing.contains($0) }
-            }
-            if !batchMeta.personShown.isEmpty {
-                // Append persons without duplicates
-                let existing = Set(existingMeta.personShown)
-                existingMeta.personShown += batchMeta.personShown.filter { !existing.contains($0) }
-            }
-            if let copyright = batchMeta.copyright, !copyright.isEmpty {
-                existingMeta.copyright = copyright
-            }
-            if let creator = batchMeta.creator, !creator.isEmpty {
-                existingMeta.creator = creator
-            }
-            if let credit = batchMeta.credit, !credit.isEmpty {
-                existingMeta.credit = credit
-            }
-            if let city = batchMeta.city, !city.isEmpty {
-                existingMeta.city = city
-            }
-            if let country = batchMeta.country, !country.isEmpty {
-                existingMeta.country = country
-            }
-            if let event = batchMeta.event, !event.isEmpty {
-                existingMeta.event = event
-            }
-            if batchMeta.digitalSourceType != nil {
-                existingMeta.digitalSourceType = batchMeta.digitalSourceType
-            }
+            applyBatchEdits(batchMeta, to: &existingMeta)
 
             let sidecar = MetadataSidecar(
                 sourceFile: imageURL.lastPathComponent,
@@ -786,6 +925,44 @@ final class MetadataViewModel {
         }
 
         hasChanges = true
+    }
+
+    private func applyBatchEdits(_ batchMeta: IPTCMetadata, to metadata: inout IPTCMetadata) {
+        if let title = batchMeta.title, !title.isEmpty {
+            metadata.title = title
+        }
+        if let desc = batchMeta.description, !desc.isEmpty {
+            metadata.description = desc
+        }
+        if !batchMeta.keywords.isEmpty {
+            let existing = Set(metadata.keywords)
+            metadata.keywords += batchMeta.keywords.filter { !existing.contains($0) }
+        }
+        if !batchMeta.personShown.isEmpty {
+            let existing = Set(metadata.personShown)
+            metadata.personShown += batchMeta.personShown.filter { !existing.contains($0) }
+        }
+        if let copyright = batchMeta.copyright, !copyright.isEmpty {
+            metadata.copyright = copyright
+        }
+        if let creator = batchMeta.creator, !creator.isEmpty {
+            metadata.creator = creator
+        }
+        if let credit = batchMeta.credit, !credit.isEmpty {
+            metadata.credit = credit
+        }
+        if let city = batchMeta.city, !city.isEmpty {
+            metadata.city = city
+        }
+        if let country = batchMeta.country, !country.isEmpty {
+            metadata.country = country
+        }
+        if let event = batchMeta.event, !event.isEmpty {
+            metadata.event = event
+        }
+        if batchMeta.digitalSourceType != nil {
+            metadata.digitalSourceType = batchMeta.digitalSourceType
+        }
     }
 
     func writeMetadataAndClearSidecar() {

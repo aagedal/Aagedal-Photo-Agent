@@ -97,6 +97,14 @@ struct FaceGroupDetailView: View {
             HStack {
                 TextField("Person name", text: $editingName)
                     .textFieldStyle(.roundedBorder)
+                    .onChange(of: editingName) { _, newValue in
+                        // Filter out newlines - names should be single line
+                        let filtered = newValue.replacingOccurrences(of: "\n", with: "")
+                            .replacingOccurrences(of: "\r", with: "")
+                        if filtered != newValue {
+                            editingName = filtered
+                        }
+                    }
                     .onSubmit {
                         applyName()
                     }
@@ -346,15 +354,32 @@ struct FaceGroupDetailView: View {
                 thumbnailData = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.85])
             }
 
-            // Add to known people database
-            let _ = try KnownPeopleService.shared.addPerson(
+            // Check for existing person with same name or similar face
+            let representativeFace = faces.first { $0.id == group.representativeFaceID } ?? faces.first
+            let duplicateCheck: KnownPeopleService.DuplicateCheckResult
+            if let repFace = representativeFace {
+                duplicateCheck = KnownPeopleService.shared.checkForDuplicate(
+                    name: trimmed,
+                    representativeFaceData: repFace.featurePrintData
+                )
+            } else {
+                duplicateCheck = .noDuplicate
+            }
+
+            // Use smart add that handles duplicates
+            let (_, addedToExisting) = try KnownPeopleService.shared.addOrMergePerson(
                 name: trimmed,
                 embeddings: embeddings,
-                thumbnailData: thumbnailData
+                thumbnailData: thumbnailData,
+                duplicateCheck: duplicateCheck
             )
 
             isAddingToKnownPeople = false
-            knownPeopleMessage = "Added \(trimmed) with \(embeddings.count) sample(s)"
+            if addedToExisting {
+                knownPeopleMessage = "Added \(embeddings.count) sample(s) to \(trimmed)"
+            } else {
+                knownPeopleMessage = "Added \(trimmed) with \(embeddings.count) sample(s)"
+            }
 
             // Clear message after delay
             Task {

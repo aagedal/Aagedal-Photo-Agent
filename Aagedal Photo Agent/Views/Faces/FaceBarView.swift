@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct FaceBarView: View {
     @Bindable var viewModel: FaceRecognitionViewModel
@@ -6,9 +7,11 @@ struct FaceBarView: View {
     let imageURLs: [URL]
     let settingsViewModel: SettingsViewModel
     var isExpanded: Bool = false
+    var selectionState: FaceSelectionState?  // Passed from expanded view for drag detection
     var onSelectImages: ((Set<URL>) -> Void)?
     var onPhotosDeleted: ((Set<URL>) -> Void)?
     var onToggleExpanded: (() -> Void)?
+    var onOpenPeopleDatabase: (() -> Void)?
 
     @State private var selectedGroup: FaceGroup?
     @State private var multiSelectedGroupIDs: Set<UUID> = []
@@ -17,7 +20,22 @@ struct FaceBarView: View {
     @State private var isCheckingKnownPeople = false
     @State private var knownPeopleMatchCount = 0
     @State private var refinementCount = 0
+    @State private var highlightedGroupID: UUID?
+    @State private var isDraggingOverBar: Bool = false
     @AppStorage("knownPeopleMode") private var knownPeopleMode: String = "off"
+
+    /// Named groups (shown first in the bar)
+    private var namedGroups: [FaceGroup] {
+        viewModel.sortedGroups.filter { $0.name != nil }
+    }
+
+    /// Unnamed groups (shown after the divider)
+    private var unnamedGroups: [FaceGroup] {
+        viewModel.sortedGroups.filter { $0.name == nil }
+    }
+
+    /// Height of the face bar
+    private let barHeight: CGFloat = 100
 
     private var isMultiSelecting: Bool {
         multiSelectedGroupIDs.count >= 2
@@ -85,27 +103,20 @@ struct FaceBarView: View {
                             .opacity(0.7)
                         }
                     } else {
-                        // After scanning: show final groups (interactive)
-                        ForEach(viewModel.sortedGroups) { group in
-                            FaceGroupThumbnail(
-                                group: group,
-                                image: viewModel.thumbnailCache[group.representativeFaceID],
-                                isMultiSelected: multiSelectedGroupIDs.contains(group.id)
-                            )
-                            .onTapGesture {
-                                if NSEvent.modifierFlags.contains(.command) {
-                                    toggleMultiSelect(group.id)
-                                } else {
-                                    multiSelectedGroupIDs.removeAll()
-                                    selectedGroup = group
-                                }
-                            }
-                            .popover(isPresented: Binding<Bool>(
-                                get: { selectedGroup?.id == group.id },
-                                set: { newValue in if !newValue { selectedGroup = nil } }
-                            )) {
-                                FaceGroupDetailView(group: group, viewModel: viewModel, settingsViewModel: settingsViewModel, onSelectImages: onSelectImages, onPhotosDeleted: onPhotosDeleted)
-                            }
+                        // Named groups first (interactive with drop targets)
+                        ForEach(namedGroups) { group in
+                            faceGroupThumbnailWithActions(group: group)
+                        }
+
+                        // Divider between named and unnamed groups
+                        if !namedGroups.isEmpty && !unnamedGroups.isEmpty {
+                            Divider()
+                                .frame(height: 70)
+                        }
+
+                        // Unnamed groups after divider
+                        ForEach(unnamedGroups) { group in
+                            faceGroupThumbnailWithActions(group: group)
                         }
                     }
                 }
@@ -279,6 +290,24 @@ struct FaceBarView: View {
 
             Spacer()
 
+            // People Database button
+            if viewModel.scanComplete {
+                Button {
+                    onOpenPeopleDatabase?()
+                } label: {
+                    VStack(spacing: 2) {
+                        Image(systemName: "person.text.rectangle")
+                            .font(.system(size: 16))
+                        Text("People")
+                            .font(.system(size: 9))
+                    }
+                    .frame(width: 52, height: 48)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Open Known People database")
+            }
+
             // Expand/collapse button
             if viewModel.scanComplete {
                 Button {
@@ -302,8 +331,42 @@ struct FaceBarView: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
-        .frame(height: 76)
+        .frame(height: barHeight)
         .background(.bar)
+    }
+
+    // MARK: - Face Group Thumbnail with Actions
+
+    @ViewBuilder
+    private func faceGroupThumbnailWithActions(group: FaceGroup) -> some View {
+        FaceGroupThumbnail(
+            group: group,
+            image: viewModel.thumbnailCache[group.representativeFaceID],
+            isMultiSelected: multiSelectedGroupIDs.contains(group.id),
+            isHighlighted: highlightedGroupID == group.id,
+            isExpanded: true
+        )
+        .onTapGesture {
+            if NSEvent.modifierFlags.contains(.command) {
+                toggleMultiSelect(group.id)
+            } else {
+                multiSelectedGroupIDs.removeAll()
+                selectedGroup = group
+            }
+        }
+        .popover(isPresented: Binding<Bool>(
+            get: { selectedGroup?.id == group.id },
+            set: { newValue in if !newValue { selectedGroup = nil } }
+        )) {
+            FaceGroupDetailView(group: group, viewModel: viewModel, settingsViewModel: settingsViewModel, onSelectImages: onSelectImages, onPhotosDeleted: onPhotosDeleted)
+        }
+        .onDrop(of: [.text], delegate: FaceBarDropDelegate(
+            targetGroupID: group.id,
+            viewModel: viewModel,
+            selectionState: selectionState,
+            highlightedGroupID: $highlightedGroupID,
+            isDraggingOverBar: $isDraggingOverBar
+        ))
     }
 
     private func toggleMultiSelect(_ id: UUID) {
@@ -552,11 +615,11 @@ struct ClusteringSettingsPopover: View {
                         .monospacedDigit()
                 }
 
-                if settingsViewModel.faceRecognitionMode == .visionFeaturePrint {
-                    Slider(value: $settingsViewModel.visionClusteringThreshold, in: 0.3...0.8, step: 0.01)
-                } else {
-                    Slider(value: $settingsViewModel.faceClothingClusteringThreshold, in: 0.3...0.8, step: 0.01)
-                }
+            if settingsViewModel.faceRecognitionMode == .visionFeaturePrint {
+                Slider(value: $settingsViewModel.visionClusteringThreshold, in: 0.3...0.8, step: 0.01)
+            } else {
+                Slider(value: $settingsViewModel.faceClothingClusteringThreshold, in: 0.3...0.8, step: 0.01)
+            }
 
                 HStack {
                     Text("Strict")
@@ -569,11 +632,95 @@ struct ClusteringSettingsPopover: View {
                 }
             }
 
+            if settingsViewModel.faceRecognitionMode == .faceAndClothing {
+                Divider()
+                Toggle("Second-pass can join existing groups", isOn: $settingsViewModel.faceClothingSecondPassAttachToExisting)
+                Text("If off, leftovers only cluster among themselves.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Text("Changes apply to new scans. Option+click Scan to rescan.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
         .padding()
         .frame(width: 260)
+    }
+}
+
+// MARK: - Face Bar Drop Delegate
+
+struct FaceBarDropDelegate: DropDelegate {
+    let targetGroupID: UUID
+    let viewModel: FaceRecognitionViewModel
+    let selectionState: FaceSelectionState?
+    @Binding var highlightedGroupID: UUID?
+    @Binding var isDraggingOverBar: Bool
+
+    func dropEntered(info: DropInfo) {
+        // Don't highlight if dragging within the same group
+        if selectionState?.draggedGroupID != targetGroupID {
+            highlightedGroupID = targetGroupID
+        }
+        isDraggingOverBar = true
+    }
+
+    func dropExited(info: DropInfo) {
+        if highlightedGroupID == targetGroupID {
+            highlightedGroupID = nil
+        }
+        // Only set isDraggingOverBar to false if we're exiting the entire bar area
+        // This is handled by checking if we're still over any group
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        isDraggingOverBar = true
+        return DropProposal(operation: .move)
+    }
+
+    func validateDrop(info: DropInfo) -> Bool {
+        // Don't allow drop if the dragged faces are from this same group
+        if selectionState?.draggedGroupID == targetGroupID {
+            return false
+        }
+        return info.hasItemsConforming(to: [.text])
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        highlightedGroupID = nil
+        isDraggingOverBar = false
+
+        guard let item = info.itemProviders(for: [.text]).first else { return false }
+
+        let targetID = targetGroupID
+        let vm = viewModel
+        let state = selectionState
+
+        item.loadObject(ofClass: NSString.self) { object, _ in
+            guard let string = object as? String else { return }
+
+            Task { @MainActor in
+                // Parse the comma-separated UUID string
+                let ids = Set(string.split(separator: ",").compactMap { UUID(uuidString: String($0)) })
+                guard !ids.isEmpty else { return }
+
+                // Filter out faces that are already in the target group
+                let facesToMove: Set<UUID>
+                if let data = vm.faceData {
+                    facesToMove = ids.filter { faceID in
+                        data.faces.first(where: { $0.id == faceID })?.groupID != targetID
+                    }
+                } else {
+                    facesToMove = ids
+                }
+
+                vm.moveFaces(facesToMove, toGroup: targetID)
+                state?.selectedFaceIDs.removeAll()
+                state?.draggedFaceIDs.removeAll()
+            }
+        }
+
+        return true
     }
 }

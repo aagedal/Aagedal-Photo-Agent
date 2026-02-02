@@ -63,6 +63,9 @@ nonisolated struct FaceDetectionService: Sendable {
         /// Weight factor for quality in edge calculations (0-1)
         var qualityEdgeWeight: Float = 0.3
 
+        /// When using Face+Clothing, allow the second pass to match leftovers to existing groups
+        var faceClothingSecondPassAttachToExisting: Bool = false
+
         nonisolated init(
             minConfidence: Float = 0.7,
             minFaceSize: Int = 50,
@@ -74,7 +77,8 @@ nonisolated struct FaceDetectionService: Sendable {
             chineseWhispersIterations: Int = 15,
             qualityGateThreshold: Float = 0.6,
             useQualityWeightedEdges: Bool = true,
-            qualityEdgeWeight: Float = 0.3
+            qualityEdgeWeight: Float = 0.3,
+            faceClothingSecondPassAttachToExisting: Bool = false
         ) {
             self.minConfidence = minConfidence
             self.minFaceSize = minFaceSize
@@ -87,6 +91,7 @@ nonisolated struct FaceDetectionService: Sendable {
             self.qualityGateThreshold = qualityGateThreshold
             self.useQualityWeightedEdges = useQualityWeightedEdges
             self.qualityEdgeWeight = qualityEdgeWeight
+            self.faceClothingSecondPassAttachToExisting = faceClothingSecondPassAttachToExisting
         }
     }
 
@@ -1345,7 +1350,97 @@ nonisolated struct FaceDetectionService: Sendable {
         _ faces: [DetectedFace],
         allFaces: [DetectedFace],
         existingGroups: [FaceGroup],
-        config: DetectionConfig
+        config: DetectionConfig,
+        visionClusteringThreshold: Float? = nil
+    ) -> [FaceGroup] {
+        let unclusteredFaces = faces.filter { $0.groupID == nil }
+        guard !unclusteredFaces.isEmpty else { return existingGroups }
+
+        if config.recognitionMode == .faceAndClothing,
+           let visionThreshold = visionClusteringThreshold {
+            return clusterFacesFaceThenClothing(
+                unclusteredFaces,
+                allFaces: allFaces,
+                existingGroups: existingGroups,
+                config: config,
+                visionThreshold: visionThreshold,
+                attachSecondPassToExisting: config.faceClothingSecondPassAttachToExisting
+            )
+        }
+
+        return clusterFacesModeAwareInternal(
+            unclusteredFaces,
+            allFaces: allFaces,
+            existingGroups: existingGroups,
+            config: config,
+            mode: config.recognitionMode,
+            threshold: config.clusteringThreshold
+        )
+    }
+
+    private func clusterFacesFaceThenClothing(
+        _ faces: [DetectedFace],
+        allFaces: [DetectedFace],
+        existingGroups: [FaceGroup],
+        config: DetectionConfig,
+        visionThreshold: Float,
+        attachSecondPassToExisting: Bool
+    ) -> [FaceGroup] {
+        let faceOnlyGroups = clusterFacesModeAwareInternal(
+            faces,
+            allFaces: allFaces,
+            existingGroups: existingGroups,
+            config: config,
+            mode: .visionFeaturePrint,
+            threshold: visionThreshold
+        )
+
+        let candidateFaceIDs = Set(faces.map(\.id))
+        var remainingFaces: [DetectedFace] = []
+        var filteredGroups: [FaceGroup] = []
+
+        for group in faceOnlyGroups {
+            if group.faceIDs.count == 1,
+               let faceID = group.faceIDs.first,
+               candidateFaceIDs.contains(faceID),
+               let face = faces.first(where: { $0.id == faceID }) {
+                remainingFaces.append(face)
+            } else {
+                filteredGroups.append(group)
+            }
+        }
+
+        guard !remainingFaces.isEmpty else { return faceOnlyGroups }
+
+        if attachSecondPassToExisting {
+            return clusterFacesModeAwareInternal(
+                remainingFaces,
+                allFaces: allFaces,
+                existingGroups: filteredGroups,
+                config: config,
+                mode: .faceAndClothing,
+                threshold: config.clusteringThreshold
+            )
+        }
+
+        let newGroups = clusterFacesModeAwareInternal(
+            remainingFaces,
+            allFaces: allFaces,
+            existingGroups: [],
+            config: config,
+            mode: .faceAndClothing,
+            threshold: config.clusteringThreshold
+        )
+        return filteredGroups + newGroups
+    }
+
+    private func clusterFacesModeAwareInternal(
+        _ faces: [DetectedFace],
+        allFaces: [DetectedFace],
+        existingGroups: [FaceGroup],
+        config: DetectionConfig,
+        mode: FaceRecognitionMode,
+        threshold: Float
     ) -> [FaceGroup] {
         let unclusteredFaces = faces.filter { $0.groupID == nil }
         guard !unclusteredFaces.isEmpty else { return existingGroups }
@@ -1359,7 +1454,7 @@ nonisolated struct FaceDetectionService: Sendable {
 
         for face in unclusteredFaces {
             var bestGroupIndex: Int?
-            var bestDistance: Float = config.clusteringThreshold
+            var bestDistance: Float = threshold
 
             for (index, group) in groups.enumerated() {
                 let memberFaces = group.faceIDs.compactMap { faceLookup[$0] }
@@ -1371,7 +1466,7 @@ nonisolated struct FaceDetectionService: Sendable {
                     if let distance = computeModeAwareDistance(
                         face1: face,
                         face2: memberFace,
-                        mode: config.recognitionMode,
+                        mode: mode,
                         config: config,
                         cache: cache
                     ) {
@@ -1398,7 +1493,13 @@ nonisolated struct FaceDetectionService: Sendable {
 
         // For remaining faces, use hierarchical agglomerative clustering
         if !remainingFaces.isEmpty {
-            let newGroups = clusterFacesHierarchicalModeAware(remainingFaces, config: config, cache: cache)
+            let newGroups = clusterFacesHierarchicalModeAware(
+                remainingFaces,
+                mode: mode,
+                threshold: threshold,
+                config: config,
+                cache: cache
+            )
             groups.append(contentsOf: newGroups)
         }
 
@@ -1408,6 +1509,8 @@ nonisolated struct FaceDetectionService: Sendable {
     /// Hierarchical agglomerative clustering with mode-aware distance computation.
     private func clusterFacesHierarchicalModeAware(
         _ faces: [DetectedFace],
+        mode: FaceRecognitionMode,
+        threshold: Float,
         config: DetectionConfig,
         cache: ExtendedFeatureCache
     ) -> [FaceGroup] {
@@ -1423,7 +1526,7 @@ nonisolated struct FaceDetectionService: Sendable {
                 if let distance = computeModeAwareDistance(
                     face1: faces[i],
                     face2: faces[j],
-                    mode: config.recognitionMode,
+                    mode: mode,
                     config: config,
                     cache: cache
                 ) {
@@ -1449,7 +1552,7 @@ nonisolated struct FaceDetectionService: Sendable {
                 }
             }
 
-            if minDistance > config.clusteringThreshold {
+            if minDistance > threshold {
                 break
             }
 
@@ -1464,7 +1567,7 @@ nonisolated struct FaceDetectionService: Sendable {
                 let distance = computeModeAwareAverageLinkage(
                     cluster1: mergedCluster,
                     cluster2: cluster,
-                    mode: config.recognitionMode,
+                    mode: mode,
                     config: config,
                     cache: cache
                 )
@@ -1480,7 +1583,7 @@ nonisolated struct FaceDetectionService: Sendable {
                     let distance = computeModeAwareAverageLinkage(
                         cluster1: clusters[i],
                         cluster2: clusters[j],
-                        mode: config.recognitionMode,
+                        mode: mode,
                         config: config,
                         cache: cache
                     )

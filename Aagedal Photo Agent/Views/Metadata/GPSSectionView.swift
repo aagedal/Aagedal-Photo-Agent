@@ -5,6 +5,8 @@ struct GPSSectionView: View {
     @Binding var latitude: Double?
     @Binding var longitude: Double?
     var onChanged: () -> Void
+    var focusKey: String? = nil
+    var focusedField: FocusState<String?>.Binding? = nil
 
     // Reverse geocoding parameters
     var isBatchMode: Bool = false
@@ -151,10 +153,18 @@ struct GPSSectionView: View {
 
     private var coordinateInputField: some View {
         HStack(spacing: 4) {
-            TextField("e.g. 59.9139, 10.7522", text: $coordinateInput)
-                .textFieldStyle(.roundedBorder)
-                .font(.caption)
-                .onSubmit { setCoordinates() }
+            if let focusedField, let focusKey {
+                TextField("e.g. 59.9139, 10.7522", text: $coordinateInput)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.caption)
+                    .focused(focusedField, equals: focusKey)
+                    .onSubmit { setCoordinates() }
+            } else {
+                TextField("e.g. 59.9139, 10.7522", text: $coordinateInput)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.caption)
+                    .onSubmit { setCoordinates() }
+            }
 
             Button { setCoordinates() } label: {
                 Image(systemName: "checkmark")
