@@ -2,6 +2,14 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+// MARK: - Main View Mode
+
+enum MainViewMode {
+    case browser           // Normal photo browsing
+    case faceManagement    // Expanded face management (existing)
+    case peopleDatabase    // Known People database view
+}
+
 struct ContentView: View {
     @State private var browserViewModel: BrowserViewModel
     @State private var metadataViewModel: MetadataViewModel
@@ -22,16 +30,21 @@ struct ContentView: View {
     @State private var c2paMetadata: C2PAMetadata?
     @State private var saveTemplateName = ""
     @State private var metadataPanelWidth: CGFloat = 320
-    @State private var isFaceManagerExpanded = false
+    @State private var mainViewMode: MainViewMode = .browser
+    @State private var faceSelectionState = FaceSelectionState()
     @State private var technicalMetadata: TechnicalMetadata?
     @State private var technicalMetadataCache: [URL: TechnicalMetadata] = [:]
     @State private var technicalMetadataTask: Task<Void, Never>?
 
     init() {
         let browser = BrowserViewModel()
+        let faceRecognition = FaceRecognitionViewModel(exifToolService: browser.exifToolService)
+        browser.onImagesDeleted = { [weak faceRecognition] urls in
+            faceRecognition?.deleteFaces(forImageURLs: urls)
+        }
         _browserViewModel = State(initialValue: browser)
         _metadataViewModel = State(initialValue: MetadataViewModel(exifToolService: browser.exifToolService))
-        _faceRecognitionViewModel = State(initialValue: FaceRecognitionViewModel(exifToolService: browser.exifToolService))
+        _faceRecognitionViewModel = State(initialValue: faceRecognition)
         _importViewModel = State(initialValue: ImportViewModel(exifToolService: browser.exifToolService))
     }
 
@@ -140,7 +153,8 @@ struct ContentView: View {
                     folderURL: browserViewModel.currentFolderURL,
                     imageURLs: browserViewModel.images.map(\.url),
                     settingsViewModel: settingsViewModel,
-                    isExpanded: isFaceManagerExpanded,
+                    isExpanded: mainViewMode == .faceManagement,
+                    selectionState: mainViewMode == .faceManagement ? faceSelectionState : nil,
                     onSelectImages: { urls in
                         browserViewModel.selectedImageIDs = urls
                     },
@@ -149,24 +163,33 @@ struct ContentView: View {
                         browserViewModel.selectedImageIDs.subtract(trashedURLs)
                     },
                     onToggleExpanded: {
-                        isFaceManagerExpanded.toggle()
+                        mainViewMode = mainViewMode == .faceManagement ? .browser : .faceManagement
+                    },
+                    onOpenPeopleDatabase: {
+                        mainViewMode = .peopleDatabase
                     }
                 )
                 Divider()
             }
 
-            if isFaceManagerExpanded {
+            switch mainViewMode {
+            case .browser:
+                browserAndMetadataPanel
+            case .faceManagement:
                 ExpandedFaceManagementView(
                     viewModel: faceRecognitionViewModel,
                     settingsViewModel: settingsViewModel,
-                    onClose: { isFaceManagerExpanded = false },
+                    selectionState: faceSelectionState,
+                    onClose: { mainViewMode = .browser },
                     onPhotosDeleted: { trashedURLs in
                         browserViewModel.images.removeAll { trashedURLs.contains($0.url) }
                         browserViewModel.selectedImageIDs.subtract(trashedURLs)
                     }
                 )
-            } else {
-                browserAndMetadataPanel
+            case .peopleDatabase:
+                ExpandedKnownPeopleView(
+                    onClose: { mainViewMode = .browser }
+                )
             }
         }
     }
@@ -562,7 +585,21 @@ struct ContentViewModifiers: ViewModifier {
         content
             .onChange(of: browserViewModel.selectedImageIDs) { oldValue, _ in
                 if !oldValue.isEmpty && metadataViewModel.hasChanges {
-                    metadataViewModel.saveToSidecar()
+                    let hadC2PA = browserViewModel.images.contains { image in
+                        metadataViewModel.selectedURLs.contains(image.url) && image.hasC2PA
+                    }
+                    let mode = hadC2PA ? settingsViewModel.metadataWriteModeC2PA : settingsViewModel.metadataWriteModeNonC2PA
+                    if hadC2PA, mode == .writeToFile {
+                        metadataViewModel.saveToSidecar()
+                        browserViewModel.refreshPendingStatus()
+                    } else {
+                        metadataViewModel.commitEdits(
+                            mode: mode,
+                            hasC2PA: hadC2PA
+                        ) {
+                            browserViewModel.refreshPendingStatus()
+                        }
+                    }
                 }
                 let selected = browserViewModel.selectedImages
                 metadataViewModel.loadMetadata(for: selected, folderURL: browserViewModel.currentFolderURL)

@@ -29,6 +29,13 @@ nonisolated enum KnownPeopleMode: String, CaseIterable, Codable, Sendable {
 
 // MARK: - Known Person
 
+/// A known person in the face recognition database.
+///
+/// **Important Architecture Note:**
+/// The Known People database stores ONLY face-only feature prints (Vision VNFeaturePrintObservation).
+/// This ensures consistent cross-context matching regardless of what the person is wearing.
+/// Even when Face+Clothing mode is used during scanning, only the face feature is stored here.
+/// Clothing features are used only for within-folder clustering, not for Known People matching.
 nonisolated struct KnownPerson: Codable, Identifiable, Sendable {
     let id: UUID
     var name: String
@@ -68,13 +75,24 @@ nonisolated struct KnownPerson: Codable, Identifiable, Sendable {
 
 // MARK: - Person Embedding
 
+/// A face embedding sample stored for a known person.
+///
+/// **Important:** `featurePrintData` always contains a face-only Vision feature print,
+/// regardless of what recognition mode was active when the face was captured.
+/// This ensures the Known People database works consistently across different contexts
+/// (e.g., the same person wearing different clothes in different photos).
 nonisolated struct PersonEmbedding: Codable, Identifiable, Sendable {
     let id: UUID
+
+    /// The face-only Vision VNFeaturePrintObservation data.
+    /// Always face-only, never includes clothing features.
     let featurePrintData: Data
+
     let sourceDescription: String?
     let addedAt: Date
 
-    /// Recognition mode used to generate this embedding
+    /// The recognition mode that was active when this face was captured.
+    /// This is metadata only - the stored `featurePrintData` is always face-only regardless.
     let recognitionMode: FaceRecognitionMode?
 
     init(

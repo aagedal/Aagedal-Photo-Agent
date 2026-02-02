@@ -1,11 +1,26 @@
 import Foundation
 import CoreGraphics
 
+/// A detected face from an image scan.
+///
+/// **Embedding Architecture:**
+/// - `featurePrintData`: Always contains the face-only Vision VNFeaturePrintObservation.
+///   This is the ONLY embedding used for Known People matching.
+/// - `clothingFeaturePrintData`: Optional clothing/torso features, ONLY used for within-folder
+///   clustering in Face+Clothing mode. Never stored in the Known People database.
+///
+/// This separation ensures the Known People database works across different contexts
+/// (same person in different clothing) while Face+Clothing mode still helps with
+/// same-event clustering where clothing is consistent.
 nonisolated struct DetectedFace: Codable, Identifiable {
     let id: UUID
     let imageURL: URL
     let faceRect: CGRect
+
+    /// Face-only Vision VNFeaturePrintObservation. Always present.
+    /// This is the only embedding stored in the Known People database.
     let featurePrintData: Data
+
     var groupID: UUID?
     let detectedAt: Date
 
@@ -15,7 +30,8 @@ nonisolated struct DetectedFace: Codable, Identifiable {
     let faceSize: Int?
     let blurScore: Float?
 
-    // Clothing/torso features (optional, only populated in Face+Clothing mode)
+    /// Clothing/torso features (optional, only in Face+Clothing mode).
+    /// Used ONLY for within-folder clustering, never for Known People matching.
     var clothingFeaturePrintData: Data?
     var clothingRect: CGRect?
 

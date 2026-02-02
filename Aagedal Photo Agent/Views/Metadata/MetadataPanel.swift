@@ -14,10 +14,40 @@ struct MetadataPanel: View {
     @State private var showingC2PAWarning = false
     @State private var showingListFilePicker = false
     @State private var listFilePickerTarget: ListFileTarget = .keywords
+    @FocusState private var focusedField: String?
+    @State private var c2paOverwriteIntent: C2PAOverwriteIntent?
+    @State private var pendingC2PASelection: [URL] = []
 
     enum ListFileTarget {
         case keywords
         case personShown
+    }
+
+    enum C2PAOverwriteIntent {
+        case autoCommit
+        case manualWrite
+    }
+
+    private func commitEdits() {
+        guard viewModel.hasChanges else { return }
+        let hasC2PA = browserViewModel.selectedImages.contains { $0.hasC2PA }
+        let mode = hasC2PA ? settingsViewModel.metadataWriteModeC2PA : settingsViewModel.metadataWriteModeNonC2PA
+        if hasC2PA, mode == .writeToFile {
+            if !pendingC2PASelection.isEmpty, Set(pendingC2PASelection) == Set(viewModel.selectedURLs) {
+                return
+            }
+            viewModel.saveToSidecar()
+            onPendingStatusChanged?()
+            pendingC2PASelection = viewModel.selectedURLs
+            c2paOverwriteIntent = .autoCommit
+            showingC2PAWarning = true
+            return
+        }
+        viewModel.commitEdits(
+            mode: mode,
+            hasC2PA: hasC2PA,
+            onComplete: onPendingStatusChanged
+        )
     }
 
     var body: some View {
@@ -76,10 +106,29 @@ struct MetadataPanel: View {
             return .handled
         }
         .alert("C2PA Protected Image", isPresented: $showingC2PAWarning) {
-            Button("Cancel", role: .cancel) { }
+            Button("Cancel", role: .cancel) {
+                c2paOverwriteIntent = nil
+                pendingC2PASelection = []
+            }
             Button("Write Anyway") {
-                viewModel.writeMetadataAndClearSidecar()
-                onPendingStatusChanged?()
+                let intent = c2paOverwriteIntent
+                c2paOverwriteIntent = nil
+
+                switch intent {
+                case .autoCommit:
+                    if Set(pendingC2PASelection) == Set(viewModel.selectedURLs) {
+                        viewModel.commitEdits(
+                            mode: .writeToFile,
+                            hasC2PA: true,
+                            allowC2PAOverwrite: true,
+                            onComplete: onPendingStatusChanged
+                        )
+                    }
+                    pendingC2PASelection = []
+                case .manualWrite, .none:
+                    viewModel.writeMetadataAndClearSidecar()
+                    onPendingStatusChanged?()
+                }
             }
         } message: {
             Text("This image has C2PA content credentials. Writing metadata will invalidate the authenticity chain.")
@@ -97,6 +146,10 @@ struct MetadataPanel: View {
                     settingsViewModel.setPersonShownListURL(url)
                 }
             }
+        }
+        .onChange(of: focusedField) { oldValue, newValue in
+            guard oldValue != nil, oldValue != newValue else { return }
+            commitEdits()
         }
     }
 
@@ -196,9 +249,11 @@ struct MetadataPanel: View {
                 set: { viewModel.editingMetadata.title = $0.isEmpty ? nil : $0; viewModel.markChanged() }
             ),
             placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "title") : "Enter title",
-            onCommit: { viewModel.saveToSidecar(); onPendingStatusChanged?() },
+            onCommit: { commitEdits() },
             showsDifference: viewModel.fieldDiffers(\.title),
-            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("title")
+            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("title"),
+            focusKey: "title",
+            focusedField: $focusedField
         )
 
         VStack(alignment: .leading, spacing: 2) {
@@ -232,9 +287,9 @@ struct MetadataPanel: View {
             .lineLimit(4...8)
             .textFieldStyle(.roundedBorder)
             .font(.body)
+            .focused($focusedField, equals: "description")
             .onSubmit {
-                viewModel.saveToSidecar()
-                onPendingStatusChanged?()
+                commitEdits()
             }
         }
         .sheet(isPresented: $isShowingVariableReference) {
@@ -254,12 +309,14 @@ struct MetadataPanel: View {
             differs: viewModel.keywordsDiffer(),
             hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("keywords"),
             onChange: { viewModel.markChanged() },
-            onCommit: { viewModel.saveToSidecar(); onPendingStatusChanged?() },
+            onCommit: { commitEdits() },
             presetList: settingsViewModel.loadKeywordsList(),
             onChooseListFile: {
                 listFilePickerTarget = .keywords
                 showingListFilePicker = true
-            }
+            },
+            focusKey: "keywords",
+            focusedField: $focusedField
         )
 
         KeywordsEditorWithDiff(
@@ -269,12 +326,14 @@ struct MetadataPanel: View {
             hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("personShown"),
             placeholder: "Add name",
             onChange: { viewModel.markChanged() },
-            onCommit: { viewModel.saveToSidecar(); onPendingStatusChanged?() },
+            onCommit: { commitEdits() },
             presetList: settingsViewModel.loadPersonShownList(),
             onChooseListFile: {
                 listFilePickerTarget = .personShown
                 showingListFilePicker = true
-            }
+            },
+            focusKey: "personShown",
+            focusedField: $focusedField
         )
 
         EditableTextField(
@@ -284,9 +343,11 @@ struct MetadataPanel: View {
                 set: { viewModel.editingMetadata.copyright = $0.isEmpty ? nil : $0; viewModel.markChanged() }
             ),
             placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "copyright") : "Enter copyright",
-            onCommit: { viewModel.saveToSidecar(); onPendingStatusChanged?() },
+            onCommit: { commitEdits() },
             showsDifference: viewModel.fieldDiffers(\.copyright),
-            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("copyright")
+            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("copyright"),
+            focusKey: "copyright",
+            focusedField: $focusedField
         )
     }
 
@@ -316,7 +377,11 @@ struct MetadataPanel: View {
 
             Picker("", selection: Binding(
                 get: { viewModel.editingMetadata.digitalSourceType },
-                set: { viewModel.editingMetadata.digitalSourceType = $0; viewModel.markChanged() }
+                set: {
+                    viewModel.editingMetadata.digitalSourceType = $0
+                    viewModel.markChanged()
+                    commitEdits()
+                }
             )) {
                 Text("None").tag(nil as DigitalSourceType?)
                 ForEach(DigitalSourceType.allCases, id: \.self) { type in
@@ -354,9 +419,11 @@ struct MetadataPanel: View {
                 set: { viewModel.editingMetadata.creator = $0.isEmpty ? nil : $0; viewModel.markChanged() }
             ),
             placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "creator") : "",
-            onCommit: { viewModel.saveToSidecar(); onPendingStatusChanged?() },
+            onCommit: { commitEdits() },
             showsDifference: viewModel.fieldDiffers(\.creator),
-            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("creator")
+            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("creator"),
+            focusKey: "creator",
+            focusedField: $focusedField
         )
         EditableTextField(
             label: "Credit",
@@ -365,9 +432,11 @@ struct MetadataPanel: View {
                 set: { viewModel.editingMetadata.credit = $0.isEmpty ? nil : $0; viewModel.markChanged() }
             ),
             placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "credit") : "",
-            onCommit: { viewModel.saveToSidecar(); onPendingStatusChanged?() },
+            onCommit: { commitEdits() },
             showsDifference: viewModel.fieldDiffers(\.credit),
-            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("credit")
+            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("credit"),
+            focusKey: "credit",
+            focusedField: $focusedField
         )
         EditableTextField(
             label: "City",
@@ -376,9 +445,11 @@ struct MetadataPanel: View {
                 set: { viewModel.editingMetadata.city = $0.isEmpty ? nil : $0; viewModel.markChanged() }
             ),
             placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "city") : "",
-            onCommit: { viewModel.saveToSidecar(); onPendingStatusChanged?() },
+            onCommit: { commitEdits() },
             showsDifference: viewModel.fieldDiffers(\.city),
-            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("city")
+            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("city"),
+            focusKey: "city",
+            focusedField: $focusedField
         )
         EditableTextField(
             label: "Country",
@@ -387,9 +458,11 @@ struct MetadataPanel: View {
                 set: { viewModel.editingMetadata.country = $0.isEmpty ? nil : $0; viewModel.markChanged() }
             ),
             placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "country") : "",
-            onCommit: { viewModel.saveToSidecar(); onPendingStatusChanged?() },
+            onCommit: { commitEdits() },
             showsDifference: viewModel.fieldDiffers(\.country),
-            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("country")
+            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("country"),
+            focusKey: "country",
+            focusedField: $focusedField
         )
         EditableTextField(
             label: "Event",
@@ -398,9 +471,11 @@ struct MetadataPanel: View {
                 set: { viewModel.editingMetadata.event = $0.isEmpty ? nil : $0; viewModel.markChanged() }
             ),
             placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "event") : "",
-            onCommit: { viewModel.saveToSidecar(); onPendingStatusChanged?() },
+            onCommit: { commitEdits() },
             showsDifference: viewModel.fieldDiffers(\.event),
-            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("event")
+            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("event"),
+            focusKey: "event",
+            focusedField: $focusedField
         )
     }
 
@@ -431,7 +506,12 @@ struct MetadataPanel: View {
                     get: { viewModel.editingMetadata.longitude },
                     set: { viewModel.editingMetadata.longitude = $0 }
                 ),
-                onChanged: { viewModel.markChanged() },
+                onChanged: {
+                    viewModel.markChanged()
+                    commitEdits()
+                },
+                focusKey: "gps",
+                focusedField: $focusedField,
                 isBatchMode: viewModel.isBatchEdit,
                 isReverseGeocoding: viewModel.isReverseGeocoding,
                 geocodingError: viewModel.geocodingError,
@@ -523,6 +603,7 @@ struct MetadataPanel: View {
 
                 Button {
                     if browserViewModel.firstSelectedImage?.hasC2PA == true {
+                        c2paOverwriteIntent = .manualWrite
                         showingC2PAWarning = true
                     } else {
                         viewModel.writeMetadataAndClearSidecar()
@@ -551,6 +632,8 @@ struct KeywordsEditorWithDiff: View {
     var onCommit: (() -> Void)? = nil
     var presetList: [String] = []
     var onChooseListFile: (() -> Void)? = nil
+    var focusKey: String? = nil
+    var focusedField: FocusState<String?>.Binding? = nil
 
     @State private var inputText = ""
 
@@ -614,17 +697,32 @@ struct KeywordsEditorWithDiff: View {
                 }
             }
 
-            TextField(placeholder, text: $inputText)
-                .textFieldStyle(.roundedBorder)
-                .font(.body)
-                .onSubmit {
-                    addKeywords()
-                }
-                .onChange(of: inputText) { _, newValue in
-                    if newValue.contains(",") || newValue.contains(";") {
+            if let focusedField, let focusKey {
+                TextField(placeholder, text: $inputText)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.body)
+                    .focused(focusedField, equals: focusKey)
+                    .onSubmit {
                         addKeywords()
                     }
-                }
+                    .onChange(of: inputText) { _, newValue in
+                        if newValue.contains(",") || newValue.contains(";") {
+                            addKeywords()
+                        }
+                    }
+            } else {
+                TextField(placeholder, text: $inputText)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.body)
+                    .onSubmit {
+                        addKeywords()
+                    }
+                    .onChange(of: inputText) { _, newValue in
+                        if newValue.contains(",") || newValue.contains(";") {
+                            addKeywords()
+                        }
+                    }
+            }
         }
     }
 
@@ -678,6 +776,8 @@ struct EditableTextField: View {
     var onCommit: (() -> Void)? = nil
     var showsDifference: Bool = false
     var hasMultipleValues: Bool = false
+    var focusKey: String? = nil
+    var focusedField: FocusState<String?>.Binding? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -690,12 +790,22 @@ struct EditableTextField: View {
                     MultipleValuesIndicator()
                 }
             }
-            TextField(placeholder, text: $text)
-                .textFieldStyle(.roundedBorder)
-                .font(.body)
-                .onSubmit {
-                    onCommit?()
-                }
+            if let focusedField, let focusKey {
+                TextField(placeholder, text: $text)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.body)
+                    .focused(focusedField, equals: focusKey)
+                    .onSubmit {
+                        onCommit?()
+                    }
+            } else {
+                TextField(placeholder, text: $text)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.body)
+                    .onSubmit {
+                        onCommit?()
+                    }
+            }
         }
     }
 }

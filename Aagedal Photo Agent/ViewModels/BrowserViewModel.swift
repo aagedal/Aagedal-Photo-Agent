@@ -30,6 +30,8 @@ final class BrowserViewModel {
     let exifToolService = ExifToolService()
     private let sidecarService = MetadataSidecarService()
 
+    @ObservationIgnored var onImagesDeleted: ((Set<URL>) -> Void)?
+
     private let favoritesKey = "favoriteFolders"
 
     private(set) var sortedImages: [ImageFile] = []
@@ -393,6 +395,7 @@ final class BrowserViewModel {
         manualOrder.removeAll { urlsToDelete.contains($0) }
         selectedImageIDs.removeAll()
         lastClickedImageURL = nil
+        onImagesDeleted?(urlsToDelete)
     }
 
     // MARK: - Manual Sort

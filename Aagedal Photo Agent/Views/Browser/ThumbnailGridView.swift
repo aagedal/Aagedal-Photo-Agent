@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import AppKit
 
 struct ThumbnailGridView: View {
     @Bindable var viewModel: BrowserViewModel
@@ -99,6 +100,10 @@ struct ThumbnailGridView: View {
                 handleTap(image: image, modifiers: .shift)
             } else {
                 handleTap(image: image, modifiers: [])
+            }
+            // Clear any text field focus before focusing the grid
+            if isTextFieldActive() {
+                NSApp.keyWindow?.makeFirstResponder(nil)
             }
             isGridFocused = true
         }

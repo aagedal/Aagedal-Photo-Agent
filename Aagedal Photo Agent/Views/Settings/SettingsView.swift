@@ -22,6 +22,11 @@ struct SettingsView: View {
                     Label("General", systemImage: "gear")
                 }
 
+            metadataTab
+                .tabItem {
+                    Label("Metadata", systemImage: "tag")
+                }
+
             facesTab
                 .tabItem {
                     Label("Faces", systemImage: "person.crop.rectangle.stack")
@@ -221,16 +226,23 @@ struct SettingsView: View {
                     } else {
                         Slider(value: $settingsViewModel.faceClothingClusteringThreshold, in: 0.3...0.8, step: 0.01)
                     }
-                    HStack {
-                        Text("Strict (fewer matches)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Text("Loose (more matches)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                HStack {
+                    Text("Strict (fewer matches)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("Loose (more matches)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
+
+                if settingsViewModel.faceRecognitionMode == .faceAndClothing {
+                    Toggle("Second-pass can join existing groups", isOn: $settingsViewModel.faceClothingSecondPassAttachToExisting)
+                    Text("If off, leftover singletons only cluster among themselves.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
 
                 if settingsViewModel.faceClusteringAlgorithm == .chineseWhispers ||
                    settingsViewModel.faceClusteringAlgorithm == .qualityGatedTwoPass {
@@ -343,6 +355,45 @@ struct SettingsView: View {
         } content: {
             KnownPeopleListView()
         }
+    }
+
+    // MARK: - Metadata Tab
+
+    @ViewBuilder
+    private var metadataTab: some View {
+        Form {
+            Section("Write Behavior") {
+                Picker("Non-C2PA Images", selection: $settingsViewModel.metadataWriteModeNonC2PA) {
+                    ForEach(MetadataWriteMode.allCases) { mode in
+                        Text(mode.displayName).tag(mode)
+                    }
+                }
+                .pickerStyle(.radioGroup)
+
+                Text(settingsViewModel.metadataWriteModeNonC2PA.description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Divider()
+
+                Picker("C2PA-Protected Images", selection: $settingsViewModel.metadataWriteModeC2PA) {
+                    ForEach(MetadataWriteMode.c2paOptions) { mode in
+                        Text(mode.displayName).tag(mode)
+                    }
+                }
+                .pickerStyle(.radioGroup)
+
+                Text(settingsViewModel.metadataWriteModeC2PA.description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Text("C2PA content credentials can be invalidated by writing to the image file. You will be prompted before overwriting.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
     }
 
     // MARK: - Known People Actions

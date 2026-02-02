@@ -96,10 +96,9 @@ final class FaceSelectionState {
 struct ExpandedFaceManagementView: View {
     @Bindable var viewModel: FaceRecognitionViewModel
     let settingsViewModel: SettingsViewModel
+    @Bindable var selectionState: FaceSelectionState
     var onClose: () -> Void
     var onPhotosDeleted: ((Set<URL>) -> Void)?
-
-    @State private var selectionState = FaceSelectionState()
     @State private var highlightedGroupID: UUID?
     @State private var highlightNewGroup = false
     @State private var editingGroupID: UUID?
@@ -652,7 +651,8 @@ struct GroupCardContent: View {
                 faces: visibleFaces,
                 viewModel: viewModel,
                 selectionState: selectionState,
-                groupFaceCount: allFaces.count
+                groupFaceCount: allFaces.count,
+                groupID: group.id
             )
 
             // Expand button
@@ -713,6 +713,14 @@ struct GroupCardHeader: View {
                     .onExitCommand { onEndEditing() }
                     .onChange(of: isEditingFocused.wrappedValue) { _, focused in
                         if !focused { onEndEditing() }
+                    }
+                    .onChange(of: editingName) { _, newValue in
+                        // Filter out newlines - names should be single line
+                        let filtered = newValue.replacingOccurrences(of: "\n", with: "")
+                            .replacingOccurrences(of: "\r", with: "")
+                        if filtered != newValue {
+                            editingName = filtered
+                        }
                     }
                     .onAppear { isEditingFocused.wrappedValue = true }
 
@@ -846,14 +854,32 @@ struct GroupCardMenu: View {
                 thumbnailData = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.85])
             }
 
-            let _ = try KnownPeopleService.shared.addPerson(
+            // Check for existing person with same name or similar face
+            let representativeFace = faces.first { $0.id == group.representativeFaceID } ?? faces.first
+            let duplicateCheck: KnownPeopleService.DuplicateCheckResult
+            if let repFace = representativeFace {
+                duplicateCheck = KnownPeopleService.shared.checkForDuplicate(
+                    name: name,
+                    representativeFaceData: repFace.featurePrintData
+                )
+            } else {
+                duplicateCheck = .noDuplicate
+            }
+
+            // Use smart add that handles duplicates
+            let (_, addedToExisting) = try KnownPeopleService.shared.addOrMergePerson(
                 name: name,
                 embeddings: embeddings,
-                thumbnailData: thumbnailData
+                thumbnailData: thumbnailData,
+                duplicateCheck: duplicateCheck
             )
 
             isAddingToKnown = false
-            addedToKnownMessage = "Added"
+            if addedToExisting {
+                addedToKnownMessage = "Added \(embeddings.count) sample(s)"
+            } else {
+                addedToKnownMessage = "Added"
+            }
 
             // Clear message after delay
             Task {
@@ -874,6 +900,7 @@ struct FacesGridView: View {
     let viewModel: FaceRecognitionViewModel
     @Bindable var selectionState: FaceSelectionState
     let groupFaceCount: Int
+    let groupID: UUID
 
     var body: some View {
         let faceIDs = faces.map(\.id)
@@ -897,6 +924,8 @@ struct FacesGridView: View {
                         } else {
                             selectionState.toggleSelection(face.id, commandKey: commandKey)
                         }
+                        // Select this group for thumbnail replacement if it's a named group matched to a known person
+                        viewModel.selectGroupForThumbnailReplacement(groupID)
                     },
                     onDragStart: {
                         let ids: Set<UUID> = isSelected ? selectionState.selectedFaceIDs : [face.id]
@@ -1425,6 +1454,18 @@ struct FaceSuggestionsPanel: View {
     @State private var lastRefinementCount = 0
     @State private var lastKnownCount = 0
 
+    /// The single selected group for thumbnail replacement (if any)
+    private var replaceThumbnailCandidate: (groupID: UUID, personID: UUID)? {
+        guard let groupID = viewModel.selectedThumbnailReplacementGroupID,
+              let match = viewModel.knownPersonMatchByGroup[groupID],
+              let group = viewModel.group(byID: groupID),
+              group.name != nil,
+              KnownPeopleService.shared.person(byID: match.personID) != nil else {
+            return nil
+        }
+        return (groupID: groupID, personID: match.personID)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // Header
@@ -1445,115 +1486,138 @@ struct FaceSuggestionsPanel: View {
 
             Divider()
 
-            // Action buttons
-            VStack(spacing: 12) {
-                // Refine button
-                if viewModel.canRefine {
-                    Button {
-                        isRefining = true
-                        lastRefinementCount = viewModel.refineWithNamedGroups()
-                        isRefining = false
-                    } label: {
-                        HStack {
-                            Image(systemName: "arrow.triangle.2.circlepath")
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Refine with Named Groups")
-                                    .font(.subheadline)
-                                Text("Match unnamed groups against named ones")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+            ScrollView {
+                VStack(spacing: 12) {
+                    // Action buttons
+                    VStack(spacing: 12) {
+                        // Refine button
+                        if viewModel.canRefine {
+                            Button {
+                                isRefining = true
+                                lastRefinementCount = viewModel.refineWithNamedGroups()
+                                isRefining = false
+                            } label: {
+                                HStack {
+                                    Image(systemName: "arrow.triangle.2.circlepath")
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Refine with Named Groups")
+                                            .font(.subheadline)
+                                        Text("Match unnamed groups against named ones")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    if lastRefinementCount > 0 {
+                                        Text("+\(lastRefinementCount)")
+                                            .font(.caption)
+                                            .foregroundStyle(.white)
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 2)
+                                            .background(.blue, in: Capsule())
+                                    }
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
                             }
-                            Spacer()
-                            if lastRefinementCount > 0 {
-                                Text("+\(lastRefinementCount)")
-                                    .font(.caption)
-                                    .foregroundStyle(.white)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(.blue, in: Capsule())
-                            }
+                            .buttonStyle(.plain)
+                            .disabled(isRefining)
                         }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+
+                        // Known People button
+                        if knownPeopleMode != "off" {
+                            Button {
+                                checkKnownPeople()
+                            } label: {
+                                HStack {
+                                    Image(systemName: "person.text.rectangle")
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Check Known People")
+                                            .font(.subheadline)
+                                        Text("Match against global database")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    if isCheckingKnown {
+                                        ProgressView()
+                                            .controlSize(.small)
+                                    } else if lastKnownCount > 0 {
+                                        Text("+\(lastKnownCount)")
+                                            .font(.caption)
+                                            .foregroundStyle(.white)
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 2)
+                                            .background(.green, in: Capsule())
+                                    }
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(isCheckingKnown)
+                        }
                     }
-                    .buttonStyle(.plain)
-                    .disabled(isRefining)
-                }
+                    .padding(.horizontal)
+                    .padding(.top)
 
-                // Known People button
-                if knownPeopleMode != "off" {
-                    Button {
-                        checkKnownPeople()
-                    } label: {
-                        HStack {
-                            Image(systemName: "person.text.rectangle")
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Check Known People")
-                                    .font(.subheadline)
-                                Text("Match against global database")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            if isCheckingKnown {
-                                ProgressView()
-                                    .controlSize(.small)
-                            } else if lastKnownCount > 0 {
-                                Text("+\(lastKnownCount)")
-                                    .font(.caption)
-                                    .foregroundStyle(.white)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(.green, in: Capsule())
-                            }
+                    // Replace Thumbnail card (single selection)
+                    if let candidate = replaceThumbnailCandidate {
+                        Divider()
+                            .padding(.horizontal)
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Update Known People")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal)
+
+                            ReplaceThumbnailCard(
+                                groupID: candidate.groupID,
+                                personID: candidate.personID,
+                                viewModel: viewModel
+                            )
+                            .padding(.horizontal)
                         }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
                     }
-                    .buttonStyle(.plain)
-                    .disabled(isCheckingKnown)
-                }
-            }
-            .padding()
 
-            Divider()
-
-            // Merge suggestions list
-            if viewModel.mergeSuggestions.isEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: "checkmark.circle")
-                        .font(.system(size: 32))
-                        .foregroundStyle(.secondary)
-                    Text("No suggestions")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    Text("Name some groups and click Refine to find matches")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                        .multilineTextAlignment(.center)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding()
-            } else {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Merge Suggestions")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                    Divider()
                         .padding(.horizontal)
-                        .padding(.top, 8)
 
-                    ScrollView {
-                        LazyVStack(spacing: 8) {
-                            ForEach(viewModel.mergeSuggestions) { suggestion in
-                                SuggestionRow(suggestion: suggestion, viewModel: viewModel)
-                            }
+                    // Merge suggestions list
+                    if viewModel.mergeSuggestions.isEmpty {
+                        VStack(spacing: 8) {
+                            Image(systemName: "checkmark.circle")
+                                .font(.system(size: 32))
+                                .foregroundStyle(.secondary)
+                            Text("No suggestions")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                            Text("Name some groups and click Refine to find matches")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                                .multilineTextAlignment(.center)
                         }
-                        .padding(.horizontal)
-                        .padding(.bottom)
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                    } else {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Merge Suggestions")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal)
+
+                            LazyVStack(spacing: 8) {
+                                ForEach(viewModel.mergeSuggestions) { suggestion in
+                                    SuggestionRow(suggestion: suggestion, viewModel: viewModel)
+                                }
+                            }
+                            .padding(.horizontal)
+                            .padding(.bottom)
+                        }
                     }
                 }
             }
@@ -1568,6 +1632,7 @@ struct FaceSuggestionsPanel: View {
         lastKnownCount = 0
 
         var matchCount = 0
+        var lastMatchedGroupID: UUID?
         let unnamedGroups = faceData.groups.filter { $0.name == nil }
 
         for group in unnamedGroups {
@@ -1583,12 +1648,151 @@ struct FaceSuggestionsPanel: View {
 
             if let bestMatch = matches.first {
                 viewModel.nameGroup(group.id, name: bestMatch.person.name)
+                // Track the match for "Replace Thumbnail" feature
+                viewModel.knownPersonMatchByGroup[group.id] = (personID: bestMatch.person.id, confidence: bestMatch.confidence)
+                lastMatchedGroupID = group.id
                 matchCount += 1
             }
         }
 
+        // Select the last matched group for thumbnail replacement suggestion
+        viewModel.selectGroupForThumbnailReplacement(lastMatchedGroupID)
+
         isCheckingKnown = false
         lastKnownCount = matchCount
+    }
+}
+
+// MARK: - Replace Thumbnail Card
+
+struct ReplaceThumbnailCard: View {
+    let groupID: UUID
+    let personID: UUID
+    @Bindable var viewModel: FaceRecognitionViewModel
+
+    @State private var currentThumbnail: NSImage?
+    @State private var newThumbnail: NSImage?
+    @State private var isReplacing = false
+
+    private var group: FaceGroup? {
+        viewModel.group(byID: groupID)
+    }
+
+    private var person: KnownPerson? {
+        KnownPeopleService.shared.person(byID: personID)
+    }
+
+    var body: some View {
+        if let group, let person {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Replace thumbnail for \(person.name)")
+                        .font(.subheadline.weight(.medium))
+                    Spacer()
+                    Button {
+                        viewModel.clearThumbnailReplacementSelection()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Dismiss")
+                }
+
+                HStack(spacing: 12) {
+                    // Current thumbnail in database
+                    VStack {
+                        thumbnailView(currentThumbnail)
+                        Text("Current")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Image(systemName: "arrow.right")
+                        .foregroundStyle(.secondary)
+
+                    // New thumbnail from this scan
+                    VStack {
+                        thumbnailView(newThumbnail)
+                        Text("New")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Spacer()
+
+                    Button {
+                        replaceThumbnail()
+                    } label: {
+                        if isReplacing {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Text("Replace")
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isReplacing)
+                }
+            }
+            .padding()
+            .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+            .onAppear {
+                loadThumbnails()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func thumbnailView(_ image: NSImage?) -> some View {
+        Group {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Image(systemName: "person.fill")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: 60, height: 60)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(.quaternary)
+        )
+    }
+
+    private func loadThumbnails() {
+        // Load current thumbnail from Known People database
+        currentThumbnail = KnownPeopleService.shared.loadThumbnail(for: personID)
+
+        // Load new thumbnail from current scan
+        if let group {
+            newThumbnail = viewModel.thumbnailCache[group.representativeFaceID]
+        }
+    }
+
+    private func replaceThumbnail() {
+        guard let group,
+              let thumbImage = viewModel.thumbnailCache[group.representativeFaceID],
+              let tiffData = thumbImage.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiffData),
+              let jpegData = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.85]) else {
+            return
+        }
+
+        isReplacing = true
+
+        do {
+            try KnownPeopleService.shared.replaceThumbnail(for: personID, newThumbnailData: jpegData)
+            // Clear selection after successful replacement
+            viewModel.clearThumbnailReplacementSelection()
+        } catch {
+            // Handle error silently
+        }
+
+        isReplacing = false
     }
 }
 

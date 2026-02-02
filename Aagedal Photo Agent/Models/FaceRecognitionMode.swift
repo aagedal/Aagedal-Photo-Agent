@@ -19,9 +19,9 @@ nonisolated enum FaceRecognitionMode: String, Codable, CaseIterable, Sendable {
     var description: String {
         switch self {
         case .visionFeaturePrint:
-            return "Apple Vision feature prints. Fast, built-in, good general accuracy."
+            return "Apple Vision feature prints (face-only). Best when matching against the Known People database."
         case .faceAndClothing:
-            return "Combines face and torso features. Best for events where clothing helps identify people."
+            return "Combines face and torso features (face-only first, then clothing for leftovers). Best for within-folder clustering when Known People is off."
         }
     }
 }

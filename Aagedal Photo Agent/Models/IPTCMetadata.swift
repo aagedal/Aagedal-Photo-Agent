@@ -64,6 +64,31 @@ struct IPTCMetadata: Codable, Sendable, Equatable {
     }
 }
 
+extension IPTCMetadata {
+    func merged(preferring override: IPTCMetadata) -> IPTCMetadata {
+        var result = self
+
+        if let value = override.title, !value.isEmpty { result.title = value }
+        if let value = override.description, !value.isEmpty { result.description = value }
+        if !override.keywords.isEmpty { result.keywords = override.keywords }
+        if !override.personShown.isEmpty { result.personShown = override.personShown }
+        if let value = override.digitalSourceType { result.digitalSourceType = value }
+        if let value = override.creator, !value.isEmpty { result.creator = value }
+        if let value = override.credit, !value.isEmpty { result.credit = value }
+        if let value = override.copyright, !value.isEmpty { result.copyright = value }
+        if let value = override.dateCreated, !value.isEmpty { result.dateCreated = value }
+        if let value = override.city, !value.isEmpty { result.city = value }
+        if let value = override.country, !value.isEmpty { result.country = value }
+        if let value = override.event, !value.isEmpty { result.event = value }
+        if let value = override.latitude { result.latitude = value }
+        if let value = override.longitude { result.longitude = value }
+        if let value = override.rating { result.rating = value }
+        if let value = override.label, !value.isEmpty { result.label = value }
+
+        return result
+    }
+}
+
 enum DigitalSourceType: String, Codable, CaseIterable, Sendable {
     case trainedAlgorithmicMedia = "trainedAlgorithmicMedia"
     case digitalCapture = "digitalCapture"
