@@ -33,6 +33,7 @@ final class MetadataViewModel {
     private let xmpSidecarService = XMPSidecarService()
     private let geocodingService = GeocodingService()
     private var previousEditingMetadata: IPTCMetadata?
+    @ObservationIgnored private var metadataLoadTask: Task<Void, Never>?
 
     init(exifToolService: ExifToolService) {
         self.exifToolService = exifToolService
@@ -52,6 +53,9 @@ final class MetadataViewModel {
     }
 
     func loadMetadata(for images: [ImageFile], folderURL: URL? = nil) {
+        metadataLoadTask?.cancel()
+        metadataLoadTask = nil
+
         selectedCount = images.count
         selectedURLs = images.map(\.url)
         hasChanges = false
@@ -70,23 +74,29 @@ final class MetadataViewModel {
             metadata = nil
             editingMetadata = IPTCMetadata()
             previousEditingMetadata = nil
+            isLoading = false
+            isLoadingBatchMetadata = false
             return
         }
 
         if images.count == 1 {
-            let imageURL = images[0].url
             metadata = nil
             editingMetadata = IPTCMetadata()
             previousEditingMetadata = nil
             isLoading = true
 
-            Task {
+            let imageURL = images[0].url
+            metadataLoadTask = Task {
                 do {
                     var imageMeta = try await exifToolService.readFullMetadata(url: imageURL)
+                    guard !Task.isCancelled else { return }
                     if MetadataWriteMode.current(forC2PA: images[0].hasC2PA) == .writeToXMPSidecar,
                        let xmpMeta = xmpSidecarService.loadSidecar(for: imageURL) {
                         imageMeta = imageMeta.merged(preferring: xmpMeta)
                     }
+                    guard !Task.isCancelled else { return }
+                    guard self.selectedURLs.count == 1,
+                          self.selectedURLs.first == imageURL else { return }
                     self.metadata = imageMeta
                     self.originalImageMetadata = imageMeta
 
@@ -108,6 +118,7 @@ final class MetadataViewModel {
                     self.editingMetadata = IPTCMetadata()
                     self.previousEditingMetadata = nil
                 }
+                guard !Task.isCancelled else { return }
                 self.isLoading = false
             }
         } else {
@@ -117,20 +128,24 @@ final class MetadataViewModel {
             previousEditingMetadata = nil
             isLoadingBatchMetadata = true
 
-            Task {
-                await loadBatchMetadata(for: images)
+            let selectionSnapshot = Set(images.map(\.url))
+            metadataLoadTask = Task {
+                await loadBatchMetadata(for: images, selectionSnapshot: selectionSnapshot)
+                guard !Task.isCancelled else { return }
                 self.isLoadingBatchMetadata = false
             }
         }
     }
 
     /// Load metadata for all selected images and compute common values
-    private func loadBatchMetadata(for images: [ImageFile]) async {
+    private func loadBatchMetadata(for images: [ImageFile], selectionSnapshot: Set<URL>) async {
         var allMetadata: [IPTCMetadata] = []
 
         for image in images {
+            if Task.isCancelled { return }
             do {
                 var meta = try await exifToolService.readFullMetadata(url: image.url)
+                if Task.isCancelled { return }
                 if MetadataWriteMode.current(forC2PA: image.hasC2PA) == .writeToXMPSidecar,
                    let xmpMeta = xmpSidecarService.loadSidecar(for: image.url) {
                     meta = meta.merged(preferring: xmpMeta)
@@ -142,6 +157,8 @@ final class MetadataViewModel {
         }
 
         guard !allMetadata.isEmpty else { return }
+        guard !Task.isCancelled else { return }
+        guard Set(selectedURLs) == selectionSnapshot else { return }
 
         // Compute common values and differing fields
         var common = IPTCMetadata()
