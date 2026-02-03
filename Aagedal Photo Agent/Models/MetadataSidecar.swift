@@ -10,6 +10,7 @@ struct MetadataHistoryEntry: Codable, Sendable, Identifiable {
 
 struct MetadataSidecar: Codable, Sendable {
     static let currentVersion = 1
+    static let historyLimit = 20
 
     var version: Int = currentVersion
     var sourceFile: String
@@ -34,5 +35,13 @@ struct MetadataSidecar: Codable, Sendable {
         self.metadata = metadata
         self.imageMetadataSnapshot = imageMetadataSnapshot
         self.history = history
+    }
+}
+
+extension Array where Element == MetadataHistoryEntry {
+    mutating func trimToHistoryLimit() {
+        let limit = MetadataSidecar.historyLimit
+        guard count > limit else { return }
+        removeFirst(count - limit)
     }
 }

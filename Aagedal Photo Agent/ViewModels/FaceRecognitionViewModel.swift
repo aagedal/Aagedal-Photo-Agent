@@ -756,16 +756,25 @@ final class FaceRecognitionViewModel {
                         url: url,
                         folderURL: folderURL,
                         names: names,
-                        writeXmpSidecar: false
+                        writeXmpSidecar: false,
+                        pendingChanges: true
                     )
                 case .writeToXMPSidecar:
                     await applyNamesToSidecar(
                         url: url,
                         folderURL: folderURL,
                         names: names,
-                        writeXmpSidecar: true
+                        writeXmpSidecar: true,
+                        pendingChanges: false
                     )
                 case .writeToFile:
+                    await applyNamesToSidecar(
+                        url: url,
+                        folderURL: folderURL,
+                        names: names,
+                        writeXmpSidecar: false,
+                        pendingChanges: false
+                    )
                     await applyNamesToFile(url: url, names: names)
                 }
             }
@@ -820,10 +829,29 @@ final class FaceRecognitionViewModel {
 
                 switch mode {
                 case .historyOnly:
-                    await applyNamesToSidecar(url: url, folderURL: folderURL, names: names, writeXmpSidecar: false)
+                    await applyNamesToSidecar(
+                        url: url,
+                        folderURL: folderURL,
+                        names: names,
+                        writeXmpSidecar: false,
+                        pendingChanges: true
+                    )
                 case .writeToXMPSidecar:
-                    await applyNamesToSidecar(url: url, folderURL: folderURL, names: names, writeXmpSidecar: true)
+                    await applyNamesToSidecar(
+                        url: url,
+                        folderURL: folderURL,
+                        names: names,
+                        writeXmpSidecar: true,
+                        pendingChanges: false
+                    )
                 case .writeToFile:
+                    await applyNamesToSidecar(
+                        url: url,
+                        folderURL: folderURL,
+                        names: names,
+                        writeXmpSidecar: false,
+                        pendingChanges: false
+                    )
                     await applyNamesToFile(url: url, names: names)
                 }
             }
@@ -866,7 +894,8 @@ final class FaceRecognitionViewModel {
         url: URL,
         folderURL: URL?,
         names: [String],
-        writeXmpSidecar: Bool
+        writeXmpSidecar: Bool,
+        pendingChanges: Bool
     ) async {
         guard let folderURL else { return }
 
@@ -878,6 +907,7 @@ final class FaceRecognitionViewModel {
         if let existingSidecar = sidecarService.loadSidecar(for: url, in: folderURL) {
             baseMetadata = existingSidecar.metadata
             history = existingSidecar.history
+            history.trimToHistoryLimit()
             snapshot = existingSidecar.imageMetadataSnapshot
             hadSidecar = true
         } else {
@@ -906,6 +936,7 @@ final class FaceRecognitionViewModel {
                 oldValue: oldValue,
                 newValue: newValue
             ))
+            history.trimToHistoryLimit()
         }
 
         var updatedMetadata = baseMetadata
@@ -914,9 +945,9 @@ final class FaceRecognitionViewModel {
         let sidecar = MetadataSidecar(
             sourceFile: url.lastPathComponent,
             lastModified: Date(),
-            pendingChanges: true,
+            pendingChanges: pendingChanges,
             metadata: updatedMetadata,
-            imageMetadataSnapshot: snapshot,
+            imageMetadataSnapshot: pendingChanges ? snapshot : updatedMetadata,
             history: history
         )
 
@@ -947,7 +978,8 @@ final class FaceRecognitionViewModel {
     private func loadBaseMetadata(url: URL, includeXmp: Bool) async -> IPTCMetadata? {
         do {
             var metadata = try await exifToolService.readFullMetadata(url: url)
-            if includeXmp, let xmpMetadata = xmpSidecarService.loadSidecar(for: url) {
+            let preferXmp = UserDefaults.standard.bool(forKey: "metadataPreferXMPSidecar")
+            if (includeXmp || preferXmp), let xmpMetadata = xmpSidecarService.loadSidecar(for: url) {
                 metadata = metadata.merged(preferring: xmpMetadata)
             }
             return metadata

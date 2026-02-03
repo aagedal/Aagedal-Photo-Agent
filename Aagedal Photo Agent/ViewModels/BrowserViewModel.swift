@@ -390,14 +390,18 @@ final class BrowserViewModel {
                 }
             }
 
-            if exifToolService.isAvailable, !writeToFile.isEmpty {
-                try? await exifToolService.writeRating(rating, to: writeToFile)
-            }
             for url in writeToSidecar {
-                await applyRatingToSidecar(url: url, rating: rating, writeXmpSidecar: false)
+                await applyRatingToSidecar(url: url, rating: rating, writeXmpSidecar: false, pendingChanges: true)
             }
             for url in writeToXmp {
-                await applyRatingToSidecar(url: url, rating: rating, writeXmpSidecar: true)
+                await applyRatingToSidecar(url: url, rating: rating, writeXmpSidecar: true, pendingChanges: false)
+            }
+            for url in writeToFile {
+                await applyRatingToSidecar(url: url, rating: rating, writeXmpSidecar: false, pendingChanges: false)
+            }
+
+            if exifToolService.isAvailable, !writeToFile.isEmpty {
+                try? await exifToolService.writeRating(rating, to: writeToFile)
             }
 
             await MainActor.run {
@@ -436,14 +440,18 @@ final class BrowserViewModel {
                 }
             }
 
-            if exifToolService.isAvailable, !writeToFile.isEmpty {
-                try? await exifToolService.writeLabel(label, to: writeToFile)
-            }
             for url in writeToSidecar {
-                await applyLabelToSidecar(url: url, label: label, writeXmpSidecar: false)
+                await applyLabelToSidecar(url: url, label: label, writeXmpSidecar: false, pendingChanges: true)
             }
             for url in writeToXmp {
-                await applyLabelToSidecar(url: url, label: label, writeXmpSidecar: true)
+                await applyLabelToSidecar(url: url, label: label, writeXmpSidecar: true, pendingChanges: false)
+            }
+            for url in writeToFile {
+                await applyLabelToSidecar(url: url, label: label, writeXmpSidecar: false, pendingChanges: false)
+            }
+
+            if exifToolService.isAvailable, !writeToFile.isEmpty {
+                try? await exifToolService.writeLabel(label, to: writeToFile)
             }
 
             await MainActor.run {
@@ -476,7 +484,7 @@ final class BrowserViewModel {
         }
     }
 
-    private func applyRatingToSidecar(url: URL, rating: StarRating, writeXmpSidecar: Bool) async {
+    private func applyRatingToSidecar(url: URL, rating: StarRating, writeXmpSidecar: Bool, pendingChanges: Bool) async {
         guard let folderURL = currentFolderURL else { return }
 
         var metadata = IPTCMetadata()
@@ -487,6 +495,7 @@ final class BrowserViewModel {
         if let existing = sidecarService.loadSidecar(for: url, in: folderURL) {
             metadata = existing.metadata
             history = existing.history
+            history.trimToHistoryLimit()
             snapshot = existing.imageMetadataSnapshot
             hadSidecar = true
         } else {
@@ -513,13 +522,14 @@ final class BrowserViewModel {
             oldValue: oldValue.map(String.init),
             newValue: newValue.map(String.init)
         ))
+        history.trimToHistoryLimit()
 
         let sidecar = MetadataSidecar(
             sourceFile: url.lastPathComponent,
             lastModified: Date(),
-            pendingChanges: true,
+            pendingChanges: pendingChanges,
             metadata: metadata,
-            imageMetadataSnapshot: snapshot,
+            imageMetadataSnapshot: pendingChanges ? snapshot : metadata,
             history: history
         )
 
@@ -530,7 +540,7 @@ final class BrowserViewModel {
         }
     }
 
-    private func applyLabelToSidecar(url: URL, label: ColorLabel, writeXmpSidecar: Bool) async {
+    private func applyLabelToSidecar(url: URL, label: ColorLabel, writeXmpSidecar: Bool, pendingChanges: Bool) async {
         guard let folderURL = currentFolderURL else { return }
 
         var metadata = IPTCMetadata()
@@ -541,6 +551,7 @@ final class BrowserViewModel {
         if let existing = sidecarService.loadSidecar(for: url, in: folderURL) {
             metadata = existing.metadata
             history = existing.history
+            history.trimToHistoryLimit()
             snapshot = existing.imageMetadataSnapshot
             hadSidecar = true
         } else {
@@ -567,13 +578,14 @@ final class BrowserViewModel {
             oldValue: oldValue,
             newValue: newValue
         ))
+        history.trimToHistoryLimit()
 
         let sidecar = MetadataSidecar(
             sourceFile: url.lastPathComponent,
             lastModified: Date(),
-            pendingChanges: true,
+            pendingChanges: pendingChanges,
             metadata: metadata,
-            imageMetadataSnapshot: snapshot,
+            imageMetadataSnapshot: pendingChanges ? snapshot : metadata,
             history: history
         )
 
@@ -587,7 +599,8 @@ final class BrowserViewModel {
     private func loadMetadataSnapshot(for url: URL, includeXmp: Bool) async -> IPTCMetadata? {
         do {
             var metadata = try await exifToolService.readFullMetadata(url: url)
-            if includeXmp, let xmpMetadata = xmpSidecarService.loadSidecar(for: url) {
+            let preferXmp = UserDefaults.standard.bool(forKey: "metadataPreferXMPSidecar")
+            if (includeXmp || preferXmp), let xmpMetadata = xmpSidecarService.loadSidecar(for: url) {
                 metadata = metadata.merged(preferring: xmpMetadata)
             }
             return metadata

@@ -26,7 +26,6 @@ struct ContentView: View {
     @State private var isShowingSaveTemplateName = false
     @State private var isShowingImport = false
     @State private var isShowingC2PADetail = false
-    @State private var isShowingDiscardAllConfirmation = false
     @State private var isShowingWriteAllC2PAWarning = false
     @State private var c2paMetadata: C2PAMetadata?
     @State private var pendingWriteAllC2PACount = 0
@@ -69,15 +68,6 @@ struct ContentView: View {
             .sheet(isPresented: $isShowingFTPUpload) { ftpUploadSheet }
             .sheet(isPresented: $isShowingImport) { importSheet }
             .sheet(isPresented: $isShowingC2PADetail) { c2paSheet }
-            .alert("Discard All Pending Changes?", isPresented: $isShowingDiscardAllConfirmation) {
-                Button("Cancel", role: .cancel) { }
-                Button("Discard All", role: .destructive) {
-                    metadataViewModel.discardAllPendingInFolder()
-                    browserViewModel.refreshPendingStatus()
-                }
-            } message: {
-                Text("This will discard all pending metadata changes for every image in the current folder. This cannot be undone.")
-            }
             .alert("C2PA Protected Images", isPresented: $isShowingWriteAllC2PAWarning) {
                 Button("Cancel", role: .cancel) { }
                 Button("Skip C2PA") {
@@ -235,11 +225,9 @@ struct ContentView: View {
                           metadataViewModel.originalImageMetadata != nil else {
                         return .ignored
                     }
-                    if metadataViewModel.metadataDisplayMode == .embedded {
-                        metadataViewModel.metadataDisplayMode = .pending
-                    } else {
-                        metadataViewModel.metadataDisplayMode = .embedded
-                    }
+                    guard metadataViewModel.hasXmpMetadata else { return .ignored }
+                    let next: MetadataReferenceSource = metadataViewModel.metadataReferenceSource == .embedded ? .xmp : .embedded
+                    metadataViewModel.applyReferenceSource(next)
                     return .handled
                 }
 
@@ -289,14 +277,6 @@ struct ContentView: View {
                         Label("Write All Pending", systemImage: "square.and.arrow.down.on.square")
                     }
                     .help("Write all pending sidecar changes to image files")
-                    .disabled(browserViewModel.images.isEmpty)
-
-                    Button {
-                        isShowingDiscardAllConfirmation = true
-                    } label: {
-                        Label("Discard All Pending", systemImage: "arrow.uturn.backward.square")
-                    }
-                    .help("Discard all pending metadata changes in folder")
                     .disabled(browserViewModel.images.isEmpty)
 
                     Button {

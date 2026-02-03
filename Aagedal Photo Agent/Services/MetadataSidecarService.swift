@@ -73,7 +73,7 @@ struct MetadataSidecarService: Sendable {
         }
         let edited = sidecar.metadata
         var names: [String] = []
-        if edited.title != original.title { names.append("Title") }
+        if edited.title != original.title { names.append("Headline") }
         if edited.description != original.description { names.append("Description") }
         if edited.keywords != original.keywords { names.append("Keywords") }
         if edited.personShown != original.personShown { names.append("Person Shown") }

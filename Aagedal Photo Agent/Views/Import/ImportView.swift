@@ -188,9 +188,9 @@ struct ImportView: View {
     @ViewBuilder
     private var metadataFields: some View {
         VStack(alignment: .leading, spacing: 6) {
-            // Title reuses the import title from the Destination section
+            // Headline reuses the import title from the Destination section
             HStack(spacing: 4) {
-                Text("Title")
+                Text("Headline")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Text("(uses import title)")

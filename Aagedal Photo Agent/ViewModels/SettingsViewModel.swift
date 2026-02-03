@@ -52,8 +52,18 @@ final class SettingsViewModel {
         didSet { UserDefaults.standard.set(metadataWriteModeC2PA.rawValue, forKey: "metadataWriteModeC2PA") }
     }
 
+    var preferXMPSidecar: Bool {
+        didSet { UserDefaults.standard.set(preferXMPSidecar, forKey: "metadataPreferXMPSidecar") }
+    }
+
     var keywordsListPath: String = ""
     var personShownListPath: String = ""
+    var copyrightListPath: String = ""
+    var creatorListPath: String = ""
+    var creditListPath: String = ""
+    var cityListPath: String = ""
+    var countryListPath: String = ""
+    var eventListPath: String = ""
 
     func setKeywordsListURL(_ url: URL) {
         saveBookmark(for: url, key: "keywordsListBookmark")
@@ -63,6 +73,36 @@ final class SettingsViewModel {
     func setPersonShownListURL(_ url: URL) {
         saveBookmark(for: url, key: "personShownListBookmark")
         personShownListPath = url.path
+    }
+
+    func setCopyrightListURL(_ url: URL) {
+        saveBookmark(for: url, key: "copyrightListBookmark")
+        copyrightListPath = url.path
+    }
+
+    func setCreatorListURL(_ url: URL) {
+        saveBookmark(for: url, key: "creatorListBookmark")
+        creatorListPath = url.path
+    }
+
+    func setCreditListURL(_ url: URL) {
+        saveBookmark(for: url, key: "creditListBookmark")
+        creditListPath = url.path
+    }
+
+    func setCityListURL(_ url: URL) {
+        saveBookmark(for: url, key: "cityListBookmark")
+        cityListPath = url.path
+    }
+
+    func setCountryListURL(_ url: URL) {
+        saveBookmark(for: url, key: "countryListBookmark")
+        countryListPath = url.path
+    }
+
+    func setEventListURL(_ url: URL) {
+        saveBookmark(for: url, key: "eventListBookmark")
+        eventListPath = url.path
     }
 
     private func saveBookmark(for url: URL, key: String) {
@@ -213,18 +253,21 @@ final class SettingsViewModel {
         let legacyWriteModeRaw = UserDefaults.standard.string(forKey: "metadataWriteMode")
         let nonC2PARaw = UserDefaults.standard.string(forKey: "metadataWriteModeNonC2PA")
             ?? legacyWriteModeRaw
-            ?? MetadataWriteMode.historyOnly.rawValue
-        self.metadataWriteModeNonC2PA = MetadataWriteMode(rawValue: nonC2PARaw) ?? .historyOnly
+            ?? MetadataWriteMode.defaultNonC2PA.rawValue
+        self.metadataWriteModeNonC2PA = MetadataWriteMode(rawValue: nonC2PARaw) ?? .defaultNonC2PA
 
         if UserDefaults.standard.object(forKey: "metadataWriteModeC2PA") != nil {
             let c2paRaw = UserDefaults.standard.string(forKey: "metadataWriteModeC2PA")
-                ?? MetadataWriteMode.historyOnly.rawValue
-            self.metadataWriteModeC2PA = MetadataWriteMode(rawValue: c2paRaw) ?? .historyOnly
+                ?? MetadataWriteMode.defaultC2PA.rawValue
+            self.metadataWriteModeC2PA = MetadataWriteMode(rawValue: c2paRaw) ?? .defaultC2PA
         } else {
-            let c2paRaw = legacyWriteModeRaw ?? MetadataWriteMode.historyOnly.rawValue
-            let c2paMode = MetadataWriteMode(rawValue: c2paRaw) ?? .historyOnly
-            self.metadataWriteModeC2PA = c2paMode == .writeToFile ? .historyOnly : c2paMode
+            let c2paRaw = legacyWriteModeRaw ?? MetadataWriteMode.defaultC2PA.rawValue
+            let c2paMode = MetadataWriteMode(rawValue: c2paRaw) ?? .defaultC2PA
+            self.metadataWriteModeC2PA = c2paMode == .writeToFile ? .writeToXMPSidecar : c2paMode
         }
+
+        let preferXmpStored = UserDefaults.standard.object(forKey: "metadataPreferXMPSidecar") as? Bool
+        self.preferXMPSidecar = preferXmpStored ?? false
 
         // Face recognition settings with defaults
         // Mode-specific thresholds with optimized defaults
@@ -270,6 +313,24 @@ final class SettingsViewModel {
         if let url = resolveBookmark(key: "personShownListBookmark") {
             self.personShownListPath = url.path
         }
+        if let url = resolveBookmark(key: "copyrightListBookmark") {
+            self.copyrightListPath = url.path
+        }
+        if let url = resolveBookmark(key: "creatorListBookmark") {
+            self.creatorListPath = url.path
+        }
+        if let url = resolveBookmark(key: "creditListBookmark") {
+            self.creditListPath = url.path
+        }
+        if let url = resolveBookmark(key: "cityListBookmark") {
+            self.cityListPath = url.path
+        }
+        if let url = resolveBookmark(key: "countryListBookmark") {
+            self.countryListPath = url.path
+        }
+        if let url = resolveBookmark(key: "eventListBookmark") {
+            self.eventListPath = url.path
+        }
     }
 
     func loadKeywordsList() -> [String] {
@@ -278,6 +339,30 @@ final class SettingsViewModel {
 
     func loadPersonShownList() -> [String] {
         loadListFromBookmark(key: "personShownListBookmark")
+    }
+
+    func loadCopyrightList() -> [String] {
+        loadListFromBookmark(key: "copyrightListBookmark")
+    }
+
+    func loadCreatorList() -> [String] {
+        loadListFromBookmark(key: "creatorListBookmark")
+    }
+
+    func loadCreditList() -> [String] {
+        loadListFromBookmark(key: "creditListBookmark")
+    }
+
+    func loadCityList() -> [String] {
+        loadListFromBookmark(key: "cityListBookmark")
+    }
+
+    func loadCountryList() -> [String] {
+        loadListFromBookmark(key: "countryListBookmark")
+    }
+
+    func loadEventList() -> [String] {
+        loadListFromBookmark(key: "eventListBookmark")
     }
 
     private func loadListFromBookmark(key: String) -> [String] {

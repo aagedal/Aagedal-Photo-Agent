@@ -77,7 +77,7 @@ private let allVariables: [VariableDefinition] = [
     VariableDefinition(
         variable: "{field:title}",
         category: "Field Reference",
-        description: "Value of the Title field from the current metadata.",
+        description: "Value of the Headline field from the current metadata.",
         example: ""
     ),
     VariableDefinition(
