@@ -481,14 +481,15 @@ final class FaceRecognitionViewModel {
 
             // Sort by confidence (highest first) - the best match becomes the target
             let sorted = groupMatches.sorted { $0.confidence > $1.confidence }
-            guard let targetGroupID = sorted.first?.groupID,
-                  let targetIndex = data.groups.firstIndex(where: { $0.id == targetGroupID }) else { continue }
+            guard let targetGroupID = sorted.first?.groupID else { continue }
+            guard let initialTargetIndex = data.groups.firstIndex(where: { $0.id == targetGroupID }) else { continue }
 
             // Name the target group
-            data.groups[targetIndex].name = knownPerson.name
+            data.groups[initialTargetIndex].name = knownPerson.name
 
             // Merge other matching groups into the target
             for match in sorted.dropFirst() {
+                guard let targetIndex = data.groups.firstIndex(where: { $0.id == targetGroupID }) else { break }
                 guard let sourceIndex = data.groups.firstIndex(where: { $0.id == match.groupID }),
                       sourceIndex != targetIndex else { continue }
 
