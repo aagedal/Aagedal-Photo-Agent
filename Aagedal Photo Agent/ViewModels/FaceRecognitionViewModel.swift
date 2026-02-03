@@ -732,6 +732,9 @@ final class FaceRecognitionViewModel {
               let group = data.groups.first(where: { $0.id == groupID }),
               let name = group.name, !name.isEmpty else { return }
 
+        let names = splitPersonNames(name)
+        guard !names.isEmpty else { return }
+
         let imageURLs = group.faceIDs.compactMap { faceID in
             data.faces.first(where: { $0.id == faceID })?.imageURL
         }
@@ -740,33 +743,33 @@ final class FaceRecognitionViewModel {
         guard !uniqueURLs.isEmpty else { return }
 
         Task {
+            let c2paLookup = await loadC2PALookup(urls: uniqueURLs)
+            let folderURL = data.folderURL
+
             for url in uniqueURLs {
-                do {
-                    // Read existing PersonInImage
-                    let existing = try await exifToolService.readFullMetadata(url: url)
-                    var persons = existing.personShown
+                let hasC2PA = c2paLookup[url] ?? false
+                let mode = MetadataWriteMode.current(forC2PA: hasC2PA)
 
-                    // Split name on comma/semicolon to support multiple person names
-                    let names = name
-                        .components(separatedBy: CharacterSet(charactersIn: ",;"))
-                        .map { $0.trimmingCharacters(in: .whitespaces) }
-                        .filter { !$0.isEmpty }
-
-                    // Deduplicate: only add if not already present
-                    for n in names {
-                        if !persons.contains(where: { $0.caseInsensitiveCompare(n) == .orderedSame }) {
-                            persons.append(n)
-                        }
-                    }
-
-                    let value = persons.joined(separator: ", ")
-                    try await exifToolService.writeFields(["XMP-iptcExt:PersonInImage": value], to: [url])
-                } catch {
-                    // Continue with next image
+                switch mode {
+                case .historyOnly:
+                    await applyNamesToSidecar(
+                        url: url,
+                        folderURL: folderURL,
+                        names: names,
+                        writeXmpSidecar: false
+                    )
+                case .writeToXMPSidecar:
+                    await applyNamesToSidecar(
+                        url: url,
+                        folderURL: folderURL,
+                        names: names,
+                        writeXmpSidecar: true
+                    )
+                case .writeToFile:
+                    await applyNamesToFile(url: url, names: names)
                 }
             }
 
-            // Post notification so MetadataPanel refreshes
             await MainActor.run {
                 NotificationCenter.default.post(name: .faceMetadataDidChange, object: nil)
             }
@@ -921,6 +924,23 @@ final class FaceRecognitionViewModel {
 
         if writeXmpSidecar {
             try? xmpSidecarService.saveSidecar(metadata: updatedMetadata, for: url)
+        }
+    }
+
+    private func loadC2PALookup(urls: [URL]) async -> [URL: Bool] {
+        guard !urls.isEmpty else { return [:] }
+        do {
+            let results = try await exifToolService.readBatchBasicMetadata(urls: urls)
+            var lookup: [URL: Bool] = [:]
+            for dict in results {
+                guard let sourcePath = dict["SourceFile"] as? String else { continue }
+                let sourceURL = URL(fileURLWithPath: sourcePath)
+                let hasC2PA = dict.keys.contains { $0.hasPrefix("JUMD") || $0.hasPrefix("C2PA") || $0 == "Claim_generator" }
+                lookup[sourceURL] = hasC2PA
+            }
+            return lookup
+        } catch {
+            return [:]
         }
     }
 
