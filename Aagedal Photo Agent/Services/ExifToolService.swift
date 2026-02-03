@@ -180,7 +180,7 @@ final class ExifToolService {
     func readBatchBasicMetadata(urls: [URL]) async throws -> [[String: Any]] {
         guard !urls.isEmpty else { return [] }
 
-        var args = ["-json", "-XMP:Rating", "-XMP:Label", "-JUMBF:All"]
+        var args = ["-json", "-XMP:Rating", "-XMP:Label", "-XMP-iptcExt:PersonInImage", "-JUMBF:All"]
         args += urls.map(\.path)
 
         let output = try await execute(args)
@@ -225,6 +225,9 @@ final class ExifToolService {
     func writeFields(_ fields: [String: String], to urls: [URL]) async throws {
         guard !urls.isEmpty, !fields.isEmpty else { return }
 
+        let creationDates = captureCreationDates(for: urls)
+        defer { restoreCreationDates(creationDates) }
+
         var args = ["-overwrite_original", "-sep", ", "]
         var tempFiles: [URL] = []
 
@@ -251,6 +254,29 @@ final class ExifToolService {
         }
         for file in tempFiles {
             try? FileManager.default.removeItem(at: file)
+        }
+    }
+
+    private func captureCreationDates(for urls: [URL]) -> [URL: Date] {
+        var result: [URL: Date] = [:]
+        for url in urls {
+            guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+                  let creationDate = attrs[.creationDate] as? Date else {
+                continue
+            }
+            result[url] = creationDate
+        }
+        return result
+    }
+
+    private func restoreCreationDates(_ creationDates: [URL: Date]) {
+        guard !creationDates.isEmpty else { return }
+        for (url, creationDate) in creationDates {
+            do {
+                try FileManager.default.setAttributes([.creationDate: creationDate], ofItemAtPath: url.path)
+            } catch {
+                exifToolLog.debug("Failed to restore creation date for \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            }
         }
     }
 

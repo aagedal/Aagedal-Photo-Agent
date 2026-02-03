@@ -29,7 +29,7 @@ struct ThumbnailGridView: View {
         GeometryReader { geometry in
             ScrollView {
                 LazyVGrid(columns: columns, spacing: 8) {
-                    ForEach(viewModel.sortedImages) { image in
+                    ForEach(viewModel.visibleImages) { image in
                         makeThumbnailCell(for: image)
                     }
                 }
@@ -62,9 +62,8 @@ struct ThumbnailGridView: View {
             return .handled
         }
         .onKeyPress(.space) {
-            // Only handle space when grid is focused and no text field is active
-            guard isGridFocused,
-                  viewModel.firstSelectedImage != nil,
+            // Only handle space when no text field is active
+            guard viewModel.firstSelectedImage != nil,
                   !isTextFieldActive() else { return .ignored }
             viewModel.isFullScreen = true
             return .handled
@@ -73,6 +72,14 @@ struct ThumbnailGridView: View {
             // Only handle Cmd+A when grid is focused (not when a text field has focus)
             guard isGridFocused, NSEvent.modifierFlags.contains(.command) else { return .ignored }
             viewModel.selectAll()
+            return .handled
+        }
+        .onKeyPress(keys: [KeyEquivalent("f")]) { press in
+            guard press.modifiers.contains(.command),
+                  viewModel.firstSelectedImage != nil else {
+                return .ignored
+            }
+            viewModel.isFullScreen.toggle()
             return .handled
         }
     }
@@ -153,9 +160,9 @@ struct ThumbnailGridView: View {
             // SHIFT-click: Range selection from last clicked anchor
             let anchor = viewModel.lastClickedImageURL ?? viewModel.selectedImageIDs.first
             if let anchor,
-               let anchorIndex = viewModel.urlToSortedIndex[anchor],
-               let currentIndex = viewModel.urlToSortedIndex[image.url] {
-                let sorted = viewModel.sortedImages
+               let anchorIndex = viewModel.urlToVisibleIndex[anchor],
+               let currentIndex = viewModel.urlToVisibleIndex[image.url] {
+                let sorted = viewModel.visibleImages
                 var updated = viewModel.selectedImageIDs
                 let range = min(anchorIndex, currentIndex)...max(anchorIndex, currentIndex)
                 for i in range {
