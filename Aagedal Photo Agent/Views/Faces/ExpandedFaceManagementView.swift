@@ -162,31 +162,40 @@ struct ExpandedFaceManagementView: View {
             }
         }
         .focusable()
+        .onChange(of: selectionState.focusedFaceID) { _, newValue in
+            updateThumbnailReplacementSelection(for: newValue)
+        }
         .onKeyPress(.space) {
+            guard !isTextFieldActive() else { return .ignored }
             openFullscreenForSelectedFace()
             return .handled
         }
         .onKeyPress(.leftArrow) {
+            guard !isTextFieldActive() else { return .ignored }
             let shift = NSEvent.modifierFlags.contains(.shift)
             navigateFace(direction: .left, shift: shift)
             return .handled
         }
         .onKeyPress(.rightArrow) {
+            guard !isTextFieldActive() else { return .ignored }
             let shift = NSEvent.modifierFlags.contains(.shift)
             navigateFace(direction: .right, shift: shift)
             return .handled
         }
         .onKeyPress(.upArrow) {
+            guard !isTextFieldActive() else { return .ignored }
             let shift = NSEvent.modifierFlags.contains(.shift)
             navigateFace(direction: .up, shift: shift)
             return .handled
         }
         .onKeyPress(.downArrow) {
+            guard !isTextFieldActive() else { return .ignored }
             let shift = NSEvent.modifierFlags.contains(.shift)
             navigateFace(direction: .down, shift: shift)
             return .handled
         }
         .onKeyPress(keys: [KeyEquivalent("g")]) { press in
+            guard !isTextFieldActive() else { return .ignored }
             if press.modifiers.contains(.command) {
                 createGroupFromSelection()
                 return .handled
@@ -369,6 +378,15 @@ struct ExpandedFaceManagementView: View {
         }
     }
 
+    private func updateThumbnailReplacementSelection(for faceID: UUID?) {
+        guard let faceID,
+              let groupID = viewModel.face(byID: faceID)?.groupID else {
+            viewModel.selectGroupForThumbnailReplacement(nil)
+            return
+        }
+        viewModel.selectGroupForThumbnailReplacement(groupID, faceID: faceID)
+    }
+
     private func createGroupFromSelection() {
         guard !selectionState.selectedFaceIDs.isEmpty else { return }
         viewModel.createNewGroup(withFaces: selectionState.selectedFaceIDs)
@@ -508,6 +526,15 @@ struct ExpandedFaceManagementView: View {
             selectionState: selectionState,
             highlightNewGroup: $highlightNewGroup
         ))
+    }
+
+    /// Check if a text field currently has keyboard focus
+    private func isTextFieldActive() -> Bool {
+        guard let window = NSApp.keyWindow else { return false }
+        if let responder = window.firstResponder {
+            return responder is NSText || responder is NSTextView
+        }
+        return false
     }
 }
 
@@ -925,7 +952,7 @@ struct FacesGridView: View {
                             selectionState.toggleSelection(face.id, commandKey: commandKey)
                         }
                         // Select this group for thumbnail replacement if it's a named group matched to a known person
-                        viewModel.selectGroupForThumbnailReplacement(groupID)
+                        viewModel.selectGroupForThumbnailReplacement(groupID, faceID: face.id)
                     },
                     onDragStart: {
                         let ids: Set<UUID> = isSelected ? selectionState.selectedFaceIDs : [face.id]
@@ -1683,7 +1710,7 @@ struct ReplaceThumbnailCard: View {
     }
 
     var body: some View {
-        if let group, let person {
+        if group != nil, let person {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Text("Replace thumbnail for \(person.name)")
@@ -1740,6 +1767,15 @@ struct ReplaceThumbnailCard: View {
             .onAppear {
                 loadThumbnails()
             }
+            .onChange(of: viewModel.selectedThumbnailReplacementFaceID) { _, _ in
+                loadThumbnails()
+            }
+            .onChange(of: groupID) { _, _ in
+                loadThumbnails()
+            }
+            .onChange(of: personID) { _, _ in
+                loadThumbnails()
+            }
         }
     }
 
@@ -1768,8 +1804,10 @@ struct ReplaceThumbnailCard: View {
         currentThumbnail = KnownPeopleService.shared.loadThumbnail(for: personID)
 
         // Load new thumbnail from current scan
-        if let group {
-            newThumbnail = viewModel.thumbnailCache[group.representativeFaceID]
+        if let faceID = viewModel.selectedThumbnailReplacementFaceID ?? group?.representativeFaceID {
+            newThumbnail = viewModel.thumbnailImage(for: faceID)
+        } else {
+            newThumbnail = nil
         }
     }
 

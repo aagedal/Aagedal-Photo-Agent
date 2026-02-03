@@ -36,6 +36,8 @@ final class FaceRecognitionViewModel {
 
     // The currently selected group for thumbnail replacement (only one at a time)
     var selectedThumbnailReplacementGroupID: UUID?
+    // The currently selected face within that group for thumbnail replacement
+    var selectedThumbnailReplacementFaceID: UUID?
 
     // Cached sorted groups (invalidated when faceData changes)
     private(set) var sortedGroups: [FaceGroup] = []
@@ -108,6 +110,8 @@ final class FaceRecognitionViewModel {
     private let detectionService = FaceDetectionService()
     private let storageService = FaceDataStorageService()
     private let exifToolService: ExifToolService
+    private let sidecarService = MetadataSidecarService()
+    private let xmpSidecarService = XMPSidecarService()
 
     init(exifToolService: ExifToolService) {
         self.exifToolService = exifToolService
@@ -625,20 +629,27 @@ final class FaceRecognitionViewModel {
 
     /// Select a group for thumbnail replacement. Only shows in suggestions panel if the group
     /// is named and has a known person match.
-    func selectGroupForThumbnailReplacement(_ groupID: UUID?) {
+    func selectGroupForThumbnailReplacement(_ groupID: UUID?, faceID: UUID? = nil) {
         guard let groupID,
               let group = group(byID: groupID),
               group.name != nil,
               knownPersonMatchByGroup[groupID] != nil else {
             selectedThumbnailReplacementGroupID = nil
+            selectedThumbnailReplacementFaceID = nil
             return
         }
         selectedThumbnailReplacementGroupID = groupID
+        if let faceID, group.faceIDs.contains(faceID) {
+            selectedThumbnailReplacementFaceID = faceID
+        } else {
+            selectedThumbnailReplacementFaceID = group.representativeFaceID
+        }
     }
 
     /// Clear the thumbnail replacement selection (e.g., after replacing or dismissing)
     func clearThumbnailReplacementSelection() {
         selectedThumbnailReplacementGroupID = nil
+        selectedThumbnailReplacementFaceID = nil
     }
 
     // MARK: - Merge Suggestions
@@ -758,6 +769,169 @@ final class FaceRecognitionViewModel {
             await MainActor.run {
                 NotificationCenter.default.post(name: .faceMetadataDidChange, object: nil)
             }
+        }
+    }
+
+    func applyAllNamesToMetadata(
+        images: [ImageFile],
+        folderURL: URL?,
+        onComplete: (() -> Void)? = nil
+    ) {
+        guard let data = faceData else {
+            onComplete?()
+            return
+        }
+
+        let availableURLs = Set(images.map(\.url))
+        var namesByURL: [URL: [String]] = [:]
+
+        for face in data.faces {
+            guard availableURLs.contains(face.imageURL),
+                  let groupID = face.groupID,
+                  let group = groupLookup[groupID],
+                  let rawName = group.name?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !rawName.isEmpty else { continue }
+
+            let names = splitPersonNames(rawName)
+            guard !names.isEmpty else { continue }
+
+            var existing = namesByURL[face.imageURL] ?? []
+            for name in names where !existing.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) {
+                existing.append(name)
+            }
+            namesByURL[face.imageURL] = existing
+        }
+
+        guard !namesByURL.isEmpty else {
+            onComplete?()
+            return
+        }
+
+        let c2paLookup = Dictionary(uniqueKeysWithValues: images.map { ($0.url, $0.hasC2PA) })
+
+        Task {
+            for (url, names) in namesByURL {
+                let hasC2PA = c2paLookup[url] ?? false
+                let mode = MetadataWriteMode.current(forC2PA: hasC2PA)
+
+                switch mode {
+                case .historyOnly:
+                    await applyNamesToSidecar(url: url, folderURL: folderURL, names: names, writeXmpSidecar: false)
+                case .writeToXMPSidecar:
+                    await applyNamesToSidecar(url: url, folderURL: folderURL, names: names, writeXmpSidecar: true)
+                case .writeToFile:
+                    await applyNamesToFile(url: url, names: names)
+                }
+            }
+
+            await MainActor.run {
+                NotificationCenter.default.post(name: .faceMetadataDidChange, object: nil)
+                onComplete?()
+            }
+        }
+    }
+
+    private func splitPersonNames(_ rawName: String) -> [String] {
+        rawName
+            .components(separatedBy: CharacterSet(charactersIn: ",;"))
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
+    private func mergePersons(existing: [String], adding: [String]) -> [String] {
+        var merged = existing
+        for name in adding where !merged.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) {
+            merged.append(name)
+        }
+        return merged
+    }
+
+    private func applyNamesToFile(url: URL, names: [String]) async {
+        do {
+            let existing = try await exifToolService.readFullMetadata(url: url)
+            let merged = mergePersons(existing: existing.personShown, adding: names)
+            guard merged != existing.personShown else { return }
+            let value = merged.joined(separator: ", ")
+            try await exifToolService.writeFields(["XMP-iptcExt:PersonInImage": value], to: [url])
+        } catch {
+            // Continue with next image
+        }
+    }
+
+    private func applyNamesToSidecar(
+        url: URL,
+        folderURL: URL?,
+        names: [String],
+        writeXmpSidecar: Bool
+    ) async {
+        guard let folderURL else { return }
+
+        var baseMetadata: IPTCMetadata
+        var history: [MetadataHistoryEntry] = []
+        var snapshot: IPTCMetadata?
+        let hadSidecar: Bool
+
+        if let existingSidecar = sidecarService.loadSidecar(for: url, in: folderURL) {
+            baseMetadata = existingSidecar.metadata
+            history = existingSidecar.history
+            snapshot = existingSidecar.imageMetadataSnapshot
+            hadSidecar = true
+        } else {
+            baseMetadata = IPTCMetadata()
+            hadSidecar = false
+        }
+
+        if snapshot == nil {
+            snapshot = await loadBaseMetadata(url: url, includeXmp: writeXmpSidecar)
+        }
+
+        if !hadSidecar, let snapshot {
+            baseMetadata = snapshot
+        }
+
+        let merged = mergePersons(existing: baseMetadata.personShown, adding: names)
+        guard merged != baseMetadata.personShown else { return }
+
+        let oldValue = baseMetadata.personShown.isEmpty ? nil : baseMetadata.personShown.joined(separator: ", ")
+        let newValue = merged.isEmpty ? nil : merged.joined(separator: ", ")
+
+        if oldValue != newValue {
+            history.append(MetadataHistoryEntry(
+                timestamp: Date(),
+                fieldName: "Person Shown",
+                oldValue: oldValue,
+                newValue: newValue
+            ))
+        }
+
+        var updatedMetadata = baseMetadata
+        updatedMetadata.personShown = merged
+
+        let sidecar = MetadataSidecar(
+            sourceFile: url.lastPathComponent,
+            lastModified: Date(),
+            pendingChanges: true,
+            metadata: updatedMetadata,
+            imageMetadataSnapshot: snapshot,
+            history: history
+        )
+
+        try? sidecarService.saveSidecar(sidecar, for: url, in: folderURL)
+
+        if writeXmpSidecar {
+            try? xmpSidecarService.saveSidecar(metadata: updatedMetadata, for: url)
+        }
+    }
+
+    private func loadBaseMetadata(url: URL, includeXmp: Bool) async -> IPTCMetadata? {
+        do {
+            var metadata = try await exifToolService.readFullMetadata(url: url)
+            if includeXmp, let xmpMetadata = xmpSidecarService.loadSidecar(for: url) {
+                metadata = metadata.merged(preferring: xmpMetadata)
+            }
+            return metadata
+        } catch {
+            return nil
         }
     }
 

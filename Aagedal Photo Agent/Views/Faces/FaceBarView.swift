@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 struct FaceBarView: View {
     @Bindable var viewModel: FaceRecognitionViewModel
     let folderURL: URL?
-    let imageURLs: [URL]
+    let images: [ImageFile]
     let settingsViewModel: SettingsViewModel
     var isExpanded: Bool = false
     var selectionState: FaceSelectionState?  // Passed from expanded view for drag detection
@@ -18,6 +18,7 @@ struct FaceBarView: View {
     @State private var showMergeSuggestions = false
     @State private var showClusteringSettings = false
     @State private var isCheckingKnownPeople = false
+    @State private var isApplyingAllNames = false
     @State private var knownPeopleMatchCount = 0
     @State private var refinementCount = 0
     @State private var highlightedGroupID: UUID?
@@ -37,8 +38,16 @@ struct FaceBarView: View {
     /// Height of the face bar
     private let barHeight: CGFloat = 100
 
+    private var imageURLs: [URL] {
+        images.map(\.url)
+    }
+
     private var isMultiSelecting: Bool {
         multiSelectedGroupIDs.count >= 2
+    }
+
+    private var canApplyAllNames: Bool {
+        viewModel.scanComplete && !namedGroups.isEmpty && !isApplyingAllNames
     }
 
     private var canUnmergeSelection: Bool {
@@ -48,6 +57,15 @@ struct FaceBarView: View {
         }
     }
 
+    private func thumbnailFaceID(for group: FaceGroup) -> UUID {
+        if group.id == viewModel.selectedThumbnailReplacementGroupID,
+           let selectedFaceID = viewModel.selectedThumbnailReplacementFaceID,
+           group.faceIDs.contains(selectedFaceID) {
+            return selectedFaceID
+        }
+        return group.representativeFaceID
+    }
+
     var body: some View {
         HStack(spacing: 8) {
             // Scan button with settings
@@ -55,6 +73,25 @@ struct FaceBarView: View {
                 scanButton
 
                 VStack(spacing: 2) {
+                    Button {
+                        applyAllNamesToMetadata()
+                    } label: {
+                        if isApplyingAllNames {
+                            ProgressView()
+                                .controlSize(.mini)
+                        } else {
+                            Image(systemName: "person.badge.plus")
+                                .font(.system(size: 8, weight: .bold))
+                                .foregroundStyle(.white)
+                                .padding(3)
+                                .background(Color.blue)
+                                .clipShape(Circle())
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canApplyAllNames)
+                    .help("Apply all named faces to metadata")
+
                     // Reset/rescan button on top
                     Button {
                         guard let folderURL else { return }
@@ -341,7 +378,7 @@ struct FaceBarView: View {
     private func faceGroupThumbnailWithActions(group: FaceGroup) -> some View {
         FaceGroupThumbnail(
             group: group,
-            image: viewModel.thumbnailCache[group.representativeFaceID],
+            image: viewModel.thumbnailCache[thumbnailFaceID(for: group)],
             isMultiSelected: multiSelectedGroupIDs.contains(group.id),
             isHighlighted: highlightedGroupID == group.id,
             isExpanded: true
@@ -462,6 +499,14 @@ struct FaceBarView: View {
                     }
                 }
             }
+        }
+    }
+
+    private func applyAllNamesToMetadata() {
+        guard !isApplyingAllNames else { return }
+        isApplyingAllNames = true
+        viewModel.applyAllNamesToMetadata(images: images, folderURL: folderURL) {
+            isApplyingAllNames = false
         }
     }
 }
