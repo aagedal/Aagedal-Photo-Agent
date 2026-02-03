@@ -24,6 +24,18 @@ final class BrowserViewModel {
         }
     }
     var draggedImageURLs: Set<URL> = []
+    var searchText: String = "" {
+        didSet { rebuildVisibleCache() }
+    }
+    var minimumStarRating: StarRating = .none {
+        didSet { rebuildVisibleCache() }
+    }
+    var selectedColorLabels: Set<ColorLabel> = [] {
+        didSet { rebuildVisibleCache() }
+    }
+    var personShownFilter: PersonShownFilter = .any {
+        didSet { rebuildVisibleCache() }
+    }
 
     let fileSystemService = FileSystemService()
     let thumbnailService = ThumbnailService()
@@ -36,6 +48,15 @@ final class BrowserViewModel {
 
     private(set) var sortedImages: [ImageFile] = []
     private(set) var urlToSortedIndex: [URL: Int] = [:]
+    private(set) var visibleImages: [ImageFile] = []
+    private(set) var urlToVisibleIndex: [URL: Int] = [:]
+
+    var isFilteringActive: Bool {
+        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || minimumStarRating != .none
+            || !selectedColorLabels.isEmpty
+            || personShownFilter != .any
+    }
 
     var selectedImages: [ImageFile] {
         images.filter { selectedImageIDs.contains($0.url) }
@@ -79,6 +100,55 @@ final class BrowserViewModel {
         }
         sortedImages = sorted
         urlToSortedIndex = Dictionary(uniqueKeysWithValues: sorted.enumerated().map { ($1.url, $0) })
+        rebuildVisibleCache()
+    }
+
+    private func rebuildVisibleCache() {
+        let filtered = applyFilters(to: sortedImages)
+        visibleImages = filtered
+        urlToVisibleIndex = Dictionary(uniqueKeysWithValues: filtered.enumerated().map { ($1.url, $0) })
+
+        let visibleSet = Set(filtered.map(\.url))
+        if !selectedImageIDs.isEmpty {
+            selectedImageIDs = selectedImageIDs.intersection(visibleSet)
+        }
+        if let anchor = lastClickedImageURL, !visibleSet.contains(anchor) {
+            lastClickedImageURL = nil
+        }
+    }
+
+    private func applyFilters(to images: [ImageFile]) -> [ImageFile] {
+        let trimmedQuery = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let query = trimmedQuery.lowercased()
+
+        return images.filter { image in
+            if image.starRating.rawValue < minimumStarRating.rawValue {
+                return false
+            }
+            if !selectedColorLabels.isEmpty && !selectedColorLabels.contains(image.colorLabel) {
+                return false
+            }
+            switch personShownFilter {
+            case .any:
+                break
+            case .missing:
+                if !image.personShown.isEmpty { return false }
+            case .present:
+                if image.personShown.isEmpty { return false }
+            }
+            guard !query.isEmpty else { return true }
+            if image.filename.lowercased().contains(query) {
+                return true
+            }
+            return image.personShown.contains { $0.lowercased().contains(query) }
+        }
+    }
+
+    func clearFilters() {
+        searchText = ""
+        minimumStarRating = .none
+        selectedColorLabels.removeAll()
+        personShownFilter = .any
     }
 
     func openFolder() {
@@ -157,6 +227,7 @@ final class BrowserViewModel {
                            let colorLabel = ColorLabel(rawValue: label) {
                             images[index].colorLabel = colorLabel
                         }
+                        images[index].personShown = parseStringOrArray(dict["PersonInImage"])
                         // C2PA detection: look for JUMD/C2PA keys from -JUMBF:All output
                         let hasC2PA = dict.keys.contains { $0.hasPrefix("JUMD") || $0.hasPrefix("C2PA") || $0 == "Claim_generator" }
                         images[index].hasC2PA = hasC2PA
@@ -168,19 +239,32 @@ final class BrowserViewModel {
         }
     }
 
+    private func parseStringOrArray(_ value: Any?) -> [String] {
+        if let array = value as? [String] {
+            return array
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        }
+        if let str = value as? String {
+            let trimmed = str.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? [] : [trimmed]
+        }
+        return []
+    }
+
     // MARK: - Arrow Key Navigation
 
     func selectNext(extending: Bool = false) {
-        guard !sortedImages.isEmpty else { return }
+        guard !visibleImages.isEmpty else { return }
         let anchor = lastClickedImageURL ?? selectedImageIDs.first
         guard let anchorURL = anchor,
-              let currentIndex = urlToSortedIndex[anchorURL] else {
-            selectedImageIDs = [sortedImages[0].url]
-            lastClickedImageURL = sortedImages[0].url
+              let currentIndex = urlToVisibleIndex[anchorURL] else {
+            selectedImageIDs = [visibleImages[0].url]
+            lastClickedImageURL = visibleImages[0].url
             return
         }
-        let nextIndex = min(currentIndex + 1, sortedImages.count - 1)
-        let nextURL = sortedImages[nextIndex].url
+        let nextIndex = min(currentIndex + 1, visibleImages.count - 1)
+        let nextURL = visibleImages[nextIndex].url
         if extending {
             var updated = selectedImageIDs
             updated.insert(nextURL)
@@ -192,16 +276,16 @@ final class BrowserViewModel {
     }
 
     func selectPrevious(extending: Bool = false) {
-        guard !sortedImages.isEmpty else { return }
+        guard !visibleImages.isEmpty else { return }
         let anchor = lastClickedImageURL ?? selectedImageIDs.first
         guard let anchorURL = anchor,
-              let currentIndex = urlToSortedIndex[anchorURL] else {
-            selectedImageIDs = [sortedImages[0].url]
-            lastClickedImageURL = sortedImages[0].url
+              let currentIndex = urlToVisibleIndex[anchorURL] else {
+            selectedImageIDs = [visibleImages[0].url]
+            lastClickedImageURL = visibleImages[0].url
             return
         }
         let prevIndex = max(currentIndex - 1, 0)
-        let prevURL = sortedImages[prevIndex].url
+        let prevURL = visibleImages[prevIndex].url
         if extending {
             var updated = selectedImageIDs
             updated.insert(prevURL)
@@ -214,21 +298,21 @@ final class BrowserViewModel {
 
     /// Navigate down one row in a grid layout
     func selectDown(columns: Int, extending: Bool = false) {
-        guard !sortedImages.isEmpty, columns > 0 else { return }
+        guard !visibleImages.isEmpty, columns > 0 else { return }
         let anchor = lastClickedImageURL ?? selectedImageIDs.first
         guard let anchorURL = anchor,
-              let currentIndex = urlToSortedIndex[anchorURL] else {
-            selectedImageIDs = [sortedImages[0].url]
-            lastClickedImageURL = sortedImages[0].url
+              let currentIndex = urlToVisibleIndex[anchorURL] else {
+            selectedImageIDs = [visibleImages[0].url]
+            lastClickedImageURL = visibleImages[0].url
             return
         }
-        let targetIndex = min(currentIndex + columns, sortedImages.count - 1)
-        let targetURL = sortedImages[targetIndex].url
+        let targetIndex = min(currentIndex + columns, visibleImages.count - 1)
+        let targetURL = visibleImages[targetIndex].url
         if extending {
             // Select all images between current and target
             var updated = selectedImageIDs
             for i in (currentIndex + 1)...targetIndex {
-                updated.insert(sortedImages[i].url)
+                updated.insert(visibleImages[i].url)
             }
             selectedImageIDs = updated
         } else {
@@ -239,21 +323,21 @@ final class BrowserViewModel {
 
     /// Navigate up one row in a grid layout
     func selectUp(columns: Int, extending: Bool = false) {
-        guard !sortedImages.isEmpty, columns > 0 else { return }
+        guard !visibleImages.isEmpty, columns > 0 else { return }
         let anchor = lastClickedImageURL ?? selectedImageIDs.first
         guard let anchorURL = anchor,
-              let currentIndex = urlToSortedIndex[anchorURL] else {
-            selectedImageIDs = [sortedImages[0].url]
-            lastClickedImageURL = sortedImages[0].url
+              let currentIndex = urlToVisibleIndex[anchorURL] else {
+            selectedImageIDs = [visibleImages[0].url]
+            lastClickedImageURL = visibleImages[0].url
             return
         }
         let targetIndex = max(currentIndex - columns, 0)
-        let targetURL = sortedImages[targetIndex].url
+        let targetURL = visibleImages[targetIndex].url
         if extending {
             // Select all images between target and current
             var updated = selectedImageIDs
             for i in targetIndex..<currentIndex {
-                updated.insert(sortedImages[i].url)
+                updated.insert(visibleImages[i].url)
             }
             selectedImageIDs = updated
         } else {
@@ -264,11 +348,11 @@ final class BrowserViewModel {
 
     /// Select all images in the current folder
     func selectAll() {
-        guard !sortedImages.isEmpty else { return }
-        selectedImageIDs = Set(sortedImages.map(\.url))
+        guard !visibleImages.isEmpty else { return }
+        selectedImageIDs = Set(visibleImages.map(\.url))
         // Keep the anchor at the first image or current anchor
         if lastClickedImageURL == nil {
-            lastClickedImageURL = sortedImages.first?.url
+            lastClickedImageURL = visibleImages.first?.url
         }
     }
 
@@ -411,5 +495,19 @@ final class BrowserViewModel {
         case label = "Label"
         case fileType = "File Type"
         case manual = "Manual"
+    }
+
+    enum PersonShownFilter: String, CaseIterable {
+        case any = "Any"
+        case missing = "Missing"
+        case present = "Present"
+
+        var displayName: String {
+            switch self {
+            case .any: return "Any"
+            case .missing: return "Missing Person Shown"
+            case .present: return "Has Person Shown"
+            }
+        }
     }
 }
