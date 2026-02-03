@@ -70,28 +70,30 @@ struct FaceBarView: View {
         HStack(spacing: 8) {
             // Scan button with settings
             HStack(spacing: 4) {
+                Button {
+                    applyAllNamesToMetadata()
+                } label: {
+                    VStack(spacing: 2) {
+                        if isApplyingAllNames {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Image(systemName: "person.badge.plus")
+                                .font(.system(size: 20))
+                        }
+                        Text("Apply Names")
+                            .font(.system(size: 10))
+                    }
+                    .frame(width: 56, height: 56)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(!canApplyAllNames)
+                .help("Apply all named faces to metadata")
+
                 scanButton
 
                 VStack(spacing: 2) {
-                    Button {
-                        applyAllNamesToMetadata()
-                    } label: {
-                        if isApplyingAllNames {
-                            ProgressView()
-                                .controlSize(.mini)
-                        } else {
-                            Image(systemName: "person.badge.plus")
-                                .font(.system(size: 8, weight: .bold))
-                                .foregroundStyle(.white)
-                                .padding(3)
-                                .background(Color.blue)
-                                .clipShape(Circle())
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(!canApplyAllNames)
-                    .help("Apply all named faces to metadata")
-
                     // Reset/rescan button on top
                     Button {
                         guard let folderURL else { return }

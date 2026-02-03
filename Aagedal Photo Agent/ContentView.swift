@@ -580,6 +580,8 @@ struct ContentViewModifiers: ViewModifier {
     let loadTechnicalMetadata: () -> Void
     @Binding var technicalMetadataCache: [URL: TechnicalMetadata]
     @Binding var technicalMetadata: TechnicalMetadata?
+    @State private var selectionLoadTask: Task<Void, Never>?
+    private let selectionDebounceNanoseconds: UInt64 = 200_000_000
 
     func body(content: Content) -> some View {
         content
@@ -601,9 +603,16 @@ struct ContentViewModifiers: ViewModifier {
                         }
                     }
                 }
+                selectionLoadTask?.cancel()
                 let selected = browserViewModel.selectedImages
-                metadataViewModel.loadMetadata(for: selected, folderURL: browserViewModel.currentFolderURL)
-                loadTechnicalMetadata()
+                selectionLoadTask = Task {
+                    try? await Task.sleep(nanoseconds: selectionDebounceNanoseconds)
+                    guard !Task.isCancelled else { return }
+                    await MainActor.run {
+                        metadataViewModel.loadMetadata(for: selected, folderURL: browserViewModel.currentFolderURL)
+                        loadTechnicalMetadata()
+                    }
+                }
             }
             .onDrop(of: [.fileURL], isTargeted: nil) { providers in
                 handleDrop(providers: providers)
