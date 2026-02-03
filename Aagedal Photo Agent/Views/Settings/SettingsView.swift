@@ -13,7 +13,6 @@ struct SettingsView: View {
     @State private var isExporting = false
     @State private var showClearConfirmation = false
     @State private var knownPeopleMessage: String?
-    @State private var showKnownPeopleList = false
 
     var body: some View {
         TabView {
@@ -301,7 +300,8 @@ struct SettingsView: View {
                             }
 
                             Button("Browse...") {
-                                showKnownPeopleList = true
+                                NSApp.activate(ignoringOtherApps: true)
+                                NotificationCenter.default.post(name: .showKnownPeopleDatabase, object: nil)
                             }
                             .disabled(knownPeopleStats.peopleCount == 0)
                         }
@@ -326,6 +326,10 @@ struct SettingsView: View {
                         .disabled(knownPeopleStats.peopleCount == 0)
                     }
 
+                    Text("Import is additive and does not replace or merge existing people.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
                     if let message = knownPeopleMessage {
                         Text(message)
                             .font(.caption)
@@ -349,11 +353,6 @@ struct SettingsView: View {
             }
         } message: {
             Text("This will permanently delete all \(knownPeopleStats.peopleCount) known people and their reference images. This cannot be undone.")
-        }
-        .sheet(isPresented: $showKnownPeopleList) {
-            refreshKnownPeopleStats()
-        } content: {
-            KnownPeopleListView()
         }
     }
 

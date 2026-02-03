@@ -102,7 +102,11 @@ struct MetadataPanel: View {
                   viewModel.originalImageMetadata != nil else {
                 return .ignored
             }
-            viewModel.showingEmbeddedValues.toggle()
+            if viewModel.metadataDisplayMode == .embedded {
+                viewModel.metadataDisplayMode = .pending
+            } else {
+                viewModel.metadataDisplayMode = .embedded
+            }
             return .handled
         }
         .alert("C2PA Protected Image", isPresented: $showingC2PAWarning) {
@@ -193,17 +197,20 @@ struct MetadataPanel: View {
         Section {
             // Toggle between Embedded and Pending views
             if !viewModel.isBatchEdit {
-                Picker("", selection: $viewModel.showingEmbeddedValues) {
-                    Text("Pending").tag(false)
-                    Text("Embedded").tag(true)
+                Picker("", selection: $viewModel.metadataDisplayMode) {
+                    Text("Pending").tag(MetadataDisplayMode.pending)
+                    Text("XMP")
+                        .tag(MetadataDisplayMode.xmp)
+                        .disabled(!viewModel.hasXmpMetadata)
+                    Text("Embedded").tag(MetadataDisplayMode.embedded)
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .disabled(viewModel.originalImageMetadata == nil)
             }
 
-            if viewModel.showingEmbeddedValues && !viewModel.isBatchEdit {
-                embeddedMetadataView
+            if viewModel.metadataDisplayMode != .pending && !viewModel.isBatchEdit {
+                readOnlyPriorityFieldsView
             } else {
                 editableMetadataFields
             }
@@ -351,16 +358,27 @@ struct MetadataPanel: View {
         )
     }
 
+    private var readOnlyEmptyMessage: String {
+        switch viewModel.metadataDisplayMode {
+        case .xmp:
+            return "No XMP sidecar found"
+        case .embedded:
+            return "No embedded metadata"
+        case .pending:
+            return ""
+        }
+    }
+
     @ViewBuilder
-    private var embeddedMetadataView: some View {
-        if let original = viewModel.originalImageMetadata {
-            ReadOnlyField(label: "Title", value: original.title)
-            ReadOnlyField(label: "Description", value: original.description)
-            ReadOnlyKeywords(label: "Keywords", keywords: original.keywords)
-            ReadOnlyKeywords(label: "Person Shown", keywords: original.personShown)
-            ReadOnlyField(label: "Copyright", value: original.copyright)
+    private var readOnlyPriorityFieldsView: some View {
+        if let metadata = viewModel.readOnlyMetadata {
+            ReadOnlyField(label: "Title", value: metadata.title)
+            ReadOnlyField(label: "Description", value: metadata.description)
+            ReadOnlyKeywords(label: "Keywords", keywords: metadata.keywords)
+            ReadOnlyKeywords(label: "Person Shown", keywords: metadata.personShown)
+            ReadOnlyField(label: "Copyright", value: metadata.copyright)
         } else {
-            Text("No embedded metadata")
+            Text(readOnlyEmptyMessage)
                 .foregroundStyle(.secondary)
                 .font(.caption)
         }
@@ -371,25 +389,30 @@ struct MetadataPanel: View {
     @ViewBuilder
     private var classificationSection: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text("Digital Source Type")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            if viewModel.metadataDisplayMode != .pending && !viewModel.isBatchEdit {
+                let displayValue = viewModel.readOnlyMetadata?.digitalSourceType?.displayName
+                ReadOnlyField(label: "Digital Source Type", value: displayValue)
+            } else {
+                Text("Digital Source Type")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
-            Picker("", selection: Binding(
-                get: { viewModel.editingMetadata.digitalSourceType },
-                set: {
-                    viewModel.editingMetadata.digitalSourceType = $0
-                    viewModel.markChanged()
-                    commitEdits()
+                Picker("", selection: Binding(
+                    get: { viewModel.editingMetadata.digitalSourceType },
+                    set: {
+                        viewModel.editingMetadata.digitalSourceType = $0
+                        viewModel.markChanged()
+                        commitEdits()
+                    }
+                )) {
+                    Text("None").tag(nil as DigitalSourceType?)
+                    ForEach(DigitalSourceType.allCases, id: \.self) { type in
+                        Text(type.displayName).tag(type as DigitalSourceType?)
+                    }
                 }
-            )) {
-                Text("None").tag(nil as DigitalSourceType?)
-                ForEach(DigitalSourceType.allCases, id: \.self) { type in
-                    Text(type.displayName).tag(type as DigitalSourceType?)
-                }
+                .pickerStyle(.menu)
+                .labelsHidden()
             }
-            .pickerStyle(.menu)
-            .labelsHidden()
         }
     }
 
@@ -398,8 +421,8 @@ struct MetadataPanel: View {
     @ViewBuilder
     private var additionalFieldsSection: some View {
         Section {
-            if viewModel.showingEmbeddedValues && !viewModel.isBatchEdit {
-                embeddedAdditionalFieldsView
+            if viewModel.metadataDisplayMode != .pending && !viewModel.isBatchEdit {
+                readOnlyAdditionalFieldsView
             } else {
                 editableAdditionalFields
             }
@@ -480,13 +503,17 @@ struct MetadataPanel: View {
     }
 
     @ViewBuilder
-    private var embeddedAdditionalFieldsView: some View {
-        if let original = viewModel.originalImageMetadata {
-            ReadOnlyField(label: "Creator", value: original.creator)
-            ReadOnlyField(label: "Credit", value: original.credit)
-            ReadOnlyField(label: "City", value: original.city)
-            ReadOnlyField(label: "Country", value: original.country)
-            ReadOnlyField(label: "Event", value: original.event)
+    private var readOnlyAdditionalFieldsView: some View {
+        if let metadata = viewModel.readOnlyMetadata {
+            ReadOnlyField(label: "Creator", value: metadata.creator)
+            ReadOnlyField(label: "Credit", value: metadata.credit)
+            ReadOnlyField(label: "City", value: metadata.city)
+            ReadOnlyField(label: "Country", value: metadata.country)
+            ReadOnlyField(label: "Event", value: metadata.event)
+        } else {
+            Text(readOnlyEmptyMessage)
+                .foregroundStyle(.secondary)
+                .font(.caption)
         }
     }
 
@@ -494,8 +521,8 @@ struct MetadataPanel: View {
 
     @ViewBuilder
     private var gpsSection: some View {
-        if viewModel.showingEmbeddedValues && !viewModel.isBatchEdit {
-            embeddedGPSView
+        if viewModel.metadataDisplayMode != .pending && !viewModel.isBatchEdit {
+            readOnlyGPSView
         } else {
             GPSSectionView(
                 latitude: Binding(
@@ -528,18 +555,22 @@ struct MetadataPanel: View {
     }
 
     @ViewBuilder
-    private var embeddedGPSView: some View {
+    private var readOnlyGPSView: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("GPS Location")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            if let original = viewModel.originalImageMetadata,
-               let lat = original.latitude,
-               let lon = original.longitude {
-                Text(String(format: "%.6f, %.6f", lat, lon))
-                    .font(.body)
+            if let metadata = viewModel.readOnlyMetadata {
+                if let lat = metadata.latitude, let lon = metadata.longitude {
+                    Text(String(format: "%.6f, %.6f", lat, lon))
+                        .font(.body)
+                } else {
+                    Text("No GPS data")
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                }
             } else {
-                Text("No GPS data")
+                Text(readOnlyEmptyMessage)
                     .font(.body)
                     .foregroundStyle(.secondary)
             }

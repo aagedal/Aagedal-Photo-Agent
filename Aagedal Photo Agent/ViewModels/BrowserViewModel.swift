@@ -41,6 +41,7 @@ final class BrowserViewModel {
     let thumbnailService = ThumbnailService()
     let exifToolService = ExifToolService()
     private let sidecarService = MetadataSidecarService()
+    private let xmpSidecarService = XMPSidecarService()
 
     @ObservationIgnored var onImagesDeleted: ((Set<URL>) -> Void)?
 
@@ -231,6 +232,7 @@ final class BrowserViewModel {
                         // C2PA detection: look for JUMD/C2PA keys from -JUMBF:All output
                         let hasC2PA = dict.keys.contains { $0.hasPrefix("JUMD") || $0.hasPrefix("C2PA") || $0 == "Claim_generator" }
                         images[index].hasC2PA = hasC2PA
+                        applyPendingSidecarOverrides(for: sourceURL, index: index)
                     }
                 }
             } catch {
@@ -361,6 +363,7 @@ final class BrowserViewModel {
     func setRating(_ rating: StarRating) {
         guard !selectedImageIDs.isEmpty else { return }
         let urls = selectedImages.map(\.url)
+        let lookup = Dictionary(uniqueKeysWithValues: images.map { ($0.url, $0) })
 
         for id in selectedImageIDs {
             if let index = images.firstIndex(where: { $0.url == id }) {
@@ -368,15 +371,45 @@ final class BrowserViewModel {
             }
         }
 
-        guard exifToolService.isAvailable else { return }
         Task {
-            try? await exifToolService.writeRating(rating, to: urls)
+            var writeToFile: [URL] = []
+            var writeToSidecar: [URL] = []
+            var writeToXmp: [URL] = []
+
+            for url in urls {
+                let hasC2PA = lookup[url]?.hasC2PA ?? false
+                let mode = MetadataWriteMode.current(forC2PA: hasC2PA)
+
+                switch mode {
+                case .historyOnly:
+                    writeToSidecar.append(url)
+                case .writeToXMPSidecar:
+                    writeToXmp.append(url)
+                case .writeToFile:
+                    writeToFile.append(url)
+                }
+            }
+
+            if exifToolService.isAvailable, !writeToFile.isEmpty {
+                try? await exifToolService.writeRating(rating, to: writeToFile)
+            }
+            for url in writeToSidecar {
+                await applyRatingToSidecar(url: url, rating: rating, writeXmpSidecar: false)
+            }
+            for url in writeToXmp {
+                await applyRatingToSidecar(url: url, rating: rating, writeXmpSidecar: true)
+            }
+
+            await MainActor.run {
+                self.refreshPendingStatus()
+            }
         }
     }
 
     func setLabel(_ label: ColorLabel) {
         guard !selectedImageIDs.isEmpty else { return }
         let urls = selectedImages.map(\.url)
+        let lookup = Dictionary(uniqueKeysWithValues: images.map { ($0.url, $0) })
 
         for id in selectedImageIDs {
             if let index = images.firstIndex(where: { $0.url == id }) {
@@ -384,9 +417,182 @@ final class BrowserViewModel {
             }
         }
 
-        guard exifToolService.isAvailable else { return }
         Task {
-            try? await exifToolService.writeLabel(label, to: urls)
+            var writeToFile: [URL] = []
+            var writeToSidecar: [URL] = []
+            var writeToXmp: [URL] = []
+
+            for url in urls {
+                let hasC2PA = lookup[url]?.hasC2PA ?? false
+                let mode = MetadataWriteMode.current(forC2PA: hasC2PA)
+
+                switch mode {
+                case .historyOnly:
+                    writeToSidecar.append(url)
+                case .writeToXMPSidecar:
+                    writeToXmp.append(url)
+                case .writeToFile:
+                    writeToFile.append(url)
+                }
+            }
+
+            if exifToolService.isAvailable, !writeToFile.isEmpty {
+                try? await exifToolService.writeLabel(label, to: writeToFile)
+            }
+            for url in writeToSidecar {
+                await applyLabelToSidecar(url: url, label: label, writeXmpSidecar: false)
+            }
+            for url in writeToXmp {
+                await applyLabelToSidecar(url: url, label: label, writeXmpSidecar: true)
+            }
+
+            await MainActor.run {
+                self.refreshPendingStatus()
+            }
+        }
+    }
+
+    private func applyPendingSidecarOverrides(for url: URL, index: Int) {
+        guard let folderURL = currentFolderURL,
+              let sidecar = sidecarService.loadSidecar(for: url, in: folderURL),
+              sidecar.pendingChanges else { return }
+
+        if let snapshot = sidecar.imageMetadataSnapshot {
+            if sidecar.metadata.rating != snapshot.rating {
+                let ratingValue = sidecar.metadata.rating ?? 0
+                images[index].starRating = StarRating(rawValue: ratingValue) ?? .none
+            }
+            if sidecar.metadata.label != snapshot.label {
+                let labelValue = sidecar.metadata.label ?? ""
+                images[index].colorLabel = ColorLabel(rawValue: labelValue) ?? .none
+            }
+        } else {
+            if let ratingValue = sidecar.metadata.rating {
+                images[index].starRating = StarRating(rawValue: ratingValue) ?? .none
+            }
+            if let labelValue = sidecar.metadata.label {
+                images[index].colorLabel = ColorLabel(rawValue: labelValue) ?? .none
+            }
+        }
+    }
+
+    private func applyRatingToSidecar(url: URL, rating: StarRating, writeXmpSidecar: Bool) async {
+        guard let folderURL = currentFolderURL else { return }
+
+        var metadata = IPTCMetadata()
+        var history: [MetadataHistoryEntry] = []
+        var snapshot: IPTCMetadata?
+        let hadSidecar: Bool
+
+        if let existing = sidecarService.loadSidecar(for: url, in: folderURL) {
+            metadata = existing.metadata
+            history = existing.history
+            snapshot = existing.imageMetadataSnapshot
+            hadSidecar = true
+        } else {
+            hadSidecar = false
+        }
+
+        if snapshot == nil {
+            snapshot = await loadMetadataSnapshot(for: url, includeXmp: writeXmpSidecar)
+        }
+
+        if !hadSidecar, let snapshot {
+            metadata = snapshot
+        }
+
+        let oldValue = metadata.rating
+        metadata.rating = rating == .none ? nil : rating.rawValue
+        let newValue = metadata.rating
+
+        guard oldValue != newValue else { return }
+
+        history.append(MetadataHistoryEntry(
+            timestamp: Date(),
+            fieldName: "Rating",
+            oldValue: oldValue.map(String.init),
+            newValue: newValue.map(String.init)
+        ))
+
+        let sidecar = MetadataSidecar(
+            sourceFile: url.lastPathComponent,
+            lastModified: Date(),
+            pendingChanges: true,
+            metadata: metadata,
+            imageMetadataSnapshot: snapshot,
+            history: history
+        )
+
+        try? sidecarService.saveSidecar(sidecar, for: url, in: folderURL)
+
+        if writeXmpSidecar {
+            try? xmpSidecarService.saveSidecar(metadata: metadata, for: url)
+        }
+    }
+
+    private func applyLabelToSidecar(url: URL, label: ColorLabel, writeXmpSidecar: Bool) async {
+        guard let folderURL = currentFolderURL else { return }
+
+        var metadata = IPTCMetadata()
+        var history: [MetadataHistoryEntry] = []
+        var snapshot: IPTCMetadata?
+        let hadSidecar: Bool
+
+        if let existing = sidecarService.loadSidecar(for: url, in: folderURL) {
+            metadata = existing.metadata
+            history = existing.history
+            snapshot = existing.imageMetadataSnapshot
+            hadSidecar = true
+        } else {
+            hadSidecar = false
+        }
+
+        if snapshot == nil {
+            snapshot = await loadMetadataSnapshot(for: url, includeXmp: writeXmpSidecar)
+        }
+
+        if !hadSidecar, let snapshot {
+            metadata = snapshot
+        }
+
+        let oldValue = metadata.label
+        metadata.label = label == .none ? nil : label.rawValue
+        let newValue = metadata.label
+
+        guard oldValue != newValue else { return }
+
+        history.append(MetadataHistoryEntry(
+            timestamp: Date(),
+            fieldName: "Label",
+            oldValue: oldValue,
+            newValue: newValue
+        ))
+
+        let sidecar = MetadataSidecar(
+            sourceFile: url.lastPathComponent,
+            lastModified: Date(),
+            pendingChanges: true,
+            metadata: metadata,
+            imageMetadataSnapshot: snapshot,
+            history: history
+        )
+
+        try? sidecarService.saveSidecar(sidecar, for: url, in: folderURL)
+
+        if writeXmpSidecar {
+            try? xmpSidecarService.saveSidecar(metadata: metadata, for: url)
+        }
+    }
+
+    private func loadMetadataSnapshot(for url: URL, includeXmp: Bool) async -> IPTCMetadata? {
+        do {
+            var metadata = try await exifToolService.readFullMetadata(url: url)
+            if includeXmp, let xmpMetadata = xmpSidecarService.loadSidecar(for: url) {
+                metadata = metadata.merged(preferring: xmpMetadata)
+            }
+            return metadata
+        } catch {
+            return nil
         }
     }
 
