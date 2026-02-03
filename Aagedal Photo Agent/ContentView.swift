@@ -151,7 +151,7 @@ struct ContentView: View {
                 FaceBarView(
                     viewModel: faceRecognitionViewModel,
                     folderURL: browserViewModel.currentFolderURL,
-                    imageURLs: browserViewModel.images.map(\.url),
+                    images: browserViewModel.images,
                     settingsViewModel: settingsViewModel,
                     isExpanded: mainViewMode == .faceManagement,
                     selectionState: mainViewMode == .faceManagement ? faceSelectionState : nil,
@@ -636,6 +636,7 @@ struct ContentViewModifiers: ViewModifier {
             .onReceive(NotificationCenter.default.publisher(for: .faceMetadataDidChange)) { _ in
                 let selected = browserViewModel.selectedImages
                 metadataViewModel.loadMetadata(for: selected, folderURL: browserViewModel.currentFolderURL)
+                browserViewModel.refreshPendingStatus()
             }
             .onChange(of: browserViewModel.currentFolderURL) {
                 technicalMetadataCache.removeAll()
