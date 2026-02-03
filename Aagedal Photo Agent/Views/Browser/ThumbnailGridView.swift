@@ -27,19 +27,26 @@ struct ThumbnailGridView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            ScrollView {
-                LazyVGrid(columns: columns, spacing: 8) {
-                    ForEach(viewModel.visibleImages) { image in
-                        makeThumbnailCell(for: image)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVGrid(columns: columns, spacing: 8) {
+                        ForEach(viewModel.visibleImages) { image in
+                            makeThumbnailCell(for: image)
+                                .id(image.url)
+                        }
                     }
+                    .padding()
                 }
-                .padding()
-            }
-            .onAppear {
-                gridWidth = geometry.size.width
-            }
-            .onChange(of: geometry.size.width) { _, newWidth in
-                gridWidth = newWidth
+                .onAppear {
+                    gridWidth = geometry.size.width
+                    scrollToSelectionIfNeeded(proxy)
+                }
+                .onChange(of: geometry.size.width) { _, newWidth in
+                    gridWidth = newWidth
+                }
+                .onChange(of: viewModel.lastClickedImageURL) { _, _ in
+                    scrollToSelectionIfNeeded(proxy)
+                }
             }
         }
         .focusable()
@@ -175,6 +182,14 @@ struct ThumbnailGridView: View {
             // Regular click: Single selection
             viewModel.selectedImageIDs = [image.url]
             viewModel.lastClickedImageURL = image.url
+        }
+    }
+
+    private func scrollToSelectionIfNeeded(_ proxy: ScrollViewProxy) {
+        guard let target = viewModel.lastClickedImageURL,
+              viewModel.urlToVisibleIndex[target] != nil else { return }
+        withAnimation(.easeInOut(duration: 0.15)) {
+            proxy.scrollTo(target, anchor: .center)
         }
     }
 }
