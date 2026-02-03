@@ -110,6 +110,7 @@ struct FaceGroupDetailView: View {
                     }
 
                 let presetNames = settingsViewModel.loadPersonShownList()
+                let _ = settingsViewModel.quickListVersion
                 Menu {
                     if !presetNames.isEmpty {
                         ForEach(presetNames, id: \.self) { name in

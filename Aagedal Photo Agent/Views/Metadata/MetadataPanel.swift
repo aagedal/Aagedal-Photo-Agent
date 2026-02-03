@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -32,6 +33,47 @@ struct MetadataPanel: View {
     enum C2PAOverwriteIntent {
         case autoCommit
         case manualWrite
+    }
+
+    private func addCurrentToQuickList(type: QuickListType, values: [String]) {
+        let sanitized = sanitizeQuickListValues(values)
+        guard !sanitized.isEmpty else { return }
+
+        if settingsViewModel.quickListURL(for: type) == nil {
+            guard let url = promptForQuickListFile(type: type) else { return }
+            settingsViewModel.setQuickListURL(url, for: type)
+        }
+
+        _ = settingsViewModel.appendToQuickList(for: type, values: sanitized)
+    }
+
+    private func addCurrentToQuickList(type: QuickListType, value: String?) {
+        addCurrentToQuickList(type: type, values: [value].compactMap { $0 })
+    }
+
+    private func sanitizeQuickListValues(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for value in values {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            guard !seen.contains(trimmed) else { continue }
+            seen.insert(trimmed)
+            result.append(trimmed)
+        }
+        return result
+    }
+
+    private func promptForQuickListFile(type: QuickListType) -> URL? {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.plainText]
+        panel.nameFieldStringValue = type.defaultFilename
+        panel.message = "Create Quick List file for \(type.displayName)"
+        guard panel.runModal() == .OK, let url = panel.url else { return nil }
+        if !FileManager.default.fileExists(atPath: url.path) {
+            try? "".write(to: url, atomically: true, encoding: .utf8)
+        }
+        return url
     }
 
     private func commitEdits() {
@@ -255,6 +297,8 @@ struct MetadataPanel: View {
 
     @ViewBuilder
     private var editableMetadataFields: some View {
+        let _ = settingsViewModel.quickListVersion
+
         EditableTextField(
             label: "Headline",
             text: Binding(
@@ -324,6 +368,9 @@ struct MetadataPanel: View {
             onChange: { viewModel.markChanged() },
             onCommit: { commitEdits() },
             showPresetSelectionIndicator: true,
+            onAddCurrentToQuickList: {
+                addCurrentToQuickList(type: .keywords, values: viewModel.editingMetadata.keywords)
+            },
             presetList: settingsViewModel.loadKeywordsList(),
             onChooseListFile: {
                 listFilePickerTarget = .keywords
@@ -343,6 +390,9 @@ struct MetadataPanel: View {
             onCommit: { commitEdits() },
             showPresetSelectionIndicator: true,
             allowsPresetToggleRemoval: true,
+            onAddCurrentToQuickList: {
+                addCurrentToQuickList(type: .personShown, values: viewModel.editingMetadata.personShown)
+            },
             presetList: settingsViewModel.loadPersonShownList(),
             onChooseListFile: {
                 listFilePickerTarget = .personShown
@@ -362,6 +412,9 @@ struct MetadataPanel: View {
             onCommit: { commitEdits() },
             showsDifference: viewModel.fieldDiffers(\.copyright),
             hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("copyright"),
+            onAddCurrentToQuickList: {
+                addCurrentToQuickList(type: .copyright, value: viewModel.editingMetadata.copyright)
+            },
             presetList: settingsViewModel.loadCopyrightList(),
             onChooseListFile: {
                 listFilePickerTarget = .copyright
@@ -414,6 +467,8 @@ struct MetadataPanel: View {
 
     @ViewBuilder
     private var editableAdditionalFields: some View {
+        let _ = settingsViewModel.quickListVersion
+
         EditableTextField(
             label: "Creator",
             text: Binding(
@@ -424,6 +479,9 @@ struct MetadataPanel: View {
             onCommit: { commitEdits() },
             showsDifference: viewModel.fieldDiffers(\.creator),
             hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("creator"),
+            onAddCurrentToQuickList: {
+                addCurrentToQuickList(type: .creator, value: viewModel.editingMetadata.creator)
+            },
             presetList: settingsViewModel.loadCreatorList(),
             onChooseListFile: {
                 listFilePickerTarget = .creator
@@ -442,6 +500,9 @@ struct MetadataPanel: View {
             onCommit: { commitEdits() },
             showsDifference: viewModel.fieldDiffers(\.credit),
             hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("credit"),
+            onAddCurrentToQuickList: {
+                addCurrentToQuickList(type: .credit, value: viewModel.editingMetadata.credit)
+            },
             presetList: settingsViewModel.loadCreditList(),
             onChooseListFile: {
                 listFilePickerTarget = .credit
@@ -460,6 +521,9 @@ struct MetadataPanel: View {
             onCommit: { commitEdits() },
             showsDifference: viewModel.fieldDiffers(\.city),
             hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("city"),
+            onAddCurrentToQuickList: {
+                addCurrentToQuickList(type: .city, value: viewModel.editingMetadata.city)
+            },
             presetList: settingsViewModel.loadCityList(),
             onChooseListFile: {
                 listFilePickerTarget = .city
@@ -478,6 +542,9 @@ struct MetadataPanel: View {
             onCommit: { commitEdits() },
             showsDifference: viewModel.fieldDiffers(\.country),
             hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("country"),
+            onAddCurrentToQuickList: {
+                addCurrentToQuickList(type: .country, value: viewModel.editingMetadata.country)
+            },
             presetList: settingsViewModel.loadCountryList(),
             onChooseListFile: {
                 listFilePickerTarget = .country
@@ -496,6 +563,9 @@ struct MetadataPanel: View {
             onCommit: { commitEdits() },
             showsDifference: viewModel.fieldDiffers(\.event),
             hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("event"),
+            onAddCurrentToQuickList: {
+                addCurrentToQuickList(type: .event, value: viewModel.editingMetadata.event)
+            },
             presetList: settingsViewModel.loadEventList(),
             onChooseListFile: {
                 listFilePickerTarget = .event
@@ -566,11 +636,14 @@ struct MetadataPanel: View {
             }
 
             HStack(spacing: 12) {
+                let hasC2PA = browserViewModel.selectedImages.contains { $0.hasC2PA }
+                let mode = hasC2PA ? settingsViewModel.metadataWriteModeC2PA : settingsViewModel.metadataWriteModeNonC2PA
+
                 if let onApplyTemplate {
                     Button {
                         onApplyTemplate()
                     } label: {
-                        Image(systemName: "doc.on.doc")
+                        Image(systemName: "wand.and.stars")
                     }
                     .help("Apply Template")
                 }
@@ -600,20 +673,22 @@ struct MetadataPanel: View {
                         .controlSize(.small)
                 }
 
-                Button {
-                    if browserViewModel.firstSelectedImage?.hasC2PA == true {
-                        c2paOverwriteIntent = .manualWrite
-                        showingC2PAWarning = true
-                    } else {
-                        viewModel.writeMetadataAndClearSidecar()
-                        onPendingStatusChanged?()
+                if mode != .writeToFile {
+                    Button {
+                        if browserViewModel.firstSelectedImage?.hasC2PA == true {
+                            c2paOverwriteIntent = .manualWrite
+                            showingC2PAWarning = true
+                        } else {
+                            viewModel.writeMetadataAndClearSidecar()
+                            onPendingStatusChanged?()
+                        }
+                    } label: {
+                        Image(systemName: "square.and.arrow.down")
                     }
-                } label: {
-                    Image(systemName: "square.and.arrow.down")
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!viewModel.hasChanges || viewModel.isSaving)
+                    .help("Write metadata to image")
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(!viewModel.hasChanges || viewModel.isSaving)
-                .help("Write metadata to image")
             }
         }
     }
@@ -631,6 +706,7 @@ struct KeywordsEditorWithDiff: View {
     var onCommit: (() -> Void)? = nil
     var showPresetSelectionIndicator: Bool = false
     var allowsPresetToggleRemoval: Bool = false
+    var onAddCurrentToQuickList: (() -> Void)? = nil
     var presetList: [String] = []
     var onChooseListFile: (() -> Void)? = nil
     var focusKey: String? = nil
@@ -651,7 +727,20 @@ struct KeywordsEditorWithDiff: View {
                 Spacer()
                 if onChooseListFile != nil {
                     Menu {
+                        if let onAddCurrentToQuickList {
+                            Button("Add Current to Quick List") {
+                                onAddCurrentToQuickList()
+                            }
+                            .disabled(keywords.isEmpty)
+                            Divider()
+                        }
+                        if let onChooseListFile {
+                            Button("Choose Quick List File...") {
+                                onChooseListFile()
+                            }
+                        }
                         if !presetList.isEmpty {
+                            Divider()
                             ForEach(presetList, id: \.self) { item in
                                 let isSelected = keywords.contains(item)
                                 Button {
@@ -668,19 +757,14 @@ struct KeywordsEditorWithDiff: View {
                                     }
                                 } label: {
                                     HStack(spacing: 6) {
-                                        if showPresetSelectionIndicator {
+                                        if showPresetSelectionIndicator, isSelected {
                                             Image(systemName: "checkmark")
-                                                .opacity(isSelected ? 1 : 0)
                                         }
                                         Text(item)
                                     }
                                 }
                                 .disabled(isSelected && !allowsPresetToggleRemoval)
                             }
-                            Divider()
-                        }
-                        Button("Choose List File...") {
-                            onChooseListFile?()
                         }
                     } label: {
                         Image(systemName: "list.bullet")
@@ -689,7 +773,7 @@ struct KeywordsEditorWithDiff: View {
                     }
                     .menuStyle(.borderlessButton)
                     .fixedSize()
-                    .help(presetList.isEmpty ? "Choose a list file to load presets" : "Choose from preset list")
+                    .help(presetList.isEmpty ? "Choose a Quick List file" : "Choose from Quick List")
                 }
             }
 
@@ -793,6 +877,7 @@ struct EditableTextField: View {
     var onCommit: (() -> Void)? = nil
     var showsDifference: Bool = false
     var hasMultipleValues: Bool = false
+    var onAddCurrentToQuickList: (() -> Void)? = nil
     var presetList: [String] = []
     var onChooseListFile: (() -> Void)? = nil
     var focusKey: String? = nil
@@ -811,7 +896,20 @@ struct EditableTextField: View {
                 Spacer()
                 if !presetList.isEmpty || onChooseListFile != nil {
                     Menu {
+                        if let onAddCurrentToQuickList {
+                            Button("Add Current to Quick List") {
+                                onAddCurrentToQuickList()
+                            }
+                            .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            Divider()
+                        }
+                        if let onChooseListFile {
+                            Button("Choose Quick List File...") {
+                                onChooseListFile()
+                            }
+                        }
                         if !presetList.isEmpty {
+                            Divider()
                             ForEach(presetList, id: \.self) { item in
                                 let isSelected = text == item
                                 Button {
@@ -821,18 +919,13 @@ struct EditableTextField: View {
                                     }
                                 } label: {
                                     HStack(spacing: 6) {
-                                        Image(systemName: "checkmark")
-                                            .opacity(isSelected ? 1 : 0)
+                                        if isSelected {
+                                            Image(systemName: "checkmark")
+                                        }
                                         Text(item)
                                     }
                                 }
                                 .disabled(isSelected)
-                            }
-                            Divider()
-                        }
-                        if let onChooseListFile {
-                            Button("Choose List File...") {
-                                onChooseListFile()
                             }
                         }
                     } label: {
@@ -842,7 +935,7 @@ struct EditableTextField: View {
                     }
                     .menuStyle(.borderlessButton)
                     .fixedSize()
-                    .help(presetList.isEmpty ? "Choose a list file to load presets" : "Choose from preset list")
+                    .help(presetList.isEmpty ? "Choose a Quick List file" : "Choose from Quick List")
                 }
             }
             if let focusedField, let focusKey {

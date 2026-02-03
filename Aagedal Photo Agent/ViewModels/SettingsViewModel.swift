@@ -21,6 +21,47 @@ enum ExifToolSource: String, CaseIterable {
     }
 }
 
+enum QuickListType: String, CaseIterable {
+    case keywords
+    case personShown
+    case copyright
+    case creator
+    case credit
+    case city
+    case country
+    case event
+
+    var bookmarkKey: String {
+        switch self {
+        case .keywords: return "keywordsListBookmark"
+        case .personShown: return "personShownListBookmark"
+        case .copyright: return "copyrightListBookmark"
+        case .creator: return "creatorListBookmark"
+        case .credit: return "creditListBookmark"
+        case .city: return "cityListBookmark"
+        case .country: return "countryListBookmark"
+        case .event: return "eventListBookmark"
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .keywords: return "Keywords"
+        case .personShown: return "Person Shown"
+        case .copyright: return "Copyright"
+        case .creator: return "Creator"
+        case .credit: return "Credit"
+        case .city: return "City"
+        case .country: return "Country"
+        case .event: return "Event"
+        }
+    }
+
+    var defaultFilename: String {
+        "\(displayName) Quick List.txt"
+    }
+}
+
 @Observable
 final class SettingsViewModel {
     var exifToolSource: ExifToolSource {
@@ -56,6 +97,7 @@ final class SettingsViewModel {
         didSet { UserDefaults.standard.set(preferXMPSidecar, forKey: "metadataPreferXMPSidecar") }
     }
 
+    var quickListVersion: Int = 0
     var keywordsListPath: String = ""
     var personShownListPath: String = ""
     var copyrightListPath: String = ""
@@ -68,46 +110,58 @@ final class SettingsViewModel {
     func setKeywordsListURL(_ url: URL) {
         saveBookmark(for: url, key: "keywordsListBookmark")
         keywordsListPath = url.path
+        quickListVersion += 1
     }
 
     func setPersonShownListURL(_ url: URL) {
         saveBookmark(for: url, key: "personShownListBookmark")
         personShownListPath = url.path
+        quickListVersion += 1
     }
 
     func setCopyrightListURL(_ url: URL) {
         saveBookmark(for: url, key: "copyrightListBookmark")
         copyrightListPath = url.path
+        quickListVersion += 1
     }
 
     func setCreatorListURL(_ url: URL) {
         saveBookmark(for: url, key: "creatorListBookmark")
         creatorListPath = url.path
+        quickListVersion += 1
     }
 
     func setCreditListURL(_ url: URL) {
         saveBookmark(for: url, key: "creditListBookmark")
         creditListPath = url.path
+        quickListVersion += 1
     }
 
     func setCityListURL(_ url: URL) {
         saveBookmark(for: url, key: "cityListBookmark")
         cityListPath = url.path
+        quickListVersion += 1
     }
 
     func setCountryListURL(_ url: URL) {
         saveBookmark(for: url, key: "countryListBookmark")
         countryListPath = url.path
+        quickListVersion += 1
     }
 
     func setEventListURL(_ url: URL) {
         saveBookmark(for: url, key: "eventListBookmark")
         eventListPath = url.path
+        quickListVersion += 1
     }
 
     private func saveBookmark(for url: URL, key: String) {
-        guard url.startAccessingSecurityScopedResource() else { return }
-        defer { url.stopAccessingSecurityScopedResource() }
+        let didStartAccessing = url.startAccessingSecurityScopedResource()
+        defer {
+            if didStartAccessing {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
         do {
             let bookmarkData = try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
             UserDefaults.standard.set(bookmarkData, forKey: key)
@@ -341,6 +395,70 @@ final class SettingsViewModel {
         loadListFromBookmark(key: "personShownListBookmark")
     }
 
+    func quickListURL(for type: QuickListType) -> URL? {
+        resolveBookmark(key: type.bookmarkKey)
+    }
+
+    func setQuickListURL(_ url: URL, for type: QuickListType) {
+        switch type {
+        case .keywords:
+            setKeywordsListURL(url)
+        case .personShown:
+            setPersonShownListURL(url)
+        case .copyright:
+            setCopyrightListURL(url)
+        case .creator:
+            setCreatorListURL(url)
+        case .credit:
+            setCreditListURL(url)
+        case .city:
+            setCityListURL(url)
+        case .country:
+            setCountryListURL(url)
+        case .event:
+            setEventListURL(url)
+        }
+    }
+
+    func appendToQuickList(for type: QuickListType, values: [String]) -> Bool {
+        let sanitized = sanitizeQuickListValues(values)
+        guard !sanitized.isEmpty else { return false }
+        guard let url = resolveBookmark(key: type.bookmarkKey) else { return false }
+        guard url.startAccessingSecurityScopedResource() else { return false }
+        defer { url.stopAccessingSecurityScopedResource() }
+
+        let existing = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        let existingLines = existing
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        var seen = Set(existingLines)
+        var newLines: [String] = []
+        for value in sanitized {
+            if !seen.contains(value) {
+                seen.insert(value)
+                newLines.append(value)
+            }
+        }
+
+        guard !newLines.isEmpty else { return true }
+
+        var updated = existing
+        if !updated.isEmpty && !updated.hasSuffix("\n") {
+            updated += "\n"
+        }
+        updated += newLines.joined(separator: "\n")
+
+        do {
+            try updated.write(to: url, atomically: true, encoding: .utf8)
+            quickListVersion += 1
+            return true
+        } catch {
+            return false
+        }
+    }
+
     func loadCopyrightList() -> [String] {
         loadListFromBookmark(key: "copyrightListBookmark")
     }
@@ -379,6 +497,19 @@ final class SettingsViewModel {
         } catch {
             return []
         }
+    }
+
+    private func sanitizeQuickListValues(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for value in values {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            guard !seen.contains(trimmed) else { continue }
+            seen.insert(trimmed)
+            result.append(trimmed)
+        }
+        return result
     }
 
     static func detectEditors() -> [DetectedEditor] {

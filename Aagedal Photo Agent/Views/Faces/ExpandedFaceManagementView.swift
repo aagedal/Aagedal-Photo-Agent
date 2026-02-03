@@ -752,6 +752,7 @@ struct GroupCardHeader: View {
                     .onAppear { isEditingFocused.wrappedValue = true }
 
                 let presetNames = settingsViewModel.loadPersonShownList()
+                let _ = settingsViewModel.quickListVersion
                 Menu {
                     if !presetNames.isEmpty {
                         ForEach(presetNames, id: \.self) { name in
