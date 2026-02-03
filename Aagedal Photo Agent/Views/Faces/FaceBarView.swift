@@ -337,7 +337,7 @@ struct FaceBarView: View {
                     VStack(spacing: 2) {
                         Image(systemName: "person.text.rectangle")
                             .font(.system(size: 16))
-                        Text("People")
+                        Text("People Database")
                             .font(.system(size: 9))
                     }
                     .frame(width: 52, height: 48)

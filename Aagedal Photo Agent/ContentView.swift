@@ -27,7 +27,9 @@ struct ContentView: View {
     @State private var isShowingImport = false
     @State private var isShowingC2PADetail = false
     @State private var isShowingDiscardAllConfirmation = false
+    @State private var isShowingWriteAllC2PAWarning = false
     @State private var c2paMetadata: C2PAMetadata?
+    @State private var pendingWriteAllC2PACount = 0
     @State private var saveTemplateName = ""
     @State private var metadataPanelWidth: CGFloat = 320
     @State private var mainViewMode: MainViewMode = .browser
@@ -75,6 +77,27 @@ struct ContentView: View {
                 }
             } message: {
                 Text("This will discard all pending metadata changes for every image in the current folder. This cannot be undone.")
+            }
+            .alert("C2PA Protected Images", isPresented: $isShowingWriteAllC2PAWarning) {
+                Button("Cancel", role: .cancel) { }
+                Button("Skip C2PA") {
+                    metadataViewModel.writeAllPendingChanges(
+                        in: browserViewModel.currentFolderURL,
+                        images: browserViewModel.images,
+                        skipC2PA: true
+                    )
+                }
+                Button("Write Anyway") {
+                    metadataViewModel.writeAllPendingChanges(
+                        in: browserViewModel.currentFolderURL,
+                        images: browserViewModel.images,
+                        skipC2PA: false
+                    )
+                }
+            } message: {
+                let count = pendingWriteAllC2PACount
+                let suffix = count == 1 ? "image has" : "images have"
+                Text("\(count) pending \(suffix) C2PA content credentials in this folder. Writing metadata will invalidate the authenticity chain.")
             }
             .overlay {
                 if isShowingTemplatePalette {
@@ -126,6 +149,9 @@ struct ContentView: View {
                 if !browserViewModel.images.isEmpty {
                     isShowingFTPUpload = true
                 }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .showKnownPeopleDatabase)) { _ in
+                mainViewMode = .peopleDatabase
             }
             .fullScreenImagePresenter(viewModel: browserViewModel)
             .onAppear {
@@ -209,7 +235,11 @@ struct ContentView: View {
                           metadataViewModel.originalImageMetadata != nil else {
                         return .ignored
                     }
-                    metadataViewModel.showingEmbeddedValues.toggle()
+                    if metadataViewModel.metadataDisplayMode == .embedded {
+                        metadataViewModel.metadataDisplayMode = .pending
+                    } else {
+                        metadataViewModel.metadataDisplayMode = .embedded
+                    }
                     return .handled
                 }
 
@@ -243,10 +273,18 @@ struct ContentView: View {
             } else {
                 HStack {
                     Button {
-                        metadataViewModel.writeAllPendingChanges(
-                            in: browserViewModel.currentFolderURL,
-                            images: browserViewModel.images
-                        )
+                        let c2paPending = browserViewModel.images.filter { image in
+                            image.hasPendingMetadataChanges && image.hasC2PA
+                        }
+                        if !c2paPending.isEmpty {
+                            pendingWriteAllC2PACount = c2paPending.count
+                            isShowingWriteAllC2PAWarning = true
+                        } else {
+                            metadataViewModel.writeAllPendingChanges(
+                                in: browserViewModel.currentFolderURL,
+                                images: browserViewModel.images
+                            )
+                        }
                     } label: {
                         Label("Write All Pending", systemImage: "square.and.arrow.down.on.square")
                     }

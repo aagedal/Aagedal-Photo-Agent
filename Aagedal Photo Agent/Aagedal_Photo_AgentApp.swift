@@ -134,4 +134,5 @@ extension Notification.Name {
     static let showTemplatePalette = Notification.Name("showTemplatePalette")
     static let uploadSelected = Notification.Name("uploadSelected")
     static let uploadAll = Notification.Name("uploadAll")
+    static let showKnownPeopleDatabase = Notification.Name("showKnownPeopleDatabase")
 }

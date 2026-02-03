@@ -1,5 +1,24 @@
 import Foundation
 
+enum MetadataDisplayMode: String, CaseIterable, Identifiable, Sendable {
+    case pending
+    case xmp
+    case embedded
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .pending:
+            return "Pending"
+        case .xmp:
+            return "XMP"
+        case .embedded:
+            return "Embedded"
+        }
+    }
+}
+
 @Observable
 final class MetadataViewModel {
     var metadata: IPTCMetadata?
@@ -12,11 +31,26 @@ final class MetadataViewModel {
     var selectedURLs: [URL] = []
     var hasChanges = false
     var saveError: String?
+    var selectedHasC2PA = false
 
     var originalImageMetadata: IPTCMetadata?
+    var embeddedMetadata: IPTCMetadata?
+    var xmpMetadata: IPTCMetadata?
     var sidecarHistory: [MetadataHistoryEntry] = []
     var currentFolderURL: URL?
-    var showingEmbeddedValues = false
+    var metadataDisplayMode: MetadataDisplayMode = .pending
+
+    var hasXmpMetadata: Bool { xmpMetadata != nil }
+    var readOnlyMetadata: IPTCMetadata? {
+        switch metadataDisplayMode {
+        case .pending:
+            return nil
+        case .xmp:
+            return xmpMetadata
+        case .embedded:
+            return embeddedMetadata
+        }
+    }
 
     // Batch metadata state - stores common values across selected images
     var batchCommonMetadata: IPTCMetadata?
@@ -60,9 +94,11 @@ final class MetadataViewModel {
         selectedURLs = images.map(\.url)
         hasChanges = false
         saveError = nil
+        selectedHasC2PA = images.contains { $0.hasC2PA }
         sidecarHistory = []
         originalImageMetadata = nil
-        showingEmbeddedValues = false
+        embeddedMetadata = nil
+        xmpMetadata = nil
         batchCommonMetadata = nil
         batchDifferingFields = []
 
@@ -74,31 +110,38 @@ final class MetadataViewModel {
             metadata = nil
             editingMetadata = IPTCMetadata()
             previousEditingMetadata = nil
+            embeddedMetadata = nil
+            xmpMetadata = nil
             isLoading = false
             isLoadingBatchMetadata = false
             return
         }
 
         if images.count == 1 {
+            let imageURL = images[0].url
+            let imageHasC2PA = images[0].hasC2PA
             metadata = nil
             editingMetadata = IPTCMetadata()
             previousEditingMetadata = nil
             isLoading = true
 
-            let imageURL = images[0].url
             metadataLoadTask = Task {
                 do {
-                    var imageMeta = try await exifToolService.readFullMetadata(url: imageURL)
+                    let embedded = try await exifToolService.readFullMetadata(url: imageURL)
                     guard !Task.isCancelled else { return }
-                    if MetadataWriteMode.current(forC2PA: images[0].hasC2PA) == .writeToXMPSidecar,
-                       let xmpMeta = xmpSidecarService.loadSidecar(for: imageURL) {
-                        imageMeta = imageMeta.merged(preferring: xmpMeta)
+                    let xmpMeta = xmpSidecarService.loadSidecar(for: imageURL)
+                    let mode = MetadataWriteMode.current(forC2PA: imageHasC2PA)
+                    var baseMeta = embedded
+                    if mode == .writeToXMPSidecar, let xmpMeta {
+                        baseMeta = embedded.merged(preferring: xmpMeta)
                     }
                     guard !Task.isCancelled else { return }
                     guard self.selectedURLs.count == 1,
                           self.selectedURLs.first == imageURL else { return }
-                    self.metadata = imageMeta
-                    self.originalImageMetadata = imageMeta
+                    self.embeddedMetadata = embedded
+                    self.xmpMetadata = xmpMeta
+                    self.metadata = baseMeta
+                    self.originalImageMetadata = baseMeta
 
                     if let folder = self.currentFolderURL,
                        let sidecar = sidecarService.loadSidecar(for: imageURL, in: folder) {
@@ -107,12 +150,15 @@ final class MetadataViewModel {
                             self.editingMetadata = sidecar.metadata
                             self.hasChanges = true
                         } else {
-                            self.editingMetadata = imageMeta
+                            self.editingMetadata = baseMeta
                         }
                     } else {
-                        self.editingMetadata = imageMeta
+                        self.editingMetadata = baseMeta
                     }
                     self.previousEditingMetadata = self.editingMetadata
+                    if self.metadataDisplayMode == .xmp, self.xmpMetadata == nil {
+                        self.metadataDisplayMode = .pending
+                    }
                 } catch {
                     self.metadata = nil
                     self.editingMetadata = IPTCMetadata()
@@ -126,6 +172,9 @@ final class MetadataViewModel {
             metadata = nil
             editingMetadata = IPTCMetadata()
             previousEditingMetadata = nil
+            embeddedMetadata = nil
+            xmpMetadata = nil
+            metadataDisplayMode = .pending
             isLoadingBatchMetadata = true
 
             let selectionSnapshot = Set(images.map(\.url))
@@ -406,6 +455,9 @@ final class MetadataViewModel {
         if selectedCount == 1, let imageURL = selectedURLs.first {
             do {
                 try xmpSidecarService.saveSidecar(metadata: editingMetadata, for: imageURL)
+                if selectedCount == 1, selectedURLs.first == imageURL {
+                    xmpMetadata = editingMetadata
+                }
             } catch {
                 saveError = "Failed to write XMP sidecar: \(error.localizedDescription)"
             }
@@ -420,6 +472,36 @@ final class MetadataViewModel {
         }
     }
 
+    private func overwriteFields(from metadata: IPTCMetadata) -> [String: String] {
+        var fields: [String: String] = [:]
+        fields["XMP:Title"] = metadata.title ?? ""
+        fields["XMP:Description"] = metadata.description ?? ""
+        fields["XMP:Subject"] = metadata.keywords.joined(separator: ", ")
+        fields["XMP-iptcExt:PersonInImage"] = metadata.personShown.joined(separator: ", ")
+        fields["XMP-iptcExt:DigitalSourceType"] = metadata.digitalSourceType?.rawValue ?? ""
+        fields["XMP:Creator"] = metadata.creator ?? ""
+        fields["XMP-photoshop:Credit"] = metadata.credit ?? ""
+        fields["XMP:Rights"] = metadata.copyright ?? ""
+        fields["XMP:DateCreated"] = metadata.dateCreated ?? ""
+        fields["XMP-photoshop:City"] = metadata.city ?? ""
+        fields["XMP-photoshop:Country"] = metadata.country ?? ""
+        fields["XMP-iptcExt:Event"] = metadata.event ?? ""
+
+        if let lat = metadata.latitude, let lon = metadata.longitude {
+            fields["EXIF:GPSLatitude"] = String(abs(lat))
+            fields["EXIF:GPSLatitudeRef"] = lat >= 0 ? "N" : "S"
+            fields["EXIF:GPSLongitude"] = String(abs(lon))
+            fields["EXIF:GPSLongitudeRef"] = lon >= 0 ? "E" : "W"
+        } else {
+            fields["EXIF:GPSLatitude"] = ""
+            fields["EXIF:GPSLatitudeRef"] = ""
+            fields["EXIF:GPSLongitude"] = ""
+            fields["EXIF:GPSLongitudeRef"] = ""
+        }
+
+        return fields
+    }
+
     private func writeMetadataAndPreserveHistory(onComplete: (() -> Void)? = nil) {
         guard selectedCount == 1,
               let imageURL = selectedURLs.first,
@@ -430,7 +512,6 @@ final class MetadataViewModel {
         }
 
         let edited = editingMetadata
-        let original = originalImageMetadata
         let previous = previousEditingMetadata
         let existingHistory = sidecarHistory
 
@@ -439,42 +520,8 @@ final class MetadataViewModel {
 
         Task {
             do {
-                var fields: [String: String] = [:]
-                if edited.title != original?.title { fields["XMP:Title"] = edited.title ?? "" }
-                if edited.description != original?.description { fields["XMP:Description"] = edited.description ?? "" }
-                if edited.keywords != original?.keywords {
-                    fields["XMP:Subject"] = edited.keywords.joined(separator: ", ")
-                }
-                if edited.personShown != original?.personShown {
-                    fields["XMP-iptcExt:PersonInImage"] = edited.personShown.joined(separator: ", ")
-                }
-                if edited.digitalSourceType != original?.digitalSourceType {
-                    fields["XMP-iptcExt:DigitalSourceType"] = edited.digitalSourceType?.rawValue ?? ""
-                }
-                if edited.latitude != original?.latitude || edited.longitude != original?.longitude {
-                    if let lat = edited.latitude, let lon = edited.longitude {
-                        fields["EXIF:GPSLatitude"] = String(abs(lat))
-                        fields["EXIF:GPSLatitudeRef"] = lat >= 0 ? "N" : "S"
-                        fields["EXIF:GPSLongitude"] = String(abs(lon))
-                        fields["EXIF:GPSLongitudeRef"] = lon >= 0 ? "E" : "W"
-                    } else {
-                        fields["EXIF:GPSLatitude"] = ""
-                        fields["EXIF:GPSLatitudeRef"] = ""
-                        fields["EXIF:GPSLongitude"] = ""
-                        fields["EXIF:GPSLongitudeRef"] = ""
-                    }
-                }
-                if edited.creator != original?.creator { fields["XMP:Creator"] = edited.creator ?? "" }
-                if edited.credit != original?.credit { fields["XMP-photoshop:Credit"] = edited.credit ?? "" }
-                if edited.copyright != original?.copyright { fields["XMP:Rights"] = edited.copyright ?? "" }
-                if edited.dateCreated != original?.dateCreated { fields["XMP:DateCreated"] = edited.dateCreated ?? "" }
-                if edited.city != original?.city { fields["XMP-photoshop:City"] = edited.city ?? "" }
-                if edited.country != original?.country { fields["XMP-photoshop:Country"] = edited.country ?? "" }
-                if edited.event != original?.event { fields["XMP-iptcExt:Event"] = edited.event ?? "" }
-
-                if !fields.isEmpty {
-                    try await exifToolService.writeFields(fields, to: [imageURL])
-                }
+                let fields = overwriteFields(from: edited)
+                try await exifToolService.writeFields(fields, to: [imageURL])
 
                 let now = Date()
                 let history = buildHistory(
@@ -499,6 +546,7 @@ final class MetadataViewModel {
                     self.previousEditingMetadata = edited
                     self.metadata = edited
                     self.originalImageMetadata = edited
+                    self.embeddedMetadata = edited
                     self.hasChanges = false
                 }
             } catch {
@@ -995,49 +1043,14 @@ final class MetadataViewModel {
 
         Task {
             do {
-                var fields: [String: String] = [:]
                 let edited = editingMetadata
-                let original = originalImageMetadata
-
-                if edited.title != original?.title { fields["XMP:Title"] = edited.title ?? "" }
-                if edited.description != original?.description { fields["XMP:Description"] = edited.description ?? "" }
-                if edited.keywords != original?.keywords {
-                    fields["XMP:Subject"] = edited.keywords.joined(separator: ", ")
-                }
-                if edited.personShown != original?.personShown {
-                    fields["XMP-iptcExt:PersonInImage"] = edited.personShown.joined(separator: ", ")
-                }
-                if edited.digitalSourceType != original?.digitalSourceType {
-                    fields["XMP-iptcExt:DigitalSourceType"] = edited.digitalSourceType?.rawValue ?? ""
-                }
-                if edited.latitude != original?.latitude || edited.longitude != original?.longitude {
-                    if let lat = edited.latitude, let lon = edited.longitude {
-                        fields["EXIF:GPSLatitude"] = String(abs(lat))
-                        fields["EXIF:GPSLatitudeRef"] = lat >= 0 ? "N" : "S"
-                        fields["EXIF:GPSLongitude"] = String(abs(lon))
-                        fields["EXIF:GPSLongitudeRef"] = lon >= 0 ? "E" : "W"
-                    } else {
-                        fields["EXIF:GPSLatitude"] = ""
-                        fields["EXIF:GPSLatitudeRef"] = ""
-                        fields["EXIF:GPSLongitude"] = ""
-                        fields["EXIF:GPSLongitudeRef"] = ""
-                    }
-                }
-                if edited.creator != original?.creator { fields["XMP:Creator"] = edited.creator ?? "" }
-                if edited.credit != original?.credit { fields["XMP-photoshop:Credit"] = edited.credit ?? "" }
-                if edited.copyright != original?.copyright { fields["XMP:Rights"] = edited.copyright ?? "" }
-                if edited.dateCreated != original?.dateCreated { fields["XMP:DateCreated"] = edited.dateCreated ?? "" }
-                if edited.city != original?.city { fields["XMP-photoshop:City"] = edited.city ?? "" }
-                if edited.country != original?.country { fields["XMP-photoshop:Country"] = edited.country ?? "" }
-                if edited.event != original?.event { fields["XMP-iptcExt:Event"] = edited.event ?? "" }
-
-                if !fields.isEmpty {
-                    try await exifToolService.writeFields(fields, to: [imageURL])
-                }
+                let fields = overwriteFields(from: edited)
+                try await exifToolService.writeFields(fields, to: [imageURL])
 
                 try? sidecarService.deleteSidecar(for: imageURL, in: folderURL)
                 self.metadata = edited
                 self.originalImageMetadata = edited
+                self.embeddedMetadata = edited
                 self.sidecarHistory = []
                 self.hasChanges = false
                 self.previousEditingMetadata = edited
@@ -1073,45 +1086,10 @@ final class MetadataViewModel {
                 }
 
                 let edited = sidecar.metadata
-                let original = sidecar.imageMetadataSnapshot
-
-                var fields: [String: String] = [:]
-                if edited.title != original?.title { fields["XMP:Title"] = edited.title ?? "" }
-                if edited.description != original?.description { fields["XMP:Description"] = edited.description ?? "" }
-                if edited.keywords != original?.keywords {
-                    fields["XMP:Subject"] = edited.keywords.joined(separator: ", ")
-                }
-                if edited.personShown != original?.personShown {
-                    fields["XMP-iptcExt:PersonInImage"] = edited.personShown.joined(separator: ", ")
-                }
-                if edited.digitalSourceType != original?.digitalSourceType {
-                    fields["XMP-iptcExt:DigitalSourceType"] = edited.digitalSourceType?.rawValue ?? ""
-                }
-                if edited.latitude != original?.latitude || edited.longitude != original?.longitude {
-                    if let lat = edited.latitude, let lon = edited.longitude {
-                        fields["EXIF:GPSLatitude"] = String(abs(lat))
-                        fields["EXIF:GPSLatitudeRef"] = lat >= 0 ? "N" : "S"
-                        fields["EXIF:GPSLongitude"] = String(abs(lon))
-                        fields["EXIF:GPSLongitudeRef"] = lon >= 0 ? "E" : "W"
-                    } else {
-                        fields["EXIF:GPSLatitude"] = ""
-                        fields["EXIF:GPSLatitudeRef"] = ""
-                        fields["EXIF:GPSLongitude"] = ""
-                        fields["EXIF:GPSLongitudeRef"] = ""
-                    }
-                }
-                if edited.creator != original?.creator { fields["XMP:Creator"] = edited.creator ?? "" }
-                if edited.credit != original?.credit { fields["XMP-photoshop:Credit"] = edited.credit ?? "" }
-                if edited.copyright != original?.copyright { fields["XMP:Rights"] = edited.copyright ?? "" }
-                if edited.dateCreated != original?.dateCreated { fields["XMP:DateCreated"] = edited.dateCreated ?? "" }
-                if edited.city != original?.city { fields["XMP-photoshop:City"] = edited.city ?? "" }
-                if edited.country != original?.country { fields["XMP-photoshop:Country"] = edited.country ?? "" }
-                if edited.event != original?.event { fields["XMP-iptcExt:Event"] = edited.event ?? "" }
+                let fields = overwriteFields(from: edited)
 
                 do {
-                    if !fields.isEmpty {
-                        try await exifToolService.writeFields(fields, to: [imageURL])
-                    }
+                    try await exifToolService.writeFields(fields, to: [imageURL])
                     try? sidecarService.deleteSidecar(for: imageURL, in: folderURL)
                 } catch {
                     // Continue with next image

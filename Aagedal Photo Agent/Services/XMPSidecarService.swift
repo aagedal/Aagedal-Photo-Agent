@@ -11,6 +11,11 @@ struct XMPSidecarService: Sendable {
         static let exif = "http://ns.adobe.com/exif/1.0/"
     }
 
+    private enum XMPPacket {
+        static let id = "W5M0MpCehiHzreSzNTczkc9d"
+        static let bom = "\u{FEFF}"
+    }
+
     func sidecarURL(for imageURL: URL) -> URL {
         imageURL.deletingPathExtension().appendingPathExtension("xmp")
     }
@@ -21,7 +26,7 @@ struct XMPSidecarService: Sendable {
 
         do {
             let data = try Data(contentsOf: url)
-            let document = try XMLDocument(data: data, options: [.nodePreserveAll])
+            guard let document = parseXMLDocument(from: data) else { return nil }
             guard let description = findDescription(in: document) else { return nil }
             return parseMetadata(from: description)
         } catch {
@@ -36,7 +41,7 @@ struct XMPSidecarService: Sendable {
         ensureNamespaces(on: description)
         updateDescription(description, with: metadata)
 
-        let data = document.xmlData(options: [.nodePrettyPrint])
+        let data = serializeXMP(document)
         try data.write(to: url)
     }
 
@@ -45,9 +50,7 @@ struct XMPSidecarService: Sendable {
     private func loadOrCreateDocument(at url: URL) throws -> XMLDocument {
         if FileManager.default.fileExists(atPath: url.path) {
             let data = try Data(contentsOf: url)
-            if let document = try? XMLDocument(data: data, options: [.nodePreserveAll]) {
-                return document
-            }
+            if let document = parseXMLDocument(from: data) { return document }
         }
         return createEmptyDocument()
     }
@@ -55,6 +58,7 @@ struct XMPSidecarService: Sendable {
     private func createEmptyDocument() -> XMLDocument {
         let xmpmeta = XMLElement(name: "x:xmpmeta")
         ensureNamespace(xmpmeta, prefix: "x", uri: Namespace.x)
+        ensureToolkitAttribute(on: xmpmeta)
 
         let rdf = XMLElement(name: "rdf:RDF")
         ensureNamespace(rdf, prefix: "rdf", uri: Namespace.rdf)
@@ -93,6 +97,7 @@ struct XMPSidecarService: Sendable {
         let root = document.rootElement() ?? {
             let xmpmeta = XMLElement(name: "x:xmpmeta")
             ensureNamespace(xmpmeta, prefix: "x", uri: Namespace.x)
+            ensureToolkitAttribute(on: xmpmeta)
             document.setRootElement(xmpmeta)
             return xmpmeta
         }()
@@ -139,6 +144,50 @@ struct XMPSidecarService: Sendable {
         }
     }
 
+    private func ensureToolkitAttribute(on element: XMLElement) {
+        guard element.localName == "xmpmeta" else { return }
+        ensureNamespace(element, prefix: "x", uri: Namespace.x)
+        if element.attribute(forName: "x:xmptk") == nil {
+            element.addAttribute(XMLNode.attribute(withName: "x:xmptk", stringValue: "Aagedal Photo Agent") as! XMLNode)
+        }
+    }
+
+    private func serializeXMP(_ document: XMLDocument) -> Data {
+        if let root = document.rootElement() {
+            ensureToolkitAttribute(on: root)
+        }
+
+        let body = document.rootElement()?.xmlString(options: [.nodePrettyPrint])
+            ?? document.xmlString(options: [.nodePrettyPrint])
+        let packet = [
+            "<?xpacket begin=\"\(XMPPacket.bom)\" id=\"\(XMPPacket.id)\"?>",
+            body,
+            "<?xpacket end=\"w\"?>"
+        ].joined(separator: "\n")
+
+        return packet.data(using: .utf8) ?? Data()
+    }
+
+    private func parseXMLDocument(from data: Data) -> XMLDocument? {
+        if let document = try? XMLDocument(data: data, options: [.nodePreserveAll]) {
+            return document
+        }
+
+        guard let xml = String(data: data, encoding: .utf8) else { return nil }
+        let cleaned = stripXPacket(from: xml)
+        guard let cleanedData = cleaned.data(using: .utf8) else { return nil }
+        return try? XMLDocument(data: cleanedData, options: [.nodePreserveAll])
+    }
+
+    private func stripXPacket(from xml: String) -> String {
+        var cleaned = xml
+        let pattern = "<\\?xpacket[^>]*\\?>"
+        while let range = cleaned.range(of: pattern, options: .regularExpression) {
+            cleaned.removeSubrange(range)
+        }
+        return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     // MARK: - Update
 
     private func updateDescription(_ description: XMLElement, with metadata: IPTCMetadata) {
@@ -146,6 +195,8 @@ struct XMPSidecarService: Sendable {
         setAltText(on: description, prefix: "dc", localName: "description", value: metadata.description)
         setBag(on: description, prefix: "dc", localName: "subject", values: metadata.keywords)
         setBag(on: description, prefix: "Iptc4xmpExt", localName: "PersonInImage", values: metadata.personShown)
+        setSimple(on: description, prefix: "xmp", localName: "Rating", value: metadata.rating.map(String.init))
+        setSimple(on: description, prefix: "xmp", localName: "Label", value: metadata.label)
         setSimple(on: description, prefix: "Iptc4xmpExt", localName: "DigitalSourceType", value: metadata.digitalSourceType?.rawValue)
         setSeq(on: description, prefix: "dc", localName: "creator", values: metadata.creator.map { [$0] } ?? [])
         setSimple(on: description, prefix: "photoshop", localName: "Credit", value: metadata.credit)
@@ -247,6 +298,8 @@ struct XMPSidecarService: Sendable {
         let descriptionText = parseAltText(from: description, prefix: "dc", localName: "description")
         let keywords = parseBag(from: description, prefix: "dc", localName: "subject")
         let personShown = parseBag(from: description, prefix: "Iptc4xmpExt", localName: "PersonInImage")
+        let ratingValue = parseSimple(from: description, prefix: "xmp", localName: "Rating")
+        let label = parseSimple(from: description, prefix: "xmp", localName: "Label")
         let digitalSourceType = parseSimple(from: description, prefix: "Iptc4xmpExt", localName: "DigitalSourceType")
         let creator = parseSeq(from: description, prefix: "dc", localName: "creator").first
         let credit = parseSimple(from: description, prefix: "photoshop", localName: "Credit")
@@ -272,7 +325,9 @@ struct XMPSidecarService: Sendable {
             dateCreated: dateCreated,
             city: city,
             country: country,
-            event: event
+            event: event,
+            rating: ratingValue.flatMap { Int($0) },
+            label: label
         )
     }
 

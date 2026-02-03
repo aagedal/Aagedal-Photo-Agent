@@ -77,6 +77,8 @@ struct MetadataSidecarService: Sendable {
         if edited.description != original.description { names.append("Description") }
         if edited.keywords != original.keywords { names.append("Keywords") }
         if edited.personShown != original.personShown { names.append("Person Shown") }
+        if edited.rating != original.rating { names.append("Rating") }
+        if edited.label != original.label { names.append("Label") }
         if edited.copyright != original.copyright { names.append("Copyright") }
         if edited.creator != original.creator { names.append("Creator") }
         if edited.credit != original.credit { names.append("Credit") }
