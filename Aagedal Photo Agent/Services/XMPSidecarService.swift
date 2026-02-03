@@ -191,6 +191,7 @@ struct XMPSidecarService: Sendable {
     // MARK: - Update
 
     private func updateDescription(_ description: XMLElement, with metadata: IPTCMetadata) {
+        setSimple(on: description, prefix: "photoshop", localName: "Headline", value: metadata.title)
         setAltText(on: description, prefix: "dc", localName: "title", value: metadata.title)
         setAltText(on: description, prefix: "dc", localName: "description", value: metadata.description)
         setBag(on: description, prefix: "dc", localName: "subject", values: metadata.keywords)
@@ -294,7 +295,8 @@ struct XMPSidecarService: Sendable {
     // MARK: - Parse
 
     private func parseMetadata(from description: XMLElement) -> IPTCMetadata {
-        let title = parseAltText(from: description, prefix: "dc", localName: "title")
+        let headline = parseSimple(from: description, prefix: "photoshop", localName: "Headline")
+        let title = headline ?? parseAltText(from: description, prefix: "dc", localName: "title")
         let descriptionText = parseAltText(from: description, prefix: "dc", localName: "description")
         let keywords = parseBag(from: description, prefix: "dc", localName: "subject")
         let personShown = parseBag(from: description, prefix: "Iptc4xmpExt", localName: "PersonInImage")

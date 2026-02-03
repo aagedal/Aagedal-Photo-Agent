@@ -168,7 +168,7 @@ struct FTPUploadView: View {
 
                 if changed {
                     var fields: [String: String] = [:]
-                    if resolved.title != meta.title { fields["XMP:Title"] = resolved.title ?? "" }
+                    if resolved.title != meta.title { fields["XMP-photoshop:Headline"] = resolved.title ?? "" }
                     if resolved.description != meta.description { fields["XMP:Description"] = resolved.description ?? "" }
                     if resolved.creator != meta.creator { fields["XMP:Creator"] = resolved.creator ?? "" }
                     if resolved.credit != meta.credit { fields["XMP-photoshop:Credit"] = resolved.credit ?? "" }

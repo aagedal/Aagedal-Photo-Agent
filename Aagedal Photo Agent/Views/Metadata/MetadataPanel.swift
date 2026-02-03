@@ -21,6 +21,12 @@ struct MetadataPanel: View {
     enum ListFileTarget {
         case keywords
         case personShown
+        case copyright
+        case creator
+        case credit
+        case city
+        case country
+        case event
     }
 
     enum C2PAOverwriteIntent {
@@ -102,11 +108,9 @@ struct MetadataPanel: View {
                   viewModel.originalImageMetadata != nil else {
                 return .ignored
             }
-            if viewModel.metadataDisplayMode == .embedded {
-                viewModel.metadataDisplayMode = .pending
-            } else {
-                viewModel.metadataDisplayMode = .embedded
-            }
+            guard viewModel.hasXmpMetadata else { return .ignored }
+            let next: MetadataReferenceSource = viewModel.metadataReferenceSource == .embedded ? .xmp : .embedded
+            viewModel.applyReferenceSource(next)
             return .handled
         }
         .alert("C2PA Protected Image", isPresented: $showingC2PAWarning) {
@@ -148,6 +152,18 @@ struct MetadataPanel: View {
                     settingsViewModel.setKeywordsListURL(url)
                 case .personShown:
                     settingsViewModel.setPersonShownListURL(url)
+                case .copyright:
+                    settingsViewModel.setCopyrightListURL(url)
+                case .creator:
+                    settingsViewModel.setCreatorListURL(url)
+                case .credit:
+                    settingsViewModel.setCreditListURL(url)
+                case .city:
+                    settingsViewModel.setCityListURL(url)
+                case .country:
+                    settingsViewModel.setCountryListURL(url)
+                case .event:
+                    settingsViewModel.setEventListURL(url)
                 }
             }
         }
@@ -195,29 +211,14 @@ struct MetadataPanel: View {
     @ViewBuilder
     private var priorityFieldsSection: some View {
         Section {
-            // Toggle between Embedded and Pending views
-            if !viewModel.isBatchEdit {
-                Picker("", selection: $viewModel.metadataDisplayMode) {
-                    Text("Pending").tag(MetadataDisplayMode.pending)
-                    Text("XMP")
-                        .tag(MetadataDisplayMode.xmp)
-                        .disabled(!viewModel.hasXmpMetadata)
-                    Text("Embedded").tag(MetadataDisplayMode.embedded)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .disabled(viewModel.originalImageMetadata == nil)
-            }
-
-            if viewModel.metadataDisplayMode != .pending && !viewModel.isBatchEdit {
-                readOnlyPriorityFieldsView
-            } else {
-                editableMetadataFields
-            }
+            editableMetadataFields
         } header: {
             HStack {
                 Text("Metadata")
                     .font(.headline)
+                if !viewModel.isBatchEdit, viewModel.hasXmpMetadata {
+                    referenceSourcePicker
+                }
                 Spacer()
                 Button {
                     showingHistoryPopover = true
@@ -237,6 +238,11 @@ struct MetadataPanel: View {
                             showingHistoryPopover = false
                             onPendingStatusChanged?()
                         },
+                        onRestoreOriginal: {
+                            viewModel.restoreToOriginal()
+                            showingHistoryPopover = false
+                            onPendingStatusChanged?()
+                        },
                         onClearHistory: {
                             viewModel.clearHistory()
                             showingHistoryPopover = false
@@ -250,12 +256,12 @@ struct MetadataPanel: View {
     @ViewBuilder
     private var editableMetadataFields: some View {
         EditableTextField(
-            label: "Title",
+            label: "Headline",
             text: Binding(
                 get: { viewModel.editingMetadata.title ?? "" },
                 set: { viewModel.editingMetadata.title = $0.isEmpty ? nil : $0; viewModel.markChanged() }
             ),
-            placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "title") : "Enter title",
+            placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "title") : "Enter headline",
             onCommit: { commitEdits() },
             showsDifference: viewModel.fieldDiffers(\.title),
             hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("title"),
@@ -317,6 +323,7 @@ struct MetadataPanel: View {
             hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("keywords"),
             onChange: { viewModel.markChanged() },
             onCommit: { commitEdits() },
+            showPresetSelectionIndicator: true,
             presetList: settingsViewModel.loadKeywordsList(),
             onChooseListFile: {
                 listFilePickerTarget = .keywords
@@ -334,6 +341,8 @@ struct MetadataPanel: View {
             placeholder: "Add name",
             onChange: { viewModel.markChanged() },
             onCommit: { commitEdits() },
+            showPresetSelectionIndicator: true,
+            allowsPresetToggleRemoval: true,
             presetList: settingsViewModel.loadPersonShownList(),
             onChooseListFile: {
                 listFilePickerTarget = .personShown
@@ -353,35 +362,14 @@ struct MetadataPanel: View {
             onCommit: { commitEdits() },
             showsDifference: viewModel.fieldDiffers(\.copyright),
             hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("copyright"),
+            presetList: settingsViewModel.loadCopyrightList(),
+            onChooseListFile: {
+                listFilePickerTarget = .copyright
+                showingListFilePicker = true
+            },
             focusKey: "copyright",
             focusedField: $focusedField
         )
-    }
-
-    private var readOnlyEmptyMessage: String {
-        switch viewModel.metadataDisplayMode {
-        case .xmp:
-            return "No XMP sidecar found"
-        case .embedded:
-            return "No embedded metadata"
-        case .pending:
-            return ""
-        }
-    }
-
-    @ViewBuilder
-    private var readOnlyPriorityFieldsView: some View {
-        if let metadata = viewModel.readOnlyMetadata {
-            ReadOnlyField(label: "Title", value: metadata.title)
-            ReadOnlyField(label: "Description", value: metadata.description)
-            ReadOnlyKeywords(label: "Keywords", keywords: metadata.keywords)
-            ReadOnlyKeywords(label: "Person Shown", keywords: metadata.personShown)
-            ReadOnlyField(label: "Copyright", value: metadata.copyright)
-        } else {
-            Text(readOnlyEmptyMessage)
-                .foregroundStyle(.secondary)
-                .font(.caption)
-        }
     }
 
     // MARK: - Classification
@@ -389,30 +377,25 @@ struct MetadataPanel: View {
     @ViewBuilder
     private var classificationSection: some View {
         VStack(alignment: .leading, spacing: 2) {
-            if viewModel.metadataDisplayMode != .pending && !viewModel.isBatchEdit {
-                let displayValue = viewModel.readOnlyMetadata?.digitalSourceType?.displayName
-                ReadOnlyField(label: "Digital Source Type", value: displayValue)
-            } else {
-                Text("Digital Source Type")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            Text("Digital Source Type")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
-                Picker("", selection: Binding(
-                    get: { viewModel.editingMetadata.digitalSourceType },
-                    set: {
-                        viewModel.editingMetadata.digitalSourceType = $0
-                        viewModel.markChanged()
-                        commitEdits()
-                    }
-                )) {
-                    Text("None").tag(nil as DigitalSourceType?)
-                    ForEach(DigitalSourceType.allCases, id: \.self) { type in
-                        Text(type.displayName).tag(type as DigitalSourceType?)
-                    }
+            Picker("", selection: Binding(
+                get: { viewModel.editingMetadata.digitalSourceType },
+                set: {
+                    viewModel.editingMetadata.digitalSourceType = $0
+                    viewModel.markChanged()
+                    commitEdits()
                 }
-                .pickerStyle(.menu)
-                .labelsHidden()
+            )) {
+                Text("None").tag(nil as DigitalSourceType?)
+                ForEach(DigitalSourceType.allCases, id: \.self) { type in
+                    Text(type.displayName).tag(type as DigitalSourceType?)
+                }
             }
+            .pickerStyle(.menu)
+            .labelsHidden()
         }
     }
 
@@ -421,11 +404,7 @@ struct MetadataPanel: View {
     @ViewBuilder
     private var additionalFieldsSection: some View {
         Section {
-            if viewModel.metadataDisplayMode != .pending && !viewModel.isBatchEdit {
-                readOnlyAdditionalFieldsView
-            } else {
-                editableAdditionalFields
-            }
+            editableAdditionalFields
         } header: {
             Text("Additional Fields")
                 .font(.subheadline)
@@ -445,6 +424,11 @@ struct MetadataPanel: View {
             onCommit: { commitEdits() },
             showsDifference: viewModel.fieldDiffers(\.creator),
             hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("creator"),
+            presetList: settingsViewModel.loadCreatorList(),
+            onChooseListFile: {
+                listFilePickerTarget = .creator
+                showingListFilePicker = true
+            },
             focusKey: "creator",
             focusedField: $focusedField
         )
@@ -458,6 +442,11 @@ struct MetadataPanel: View {
             onCommit: { commitEdits() },
             showsDifference: viewModel.fieldDiffers(\.credit),
             hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("credit"),
+            presetList: settingsViewModel.loadCreditList(),
+            onChooseListFile: {
+                listFilePickerTarget = .credit
+                showingListFilePicker = true
+            },
             focusKey: "credit",
             focusedField: $focusedField
         )
@@ -471,6 +460,11 @@ struct MetadataPanel: View {
             onCommit: { commitEdits() },
             showsDifference: viewModel.fieldDiffers(\.city),
             hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("city"),
+            presetList: settingsViewModel.loadCityList(),
+            onChooseListFile: {
+                listFilePickerTarget = .city
+                showingListFilePicker = true
+            },
             focusKey: "city",
             focusedField: $focusedField
         )
@@ -484,6 +478,11 @@ struct MetadataPanel: View {
             onCommit: { commitEdits() },
             showsDifference: viewModel.fieldDiffers(\.country),
             hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("country"),
+            presetList: settingsViewModel.loadCountryList(),
+            onChooseListFile: {
+                listFilePickerTarget = .country
+                showingListFilePicker = true
+            },
             focusKey: "country",
             focusedField: $focusedField
         )
@@ -497,84 +496,62 @@ struct MetadataPanel: View {
             onCommit: { commitEdits() },
             showsDifference: viewModel.fieldDiffers(\.event),
             hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("event"),
+            presetList: settingsViewModel.loadEventList(),
+            onChooseListFile: {
+                listFilePickerTarget = .event
+                showingListFilePicker = true
+            },
             focusKey: "event",
             focusedField: $focusedField
         )
     }
 
-    @ViewBuilder
-    private var readOnlyAdditionalFieldsView: some View {
-        if let metadata = viewModel.readOnlyMetadata {
-            ReadOnlyField(label: "Creator", value: metadata.creator)
-            ReadOnlyField(label: "Credit", value: metadata.credit)
-            ReadOnlyField(label: "City", value: metadata.city)
-            ReadOnlyField(label: "Country", value: metadata.country)
-            ReadOnlyField(label: "Event", value: metadata.event)
-        } else {
-            Text(readOnlyEmptyMessage)
-                .foregroundStyle(.secondary)
-                .font(.caption)
+    private var referenceSourcePicker: some View {
+        Picker("", selection: Binding(
+            get: { viewModel.metadataReferenceSource },
+            set: { viewModel.applyReferenceSource($0) }
+        )) {
+            Text("Embedded").tag(MetadataReferenceSource.embedded)
+            Text("XMP Sidecar")
+                .tag(MetadataReferenceSource.xmp)
+                .disabled(!viewModel.hasXmpMetadata)
         }
+        .pickerStyle(.menu)
+        .labelsHidden()
+        .controlSize(.small)
     }
 
     // MARK: - GPS
 
     @ViewBuilder
     private var gpsSection: some View {
-        if viewModel.metadataDisplayMode != .pending && !viewModel.isBatchEdit {
-            readOnlyGPSView
-        } else {
-            GPSSectionView(
-                latitude: Binding(
-                    get: { viewModel.editingMetadata.latitude },
-                    set: { viewModel.editingMetadata.latitude = $0 }
-                ),
-                longitude: Binding(
-                    get: { viewModel.editingMetadata.longitude },
-                    set: { viewModel.editingMetadata.longitude = $0 }
-                ),
-                onChanged: {
-                    viewModel.markChanged()
-                    commitEdits()
-                },
-                focusKey: "gps",
-                focusedField: $focusedField,
-                isBatchMode: viewModel.isBatchEdit,
-                isReverseGeocoding: viewModel.isReverseGeocoding,
-                geocodingError: viewModel.geocodingError,
-                geocodingProgress: viewModel.geocodingProgress,
-                onReverseGeocode: {
-                    if viewModel.isBatchEdit {
-                        viewModel.reverseGeocodeSelectedImages()
-                    } else {
-                        viewModel.reverseGeocodeCurrentLocation()
-                    }
-                }
-            )
-        }
-    }
-
-    @ViewBuilder
-    private var readOnlyGPSView: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("GPS Location")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            if let metadata = viewModel.readOnlyMetadata {
-                if let lat = metadata.latitude, let lon = metadata.longitude {
-                    Text(String(format: "%.6f, %.6f", lat, lon))
-                        .font(.body)
+        GPSSectionView(
+            latitude: Binding(
+                get: { viewModel.editingMetadata.latitude },
+                set: { viewModel.editingMetadata.latitude = $0 }
+            ),
+            longitude: Binding(
+                get: { viewModel.editingMetadata.longitude },
+                set: { viewModel.editingMetadata.longitude = $0 }
+            ),
+            onChanged: {
+                viewModel.markChanged()
+                commitEdits()
+            },
+            focusKey: "gps",
+            focusedField: $focusedField,
+            isBatchMode: viewModel.isBatchEdit,
+            isReverseGeocoding: viewModel.isReverseGeocoding,
+            geocodingError: viewModel.geocodingError,
+            geocodingProgress: viewModel.geocodingProgress,
+            onReverseGeocode: {
+                if viewModel.isBatchEdit {
+                    viewModel.reverseGeocodeSelectedImages()
                 } else {
-                    Text("No GPS data")
-                        .font(.body)
-                        .foregroundStyle(.secondary)
+                    viewModel.reverseGeocodeCurrentLocation()
                 }
-            } else {
-                Text(readOnlyEmptyMessage)
-                    .font(.body)
-                    .foregroundStyle(.secondary)
             }
-        }
+        )
     }
 
     // MARK: - Action Buttons
@@ -624,15 +601,6 @@ struct MetadataPanel: View {
                 }
 
                 Button {
-                    viewModel.discardPendingChanges()
-                    onPendingStatusChanged?()
-                } label: {
-                    Image(systemName: "arrow.uturn.backward")
-                }
-                .disabled((!viewModel.hasChanges && !viewModel.selectedHavePendingSidecars) || viewModel.isSaving)
-                .help("Discard pending changes")
-
-                Button {
                     if browserViewModel.firstSelectedImage?.hasC2PA == true {
                         c2paOverwriteIntent = .manualWrite
                         showingC2PAWarning = true
@@ -661,6 +629,8 @@ struct KeywordsEditorWithDiff: View {
     var placeholder: String = "Add keyword"
     var onChange: (() -> Void)? = nil
     var onCommit: (() -> Void)? = nil
+    var showPresetSelectionIndicator: Bool = false
+    var allowsPresetToggleRemoval: Bool = false
     var presetList: [String] = []
     var onChooseListFile: (() -> Void)? = nil
     var focusKey: String? = nil
@@ -683,13 +653,29 @@ struct KeywordsEditorWithDiff: View {
                     Menu {
                         if !presetList.isEmpty {
                             ForEach(presetList, id: \.self) { item in
-                                Button(item) {
-                                    if !keywords.contains(item) {
+                                let isSelected = keywords.contains(item)
+                                Button {
+                                    if isSelected {
+                                        if allowsPresetToggleRemoval {
+                                            keywords.removeAll { $0 == item }
+                                            onChange?()
+                                            onCommit?()
+                                        }
+                                    } else {
                                         keywords.append(item)
                                         onChange?()
                                         onCommit?()
                                     }
+                                } label: {
+                                    HStack(spacing: 6) {
+                                        if showPresetSelectionIndicator {
+                                            Image(systemName: "checkmark")
+                                                .opacity(isSelected ? 1 : 0)
+                                        }
+                                        Text(item)
+                                    }
                                 }
+                                .disabled(isSelected && !allowsPresetToggleRemoval)
                             }
                             Divider()
                         }
@@ -703,7 +689,7 @@ struct KeywordsEditorWithDiff: View {
                     }
                     .menuStyle(.borderlessButton)
                     .fixedSize()
-                    .help(presetList.isEmpty ? "Choose a list file to load presets" : "Add from preset list")
+                    .help(presetList.isEmpty ? "Choose a list file to load presets" : "Choose from preset list")
                 }
             }
 
@@ -807,6 +793,8 @@ struct EditableTextField: View {
     var onCommit: (() -> Void)? = nil
     var showsDifference: Bool = false
     var hasMultipleValues: Bool = false
+    var presetList: [String] = []
+    var onChooseListFile: (() -> Void)? = nil
     var focusKey: String? = nil
     var focusedField: FocusState<String?>.Binding? = nil
 
@@ -819,6 +807,42 @@ struct EditableTextField: View {
                 DifferenceIndicator(differs: showsDifference)
                 if hasMultipleValues {
                     MultipleValuesIndicator()
+                }
+                Spacer()
+                if !presetList.isEmpty || onChooseListFile != nil {
+                    Menu {
+                        if !presetList.isEmpty {
+                            ForEach(presetList, id: \.self) { item in
+                                let isSelected = text == item
+                                Button {
+                                    if !isSelected {
+                                        text = item
+                                        onCommit?()
+                                    }
+                                } label: {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "checkmark")
+                                            .opacity(isSelected ? 1 : 0)
+                                        Text(item)
+                                    }
+                                }
+                                .disabled(isSelected)
+                            }
+                            Divider()
+                        }
+                        if let onChooseListFile {
+                            Button("Choose List File...") {
+                                onChooseListFile()
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "list.bullet")
+                            .font(.caption)
+                            .foregroundStyle(presetList.isEmpty ? .secondary : .primary)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .help(presetList.isEmpty ? "Choose a list file to load presets" : "Choose from preset list")
                 }
             }
             if let focusedField, let focusKey {

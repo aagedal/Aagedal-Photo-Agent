@@ -389,6 +389,13 @@ struct SettingsView: View {
                 Text("C2PA content credentials can be invalidated by writing to the image file. You will be prompted before overwriting.")
                     .font(.caption)
                     .foregroundStyle(.orange)
+
+                Divider()
+
+                Toggle("Prefer XMP sidecar when available", isOn: $settingsViewModel.preferXMPSidecar)
+                Text("When an XMP sidecar exists, use it as the primary metadata source for viewing and comparisons.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

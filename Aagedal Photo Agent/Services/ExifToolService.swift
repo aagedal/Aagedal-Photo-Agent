@@ -200,7 +200,9 @@ final class ExifToolService {
         }
 
         return IPTCMetadata(
-            title: dict["Title"] as? String ?? dict["ObjectName"] as? String,
+            title: dict["Headline"] as? String
+                ?? dict["Title"] as? String
+                ?? dict["ObjectName"] as? String,
             description: dict["Description"] as? String ?? dict["Caption-Abstract"] as? String,
             keywords: parseStringOrArray(dict["Subject"] ?? dict["Keywords"]),
             personShown: parseStringOrArray(dict["PersonInImage"]),
@@ -225,13 +227,32 @@ final class ExifToolService {
     func writeFields(_ fields: [String: String], to urls: [URL]) async throws {
         guard !urls.isEmpty, !fields.isEmpty else { return }
 
+        var normalizedFields = fields
+        // Bridge tends to prioritize IPTC Keywords/Copyright over XMP for some formats.
+        // Mirror XMP writes into IPTC when not explicitly provided.
+        if let subject = normalizedFields["XMP:Subject"], normalizedFields["IPTC:Keywords"] == nil {
+            normalizedFields["IPTC:Keywords"] = subject
+        }
+        if let rights = normalizedFields["XMP:Rights"], normalizedFields["IPTC:CopyrightNotice"] == nil {
+            normalizedFields["IPTC:CopyrightNotice"] = rights
+        }
+        if let title = normalizedFields["XMP:Title"], normalizedFields["XMP-photoshop:Headline"] == nil {
+            normalizedFields["XMP-photoshop:Headline"] = title
+        }
+        if let headline = normalizedFields["XMP-photoshop:Headline"], normalizedFields["IPTC:Headline"] == nil {
+            normalizedFields["IPTC:Headline"] = headline
+        }
+        if let creator = normalizedFields["XMP:Creator"], normalizedFields["IPTC:By-line"] == nil {
+            normalizedFields["IPTC:By-line"] = creator
+        }
+
         let creationDates = captureCreationDates(for: urls)
         defer { restoreCreationDates(creationDates) }
 
         var args = ["-overwrite_original", "-sep", ", "]
         var tempFiles: [URL] = []
 
-        for (key, value) in fields {
+        for (key, value) in normalizedFields {
             if value.contains("\n") || value.contains("\r") {
                 let tempURL = FileManager.default.temporaryDirectory
                     .appendingPathComponent(UUID().uuidString + ".txt")

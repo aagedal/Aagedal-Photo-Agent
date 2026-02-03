@@ -3,7 +3,13 @@ import SwiftUI
 struct MetadataHistoryView: View {
     let history: [MetadataHistoryEntry]
     var onRestoreToPoint: ((Int) -> Void)?
+    var onRestoreOriginal: (() -> Void)?
     var onClearHistory: (() -> Void)?
+
+    private func displayName(for fieldName: String) -> String {
+        if fieldName == "Title" { return "Headline" }
+        return fieldName
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -28,13 +34,31 @@ struct MetadataHistoryView: View {
                     .foregroundStyle(.secondary)
                     .frame(maxHeight: .infinity)
             } else {
+                if let onRestoreOriginal {
+                    Button {
+                        onRestoreOriginal()
+                    } label: {
+                        HStack {
+                            Text("Original State")
+                                .fontWeight(.medium)
+                            Spacer()
+                            Text("Before edits")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.bottom, 4)
+                }
+
                 List(Array(history.enumerated().reversed()), id: \.element.id) { index, entry in
                     Button {
                         onRestoreToPoint?(index)
                     } label: {
                         VStack(alignment: .leading, spacing: 2) {
                             HStack {
-                                Text(entry.fieldName)
+                                Text(displayName(for: entry.fieldName))
                                     .fontWeight(.medium)
                                 Spacer()
                                 Text(entry.timestamp, style: .relative)
@@ -58,7 +82,7 @@ struct MetadataHistoryView: View {
                 }
                 .listStyle(.plain)
 
-                Text("Click an entry to restore to that point")
+                Text("Click an entry to restore to that point, or choose Original State")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }

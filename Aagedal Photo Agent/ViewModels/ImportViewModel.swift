@@ -248,7 +248,7 @@ final class ImportViewModel {
     private func buildMetadataFields(from meta: IPTCMetadata) -> [String: String] {
         var fields: [String: String] = [:]
 
-        if let v = meta.title, !v.isEmpty { fields["XMP:Title"] = v }
+        if let v = meta.title, !v.isEmpty { fields["XMP-photoshop:Headline"] = v }
         if let v = meta.description, !v.isEmpty { fields["XMP:Description"] = v }
         if !meta.keywords.isEmpty { fields["XMP:Subject"] = meta.keywords.joined(separator: ", ") }
         if !meta.personShown.isEmpty { fields["XMP-iptcExt:PersonInImage"] = meta.personShown.joined(separator: ", ") }

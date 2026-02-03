@@ -33,6 +33,9 @@ enum MetadataWriteMode: String, CaseIterable, Identifiable, Sendable {
         [.historyOnly, .writeToXMPSidecar, .writeToFile]
     }
 
+    static var defaultNonC2PA: MetadataWriteMode { .writeToFile }
+    static var defaultC2PA: MetadataWriteMode { .writeToXMPSidecar }
+
     static var current: MetadataWriteMode {
         current(forC2PA: false)
     }
@@ -43,18 +46,18 @@ enum MetadataWriteMode: String, CaseIterable, Identifiable, Sendable {
 
         if forC2PA {
             if defaults.object(forKey: "metadataWriteModeC2PA") != nil {
-                let raw = defaults.string(forKey: "metadataWriteModeC2PA") ?? MetadataWriteMode.historyOnly.rawValue
-                return MetadataWriteMode(rawValue: raw) ?? .historyOnly
+                let raw = defaults.string(forKey: "metadataWriteModeC2PA") ?? MetadataWriteMode.defaultC2PA.rawValue
+                return MetadataWriteMode(rawValue: raw) ?? .defaultC2PA
             }
 
-            let raw = defaults.string(forKey: legacyKey) ?? MetadataWriteMode.historyOnly.rawValue
-            let mode = MetadataWriteMode(rawValue: raw) ?? .historyOnly
-            return mode == .writeToFile ? .historyOnly : mode
+            let raw = defaults.string(forKey: legacyKey) ?? MetadataWriteMode.defaultC2PA.rawValue
+            let mode = MetadataWriteMode(rawValue: raw) ?? .defaultC2PA
+            return mode == .writeToFile ? .writeToXMPSidecar : mode
         } else {
             let raw = defaults.string(forKey: "metadataWriteModeNonC2PA")
                 ?? defaults.string(forKey: legacyKey)
-                ?? MetadataWriteMode.historyOnly.rawValue
-            return MetadataWriteMode(rawValue: raw) ?? .historyOnly
+                ?? MetadataWriteMode.defaultNonC2PA.rawValue
+            return MetadataWriteMode(rawValue: raw) ?? .defaultNonC2PA
         }
     }
 }

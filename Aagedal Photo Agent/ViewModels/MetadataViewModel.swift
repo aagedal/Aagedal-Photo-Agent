@@ -1,20 +1,17 @@
 import Foundation
 
-enum MetadataDisplayMode: String, CaseIterable, Identifiable, Sendable {
-    case pending
-    case xmp
+enum MetadataReferenceSource: String, CaseIterable, Identifiable, Sendable {
     case embedded
+    case xmp
 
     var id: String { rawValue }
 
     var displayName: String {
         switch self {
-        case .pending:
-            return "Pending"
-        case .xmp:
-            return "XMP"
         case .embedded:
             return "Embedded"
+        case .xmp:
+            return "XMP Sidecar"
         }
     }
 }
@@ -38,18 +35,11 @@ final class MetadataViewModel {
     var xmpMetadata: IPTCMetadata?
     var sidecarHistory: [MetadataHistoryEntry] = []
     var currentFolderURL: URL?
-    var metadataDisplayMode: MetadataDisplayMode = .pending
+    var metadataReferenceSource: MetadataReferenceSource = .embedded
 
     var hasXmpMetadata: Bool { xmpMetadata != nil }
-    var readOnlyMetadata: IPTCMetadata? {
-        switch metadataDisplayMode {
-        case .pending:
-            return nil
-        case .xmp:
-            return xmpMetadata
-        case .embedded:
-            return embeddedMetadata
-        }
+    var referenceMetadata: IPTCMetadata? {
+        referenceMetadata(for: metadataReferenceSource, embedded: embeddedMetadata, xmp: xmpMetadata)
     }
 
     // Batch metadata state - stores common values across selected images
@@ -74,6 +64,31 @@ final class MetadataViewModel {
     }
 
     var isBatchEdit: Bool { selectedCount > 1 }
+
+    private var prefersXMPSidecar: Bool {
+        UserDefaults.standard.bool(forKey: "metadataPreferXMPSidecar")
+    }
+
+    private func defaultReferenceSource(hasXmp: Bool) -> MetadataReferenceSource {
+        if prefersXMPSidecar, hasXmp { return .xmp }
+        return .embedded
+    }
+
+    private func referenceMetadata(
+        for source: MetadataReferenceSource,
+        embedded: IPTCMetadata?,
+        xmp: IPTCMetadata?
+    ) -> IPTCMetadata? {
+        switch source {
+        case .embedded:
+            return embedded
+        case .xmp:
+            if let embedded, let xmp {
+                return embedded.merged(preferring: xmp)
+            }
+            return xmp ?? embedded
+        }
+    }
 
     var selectedHavePendingSidecars: Bool {
         guard let folderURL = currentFolderURL else { return false }
@@ -119,7 +134,6 @@ final class MetadataViewModel {
 
         if images.count == 1 {
             let imageURL = images[0].url
-            let imageHasC2PA = images[0].hasC2PA
             metadata = nil
             editingMetadata = IPTCMetadata()
             previousEditingMetadata = nil
@@ -130,22 +144,25 @@ final class MetadataViewModel {
                     let embedded = try await exifToolService.readFullMetadata(url: imageURL)
                     guard !Task.isCancelled else { return }
                     let xmpMeta = xmpSidecarService.loadSidecar(for: imageURL)
-                    let mode = MetadataWriteMode.current(forC2PA: imageHasC2PA)
-                    var baseMeta = embedded
-                    if mode == .writeToXMPSidecar, let xmpMeta {
-                        baseMeta = embedded.merged(preferring: xmpMeta)
-                    }
+                    let referenceSource = self.defaultReferenceSource(hasXmp: xmpMeta != nil)
+                    let baseMeta = self.referenceMetadata(
+                        for: referenceSource,
+                        embedded: embedded,
+                        xmp: xmpMeta
+                    ) ?? embedded
                     guard !Task.isCancelled else { return }
                     guard self.selectedURLs.count == 1,
                           self.selectedURLs.first == imageURL else { return }
                     self.embeddedMetadata = embedded
                     self.xmpMetadata = xmpMeta
+                    self.metadataReferenceSource = referenceSource
                     self.metadata = baseMeta
                     self.originalImageMetadata = baseMeta
 
                     if let folder = self.currentFolderURL,
                        let sidecar = sidecarService.loadSidecar(for: imageURL, in: folder) {
                         self.sidecarHistory = sidecar.history
+                        self.sidecarHistory.trimToHistoryLimit()
                         if sidecar.pendingChanges {
                             self.editingMetadata = sidecar.metadata
                             self.hasChanges = true
@@ -156,8 +173,8 @@ final class MetadataViewModel {
                         self.editingMetadata = baseMeta
                     }
                     self.previousEditingMetadata = self.editingMetadata
-                    if self.metadataDisplayMode == .xmp, self.xmpMetadata == nil {
-                        self.metadataDisplayMode = .pending
+                    if self.metadataReferenceSource == .xmp, self.xmpMetadata == nil {
+                        self.metadataReferenceSource = .embedded
                     }
                 } catch {
                     self.metadata = nil
@@ -174,7 +191,7 @@ final class MetadataViewModel {
             previousEditingMetadata = nil
             embeddedMetadata = nil
             xmpMetadata = nil
-            metadataDisplayMode = .pending
+            metadataReferenceSource = .embedded
             isLoadingBatchMetadata = true
 
             let selectionSnapshot = Set(images.map(\.url))
@@ -183,6 +200,27 @@ final class MetadataViewModel {
                 guard !Task.isCancelled else { return }
                 self.isLoadingBatchMetadata = false
             }
+        }
+    }
+
+    func applyReferenceSource(_ source: MetadataReferenceSource) {
+        if source == .xmp, xmpMetadata == nil {
+            metadataReferenceSource = .embedded
+            return
+        }
+        metadataReferenceSource = source
+        guard let reference = referenceMetadata(
+            for: source,
+            embedded: embeddedMetadata,
+            xmp: xmpMetadata
+        ) else { return }
+
+        originalImageMetadata = reference
+        metadata = reference
+
+        if !hasChanges {
+            editingMetadata = reference
+            previousEditingMetadata = reference
         }
     }
 
@@ -195,7 +233,7 @@ final class MetadataViewModel {
             do {
                 var meta = try await exifToolService.readFullMetadata(url: image.url)
                 if Task.isCancelled { return }
-                if MetadataWriteMode.current(forC2PA: image.hasC2PA) == .writeToXMPSidecar,
+                if prefersXMPSidecar,
                    let xmpMeta = xmpSidecarService.loadSidecar(for: image.url) {
                     meta = meta.merged(preferring: xmpMeta)
                 }
@@ -213,7 +251,7 @@ final class MetadataViewModel {
         var common = IPTCMetadata()
         var differing = Set<String>()
 
-        // Title
+        // Headline
         let titles = allMetadata.compactMap(\.title)
         if titles.count == allMetadata.count, let first = titles.first, titles.allSatisfy({ $0 == first }) {
             common.title = first
@@ -351,9 +389,7 @@ final class MetadataViewModel {
             saveToSidecar()
             onComplete?()
         case .writeToXMPSidecar:
-            saveToSidecar()
-            writeXMPSidecar()
-            onComplete?()
+            writeXMPSidecarAndPreserveHistory(onComplete: onComplete)
         case .writeToFile:
             if hasC2PA && !allowC2PAOverwrite {
                 saveToSidecar()
@@ -381,7 +417,7 @@ final class MetadataViewModel {
 
                 if isBatch {
                     // Batch: only write non-empty fields
-                    if let v = edited.title, !v.isEmpty { fields["XMP:Title"] = v }
+                    if let v = edited.title, !v.isEmpty { fields["XMP-photoshop:Headline"] = v }
                     if let v = edited.description, !v.isEmpty { fields["XMP:Description"] = v }
                     if !edited.keywords.isEmpty { fields["XMP:Subject"] = edited.keywords.joined(separator: ", ") }
                     if !edited.personShown.isEmpty { fields["XMP-iptcExt:PersonInImage"] = edited.personShown.joined(separator: ", ") }
@@ -401,7 +437,7 @@ final class MetadataViewModel {
                     if let v = edited.event, !v.isEmpty { fields["XMP-iptcExt:Event"] = v }
                 } else {
                     // Single: write all changed fields
-                    if edited.title != original?.title { fields["XMP:Title"] = edited.title ?? "" }
+                    if edited.title != original?.title { fields["XMP-photoshop:Headline"] = edited.title ?? "" }
                     if edited.description != original?.description { fields["XMP:Description"] = edited.description ?? "" }
                     if edited.keywords != original?.keywords {
                         // Clear then set keywords
@@ -472,9 +508,82 @@ final class MetadataViewModel {
         }
     }
 
+    private func writeXMPSidecarAndPreserveHistory(onComplete: (() -> Void)? = nil) {
+        guard let folderURL = currentFolderURL else {
+            writeXMPSidecar()
+            onComplete?()
+            return
+        }
+
+        if selectedCount > 1 {
+            writeXMPSidecar()
+            saveBatchSidecars(folderURL: folderURL, pendingChanges: false)
+            hasChanges = false
+            onComplete?()
+            return
+        }
+
+        guard let imageURL = selectedURLs.first else {
+            onComplete?()
+            return
+        }
+
+        let edited = editingMetadata
+        let previous = previousEditingMetadata ?? IPTCMetadata()
+        let existingHistory = sidecarHistory
+
+        isSaving = true
+        saveError = nil
+
+        Task {
+            do {
+                try xmpSidecarService.saveSidecar(metadata: edited, for: imageURL)
+
+                let now = Date()
+                let history = buildHistory(
+                    previous: previous,
+                    edited: edited,
+                    timestamp: now,
+                    existing: existingHistory
+                )
+                let sidecar = MetadataSidecar(
+                    sourceFile: imageURL.lastPathComponent,
+                    lastModified: now,
+                    pendingChanges: false,
+                    metadata: edited,
+                    imageMetadataSnapshot: edited,
+                    history: history
+                )
+                try sidecarService.saveSidecar(sidecar, for: imageURL, in: folderURL)
+
+                let isStillSelected = self.selectedCount == 1 && self.selectedURLs.first == imageURL
+                if isStillSelected {
+                    self.sidecarHistory = history
+                    self.previousEditingMetadata = edited
+                    self.xmpMetadata = edited
+                    if self.metadataReferenceSource == .xmp {
+                        let reference = self.referenceMetadata(
+                            for: .xmp,
+                            embedded: self.embeddedMetadata,
+                            xmp: edited
+                        ) ?? edited
+                        self.metadata = reference
+                        self.originalImageMetadata = reference
+                    }
+                    self.hasChanges = false
+                }
+            } catch {
+                self.saveError = "Failed to write XMP sidecar: \(error.localizedDescription)"
+            }
+
+            self.isSaving = false
+            onComplete?()
+        }
+    }
+
     private func overwriteFields(from metadata: IPTCMetadata) -> [String: String] {
         var fields: [String: String] = [:]
-        fields["XMP:Title"] = metadata.title ?? ""
+        fields["XMP-photoshop:Headline"] = metadata.title ?? ""
         fields["XMP:Description"] = metadata.description ?? ""
         fields["XMP:Subject"] = metadata.keywords.joined(separator: ", ")
         fields["XMP-iptcExt:PersonInImage"] = metadata.personShown.joined(separator: ", ")
@@ -686,7 +795,7 @@ final class MetadataViewModel {
 
                     if changed {
                         var fields: [String: String] = [:]
-                        if resolved.title != meta.title { fields["XMP:Title"] = resolved.title ?? "" }
+                        if resolved.title != meta.title { fields["XMP-photoshop:Headline"] = resolved.title ?? "" }
                         if resolved.description != meta.description { fields["XMP:Description"] = resolved.description ?? "" }
                         if resolved.creator != meta.creator { fields["XMP:Creator"] = resolved.creator ?? "" }
                         if resolved.credit != meta.credit { fields["XMP-photoshop:Credit"] = resolved.credit ?? "" }
@@ -745,7 +854,7 @@ final class MetadataViewModel {
 
                     if changed {
                         var fields: [String: String] = [:]
-                        if resolved.title != meta.title { fields["XMP:Title"] = resolved.title ?? "" }
+                        if resolved.title != meta.title { fields["XMP-photoshop:Headline"] = resolved.title ?? "" }
                         if resolved.description != meta.description { fields["XMP:Description"] = resolved.description ?? "" }
                         if resolved.creator != meta.creator { fields["XMP:Creator"] = resolved.creator ?? "" }
                         if resolved.credit != meta.credit { fields["XMP-photoshop:Credit"] = resolved.credit ?? "" }
@@ -937,7 +1046,7 @@ final class MetadataViewModel {
             }
         }
 
-        recordChange("Title", old: previous.title, new: edited.title)
+        recordChange("Headline", old: previous.title, new: edited.title)
         recordChange("Description", old: previous.description, new: edited.description)
         recordArrayChange("Keywords", old: previous.keywords, new: edited.keywords)
         recordArrayChange("Person Shown", old: previous.personShown, new: edited.personShown)
@@ -954,10 +1063,11 @@ final class MetadataViewModel {
             new: edited.digitalSourceType?.rawValue
         )
 
+        history.trimToHistoryLimit()
         return history
     }
 
-    private func saveBatchSidecars(folderURL: URL) {
+    private func saveBatchSidecars(folderURL: URL, pendingChanges: Bool = true) {
         let now = Date()
         let batchMeta = editingMetadata
 
@@ -975,21 +1085,28 @@ final class MetadataViewModel {
                 existingMeta = IPTCMetadata()
             }
 
+            let previousMeta = existingMeta
             applyBatchEdits(batchMeta, to: &existingMeta)
+            let history = buildHistory(
+                previous: previousMeta,
+                edited: existingMeta,
+                timestamp: now,
+                existing: existingHistory
+            )
 
             let sidecar = MetadataSidecar(
                 sourceFile: imageURL.lastPathComponent,
                 lastModified: now,
-                pendingChanges: true,
+                pendingChanges: pendingChanges,
                 metadata: existingMeta,
-                imageMetadataSnapshot: snapshot,
-                history: existingHistory
+                imageMetadataSnapshot: pendingChanges ? snapshot : existingMeta,
+                history: history
             )
 
             try? sidecarService.saveSidecar(sidecar, for: imageURL, in: folderURL)
         }
 
-        hasChanges = true
+        hasChanges = pendingChanges
     }
 
     private func applyBatchEdits(_ batchMeta: IPTCMetadata, to metadata: inout IPTCMetadata) {
@@ -1134,7 +1251,7 @@ final class MetadataViewModel {
     var pendingFieldNames: [String] {
         guard let original = originalImageMetadata else { return [] }
         var names: [String] = []
-        if editingMetadata.title != original.title { names.append("Title") }
+        if editingMetadata.title != original.title { names.append("Headline") }
         if editingMetadata.description != original.description { names.append("Description") }
         if editingMetadata.keywords != original.keywords { names.append("Keywords") }
         if editingMetadata.personShown != original.personShown { names.append("Person Shown") }
@@ -1202,6 +1319,27 @@ final class MetadataViewModel {
         try? sidecarService.saveSidecar(sidecar, for: imageURL, in: folderURL)
     }
 
+    func restoreToOriginal() {
+        guard let original = originalImageMetadata else { return }
+
+        editingMetadata = original
+        previousEditingMetadata = original
+        hasChanges = false
+
+        if let imageURL = selectedURLs.first,
+           let folderURL = currentFolderURL {
+            let sidecar = MetadataSidecar(
+                sourceFile: imageURL.lastPathComponent,
+                lastModified: Date(),
+                pendingChanges: false,
+                metadata: editingMetadata,
+                imageMetadataSnapshot: originalImageMetadata,
+                history: sidecarHistory
+            )
+            try? sidecarService.saveSidecar(sidecar, for: imageURL, in: folderURL)
+        }
+    }
+
     func restoreToHistoryPoint(at index: Int) {
         guard let original = originalImageMetadata else { return }
 
@@ -1216,8 +1354,6 @@ final class MetadataViewModel {
         editingMetadata = restored
         previousEditingMetadata = restored
 
-        // Trim history to only include entries up to this point
-        sidecarHistory = historyToApply
         hasChanges = editingMetadata != original
 
         // Save the updated sidecar
@@ -1237,7 +1373,7 @@ final class MetadataViewModel {
 
     private func applyHistoryEntry(_ entry: MetadataHistoryEntry, to metadata: inout IPTCMetadata) {
         switch entry.fieldName {
-        case "Title":
+        case "Headline", "Title":
             metadata.title = entry.newValue
         case "Description":
             metadata.description = entry.newValue
@@ -1273,5 +1409,6 @@ final class MetadataViewModel {
         sidecarHistory = []
         originalImageMetadata = nil
         previousEditingMetadata = nil
+        metadataReferenceSource = .embedded
     }
 }

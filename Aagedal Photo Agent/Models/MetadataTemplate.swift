@@ -31,7 +31,7 @@ struct TemplateField: Codable, Identifiable, Sendable, Hashable {
     }
 
     static let availableFields: [(key: String, label: String)] = [
-        ("title", "Title"),
+        ("title", "Headline"),
         ("description", "Description"),
         ("keywords", "Keywords"),
         ("personShown", "Person Shown"),
