@@ -179,11 +179,13 @@ final class KnownPeopleService {
     }
 
     /// Check if a person with this name or similar face already exists.
+    /// Set allowFaceMatch to false to only check name matches.
     /// Use this before adding to avoid duplicates.
     func checkForDuplicate(
         name: String,
         representativeFaceData: Data,
-        threshold: Float = 0.45
+        threshold: Float = 0.45,
+        allowFaceMatch: Bool = true
     ) -> DuplicateCheckResult {
         let db = loadDatabase()
         let trimmedName = name.trimmingCharacters(in: .whitespaces)
@@ -194,9 +196,14 @@ final class KnownPeopleService {
                 .caseInsensitiveCompare(trimmedName) == .orderedSame
         }
 
-        // Check for face match
-        let faceMatches = matchFace(featurePrintData: representativeFaceData, threshold: threshold, maxResults: 1)
-        let faceMatch = faceMatches.first
+        // Check for face match if allowed
+        let faceMatch: KnownPersonMatch?
+        if allowFaceMatch {
+            let faceMatches = matchFace(featurePrintData: representativeFaceData, threshold: threshold, maxResults: 1)
+            faceMatch = faceMatches.first
+        } else {
+            faceMatch = nil
+        }
 
         // Determine result
         if let nameMatch, let faceMatch, nameMatch.id == faceMatch.person.id {
