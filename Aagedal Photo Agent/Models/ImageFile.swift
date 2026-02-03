@@ -15,6 +15,7 @@ struct ImageFile: Identifiable, Hashable, Sendable {
     var hasPendingMetadataChanges: Bool
     var pendingFieldNames: [String] = []
     var metadata: IPTCMetadata?
+    var personShown: [String]
 
     init(url: URL) {
         self.url = url
@@ -30,6 +31,7 @@ struct ImageFile: Identifiable, Hashable, Sendable {
         self.hasC2PA = false
         self.hasPendingMetadataChanges = false
         self.metadata = nil
+        self.personShown = []
     }
 
     static func == (lhs: ImageFile, rhs: ImageFile) -> Bool {
