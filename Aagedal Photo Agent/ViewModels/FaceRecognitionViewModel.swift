@@ -653,7 +653,6 @@ final class FaceRecognitionViewModel {
     }
 
     func shouldAllowFaceMatchForKnownPeopleAdd(groupID: UUID, name: String) -> Bool {
-        guard knownPersonMatchByGroup[groupID] != nil else { return true }
         return nameMatchesKnownPerson(groupID: groupID, name: name)
     }
 
