@@ -886,9 +886,11 @@ struct GroupCardMenu: View {
             let representativeFace = faces.first { $0.id == group.representativeFaceID } ?? faces.first
             let duplicateCheck: KnownPeopleService.DuplicateCheckResult
             if let repFace = representativeFace {
+                let allowFaceMatch = viewModel.shouldAllowFaceMatchForKnownPeopleAdd(groupID: group.id, name: name)
                 duplicateCheck = KnownPeopleService.shared.checkForDuplicate(
                     name: name,
-                    representativeFaceData: repFace.featurePrintData
+                    representativeFaceData: repFace.featurePrintData,
+                    allowFaceMatch: allowFaceMatch
                 )
             } else {
                 duplicateCheck = .noDuplicate
@@ -1486,8 +1488,7 @@ struct FaceSuggestionsPanel: View {
     private var replaceThumbnailCandidate: (groupID: UUID, personID: UUID)? {
         guard let groupID = viewModel.selectedThumbnailReplacementGroupID,
               let match = viewModel.knownPersonMatchByGroup[groupID],
-              let group = viewModel.group(byID: groupID),
-              group.name != nil,
+              viewModel.groupNameMatchesKnownPerson(groupID),
               KnownPeopleService.shared.person(byID: match.personID) != nil else {
             return nil
         }

@@ -359,9 +359,11 @@ struct FaceGroupDetailView: View {
             let representativeFace = faces.first { $0.id == group.representativeFaceID } ?? faces.first
             let duplicateCheck: KnownPeopleService.DuplicateCheckResult
             if let repFace = representativeFace {
+                let allowFaceMatch = viewModel.shouldAllowFaceMatchForKnownPeopleAdd(groupID: group.id, name: trimmed)
                 duplicateCheck = KnownPeopleService.shared.checkForDuplicate(
                     name: trimmed,
-                    representativeFaceData: repFace.featurePrintData
+                    representativeFaceData: repFace.featurePrintData,
+                    allowFaceMatch: allowFaceMatch
                 )
             } else {
                 duplicateCheck = .noDuplicate

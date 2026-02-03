@@ -628,13 +628,42 @@ final class FaceRecognitionViewModel {
         return nil
     }
 
+    private func normalizePersonName(_ name: String) -> String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func namesMatch(_ lhs: String, _ rhs: String) -> Bool {
+        normalizePersonName(lhs).caseInsensitiveCompare(normalizePersonName(rhs)) == .orderedSame
+    }
+
+    private func nameMatchesKnownPerson(groupID: UUID, name: String) -> Bool {
+        guard let match = knownPersonMatchByGroup[groupID],
+              let person = KnownPeopleService.shared.person(byID: match.personID) else {
+            return false
+        }
+        return namesMatch(name, person.name)
+    }
+
+    func groupNameMatchesKnownPerson(_ groupID: UUID) -> Bool {
+        guard let group = group(byID: groupID),
+              let groupName = group.name else {
+            return false
+        }
+        return nameMatchesKnownPerson(groupID: groupID, name: groupName)
+    }
+
+    func shouldAllowFaceMatchForKnownPeopleAdd(groupID: UUID, name: String) -> Bool {
+        guard knownPersonMatchByGroup[groupID] != nil else { return true }
+        return nameMatchesKnownPerson(groupID: groupID, name: name)
+    }
+
     /// Select a group for thumbnail replacement. Only shows in suggestions panel if the group
     /// is named and has a known person match.
     func selectGroupForThumbnailReplacement(_ groupID: UUID?, faceID: UUID? = nil) {
         guard let groupID,
               let group = group(byID: groupID),
               group.name != nil,
-              knownPersonMatchByGroup[groupID] != nil else {
+              groupNameMatchesKnownPerson(groupID) else {
             selectedThumbnailReplacementGroupID = nil
             selectedThumbnailReplacementFaceID = nil
             return
