@@ -95,7 +95,7 @@ enum ColorLabel: String, Codable, CaseIterable, Sendable {
     private static func mappedLabel(from value: String?) -> ColorLabel? {
         guard let value else { return nil }
         let normalized = normalizeLabel(value)
-        guard !normalized.isEmpty else { return .none }
+        guard !normalized.isEmpty else { return ColorLabel.none }
         return labelAliases[normalized]
     }
 
