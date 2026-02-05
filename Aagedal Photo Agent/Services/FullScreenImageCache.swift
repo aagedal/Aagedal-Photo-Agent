@@ -8,7 +8,7 @@ nonisolated(unsafe) private let cacheLogger = Logger(subsystem: "com.aagedal.pho
 final class FullScreenImageCache: @unchecked Sendable {
     nonisolated(unsafe) private let cache = NSCache<NSURL, NSImage>()
     nonisolated(unsafe) private var prefetchTasks: [URL: Task<Void, Never>] = [:]
-    nonisolated(unsafe) private let lock = NSLock()
+    private let lock = NSLock()
 
     init() {
         cache.countLimit = 7
