@@ -308,6 +308,14 @@ struct ContentView: View {
                     }
                     .help("Resolve all {variable} placeholders in metadata across every image in the folder")
                     .disabled(browserViewModel.images.isEmpty)
+
+                    Button {
+                        togglePeopleDatabase()
+                    } label: {
+                        Label("People Database", systemImage: "person.text.rectangle")
+                            .labelStyle(.iconOnly)
+                    }
+                    .help("Open Known People database")
                 }
             }
         }

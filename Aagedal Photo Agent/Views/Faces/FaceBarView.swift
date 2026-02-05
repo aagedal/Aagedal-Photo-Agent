@@ -329,24 +329,6 @@ struct FaceBarView: View {
 
             Spacer()
 
-            // People Database button
-            if viewModel.scanComplete {
-                Button {
-                    onOpenPeopleDatabase?()
-                } label: {
-                    VStack(spacing: 2) {
-                        Image(systemName: "person.text.rectangle")
-                            .font(.system(size: 16))
-                        Text("People Database")
-                            .font(.system(size: 9))
-                    }
-                    .frame(width: 52, height: 48)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("Open Known People database")
-            }
-
             // Expand/collapse button
             if viewModel.scanComplete {
                 Button {
