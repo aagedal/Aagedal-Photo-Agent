@@ -228,9 +228,11 @@ final class ImportViewModel {
 
         resolved.title = resolveField(meta.title, filename: filename, ref: meta)
         resolved.description = resolveField(meta.description, filename: filename, ref: meta)
+        resolved.extendedDescription = resolveField(meta.extendedDescription, filename: filename, ref: meta)
         resolved.creator = resolveField(meta.creator, filename: filename, ref: meta)
         resolved.credit = resolveField(meta.credit, filename: filename, ref: meta)
         resolved.copyright = resolveField(meta.copyright, filename: filename, ref: meta)
+        resolved.jobId = resolveField(meta.jobId, filename: filename, ref: meta)
         resolved.dateCreated = resolveField(meta.dateCreated, filename: filename, ref: meta)
         resolved.city = resolveField(meta.city, filename: filename, ref: meta)
         resolved.country = resolveField(meta.country, filename: filename, ref: meta)
@@ -250,12 +252,14 @@ final class ImportViewModel {
 
         if let v = meta.title, !v.isEmpty { fields["XMP-photoshop:Headline"] = v }
         if let v = meta.description, !v.isEmpty { fields["XMP:Description"] = v }
+        if let v = meta.extendedDescription, !v.isEmpty { fields["XMP-iptcCore:ExtDescrAccessibility"] = v }
         if !meta.keywords.isEmpty { fields["XMP:Subject"] = meta.keywords.joined(separator: ", ") }
         if !meta.personShown.isEmpty { fields["XMP-iptcExt:PersonInImage"] = meta.personShown.joined(separator: ", ") }
         if let v = meta.digitalSourceType { fields["XMP-iptcExt:DigitalSourceType"] = v.rawValue }
         if let v = meta.creator, !v.isEmpty { fields["XMP:Creator"] = v }
         if let v = meta.credit, !v.isEmpty { fields["XMP-photoshop:Credit"] = v }
         if let v = meta.copyright, !v.isEmpty { fields["XMP:Rights"] = v }
+        if let v = meta.jobId, !v.isEmpty { fields["XMP-photoshop:TransmissionReference"] = v }
         if let v = meta.dateCreated, !v.isEmpty { fields["XMP:DateCreated"] = v }
         if let v = meta.city, !v.isEmpty { fields["XMP-photoshop:City"] = v }
         if let v = meta.country, !v.isEmpty { fields["XMP-photoshop:Country"] = v }

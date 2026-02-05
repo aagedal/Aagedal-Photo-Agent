@@ -1,6 +1,22 @@
 import SwiftUI
 import AppKit
 
+private enum KnownPeopleSortMode: String, CaseIterable, Identifiable {
+    case name
+    case dateAdded
+    case dateUpdated
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .name: return "Name"
+        case .dateAdded: return "Date Added"
+        case .dateUpdated: return "Date Updated"
+        }
+    }
+}
+
 struct KnownPeopleListView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var people: [KnownPerson] = []
@@ -8,16 +24,20 @@ struct KnownPeopleListView: View {
     @State private var searchText = ""
     @State private var showDeleteConfirmation = false
     @State private var personToDelete: KnownPerson?
+    @State private var sortMode: KnownPeopleSortMode = .name
 
     private var filteredPeople: [KnownPerson] {
+        let filtered: [KnownPerson]
         if searchText.isEmpty {
-            return people.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            filtered = people
+        } else {
+            filtered = people.filter {
+                $0.name.localizedCaseInsensitiveContains(searchText) ||
+                ($0.role?.localizedCaseInsensitiveContains(searchText) ?? false) ||
+                ($0.notes?.localizedCaseInsensitiveContains(searchText) ?? false)
+            }
         }
-        return people.filter {
-            $0.name.localizedCaseInsensitiveContains(searchText) ||
-            ($0.role?.localizedCaseInsensitiveContains(searchText) ?? false) ||
-            ($0.notes?.localizedCaseInsensitiveContains(searchText) ?? false)
-        }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        return sortPeople(filtered)
     }
 
     var body: some View {
@@ -83,12 +103,34 @@ struct KnownPeopleListView: View {
             }
 
             ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    ForEach(KnownPeopleSortMode.allCases) { mode in
+                        Button {
+                            sortMode = mode
+                        } label: {
+                            if mode == sortMode {
+                                Label(mode.displayName, systemImage: "checkmark")
+                            } else {
+                                Text(mode.displayName)
+                            }
+                        }
+                    }
+                } label: {
+                    Label("Sort", systemImage: "arrow.up.arrow.down")
+                }
+                .help("Sort known people")
+            }
+
+            ToolbarItem(placement: .primaryAction) {
                 Text("\(people.count) people")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
         .onAppear {
+            loadPeople()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .knownPeopleDatabaseDidChange)) { _ in
             loadPeople()
         }
         .alert("Delete Person?", isPresented: $showDeleteConfirmation, presenting: personToDelete) { person in
@@ -103,6 +145,17 @@ struct KnownPeopleListView: View {
 
     private func loadPeople() {
         people = KnownPeopleService.shared.getAllPeople()
+    }
+
+    private func sortPeople(_ people: [KnownPerson]) -> [KnownPerson] {
+        switch sortMode {
+        case .name:
+            return people.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        case .dateAdded:
+            return people.sorted { $0.createdAt > $1.createdAt }
+        case .dateUpdated:
+            return people.sorted { $0.updatedAt > $1.updatedAt }
+        }
     }
 
     private func savePerson(_ person: KnownPerson) {
@@ -173,6 +226,9 @@ struct KnownPersonRow: View {
         }
         .padding(.vertical, 4)
         .onAppear {
+            loadThumbnail()
+        }
+        .onChange(of: person.updatedAt) { _, _ in
             loadThumbnail()
         }
     }
@@ -304,6 +360,9 @@ struct KnownPersonDetailView: View {
         .onChange(of: person.id) {
             loadThumbnail()
             resetFields()
+        }
+        .onChange(of: person.updatedAt) { _, _ in
+            loadThumbnail()
         }
         .onChange(of: editedName) { checkForChanges() }
         .onChange(of: editedRole) { checkForChanges() }

@@ -11,6 +11,8 @@ struct MetadataPanel: View {
     var onPendingStatusChanged: (() -> Void)?
 
     @State private var isShowingVariableReference = false
+    @State private var variableInsertTarget: VariableInsertTarget = .description
+    @State private var showExtendedDescription = false
     @State private var showingHistoryPopover = false
     @State private var showingC2PAWarning = false
     @State private var showingListFilePicker = false
@@ -33,6 +35,12 @@ struct MetadataPanel: View {
     enum C2PAOverwriteIntent {
         case autoCommit
         case manualWrite
+    }
+
+    enum VariableInsertTarget {
+        case description
+        case extendedDescription
+        case jobId
     }
 
     private func addCurrentToQuickList(type: QuickListType, values: [String]) {
@@ -74,6 +82,21 @@ struct MetadataPanel: View {
             try? "".write(to: url, atomically: true, encoding: .utf8)
         }
         return url
+    }
+
+    private func insertVariable(_ variable: String) {
+        switch variableInsertTarget {
+        case .description:
+            let current = viewModel.editingMetadata.description ?? ""
+            viewModel.editingMetadata.description = current + variable
+        case .extendedDescription:
+            let current = viewModel.editingMetadata.extendedDescription ?? ""
+            viewModel.editingMetadata.extendedDescription = current + variable
+        case .jobId:
+            let current = viewModel.editingMetadata.jobId ?? ""
+            viewModel.editingMetadata.jobId = current + variable
+        }
+        viewModel.markChanged()
     }
 
     private func commitEdits() {
@@ -324,6 +347,7 @@ struct MetadataPanel: View {
                 }
                 Spacer()
                 Button {
+                    variableInsertTarget = .description
                     isShowingVariableReference = true
                 } label: {
                     Image(systemName: "curlybraces")
@@ -352,12 +376,52 @@ struct MetadataPanel: View {
         .sheet(isPresented: $isShowingVariableReference) {
             VariableReferenceView(
                 isPresented: $isShowingVariableReference,
-                onInsert: { variable in
-                    let current = viewModel.editingMetadata.description ?? ""
-                    viewModel.editingMetadata.description = current + variable
-                    viewModel.markChanged()
-                }
+                onInsert: insertVariable
             )
+        }
+
+        DisclosureGroup(isExpanded: $showExtendedDescription) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack {
+                    Spacer()
+                    Button {
+                        variableInsertTarget = .extendedDescription
+                        isShowingVariableReference = true
+                    } label: {
+                        Image(systemName: "curlybraces")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Variable Reference")
+                }
+                TextField(
+                    viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "extendedDescription") : "Enter extended description",
+                    text: Binding(
+                        get: { viewModel.editingMetadata.extendedDescription ?? "" },
+                        set: { viewModel.editingMetadata.extendedDescription = $0.isEmpty ? nil : $0; viewModel.markChanged() }
+                    ),
+                    axis: .vertical
+                )
+                .lineLimit(4...8)
+                .textFieldStyle(.roundedBorder)
+                .font(.body)
+                .focused($focusedField, equals: "extendedDescription")
+                .onSubmit {
+                    commitEdits()
+                }
+            }
+            .padding(.top, 2)
+        } label: {
+            HStack(spacing: 4) {
+                Text("Extended Description")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                DifferenceIndicator(differs: viewModel.fieldDiffers(\.extendedDescription))
+                if viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("extendedDescription") {
+                    MultipleValuesIndicator()
+                }
+            }
         }
 
         KeywordsEditorWithDiff(
@@ -421,6 +485,20 @@ struct MetadataPanel: View {
                 showingListFilePicker = true
             },
             focusKey: "copyright",
+            focusedField: $focusedField
+        )
+
+        EditableTextField(
+            label: "Job ID",
+            text: Binding(
+                get: { viewModel.editingMetadata.jobId ?? "" },
+                set: { viewModel.editingMetadata.jobId = $0.isEmpty ? nil : $0; viewModel.markChanged() }
+            ),
+            placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "jobId") : "Enter job ID",
+            onCommit: { commitEdits() },
+            showsDifference: viewModel.fieldDiffers(\.jobId),
+            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("jobId"),
+            focusKey: "jobId",
             focusedField: $focusedField
         )
     }

@@ -68,6 +68,7 @@ final class KnownPeopleService {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(db)
         try data.write(to: databaseFileURL)
+        NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
     }
 
     // MARK: - Thumbnails
@@ -367,6 +368,21 @@ final class KnownPeopleService {
 
     // MARK: - Matching
 
+    struct MatchPolicy: Sendable {
+        let threshold: Float
+        let minConfidence: Float
+        let minConfidenceGap: Float
+    }
+
+    private func currentAutoMatchPolicy() -> MatchPolicy {
+        let minConfidence = Float(UserDefaults.standard.object(forKey: "knownPeopleMinConfidence") as? Double ?? 0.60)
+        return MatchPolicy(
+            threshold: 0.45,
+            minConfidence: minConfidence,
+            minConfidenceGap: 0.05
+        )
+    }
+
     private func clearFeaturePrintCache() {
         featurePrintCache = [:]
     }
@@ -442,6 +458,31 @@ final class KnownPeopleService {
             .sorted { $0.confidence > $1.confidence }
             .prefix(maxResults)
             .map { $0 }
+    }
+
+    /// Returns the best match only if it clears a stricter auto-match policy.
+    /// This is intended for auto-naming flows and is more conservative than raw `matchFace`.
+    func bestAutoMatch(
+        featurePrintData: Data,
+        policy: MatchPolicy? = nil
+    ) -> KnownPersonMatch? {
+        let policy = policy ?? currentAutoMatchPolicy()
+        let matches = matchFace(
+            featurePrintData: featurePrintData,
+            threshold: policy.threshold,
+            maxResults: 2
+        )
+
+        guard let best = matches.first, best.confidence >= policy.minConfidence else {
+            return nil
+        }
+
+        if let second = matches.dropFirst().first,
+           best.confidence - second.confidence < policy.minConfidenceGap {
+            return nil
+        }
+
+        return best
     }
 
     /// Match multiple faces at once for efficiency.

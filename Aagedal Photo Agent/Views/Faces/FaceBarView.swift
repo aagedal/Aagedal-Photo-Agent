@@ -434,13 +434,9 @@ struct FaceBarView: View {
             }
 
             // Match against known people
-            let matches = KnownPeopleService.shared.matchFace(
-                featurePrintData: face.featurePrintData,
-                threshold: 0.45,
-                maxResults: 1
-            )
-
-            if let bestMatch = matches.first {
+            if let bestMatch = KnownPeopleService.shared.bestAutoMatch(
+                featurePrintData: face.featurePrintData
+            ) {
                 // Auto-name the group with the matched person's name
                 viewModel.nameGroup(group.id, name: bestMatch.person.name)
                 matchCount += 1

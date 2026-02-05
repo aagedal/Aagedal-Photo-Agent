@@ -1669,13 +1669,9 @@ struct FaceSuggestionsPanel: View {
                 continue
             }
 
-            let matches = KnownPeopleService.shared.matchFace(
-                featurePrintData: face.featurePrintData,
-                threshold: 0.45,
-                maxResults: 1
-            )
-
-            if let bestMatch = matches.first {
+            if let bestMatch = KnownPeopleService.shared.bestAutoMatch(
+                featurePrintData: face.featurePrintData
+            ) {
                 viewModel.nameGroup(group.id, name: bestMatch.person.name)
                 // Track the match for "Replace Thumbnail" feature
                 viewModel.knownPersonMatchByGroup[group.id] = (personID: bestMatch.person.id, confidence: bestMatch.confidence)
@@ -1814,8 +1810,10 @@ struct ReplaceThumbnailCard: View {
     }
 
     private func replaceThumbnail() {
-        guard let group,
-              let thumbImage = viewModel.thumbnailCache[group.representativeFaceID],
+        guard let group else { return }
+
+        let faceID = viewModel.selectedThumbnailReplacementFaceID ?? group.representativeFaceID
+        guard let thumbImage = viewModel.thumbnailImage(for: faceID),
               let tiffData = thumbImage.tiffRepresentation,
               let bitmap = NSBitmapImageRep(data: tiffData),
               let jpegData = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.85]) else {

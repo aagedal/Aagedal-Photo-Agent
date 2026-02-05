@@ -84,16 +84,21 @@ struct PresetVariableInterpolator: Sendable {
         guard let metadata else { return "" }
 
         // Build a lookup that accepts both keys and labels
-        let normalized = name.lowercased().replacingOccurrences(of: " ", with: "")
+        let normalized = name.lowercased()
+            .replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: "-", with: "")
+            .replacingOccurrences(of: "_", with: "")
 
         switch normalized {
         case "title": return metadata.title ?? ""
         case "description": return metadata.description ?? ""
+        case "extendeddescription": return metadata.extendedDescription ?? ""
         case "keywords": return metadata.keywords.joined(separator: ", ")
         case "personshown", "persons": return metadata.personShown.joined(separator: ", ")
         case "creator": return metadata.creator ?? ""
         case "credit": return metadata.credit ?? ""
         case "copyright": return metadata.copyright ?? ""
+        case "jobid": return metadata.jobId ?? ""
         case "datecreated": return metadata.dateCreated ?? ""
         case "city": return metadata.city ?? ""
         case "country": return metadata.country ?? ""

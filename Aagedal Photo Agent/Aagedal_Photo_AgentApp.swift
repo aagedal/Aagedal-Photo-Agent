@@ -135,4 +135,5 @@ extension Notification.Name {
     static let uploadSelected = Notification.Name("uploadSelected")
     static let uploadAll = Notification.Name("uploadAll")
     static let showKnownPeopleDatabase = Notification.Name("showKnownPeopleDatabase")
+    static let knownPeopleDatabaseDidChange = Notification.Name("knownPeopleDatabaseDidChange")
 }

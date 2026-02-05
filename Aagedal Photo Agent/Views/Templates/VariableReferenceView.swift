@@ -87,6 +87,12 @@ private let allVariables: [VariableDefinition] = [
         example: ""
     ),
     VariableDefinition(
+        variable: "{field:extendedDescription}",
+        category: "Field Reference",
+        description: "Value of the Extended Description field.",
+        example: ""
+    ),
+    VariableDefinition(
         variable: "{field:keywords}",
         category: "Field Reference",
         description: "Comma-separated keywords.",
@@ -114,6 +120,12 @@ private let allVariables: [VariableDefinition] = [
         variable: "{field:copyright}",
         category: "Field Reference",
         description: "Value of the Copyright field.",
+        example: ""
+    ),
+    VariableDefinition(
+        variable: "{field:jobId}",
+        category: "Field Reference",
+        description: "Value of the Job ID field.",
         example: ""
     ),
     VariableDefinition(

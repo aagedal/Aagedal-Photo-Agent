@@ -457,13 +457,9 @@ final class FaceRecognitionViewModel {
                 continue
             }
 
-            let matches = KnownPeopleService.shared.matchFace(
-                featurePrintData: face.featurePrintData,
-                threshold: 0.45,
-                maxResults: 1
-            )
-
-            if let bestMatch = matches.first {
+            if let bestMatch = KnownPeopleService.shared.bestAutoMatch(
+                featurePrintData: face.featurePrintData
+            ) {
                 // Record the match for "Replace Thumbnail" feature
                 knownPersonMatchByGroup[group.id] = (personID: bestMatch.person.id, confidence: bestMatch.confidence)
 
@@ -541,13 +537,9 @@ final class FaceRecognitionViewModel {
                 continue
             }
 
-            let matches = KnownPeopleService.shared.matchFace(
-                featurePrintData: face.featurePrintData,
-                threshold: 0.45,
-                maxResults: 1
-            )
-
-            if let bestMatch = matches.first {
+            if let bestMatch = KnownPeopleService.shared.bestAutoMatch(
+                featurePrintData: face.featurePrintData
+            ) {
                 // Record the match
                 knownPersonMatchByGroup[group.id] = (personID: bestMatch.person.id, confidence: bestMatch.confidence)
 
@@ -613,13 +605,9 @@ final class FaceRecognitionViewModel {
             return nil
         }
 
-        let matches = KnownPeopleService.shared.matchFace(
-            featurePrintData: face.featurePrintData,
-            threshold: 0.45,
-            maxResults: 1
-        )
-
-        if let bestMatch = matches.first {
+        if let bestMatch = KnownPeopleService.shared.bestAutoMatch(
+            featurePrintData: face.featurePrintData
+        ) {
             // Record the match for "Replace Thumbnail" feature
             knownPersonMatchByGroup[groupID] = (personID: bestMatch.person.id, confidence: bestMatch.confidence)
             return bestMatch.person.id
