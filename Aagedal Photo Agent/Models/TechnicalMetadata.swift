@@ -4,6 +4,7 @@ struct TechnicalMetadata {
     var camera: String?
     var lens: String?
     var captureDate: String?
+    var modifiedDate: String?
     var focalLength: String?
     var aperture: String?
     var shutterSpeed: String?
@@ -40,6 +41,7 @@ struct TechnicalMetadata {
 
         lens = dict["LensModel"] as? String
         captureDate = dict["DateTimeOriginal"] as? String
+        modifiedDate = dict["FileModifyDate"] as? String
 
         // Focal length
         if let fl = dict["FocalLength"] as? Double {

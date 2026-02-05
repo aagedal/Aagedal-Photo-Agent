@@ -102,18 +102,21 @@ struct ThumbnailGridView: View {
             }
         )
         .equatable()
-        .onTapGesture(count: 2) {
-            viewModel.selectedImageIDs = [image.url]
-            viewModel.isFullScreen = true
-        }
         .onTapGesture {
-            let flags = NSEvent.modifierFlags
-            if flags.contains(.command) {
-                handleTap(image: image, modifiers: .command)
-            } else if flags.contains(.shift) {
-                handleTap(image: image, modifiers: .shift)
+            let clickCount = NSApp.currentEvent?.clickCount ?? 1
+            if clickCount == 2 {
+                viewModel.selectedImageIDs = [image.url]
+                viewModel.lastClickedImageURL = image.url
+                viewModel.isFullScreen = true
             } else {
-                handleTap(image: image, modifiers: [])
+                let flags = NSEvent.modifierFlags
+                if flags.contains(.command) {
+                    handleTap(image: image, modifiers: .command)
+                } else if flags.contains(.shift) {
+                    handleTap(image: image, modifiers: .shift)
+                } else {
+                    handleTap(image: image, modifiers: [])
+                }
             }
             // Clear any text field focus before focusing the grid
             if isTextFieldActive() {
@@ -169,12 +172,11 @@ struct ThumbnailGridView: View {
             if let anchor,
                let anchorIndex = viewModel.urlToVisibleIndex[anchor],
                let currentIndex = viewModel.urlToVisibleIndex[image.url] {
+                let range = min(anchorIndex, currentIndex)...max(anchorIndex, currentIndex)
                 let sorted = viewModel.visibleImages
                 var updated = viewModel.selectedImageIDs
-                let range = min(anchorIndex, currentIndex)...max(anchorIndex, currentIndex)
-                for i in range {
-                    updated.insert(sorted[i].url)
-                }
+                updated.reserveCapacity(updated.count + range.count)
+                updated.formUnion(sorted[range].lazy.map { $0.url })
                 viewModel.selectedImageIDs = updated
             }
             // Don't update lastClickedImageURL — anchor stays for subsequent shift-clicks

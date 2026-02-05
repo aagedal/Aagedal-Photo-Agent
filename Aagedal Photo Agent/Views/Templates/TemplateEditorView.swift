@@ -115,7 +115,7 @@ struct TemplateEditorView: View {
     private func variableMenu(for field: Binding<TemplateField>) -> some View {
         Menu {
             Section("Date") {
-                Button("{date} — medium format") {
+                Button("{date} — today, medium format") {
                     field.wrappedValue.templateValue += "{date}"
                 }
                 Button("{date:yyyy-MM-dd}") {
@@ -129,6 +129,12 @@ struct TemplateEditorView: View {
                 }
                 Button("{date:yyyy}") {
                     field.wrappedValue.templateValue += "{date:yyyy}"
+                }
+                Button("{dateCreated} — metadata") {
+                    field.wrappedValue.templateValue += "{dateCreated}"
+                }
+                Button("{dateCaptured} — EXIF DateTimeOriginal") {
+                    field.wrappedValue.templateValue += "{dateCaptured}"
                 }
             }
 

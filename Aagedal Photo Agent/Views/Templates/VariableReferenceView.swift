@@ -13,7 +13,7 @@ private let allVariables: [VariableDefinition] = [
     VariableDefinition(
         variable: "{date}",
         category: "Date",
-        description: "Current date in the system's medium format.",
+        description: "Today's date in the system's medium format.",
         example: "Jan 27, 2026"
     ),
     VariableDefinition(
@@ -51,6 +51,18 @@ private let allVariables: [VariableDefinition] = [
         category: "Date",
         description: "Custom date using any DateFormatter pattern. Replace FORMAT with your own pattern (e.g. HH:mm, EEE dd MMM).",
         example: "{date:EEE dd MMM} \u{2192} Mon 27 Jan"
+    ),
+    VariableDefinition(
+        variable: "{dateCreated}",
+        category: "Date",
+        description: "Date Created from metadata (if available).",
+        example: "2026-01-27"
+    ),
+    VariableDefinition(
+        variable: "{dateCaptured}",
+        category: "Date",
+        description: "EXIF DateTimeOriginal from metadata (if available).",
+        example: "2026-01-27"
     ),
 
     // Shortcuts
