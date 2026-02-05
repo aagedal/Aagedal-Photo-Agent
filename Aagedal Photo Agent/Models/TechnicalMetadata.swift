@@ -1,4 +1,6 @@
 import Foundation
+import ImageIO
+import CoreGraphics
 
 struct TechnicalMetadata {
     var camera: String?
@@ -25,7 +27,7 @@ struct TechnicalMetadata {
         return "\(w) x \(h)"
     }
 
-    init(from dict: [String: Any]) {
+    init(from dict: [String: Any], fileURL: URL? = nil) {
         // Camera: combine Make + Model, avoiding duplication
         let make = (dict["Make"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
         let model = (dict["Model"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -79,16 +81,24 @@ struct TechnicalMetadata {
         imageWidth = dict["ImageWidth"] as? Int ?? dict["File:ImageWidth"] as? Int
         imageHeight = dict["ImageHeight"] as? Int ?? dict["File:ImageHeight"] as? Int
 
+        // Bit depth and color space — prefer native Apple APIs (CGImageSource),
+        // which correctly read CICP/NCLX, JXL codestream headers, ICC profiles etc.
+        // Fall back to ExifTool tags when native detection isn't available.
+        let nativeInfo = fileURL.flatMap { Self.nativeImageInfo(for: $0) }
+
         // Bit depth
-        if let bps = dict["BitsPerSample"] as? Int {
+        if let nativeBitDepth = nativeInfo?.bitDepth {
+            bitDepth = nativeBitDepth
+        } else if let bps = dict["BitsPerSample"] as? Int {
             bitDepth = bps
         } else if let bpsArr = dict["BitsPerSample"] as? [Int], let first = bpsArr.first {
             bitDepth = first
         }
 
-        // Color space — prefer ICC profile description (accurate: "Display P3", "ProPhoto RGB", etc.)
-        // Fall back to EXIF ColorSpace tag (limited: sRGB=1, Adobe RGB=2, Uncalibrated=0xFFFF)
-        if let iccDesc = dict["ProfileDescription"] as? String, !iccDesc.isEmpty {
+        // Color space
+        if let nativeProfile = nativeInfo?.profileName, !nativeProfile.isEmpty {
+            colorSpace = Self.cleanProfileName(nativeProfile)
+        } else if let iccDesc = dict["ProfileDescription"] as? String, !iccDesc.isEmpty {
             colorSpace = iccDesc
         } else if let cs = dict["ColorSpace"] as? Int {
             switch cs {
@@ -117,5 +127,58 @@ struct TechnicalMetadata {
         // Edited detection: "Relationship" = "parentOf" means the file has an
         // ingredient (i.e. it was edited/re-signed by another tool)
         c2paEdited = (dict["Relationship"] as? String) == "parentOf"
+    }
+
+    // MARK: - Native Apple API color space detection
+
+    private struct NativeImageInfo {
+        let profileName: String?
+        let bitDepth: Int?
+    }
+
+    /// Use CGImageSource to read the actual color profile and bit depth from the image file.
+    /// This correctly handles CICP/NCLX (AVIF/HEIF), JXL codestream headers, and ICC profiles.
+    private static func nativeImageInfo(for url: URL) -> NativeImageInfo? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any]
+        let profileName = props?[kCGImagePropertyProfileName as String] as? String
+        let depth = props?[kCGImagePropertyDepth as String] as? Int
+        if profileName == nil && depth == nil { return nil }
+        return NativeImageInfo(profileName: profileName, bitDepth: depth)
+    }
+
+    /// Clean up raw profile names for display.
+    /// e.g. "QuickTime 'nclc' Video (9,1,9)" → "Rec. 2020" via CICP code parsing.
+    private static func cleanProfileName(_ name: String) -> String {
+        // Handle QuickTime NCLX profile strings like "QuickTime 'nclc' Video (9,1,9)"
+        if name.contains("nclc") || name.contains("nclx") {
+            // Extract CICP codes from parenthesized tuple
+            if let range = name.range(of: #"\((\d+),(\d+),(\d+)\)"#, options: .regularExpression) {
+                let match = String(name[range]).dropFirst().dropLast() // remove parens
+                let codes = match.split(separator: ",").compactMap { Int($0) }
+                if codes.count >= 2 {
+                    return colorSpaceFromCICPCodes(primaries: codes[0], transfer: codes[1])
+                }
+            }
+            return name
+        }
+        return name
+    }
+
+    private static func colorSpaceFromCICPCodes(primaries: Int, transfer: Int) -> String {
+        let isPQ = transfer == 16
+        let isHLG = transfer == 18
+
+        let gamut: String
+        switch primaries {
+        case 9:  gamut = "Rec. 2020"
+        case 12: gamut = "Display P3"
+        case 1:  gamut = "sRGB"
+        default: gamut = "CICP \(primaries)"
+        }
+
+        if isPQ { return "\(gamut) PQ" }
+        if isHLG { return "\(gamut) HLG" }
+        return gamut
     }
 }

@@ -348,7 +348,7 @@ final class ExifToolService {
             exifToolLog.warning("readTechnicalMetadata: no data returned for \(url.lastPathComponent, privacy: .public)")
             return TechnicalMetadata(from: [:])
         }
-        return TechnicalMetadata(from: dict)
+        return TechnicalMetadata(from: dict, fileURL: url)
     }
 
     /// Read detailed C2PA metadata using -G3 to separate multi-manifest chains.

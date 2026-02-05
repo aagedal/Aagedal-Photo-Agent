@@ -134,6 +134,19 @@ final class FullScreenImageCache: @unchecked Sendable {
         return NSImage(contentsOf: url)
     }
 
+    /// Load an image at full source resolution, preserving color space and bit depth.
+    nonisolated static func loadFullResolution(from url: URL) -> NSImage? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+        ]
+        guard let cgImage = CGImageSourceCreateImageAtIndex(source, 0, options as CFDictionary) else {
+            return NSImage(contentsOf: url)
+        }
+        return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+    }
+
     /// Extract the embedded JPEG preview from a RAW file.
     nonisolated static func extractEmbeddedPreview(from url: URL) -> NSImage? {
         let filename = url.lastPathComponent

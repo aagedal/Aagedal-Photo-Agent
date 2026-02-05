@@ -198,8 +198,8 @@ final class BrowserViewModel {
         lastClickedImageURL = nil
         manualOrder.removeAll()
 
-        // Add to open folders if not already there
-        if !openFolders.contains(url) {
+        // Add to open folders if not already there, unless it's a subfolder of an existing open folder
+        if !openFolders.contains(url) && !isSubfolderOfOpenFolder(url) {
             openFolders.append(url)
         }
 
@@ -811,11 +811,18 @@ final class BrowserViewModel {
     }
 
     func closeOpenFolder(_ url: URL) {
+        // Clean up subfolder entries that belong to this open folder
+        let childURLs = subfoldersByOpenFolder[url] ?? []
+        for child in childURLs {
+            subfoldersByOpenFolder.removeValue(forKey: child)
+        }
         openFolders.removeAll { $0 == url }
         subfoldersByOpenFolder.removeValue(forKey: url)
         expandedFolders.remove(url)
-        // If we closed the current folder, switch to another open folder or clear
-        if currentFolderURL == url {
+        // If we closed the current folder (or it was browsing a subfolder of this folder),
+        // switch to another open folder or clear
+        let currentIsChild = childURLs.contains(currentFolderURL ?? URL(fileURLWithPath: "/"))
+        if currentFolderURL == url || currentIsChild {
             if let nextFolder = openFolders.first {
                 loadFolder(url: nextFolder)
             } else {
@@ -826,6 +833,15 @@ final class BrowserViewModel {
                 subfoldersByOpenFolder = [:]
             }
         }
+    }
+
+    private func isSubfolderOfOpenFolder(_ url: URL) -> Bool {
+        for (_, subfolders) in subfoldersByOpenFolder {
+            if subfolders.contains(url) {
+                return true
+            }
+        }
+        return false
     }
 
 
