@@ -410,6 +410,7 @@ struct ContentView: View {
                             let isExpanded = browserViewModel.expandedFolders.contains(folderURL)
 
                             VStack(alignment: .leading, spacing: 2) {
+                                // Parent folder row
                                 HStack(spacing: 4) {
                                     if hasSubfolders {
                                         Image(systemName: "chevron.right")
@@ -438,6 +439,16 @@ struct ContentView: View {
                                         .font(.callout)
                                         .foregroundStyle(isCurrent ? Color.accentColor : Color.primary)
                                     Spacer()
+
+                                    Button {
+                                        browserViewModel.closeOpenFolder(folderURL)
+                                    } label: {
+                                        Image(systemName: "xmark.circle.fill")
+                                            .font(.caption)
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .foregroundStyle(.secondary)
+                                    .help("Close Folder")
                                 }
                                 .padding(.vertical, 4)
                                 .padding(.horizontal, 6)
@@ -450,20 +461,51 @@ struct ContentView: View {
                                     browserViewModel.loadFolder(url: folderURL)
                                 }
 
+                                // Subfolders
                                 if isExpanded {
                                     ForEach(subfolders, id: \.self) { subfolderURL in
-                                        HStack(spacing: 6) {
-                                            Image(systemName: "folder")
-                                                .foregroundStyle(.secondary)
-                                            Text(subfolderURL.lastPathComponent)
-                                            Spacer()
-                                        }
-                                        .font(.callout)
-                                        .padding(.leading, 28)
-                                        .padding(.vertical, 2)
-                                        .contentShape(Rectangle())
-                                        .onTapGesture {
-                                            browserViewModel.loadFolder(url: subfolderURL)
+                                        let isSubCurrent = subfolderURL == browserViewModel.currentFolderURL
+                                        let subSubfolders = browserViewModel.subfoldersByOpenFolder[subfolderURL] ?? []
+
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            HStack(spacing: 6) {
+                                                Image(systemName: isSubCurrent ? "folder.fill" : "folder")
+                                                    .foregroundStyle(isSubCurrent ? Color.accentColor : Color.secondary)
+                                                Text(subfolderURL.lastPathComponent)
+                                                    .foregroundStyle(isSubCurrent ? Color.accentColor : Color.primary)
+                                                Spacer()
+                                            }
+                                            .font(.callout)
+                                            .padding(.leading, 22)
+                                            .padding(.vertical, 3)
+                                            .padding(.trailing, 6)
+                                            .background(
+                                                RoundedRectangle(cornerRadius: 6)
+                                                    .fill(isSubCurrent ? Color.accentColor.opacity(0.15) : Color.clear)
+                                            )
+                                            .contentShape(Rectangle())
+                                            .onTapGesture {
+                                                browserViewModel.loadFolder(url: subfolderURL)
+                                            }
+
+                                            // Sub-subfolders shown when this subfolder is active
+                                            if isSubCurrent, !subSubfolders.isEmpty {
+                                                ForEach(subSubfolders, id: \.self) { subSubURL in
+                                                    HStack(spacing: 6) {
+                                                        Image(systemName: "folder")
+                                                            .foregroundStyle(.secondary)
+                                                        Text(subSubURL.lastPathComponent)
+                                                        Spacer()
+                                                    }
+                                                    .font(.callout)
+                                                    .padding(.leading, 42)
+                                                    .padding(.vertical, 2)
+                                                    .contentShape(Rectangle())
+                                                    .onTapGesture {
+                                                        browserViewModel.loadFolder(url: subSubURL)
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }

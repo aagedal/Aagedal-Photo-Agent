@@ -1,8 +1,40 @@
 import SwiftUI
 import AppKit
+import QuartzCore
 import os.log
 
 nonisolated private let imageLogger = Logger(subsystem: "com.aagedal.photo-agent", category: "ImageLoading")
+
+// MARK: - HDR Image View (CALayer-based EDR rendering)
+
+/// Renders an NSImage using a CALayer with Extended Dynamic Range enabled.
+/// This allows PQ/HLG HDR images to use the display's full brightness range
+/// instead of being tonemapped to SDR.
+private struct HDRImageView: NSViewRepresentable {
+    let image: NSImage
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        view.wantsLayer = true
+        view.layer?.contentsGravity = .resizeAspect
+        if #available(macOS 26.0, *) {
+            view.layer?.preferredDynamicRange = .high
+        } else {
+            view.layer?.wantsExtendedDynamicRangeContent = true
+        }
+        updateLayer(view)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        updateLayer(nsView)
+    }
+
+    private func updateLayer(_ view: NSView) {
+        guard let layer = view.layer else { return }
+        layer.contents = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
+    }
+}
 
 // MARK: - CGFloat Clamping Extension
 
@@ -203,10 +235,11 @@ struct FullScreenImageView: View {
                 Color.black
 
                 if let currentImage {
-                    Image(nsImage: currentImage)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .allowedDynamicRange(.high)
+                    HDRImageView(image: currentImage)
+                        .aspectRatio(
+                            currentImage.size.width / currentImage.size.height,
+                            contentMode: .fit
+                        )
                         .scaleEffect(zoomScale)
                         .offset(offset)
                         .gesture(magnifyGesture)
@@ -457,11 +490,11 @@ struct FullScreenImageView: View {
             }
         }
 
-        // Phase 2: Full quality at Retina resolution
+        // Phase 2: Full source resolution (for zoom and HDR fidelity)
         let fullStart = CFAbsoluteTimeGetCurrent()
-        imageLogger.info("\(filename): Phase 2 starting (target \(Int(screenMaxPx))px)")
+        imageLogger.info("\(filename): Phase 2 starting (full resolution)")
         fullLoadTask = Task.detached(priority: .userInitiated) {
-            let image = FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: screenMaxPx)
+            let image = FullScreenImageCache.loadFullResolution(from: url)
             let fullElapsed = CFAbsoluteTimeGetCurrent() - fullStart
             guard !Task.isCancelled else {
                 imageLogger.info("\(filename): Phase 2 cancelled after \(String(format: "%.1f", fullElapsed * 1000))ms")
@@ -663,6 +696,12 @@ struct FullScreenPresenter: ViewModifier {
         let hostingView = NSHostingView(
             rootView: FullScreenImageView(viewModel: viewModel, zoomController: controller)
         )
+        hostingView.wantsLayer = true
+        if #available(macOS 26.0, *) {
+            hostingView.layer?.preferredDynamicRange = .high
+        } else {
+            hostingView.layer?.wantsExtendedDynamicRangeContent = true
+        }
         window.contentView = hostingView
         window.setFrame(screen.frame, display: true)
         window.makeKeyAndOrderFront(nil)

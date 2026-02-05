@@ -29,7 +29,6 @@ struct ThumbnailCell: View, Equatable {
                         Image(nsImage: thumbnail)
                             .resizable()
                             .aspectRatio(contentMode: .fit)
-                            .allowedDynamicRange(.high)
                     } else {
                         Rectangle()
                             .fill(.quaternary)
