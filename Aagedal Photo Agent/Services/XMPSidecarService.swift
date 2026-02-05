@@ -7,6 +7,7 @@ struct XMPSidecarService: Sendable {
         static let dc = "http://purl.org/dc/elements/1.1/"
         static let xmp = "http://ns.adobe.com/xap/1.0/"
         static let photoshop = "http://ns.adobe.com/photoshop/1.0/"
+        static let iptcCore = "http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/"
         static let iptcExt = "http://iptc.org/std/Iptc4xmpExt/2008-02-29/"
         static let exif = "http://ns.adobe.com/exif/1.0/"
     }
@@ -131,6 +132,7 @@ struct XMPSidecarService: Sendable {
         ensureNamespace(description, prefix: "dc", uri: Namespace.dc)
         ensureNamespace(description, prefix: "xmp", uri: Namespace.xmp)
         ensureNamespace(description, prefix: "photoshop", uri: Namespace.photoshop)
+        ensureNamespace(description, prefix: "Iptc4xmpCore", uri: Namespace.iptcCore)
         ensureNamespace(description, prefix: "Iptc4xmpExt", uri: Namespace.iptcExt)
         ensureNamespace(description, prefix: "exif", uri: Namespace.exif)
         if let rdf = description.parent as? XMLElement {
@@ -194,6 +196,7 @@ struct XMPSidecarService: Sendable {
         setSimple(on: description, prefix: "photoshop", localName: "Headline", value: metadata.title)
         setAltText(on: description, prefix: "dc", localName: "title", value: metadata.title)
         setAltText(on: description, prefix: "dc", localName: "description", value: metadata.description)
+        setAltText(on: description, prefix: "Iptc4xmpCore", localName: "ExtDescrAccessibility", value: metadata.extendedDescription)
         setBag(on: description, prefix: "dc", localName: "subject", values: metadata.keywords)
         setBag(on: description, prefix: "Iptc4xmpExt", localName: "PersonInImage", values: metadata.personShown)
         setSimple(on: description, prefix: "xmp", localName: "Rating", value: metadata.rating.map(String.init))
@@ -201,6 +204,7 @@ struct XMPSidecarService: Sendable {
         setSimple(on: description, prefix: "Iptc4xmpExt", localName: "DigitalSourceType", value: metadata.digitalSourceType?.rawValue)
         setSeq(on: description, prefix: "dc", localName: "creator", values: metadata.creator.map { [$0] } ?? [])
         setSimple(on: description, prefix: "photoshop", localName: "Credit", value: metadata.credit)
+        setSimple(on: description, prefix: "photoshop", localName: "TransmissionReference", value: metadata.jobId)
         setAltText(on: description, prefix: "dc", localName: "rights", value: metadata.copyright)
         setSimple(on: description, prefix: "photoshop", localName: "DateCreated", value: metadata.dateCreated)
         setSimple(on: description, prefix: "photoshop", localName: "City", value: metadata.city)
@@ -283,6 +287,8 @@ struct XMPSidecarService: Sendable {
             return Namespace.xmp
         case "photoshop":
             return Namespace.photoshop
+        case "Iptc4xmpCore":
+            return Namespace.iptcCore
         case "Iptc4xmpExt":
             return Namespace.iptcExt
         case "exif":
@@ -298,6 +304,7 @@ struct XMPSidecarService: Sendable {
         let headline = parseSimple(from: description, prefix: "photoshop", localName: "Headline")
         let title = headline ?? parseAltText(from: description, prefix: "dc", localName: "title")
         let descriptionText = parseAltText(from: description, prefix: "dc", localName: "description")
+        let extendedDescription = parseAltText(from: description, prefix: "Iptc4xmpCore", localName: "ExtDescrAccessibility")
         let keywords = parseBag(from: description, prefix: "dc", localName: "subject")
         let personShown = parseBag(from: description, prefix: "Iptc4xmpExt", localName: "PersonInImage")
         let ratingValue = parseSimple(from: description, prefix: "xmp", localName: "Rating")
@@ -305,6 +312,7 @@ struct XMPSidecarService: Sendable {
         let digitalSourceType = parseSimple(from: description, prefix: "Iptc4xmpExt", localName: "DigitalSourceType")
         let creator = parseSeq(from: description, prefix: "dc", localName: "creator").first
         let credit = parseSimple(from: description, prefix: "photoshop", localName: "Credit")
+        let jobId = parseSimple(from: description, prefix: "photoshop", localName: "TransmissionReference")
         let rights = parseAltText(from: description, prefix: "dc", localName: "rights")
         let dateCreated = parseSimple(from: description, prefix: "photoshop", localName: "DateCreated")
         let city = parseSimple(from: description, prefix: "photoshop", localName: "City")
@@ -316,6 +324,7 @@ struct XMPSidecarService: Sendable {
         return IPTCMetadata(
             title: title,
             description: descriptionText,
+            extendedDescription: extendedDescription,
             keywords: keywords,
             personShown: personShown,
             digitalSourceType: digitalSourceType.flatMap { DigitalSourceType(rawValue: $0) },
@@ -324,6 +333,7 @@ struct XMPSidecarService: Sendable {
             creator: creator,
             credit: credit,
             copyright: rights,
+            jobId: jobId,
             dateCreated: dateCreated,
             city: city,
             country: country,

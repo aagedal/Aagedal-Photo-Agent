@@ -75,11 +75,13 @@ struct MetadataSidecarService: Sendable {
         var names: [String] = []
         if edited.title != original.title { names.append("Headline") }
         if edited.description != original.description { names.append("Description") }
+        if edited.extendedDescription != original.extendedDescription { names.append("Extended Description") }
         if edited.keywords != original.keywords { names.append("Keywords") }
         if edited.personShown != original.personShown { names.append("Person Shown") }
         if edited.rating != original.rating { names.append("Rating") }
         if edited.label != original.label { names.append("Label") }
         if edited.copyright != original.copyright { names.append("Copyright") }
+        if edited.jobId != original.jobId { names.append("Job ID") }
         if edited.creator != original.creator { names.append("Creator") }
         if edited.credit != original.credit { names.append("Credit") }
         if edited.city != original.city { names.append("City") }

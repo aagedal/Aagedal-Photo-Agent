@@ -211,6 +211,19 @@ struct ImportView: View {
                 .overlay(RoundedRectangle(cornerRadius: 5).stroke(.quaternary))
             }
 
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Extended Description")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TextEditor(text: Binding(
+                    get: { viewModel.configuration.metadata.extendedDescription ?? "" },
+                    set: { viewModel.configuration.metadata.extendedDescription = $0.isEmpty ? nil : $0 }
+                ))
+                .font(.body)
+                .frame(height: 56)
+                .overlay(RoundedRectangle(cornerRadius: 5).stroke(.quaternary))
+            }
+
             KeywordsEditor(
                 label: "Keywords",
                 keywords: $viewModel.configuration.metadata.keywords
@@ -226,6 +239,14 @@ struct ImportView: View {
                 text: Binding(
                     get: { viewModel.configuration.metadata.copyright ?? "" },
                     set: { viewModel.configuration.metadata.copyright = $0.isEmpty ? nil : $0 }
+                )
+            )
+
+            EditableTextField(
+                label: "Job ID",
+                text: Binding(
+                    get: { viewModel.configuration.metadata.jobId ?? "" },
+                    set: { viewModel.configuration.metadata.jobId = $0.isEmpty ? nil : $0 }
                 )
             )
 

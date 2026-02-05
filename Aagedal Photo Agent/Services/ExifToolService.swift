@@ -204,6 +204,7 @@ final class ExifToolService {
                 ?? dict["Title"] as? String
                 ?? dict["ObjectName"] as? String,
             description: dict["Description"] as? String ?? dict["Caption-Abstract"] as? String,
+            extendedDescription: dict["ExtDescrAccessibility"] as? String,
             keywords: parseStringOrArray(dict["Subject"] ?? dict["Keywords"]),
             personShown: parseStringOrArray(dict["PersonInImage"]),
             digitalSourceType: (dict["DigitalSourceType"] as? String).flatMap { DigitalSourceType(rawValue: $0) },
@@ -212,6 +213,9 @@ final class ExifToolService {
             creator: parseFirstString(dict["Creator"] ?? dict["By-line"]),
             credit: dict["Credit"] as? String,
             copyright: dict["Rights"] as? String ?? dict["CopyrightNotice"] as? String,
+            jobId: dict["TransmissionReference"] as? String
+                ?? dict["JobID"] as? String
+                ?? dict["OriginalTransmissionReference"] as? String,
             dateCreated: dict["DateCreated"] as? String ?? dict["CreateDate"] as? String,
             city: dict["City"] as? String,
             country: dict["Country"] as? String ?? dict["Country-PrimaryLocationName"] as? String,
@@ -244,6 +248,14 @@ final class ExifToolService {
         }
         if let creator = normalizedFields["XMP:Creator"], normalizedFields["IPTC:By-line"] == nil {
             normalizedFields["IPTC:By-line"] = creator
+        }
+        if let jobId = normalizedFields["XMP-photoshop:TransmissionReference"] {
+            if normalizedFields["IPTC:OriginalTransmissionReference"] == nil {
+                normalizedFields["IPTC:OriginalTransmissionReference"] = jobId
+            }
+            if normalizedFields["IPTC:JobID"] == nil {
+                normalizedFields["IPTC:JobID"] = jobId
+            }
         }
 
         let creationDates = captureCreationDates(for: urls)

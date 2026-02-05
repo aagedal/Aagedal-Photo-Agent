@@ -289,6 +289,20 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
 
                 if settingsViewModel.knownPeopleMode != .off {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("Auto-match Min Confidence")
+                            Spacer()
+                            Text(String(format: "%.2f", settingsViewModel.knownPeopleMinConfidence))
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        }
+                        Slider(value: $settingsViewModel.knownPeopleMinConfidence, in: 0.50...0.95, step: 0.01)
+                        Text("Lower values match more often; higher values reduce false matches.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
                     LabeledContent("Database") {
                         HStack {
                             if knownPeopleStats.peopleCount == 0 {

@@ -267,6 +267,16 @@ final class MetadataViewModel {
             differing.insert("description")
         }
 
+        // Extended Description
+        let extendedDescriptions = allMetadata.compactMap(\.extendedDescription)
+        if extendedDescriptions.count == allMetadata.count,
+           let first = extendedDescriptions.first,
+           extendedDescriptions.allSatisfy({ $0 == first }) {
+            common.extendedDescription = first
+        } else if !extendedDescriptions.isEmpty {
+            differing.insert("extendedDescription")
+        }
+
         // Keywords
         let keywordSets = allMetadata.map { Set($0.keywords) }
         if let first = keywordSets.first, keywordSets.allSatisfy({ $0 == first }) {
@@ -289,6 +299,14 @@ final class MetadataViewModel {
             common.copyright = first
         } else if !copyrights.isEmpty {
             differing.insert("copyright")
+        }
+
+        // Job ID
+        let jobIds = allMetadata.compactMap(\.jobId)
+        if jobIds.count == allMetadata.count, let first = jobIds.first, jobIds.allSatisfy({ $0 == first }) {
+            common.jobId = first
+        } else if !jobIds.isEmpty {
+            differing.insert("jobId")
         }
 
         // Creator
@@ -419,6 +437,7 @@ final class MetadataViewModel {
                     // Batch: only write non-empty fields
                     if let v = edited.title, !v.isEmpty { fields["XMP-photoshop:Headline"] = v }
                     if let v = edited.description, !v.isEmpty { fields["XMP:Description"] = v }
+                    if let v = edited.extendedDescription, !v.isEmpty { fields["XMP-iptcCore:ExtDescrAccessibility"] = v }
                     if !edited.keywords.isEmpty { fields["XMP:Subject"] = edited.keywords.joined(separator: ", ") }
                     if !edited.personShown.isEmpty { fields["XMP-iptcExt:PersonInImage"] = edited.personShown.joined(separator: ", ") }
                     if let v = edited.digitalSourceType { fields["XMP-iptcExt:DigitalSourceType"] = v.rawValue }
@@ -431,6 +450,7 @@ final class MetadataViewModel {
                     if let v = edited.creator, !v.isEmpty { fields["XMP:Creator"] = v }
                     if let v = edited.credit, !v.isEmpty { fields["XMP-photoshop:Credit"] = v }
                     if let v = edited.copyright, !v.isEmpty { fields["XMP:Rights"] = v }
+                    if let v = edited.jobId, !v.isEmpty { fields["XMP-photoshop:TransmissionReference"] = v }
                     if let v = edited.dateCreated, !v.isEmpty { fields["XMP:DateCreated"] = v }
                     if let v = edited.city, !v.isEmpty { fields["XMP-photoshop:City"] = v }
                     if let v = edited.country, !v.isEmpty { fields["XMP-photoshop:Country"] = v }
@@ -439,6 +459,9 @@ final class MetadataViewModel {
                     // Single: write all changed fields
                     if edited.title != original?.title { fields["XMP-photoshop:Headline"] = edited.title ?? "" }
                     if edited.description != original?.description { fields["XMP:Description"] = edited.description ?? "" }
+                    if edited.extendedDescription != original?.extendedDescription {
+                        fields["XMP-iptcCore:ExtDescrAccessibility"] = edited.extendedDescription ?? ""
+                    }
                     if edited.keywords != original?.keywords {
                         // Clear then set keywords
                         fields["XMP:Subject"] = edited.keywords.joined(separator: ", ")
@@ -465,6 +488,9 @@ final class MetadataViewModel {
                     if edited.creator != original?.creator { fields["XMP:Creator"] = edited.creator ?? "" }
                     if edited.credit != original?.credit { fields["XMP-photoshop:Credit"] = edited.credit ?? "" }
                     if edited.copyright != original?.copyright { fields["XMP:Rights"] = edited.copyright ?? "" }
+                    if edited.jobId != original?.jobId {
+                        fields["XMP-photoshop:TransmissionReference"] = edited.jobId ?? ""
+                    }
                     if edited.dateCreated != original?.dateCreated { fields["XMP:DateCreated"] = edited.dateCreated ?? "" }
                     if edited.city != original?.city { fields["XMP-photoshop:City"] = edited.city ?? "" }
                     if edited.country != original?.country { fields["XMP-photoshop:Country"] = edited.country ?? "" }
@@ -585,12 +611,14 @@ final class MetadataViewModel {
         var fields: [String: String] = [:]
         fields["XMP-photoshop:Headline"] = metadata.title ?? ""
         fields["XMP:Description"] = metadata.description ?? ""
+        fields["XMP-iptcCore:ExtDescrAccessibility"] = metadata.extendedDescription ?? ""
         fields["XMP:Subject"] = metadata.keywords.joined(separator: ", ")
         fields["XMP-iptcExt:PersonInImage"] = metadata.personShown.joined(separator: ", ")
         fields["XMP-iptcExt:DigitalSourceType"] = metadata.digitalSourceType?.rawValue ?? ""
         fields["XMP:Creator"] = metadata.creator ?? ""
         fields["XMP-photoshop:Credit"] = metadata.credit ?? ""
         fields["XMP:Rights"] = metadata.copyright ?? ""
+        fields["XMP-photoshop:TransmissionReference"] = metadata.jobId ?? ""
         fields["XMP:DateCreated"] = metadata.dateCreated ?? ""
         fields["XMP-photoshop:City"] = metadata.city ?? ""
         fields["XMP-photoshop:Country"] = metadata.country ?? ""
@@ -673,6 +701,8 @@ final class MetadataViewModel {
                 editingMetadata.title = append ? appendString(editingMetadata.title, value) : value
             case "description":
                 editingMetadata.description = append ? appendString(editingMetadata.description, value) : value
+            case "extendedDescription":
+                editingMetadata.extendedDescription = append ? appendString(editingMetadata.extendedDescription, value) : value
             case "keywords":
                 let newKeywords = value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
                 if append {
@@ -697,6 +727,8 @@ final class MetadataViewModel {
                 editingMetadata.credit = append ? appendString(editingMetadata.credit, value) : value
             case "copyright":
                 editingMetadata.copyright = append ? appendString(editingMetadata.copyright, value) : value
+            case "jobId":
+                editingMetadata.jobId = append ? appendString(editingMetadata.jobId, value) : value
             case "dateCreated":
                 editingMetadata.dateCreated = append ? appendString(editingMetadata.dateCreated, value) : value
             case "city":
@@ -723,9 +755,11 @@ final class MetadataViewModel {
         let fields: [String?] = [
             editingMetadata.title,
             editingMetadata.description,
+            editingMetadata.extendedDescription,
             editingMetadata.creator,
             editingMetadata.credit,
             editingMetadata.copyright,
+            editingMetadata.jobId,
             editingMetadata.dateCreated,
             editingMetadata.city,
             editingMetadata.country,
@@ -745,9 +779,11 @@ final class MetadataViewModel {
 
         editingMetadata.title = resolveIfPresent(editingMetadata.title, interpolator: interpolator, filename: filename, ref: snapshot)
         editingMetadata.description = resolveIfPresent(editingMetadata.description, interpolator: interpolator, filename: filename, ref: snapshot)
+        editingMetadata.extendedDescription = resolveIfPresent(editingMetadata.extendedDescription, interpolator: interpolator, filename: filename, ref: snapshot)
         editingMetadata.creator = resolveIfPresent(editingMetadata.creator, interpolator: interpolator, filename: filename, ref: snapshot)
         editingMetadata.credit = resolveIfPresent(editingMetadata.credit, interpolator: interpolator, filename: filename, ref: snapshot)
         editingMetadata.copyright = resolveIfPresent(editingMetadata.copyright, interpolator: interpolator, filename: filename, ref: snapshot)
+        editingMetadata.jobId = resolveIfPresent(editingMetadata.jobId, interpolator: interpolator, filename: filename, ref: snapshot)
         editingMetadata.dateCreated = resolveIfPresent(editingMetadata.dateCreated, interpolator: interpolator, filename: filename, ref: snapshot)
         editingMetadata.city = resolveIfPresent(editingMetadata.city, interpolator: interpolator, filename: filename, ref: snapshot)
         editingMetadata.country = resolveIfPresent(editingMetadata.country, interpolator: interpolator, filename: filename, ref: snapshot)
@@ -785,9 +821,11 @@ final class MetadataViewModel {
 
                     resolved.title = resolveIfChanged(meta.title, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
                     resolved.description = resolveIfChanged(meta.description, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolved.extendedDescription = resolveIfChanged(meta.extendedDescription, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
                     resolved.creator = resolveIfChanged(meta.creator, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
                     resolved.credit = resolveIfChanged(meta.credit, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
                     resolved.copyright = resolveIfChanged(meta.copyright, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolved.jobId = resolveIfChanged(meta.jobId, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
                     resolved.dateCreated = resolveIfChanged(meta.dateCreated, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
                     resolved.city = resolveIfChanged(meta.city, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
                     resolved.country = resolveIfChanged(meta.country, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
@@ -797,9 +835,15 @@ final class MetadataViewModel {
                         var fields: [String: String] = [:]
                         if resolved.title != meta.title { fields["XMP-photoshop:Headline"] = resolved.title ?? "" }
                         if resolved.description != meta.description { fields["XMP:Description"] = resolved.description ?? "" }
+                        if resolved.extendedDescription != meta.extendedDescription {
+                            fields["XMP-iptcCore:ExtDescrAccessibility"] = resolved.extendedDescription ?? ""
+                        }
                         if resolved.creator != meta.creator { fields["XMP:Creator"] = resolved.creator ?? "" }
                         if resolved.credit != meta.credit { fields["XMP-photoshop:Credit"] = resolved.credit ?? "" }
                         if resolved.copyright != meta.copyright { fields["XMP:Rights"] = resolved.copyright ?? "" }
+                        if resolved.jobId != meta.jobId {
+                            fields["XMP-photoshop:TransmissionReference"] = resolved.jobId ?? ""
+                        }
                         if resolved.dateCreated != meta.dateCreated { fields["XMP:DateCreated"] = resolved.dateCreated ?? "" }
                         if resolved.city != meta.city { fields["XMP-photoshop:City"] = resolved.city ?? "" }
                         if resolved.country != meta.country { fields["XMP-photoshop:Country"] = resolved.country ?? "" }
@@ -844,9 +888,11 @@ final class MetadataViewModel {
 
                     resolved.title = resolveIfChanged(meta.title, interpolator: interpolator, filename: image.filename, ref: snapshot, changed: &changed)
                     resolved.description = resolveIfChanged(meta.description, interpolator: interpolator, filename: image.filename, ref: snapshot, changed: &changed)
+                    resolved.extendedDescription = resolveIfChanged(meta.extendedDescription, interpolator: interpolator, filename: image.filename, ref: snapshot, changed: &changed)
                     resolved.creator = resolveIfChanged(meta.creator, interpolator: interpolator, filename: image.filename, ref: snapshot, changed: &changed)
                     resolved.credit = resolveIfChanged(meta.credit, interpolator: interpolator, filename: image.filename, ref: snapshot, changed: &changed)
                     resolved.copyright = resolveIfChanged(meta.copyright, interpolator: interpolator, filename: image.filename, ref: snapshot, changed: &changed)
+                    resolved.jobId = resolveIfChanged(meta.jobId, interpolator: interpolator, filename: image.filename, ref: snapshot, changed: &changed)
                     resolved.dateCreated = resolveIfChanged(meta.dateCreated, interpolator: interpolator, filename: image.filename, ref: snapshot, changed: &changed)
                     resolved.city = resolveIfChanged(meta.city, interpolator: interpolator, filename: image.filename, ref: snapshot, changed: &changed)
                     resolved.country = resolveIfChanged(meta.country, interpolator: interpolator, filename: image.filename, ref: snapshot, changed: &changed)
@@ -856,9 +902,15 @@ final class MetadataViewModel {
                         var fields: [String: String] = [:]
                         if resolved.title != meta.title { fields["XMP-photoshop:Headline"] = resolved.title ?? "" }
                         if resolved.description != meta.description { fields["XMP:Description"] = resolved.description ?? "" }
+                        if resolved.extendedDescription != meta.extendedDescription {
+                            fields["XMP-iptcCore:ExtDescrAccessibility"] = resolved.extendedDescription ?? ""
+                        }
                         if resolved.creator != meta.creator { fields["XMP:Creator"] = resolved.creator ?? "" }
                         if resolved.credit != meta.credit { fields["XMP-photoshop:Credit"] = resolved.credit ?? "" }
                         if resolved.copyright != meta.copyright { fields["XMP:Rights"] = resolved.copyright ?? "" }
+                        if resolved.jobId != meta.jobId {
+                            fields["XMP-photoshop:TransmissionReference"] = resolved.jobId ?? ""
+                        }
                         if resolved.dateCreated != meta.dateCreated { fields["XMP:DateCreated"] = resolved.dateCreated ?? "" }
                         if resolved.city != meta.city { fields["XMP-photoshop:City"] = resolved.city ?? "" }
                         if resolved.country != meta.country { fields["XMP-photoshop:Country"] = resolved.country ?? "" }
@@ -1048,9 +1100,11 @@ final class MetadataViewModel {
 
         recordChange("Headline", old: previous.title, new: edited.title)
         recordChange("Description", old: previous.description, new: edited.description)
+        recordChange("Extended Description", old: previous.extendedDescription, new: edited.extendedDescription)
         recordArrayChange("Keywords", old: previous.keywords, new: edited.keywords)
         recordArrayChange("Person Shown", old: previous.personShown, new: edited.personShown)
         recordChange("Copyright", old: previous.copyright, new: edited.copyright)
+        recordChange("Job ID", old: previous.jobId, new: edited.jobId)
         recordChange("Creator", old: previous.creator, new: edited.creator)
         recordChange("Credit", old: previous.credit, new: edited.credit)
         recordChange("Date Created", old: previous.dateCreated, new: edited.dateCreated)
@@ -1116,6 +1170,9 @@ final class MetadataViewModel {
         if let desc = batchMeta.description, !desc.isEmpty {
             metadata.description = desc
         }
+        if let extDesc = batchMeta.extendedDescription, !extDesc.isEmpty {
+            metadata.extendedDescription = extDesc
+        }
         if !batchMeta.keywords.isEmpty {
             let existing = Set(metadata.keywords)
             metadata.keywords += batchMeta.keywords.filter { !existing.contains($0) }
@@ -1126,6 +1183,9 @@ final class MetadataViewModel {
         }
         if let copyright = batchMeta.copyright, !copyright.isEmpty {
             metadata.copyright = copyright
+        }
+        if let jobId = batchMeta.jobId, !jobId.isEmpty {
+            metadata.jobId = jobId
         }
         if let creator = batchMeta.creator, !creator.isEmpty {
             metadata.creator = creator
@@ -1253,9 +1313,11 @@ final class MetadataViewModel {
         var names: [String] = []
         if editingMetadata.title != original.title { names.append("Headline") }
         if editingMetadata.description != original.description { names.append("Description") }
+        if editingMetadata.extendedDescription != original.extendedDescription { names.append("Extended Description") }
         if editingMetadata.keywords != original.keywords { names.append("Keywords") }
         if editingMetadata.personShown != original.personShown { names.append("Person Shown") }
         if editingMetadata.copyright != original.copyright { names.append("Copyright") }
+        if editingMetadata.jobId != original.jobId { names.append("Job ID") }
         if editingMetadata.creator != original.creator { names.append("Creator") }
         if editingMetadata.credit != original.credit { names.append("Credit") }
         if editingMetadata.city != original.city { names.append("City") }
@@ -1377,12 +1439,16 @@ final class MetadataViewModel {
             metadata.title = entry.newValue
         case "Description":
             metadata.description = entry.newValue
+        case "Extended Description":
+            metadata.extendedDescription = entry.newValue
         case "Keywords":
             metadata.keywords = entry.newValue?.components(separatedBy: ", ") ?? []
         case "Person Shown":
             metadata.personShown = entry.newValue?.components(separatedBy: ", ") ?? []
         case "Copyright":
             metadata.copyright = entry.newValue
+        case "Job ID", "Job-ID":
+            metadata.jobId = entry.newValue
         case "Creator":
             metadata.creator = entry.newValue
         case "Credit":

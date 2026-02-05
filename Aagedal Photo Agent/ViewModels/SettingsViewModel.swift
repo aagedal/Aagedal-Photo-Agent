@@ -267,6 +267,13 @@ final class SettingsViewModel {
         }
     }
 
+    /// Minimum confidence required for auto-matching known people. Default: 0.60
+    var knownPeopleMinConfidence: Double {
+        didSet {
+            UserDefaults.standard.set(knownPeopleMinConfidence, forKey: "knownPeopleMinConfidence")
+        }
+    }
+
     var detectedEditors: [DetectedEditor] = []
 
     var bundledExifToolPath: String? {
@@ -357,6 +364,8 @@ final class SettingsViewModel {
 
         let storedKnownPeopleMode = UserDefaults.standard.string(forKey: "knownPeopleMode") ?? "off"
         self.knownPeopleMode = KnownPeopleMode(rawValue: storedKnownPeopleMode) ?? .off
+        let storedKnownPeopleMinConfidence = UserDefaults.standard.object(forKey: "knownPeopleMinConfidence") as? Double
+        self.knownPeopleMinConfidence = storedKnownPeopleMinConfidence ?? 0.60
 
         self.detectedEditors = Self.detectEditors()
 

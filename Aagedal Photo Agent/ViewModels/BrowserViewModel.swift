@@ -18,6 +18,7 @@ final class BrowserViewModel {
     }
     var favoriteFolders: [FavoriteFolder] = []
     var openFolders: [URL] = []
+    var subfoldersByOpenFolder: [URL: [URL]] = [:]
     var manualOrder: [URL] = [] {
         didSet {
             if sortOrder == .manual { rebuildSortedCache() }
@@ -44,6 +45,9 @@ final class BrowserViewModel {
     private let xmpSidecarService = XMPSidecarService()
 
     @ObservationIgnored var onImagesDeleted: ((Set<URL>) -> Void)?
+    @ObservationIgnored private var isAutoRefreshing = false
+    @ObservationIgnored private var isMetadataLoading = false
+    @ObservationIgnored private var pendingMetadataURLs: Set<URL> = []
 
     private let favoritesKey = "favoriteFolders"
 
@@ -177,6 +181,8 @@ final class BrowserViewModel {
         }
 
         Task {
+            let discoveredSubfolders = (try? fileSystemService.listSubfolders(at: url)) ?? []
+            self.subfoldersByOpenFolder[url] = discoveredSubfolders
             do {
                 var files = try fileSystemService.scanFolder(at: url)
                 let pendingURLs = sidecarService.imagesWithPendingChanges(in: url)
@@ -196,8 +202,91 @@ final class BrowserViewModel {
         }
     }
 
+    func refreshCurrentFolderIfNeeded() {
+        guard let folderURL = currentFolderURL else { return }
+        guard !isLoading, !isMetadataLoading, !isAutoRefreshing else { return }
+        isAutoRefreshing = true
+
+        Task {
+            defer { self.isAutoRefreshing = false }
+
+            let scanned: [ImageFile]
+            do {
+                scanned = try fileSystemService.scanFolder(at: folderURL)
+            } catch {
+                return
+            }
+
+            let existingByURL = Dictionary(uniqueKeysWithValues: images.map { ($0.url, $0) })
+            let existingURLs = Set(existingByURL.keys)
+            let scannedURLs = Set(scanned.map(\.url))
+
+            var merged: [ImageFile] = []
+            merged.reserveCapacity(scanned.count)
+            var newURLs: [URL] = []
+            var modifiedURLs: [URL] = []
+
+            for item in scanned {
+                if let existing = existingByURL[item.url] {
+                    let isModified = existing.fileSize != item.fileSize
+                        || existing.dateModified != item.dateModified
+                    var updated = item
+                    updated.starRating = existing.starRating
+                    updated.colorLabel = existing.colorLabel
+                    updated.hasC2PA = existing.hasC2PA
+                    updated.hasPendingMetadataChanges = existing.hasPendingMetadataChanges
+                    updated.pendingFieldNames = existing.pendingFieldNames
+                    updated.metadata = existing.metadata
+                    updated.personShown = existing.personShown
+                    merged.append(updated)
+                    if isModified {
+                        modifiedURLs.append(item.url)
+                    }
+                } else {
+                    merged.append(item)
+                    newURLs.append(item.url)
+                }
+            }
+
+            let removedURLs = existingURLs.subtracting(scannedURLs)
+            if newURLs.isEmpty && modifiedURLs.isEmpty && removedURLs.isEmpty {
+                return
+            }
+            guard self.currentFolderURL == folderURL else { return }
+
+            let pendingURLs = sidecarService.imagesWithPendingChanges(in: folderURL)
+            for index in merged.indices {
+                let url = merged[index].url
+                if pendingURLs.contains(url) {
+                    merged[index].hasPendingMetadataChanges = true
+                    merged[index].pendingFieldNames = sidecarService.pendingFieldNames(for: url, in: folderURL)
+                } else {
+                    merged[index].hasPendingMetadataChanges = false
+                    merged[index].pendingFieldNames = []
+                }
+            }
+
+            self.images = merged
+
+            let metadataRefreshURLs = newURLs + modifiedURLs
+            if !metadataRefreshURLs.isEmpty {
+                pendingMetadataURLs.formUnion(metadataRefreshURLs)
+                drainPendingMetadataIfNeeded()
+            }
+        }
+    }
+
     private func loadBasicMetadata() async {
         guard exifToolService.isAvailable else { return }
+        if isMetadataLoading {
+            pendingMetadataURLs.formUnion(images.map(\.url))
+            return
+        }
+        isMetadataLoading = true
+        defer {
+            isMetadataLoading = false
+            drainPendingMetadataIfNeeded()
+        }
 
         do {
             try exifToolService.start()
@@ -238,6 +327,68 @@ final class BrowserViewModel {
             } catch {
                 // Continue with next batch
             }
+        }
+    }
+
+    private func loadBasicMetadata(for urls: [URL]) async {
+        guard exifToolService.isAvailable else { return }
+        guard !urls.isEmpty else { return }
+        if isMetadataLoading {
+            pendingMetadataURLs.formUnion(urls)
+            return
+        }
+        isMetadataLoading = true
+        defer {
+            isMetadataLoading = false
+            drainPendingMetadataIfNeeded()
+        }
+
+        do {
+            try exifToolService.start()
+        } catch {
+            return
+        }
+
+        let batchSize = 50
+
+        for batchStart in stride(from: 0, to: urls.count, by: batchSize) {
+            let batchEnd = min(batchStart + batchSize, urls.count)
+            let batchURLs = Array(urls[batchStart..<batchEnd])
+
+            do {
+                let results = try await exifToolService.readBatchBasicMetadata(urls: batchURLs)
+                for dict in results {
+                    guard let sourcePath = dict["SourceFile"] as? String else { continue }
+                    let sourceURL = URL(fileURLWithPath: sourcePath)
+
+                    if let index = images.firstIndex(where: { $0.url == sourceURL }) {
+                        if let rating = dict["Rating"] as? Int,
+                           let starRating = StarRating(rawValue: rating) {
+                            images[index].starRating = starRating
+                        }
+                        if let label = dict["Label"] as? String,
+                           let colorLabel = ColorLabel(rawValue: label) {
+                            images[index].colorLabel = colorLabel
+                        }
+                        images[index].personShown = parseStringOrArray(dict["PersonInImage"])
+                        let hasC2PA = dict.keys.contains { $0.hasPrefix("JUMD") || $0.hasPrefix("C2PA") || $0 == "Claim_generator" }
+                        images[index].hasC2PA = hasC2PA
+                        applyPendingSidecarOverrides(for: sourceURL, index: index)
+                    }
+                }
+            } catch {
+                // Continue with next batch
+            }
+        }
+    }
+
+    private func drainPendingMetadataIfNeeded() {
+        guard !isMetadataLoading else { return }
+        guard !pendingMetadataURLs.isEmpty else { return }
+        let urls = Array(pendingMetadataURLs)
+        pendingMetadataURLs.removeAll()
+        Task {
+            await loadBasicMetadata(for: urls)
         }
     }
 
@@ -644,6 +795,7 @@ final class BrowserViewModel {
 
     func closeOpenFolder(_ url: URL) {
         openFolders.removeAll { $0 == url }
+        subfoldersByOpenFolder.removeValue(forKey: url)
         // If we closed the current folder, switch to another open folder or clear
         if currentFolderURL == url {
             if let nextFolder = openFolders.first {
@@ -653,9 +805,11 @@ final class BrowserViewModel {
                 currentFolderName = nil
                 images = []
                 selectedImageIDs.removeAll()
+                subfoldersByOpenFolder = [:]
             }
         }
     }
+
 
     // MARK: - Pending Status
 

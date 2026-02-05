@@ -1,5 +1,22 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
+
+private enum KnownPeopleSortMode: String, CaseIterable, Identifiable {
+    case name
+    case dateAdded
+    case dateUpdated
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .name: return "Name"
+        case .dateAdded: return "Date Added"
+        case .dateUpdated: return "Date Updated"
+        }
+    }
+}
 
 // MARK: - Expanded Known People View
 
@@ -12,17 +29,23 @@ struct ExpandedKnownPeopleView: View {
     @State private var showDeleteConfirmation = false
     @State private var personToDelete: KnownPerson?
     @State private var showMergeConfirmation = false
+    @State private var sortMode: KnownPeopleSortMode = .name
+    @State private var isImporting = false
+    @State private var isExporting = false
+    @State private var importExportMessage: String?
 
     private var filteredPeople: [KnownPerson] {
-        let sorted = people.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        let base: [KnownPerson]
         if searchText.isEmpty {
-            return sorted
+            base = people
+        } else {
+            base = people.filter {
+                $0.name.localizedCaseInsensitiveContains(searchText) ||
+                ($0.role?.localizedCaseInsensitiveContains(searchText) ?? false) ||
+                ($0.notes?.localizedCaseInsensitiveContains(searchText) ?? false)
+            }
         }
-        return sorted.filter {
-            $0.name.localizedCaseInsensitiveContains(searchText) ||
-            ($0.role?.localizedCaseInsensitiveContains(searchText) ?? false) ||
-            ($0.notes?.localizedCaseInsensitiveContains(searchText) ?? false)
-        }
+        return sortPeople(base)
     }
 
     private var selectedPerson: KnownPerson? {
@@ -53,6 +76,9 @@ struct ExpandedKnownPeopleView: View {
             mainContent
         }
         .onAppear {
+            loadPeople()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .knownPeopleDatabaseDidChange)) { _ in
             loadPeople()
         }
         .alert("Delete Person?", isPresented: $showDeleteConfirmation, presenting: personToDelete) { person in
@@ -117,7 +143,52 @@ struct ExpandedKnownPeopleView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
+            if let importExportMessage {
+                Text(importExportMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Spacer()
+
+            Button {
+                importKnownPeople()
+            } label: {
+                if isImporting {
+                    Label("Importing...", systemImage: "arrow.down.doc")
+                } else {
+                    Label("Import", systemImage: "arrow.down.doc")
+                }
+            }
+            .disabled(isImporting || isExporting)
+
+            Button {
+                exportKnownPeople()
+            } label: {
+                if isExporting {
+                    Label("Exporting...", systemImage: "arrow.up.doc")
+                } else {
+                    Label("Export", systemImage: "arrow.up.doc")
+                }
+            }
+            .disabled(isImporting || isExporting)
+
+            Menu {
+                ForEach(KnownPeopleSortMode.allCases) { mode in
+                    Button {
+                        sortMode = mode
+                    } label: {
+                        if mode == sortMode {
+                            Label(mode.displayName, systemImage: "checkmark")
+                        } else {
+                            Text(mode.displayName)
+                        }
+                    }
+                }
+            } label: {
+                Label("Sort", systemImage: "arrow.up.arrow.down")
+            }
+            .help("Sort known people")
 
             // Selection info
             if !selectedPersonIDs.isEmpty {
@@ -265,6 +336,73 @@ struct ExpandedKnownPeopleView: View {
 
     private func loadPeople() {
         people = KnownPeopleService.shared.getAllPeople()
+    }
+
+    private func sortPeople(_ people: [KnownPerson]) -> [KnownPerson] {
+        switch sortMode {
+        case .name:
+            return people.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        case .dateAdded:
+            return people.sorted { $0.createdAt > $1.createdAt }
+        case .dateUpdated:
+            return people.sorted { $0.updatedAt > $1.updatedAt }
+        }
+    }
+
+    private func importKnownPeople() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.zip]
+        panel.message = "Select a Known People database (.zip)"
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        isImporting = true
+        importExportMessage = nil
+
+        do {
+            let count = try KnownPeopleService.shared.importFromZip(sourceURL: url)
+            isImporting = false
+            importExportMessage = "Imported \(count) people"
+            loadPeople()
+
+            Task {
+                try? await Task.sleep(for: .seconds(3))
+                importExportMessage = nil
+            }
+        } catch {
+            isImporting = false
+            importExportMessage = "Import failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func exportKnownPeople() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.zip]
+        panel.nameFieldStringValue = "KnownPeople.zip"
+        panel.message = "Export Known People database"
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        isExporting = true
+        importExportMessage = nil
+
+        do {
+            try KnownPeopleService.shared.exportToZip(destinationURL: url)
+            isExporting = false
+            importExportMessage = "Export complete"
+            loadPeople()
+
+            Task {
+                try? await Task.sleep(for: .seconds(3))
+                importExportMessage = nil
+            }
+        } catch {
+            isExporting = false
+            importExportMessage = "Export failed: \(error.localizedDescription)"
+        }
     }
 
     private func savePerson(_ person: KnownPerson) {

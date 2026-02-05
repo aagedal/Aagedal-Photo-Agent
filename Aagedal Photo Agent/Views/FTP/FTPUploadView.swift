@@ -158,9 +158,11 @@ struct FTPUploadView: View {
 
                 resolved.title = resolveIfChanged(meta.title, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
                 resolved.description = resolveIfChanged(meta.description, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                resolved.extendedDescription = resolveIfChanged(meta.extendedDescription, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
                 resolved.creator = resolveIfChanged(meta.creator, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
                 resolved.credit = resolveIfChanged(meta.credit, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
                 resolved.copyright = resolveIfChanged(meta.copyright, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                resolved.jobId = resolveIfChanged(meta.jobId, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
                 resolved.dateCreated = resolveIfChanged(meta.dateCreated, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
                 resolved.city = resolveIfChanged(meta.city, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
                 resolved.country = resolveIfChanged(meta.country, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
@@ -170,9 +172,15 @@ struct FTPUploadView: View {
                     var fields: [String: String] = [:]
                     if resolved.title != meta.title { fields["XMP-photoshop:Headline"] = resolved.title ?? "" }
                     if resolved.description != meta.description { fields["XMP:Description"] = resolved.description ?? "" }
+                    if resolved.extendedDescription != meta.extendedDescription {
+                        fields["XMP-iptcCore:ExtDescrAccessibility"] = resolved.extendedDescription ?? ""
+                    }
                     if resolved.creator != meta.creator { fields["XMP:Creator"] = resolved.creator ?? "" }
                     if resolved.credit != meta.credit { fields["XMP-photoshop:Credit"] = resolved.credit ?? "" }
                     if resolved.copyright != meta.copyright { fields["XMP:Rights"] = resolved.copyright ?? "" }
+                    if resolved.jobId != meta.jobId {
+                        fields["XMP-photoshop:TransmissionReference"] = resolved.jobId ?? ""
+                    }
                     if resolved.dateCreated != meta.dateCreated { fields["XMP:DateCreated"] = resolved.dateCreated ?? "" }
                     if resolved.city != meta.city { fields["XMP-photoshop:City"] = resolved.city ?? "" }
                     if resolved.country != meta.country { fields["XMP-photoshop:Country"] = resolved.country ?? "" }

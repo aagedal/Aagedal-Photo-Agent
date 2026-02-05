@@ -32,6 +32,7 @@ struct ContentView: View {
     @State private var saveTemplateName = ""
     @State private var metadataPanelWidth: CGFloat = 320
     @State private var mainViewMode: MainViewMode = .browser
+    @State private var lastNonPeopleViewMode: MainViewMode = .browser
     @State private var faceSelectionState = FaceSelectionState()
     @State private var technicalMetadata: TechnicalMetadata?
     @State private var technicalMetadataCache: [URL: TechnicalMetadata] = [:]
@@ -141,7 +142,7 @@ struct ContentView: View {
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .showKnownPeopleDatabase)) { _ in
-                mainViewMode = .peopleDatabase
+                openPeopleDatabase()
             }
             .fullScreenImagePresenter(viewModel: browserViewModel)
             .onAppear {
@@ -182,7 +183,7 @@ struct ContentView: View {
                         mainViewMode = mainViewMode == .faceManagement ? .browser : .faceManagement
                     },
                     onOpenPeopleDatabase: {
-                        mainViewMode = .peopleDatabase
+                        togglePeopleDatabase()
                     }
                 )
                 Divider()
@@ -204,9 +205,30 @@ struct ContentView: View {
                 )
             case .peopleDatabase:
                 ExpandedKnownPeopleView(
-                    onClose: { mainViewMode = .browser }
+                    onClose: { closePeopleDatabase() }
                 )
             }
+        }
+    }
+
+    // MARK: - People Database Navigation
+
+    private func openPeopleDatabase() {
+        if mainViewMode != .peopleDatabase {
+            lastNonPeopleViewMode = mainViewMode
+        }
+        mainViewMode = .peopleDatabase
+    }
+
+    private func closePeopleDatabase() {
+        mainViewMode = lastNonPeopleViewMode
+    }
+
+    private func togglePeopleDatabase() {
+        if mainViewMode == .peopleDatabase {
+            closePeopleDatabase()
+        } else {
+            openPeopleDatabase()
         }
     }
 
@@ -344,22 +366,77 @@ struct ContentView: View {
                     }
                 }
 
+                if !browserViewModel.favoriteFolders.isEmpty {
+                    Section("Favorites") {
+                        ForEach(browserViewModel.favoriteFolders) { favorite in
+                            Button {
+                                browserViewModel.loadFolder(url: favorite.url)
+                            } label: {
+                                Label(favorite.name, systemImage: "folder.fill")
+                            }
+                            .contextMenu {
+                                Button("Remove from Favorites", role: .destructive) {
+                                    browserViewModel.removeFavorite(favorite)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if !browserViewModel.favoriteFolders.isEmpty && !browserViewModel.openFolders.isEmpty {
+                    HStack {
+                        Rectangle()
+                            .fill(Color(nsColor: .separatorColor))
+                            .frame(height: 1)
+                    }
+                    .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+                    .listRowSeparator(.hidden)
+                }
+
                 if !browserViewModel.openFolders.isEmpty {
                     Section("Open Folders") {
                         ForEach(browserViewModel.openFolders, id: \.self) { folderURL in
-                            Button {
-                                browserViewModel.loadFolder(url: folderURL)
-                            } label: {
-                                HStack {
+                            let isCurrent = folderURL == browserViewModel.currentFolderURL
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 8) {
                                     Label(folderURL.lastPathComponent, systemImage: "folder.fill")
+                                        .font(.callout)
+                                        .opacity(isCurrent ? 1 : 0.55)
                                     Spacer()
-                                    if folderURL == browserViewModel.currentFolderURL {
-                                        Image(systemName: "checkmark")
+                                    Button {
+                                        browserViewModel.closeOpenFolder(folderURL)
+                                    } label: {
+                                        Image(systemName: "xmark.circle.fill")
                                             .font(.caption)
-                                            .foregroundStyle(.secondary)
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .foregroundStyle(.secondary)
+                                    .help("Close Folder")
+                                }
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    browserViewModel.loadFolder(url: folderURL)
+                                }
+
+                                if isCurrent,
+                                   let subfolders = browserViewModel.subfoldersByOpenFolder[folderURL],
+                                   !subfolders.isEmpty {
+                                    ForEach(subfolders, id: \.self) { subfolderURL in
+                                        HStack(spacing: 6) {
+                                            Image(systemName: "folder")
+                                            Text(subfolderURL.lastPathComponent)
+                                            Spacer()
+                                        }
+                                        .font(.footnote)
+                                        .padding(.leading, 18)
+                                        .contentShape(Rectangle())
+                                        .onTapGesture {
+                                            browserViewModel.loadFolder(url: subfolderURL)
+                                        }
                                     }
                                 }
                             }
+                            .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
                             .contextMenu {
                                 Button {
                                     browserViewModel.addCurrentFolderToFavorites()
@@ -372,23 +449,6 @@ struct ContentView: View {
 
                                 Button("Close", role: .destructive) {
                                     browserViewModel.closeOpenFolder(folderURL)
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if !browserViewModel.favoriteFolders.isEmpty {
-                    Section("Favorites") {
-                        ForEach(browserViewModel.favoriteFolders) { favorite in
-                            Button {
-                                browserViewModel.loadFolder(url: favorite.url)
-                            } label: {
-                                Label(favorite.name, systemImage: "folder.fill")
-                            }
-                            .contextMenu {
-                                Button("Remove from Favorites", role: .destructive) {
-                                    browserViewModel.removeFavorite(favorite)
                                 }
                             }
                         }
@@ -602,7 +662,7 @@ struct ContentViewModifiers: ViewModifier {
     private let selectionDebounceNanoseconds: UInt64 = 200_000_000
 
     func body(content: Content) -> some View {
-        content
+        let base = content
             .onChange(of: browserViewModel.selectedImageIDs) { oldValue, _ in
                 if !oldValue.isEmpty && metadataViewModel.hasChanges {
                     let hadC2PA = browserViewModel.images.contains { image in
@@ -681,6 +741,8 @@ struct ContentViewModifiers: ViewModifier {
                     browserViewModel.refreshPendingStatus()
                 }
             }
+        return base
+            .modifier(AutoRefreshModifier(browserViewModel: browserViewModel))
     }
 
     private func handleDrop(providers: [NSItemProvider]) -> Bool {
@@ -708,6 +770,31 @@ struct ContentViewModifiers: ViewModifier {
             withApplicationAt: URL(fileURLWithPath: editorPath),
             configuration: NSWorkspace.OpenConfiguration()
         )
+    }
+}
+
+struct AutoRefreshModifier: ViewModifier {
+    let browserViewModel: BrowserViewModel
+    @State private var autoRefreshTask: Task<Void, Never>?
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear {
+                if autoRefreshTask == nil {
+                    autoRefreshTask = Task {
+                        while !Task.isCancelled {
+                            try? await Task.sleep(nanoseconds: 10_000_000_000)
+                            await MainActor.run {
+                                browserViewModel.refreshCurrentFolderIfNeeded()
+                            }
+                        }
+                    }
+                }
+            }
+            .onDisappear {
+                autoRefreshTask?.cancel()
+                autoRefreshTask = nil
+            }
     }
 }
 

@@ -4,6 +4,7 @@ struct IPTCMetadata: Codable, Sendable, Equatable {
     // Priority fields (always visible)
     var title: String?
     var description: String?
+    var extendedDescription: String?
     var keywords: [String]
     var personShown: [String]
 
@@ -14,6 +15,7 @@ struct IPTCMetadata: Codable, Sendable, Equatable {
     var creator: String?
     var credit: String?
     var copyright: String?
+    var jobId: String?
     var dateCreated: String?
     var city: String?
     var country: String?
@@ -30,6 +32,7 @@ struct IPTCMetadata: Codable, Sendable, Equatable {
     init(
         title: String? = nil,
         description: String? = nil,
+        extendedDescription: String? = nil,
         keywords: [String] = [],
         personShown: [String] = [],
         digitalSourceType: DigitalSourceType? = nil,
@@ -38,6 +41,7 @@ struct IPTCMetadata: Codable, Sendable, Equatable {
         creator: String? = nil,
         credit: String? = nil,
         copyright: String? = nil,
+        jobId: String? = nil,
         dateCreated: String? = nil,
         city: String? = nil,
         country: String? = nil,
@@ -47,6 +51,7 @@ struct IPTCMetadata: Codable, Sendable, Equatable {
     ) {
         self.title = title
         self.description = description
+        self.extendedDescription = extendedDescription
         self.keywords = keywords
         self.personShown = personShown
         self.digitalSourceType = digitalSourceType
@@ -55,6 +60,7 @@ struct IPTCMetadata: Codable, Sendable, Equatable {
         self.creator = creator
         self.credit = credit
         self.copyright = copyright
+        self.jobId = jobId
         self.dateCreated = dateCreated
         self.city = city
         self.country = country
@@ -70,12 +76,14 @@ extension IPTCMetadata {
 
         if let value = override.title, !value.isEmpty { result.title = value }
         if let value = override.description, !value.isEmpty { result.description = value }
+        if let value = override.extendedDescription, !value.isEmpty { result.extendedDescription = value }
         if !override.keywords.isEmpty { result.keywords = override.keywords }
         if !override.personShown.isEmpty { result.personShown = override.personShown }
         if let value = override.digitalSourceType { result.digitalSourceType = value }
         if let value = override.creator, !value.isEmpty { result.creator = value }
         if let value = override.credit, !value.isEmpty { result.credit = value }
         if let value = override.copyright, !value.isEmpty { result.copyright = value }
+        if let value = override.jobId, !value.isEmpty { result.jobId = value }
         if let value = override.dateCreated, !value.isEmpty { result.dateCreated = value }
         if let value = override.city, !value.isEmpty { result.city = value }
         if let value = override.country, !value.isEmpty { result.country = value }
