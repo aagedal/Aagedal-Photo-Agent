@@ -308,7 +308,9 @@ struct XMPSidecarService: Sendable {
         let keywords = parseBag(from: description, prefix: "dc", localName: "subject")
         let personShown = parseBag(from: description, prefix: "Iptc4xmpExt", localName: "PersonInImage")
         let ratingValue = parseSimple(from: description, prefix: "xmp", localName: "Rating")
-        let label = parseSimple(from: description, prefix: "xmp", localName: "Label")
+        let label = ColorLabel.canonicalMetadataLabel(
+            parseSimple(from: description, prefix: "xmp", localName: "Label")
+        )
         let digitalSourceType = parseSimple(from: description, prefix: "Iptc4xmpExt", localName: "DigitalSourceType")
         let creator = parseSeq(from: description, prefix: "dc", localName: "creator").first
         let credit = parseSimple(from: description, prefix: "photoshop", localName: "Credit")

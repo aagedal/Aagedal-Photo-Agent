@@ -71,11 +71,11 @@ private class FullScreenWindow: NSWindow {
             return
         }
 
-        let numberKeyCodes: [Int: Int] = [29: 0, 18: 1, 19: 2, 20: 3, 21: 4, 23: 5, 22: 6]
+        let numberKeyCodes: [Int: Int] = [29: 0, 18: 1, 19: 2, 20: 3, 21: 4, 23: 5, 22: 6, 26: 7, 28: 8]
 
         if hasCmd && hasOption {
-            // CMD+Option+0 through CMD+Option+6 → set color label
-            if let index = numberKeyCodes[keyCode], index <= 6 {
+            // CMD+Option+0 through CMD+Option+8 → set color label
+            if let index = numberKeyCodes[keyCode], index <= 8 {
                 onSetLabel?(index)
                 return
             }

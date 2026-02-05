@@ -222,7 +222,7 @@ final class ExifToolService {
             country: dict["Country"] as? String ?? dict["Country-PrimaryLocationName"] as? String,
             event: dict["Event"] as? String,
             rating: dict["Rating"] as? Int,
-            label: dict["Label"] as? String
+            label: ColorLabel.canonicalMetadataLabel(dict["Label"] as? String)
         )
     }
 
@@ -322,7 +322,7 @@ final class ExifToolService {
 
     /// Write color label to files.
     func writeLabel(_ label: ColorLabel, to urls: [URL]) async throws {
-        try await writeFields(["XMP:Label": label.rawValue], to: urls)
+        try await writeFields(["XMP:Label": label.xmpLabelValue ?? ""], to: urls)
     }
 
     /// Read technical/EXIF metadata for a single file.
