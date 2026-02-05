@@ -405,38 +405,62 @@ struct ContentView: View {
                     Section("Open Folders") {
                         ForEach(browserViewModel.openFolders, id: \.self) { folderURL in
                             let isCurrent = folderURL == browserViewModel.currentFolderURL
+                            let subfolders = browserViewModel.subfoldersByOpenFolder[folderURL] ?? []
+                            let hasSubfolders = !subfolders.isEmpty
+                            let isExpanded = browserViewModel.expandedFolders.contains(folderURL)
+
                             VStack(alignment: .leading, spacing: 2) {
-                                HStack(spacing: 8) {
-                                    Label(folderURL.lastPathComponent, systemImage: "folder.fill")
-                                        .font(.callout)
-                                        .opacity(isCurrent ? 1 : 0.55)
-                                    Spacer()
-                                    Button {
-                                        browserViewModel.closeOpenFolder(folderURL)
-                                    } label: {
-                                        Image(systemName: "xmark.circle.fill")
-                                            .font(.caption)
+                                HStack(spacing: 4) {
+                                    if hasSubfolders {
+                                        Image(systemName: "chevron.right")
+                                            .font(.caption2)
+                                            .fontWeight(.semibold)
+                                            .foregroundStyle(.secondary)
+                                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                                            .animation(.easeInOut(duration: 0.15), value: isExpanded)
+                                            .frame(width: 12, alignment: .center)
+                                            .contentShape(Rectangle())
+                                            .onTapGesture {
+                                                if isExpanded {
+                                                    browserViewModel.expandedFolders.remove(folderURL)
+                                                } else {
+                                                    browserViewModel.expandedFolders.insert(folderURL)
+                                                }
+                                            }
+                                    } else {
+                                        Spacer()
+                                            .frame(width: 12)
                                     }
-                                    .buttonStyle(.borderless)
-                                    .foregroundStyle(.secondary)
-                                    .help("Close Folder")
+
+                                    Image(systemName: "folder.fill")
+                                        .foregroundStyle(isCurrent ? Color.accentColor : Color.secondary)
+                                    Text(folderURL.lastPathComponent)
+                                        .font(.callout)
+                                        .foregroundStyle(isCurrent ? Color.accentColor : Color.primary)
+                                    Spacer()
                                 }
+                                .padding(.vertical, 4)
+                                .padding(.horizontal, 6)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .fill(isCurrent ? Color.accentColor.opacity(0.15) : Color.clear)
+                                )
                                 .contentShape(Rectangle())
                                 .onTapGesture {
                                     browserViewModel.loadFolder(url: folderURL)
                                 }
 
-                                if isCurrent,
-                                   let subfolders = browserViewModel.subfoldersByOpenFolder[folderURL],
-                                   !subfolders.isEmpty {
+                                if isExpanded {
                                     ForEach(subfolders, id: \.self) { subfolderURL in
                                         HStack(spacing: 6) {
                                             Image(systemName: "folder")
+                                                .foregroundStyle(.secondary)
                                             Text(subfolderURL.lastPathComponent)
                                             Spacer()
                                         }
-                                        .font(.footnote)
-                                        .padding(.leading, 18)
+                                        .font(.callout)
+                                        .padding(.leading, 28)
+                                        .padding(.vertical, 2)
                                         .contentShape(Rectangle())
                                         .onTapGesture {
                                             browserViewModel.loadFolder(url: subfolderURL)

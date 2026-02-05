@@ -25,6 +25,7 @@ final class BrowserViewModel {
     var favoriteFolders: [FavoriteFolder] = []
     var openFolders: [URL] = []
     var subfoldersByOpenFolder: [URL: [URL]] = [:]
+    var expandedFolders: Set<URL> = []
     var manualOrder: [URL] = [] {
         didSet {
             if sortOrder == .manual { rebuildSortedCache() }
@@ -205,6 +206,9 @@ final class BrowserViewModel {
         Task {
             let discoveredSubfolders = (try? fileSystemService.listSubfolders(at: url)) ?? []
             self.subfoldersByOpenFolder[url] = discoveredSubfolders
+            if !discoveredSubfolders.isEmpty {
+                self.expandedFolders.insert(url)
+            }
             do {
                 var files = try fileSystemService.scanFolder(at: url)
                 let pendingURLs = sidecarService.imagesWithPendingChanges(in: url)
@@ -809,6 +813,7 @@ final class BrowserViewModel {
     func closeOpenFolder(_ url: URL) {
         openFolders.removeAll { $0 == url }
         subfoldersByOpenFolder.removeValue(forKey: url)
+        expandedFolders.remove(url)
         // If we closed the current folder, switch to another open folder or clear
         if currentFolderURL == url {
             if let nextFolder = openFolders.first {
