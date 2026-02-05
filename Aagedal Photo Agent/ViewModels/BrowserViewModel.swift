@@ -335,10 +335,7 @@ final class BrowserViewModel {
                            let starRating = StarRating(rawValue: rating) {
                             images[index].starRating = starRating
                         }
-                        if let label = dict["Label"] as? String,
-                           let colorLabel = ColorLabel(rawValue: label) {
-                            images[index].colorLabel = colorLabel
-                        }
+                        images[index].colorLabel = ColorLabel.fromMetadataLabel(dict["Label"] as? String)
                         images[index].personShown = parseStringOrArray(dict["PersonInImage"])
                         // C2PA detection: look for JUMD/C2PA keys from -JUMBF:All output
                         let hasC2PA = dict.keys.contains { $0.hasPrefix("JUMD") || $0.hasPrefix("C2PA") || $0 == "Claim_generator" }
@@ -388,10 +385,7 @@ final class BrowserViewModel {
                            let starRating = StarRating(rawValue: rating) {
                             images[index].starRating = starRating
                         }
-                        if let label = dict["Label"] as? String,
-                           let colorLabel = ColorLabel(rawValue: label) {
-                            images[index].colorLabel = colorLabel
-                        }
+                        images[index].colorLabel = ColorLabel.fromMetadataLabel(dict["Label"] as? String)
                         images[index].personShown = parseStringOrArray(dict["PersonInImage"])
                         let hasC2PA = dict.keys.contains { $0.hasPrefix("JUMD") || $0.hasPrefix("C2PA") || $0 == "Claim_generator" }
                         images[index].hasC2PA = hasC2PA
@@ -644,16 +638,13 @@ final class BrowserViewModel {
                 images[index].starRating = StarRating(rawValue: ratingValue) ?? .none
             }
             if sidecar.metadata.label != snapshot.label {
-                let labelValue = sidecar.metadata.label ?? ""
-                images[index].colorLabel = ColorLabel(rawValue: labelValue) ?? .none
+                images[index].colorLabel = ColorLabel.fromMetadataLabel(sidecar.metadata.label)
             }
         } else {
             if let ratingValue = sidecar.metadata.rating {
                 images[index].starRating = StarRating(rawValue: ratingValue) ?? .none
             }
-            if let labelValue = sidecar.metadata.label {
-                images[index].colorLabel = ColorLabel(rawValue: labelValue) ?? .none
-            }
+            images[index].colorLabel = ColorLabel.fromMetadataLabel(sidecar.metadata.label)
         }
     }
 
@@ -740,7 +731,7 @@ final class BrowserViewModel {
         }
 
         let oldValue = metadata.label
-        metadata.label = label == .none ? nil : label.rawValue
+        metadata.label = label.xmpLabelValue
         let newValue = metadata.label
 
         guard oldValue != newValue else { return }
