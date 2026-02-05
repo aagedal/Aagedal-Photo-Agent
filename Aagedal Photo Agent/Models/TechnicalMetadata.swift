@@ -86,8 +86,11 @@ struct TechnicalMetadata {
             bitDepth = first
         }
 
-        // Color space
-        if let cs = dict["ColorSpace"] as? Int {
+        // Color space — prefer ICC profile description (accurate: "Display P3", "ProPhoto RGB", etc.)
+        // Fall back to EXIF ColorSpace tag (limited: sRGB=1, Adobe RGB=2, Uncalibrated=0xFFFF)
+        if let iccDesc = dict["ProfileDescription"] as? String, !iccDesc.isEmpty {
+            colorSpace = iccDesc
+        } else if let cs = dict["ColorSpace"] as? Int {
             switch cs {
             case 1: colorSpace = "sRGB"
             case 2: colorSpace = "Adobe RGB"

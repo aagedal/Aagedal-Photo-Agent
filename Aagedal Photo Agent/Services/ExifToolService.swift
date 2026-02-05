@@ -335,6 +335,7 @@ final class ExifToolService {
             "-EXIF:FNumber", "-EXIF:ExposureTime", "-EXIF:ISO",
             "-EXIF:ImageWidth", "-EXIF:ImageHeight",
             "-EXIF:BitsPerSample", "-EXIF:ColorSpace",
+            "-ICC_Profile:ProfileDescription",
             "-File:FileModifyDate",
             "-File:ImageWidth", "-File:ImageHeight",
             "-JUMBF:All",
