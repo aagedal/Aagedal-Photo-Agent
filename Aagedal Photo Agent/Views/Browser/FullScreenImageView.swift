@@ -206,6 +206,7 @@ struct FullScreenImageView: View {
                     Image(nsImage: currentImage)
                         .resizable()
                         .aspectRatio(contentMode: .fit)
+                        .allowedDynamicRange(.high)
                         .scaleEffect(zoomScale)
                         .offset(offset)
                         .gesture(magnifyGesture)
