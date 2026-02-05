@@ -1,6 +1,5 @@
 import SwiftUI
 import AppKit
-import UniformTypeIdentifiers
 import os.log
 
 nonisolated private let imageLogger = Logger(subsystem: "com.aagedal.photo-agent", category: "ImageLoading")
@@ -115,6 +114,10 @@ struct FullScreenImageView: View {
     @State private var showLabelPicker = false
     @State private var hideOverlays = false
     @FocusState private var isFocused: Bool
+
+    // Image cache and prefetch
+    @State private var imageCache = FullScreenImageCache()
+    @State private var lastNavigationIndex: Int?
 
     // Zoom state
     @State private var zoomScale: CGFloat = 1.0
@@ -279,6 +282,9 @@ struct FullScreenImageView: View {
                 toggleUI()
             }
         }
+        .onDisappear {
+            imageCache.cancelAllPrefetch()
+        }
         .onKeyPress(.leftArrow) {
             viewModel.selectPrevious()
             return .handled
@@ -399,35 +405,62 @@ struct FullScreenImageView: View {
             return
         }
 
+        // Phase 0: Instant — check cache, then fall back to thumbnail
+        if let cached = imageCache.cachedImage(for: url) {
+            imageLogger.info("\(filename): Phase 0 cache hit")
+            currentImage = cached
+            isLoading = false
+            triggerPrefetch(for: url)
+            return
+        }
+
+        // Cache miss — show thumbnail instantly (zero I/O) to avoid blank screen
+        if let thumb = viewModel.thumbnailService.thumbnail(for: url) {
+            imageLogger.info("\(filename): Phase 0 thumbnail placeholder")
+            currentImage = thumb
+        }
+
         isLoading = true
 
-        let isRAW = isRAWFile(url)
+        let isRAW = SupportedImageFormats.isRaw(url: url)
+        let screenScale = NSScreen.main?.backingScaleFactor ?? 2.0
+        let screenLogicalPx = max(NSScreen.main?.frame.width ?? 3840, NSScreen.main?.frame.height ?? 2160)
+        let screenMaxPx = screenLogicalPx * screenScale
         imageLogger.info("\(filename): isRAW=\(isRAW)")
 
-        // Phase 1: For RAW files, instantly show the embedded JPEG preview
+        // Phase 1: Fast preview (~20-80ms)
         if isRAW {
+            // RAW: extract embedded JPEG preview
             let previewStart = CFAbsoluteTimeGetCurrent()
             let preview = await Task.detached(priority: .userInitiated) {
-                Self.extractEmbeddedPreview(from: url)
+                FullScreenImageCache.extractEmbeddedPreview(from: url)
             }.value
             let previewElapsed = CFAbsoluteTimeGetCurrent() - previewStart
             if let preview {
-                imageLogger.info("\(filename): Phase 1 preview loaded in \(String(format: "%.1f", previewElapsed * 1000))ms (\(preview.size.width)×\(preview.size.height))")
+                imageLogger.info("\(filename): Phase 1 RAW preview in \(String(format: "%.1f", previewElapsed * 1000))ms (\(preview.size.width)x\(preview.size.height))")
                 currentImage = preview
             } else {
-                imageLogger.warning("\(filename): Phase 1 no embedded preview found (\(String(format: "%.1f", previewElapsed * 1000))ms)")
+                imageLogger.warning("\(filename): Phase 1 no embedded preview (\(String(format: "%.1f", previewElapsed * 1000))ms)")
+            }
+        } else {
+            // Non-RAW: quick downsample at logical resolution (no Retina multiplier)
+            let previewStart = CFAbsoluteTimeGetCurrent()
+            let preview = await Task.detached(priority: .userInitiated) {
+                FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: screenLogicalPx)
+            }.value
+            let previewElapsed = CFAbsoluteTimeGetCurrent() - previewStart
+            guard !Task.isCancelled else { return }
+            if let preview, currentImageFile?.url == url {
+                imageLogger.info("\(filename): Phase 1 preview in \(String(format: "%.1f", previewElapsed * 1000))ms (\(preview.size.width)x\(preview.size.height))")
+                currentImage = preview
             }
         }
 
-        // Phase 2: Load screen-resolution image without blocking navigation.
-        // We eagerly downsample via CGImageSource so the rendering pipeline doesn't
-        // have to push 50MP through the main thread.
+        // Phase 2: Full quality at Retina resolution
         let fullStart = CFAbsoluteTimeGetCurrent()
-        let screenScale = NSScreen.main?.backingScaleFactor ?? 2.0
-        let screenMaxPx = max(NSScreen.main?.frame.width ?? 3840, NSScreen.main?.frame.height ?? 2160) * screenScale
         imageLogger.info("\(filename): Phase 2 starting (target \(Int(screenMaxPx))px)")
         fullLoadTask = Task.detached(priority: .userInitiated) {
-            let image = Self.loadDownsampled(from: url, maxPixelSize: screenMaxPx)
+            let image = FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: screenMaxPx)
             let fullElapsed = CFAbsoluteTimeGetCurrent() - fullStart
             guard !Task.isCancelled else {
                 imageLogger.info("\(filename): Phase 2 cancelled after \(String(format: "%.1f", fullElapsed * 1000))ms")
@@ -437,100 +470,48 @@ struct FullScreenImageView: View {
                 if currentImageFile?.url == url {
                     let w = image?.size.width ?? 0
                     let h = image?.size.height ?? 0
-                    imageLogger.info("\(filename): Phase 2 done in \(String(format: "%.1f", fullElapsed * 1000))ms (\(w)×\(h))")
+                    imageLogger.info("\(filename): Phase 2 done in \(String(format: "%.1f", fullElapsed * 1000))ms (\(w)x\(h))")
                     currentImage = image
                     isLoading = false
+                    // Store in cache and trigger prefetch
+                    if let image {
+                        imageCache.store(image, for: url)
+                    }
+                    triggerPrefetch(for: url)
                 } else {
-                    imageLogger.info("\(filename): Phase 2 done in \(String(format: "%.1f", fullElapsed * 1000))ms but image changed, discarding")
+                    imageLogger.info("\(filename): Phase 2 done but image changed, discarding")
                 }
             }
         }
     }
 
-    private func isRAWFile(_ url: URL) -> Bool {
-        let rawExtensions: Set<String> = [
-            "raw", "cr2", "cr3", "nef", "nrw", "arw", "raf",
-            "dng", "rw2", "orf", "pef", "srw"
-        ]
-        return rawExtensions.contains(url.pathExtension.lowercased())
-    }
+    private func triggerPrefetch(for url: URL) {
+        guard let currentIndex = viewModel.urlToVisibleIndex[url] else { return }
 
-    /// Load an image suitable for full-screen display.
-    /// For oversized images (e.g. 50MP RAW), eagerly downsample to screen resolution
-    /// so SwiftUI doesn't have to decode the full bitmap on the main thread.
-    /// For images already at or near screen size, use NSImage directly (faster).
-    nonisolated private static func loadDownsampled(from url: URL, maxPixelSize: CGFloat) -> NSImage? {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
-
-        // Check source dimensions to decide whether downsampling is worthwhile
-        let needsDownsample: Bool
-        if let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-           let pw = props[kCGImagePropertyPixelWidth] as? Int,
-           let ph = props[kCGImagePropertyPixelHeight] as? Int {
-            let longest = max(pw, ph)
-            // Only downsample if the image is significantly larger than the target
-            needsDownsample = CGFloat(longest) > maxPixelSize * 1.5
+        let direction: FullScreenImageCache.NavigationDirection
+        if let lastIndex = lastNavigationIndex {
+            if currentIndex > lastIndex {
+                direction = .forward
+            } else if currentIndex < lastIndex {
+                direction = .backward
+            } else {
+                direction = .none
+            }
         } else {
-            needsDownsample = true
+            direction = .none
         }
+        lastNavigationIndex = currentIndex
 
-        if needsDownsample {
-            let options: [CFString: Any] = [
-                kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
-                kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceCreateThumbnailWithTransform: true,
-                kCGImageSourceShouldCacheImmediately: true,
-            ]
-            if let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) {
-                return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
-            }
-        }
+        let screenScale = NSScreen.main?.backingScaleFactor ?? 2.0
+        let screenMaxPx = max(NSScreen.main?.frame.width ?? 3840, NSScreen.main?.frame.height ?? 2160) * screenScale
+        let imageURLs = viewModel.visibleImages.map(\.url)
 
-        return NSImage(contentsOf: url)
-    }
-
-    nonisolated private static func extractEmbeddedPreview(from url: URL) -> NSImage? {
-        let filename = url.lastPathComponent
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
-            imageLogger.warning("\(filename): CGImageSourceCreateWithURL failed")
-            return nil
-        }
-
-        let imageCount = CGImageSourceGetCount(source)
-        let sourceType = CGImageSourceGetType(source) as String? ?? "unknown"
-        imageLogger.info("\(filename): CGImageSource type=\(sourceType), imageCount=\(imageCount)")
-
-        // First try to get the embedded JPEG thumbnail (fastest)
-        let thumbOptions: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageIfAbsent: false,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: 3840,
-        ]
-        if let cgThumb = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbOptions as CFDictionary) {
-            imageLogger.info("\(filename): Got embedded thumbnail \(cgThumb.width)×\(cgThumb.height)")
-            return NSImage(cgImage: cgThumb, size: NSSize(width: cgThumb.width, height: cgThumb.height))
-        } else {
-            imageLogger.info("\(filename): No embedded thumbnail at index 0")
-        }
-
-        // Fallback: check for additional images in the source (many RAW formats
-        // store a full-size JPEG as a secondary image)
-        if imageCount > 1 {
-            for i in 1..<imageCount {
-                if let props = CGImageSourceCopyPropertiesAtIndex(source, i, nil) as? [CFString: Any] {
-                    let w = props[kCGImagePropertyPixelWidth].map { "\($0)" } ?? "?"
-                    let h = props[kCGImagePropertyPixelHeight].map { "\($0)" } ?? "?"
-                    imageLogger.info("\(filename): Image at index \(i): \(w)×\(h)")
-                }
-            }
-            if let cgImage = CGImageSourceCreateImageAtIndex(source, 1, nil) {
-                imageLogger.info("\(filename): Using secondary image \(cgImage.width)×\(cgImage.height)")
-                return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
-            }
-        }
-
-        imageLogger.warning("\(filename): No preview found")
-        return nil
+        imageCache.startPrefetch(
+            currentIndex: currentIndex,
+            images: imageURLs,
+            direction: direction,
+            screenMaxPx: screenMaxPx
+        )
     }
 
     private func colorLabelOverlay(for file: ImageFile) -> some View {

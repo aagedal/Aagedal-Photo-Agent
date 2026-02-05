@@ -224,7 +224,7 @@ final class FaceRecognitionViewModel {
         errorMessage = nil
         scanningGroups = []
 
-        Task {
+        Task(priority: .utility) {
             // Load existing data for incremental scan
             let existingData = forceFullScan ? nil : storageService.loadFaceData(for: folderURL)
 
@@ -390,7 +390,7 @@ final class FaceRecognitionViewModel {
                         pending -= 1
                     }
 
-                    taskGroup.addTask {
+                    taskGroup.addTask(priority: .utility) {
                         let results = (try? await detectionService.detectFaces(in: url, config: config)) ?? []
                         return (url, results)
                     }

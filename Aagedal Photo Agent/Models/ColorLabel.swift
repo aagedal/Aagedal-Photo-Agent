@@ -117,7 +117,7 @@ enum ColorLabel: String, Codable, CaseIterable, Sendable {
         "review": .blue,
         "purple": .purple,
         "todo": .purple,
-        "orange": .none,
+        "orange": ColorLabel.none,
         "cyan": .cyan,
         "aqua": .cyan,
         "teal": .cyan,
