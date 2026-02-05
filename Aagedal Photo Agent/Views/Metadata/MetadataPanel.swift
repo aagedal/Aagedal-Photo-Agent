@@ -38,9 +38,17 @@ struct MetadataPanel: View {
     }
 
     enum VariableInsertTarget {
+        case title
         case description
         case extendedDescription
+        case creator
+        case credit
+        case copyright
         case jobId
+        case dateCreated
+        case city
+        case country
+        case event
     }
 
     private func addCurrentToQuickList(type: QuickListType, values: [String]) {
@@ -86,15 +94,39 @@ struct MetadataPanel: View {
 
     private func insertVariable(_ variable: String) {
         switch variableInsertTarget {
+        case .title:
+            let current = viewModel.editingMetadata.title ?? ""
+            viewModel.editingMetadata.title = current + variable
         case .description:
             let current = viewModel.editingMetadata.description ?? ""
             viewModel.editingMetadata.description = current + variable
         case .extendedDescription:
             let current = viewModel.editingMetadata.extendedDescription ?? ""
             viewModel.editingMetadata.extendedDescription = current + variable
+        case .creator:
+            let current = viewModel.editingMetadata.creator ?? ""
+            viewModel.editingMetadata.creator = current + variable
+        case .credit:
+            let current = viewModel.editingMetadata.credit ?? ""
+            viewModel.editingMetadata.credit = current + variable
+        case .copyright:
+            let current = viewModel.editingMetadata.copyright ?? ""
+            viewModel.editingMetadata.copyright = current + variable
         case .jobId:
             let current = viewModel.editingMetadata.jobId ?? ""
             viewModel.editingMetadata.jobId = current + variable
+        case .dateCreated:
+            let current = viewModel.editingMetadata.dateCreated ?? ""
+            viewModel.editingMetadata.dateCreated = current + variable
+        case .city:
+            let current = viewModel.editingMetadata.city ?? ""
+            viewModel.editingMetadata.city = current + variable
+        case .country:
+            let current = viewModel.editingMetadata.country ?? ""
+            viewModel.editingMetadata.country = current + variable
+        case .event:
+            let current = viewModel.editingMetadata.event ?? ""
+            viewModel.editingMetadata.event = current + variable
         }
         viewModel.markChanged()
     }
@@ -332,6 +364,10 @@ struct MetadataPanel: View {
             onCommit: { commitEdits() },
             showsDifference: viewModel.fieldDiffers(\.title),
             hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("title"),
+            onInsertVariable: {
+                variableInsertTarget = .title
+                isShowingVariableReference = true
+            },
             focusKey: "title",
             focusedField: $focusedField
         )
@@ -369,8 +405,15 @@ struct MetadataPanel: View {
             .textFieldStyle(.roundedBorder)
             .font(.body)
             .focused($focusedField, equals: "description")
-            .onSubmit {
+            .onKeyPress(.return) {
+                if NSEvent.modifierFlags.contains(.shift) {
+                    let current = viewModel.editingMetadata.description ?? ""
+                    viewModel.editingMetadata.description = current + "\n"
+                    viewModel.markChanged()
+                    return .handled
+                }
                 commitEdits()
+                return .handled
             }
         }
         .sheet(isPresented: $isShowingVariableReference) {
@@ -407,8 +450,15 @@ struct MetadataPanel: View {
                 .textFieldStyle(.roundedBorder)
                 .font(.body)
                 .focused($focusedField, equals: "extendedDescription")
-                .onSubmit {
+                .onKeyPress(.return) {
+                    if NSEvent.modifierFlags.contains(.shift) {
+                        let current = viewModel.editingMetadata.extendedDescription ?? ""
+                        viewModel.editingMetadata.extendedDescription = current + "\n"
+                        viewModel.markChanged()
+                        return .handled
+                    }
                     commitEdits()
+                    return .handled
                 }
             }
             .padding(.top, 2)
@@ -476,6 +526,10 @@ struct MetadataPanel: View {
             onCommit: { commitEdits() },
             showsDifference: viewModel.fieldDiffers(\.copyright),
             hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("copyright"),
+            onInsertVariable: {
+                variableInsertTarget = .copyright
+                isShowingVariableReference = true
+            },
             onAddCurrentToQuickList: {
                 addCurrentToQuickList(type: .copyright, value: viewModel.editingMetadata.copyright)
             },
@@ -498,6 +552,10 @@ struct MetadataPanel: View {
             onCommit: { commitEdits() },
             showsDifference: viewModel.fieldDiffers(\.jobId),
             hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("jobId"),
+            onInsertVariable: {
+                variableInsertTarget = .jobId
+                isShowingVariableReference = true
+            },
             focusKey: "jobId",
             focusedField: $focusedField
         )
@@ -557,6 +615,10 @@ struct MetadataPanel: View {
             onCommit: { commitEdits() },
             showsDifference: viewModel.fieldDiffers(\.creator),
             hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("creator"),
+            onInsertVariable: {
+                variableInsertTarget = .creator
+                isShowingVariableReference = true
+            },
             onAddCurrentToQuickList: {
                 addCurrentToQuickList(type: .creator, value: viewModel.editingMetadata.creator)
             },
@@ -578,6 +640,10 @@ struct MetadataPanel: View {
             onCommit: { commitEdits() },
             showsDifference: viewModel.fieldDiffers(\.credit),
             hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("credit"),
+            onInsertVariable: {
+                variableInsertTarget = .credit
+                isShowingVariableReference = true
+            },
             onAddCurrentToQuickList: {
                 addCurrentToQuickList(type: .credit, value: viewModel.editingMetadata.credit)
             },
@@ -599,6 +665,10 @@ struct MetadataPanel: View {
             onCommit: { commitEdits() },
             showsDifference: viewModel.fieldDiffers(\.city),
             hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("city"),
+            onInsertVariable: {
+                variableInsertTarget = .city
+                isShowingVariableReference = true
+            },
             onAddCurrentToQuickList: {
                 addCurrentToQuickList(type: .city, value: viewModel.editingMetadata.city)
             },
@@ -620,6 +690,10 @@ struct MetadataPanel: View {
             onCommit: { commitEdits() },
             showsDifference: viewModel.fieldDiffers(\.country),
             hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("country"),
+            onInsertVariable: {
+                variableInsertTarget = .country
+                isShowingVariableReference = true
+            },
             onAddCurrentToQuickList: {
                 addCurrentToQuickList(type: .country, value: viewModel.editingMetadata.country)
             },
@@ -641,6 +715,10 @@ struct MetadataPanel: View {
             onCommit: { commitEdits() },
             showsDifference: viewModel.fieldDiffers(\.event),
             hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("event"),
+            onInsertVariable: {
+                variableInsertTarget = .event
+                isShowingVariableReference = true
+            },
             onAddCurrentToQuickList: {
                 addCurrentToQuickList(type: .event, value: viewModel.editingMetadata.event)
             },
@@ -764,7 +842,7 @@ struct MetadataPanel: View {
                         Image(systemName: "square.and.arrow.down")
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(!viewModel.hasChanges || viewModel.isSaving)
+                    .disabled(!viewModel.canWriteMetadataToImage)
                     .help("Write metadata to image")
                 }
             }
@@ -955,6 +1033,7 @@ struct EditableTextField: View {
     var onCommit: (() -> Void)? = nil
     var showsDifference: Bool = false
     var hasMultipleValues: Bool = false
+    var onInsertVariable: (() -> Void)? = nil
     var onAddCurrentToQuickList: (() -> Void)? = nil
     var presetList: [String] = []
     var onChooseListFile: (() -> Void)? = nil
@@ -972,6 +1051,17 @@ struct EditableTextField: View {
                     MultipleValuesIndicator()
                 }
                 Spacer()
+                if let onInsertVariable {
+                    Button {
+                        onInsertVariable()
+                    } label: {
+                        Image(systemName: "curlybraces")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Variable Reference")
+                }
                 if !presetList.isEmpty || onChooseListFile != nil {
                     Menu {
                         if let onAddCurrentToQuickList {

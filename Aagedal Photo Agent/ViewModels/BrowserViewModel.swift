@@ -6,7 +6,13 @@ final class BrowserViewModel {
     var images: [ImageFile] = [] {
         didSet { rebuildSortedCache() }
     }
-    var selectedImageIDs: Set<URL> = []
+    var selectedImageIDs: Set<URL> = [] {
+        didSet {
+            if selectedImageIDs != oldValue {
+                rebuildSelectedCache()
+            }
+        }
+    }
     var lastClickedImageURL: URL?
     var currentFolderURL: URL?
     var currentFolderName: String?
@@ -63,9 +69,9 @@ final class BrowserViewModel {
             || personShownFilter != .any
     }
 
-    var selectedImages: [ImageFile] {
-        images.filter { selectedImageIDs.contains($0.url) }
-    }
+    private(set) var selectedImagesCache: [ImageFile] = []
+
+    var selectedImages: [ImageFile] { selectedImagesCache }
 
     var firstSelectedImage: ImageFile? {
         guard let firstID = selectedImageIDs.first else { return nil }
@@ -115,11 +121,27 @@ final class BrowserViewModel {
 
         let visibleSet = Set(filtered.map(\.url))
         if !selectedImageIDs.isEmpty {
-            selectedImageIDs = selectedImageIDs.intersection(visibleSet)
+            let intersection = selectedImageIDs.intersection(visibleSet)
+            if intersection != selectedImageIDs {
+                selectedImageIDs = intersection
+            } else {
+                rebuildSelectedCache()
+            }
+        } else {
+            selectedImagesCache = []
         }
         if let anchor = lastClickedImageURL, !visibleSet.contains(anchor) {
             lastClickedImageURL = nil
         }
+    }
+
+    private func rebuildSelectedCache() {
+        guard !selectedImageIDs.isEmpty else {
+            selectedImagesCache = []
+            return
+        }
+        let selection = selectedImageIDs
+        selectedImagesCache = images.filter { selection.contains($0.url) }
     }
 
     private func applyFilters(to images: [ImageFile]) -> [ImageFile] {

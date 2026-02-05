@@ -217,6 +217,7 @@ final class ExifToolService {
                 ?? dict["JobID"] as? String
                 ?? dict["OriginalTransmissionReference"] as? String,
             dateCreated: dict["DateCreated"] as? String ?? dict["CreateDate"] as? String,
+            captureDate: dict["DateTimeOriginal"] as? String,
             city: dict["City"] as? String,
             country: dict["Country"] as? String ?? dict["Country-PrimaryLocationName"] as? String,
             event: dict["Event"] as? String,
@@ -334,6 +335,7 @@ final class ExifToolService {
             "-EXIF:FNumber", "-EXIF:ExposureTime", "-EXIF:ISO",
             "-EXIF:ImageWidth", "-EXIF:ImageHeight",
             "-EXIF:BitsPerSample", "-EXIF:ColorSpace",
+            "-File:FileModifyDate",
             "-File:ImageWidth", "-File:ImageHeight",
             "-JUMBF:All",
             url.path

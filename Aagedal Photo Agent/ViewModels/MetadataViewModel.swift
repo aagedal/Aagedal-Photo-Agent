@@ -41,6 +41,14 @@ final class MetadataViewModel {
     var referenceMetadata: IPTCMetadata? {
         referenceMetadata(for: metadataReferenceSource, embedded: embeddedMetadata, xmp: xmpMetadata)
     }
+    var canWriteMetadataToImage: Bool {
+        if isSaving { return false }
+        if hasChanges { return true }
+        if selectedCount == 1, let embedded = embeddedMetadata {
+            return editingMetadata != embedded
+        }
+        return selectedHavePendingSidecars
+    }
 
     // Batch metadata state - stores common values across selected images
     var batchCommonMetadata: IPTCMetadata?
@@ -751,7 +759,7 @@ final class MetadataViewModel {
 
     /// Checks whether any text field in editingMetadata contains variable placeholders.
     var hasVariables: Bool {
-        let variablePattern = /\{(date|date:[^}]+|filename|persons|keywords|field:[^}]+)\}/
+        let variablePattern = /\{(date|date:[^}]+|dateCreated|dateCaptured|filename|persons|keywords|field:[^}]+)\}/
         let fields: [String?] = [
             editingMetadata.title,
             editingMetadata.description,

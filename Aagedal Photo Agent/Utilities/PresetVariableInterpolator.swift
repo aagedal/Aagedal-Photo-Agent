@@ -3,8 +3,10 @@ import Foundation
 struct PresetVariableInterpolator: Sendable {
     /// Resolves template variables in a string.
     /// Supported variables:
-    /// - `{date}` — current date in default format (e.g., "Jan 27, 2026")
-    /// - `{date:FORMAT}` — current date with custom DateFormatter format (e.g., `{date:dd.MM.yyyy}`)
+    /// - `{date}` — today's date in default format (e.g., "Jan 27, 2026")
+    /// - `{date:FORMAT}` — today's date with custom DateFormatter format (e.g., `{date:dd.MM.yyyy}`)
+    /// - `{dateCreated}` — Date Created from metadata (if available)
+    /// - `{dateCaptured}` — EXIF DateTimeOriginal from metadata (if available)
     /// - `{filename}` — filename of the target image (without extension)
     /// - `{persons}` — comma-separated list of Person Shown names
     /// - `{keywords}` — comma-separated list of keywords
@@ -18,6 +20,17 @@ struct PresetVariableInterpolator: Sendable {
 
         // {date} and {date:FORMAT}
         result = resolveDate(in: result)
+
+        // {dateCreated} and {dateCaptured}
+        if let metadata = existingMetadata {
+            let dateCreated = metadata.dateCreated ?? ""
+            let dateCaptured = metadata.captureDate ?? ""
+            result = result.replacingOccurrences(of: "{dateCreated}", with: dateCreated)
+            result = result.replacingOccurrences(of: "{dateCaptured}", with: dateCaptured)
+        } else {
+            result = result.replacingOccurrences(of: "{dateCreated}", with: "")
+            result = result.replacingOccurrences(of: "{dateCaptured}", with: "")
+        }
 
         // {filename}
         let nameWithoutExt = (filename as NSString).deletingPathExtension

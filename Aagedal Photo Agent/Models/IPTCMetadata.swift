@@ -17,6 +17,7 @@ struct IPTCMetadata: Codable, Sendable, Equatable {
     var copyright: String?
     var jobId: String?
     var dateCreated: String?
+    var captureDate: String?
     var city: String?
     var country: String?
     var event: String?
@@ -43,6 +44,7 @@ struct IPTCMetadata: Codable, Sendable, Equatable {
         copyright: String? = nil,
         jobId: String? = nil,
         dateCreated: String? = nil,
+        captureDate: String? = nil,
         city: String? = nil,
         country: String? = nil,
         event: String? = nil,
@@ -62,6 +64,7 @@ struct IPTCMetadata: Codable, Sendable, Equatable {
         self.copyright = copyright
         self.jobId = jobId
         self.dateCreated = dateCreated
+        self.captureDate = captureDate
         self.city = city
         self.country = country
         self.event = event
@@ -85,6 +88,7 @@ extension IPTCMetadata {
         if let value = override.copyright, !value.isEmpty { result.copyright = value }
         if let value = override.jobId, !value.isEmpty { result.jobId = value }
         if let value = override.dateCreated, !value.isEmpty { result.dateCreated = value }
+        if let value = override.captureDate, !value.isEmpty { result.captureDate = value }
         if let value = override.city, !value.isEmpty { result.city = value }
         if let value = override.country, !value.isEmpty { result.country = value }
         if let value = override.event, !value.isEmpty { result.event = value }

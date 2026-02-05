@@ -19,7 +19,10 @@ struct TechnicalMetadataView: View {
                     row("Lens", lens)
                 }
                 if let date = m.captureDate {
-                    row("Date", date)
+                    row("Captured", date)
+                }
+                if let modified = m.modifiedDate {
+                    row("Modified", modified)
                 }
                 if let fl = m.focalLength {
                     row("Focal Length", fl)
