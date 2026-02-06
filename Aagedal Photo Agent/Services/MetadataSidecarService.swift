@@ -26,6 +26,9 @@ struct MetadataSidecarService: Sendable {
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
             let sidecar = try decoder.decode(MetadataSidecar.self, from: data)
+            guard !sidecar.sourceFile.contains("/"), !sidecar.sourceFile.contains("\\") else {
+                return nil
+            }
             return sidecar
         } catch {
             return nil
@@ -51,6 +54,9 @@ struct MetadataSidecarService: Sendable {
         for file in files where file.pathExtension == "json" {
             guard let data = try? Data(contentsOf: file),
                   let sidecar = try? decoder.decode(MetadataSidecar.self, from: data) else {
+                continue
+            }
+            guard !sidecar.sourceFile.contains("/"), !sidecar.sourceFile.contains("\\") else {
                 continue
             }
             let imageURL = folderURL.appendingPathComponent(sidecar.sourceFile)

@@ -1335,6 +1335,21 @@ final class MetadataViewModel {
         return names
     }
 
+    var showDiscardConfirmation = false
+    var showDiscardAllConfirmation = false
+
+    /// Call this instead of discardPendingChanges() directly.
+    /// Sets showDiscardConfirmation = true so a view can present an alert.
+    func confirmDiscardPendingChanges() {
+        showDiscardConfirmation = true
+    }
+
+    /// Call this instead of discardAllPendingInFolder() directly.
+    /// Sets showDiscardAllConfirmation = true so a view can present an alert.
+    func confirmDiscardAllPendingInFolder() {
+        showDiscardAllConfirmation = true
+    }
+
     func discardPendingChanges() {
         guard let folderURL = currentFolderURL else { return }
 

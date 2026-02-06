@@ -103,7 +103,7 @@ struct ThumbnailGridView: View {
             isSelected: viewModel.selectedImageIDs.contains(image.url),
             thumbnailService: viewModel.thumbnailService,
             onDelete: {
-                viewModel.deleteSelectedImages()
+                viewModel.confirmDeleteSelectedImages()
             },
             onAddToSubfolder: {
                 if !viewModel.selectedImageIDs.contains(image.url) {
