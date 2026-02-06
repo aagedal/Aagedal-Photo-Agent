@@ -1280,9 +1280,11 @@ final class MetadataViewModel {
             let total = pendingSidecars.count
             self.folderProcessProgress = "0/\(total)"
 
+            let imagesByURL = Dictionary(images.map { ($0.url, $0) }, uniquingKeysWith: { _, last in last })
+
             for (imageURL, sidecar) in pendingSidecars {
                 if skipC2PA {
-                    if let image = images.first(where: { $0.url == imageURL }), image.hasC2PA {
+                    if let image = imagesByURL[imageURL], image.hasC2PA {
                         processed += 1
                         self.folderProcessProgress = "\(processed)/\(total)"
                         continue

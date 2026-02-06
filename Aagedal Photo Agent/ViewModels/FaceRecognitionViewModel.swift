@@ -342,9 +342,13 @@ final class FaceRecognitionViewModel {
                         }
 
                         // Assign group IDs to the newly clustered faces
+                        let ungroupedIndex = Dictionary(
+                            allFaces.enumerated().compactMap { (i, f) in f.groupID == nil ? (f.id, i) : nil },
+                            uniquingKeysWith: { first, _ in first }
+                        )
                         for group in allGroups {
                             for faceID in group.faceIDs {
-                                if let index = allFaces.firstIndex(where: { $0.id == faceID && $0.groupID == nil }) {
+                                if let index = ungroupedIndex[faceID] {
                                     allFaces[index].groupID = group.id
                                 }
                             }
