@@ -305,6 +305,11 @@ struct MetadataPanel: View {
             openVariableReferenceFromShortcut()
             return .handled
         }
+        .onKeyPress(.escape) {
+            guard focusedField != nil else { return .ignored }
+            focusedField = nil
+            return .handled
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSTextView.didChangeSelectionNotification)) { notification in
             guard !isShowingVariableReference,
                   let key = focusedField,

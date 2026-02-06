@@ -41,6 +41,9 @@ enum UserDefaultsKeys {
     static let favoriteFolders = "favoriteFolders"
     static let ftpConnections = "ftpConnections"
 
+    // MARK: - Browser
+    static let thumbnailSortOrder = "thumbnailSortOrder"
+
     // MARK: - Quick List Bookmarks
     static let keywordsListBookmark = "keywordsListBookmark"
     static let personShownListBookmark = "personShownListBookmark"
