@@ -124,7 +124,8 @@ final class KnownPeopleService {
         var db = loadDatabase()
 
         guard let index = db.people.firstIndex(where: { $0.id == person.id }) else {
-            return
+            throw NSError(domain: "KnownPeopleService", code: 10,
+                          userInfo: [NSLocalizedDescriptionKey: "Person not found: \(person.name)"])
         }
 
         var updated = person
@@ -153,7 +154,8 @@ final class KnownPeopleService {
         var db = loadDatabase()
 
         guard let index = db.people.firstIndex(where: { $0.id == personID }) else {
-            return
+            throw NSError(domain: "KnownPeopleService", code: 10,
+                          userInfo: [NSLocalizedDescriptionKey: "Person not found with ID: \(personID)"])
         }
 
         db.people[index].embeddings.append(embedding)
@@ -252,7 +254,8 @@ final class KnownPeopleService {
         var db = loadDatabase()
 
         guard let index = db.people.firstIndex(where: { $0.id == personID }) else {
-            return
+            throw NSError(domain: "KnownPeopleService", code: 10,
+                          userInfo: [NSLocalizedDescriptionKey: "Person not found with ID: \(personID)"])
         }
 
         // Get existing embedding data for comparison
@@ -599,15 +602,18 @@ final class KnownPeopleService {
         let peopleData = try Data(contentsOf: peopleURL)
         let importedPeople = try JSONDecoder().decode([KnownPerson].self, from: peopleData)
 
-        // Add imported people (UUIDs are unique, no conflict resolution needed)
+        // Filter out people whose UUIDs already exist to prevent duplicates on re-import
         var db = loadDatabase()
-        db.people.append(contentsOf: importedPeople)
+        let existingIDs = Set(db.people.map(\.id))
+        let newPeople = importedPeople.filter { !existingIDs.contains($0.id) }
+
+        db.people.append(contentsOf: newPeople)
         db.lastModified = Date()
         database = db
 
-        // Copy thumbnails
+        // Copy thumbnails only for newly imported people
         let importedThumbnailsDir = extractedDir.appendingPathComponent("thumbnails")
-        for person in importedPeople {
+        for person in newPeople {
             let sourceThumb = importedThumbnailsDir.appendingPathComponent("\(person.id.uuidString).jpg")
             if FileManager.default.fileExists(atPath: sourceThumb.path) {
                 let destThumb = thumbnailURL(for: person.id)
@@ -618,7 +624,7 @@ final class KnownPeopleService {
         try saveDatabase()
         clearFeaturePrintCache()
 
-        return importedPeople.count
+        return newPeople.count
     }
 
     // MARK: - Statistics

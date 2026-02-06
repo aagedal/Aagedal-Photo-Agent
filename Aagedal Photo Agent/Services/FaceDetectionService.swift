@@ -438,10 +438,10 @@ nonisolated struct FaceDetectionService: Sendable {
         }
 
         // Convert clusters to FaceGroups
-        return clusters.map { clusterFaces in
+        return clusters.compactMap { clusterFaces in
             // Pick the face with highest quality score as representative
             let sortedByQuality = clusterFaces.sorted { ($0.qualityScore ?? 0) > ($1.qualityScore ?? 0) }
-            let representative = sortedByQuality.first!
+            guard let representative = sortedByQuality.first else { return nil }
 
             return FaceGroup(
                 id: UUID(),
@@ -593,9 +593,9 @@ nonisolated struct FaceDetectionService: Sendable {
             }
         }
 
-        return clusters.map { clusterFaces in
+        return clusters.compactMap { clusterFaces in
             let sortedByQuality = clusterFaces.sorted { ($0.qualityScore ?? 0) > ($1.qualityScore ?? 0) }
-            let representative = sortedByQuality.first!
+            guard let representative = sortedByQuality.first else { return nil }
             return FaceGroup(
                 id: UUID(),
                 name: nil,
@@ -685,9 +685,9 @@ nonisolated struct FaceDetectionService: Sendable {
             }
         }
 
-        return groupsByLabel.values.map { clusterFaces in
+        return groupsByLabel.values.compactMap { clusterFaces in
             let sortedByQuality = clusterFaces.sorted { ($0.qualityScore ?? 0) > ($1.qualityScore ?? 0) }
-            let representative = sortedByQuality.first!
+            guard let representative = sortedByQuality.first else { return nil }
             return FaceGroup(
                 id: UUID(),
                 name: nil,
@@ -1610,9 +1610,9 @@ nonisolated struct FaceDetectionService: Sendable {
         }
 
         // Convert clusters to FaceGroups
-        return clusters.map { clusterFaces in
+        return clusters.compactMap { clusterFaces in
             let sortedByQuality = clusterFaces.sorted { ($0.qualityScore ?? 0) > ($1.qualityScore ?? 0) }
-            let representative = sortedByQuality.first!
+            guard let representative = sortedByQuality.first else { return nil }
 
             return FaceGroup(
                 id: UUID(),
