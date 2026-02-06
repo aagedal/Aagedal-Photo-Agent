@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import QuartzCore
+import ImageIO
 import os.log
 
 nonisolated private let imageLogger = Logger(subsystem: "com.aagedal.photo-agent", category: "ImageLoading")
@@ -12,6 +13,7 @@ nonisolated private let imageLogger = Logger(subsystem: "com.aagedal.photo-agent
 /// instead of being tonemapped to SDR.
 private struct HDRImageView: NSViewRepresentable {
     let image: NSImage
+    var useNearestNeighbor: Bool = false
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
@@ -33,6 +35,9 @@ private struct HDRImageView: NSViewRepresentable {
     private func updateLayer(_ view: NSView) {
         guard let layer = view.layer else { return }
         layer.contents = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        let filter: CALayerContentsFilter = useNearestNeighbor ? .nearest : .linear
+        layer.magnificationFilter = filter
+        layer.minificationFilter = filter
     }
 }
 
@@ -48,20 +53,25 @@ private extension CGFloat {
 
 @Observable
 fileprivate class ZoomController {
-    var toggleZoomAction: (() -> Void)?
-    var scrollZoomAction: ((CGFloat) -> Void)?
+    var toggleZoomAction: ((CGPoint) -> Void)?
+    var scrollZoomAction: ((CGFloat, CGPoint) -> Void)?
     var toggleUIAction: (() -> Void)?
+    var toggleScalingAction: (() -> Void)?
 
-    func toggleZoom() {
-        toggleZoomAction?()
+    func toggleZoom(at location: CGPoint) {
+        toggleZoomAction?(location)
     }
 
-    func scrollZoom(_ delta: CGFloat) {
-        scrollZoomAction?(delta)
+    func scrollZoom(_ delta: CGFloat, at location: CGPoint) {
+        scrollZoomAction?(delta, location)
     }
 
     func toggleUI() {
         toggleUIAction?()
+    }
+
+    func toggleScaling() {
+        toggleScalingAction?()
     }
 }
 
@@ -71,9 +81,10 @@ private class FullScreenWindow: NSWindow {
     var onDismiss: (() -> Void)?
     var onSetRating: ((Int) -> Void)?
     var onSetLabel: ((Int) -> Void)?
-    var onToggleZoom: (() -> Void)?
-    var onScrollZoom: ((CGFloat) -> Void)?
+    var onToggleZoom: ((CGPoint) -> Void)?
+    var onScrollZoom: ((CGFloat, CGPoint) -> Void)?
     var onToggleUI: (() -> Void)?
+    var onToggleScaling: (() -> Void)?
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
@@ -90,15 +101,27 @@ private class FullScreenWindow: NSWindow {
             return
         }
 
-        // Z key (keyCode 6) → toggle zoom
+        // Z key (keyCode 6) → toggle zoom towards cursor
         if keyCode == 6 && !hasCmd && !hasOption {
-            onToggleZoom?()
+            let mouseLoc = NSEvent.mouseLocation
+            // Convert screen coordinates to window coordinates (top-left origin)
+            let windowLoc = CGPoint(
+                x: mouseLoc.x - frame.origin.x,
+                y: frame.height - (mouseLoc.y - frame.origin.y)
+            )
+            onToggleZoom?(windowLoc)
             return
         }
 
         // H key (keyCode 4) → toggle UI visibility
         if keyCode == 4 && !hasCmd && !hasOption {
             onToggleUI?()
+            return
+        }
+
+        // S key (keyCode 1) → toggle scaling filter
+        if keyCode == 1 && !hasCmd && !hasOption {
+            onToggleScaling?()
             return
         }
 
@@ -122,10 +145,13 @@ private class FullScreenWindow: NSWindow {
     }
 
     override func scrollWheel(with event: NSEvent) {
-        // Use scroll wheel for zooming (deltaY)
+        // Use scroll wheel for zooming (deltaY), anchored at mouse position
         let delta = event.scrollingDeltaY
         if abs(delta) > 0.01 {
-            onScrollZoom?(delta)
+            // Convert mouse location to top-left origin (SwiftUI coordinate space)
+            let windowLoc = event.locationInWindow
+            let flipped = CGPoint(x: windowLoc.x, y: frame.height - windowLoc.y)
+            onScrollZoom?(delta, flipped)
         }
     }
 
@@ -157,37 +183,53 @@ struct FullScreenImageView: View {
     @State private var offset: CGSize = .zero
     @State private var lastOffset: CGSize = .zero
     @State private var isZoomedTo100: Bool = false
+    @State private var sourcePixelSize: CGSize?
+    @State private var useNearestNeighbor: Bool = false
 
-    private let minZoom: CGFloat = 1.0
+    /// Minimum zoom allows zooming out to 1:1 pixel mapping for small images.
+    private var minZoom: CGFloat {
+        min(calculateZoomTo100(), 1.0)
+    }
     private let maxZoom: CGFloat = 10.0
 
     private var currentImageFile: ImageFile? {
         viewModel.firstSelectedImage
     }
 
-    /// Calculate the scale factor for 100% zoom (1:1 pixel mapping)
+    /// Calculate the scale factor for 100% zoom (1:1 pixel mapping).
+    /// Uses the original source file pixel dimensions, not the loaded NSImage size.
     private func calculateZoomTo100() -> CGFloat {
-        guard let image = currentImage,
-              let screen = NSScreen.main else { return 1.0 }
+        guard let screen = NSScreen.main else { return 1.0 }
 
-        let imageSize = image.size
-        let screenSize = screen.frame.size
+        // Use source pixel dimensions for accurate 100% calculation
+        let imagePixels: CGSize
+        if let src = sourcePixelSize {
+            imagePixels = src
+        } else if let image = currentImage {
+            imagePixels = image.size
+        } else {
+            return 1.0
+        }
 
-        // Calculate the fit scale (how much the image is scaled down to fit)
-        let fitScaleX = screenSize.width / imageSize.width
-        let fitScaleY = screenSize.height / imageSize.height
+        let screenPoints = screen.frame.size
+        let backingScale = screen.backingScaleFactor
+
+        // The image is fitted to screen points. At 100% zoom, 1 source pixel = 1 screen pixel.
+        // fitScale = how much the image is scaled to fit the screen in points.
+        let fitScaleX = screenPoints.width / imagePixels.width
+        let fitScaleY = screenPoints.height / imagePixels.height
         let fitScale = min(fitScaleX, fitScaleY)
 
-        // 100% zoom means 1:1 pixel ratio, so we need to counteract the fit scale
-        // If fitScale < 1, image was scaled down, so zoom100 = 1/fitScale
-        // If fitScale >= 1, image already fits at 100% or smaller, just use 1.0
-        if fitScale < 1.0 {
-            return 1.0 / fitScale
-        }
-        return 1.0
+        // At zoomScale=1, the image fills fitScale * imagePixels points.
+        // Each point = backingScale pixels. So displayed pixels = fitScale * imagePixels * backingScale.
+        // For 1:1 pixel mapping: fitScale * zoom100 * backingScale = 1
+        // zoom100 = 1 / (fitScale * backingScale)
+        let zoom100 = 1.0 / (fitScale * backingScale)
+        return zoom100
     }
 
-    func toggleZoom() {
+    func toggleZoom(at cursorLocation: CGPoint) {
+        guard let screen = NSScreen.main else { return }
         withAnimation(.easeInOut(duration: 0.2)) {
             if isZoomedTo100 {
                 // Zoom to fit
@@ -195,9 +237,22 @@ struct FullScreenImageView: View {
                 offset = .zero
                 isZoomedTo100 = false
             } else {
-                // Zoom to 100%
-                zoomScale = calculateZoomTo100()
-                offset = .zero
+                // Zoom to 100% anchored at cursor
+                let oldScale = zoomScale
+                let newScale = calculateZoomTo100()
+
+                let viewCenter = CGPoint(x: screen.frame.width / 2, y: screen.frame.height / 2)
+                let cursorFromCenter = CGSize(
+                    width: cursorLocation.x - viewCenter.x,
+                    height: cursorLocation.y - viewCenter.y
+                )
+                let ratio = newScale / oldScale
+                offset = CGSize(
+                    width: offset.width * ratio + cursorFromCenter.width * (1 - ratio),
+                    height: offset.height * ratio + cursorFromCenter.height * (1 - ratio)
+                )
+
+                zoomScale = newScale
                 isZoomedTo100 = true
             }
             lastZoomScale = zoomScale
@@ -205,21 +260,43 @@ struct FullScreenImageView: View {
         }
     }
 
-    func handleScrollZoom(_ delta: CGFloat) {
+    func handleScrollZoom(_ delta: CGFloat, at cursorLocation: CGPoint) {
+        guard let screen = NSScreen.main else { return }
         let zoomFactor: CGFloat = 1.0 + (delta * 0.02)
-        let newScale = (zoomScale * zoomFactor).clamped(to: minZoom...maxZoom)
+        let oldScale = zoomScale
+        let newScale = (oldScale * zoomFactor).clamped(to: minZoom...maxZoom)
+        guard newScale != oldScale else { return }
+
+        // Cursor position relative to view center
+        let viewCenter = CGPoint(x: screen.frame.width / 2, y: screen.frame.height / 2)
+        let cursorFromCenter = CGSize(
+            width: cursorLocation.x - viewCenter.x,
+            height: cursorLocation.y - viewCenter.y
+        )
+
+        // To keep the content under the cursor fixed:
+        // cursor_content = (cursorFromCenter - offset) / oldScale
+        // After zoom: newOffset = cursorFromCenter - cursor_content * newScale
+        // Simplifies to: newOffset = offset * (newScale / oldScale) + cursorFromCenter * (1 - newScale / oldScale)
+        let ratio = newScale / oldScale
+        let newOffset = CGSize(
+            width: offset.width * ratio + cursorFromCenter.width * (1 - ratio),
+            height: offset.height * ratio + cursorFromCenter.height * (1 - ratio)
+        )
 
         withAnimation(.easeOut(duration: 0.1)) {
             zoomScale = newScale
             lastZoomScale = newScale
 
-            // Reset offset if zoomed back to fit
+            // At fit level (1.0) or below, no panning is needed
             if newScale <= 1.0 {
                 offset = .zero
                 lastOffset = .zero
+            } else {
+                offset = newOffset
+                lastOffset = newOffset
             }
 
-            // Update isZoomedTo100 state
             let zoom100 = calculateZoomTo100()
             isZoomedTo100 = abs(zoomScale - zoom100) < 0.01
         }
@@ -235,7 +312,7 @@ struct FullScreenImageView: View {
                 Color.black
 
                 if let currentImage {
-                    HDRImageView(image: currentImage)
+                    HDRImageView(image: currentImage, useNearestNeighbor: useNearestNeighbor)
                         .aspectRatio(
                             currentImage.size.width / currentImage.size.height,
                             contentMode: .fit
@@ -245,7 +322,13 @@ struct FullScreenImageView: View {
                         .gesture(magnifyGesture)
                         .gesture(dragGesture(in: geometry.size))
                         .onTapGesture(count: 2) {
-                            toggleZoom()
+                            let mouse = NSEvent.mouseLocation
+                            let screenFrame = NSScreen.main?.frame ?? .zero
+                            let location = CGPoint(
+                                x: mouse.x - screenFrame.origin.x,
+                                y: screenFrame.height - (mouse.y - screenFrame.origin.y)
+                            )
+                            toggleZoom(at: location)
                         }
                 }
 
@@ -284,8 +367,14 @@ struct FullScreenImageView: View {
                                     .font(.caption)
                                     .foregroundStyle(.white)
 
-                                if zoomScale > 1.01 {
+                                if abs(zoomScale - 1.0) > 0.01 {
                                     Text("\(Int(zoomScale * 100))%")
+                                        .font(.caption)
+                                        .foregroundStyle(.white.opacity(0.7))
+                                }
+
+                                if useNearestNeighbor {
+                                    Text("NN")
                                         .font(.caption)
                                         .foregroundStyle(.white.opacity(0.7))
                                 }
@@ -306,14 +395,17 @@ struct FullScreenImageView: View {
         .onAppear {
             isFocused = true
             // Register actions with the controller
-            zoomController?.toggleZoomAction = { [self] in
-                toggleZoom()
+            zoomController?.toggleZoomAction = { [self] location in
+                toggleZoom(at: location)
             }
-            zoomController?.scrollZoomAction = { [self] delta in
-                handleScrollZoom(delta)
+            zoomController?.scrollZoomAction = { [self] delta, location in
+                handleScrollZoom(delta, at: location)
             }
             zoomController?.toggleUIAction = { [self] in
                 toggleUI()
+            }
+            zoomController?.toggleScalingAction = { [self] in
+                useNearestNeighbor.toggle()
             }
         }
         .onDisappear {
@@ -356,10 +448,9 @@ struct FullScreenImageView: View {
             }
             .onEnded { value in
                 lastZoomScale = zoomScale
-                // Reset offset if zoomed back to fit
+                // Reset offset if at or above fit level (1.0) — panning only makes sense above fit
                 if zoomScale <= 1.0 {
                     withAnimation(.easeOut(duration: 0.2)) {
-                        zoomScale = 1.0
                         offset = .zero
                         lastOffset = .zero
                     }
@@ -373,6 +464,7 @@ struct FullScreenImageView: View {
     private func dragGesture(in size: CGSize) -> some Gesture {
         DragGesture()
             .onChanged { value in
+                // Only allow panning when zoomed beyond fit level
                 guard zoomScale > 1.0 else { return }
                 offset = CGSize(
                     width: lastOffset.width + value.translation.width,
@@ -386,7 +478,6 @@ struct FullScreenImageView: View {
                     return
                 }
                 lastOffset = offset
-                // Constrain offset to prevent panning too far
                 constrainOffset(in: size)
             }
     }
@@ -435,8 +526,19 @@ struct FullScreenImageView: View {
 
         guard let url = currentImageFile?.url else {
             currentImage = nil
+            sourcePixelSize = nil
             isLoading = false
             return
+        }
+
+        // Read source pixel dimensions (cheap metadata-only, no pixel decode)
+        if let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+           let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+           let pw = props[kCGImagePropertyPixelWidth] as? Int,
+           let ph = props[kCGImagePropertyPixelHeight] as? Int {
+            sourcePixelSize = CGSize(width: CGFloat(pw), height: CGFloat(ph))
+        } else {
+            sourcePixelSize = nil
         }
 
         // Phase 0: Instant — check cache, then fall back to thumbnail
@@ -683,14 +785,17 @@ struct FullScreenPresenter: ViewModifier {
             guard let label = ColorLabel.fromShortcutIndex(index) else { return }
             viewModel?.setLabel(label)
         }
-        window.onToggleZoom = { [weak controller] in
-            controller?.toggleZoom()
+        window.onToggleZoom = { [weak controller] location in
+            controller?.toggleZoom(at: location)
         }
-        window.onScrollZoom = { [weak controller] delta in
-            controller?.scrollZoom(delta)
+        window.onScrollZoom = { [weak controller] delta, location in
+            controller?.scrollZoom(delta, at: location)
         }
         window.onToggleUI = { [weak controller] in
             controller?.toggleUI()
+        }
+        window.onToggleScaling = { [weak controller] in
+            controller?.toggleScaling()
         }
 
         let hostingView = NSHostingView(
