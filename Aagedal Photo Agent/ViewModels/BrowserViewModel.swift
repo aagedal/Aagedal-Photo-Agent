@@ -518,8 +518,10 @@ final class BrowserViewModel {
         if extending {
             // Select all images between current and target
             var updated = selectedImageIDs
-            for i in (currentIndex + 1)...targetIndex {
-                updated.insert(visibleImages[i].url)
+            if targetIndex > currentIndex {
+                for i in (currentIndex + 1)...targetIndex {
+                    updated.insert(visibleImages[i].url)
+                }
             }
             selectedImageIDs = updated
         } else {
@@ -543,8 +545,10 @@ final class BrowserViewModel {
         if extending {
             // Select all images between target and current
             var updated = selectedImageIDs
-            for i in targetIndex..<currentIndex {
-                updated.insert(visibleImages[i].url)
+            if targetIndex < currentIndex {
+                for i in targetIndex..<currentIndex {
+                    updated.insert(visibleImages[i].url)
+                }
             }
             selectedImageIDs = updated
         } else {
