@@ -26,6 +26,7 @@ final class BrowserViewModel {
     struct FullScreenFaceContext {
         let faceRecognitionViewModel: FaceRecognitionViewModel
         let highlightedFaceID: UUID?
+        let navigationImageURLs: [URL]?
     }
 
     @ObservationIgnored var fullScreenFaceContext: FullScreenFaceContext?
@@ -473,7 +474,32 @@ final class BrowserViewModel {
 
     // MARK: - Arrow Key Navigation
 
+    @discardableResult
+    private func navigateFullScreenFaceSequence(step: Int) -> Bool {
+        guard isFullScreen,
+              let navigationURLs = fullScreenFaceContext?.navigationImageURLs,
+              !navigationURLs.isEmpty else {
+            return false
+        }
+
+        let anchor = selectedImageIDs.first ?? lastClickedImageURL
+        guard let anchorURL = anchor,
+              let currentIndex = navigationURLs.firstIndex(of: anchorURL) else {
+            let firstURL = navigationURLs[0]
+            selectedImageIDs = [firstURL]
+            lastClickedImageURL = firstURL
+            return true
+        }
+
+        let targetIndex = max(0, min(currentIndex + step, navigationURLs.count - 1))
+        let targetURL = navigationURLs[targetIndex]
+        selectedImageIDs = [targetURL]
+        lastClickedImageURL = targetURL
+        return true
+    }
+
     func selectNext(extending: Bool = false) {
+        if navigateFullScreenFaceSequence(step: 1) { return }
         guard !visibleImages.isEmpty else { return }
         let anchor = lastClickedImageURL ?? selectedImageIDs.first
         guard let anchorURL = anchor,
@@ -495,6 +521,7 @@ final class BrowserViewModel {
     }
 
     func selectPrevious(extending: Bool = false) {
+        if navigateFullScreenFaceSequence(step: -1) { return }
         guard !visibleImages.isEmpty else { return }
         let anchor = lastClickedImageURL ?? selectedImageIDs.first
         guard let anchorURL = anchor,

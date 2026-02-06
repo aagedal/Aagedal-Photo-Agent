@@ -214,9 +214,34 @@ struct ContentView: View {
                     },
                     onOpenFullScreen: { imageURL, highlightedFaceID in
                         browserViewModel.selectedImageIDs = [imageURL]
+                        browserViewModel.lastClickedImageURL = imageURL
+
+                        let navigationImageURLs: [URL]? = {
+                            guard let highlightedFaceID,
+                                  let selectedFace = faceRecognitionViewModel.face(byID: highlightedFaceID),
+                                  let groupID = selectedFace.groupID,
+                                  let group = faceRecognitionViewModel.group(byID: groupID) else {
+                                return nil
+                            }
+
+                            var orderedImageURLs: [URL] = []
+                            var seenURLs: Set<URL> = []
+                            for face in faceRecognitionViewModel.faces(in: group) {
+                                if seenURLs.insert(face.imageURL).inserted {
+                                    orderedImageURLs.append(face.imageURL)
+                                }
+                            }
+
+                            if !orderedImageURLs.contains(imageURL) {
+                                orderedImageURLs.insert(imageURL, at: 0)
+                            }
+                            return orderedImageURLs.isEmpty ? nil : orderedImageURLs
+                        }()
+
                         browserViewModel.fullScreenFaceContext = BrowserViewModel.FullScreenFaceContext(
                             faceRecognitionViewModel: faceRecognitionViewModel,
-                            highlightedFaceID: highlightedFaceID
+                            highlightedFaceID: highlightedFaceID,
+                            navigationImageURLs: navigationImageURLs
                         )
                         browserViewModel.isFullScreen = true
                     }
