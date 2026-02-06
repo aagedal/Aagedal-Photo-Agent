@@ -16,8 +16,12 @@ final class FaceRecognitionViewModel {
     var scanComplete = false
     var errorMessage: String?
 
-    // Thumbnail cache: faceID -> NSImage (not observed to avoid re-render loops during lazy loading)
-    @ObservationIgnored var thumbnailCache: [UUID: NSImage] = [:]
+    // Thumbnail cache: faceID -> NSImage (NSCache with eviction, not observed to avoid re-render loops)
+    @ObservationIgnored nonisolated(unsafe) private let thumbnailCache: NSCache<NSUUID, NSImage> = {
+        let cache = NSCache<NSUUID, NSImage>()
+        cache.countLimit = 500
+        return cache
+    }()
 
     // Merge suggestions for similar groups
     var mergeSuggestions: [MergeSuggestion] = []
@@ -180,17 +184,17 @@ final class FaceRecognitionViewModel {
         } else {
             self.faceData = nil
             self.scanComplete = false
-            self.thumbnailCache = [:]
+            self.thumbnailCache.removeAllObjects()
         }
     }
 
     private func loadThumbnails(for data: FolderFaceData) {
-        thumbnailCache = [:]
+        thumbnailCache.removeAllObjects()
         for group in data.groups {
             let faceID = group.representativeFaceID
             if let thumbData = storageService.loadThumbnail(for: faceID, folderURL: data.folderURL),
                let image = NSImage(data: thumbData) {
-                thumbnailCache[faceID] = image
+                thumbnailCache.setObject(image, forKey: faceID as NSUUID)
             }
         }
     }
@@ -215,7 +219,7 @@ final class FaceRecognitionViewModel {
             // Full rescan: delete all existing data
             try? storageService.deleteFaceData(for: folderURL)
             faceData = nil
-            thumbnailCache = [:]
+            thumbnailCache.removeAllObjects()
             scanComplete = false
             mergeSuggestions = []
         }
@@ -312,7 +316,7 @@ final class FaceRecognitionViewModel {
                         let image = NSImage(data: result.thumbnail)
                         if let image {
                             await MainActor.run {
-                                thumbnailCache[result.face.id] = image
+                                thumbnailCache.setObject(image, forKey: result.face.id as NSUUID)
                             }
                         }
                     }
@@ -1289,7 +1293,7 @@ final class FaceRecognitionViewModel {
 
         // Remove thumbnails from cache and disk
         for faceID in faceIDs {
-            thumbnailCache.removeValue(forKey: faceID)
+            thumbnailCache.removeObject(forKey: faceID as NSUUID)
             storageService.deleteThumbnail(for: faceID, folderURL: data.folderURL)
         }
 
@@ -1330,7 +1334,7 @@ final class FaceRecognitionViewModel {
 
         // Clean up thumbnails
         for faceID in faceIDs {
-            thumbnailCache.removeValue(forKey: faceID)
+            thumbnailCache.removeObject(forKey: faceID as NSUUID)
             storageService.deleteThumbnail(for: faceID, folderURL: data.folderURL)
         }
 
@@ -1344,7 +1348,7 @@ final class FaceRecognitionViewModel {
     func deleteFaceData(for folderURL: URL) {
         try? storageService.deleteFaceData(for: folderURL)
         faceData = nil
-        thumbnailCache = [:]
+        thumbnailCache.removeAllObjects()
         scanComplete = false
     }
 
@@ -1369,14 +1373,14 @@ final class FaceRecognitionViewModel {
     }
 
     func thumbnailImage(for faceID: UUID) -> NSImage? {
-        if let cached = thumbnailCache[faceID] { return cached }
+        if let cached = thumbnailCache.object(forKey: faceID as NSUUID) { return cached }
 
         guard let folderURL = faceData?.folderURL,
               let data = storageService.loadThumbnail(for: faceID, folderURL: folderURL),
               let image = NSImage(data: data) else {
             return nil
         }
-        thumbnailCache[faceID] = image
+        thumbnailCache.setObject(image, forKey: faceID as NSUUID)
         return image
     }
 }

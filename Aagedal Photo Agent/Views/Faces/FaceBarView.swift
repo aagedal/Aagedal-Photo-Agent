@@ -136,7 +136,7 @@ struct FaceBarView: View {
                         ForEach(viewModel.scanningGroups) { group in
                             FaceGroupThumbnail(
                                 group: group,
-                                image: viewModel.thumbnailCache[group.representativeFaceID],
+                                image: viewModel.thumbnailImage(for: group.representativeFaceID),
                                 isMultiSelected: false
                             )
                             .opacity(0.7)
@@ -362,7 +362,7 @@ struct FaceBarView: View {
     private func faceGroupThumbnailWithActions(group: FaceGroup) -> some View {
         FaceGroupThumbnail(
             group: group,
-            image: viewModel.thumbnailCache[thumbnailFaceID(for: group)],
+            image: viewModel.thumbnailImage(for: thumbnailFaceID(for: group)),
             isMultiSelected: multiSelectedGroupIDs.contains(group.id),
             isHighlighted: highlightedGroupID == group.id,
             isExpanded: true
@@ -576,7 +576,7 @@ struct MergeSuggestionRow: View {
     @ViewBuilder
     private func groupThumbnail(_ group: FaceGroup?) -> some View {
         if let group,
-           let image = viewModel.thumbnailCache[group.representativeFaceID] {
+           let image = viewModel.thumbnailImage(for: group.representativeFaceID) {
             VStack(spacing: 2) {
                 Image(nsImage: image)
                     .resizable()
