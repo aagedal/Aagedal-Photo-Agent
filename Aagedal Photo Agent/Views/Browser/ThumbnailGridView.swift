@@ -371,9 +371,9 @@ struct ImageReorderDelegate: DropDelegate {
 
             // Find the new insertion point (target may have shifted after removals)
             let insertionIndex: Int
-            if let newTargetIndex = viewModel.manualOrder.firstIndex(of: targetURL) {
+            if let newTargetIndex = viewModel.manualOrder.firstIndex(of: targetURL),
+               let firstDraggedOriginalIndex = draggedIndices.first {
                 // Insert after target if we were originally below it, before if above
-                let firstDraggedOriginalIndex = draggedIndices.first!
                 insertionIndex = firstDraggedOriginalIndex > toIndex ? newTargetIndex : newTargetIndex + 1
             } else {
                 insertionIndex = viewModel.manualOrder.endIndex

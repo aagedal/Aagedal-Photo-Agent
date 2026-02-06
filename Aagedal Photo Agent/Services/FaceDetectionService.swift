@@ -957,7 +957,7 @@ nonisolated struct FaceDetectionService: Sendable {
                 let refinementThreshold = threshold * 1.15
 
                 if avgDistance <= refinementThreshold {
-                    if bestMatch == nil || avgDistance < bestMatch!.distance {
+                    if bestMatch.map({ avgDistance < $0.distance }) ?? true {
                         bestMatch = (namedGroup, avgDistance)
                     }
                 }
@@ -1147,7 +1147,7 @@ nonisolated struct FaceDetectionService: Sendable {
         // Create a new bitmap context with the correct orientation
         // Try original format first, fall back to standard 8-bit RGBA for compatibility
         // (HEIC 10-bit images may not be supported by CGContext)
-        let colorSpace = cgImage.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!
+        let colorSpace = cgImage.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
         var context = CGContext(
             data: nil,
             width: newWidth,
@@ -1166,7 +1166,7 @@ nonisolated struct FaceDetectionService: Sendable {
                 height: newHeight,
                 bitsPerComponent: 8,
                 bytesPerRow: 0,
-                space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
             )
         }

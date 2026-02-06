@@ -47,21 +47,19 @@ final class FullScreenImageCache: @unchecked Sendable {
         let targetIndices = (ahead + behind).filter { $0 >= 0 && $0 < images.count }
         let targetURLs = Set(targetIndices.map { images[$0] })
 
-        lock.lock()
-        // Cancel prefetch tasks for URLs no longer needed
-        for (url, task) in prefetchTasks where !targetURLs.contains(url) {
-            task.cancel()
-            prefetchTasks.removeValue(forKey: url)
+        lock.withLock {
+            // Cancel prefetch tasks for URLs no longer needed
+            for (url, task) in prefetchTasks where !targetURLs.contains(url) {
+                task.cancel()
+                prefetchTasks.removeValue(forKey: url)
+            }
         }
-        lock.unlock()
 
         for url in targetURLs {
             // Skip if already cached
             if cachedImage(for: url) != nil { continue }
 
-            lock.lock()
-            let alreadyPrefetching = prefetchTasks[url] != nil
-            lock.unlock()
+            let alreadyPrefetching = lock.withLock { prefetchTasks[url] != nil }
             if alreadyPrefetching { continue }
 
             let task = Task.detached(priority: .utility) { [weak self] in
@@ -80,25 +78,21 @@ final class FullScreenImageCache: @unchecked Sendable {
                 self.removePrefetchTask(for: url)
             }
 
-            lock.lock()
-            prefetchTasks[url] = task
-            lock.unlock()
+            lock.withLock { prefetchTasks[url] = task }
         }
     }
 
     nonisolated private func removePrefetchTask(for url: URL) {
-        lock.lock()
-        prefetchTasks.removeValue(forKey: url)
-        lock.unlock()
+        lock.withLock { prefetchTasks.removeValue(forKey: url) }
     }
 
     nonisolated func cancelAllPrefetch() {
-        lock.lock()
-        for (_, task) in prefetchTasks {
-            task.cancel()
+        lock.withLock {
+            for (_, task) in prefetchTasks {
+                task.cancel()
+            }
+            prefetchTasks.removeAll()
         }
-        prefetchTasks.removeAll()
-        lock.unlock()
         cacheLogger.info("All prefetch tasks cancelled")
     }
 

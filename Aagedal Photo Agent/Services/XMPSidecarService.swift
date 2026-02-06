@@ -67,7 +67,9 @@ struct XMPSidecarService: Sendable {
         xmpmeta.addChild(rdf)
 
         let description = XMLElement(name: "rdf:Description")
-        description.addAttribute(XMLNode.attribute(withName: "rdf:about", stringValue: "") as! XMLNode)
+        if let aboutAttr = XMLNode.attribute(withName: "rdf:about", stringValue: "") as? XMLNode {
+            description.addAttribute(aboutAttr)
+        }
         ensureNamespaces(on: description)
         rdf.addChild(description)
 
@@ -84,7 +86,9 @@ struct XMPSidecarService: Sendable {
 
         let rdf = ensureRdfRoot(in: document)
         let description = XMLElement(name: "rdf:Description")
-        description.addAttribute(XMLNode.attribute(withName: "rdf:about", stringValue: "") as! XMLNode)
+        if let aboutAttr = XMLNode.attribute(withName: "rdf:about", stringValue: "") as? XMLNode {
+            description.addAttribute(aboutAttr)
+        }
         ensureNamespaces(on: description)
         rdf.addChild(description)
         return description
@@ -142,7 +146,9 @@ struct XMPSidecarService: Sendable {
 
     private func ensureNamespace(_ element: XMLElement, prefix: String, uri: String) {
         if element.namespace(forPrefix: prefix) == nil {
-            element.addNamespace(XMLNode.namespace(withName: prefix, stringValue: uri) as! XMLNode)
+            if let ns = XMLNode.namespace(withName: prefix, stringValue: uri) as? XMLNode {
+                element.addNamespace(ns)
+            }
         }
     }
 
@@ -150,7 +156,9 @@ struct XMPSidecarService: Sendable {
         guard element.localName == "xmpmeta" else { return }
         ensureNamespace(element, prefix: "x", uri: Namespace.x)
         if element.attribute(forName: "x:xmptk") == nil {
-            element.addAttribute(XMLNode.attribute(withName: "x:xmptk", stringValue: "Aagedal Photo Agent") as! XMLNode)
+            if let tkAttr = XMLNode.attribute(withName: "x:xmptk", stringValue: "Aagedal Photo Agent") as? XMLNode {
+                element.addAttribute(tkAttr)
+            }
         }
     }
 
@@ -234,7 +242,9 @@ struct XMPSidecarService: Sendable {
         let element = XMLElement(name: "\(prefix):\(localName)")
         let alt = XMLElement(name: "rdf:Alt")
         let li = XMLElement(name: "rdf:li", stringValue: value)
-        li.addAttribute(XMLNode.attribute(withName: "xml:lang", stringValue: "x-default") as! XMLNode)
+        if let langAttr = XMLNode.attribute(withName: "xml:lang", stringValue: "x-default") as? XMLNode {
+            li.addAttribute(langAttr)
+        }
         alt.addChild(li)
         element.addChild(alt)
         description.addChild(element)

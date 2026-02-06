@@ -146,7 +146,7 @@ final class FaceRecognitionViewModel {
         case .manual:
             // Named groups first (alphabetical), then unnamed in array order (insertion order)
             let named = groups.filter { $0.name != nil }.sorted {
-                $0.name!.localizedCaseInsensitiveCompare($1.name!) == .orderedAscending
+                ($0.name ?? "").localizedCaseInsensitiveCompare($1.name ?? "") == .orderedAscending
             }
             let unnamed = groups.filter { $0.name == nil }
             sortedGroups = named + unnamed
