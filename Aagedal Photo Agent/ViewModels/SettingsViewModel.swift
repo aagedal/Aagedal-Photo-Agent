@@ -14,12 +14,7 @@ final class UpdateChecker {
     private let caskURL = URL(string: "https://raw.githubusercontent.com/aagedal/homebrew-casks/main/Casks/aagedal-photo-agent.rb")!
     private var isChecking = false
 
-    private enum Keys {
-        static let updateCheckFrequency = "updateCheckFrequency"
-        static let updateLastChecked = "updateLastChecked"
-        static let updateLatestVersion = "updateLatestVersion"
-        static let updateAvailable = "updateAvailable"
-    }
+    private typealias Keys = UserDefaultsKeys
 
     func checkIfNeeded() async {
         guard let interval = currentFrequency.interval else { return }
@@ -206,15 +201,15 @@ enum QuickListType: String, CaseIterable {
 @Observable
 final class SettingsViewModel {
     var exifToolSource: ExifToolSource {
-        didSet { UserDefaults.standard.set(exifToolSource.rawValue, forKey: "exifToolSource") }
+        didSet { UserDefaults.standard.set(exifToolSource.rawValue, forKey: UserDefaultsKeys.exifToolSource) }
     }
 
     var exifToolCustomPath: String {
-        didSet { UserDefaults.standard.set(exifToolCustomPath.isEmpty ? nil : exifToolCustomPath, forKey: "exifToolCustomPath") }
+        didSet { UserDefaults.standard.set(exifToolCustomPath.isEmpty ? nil : exifToolCustomPath, forKey: UserDefaultsKeys.exifToolCustomPath) }
     }
 
     var defaultExternalEditor: String {
-        didSet { UserDefaults.standard.set(defaultExternalEditor.isEmpty ? nil : defaultExternalEditor, forKey: "defaultExternalEditor") }
+        didSet { UserDefaults.standard.set(defaultExternalEditor.isEmpty ? nil : defaultExternalEditor, forKey: UserDefaultsKeys.defaultExternalEditor) }
     }
 
     var defaultExternalEditorName: String {
@@ -223,23 +218,23 @@ final class SettingsViewModel {
     }
 
     var updateCheckFrequency: UpdateCheckFrequency {
-        didSet { UserDefaults.standard.set(updateCheckFrequency.rawValue, forKey: "updateCheckFrequency") }
+        didSet { UserDefaults.standard.set(updateCheckFrequency.rawValue, forKey: UserDefaultsKeys.updateCheckFrequency) }
     }
 
     var faceCleanupPolicy: FaceCleanupPolicy {
-        didSet { UserDefaults.standard.set(faceCleanupPolicy.rawValue, forKey: "faceCleanupPolicy") }
+        didSet { UserDefaults.standard.set(faceCleanupPolicy.rawValue, forKey: UserDefaultsKeys.faceCleanupPolicy) }
     }
 
     var metadataWriteModeNonC2PA: MetadataWriteMode {
-        didSet { UserDefaults.standard.set(metadataWriteModeNonC2PA.rawValue, forKey: "metadataWriteModeNonC2PA") }
+        didSet { UserDefaults.standard.set(metadataWriteModeNonC2PA.rawValue, forKey: UserDefaultsKeys.metadataWriteModeNonC2PA) }
     }
 
     var metadataWriteModeC2PA: MetadataWriteMode {
-        didSet { UserDefaults.standard.set(metadataWriteModeC2PA.rawValue, forKey: "metadataWriteModeC2PA") }
+        didSet { UserDefaults.standard.set(metadataWriteModeC2PA.rawValue, forKey: UserDefaultsKeys.metadataWriteModeC2PA) }
     }
 
     var preferXMPSidecar: Bool {
-        didSet { UserDefaults.standard.set(preferXMPSidecar, forKey: "metadataPreferXMPSidecar") }
+        didSet { UserDefaults.standard.set(preferXMPSidecar, forKey: UserDefaultsKeys.metadataPreferXMPSidecar) }
     }
 
     var quickListVersion: Int = 0
@@ -253,49 +248,49 @@ final class SettingsViewModel {
     var eventListPath: String = ""
 
     func setKeywordsListURL(_ url: URL) {
-        saveBookmark(for: url, key: "keywordsListBookmark")
+        saveBookmark(for: url, key: UserDefaultsKeys.keywordsListBookmark)
         keywordsListPath = url.path
         quickListVersion += 1
     }
 
     func setPersonShownListURL(_ url: URL) {
-        saveBookmark(for: url, key: "personShownListBookmark")
+        saveBookmark(for: url, key: UserDefaultsKeys.personShownListBookmark)
         personShownListPath = url.path
         quickListVersion += 1
     }
 
     func setCopyrightListURL(_ url: URL) {
-        saveBookmark(for: url, key: "copyrightListBookmark")
+        saveBookmark(for: url, key: UserDefaultsKeys.copyrightListBookmark)
         copyrightListPath = url.path
         quickListVersion += 1
     }
 
     func setCreatorListURL(_ url: URL) {
-        saveBookmark(for: url, key: "creatorListBookmark")
+        saveBookmark(for: url, key: UserDefaultsKeys.creatorListBookmark)
         creatorListPath = url.path
         quickListVersion += 1
     }
 
     func setCreditListURL(_ url: URL) {
-        saveBookmark(for: url, key: "creditListBookmark")
+        saveBookmark(for: url, key: UserDefaultsKeys.creditListBookmark)
         creditListPath = url.path
         quickListVersion += 1
     }
 
     func setCityListURL(_ url: URL) {
-        saveBookmark(for: url, key: "cityListBookmark")
+        saveBookmark(for: url, key: UserDefaultsKeys.cityListBookmark)
         cityListPath = url.path
         quickListVersion += 1
     }
 
     func setCountryListURL(_ url: URL) {
-        saveBookmark(for: url, key: "countryListBookmark")
+        saveBookmark(for: url, key: UserDefaultsKeys.countryListBookmark)
         countryListPath = url.path
         quickListVersion += 1
     }
 
     func setEventListURL(_ url: URL) {
-        saveBookmark(for: url, key: "eventListBookmark")
+        saveBookmark(for: url, key: UserDefaultsKeys.eventListBookmark)
         eventListPath = url.path
         quickListVersion += 1
     }
@@ -332,12 +327,12 @@ final class SettingsViewModel {
 
     /// Clustering sensitivity threshold for Vision mode. Default: 0.40
     var visionClusteringThreshold: Double {
-        didSet { UserDefaults.standard.set(visionClusteringThreshold, forKey: "visionClusteringThreshold") }
+        didSet { UserDefaults.standard.set(visionClusteringThreshold, forKey: UserDefaultsKeys.visionClusteringThreshold) }
     }
 
     /// Clustering sensitivity threshold for Face+Clothing mode. Default: 0.48
     var faceClothingClusteringThreshold: Double {
-        didSet { UserDefaults.standard.set(faceClothingClusteringThreshold, forKey: "faceClothingClusteringThreshold") }
+        didSet { UserDefaults.standard.set(faceClothingClusteringThreshold, forKey: UserDefaultsKeys.faceClothingClusteringThreshold) }
     }
 
     /// Returns the effective clustering threshold for the current recognition mode
@@ -352,23 +347,23 @@ final class SettingsViewModel {
 
     /// Minimum detection confidence (0.5 - 0.95). Default: 0.7
     var faceMinConfidence: Double {
-        didSet { UserDefaults.standard.set(faceMinConfidence, forKey: "faceMinConfidence") }
+        didSet { UserDefaults.standard.set(faceMinConfidence, forKey: UserDefaultsKeys.faceMinConfidence) }
     }
 
     /// Minimum face size in pixels (30 - 150). Default: 50
     var faceMinFaceSize: Int {
-        didSet { UserDefaults.standard.set(faceMinFaceSize, forKey: "faceMinFaceSize") }
+        didSet { UserDefaults.standard.set(faceMinFaceSize, forKey: UserDefaultsKeys.faceMinFaceSize) }
     }
 
     /// Face recognition mode (vision, arcface, faceClothing). Default: vision
     var faceRecognitionMode: FaceRecognitionMode {
-        didSet { UserDefaults.standard.set(faceRecognitionMode.rawValue, forKey: "faceRecognitionMode") }
+        didSet { UserDefaults.standard.set(faceRecognitionMode.rawValue, forKey: UserDefaultsKeys.faceRecognitionMode) }
     }
 
     /// Face weight for Face+Clothing mode (0.3 - 0.9). Default: 0.7
     var faceFaceWeight: Double {
         didSet {
-            UserDefaults.standard.set(faceFaceWeight, forKey: "faceFaceWeight")
+            UserDefaults.standard.set(faceFaceWeight, forKey: UserDefaultsKeys.faceFaceWeight)
         }
     }
 
@@ -380,42 +375,42 @@ final class SettingsViewModel {
     /// Clustering algorithm. Default: chineseWhispers (most accurate)
     var faceClusteringAlgorithm: FaceClusteringAlgorithm {
         didSet {
-            UserDefaults.standard.set(faceClusteringAlgorithm.rawValue, forKey: "faceClusteringAlgorithm")
+            UserDefaults.standard.set(faceClusteringAlgorithm.rawValue, forKey: UserDefaultsKeys.faceClusteringAlgorithm)
         }
     }
 
     /// Quality gate threshold for quality-gated clustering (0.3 - 0.9). Default: 0.6
     var faceQualityGateThreshold: Double {
         didSet {
-            UserDefaults.standard.set(faceQualityGateThreshold, forKey: "faceQualityGateThreshold")
+            UserDefaults.standard.set(faceQualityGateThreshold, forKey: UserDefaultsKeys.faceQualityGateThreshold)
         }
     }
 
     /// Whether to use quality-weighted edges in Chinese Whispers. Default: true
     var faceUseQualityWeightedEdges: Bool {
         didSet {
-            UserDefaults.standard.set(faceUseQualityWeightedEdges, forKey: "faceUseQualityWeightedEdges")
+            UserDefaults.standard.set(faceUseQualityWeightedEdges, forKey: UserDefaultsKeys.faceUseQualityWeightedEdges)
         }
     }
 
     /// For Face+Clothing mode: allow the second pass to match leftovers to existing groups. Default: false
     var faceClothingSecondPassAttachToExisting: Bool {
         didSet {
-            UserDefaults.standard.set(faceClothingSecondPassAttachToExisting, forKey: "faceClothingSecondPassAttachToExisting")
+            UserDefaults.standard.set(faceClothingSecondPassAttachToExisting, forKey: UserDefaultsKeys.faceClothingSecondPassAttachToExisting)
         }
     }
 
     /// Known People database mode. Default: off
     var knownPeopleMode: KnownPeopleMode {
         didSet {
-            UserDefaults.standard.set(knownPeopleMode.rawValue, forKey: "knownPeopleMode")
+            UserDefaults.standard.set(knownPeopleMode.rawValue, forKey: UserDefaultsKeys.knownPeopleMode)
         }
     }
 
     /// Minimum confidence required for auto-matching known people. Default: 0.60
     var knownPeopleMinConfidence: Double {
         didSet {
-            UserDefaults.standard.set(knownPeopleMinConfidence, forKey: "knownPeopleMinConfidence")
+            UserDefaults.standard.set(knownPeopleMinConfidence, forKey: UserDefaultsKeys.knownPeopleMinConfidence)
         }
     }
 
@@ -450,22 +445,22 @@ final class SettingsViewModel {
     }
 
     init() {
-        let sourceRaw = UserDefaults.standard.string(forKey: "exifToolSource") ?? "bundled"
+        let sourceRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.exifToolSource) ?? "bundled"
         self.exifToolSource = ExifToolSource(rawValue: sourceRaw) ?? .bundled
-        self.exifToolCustomPath = UserDefaults.standard.string(forKey: "exifToolCustomPath") ?? ""
-        self.defaultExternalEditor = UserDefaults.standard.string(forKey: "defaultExternalEditor") ?? ""
-        let updateRaw = UserDefaults.standard.string(forKey: "updateCheckFrequency") ?? UpdateCheckFrequency.weekly.rawValue
+        self.exifToolCustomPath = UserDefaults.standard.string(forKey: UserDefaultsKeys.exifToolCustomPath) ?? ""
+        self.defaultExternalEditor = UserDefaults.standard.string(forKey: UserDefaultsKeys.defaultExternalEditor) ?? ""
+        let updateRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.updateCheckFrequency) ?? UpdateCheckFrequency.weekly.rawValue
         self.updateCheckFrequency = UpdateCheckFrequency(rawValue: updateRaw) ?? .weekly
-        let raw = UserDefaults.standard.string(forKey: "faceCleanupPolicy") ?? "never"
+        let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.faceCleanupPolicy) ?? "never"
         self.faceCleanupPolicy = FaceCleanupPolicy(rawValue: raw) ?? .never
-        let legacyWriteModeRaw = UserDefaults.standard.string(forKey: "metadataWriteMode")
-        let nonC2PARaw = UserDefaults.standard.string(forKey: "metadataWriteModeNonC2PA")
+        let legacyWriteModeRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.metadataWriteMode)
+        let nonC2PARaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.metadataWriteModeNonC2PA)
             ?? legacyWriteModeRaw
             ?? MetadataWriteMode.defaultNonC2PA.rawValue
         self.metadataWriteModeNonC2PA = MetadataWriteMode(rawValue: nonC2PARaw) ?? .defaultNonC2PA
 
-        if UserDefaults.standard.object(forKey: "metadataWriteModeC2PA") != nil {
-            let c2paRaw = UserDefaults.standard.string(forKey: "metadataWriteModeC2PA")
+        if UserDefaults.standard.object(forKey: UserDefaultsKeys.metadataWriteModeC2PA) != nil {
+            let c2paRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.metadataWriteModeC2PA)
                 ?? MetadataWriteMode.defaultC2PA.rawValue
             self.metadataWriteModeC2PA = MetadataWriteMode(rawValue: c2paRaw) ?? .defaultC2PA
         } else {
@@ -474,81 +469,81 @@ final class SettingsViewModel {
             self.metadataWriteModeC2PA = c2paMode == .writeToFile ? .writeToXMPSidecar : c2paMode
         }
 
-        let preferXmpStored = UserDefaults.standard.object(forKey: "metadataPreferXMPSidecar") as? Bool
+        let preferXmpStored = UserDefaults.standard.object(forKey: UserDefaultsKeys.metadataPreferXMPSidecar) as? Bool
         self.preferXMPSidecar = preferXmpStored ?? false
 
         // Face recognition settings with defaults
         // Mode-specific thresholds with optimized defaults
-        let storedVisionThreshold = UserDefaults.standard.object(forKey: "visionClusteringThreshold") as? Double
+        let storedVisionThreshold = UserDefaults.standard.object(forKey: UserDefaultsKeys.visionClusteringThreshold) as? Double
         self.visionClusteringThreshold = storedVisionThreshold ?? 0.40
 
-        let storedFaceClothingThreshold = UserDefaults.standard.object(forKey: "faceClothingClusteringThreshold") as? Double
+        let storedFaceClothingThreshold = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceClothingClusteringThreshold) as? Double
         self.faceClothingClusteringThreshold = storedFaceClothingThreshold ?? 0.48
 
-        let storedConfidence = UserDefaults.standard.object(forKey: "faceMinConfidence") as? Double
+        let storedConfidence = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceMinConfidence) as? Double
         self.faceMinConfidence = storedConfidence ?? 0.7
 
-        let storedMinSize = UserDefaults.standard.object(forKey: "faceMinFaceSize") as? Int
+        let storedMinSize = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceMinFaceSize) as? Int
         self.faceMinFaceSize = storedMinSize ?? 50
 
-        let storedMode = UserDefaults.standard.string(forKey: "faceRecognitionMode") ?? "faceClothing"
+        let storedMode = UserDefaults.standard.string(forKey: UserDefaultsKeys.faceRecognitionMode) ?? "faceClothing"
         self.faceRecognitionMode = FaceRecognitionMode(rawValue: storedMode) ?? .faceAndClothing
 
-        let storedFaceWeight = UserDefaults.standard.object(forKey: "faceFaceWeight") as? Double
+        let storedFaceWeight = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceFaceWeight) as? Double
         self.faceFaceWeight = storedFaceWeight ?? 0.7
 
-        let storedAlgorithm = UserDefaults.standard.string(forKey: "faceClusteringAlgorithm") ?? "chineseWhispers"
+        let storedAlgorithm = UserDefaults.standard.string(forKey: UserDefaultsKeys.faceClusteringAlgorithm) ?? "chineseWhispers"
         self.faceClusteringAlgorithm = FaceClusteringAlgorithm(rawValue: storedAlgorithm) ?? .chineseWhispers
 
-        let storedQualityGate = UserDefaults.standard.object(forKey: "faceQualityGateThreshold") as? Double
+        let storedQualityGate = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceQualityGateThreshold) as? Double
         self.faceQualityGateThreshold = storedQualityGate ?? 0.6
 
-        let storedQualityWeighted = UserDefaults.standard.object(forKey: "faceUseQualityWeightedEdges") as? Bool
+        let storedQualityWeighted = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceUseQualityWeightedEdges) as? Bool
         self.faceUseQualityWeightedEdges = storedQualityWeighted ?? true
 
-        let storedSecondPassAttach = UserDefaults.standard.object(forKey: "faceClothingSecondPassAttachToExisting") as? Bool
+        let storedSecondPassAttach = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceClothingSecondPassAttachToExisting) as? Bool
         self.faceClothingSecondPassAttachToExisting = storedSecondPassAttach ?? false
 
-        let storedKnownPeopleMode = UserDefaults.standard.string(forKey: "knownPeopleMode") ?? "off"
+        let storedKnownPeopleMode = UserDefaults.standard.string(forKey: UserDefaultsKeys.knownPeopleMode) ?? "off"
         self.knownPeopleMode = KnownPeopleMode(rawValue: storedKnownPeopleMode) ?? .off
-        let storedKnownPeopleMinConfidence = UserDefaults.standard.object(forKey: "knownPeopleMinConfidence") as? Double
+        let storedKnownPeopleMinConfidence = UserDefaults.standard.object(forKey: UserDefaultsKeys.knownPeopleMinConfidence) as? Double
         self.knownPeopleMinConfidence = storedKnownPeopleMinConfidence ?? 0.60
 
         self.detectedEditors = Self.detectEditors()
 
         // Restore paths from bookmarks (must be after all properties are initialized)
-        if let url = resolveBookmark(key: "keywordsListBookmark") {
+        if let url = resolveBookmark(key: UserDefaultsKeys.keywordsListBookmark) {
             self.keywordsListPath = url.path
         }
-        if let url = resolveBookmark(key: "personShownListBookmark") {
+        if let url = resolveBookmark(key: UserDefaultsKeys.personShownListBookmark) {
             self.personShownListPath = url.path
         }
-        if let url = resolveBookmark(key: "copyrightListBookmark") {
+        if let url = resolveBookmark(key: UserDefaultsKeys.copyrightListBookmark) {
             self.copyrightListPath = url.path
         }
-        if let url = resolveBookmark(key: "creatorListBookmark") {
+        if let url = resolveBookmark(key: UserDefaultsKeys.creatorListBookmark) {
             self.creatorListPath = url.path
         }
-        if let url = resolveBookmark(key: "creditListBookmark") {
+        if let url = resolveBookmark(key: UserDefaultsKeys.creditListBookmark) {
             self.creditListPath = url.path
         }
-        if let url = resolveBookmark(key: "cityListBookmark") {
+        if let url = resolveBookmark(key: UserDefaultsKeys.cityListBookmark) {
             self.cityListPath = url.path
         }
-        if let url = resolveBookmark(key: "countryListBookmark") {
+        if let url = resolveBookmark(key: UserDefaultsKeys.countryListBookmark) {
             self.countryListPath = url.path
         }
-        if let url = resolveBookmark(key: "eventListBookmark") {
+        if let url = resolveBookmark(key: UserDefaultsKeys.eventListBookmark) {
             self.eventListPath = url.path
         }
     }
 
     func loadKeywordsList() -> [String] {
-        loadListFromBookmark(key: "keywordsListBookmark")
+        loadListFromBookmark(key: UserDefaultsKeys.keywordsListBookmark)
     }
 
     func loadPersonShownList() -> [String] {
-        loadListFromBookmark(key: "personShownListBookmark")
+        loadListFromBookmark(key: UserDefaultsKeys.personShownListBookmark)
     }
 
     func quickListURL(for type: QuickListType) -> URL? {
@@ -616,27 +611,27 @@ final class SettingsViewModel {
     }
 
     func loadCopyrightList() -> [String] {
-        loadListFromBookmark(key: "copyrightListBookmark")
+        loadListFromBookmark(key: UserDefaultsKeys.copyrightListBookmark)
     }
 
     func loadCreatorList() -> [String] {
-        loadListFromBookmark(key: "creatorListBookmark")
+        loadListFromBookmark(key: UserDefaultsKeys.creatorListBookmark)
     }
 
     func loadCreditList() -> [String] {
-        loadListFromBookmark(key: "creditListBookmark")
+        loadListFromBookmark(key: UserDefaultsKeys.creditListBookmark)
     }
 
     func loadCityList() -> [String] {
-        loadListFromBookmark(key: "cityListBookmark")
+        loadListFromBookmark(key: UserDefaultsKeys.cityListBookmark)
     }
 
     func loadCountryList() -> [String] {
-        loadListFromBookmark(key: "countryListBookmark")
+        loadListFromBookmark(key: UserDefaultsKeys.countryListBookmark)
     }
 
     func loadEventList() -> [String] {
-        loadListFromBookmark(key: "eventListBookmark")
+        loadListFromBookmark(key: UserDefaultsKeys.eventListBookmark)
     }
 
     private func loadListFromBookmark(key: String) -> [String] {

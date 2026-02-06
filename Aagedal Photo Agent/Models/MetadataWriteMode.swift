@@ -42,20 +42,19 @@ enum MetadataWriteMode: String, CaseIterable, Identifiable, Sendable {
 
     static func current(forC2PA: Bool) -> MetadataWriteMode {
         let defaults = UserDefaults.standard
-        let legacyKey = "metadataWriteMode"
 
         if forC2PA {
-            if defaults.object(forKey: "metadataWriteModeC2PA") != nil {
-                let raw = defaults.string(forKey: "metadataWriteModeC2PA") ?? MetadataWriteMode.defaultC2PA.rawValue
+            if defaults.object(forKey: UserDefaultsKeys.metadataWriteModeC2PA) != nil {
+                let raw = defaults.string(forKey: UserDefaultsKeys.metadataWriteModeC2PA) ?? MetadataWriteMode.defaultC2PA.rawValue
                 return MetadataWriteMode(rawValue: raw) ?? .defaultC2PA
             }
 
-            let raw = defaults.string(forKey: legacyKey) ?? MetadataWriteMode.defaultC2PA.rawValue
+            let raw = defaults.string(forKey: UserDefaultsKeys.metadataWriteMode) ?? MetadataWriteMode.defaultC2PA.rawValue
             let mode = MetadataWriteMode(rawValue: raw) ?? .defaultC2PA
             return mode == .writeToFile ? .writeToXMPSidecar : mode
         } else {
-            let raw = defaults.string(forKey: "metadataWriteModeNonC2PA")
-                ?? defaults.string(forKey: legacyKey)
+            let raw = defaults.string(forKey: UserDefaultsKeys.metadataWriteModeNonC2PA)
+                ?? defaults.string(forKey: UserDefaultsKeys.metadataWriteMode)
                 ?? MetadataWriteMode.defaultNonC2PA.rawValue
             return MetadataWriteMode(rawValue: raw) ?? .defaultNonC2PA
         }

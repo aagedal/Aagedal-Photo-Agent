@@ -170,21 +170,21 @@ struct FTPUploadView: View {
 
                 if changed {
                     var fields: [String: String] = [:]
-                    if resolved.title != meta.title { fields["XMP-photoshop:Headline"] = resolved.title ?? "" }
-                    if resolved.description != meta.description { fields["XMP:Description"] = resolved.description ?? "" }
+                    if resolved.title != meta.title { fields[ExifToolWriteTag.headline] = resolved.title ?? "" }
+                    if resolved.description != meta.description { fields[ExifToolWriteTag.description] = resolved.description ?? "" }
                     if resolved.extendedDescription != meta.extendedDescription {
-                        fields["XMP-iptcCore:ExtDescrAccessibility"] = resolved.extendedDescription ?? ""
+                        fields[ExifToolWriteTag.extendedDescription] = resolved.extendedDescription ?? ""
                     }
-                    if resolved.creator != meta.creator { fields["XMP:Creator"] = resolved.creator ?? "" }
-                    if resolved.credit != meta.credit { fields["XMP-photoshop:Credit"] = resolved.credit ?? "" }
-                    if resolved.copyright != meta.copyright { fields["XMP:Rights"] = resolved.copyright ?? "" }
+                    if resolved.creator != meta.creator { fields[ExifToolWriteTag.creator] = resolved.creator ?? "" }
+                    if resolved.credit != meta.credit { fields[ExifToolWriteTag.credit] = resolved.credit ?? "" }
+                    if resolved.copyright != meta.copyright { fields[ExifToolWriteTag.rights] = resolved.copyright ?? "" }
                     if resolved.jobId != meta.jobId {
-                        fields["XMP-photoshop:TransmissionReference"] = resolved.jobId ?? ""
+                        fields[ExifToolWriteTag.transmissionReference] = resolved.jobId ?? ""
                     }
-                    if resolved.dateCreated != meta.dateCreated { fields["XMP:DateCreated"] = resolved.dateCreated ?? "" }
-                    if resolved.city != meta.city { fields["XMP-photoshop:City"] = resolved.city ?? "" }
-                    if resolved.country != meta.country { fields["XMP-photoshop:Country"] = resolved.country ?? "" }
-                    if resolved.event != meta.event { fields["XMP-iptcExt:Event"] = resolved.event ?? "" }
+                    if resolved.dateCreated != meta.dateCreated { fields[ExifToolWriteTag.dateCreated] = resolved.dateCreated ?? "" }
+                    if resolved.city != meta.city { fields[ExifToolWriteTag.city] = resolved.city ?? "" }
+                    if resolved.country != meta.country { fields[ExifToolWriteTag.country] = resolved.country ?? "" }
+                    if resolved.event != meta.event { fields[ExifToolWriteTag.event] = resolved.event ?? "" }
 
                     if !fields.isEmpty {
                         try await exifToolService.writeFields(fields, to: [url])

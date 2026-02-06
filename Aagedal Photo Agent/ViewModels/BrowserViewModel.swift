@@ -33,7 +33,18 @@ final class BrowserViewModel {
     }
     @ObservationIgnored var draggedImageURLs: Set<URL> = []
     var searchText: String = "" {
-        didSet { rebuildVisibleCache() }
+        didSet {
+            searchDebounceTask?.cancel()
+            if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                rebuildVisibleCache()
+            } else {
+                searchDebounceTask = Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .milliseconds(200))
+                    guard !Task.isCancelled else { return }
+                    self?.rebuildVisibleCache()
+                }
+            }
+        }
     }
     var minimumStarRating: StarRating = .none {
         didSet { rebuildVisibleCache() }
@@ -52,11 +63,12 @@ final class BrowserViewModel {
     private let xmpSidecarService = XMPSidecarService()
 
     @ObservationIgnored var onImagesDeleted: ((Set<URL>) -> Void)?
+    @ObservationIgnored private var searchDebounceTask: Task<Void, Never>?
     @ObservationIgnored private var isAutoRefreshing = false
     @ObservationIgnored private var isMetadataLoading = false
     @ObservationIgnored private var pendingMetadataURLs: Set<URL> = []
 
-    private let favoritesKey = "favoriteFolders"
+    private let favoritesKey = UserDefaultsKeys.favoriteFolders
 
     private(set) var sortedImages: [ImageFile] = []
     private(set) var urlToSortedIndex: [URL: Int] = [:]
@@ -331,18 +343,18 @@ final class BrowserViewModel {
             do {
                 let results = try await exifToolService.readBatchBasicMetadata(urls: batchURLs)
                 for dict in results {
-                    guard let sourcePath = dict["SourceFile"] as? String else { continue }
+                    guard let sourcePath = dict[ExifToolReadKey.sourceFile] as? String else { continue }
                     let sourceURL = URL(fileURLWithPath: sourcePath)
 
                     if let index = images.firstIndex(where: { $0.url == sourceURL }) {
-                        if let rating = dict["Rating"] as? Int,
+                        if let rating = dict[ExifToolReadKey.rating] as? Int,
                            let starRating = StarRating(rawValue: rating) {
                             images[index].starRating = starRating
                         }
-                        images[index].colorLabel = ColorLabel.fromMetadataLabel(dict["Label"] as? String)
-                        images[index].personShown = parseStringOrArray(dict["PersonInImage"])
+                        images[index].colorLabel = ColorLabel.fromMetadataLabel(dict[ExifToolReadKey.label] as? String)
+                        images[index].personShown = parseStringOrArray(dict[ExifToolReadKey.personInImage])
                         // C2PA detection: look for JUMD/C2PA keys from -JUMBF:All output
-                        let hasC2PA = dict.keys.contains { $0.hasPrefix("JUMD") || $0.hasPrefix("C2PA") || $0 == "Claim_generator" }
+                        let hasC2PA = dict.keys.contains { $0.hasPrefix("JUMD") || $0.hasPrefix("C2PA") || $0 == ExifToolReadKey.claimGenerator }
                         images[index].hasC2PA = hasC2PA
                         applyPendingSidecarOverrides(for: sourceURL, index: index)
                     }
@@ -381,17 +393,17 @@ final class BrowserViewModel {
             do {
                 let results = try await exifToolService.readBatchBasicMetadata(urls: batchURLs)
                 for dict in results {
-                    guard let sourcePath = dict["SourceFile"] as? String else { continue }
+                    guard let sourcePath = dict[ExifToolReadKey.sourceFile] as? String else { continue }
                     let sourceURL = URL(fileURLWithPath: sourcePath)
 
                     if let index = images.firstIndex(where: { $0.url == sourceURL }) {
-                        if let rating = dict["Rating"] as? Int,
+                        if let rating = dict[ExifToolReadKey.rating] as? Int,
                            let starRating = StarRating(rawValue: rating) {
                             images[index].starRating = starRating
                         }
-                        images[index].colorLabel = ColorLabel.fromMetadataLabel(dict["Label"] as? String)
-                        images[index].personShown = parseStringOrArray(dict["PersonInImage"])
-                        let hasC2PA = dict.keys.contains { $0.hasPrefix("JUMD") || $0.hasPrefix("C2PA") || $0 == "Claim_generator" }
+                        images[index].colorLabel = ColorLabel.fromMetadataLabel(dict[ExifToolReadKey.label] as? String)
+                        images[index].personShown = parseStringOrArray(dict[ExifToolReadKey.personInImage])
+                        let hasC2PA = dict.keys.contains { $0.hasPrefix("JUMD") || $0.hasPrefix("C2PA") || $0 == ExifToolReadKey.claimGenerator }
                         images[index].hasC2PA = hasC2PA
                         applyPendingSidecarOverrides(for: sourceURL, index: index)
                     }
@@ -767,7 +779,7 @@ final class BrowserViewModel {
     private func loadMetadataSnapshot(for url: URL, includeXmp: Bool) async -> IPTCMetadata? {
         do {
             var metadata = try await exifToolService.readFullMetadata(url: url)
-            let preferXmp = UserDefaults.standard.bool(forKey: "metadataPreferXMPSidecar")
+            let preferXmp = UserDefaults.standard.bool(forKey: UserDefaultsKeys.metadataPreferXMPSidecar)
             if (includeXmp || preferXmp), let xmpMetadata = xmpSidecarService.loadSidecar(for: url) {
                 metadata = metadata.merged(preferring: xmpMetadata)
             }

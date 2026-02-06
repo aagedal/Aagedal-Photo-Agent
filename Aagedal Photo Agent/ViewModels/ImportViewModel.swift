@@ -255,20 +255,20 @@ final class ImportViewModel {
     private func buildMetadataFields(from meta: IPTCMetadata) -> [String: String] {
         var fields: [String: String] = [:]
 
-        if let v = meta.title, !v.isEmpty { fields["XMP-photoshop:Headline"] = v }
-        if let v = meta.description, !v.isEmpty { fields["XMP:Description"] = v }
-        if let v = meta.extendedDescription, !v.isEmpty { fields["XMP-iptcCore:ExtDescrAccessibility"] = v }
-        if !meta.keywords.isEmpty { fields["XMP:Subject"] = meta.keywords.joined(separator: ", ") }
-        if !meta.personShown.isEmpty { fields["XMP-iptcExt:PersonInImage"] = meta.personShown.joined(separator: ", ") }
-        if let v = meta.digitalSourceType { fields["XMP-iptcExt:DigitalSourceType"] = v.rawValue }
-        if let v = meta.creator, !v.isEmpty { fields["XMP:Creator"] = v }
-        if let v = meta.credit, !v.isEmpty { fields["XMP-photoshop:Credit"] = v }
-        if let v = meta.copyright, !v.isEmpty { fields["XMP:Rights"] = v }
-        if let v = meta.jobId, !v.isEmpty { fields["XMP-photoshop:TransmissionReference"] = v }
-        if let v = meta.dateCreated, !v.isEmpty { fields["XMP:DateCreated"] = v }
-        if let v = meta.city, !v.isEmpty { fields["XMP-photoshop:City"] = v }
-        if let v = meta.country, !v.isEmpty { fields["XMP-photoshop:Country"] = v }
-        if let v = meta.event, !v.isEmpty { fields["XMP-iptcExt:Event"] = v }
+        if let v = meta.title, !v.isEmpty { fields[ExifToolWriteTag.headline] = v }
+        if let v = meta.description, !v.isEmpty { fields[ExifToolWriteTag.description] = v }
+        if let v = meta.extendedDescription, !v.isEmpty { fields[ExifToolWriteTag.extendedDescription] = v }
+        if !meta.keywords.isEmpty { fields[ExifToolWriteTag.subject] = meta.keywords.joined(separator: ", ") }
+        if !meta.personShown.isEmpty { fields[ExifToolWriteTag.personInImage] = meta.personShown.joined(separator: ", ") }
+        if let v = meta.digitalSourceType { fields[ExifToolWriteTag.digitalSourceType] = v.rawValue }
+        if let v = meta.creator, !v.isEmpty { fields[ExifToolWriteTag.creator] = v }
+        if let v = meta.credit, !v.isEmpty { fields[ExifToolWriteTag.credit] = v }
+        if let v = meta.copyright, !v.isEmpty { fields[ExifToolWriteTag.rights] = v }
+        if let v = meta.jobId, !v.isEmpty { fields[ExifToolWriteTag.transmissionReference] = v }
+        if let v = meta.dateCreated, !v.isEmpty { fields[ExifToolWriteTag.dateCreated] = v }
+        if let v = meta.city, !v.isEmpty { fields[ExifToolWriteTag.city] = v }
+        if let v = meta.country, !v.isEmpty { fields[ExifToolWriteTag.country] = v }
+        if let v = meta.event, !v.isEmpty { fields[ExifToolWriteTag.event] = v }
 
         return fields
     }
