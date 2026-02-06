@@ -11,7 +11,6 @@ struct FileSystemService: Sendable {
         return contents
             .filter { SupportedImageFormats.isSupported(url: $0) }
             .map { ImageFile(url: $0) }
-            .sorted { $0.filename.localizedStandardCompare($1.filename) == .orderedAscending }
     }
 
     func listSubfolders(at url: URL) throws -> [URL] {

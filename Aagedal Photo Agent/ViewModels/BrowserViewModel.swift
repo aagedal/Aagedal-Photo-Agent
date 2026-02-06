@@ -257,16 +257,16 @@ final class BrowserViewModel {
             }
             do {
                 var files = try fileSystemService.scanFolder(at: url)
-                let pendingURLs = sidecarService.imagesWithPendingChanges(in: url)
+                let allSidecars = sidecarService.loadAllSidecars(in: url)
                 for i in files.indices {
-                    if pendingURLs.contains(files[i].url) {
+                    if let sidecar = allSidecars[files[i].url], sidecar.pendingChanges {
                         files[i].hasPendingMetadataChanges = true
-                        files[i].pendingFieldNames = sidecarService.pendingFieldNames(for: files[i].url, in: url)
+                        files[i].pendingFieldNames = extractPendingFieldNames(from: sidecar)
                     }
                 }
                 self.images = files
                 self.isLoading = false
-                await loadBasicMetadata()
+                await loadBasicMetadata(cachedSidecars: allSidecars)
             } catch {
                 self.errorMessage = error.localizedDescription
                 self.isLoading = false
@@ -326,12 +326,12 @@ final class BrowserViewModel {
             }
             guard self.currentFolderURL == folderURL else { return }
 
-            let pendingURLs = sidecarService.imagesWithPendingChanges(in: folderURL)
+            let allSidecars = sidecarService.loadAllSidecars(in: folderURL)
             for index in merged.indices {
                 let url = merged[index].url
-                if pendingURLs.contains(url) {
+                if let sidecar = allSidecars[url], sidecar.pendingChanges {
                     merged[index].hasPendingMetadataChanges = true
-                    merged[index].pendingFieldNames = sidecarService.pendingFieldNames(for: url, in: folderURL)
+                    merged[index].pendingFieldNames = extractPendingFieldNames(from: sidecar)
                 } else {
                     merged[index].hasPendingMetadataChanges = false
                     merged[index].pendingFieldNames = []
@@ -348,7 +348,7 @@ final class BrowserViewModel {
         }
     }
 
-    private func loadBasicMetadata() async {
+    private func loadBasicMetadata(cachedSidecars: [URL: MetadataSidecar] = [:]) async {
         guard exifToolService.isAvailable else { return }
         if isMetadataLoading {
             pendingMetadataURLs.formUnion(images.map(\.url))
@@ -390,7 +390,7 @@ final class BrowserViewModel {
                         // C2PA detection: look for JUMD/C2PA keys from -JUMBF:All output
                         let hasC2PA = TechnicalMetadata.dictHasC2PA(dict)
                         images[index].hasC2PA = hasC2PA
-                        applyPendingSidecarOverrides(for: sourceURL, index: index)
+                        applyPendingSidecarOverrides(for: sourceURL, index: index, cachedSidecar: cachedSidecars[sourceURL])
                     }
                 }
             } catch {
@@ -689,10 +689,17 @@ final class BrowserViewModel {
         }
     }
 
-    private func applyPendingSidecarOverrides(for url: URL, index: Int) {
-        guard let folderURL = currentFolderURL,
-              let sidecar = sidecarService.loadSidecar(for: url, in: folderURL),
-              sidecar.pendingChanges else { return }
+    private func applyPendingSidecarOverrides(for url: URL, index: Int, cachedSidecar: MetadataSidecar? = nil) {
+        let sidecar: MetadataSidecar
+        if let cached = cachedSidecar {
+            sidecar = cached
+        } else if let folderURL = currentFolderURL,
+                  let loaded = sidecarService.loadSidecar(for: url, in: folderURL) {
+            sidecar = loaded
+        } else {
+            return
+        }
+        guard sidecar.pendingChanges else { return }
 
         if let snapshot = sidecar.imageMetadataSnapshot {
             if sidecar.metadata.rating != snapshot.rating {
@@ -921,15 +928,40 @@ final class BrowserViewModel {
 
     // MARK: - Pending Status
 
+    private func extractPendingFieldNames(from sidecar: MetadataSidecar?) -> [String] {
+        guard let sidecar, sidecar.pendingChanges,
+              let original = sidecar.imageMetadataSnapshot else {
+            return []
+        }
+        let edited = sidecar.metadata
+        var names: [String] = []
+        if edited.title != original.title { names.append("Headline") }
+        if edited.description != original.description { names.append("Description") }
+        if edited.extendedDescription != original.extendedDescription { names.append("Extended Description") }
+        if edited.keywords != original.keywords { names.append("Keywords") }
+        if edited.personShown != original.personShown { names.append("Person Shown") }
+        if edited.rating != original.rating { names.append("Rating") }
+        if edited.label != original.label { names.append("Label") }
+        if edited.copyright != original.copyright { names.append("Copyright") }
+        if edited.jobId != original.jobId { names.append("Job ID") }
+        if edited.creator != original.creator { names.append("Creator") }
+        if edited.credit != original.credit { names.append("Credit") }
+        if edited.city != original.city { names.append("City") }
+        if edited.country != original.country { names.append("Country") }
+        if edited.event != original.event { names.append("Event") }
+        if edited.digitalSourceType != original.digitalSourceType { names.append("Digital Source Type") }
+        return names
+    }
+
     func refreshPendingStatus() {
         guard let folderURL = currentFolderURL else { return }
-        let pendingURLs = sidecarService.imagesWithPendingChanges(in: folderURL)
+        let allSidecars = sidecarService.loadAllSidecars(in: folderURL)
         for i in images.indices {
-            let hasPending = pendingURLs.contains(images[i].url)
-            images[i].hasPendingMetadataChanges = hasPending
-            if hasPending {
-                images[i].pendingFieldNames = sidecarService.pendingFieldNames(for: images[i].url, in: folderURL)
+            if let sidecar = allSidecars[images[i].url], sidecar.pendingChanges {
+                images[i].hasPendingMetadataChanges = true
+                images[i].pendingFieldNames = extractPendingFieldNames(from: sidecar)
             } else {
+                images[i].hasPendingMetadataChanges = false
                 images[i].pendingFieldNames = []
             }
         }
