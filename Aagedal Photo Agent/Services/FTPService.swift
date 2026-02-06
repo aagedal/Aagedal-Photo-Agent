@@ -66,13 +66,21 @@ struct FTPService: Sendable {
             }
         }
 
-        try process.run()
-        process.waitUntilExit()
-
-        stderrPipe.fileHandleForReading.readabilityHandler = nil
-
-        guard process.terminationStatus == 0 else {
-            throw FTPError.uploadFailed(process.terminationStatus)
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+            process.terminationHandler = { proc in
+                stderrPipe.fileHandleForReading.readabilityHandler = nil
+                if proc.terminationStatus == 0 {
+                    continuation.resume()
+                } else {
+                    continuation.resume(throwing: FTPError.uploadFailed(proc.terminationStatus))
+                }
+            }
+            do {
+                try process.run()
+            } catch {
+                stderrPipe.fileHandleForReading.readabilityHandler = nil
+                continuation.resume(throwing: error)
+            }
         }
 
         let finalProgress = FTPUploadProgress(
