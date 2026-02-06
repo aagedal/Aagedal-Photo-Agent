@@ -354,7 +354,7 @@ final class BrowserViewModel {
                         images[index].colorLabel = ColorLabel.fromMetadataLabel(dict[ExifToolReadKey.label] as? String)
                         images[index].personShown = parseStringOrArray(dict[ExifToolReadKey.personInImage])
                         // C2PA detection: look for JUMD/C2PA keys from -JUMBF:All output
-                        let hasC2PA = dict.keys.contains { $0.hasPrefix("JUMD") || $0.hasPrefix("C2PA") || $0 == ExifToolReadKey.claimGenerator }
+                        let hasC2PA = TechnicalMetadata.dictHasC2PA(dict)
                         images[index].hasC2PA = hasC2PA
                         applyPendingSidecarOverrides(for: sourceURL, index: index)
                     }
@@ -403,7 +403,7 @@ final class BrowserViewModel {
                         }
                         images[index].colorLabel = ColorLabel.fromMetadataLabel(dict[ExifToolReadKey.label] as? String)
                         images[index].personShown = parseStringOrArray(dict[ExifToolReadKey.personInImage])
-                        let hasC2PA = dict.keys.contains { $0.hasPrefix("JUMD") || $0.hasPrefix("C2PA") || $0 == ExifToolReadKey.claimGenerator }
+                        let hasC2PA = TechnicalMetadata.dictHasC2PA(dict)
                         images[index].hasC2PA = hasC2PA
                         applyPendingSidecarOverrides(for: sourceURL, index: index)
                     }

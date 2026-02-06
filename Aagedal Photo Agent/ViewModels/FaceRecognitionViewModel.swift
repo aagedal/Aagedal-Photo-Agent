@@ -982,7 +982,7 @@ final class FaceRecognitionViewModel {
             for dict in results {
                 guard let sourcePath = dict[ExifToolReadKey.sourceFile] as? String else { continue }
                 let sourceURL = URL(fileURLWithPath: sourcePath)
-                let hasC2PA = dict.keys.contains { $0.hasPrefix("JUMD") || $0.hasPrefix("C2PA") || $0 == ExifToolReadKey.claimGenerator }
+                let hasC2PA = TechnicalMetadata.dictHasC2PA(dict)
                 lookup[sourceURL] = hasC2PA
             }
             return lookup
