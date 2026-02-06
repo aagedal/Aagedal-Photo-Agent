@@ -53,17 +53,19 @@ enum CoordinateParser {
         let matches = input.matches(of: dmsComponent)
         guard matches.count == 2 else { return nil }
 
+        guard let latDeg = Int(matches[0].1),
+              let latMin = Int(matches[0].2),
+              let latSec = Double(matches[0].3) else { return nil }
         guard let lat = dmsToDecimal(
-            degrees: Int(matches[0].1)!,
-            minutes: Int(matches[0].2)!,
-            seconds: Double(matches[0].3)!,
+            degrees: latDeg, minutes: latMin, seconds: latSec,
             direction: matches[0].4.map { String($0) }
         ) else { return nil }
 
+        guard let lonDeg = Int(matches[1].1),
+              let lonMin = Int(matches[1].2),
+              let lonSec = Double(matches[1].3) else { return nil }
         guard let lon = dmsToDecimal(
-            degrees: Int(matches[1].1)!,
-            minutes: Int(matches[1].2)!,
-            seconds: Double(matches[1].3)!,
+            degrees: lonDeg, minutes: lonMin, seconds: lonSec,
             direction: matches[1].4.map { String($0) }
         ) else { return nil }
 
@@ -78,15 +80,17 @@ enum CoordinateParser {
         let matches = input.matches(of: ddmComponent)
         guard matches.count == 2 else { return nil }
 
+        guard let latDeg = Int(matches[0].1),
+              let latMin = Double(matches[0].2) else { return nil }
         guard let lat = ddmToDecimal(
-            degrees: Int(matches[0].1)!,
-            minutes: Double(matches[0].2)!,
+            degrees: latDeg, minutes: latMin,
             direction: matches[0].3.map { String($0) }
         ) else { return nil }
 
+        guard let lonDeg = Int(matches[1].1),
+              let lonMin = Double(matches[1].2) else { return nil }
         guard let lon = ddmToDecimal(
-            degrees: Int(matches[1].1)!,
-            minutes: Double(matches[1].2)!,
+            degrees: lonDeg, minutes: lonMin,
             direction: matches[1].3.map { String($0) }
         ) else { return nil }
 
