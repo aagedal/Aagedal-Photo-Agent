@@ -33,8 +33,16 @@ final class KnownPeopleService {
 
     // MARK: - In-Memory Cache
 
-    private var database: KnownPeopleDatabase?
+    private var database: KnownPeopleDatabase? {
+        didSet { rebuildPeopleIndex() }
+    }
+    private var peopleIndex: [UUID: Int] = [:]
     private var featurePrintCache: [UUID: VNFeaturePrintObservation] = [:]
+
+    private func rebuildPeopleIndex() {
+        guard let db = database else { peopleIndex = [:]; return }
+        peopleIndex = Dictionary(uniqueKeysWithValues: db.people.enumerated().map { ($1.id, $0) })
+    }
 
     // MARK: - Load / Save
 
@@ -122,9 +130,8 @@ final class KnownPeopleService {
 
     func updatePerson(_ person: KnownPerson) throws {
         var db = loadDatabase()
-        let peopleIdx = Dictionary(uniqueKeysWithValues: db.people.enumerated().map { ($1.id, $0) })
 
-        guard let index = peopleIdx[person.id] else {
+        guard let index = peopleIndex[person.id] else {
             throw NSError(domain: "KnownPeopleService", code: 10,
                           userInfo: [NSLocalizedDescriptionKey: "Person not found: \(person.name)"])
         }
@@ -153,9 +160,8 @@ final class KnownPeopleService {
 
     func addEmbedding(_ embedding: PersonEmbedding, toPersonID personID: UUID) throws {
         var db = loadDatabase()
-        let peopleIdx = Dictionary(uniqueKeysWithValues: db.people.enumerated().map { ($1.id, $0) })
 
-        guard let index = peopleIdx[personID] else {
+        guard let index = peopleIndex[personID] else {
             throw NSError(domain: "KnownPeopleService", code: 10,
                           userInfo: [NSLocalizedDescriptionKey: "Person not found with ID: \(personID)"])
         }
@@ -254,9 +260,8 @@ final class KnownPeopleService {
     /// Add embeddings to a person, skipping any that are duplicates (same featurePrintData).
     func addEmbeddingsDeduped(_ embeddings: [PersonEmbedding], toPersonID personID: UUID) throws {
         var db = loadDatabase()
-        let peopleIdx = Dictionary(uniqueKeysWithValues: db.people.enumerated().map { ($1.id, $0) })
 
-        guard let index = peopleIdx[personID] else {
+        guard let index = peopleIndex[personID] else {
             throw NSError(domain: "KnownPeopleService", code: 10,
                           userInfo: [NSLocalizedDescriptionKey: "Person not found with ID: \(personID)"])
         }
@@ -291,9 +296,8 @@ final class KnownPeopleService {
     /// Deduplicates embeddings to avoid storing the same face data multiple times.
     func mergePeople(sourceID: UUID, intoTargetID: UUID) throws {
         var db = loadDatabase()
-        let peopleIdx = Dictionary(uniqueKeysWithValues: db.people.enumerated().map { ($1.id, $0) })
-        guard let sourceIndex = peopleIdx[sourceID],
-              let targetIndex = peopleIdx[intoTargetID],
+        guard let sourceIndex = peopleIndex[sourceID],
+              let targetIndex = peopleIndex[intoTargetID],
               sourceIndex != targetIndex else {
             return
         }
@@ -327,8 +331,7 @@ final class KnownPeopleService {
 
         // Update timestamp
         var db = loadDatabase()
-        let peopleIdx = Dictionary(uniqueKeysWithValues: db.people.enumerated().map { ($1.id, $0) })
-        if let index = peopleIdx[personID] {
+        if let index = peopleIndex[personID] {
             db.people[index].updatedAt = Date()
             db.lastModified = Date()
             database = db
@@ -339,8 +342,7 @@ final class KnownPeopleService {
     /// Delete a single embedding from a person
     func removeEmbedding(_ embeddingID: UUID, fromPersonID personID: UUID) throws {
         var db = loadDatabase()
-        let peopleIdx = Dictionary(uniqueKeysWithValues: db.people.enumerated().map { ($1.id, $0) })
-        guard let index = peopleIdx[personID] else { return }
+        guard let index = peopleIndex[personID] else { return }
 
         db.people[index].embeddings.removeAll { $0.id == embeddingID }
 
@@ -359,8 +361,7 @@ final class KnownPeopleService {
     /// Get a person by ID
     func person(byID personID: UUID) -> KnownPerson? {
         let db = loadDatabase()
-        let peopleIdx = Dictionary(uniqueKeysWithValues: db.people.enumerated().map { ($1.id, $0) })
-        guard let index = peopleIdx[personID] else { return nil }
+        guard let index = peopleIndex[personID] else { return nil }
         return db.people[index]
     }
 
