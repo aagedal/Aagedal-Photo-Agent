@@ -188,8 +188,10 @@ final class BrowserViewModel {
             selectedImagesCache = []
             return
         }
-        let selection = selectedImageIDs
-        selectedImagesCache = images.filter { selection.contains($0.url) }
+        selectedImagesCache = selectedImageIDs.compactMap { url in
+            guard let index = urlToImageIndex[url] else { return nil }
+            return images[index]
+        }
     }
 
     private func applyFilters(to images: [ImageFile]) -> [ImageFile] {

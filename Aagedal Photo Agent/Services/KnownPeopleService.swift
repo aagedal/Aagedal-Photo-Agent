@@ -37,7 +37,11 @@ final class KnownPeopleService {
         didSet { rebuildPeopleIndex() }
     }
     private var peopleIndex: [UUID: Int] = [:]
-    private var featurePrintCache: [UUID: VNFeaturePrintObservation] = [:]
+    private let featurePrintCache: NSCache<NSUUID, VNFeaturePrintObservation> = {
+        let cache = NSCache<NSUUID, VNFeaturePrintObservation>()
+        cache.countLimit = 1000
+        return cache
+    }()
 
     private func rebuildPeopleIndex() {
         guard let db = database else { peopleIndex = [:]; return }
@@ -367,7 +371,7 @@ final class KnownPeopleService {
 
     func clearDatabase() throws {
         database = KnownPeopleDatabase()
-        featurePrintCache = [:]
+        featurePrintCache.removeAllObjects()
 
         // Remove all files
         if FileManager.default.fileExists(atPath: knownPeopleDirectory.path) {
@@ -397,11 +401,12 @@ final class KnownPeopleService {
     }
 
     private func clearFeaturePrintCache() {
-        featurePrintCache = [:]
+        featurePrintCache.removeAllObjects()
     }
 
     private func getFeaturePrint(for embedding: PersonEmbedding) -> VNFeaturePrintObservation? {
-        if let cached = featurePrintCache[embedding.id] {
+        let key = embedding.id as NSUUID
+        if let cached = featurePrintCache.object(forKey: key) {
             return cached
         }
 
@@ -412,7 +417,7 @@ final class KnownPeopleService {
             return nil
         }
 
-        featurePrintCache[embedding.id] = fp
+        featurePrintCache.setObject(fp, forKey: key)
         return fp
     }
 
