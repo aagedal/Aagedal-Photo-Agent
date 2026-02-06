@@ -105,45 +105,53 @@ final class FullScreenImageCache: @unchecked Sendable {
     // MARK: - Shared Image Loading
 
     /// Load an image downsampled to the given max pixel size.
-    /// For images already near the target size, loads at full resolution (faster).
+    /// Always uses CGImageSourceCreateThumbnailAtIndex to ensure EXIF orientation is applied.
     nonisolated static func loadDownsampled(from url: URL, maxPixelSize: CGFloat) -> CGImage? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
 
-        let needsDownsample: Bool
+        // Determine target size: downsample if significantly larger, otherwise use actual size
+        // (still go through the thumbnail API so orientation transform is always applied)
+        let targetSize: CGFloat
         if let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
            let pw = props[kCGImagePropertyPixelWidth] as? Int,
            let ph = props[kCGImagePropertyPixelHeight] as? Int {
-            let longest = max(pw, ph)
-            needsDownsample = CGFloat(longest) > maxPixelSize * 1.5
+            let longestSide = CGFloat(max(pw, ph))
+            targetSize = longestSide > maxPixelSize * 1.5 ? maxPixelSize : longestSide
         } else {
-            needsDownsample = true
-        }
-
-        if needsDownsample {
-            let options: [CFString: Any] = [
-                kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
-                kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceCreateThumbnailWithTransform: true,
-                kCGImageSourceShouldCacheImmediately: true,
-            ]
-            return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+            targetSize = maxPixelSize
         }
 
         let options: [CFString: Any] = [
-            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: targetSize,
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
         ]
-        return CGImageSourceCreateImageAtIndex(source, 0, options as CFDictionary)
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
     }
 
     /// Load an image at full source resolution, preserving color space and bit depth.
+    /// Uses CGImageSourceCreateThumbnailAtIndex to ensure EXIF orientation is applied.
     nonisolated static func loadFullResolution(from url: URL) -> CGImage? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+
+        // Read actual pixel dimensions to use as maxPixelSize (no downsampling, but orientation IS applied)
+        let maxDimension: CGFloat
+        if let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+           let pw = props[kCGImagePropertyPixelWidth] as? Int,
+           let ph = props[kCGImagePropertyPixelHeight] as? Int {
+            maxDimension = CGFloat(max(pw, ph))
+        } else {
+            maxDimension = 32000 // Safe fallback
+        }
+
         let options: [CFString: Any] = [
-            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxDimension,
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
         ]
-        return CGImageSourceCreateImageAtIndex(source, 0, options as CFDictionary)
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
     }
 
     /// Extract the embedded JPEG preview from a RAW file.
@@ -181,10 +189,11 @@ final class FullScreenImageCache: @unchecked Sendable {
                 }
             }
             let options: [CFString: Any] = [
-                kCGImageSourceShouldCacheImmediately: true,
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
                 kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceShouldCacheImmediately: true,
             ]
-            if let cgImage = CGImageSourceCreateImageAtIndex(source, 1, options as CFDictionary) {
+            if let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 1, options as CFDictionary) {
                 cacheLogger.info("\(filename): Using secondary image \(cgImage.width)x\(cgImage.height)")
                 return cgImage
             }

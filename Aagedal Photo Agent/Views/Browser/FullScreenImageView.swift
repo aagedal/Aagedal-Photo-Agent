@@ -62,6 +62,7 @@ fileprivate class ZoomController {
     var scrollZoomAction: ((CGFloat, CGPoint) -> Void)?
     var toggleUIAction: (() -> Void)?
     var toggleScalingAction: (() -> Void)?
+    var toggleFaceRectanglesAction: (() -> Void)?
 
     func toggleZoom(at location: CGPoint) {
         toggleZoomAction?(location)
@@ -78,6 +79,10 @@ fileprivate class ZoomController {
     func toggleScaling() {
         toggleScalingAction?()
     }
+
+    func toggleFaceRectangles() {
+        toggleFaceRectanglesAction?()
+    }
 }
 
 // MARK: - Custom NSWindow that intercepts Escape and Space
@@ -90,6 +95,7 @@ private class FullScreenWindow: NSWindow {
     var onScrollZoom: ((CGFloat, CGPoint) -> Void)?
     var onToggleUI: (() -> Void)?
     var onToggleScaling: (() -> Void)?
+    var onToggleFaceRectangles: (() -> Void)?
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
@@ -127,6 +133,12 @@ private class FullScreenWindow: NSWindow {
         // S key (keyCode 1) → toggle scaling filter
         if keyCode == 1 && !hasCmd && !hasOption {
             onToggleScaling?()
+            return
+        }
+
+        // G key (keyCode 5) → toggle face rectangles
+        if keyCode == 5 && !hasCmd && !hasOption {
+            onToggleFaceRectangles?()
             return
         }
 
@@ -183,6 +195,9 @@ struct FullScreenImageView: View {
     // Image cache and prefetch
     @State private var imageCache = FullScreenImageCache()
     @State private var lastNavigationIndex: Int?
+
+    // Face overlay state
+    @State private var showFaceRectangles: Bool = false
 
     // Zoom state
     @State private var zoomScale: CGFloat = 1.0
@@ -339,6 +354,13 @@ struct FullScreenImageView: View {
                             )
                             toggleZoom(at: location)
                         }
+
+                    // Face rectangles overlay (between image and UI overlays)
+                    if showFaceRectangles && !hideOverlays {
+                        faceRectanglesOverlay(imageSize: currentImage.size, containerSize: geometry.size)
+                            .scaleEffect(zoomScale)
+                            .offset(offset)
+                    }
                 }
 
                 if !hideOverlays {
@@ -368,7 +390,7 @@ struct FullScreenImageView: View {
                             .padding(.bottom, 20)
                         }
 
-                        // Bottom-center: filename + zoom indicator
+                        // Bottom-center: filename + indicators
                         VStack {
                             Spacer()
                             HStack(spacing: 12) {
@@ -376,8 +398,18 @@ struct FullScreenImageView: View {
                                     .font(.caption)
                                     .foregroundStyle(.white)
 
-                                if abs(zoomScale - 1.0) > 0.01 {
+                                if isZoomedTo100 {
+                                    Text("1:1")
+                                        .font(.caption)
+                                        .foregroundStyle(.white.opacity(0.7))
+                                } else if abs(zoomScale - 1.0) > 0.01 {
                                     Text("\(Int(zoomScale * 100))%")
+                                        .font(.caption)
+                                        .foregroundStyle(.white.opacity(0.7))
+                                }
+
+                                if showFaceRectangles {
+                                    Text("Faces")
                                         .font(.caption)
                                         .foregroundStyle(.white.opacity(0.7))
                                 }
@@ -403,6 +435,8 @@ struct FullScreenImageView: View {
         .focusEffectDisabled()
         .onAppear {
             isFocused = true
+            // Initialize face rectangles from context (visible by default when opened from face view)
+            showFaceRectangles = viewModel.fullScreenFaceContext != nil
             // Register actions with the controller
             zoomController?.toggleZoomAction = { [self] location in
                 toggleZoom(at: location)
@@ -415,6 +449,9 @@ struct FullScreenImageView: View {
             }
             zoomController?.toggleScalingAction = { [self] in
                 useNearestNeighbor.toggle()
+            }
+            zoomController?.toggleFaceRectanglesAction = { [self] in
+                showFaceRectangles.toggle()
             }
         }
         .onDisappear {
@@ -545,11 +582,16 @@ struct FullScreenImageView: View {
         }
 
         // Read source pixel dimensions (cheap metadata-only, no pixel decode)
+        // EXIF orientations 5-8 swap width/height after transform
         if let source = CGImageSourceCreateWithURL(url as CFURL, nil),
            let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
            let pw = props[kCGImagePropertyPixelWidth] as? Int,
            let ph = props[kCGImagePropertyPixelHeight] as? Int {
-            sourcePixelSize = CGSize(width: CGFloat(pw), height: CGFloat(ph))
+            let orientation = props[kCGImagePropertyOrientation] as? Int ?? 1
+            let swapped = orientation >= 5 && orientation <= 8
+            sourcePixelSize = swapped
+                ? CGSize(width: CGFloat(ph), height: CGFloat(pw))
+                : CGSize(width: CGFloat(pw), height: CGFloat(ph))
         } else {
             sourcePixelSize = nil
         }
@@ -704,6 +746,67 @@ struct FullScreenImageView: View {
         return makeLoadedImage(from: cgImage)
     }
 
+    // MARK: - Face Rectangles Overlay
+
+    /// Generate a distinct color for a face group based on its UUID
+    private func colorForGroup(_ groupID: UUID?) -> Color {
+        guard let groupID else { return Color.gray }
+        let hue = Double(groupID.uuid.0 ^ groupID.uuid.1) / 256.0
+        return Color(hue: hue, saturation: 0.8, brightness: 0.9)
+    }
+
+    /// Calculate where the image content is displayed within a container using aspect-fit
+    private func calculateImageDisplayRect(imageSize: CGSize, in containerSize: CGSize) -> CGRect {
+        guard imageSize.width > 0, imageSize.height > 0,
+              containerSize.width > 0, containerSize.height > 0 else {
+            return .zero
+        }
+        let imageAspect = imageSize.width / imageSize.height
+        let containerAspect = containerSize.width / containerSize.height
+        if imageAspect > containerAspect {
+            let displayHeight = containerSize.width / imageAspect
+            let yOffset = (containerSize.height - displayHeight) / 2
+            return CGRect(x: 0, y: yOffset, width: containerSize.width, height: displayHeight)
+        } else {
+            let displayWidth = containerSize.height * imageAspect
+            let xOffset = (containerSize.width - displayWidth) / 2
+            return CGRect(x: xOffset, y: 0, width: displayWidth, height: containerSize.height)
+        }
+    }
+
+    /// Convert Vision face rect (normalized, bottom-left origin) to display rect (pixels, top-left origin)
+    private func convertFaceRect(_ faceRect: CGRect, toDisplayIn imageDisplayRect: CGRect) -> CGRect {
+        let displayX = imageDisplayRect.minX + faceRect.origin.x * imageDisplayRect.width
+        let displayY = imageDisplayRect.minY + (1.0 - faceRect.origin.y - faceRect.height) * imageDisplayRect.height
+        let displayW = faceRect.width * imageDisplayRect.width
+        let displayH = faceRect.height * imageDisplayRect.height
+        return CGRect(x: displayX, y: displayY, width: displayW, height: displayH)
+    }
+
+    @ViewBuilder
+    private func faceRectanglesOverlay(imageSize: CGSize, containerSize: CGSize) -> some View {
+        let faceContext = viewModel.fullScreenFaceContext
+        let highlightedFaceID = faceContext?.highlightedFaceID
+        let imageDisplayRect = calculateImageDisplayRect(imageSize: imageSize, in: containerSize)
+
+        if let faceVM = faceContext?.faceRecognitionViewModel,
+           let url = currentImageFile?.url {
+            let facesInImage = faceVM.faceData?.faces.filter { $0.imageURL == url } ?? []
+            Canvas { context, _ in
+                for face in facesInImage {
+                    let isHighlighted = face.id == highlightedFaceID
+                    let faceDisplayRect = convertFaceRect(face.faceRect, toDisplayIn: imageDisplayRect)
+                    let groupColor = colorForGroup(face.groupID)
+                    let lineWidth: CGFloat = isHighlighted ? 4 : 2
+                    let opacity: CGFloat = isHighlighted ? 1.0 : 0.5
+                    let path = Path(roundedRect: faceDisplayRect, cornerRadius: 4)
+                    context.stroke(path, with: .color(groupColor.opacity(opacity)), lineWidth: lineWidth)
+                }
+            }
+            .allowsHitTesting(false)
+        }
+    }
+
     private func colorLabelOverlay(for file: ImageFile) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             if showLabelPicker {
@@ -852,6 +955,9 @@ struct FullScreenPresenter: ViewModifier {
         window.onToggleScaling = { [weak controller] in
             controller?.toggleScaling()
         }
+        window.onToggleFaceRectangles = { [weak controller] in
+            controller?.toggleFaceRectangles()
+        }
 
         let hostingView = NSHostingView(
             rootView: FullScreenImageView(viewModel: viewModel, zoomController: controller)
@@ -886,6 +992,7 @@ struct FullScreenPresenter: ViewModifier {
         fullScreenWindow?.orderOut(nil)
         fullScreenWindow = nil
         zoomController = nil
+        viewModel.fullScreenFaceContext = nil
     }
 }
 

@@ -18,6 +18,13 @@ final class BrowserViewModel {
     var currentFolderName: String?
     var isLoading = false
     var isFullScreen = false
+
+    struct FullScreenFaceContext {
+        let faceRecognitionViewModel: FaceRecognitionViewModel
+        let highlightedFaceID: UUID?
+    }
+
+    @ObservationIgnored var fullScreenFaceContext: FullScreenFaceContext?
     var errorMessage: String?
     var sortOrder: SortOrder = .name {
         didSet { rebuildSortedCache() }

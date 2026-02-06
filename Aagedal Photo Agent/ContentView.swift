@@ -211,6 +211,14 @@ struct ContentView: View {
                     onPhotosDeleted: { trashedURLs in
                         browserViewModel.images.removeAll { trashedURLs.contains($0.url) }
                         browserViewModel.selectedImageIDs.subtract(trashedURLs)
+                    },
+                    onOpenFullScreen: { imageURL, highlightedFaceID in
+                        browserViewModel.selectedImageIDs = [imageURL]
+                        browserViewModel.fullScreenFaceContext = BrowserViewModel.FullScreenFaceContext(
+                            faceRecognitionViewModel: faceRecognitionViewModel,
+                            highlightedFaceID: highlightedFaceID
+                        )
+                        browserViewModel.isFullScreen = true
                     }
                 )
             case .peopleDatabase:
