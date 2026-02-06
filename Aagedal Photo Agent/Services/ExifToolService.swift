@@ -204,8 +204,24 @@ final class ExifToolService {
         }
     }
 
+    /// Safety limit for accumulated output (10 MB). If ExifTool sends a malformed
+    /// response without a {ready} sentinel, this prevents unbounded memory growth.
+    private let maxAccumulatedOutputSize = 10 * 1024 * 1024
+
     private func handleOutput(_ str: String) {
         accumulatedOutput += str
+
+        // Guard against unbounded growth from a missing sentinel
+        if accumulatedOutput.utf8.count > maxAccumulatedOutputSize {
+            exifToolLog.error("ExifTool output exceeded \(self.maxAccumulatedOutputSize) bytes without sentinel — restarting")
+            let overflow = accumulatedOutput
+            accumulatedOutput = ""
+            pendingContinuation?.resume(returning: overflow)
+            pendingContinuation = nil
+            isExecuting = false
+            stop()
+            return
+        }
 
         // Check for {ready} sentinel — ExifTool sends "{readyNNN}\n" after each command
         if let readyRange = accumulatedOutput.range(of: "{ready", options: .backwards) {
