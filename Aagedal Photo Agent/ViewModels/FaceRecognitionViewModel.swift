@@ -111,6 +111,7 @@ final class FaceRecognitionViewModel {
         return dataMode != recognitionMode
     }
 
+    @ObservationIgnored private var activeScanTask: Task<Void, Never>?
     private let detectionService = FaceDetectionService()
     private let storageService = FaceDataStorageService()
     private let exifToolService: ExifToolService
@@ -228,7 +229,7 @@ final class FaceRecognitionViewModel {
         errorMessage = nil
         scanningGroups = []
 
-        Task(priority: .utility) {
+        activeScanTask = Task(priority: .utility) {
             // Load existing data for incremental scan
             let existingData = forceFullScan ? nil : storageService.loadFaceData(for: folderURL)
 
@@ -401,6 +402,11 @@ final class FaceRecognitionViewModel {
                 var pending = 0
 
                 for url in toScan {
+                    if Task.isCancelled {
+                        taskGroup.cancelAll()
+                        break
+                    }
+
                     if pending >= 4 {
                         if let (scannedURL, results) = await taskGroup.next() {
                             await processBatch(scannedURL: scannedURL, results: results)
@@ -423,12 +429,14 @@ final class FaceRecognitionViewModel {
                 return (allFaces, allGroups, scannedFiles)
             }
 
+            let isCancelled = Task.isCancelled
+
             let folderData = FolderFaceData(
                 folderURL: folderURL,
                 faces: allFaces,
                 groups: allGroups,
                 lastScanDate: Date(),
-                scanComplete: true,
+                scanComplete: !isCancelled,
                 scannedFiles: scannedFiles,
                 recognitionMode: config.recognitionMode
             )
@@ -444,12 +452,15 @@ final class FaceRecognitionViewModel {
             await MainActor.run {
                 self.faceData = folderData
                 self.isScanning = false
-                self.scanComplete = true
+                self.scanComplete = !isCancelled
                 self.scanProgress = ""
                 self.scanningGroups = []
+                self.activeScanTask = nil
                 self.loadThumbnails(for: folderData)
                 self.updateMergeSuggestions()
             }
+
+            guard !isCancelled else { return }
 
             // Auto-match known people if Always On mode
             let modeRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.knownPeopleMode) ?? "off"
@@ -458,6 +469,11 @@ final class FaceRecognitionViewModel {
                 await self.matchKnownPeopleIntegrated()
             }
         }
+    }
+
+    func cancelScan() {
+        activeScanTask?.cancel()
+        activeScanTask = nil
     }
 
     // MARK: - Integrated Known People Matching

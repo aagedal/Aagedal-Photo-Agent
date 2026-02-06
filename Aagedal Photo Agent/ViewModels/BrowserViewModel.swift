@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import os
 
 @Observable
 final class BrowserViewModel {
@@ -60,13 +61,13 @@ final class BrowserViewModel {
         }
     }
     var minimumStarRating: StarRating = .none {
-        didSet { rebuildVisibleCache() }
+        didSet { scheduleFilterRebuild() }
     }
     var selectedColorLabels: Set<ColorLabel> = [] {
-        didSet { rebuildVisibleCache() }
+        didSet { scheduleFilterRebuild() }
     }
     var personShownFilter: PersonShownFilter = .any {
-        didSet { rebuildVisibleCache() }
+        didSet { scheduleFilterRebuild() }
     }
 
     let fileSystemService = FileSystemService()
@@ -75,8 +76,10 @@ final class BrowserViewModel {
     private let sidecarService = MetadataSidecarService()
     private let xmpSidecarService = XMPSidecarService()
 
+    nonisolated(unsafe) private let logger = Logger(subsystem: "com.aagedal.photo-agent", category: "BrowserViewModel")
     @ObservationIgnored var onImagesDeleted: ((Set<URL>) -> Void)?
     @ObservationIgnored private var searchDebounceTask: Task<Void, Never>?
+    @ObservationIgnored private var filterDebounceTask: Task<Void, Never>?
     @ObservationIgnored private var isAutoRefreshing = false
     @ObservationIgnored private var isMetadataLoading = false
     @ObservationIgnored private var pendingMetadataURLs: Set<URL> = []
@@ -147,6 +150,15 @@ final class BrowserViewModel {
         sortedImages = sorted
         urlToSortedIndex = Dictionary(uniqueKeysWithValues: sorted.enumerated().map { ($1.url, $0) })
         rebuildVisibleCache()
+    }
+
+    private func scheduleFilterRebuild() {
+        filterDebounceTask?.cancel()
+        filterDebounceTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(50))
+            guard !Task.isCancelled else { return }
+            self?.rebuildVisibleCache()
+        }
     }
 
     private func rebuildVisibleCache() {
@@ -382,7 +394,7 @@ final class BrowserViewModel {
                     }
                 }
             } catch {
-                // Continue with next batch
+                logger.warning("Batch metadata load failed (batch at offset \(batchStart)): \(error.localizedDescription)")
             }
         }
     }
@@ -431,7 +443,7 @@ final class BrowserViewModel {
                     }
                 }
             } catch {
-                // Continue with next batch
+                logger.warning("Incremental metadata load failed: \(error.localizedDescription)")
             }
         }
     }
