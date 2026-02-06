@@ -115,8 +115,7 @@ struct MetadataPanel: View {
 
     private func openVariableReference(for target: VariableInsertTarget) {
         variableInsertTarget = target
-        if fieldSelections[target.focusKey] == nil,
-           let editor = NSApp.keyWindow?.firstResponder as? NSTextView {
+        if let editor = NSApp.keyWindow?.firstResponder as? NSTextView {
             fieldSelections[target.focusKey] = editor.selectedRange()
         }
         isShowingVariableReference = true
@@ -307,14 +306,16 @@ struct MetadataPanel: View {
             return .handled
         }
         .onReceive(NotificationCenter.default.publisher(for: NSTextView.didChangeSelectionNotification)) { notification in
-            guard let key = focusedField,
+            guard !isShowingVariableReference,
+                  let key = focusedField,
                   let editor = notification.object as? NSTextView else {
                 return
             }
             fieldSelections[key] = editor.selectedRange()
         }
         .onChange(of: focusedField) { _, newValue in
-            guard let key = newValue,
+            guard !isShowingVariableReference,
+                  let key = newValue,
                   let editor = NSApp.keyWindow?.firstResponder as? NSTextView else {
                 return
             }

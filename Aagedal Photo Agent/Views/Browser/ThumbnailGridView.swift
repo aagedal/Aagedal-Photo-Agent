@@ -6,6 +6,7 @@ struct ThumbnailGridView: View {
     @Bindable var viewModel: BrowserViewModel
     @FocusState private var isGridFocused: Bool
     @State private var gridWidth: CGFloat = 0
+    @State private var dragCoordinator = ThumbnailDragCoordinator()
 
     private let columns = [
         GridItem(.adaptive(minimum: 190, maximum: 250), spacing: 8)
@@ -40,12 +41,16 @@ struct ThumbnailGridView: View {
                 .onAppear {
                     gridWidth = geometry.size.width
                     scrollToSelectionIfNeeded(proxy)
+                    setupDragCoordinator()
                 }
                 .onChange(of: geometry.size.width) { _, newWidth in
                     gridWidth = newWidth
                 }
-                .onChange(of: viewModel.lastClickedImageURL) { _, _ in
+                .onChange(of: viewModel.lastClickedImageURL) { _, newValue in
                     scrollToSelectionIfNeeded(proxy)
+                    if newValue != nil {
+                        isGridFocused = true
+                    }
                 }
             }
         }
@@ -114,30 +119,65 @@ struct ThumbnailGridView: View {
             .overlay(
                 ThumbnailDragSource(
                     itemURL: image.url,
-                    selectionProvider: {
-                        viewModel.visibleImages
-                            .filter { viewModel.selectedImageIDs.contains($0.url) }
-                            .map(\.url)
-                    },
-                    onClick: { clickCount, modifiers in
-                        handleThumbnailClick(for: image, clickCount: clickCount, modifiers: modifiers)
-                    },
-                    onDragStart: { urls in
-                        if viewModel.sortOrder != .manual {
-                            viewModel.initializeManualOrder(from: viewModel.sortedImages)
-                            viewModel.sortOrder = .manual
-                        }
-                        viewModel.draggedImageURLs = Set(urls)
-                    },
-                    onDragEnd: {
-                        viewModel.draggedImageURLs = []
-                    }
+                    coordinator: dragCoordinator
                 )
             )
             .onDrop(of: [.fileURL], delegate: ImageReorderDelegate(
                 targetURL: image.url,
                 viewModel: viewModel
             ))
+    }
+
+    private func setupDragCoordinator() {
+        let vm = viewModel
+        dragCoordinator.selectionProvider = {
+            vm.visibleImages
+                .filter { vm.selectedImageIDs.contains($0.url) }
+                .map(\.url)
+        }
+        dragCoordinator.onClick = { url, clickCount, modifiers in
+            if clickCount == 2 {
+                vm.selectedImageIDs = [url]
+                vm.lastClickedImageURL = url
+                vm.isFullScreen = true
+            } else if modifiers.contains(.command) {
+                var updated = vm.selectedImageIDs
+                if updated.contains(url) {
+                    updated.remove(url)
+                } else {
+                    updated.insert(url)
+                }
+                vm.selectedImageIDs = updated
+                vm.lastClickedImageURL = url
+            } else if modifiers.contains(.shift) {
+                let anchor = vm.lastClickedImageURL ?? vm.selectedImageIDs.first
+                if let anchor,
+                   let anchorIndex = vm.urlToVisibleIndex[anchor],
+                   let currentIndex = vm.urlToVisibleIndex[url] {
+                    let range = min(anchorIndex, currentIndex)...max(anchorIndex, currentIndex)
+                    var updated = vm.selectedImageIDs
+                    updated.reserveCapacity(updated.count + range.count)
+                    updated.formUnion(vm.visibleImages[range].lazy.map(\.url))
+                    vm.selectedImageIDs = updated
+                }
+            } else {
+                vm.selectedImageIDs = [url]
+                vm.lastClickedImageURL = url
+            }
+        }
+        dragCoordinator.onDragStart = { urls in
+            if vm.sortOrder != .manual {
+                vm.initializeManualOrder(from: vm.sortedImages)
+                vm.sortOrder = .manual
+            }
+            vm.draggedImageURLs = Set(urls)
+        }
+        dragCoordinator.onDragEnd = {
+            vm.draggedImageURLs = []
+        }
+        dragCoordinator.thumbnailProvider = { url in
+            vm.thumbnailService.thumbnail(for: url)
+        }
     }
 
     /// Check if a text field currently has keyboard focus
@@ -150,58 +190,6 @@ struct ThumbnailGridView: View {
         return false
     }
 
-    private func handleTap(image: ImageFile, modifiers: EventModifiers) {
-        if modifiers.contains(.command) {
-            // CMD-click: Toggle individual selection (full assignment for reliable change detection)
-            var updated = viewModel.selectedImageIDs
-            if updated.contains(image.url) {
-                updated.remove(image.url)
-            } else {
-                updated.insert(image.url)
-            }
-            viewModel.selectedImageIDs = updated
-            viewModel.lastClickedImageURL = image.url
-        } else if modifiers.contains(.shift) {
-            // SHIFT-click: Range selection from last clicked anchor
-            let anchor = viewModel.lastClickedImageURL ?? viewModel.selectedImageIDs.first
-            if let anchor,
-               let anchorIndex = viewModel.urlToVisibleIndex[anchor],
-               let currentIndex = viewModel.urlToVisibleIndex[image.url] {
-                let range = min(anchorIndex, currentIndex)...max(anchorIndex, currentIndex)
-                let sorted = viewModel.visibleImages
-                var updated = viewModel.selectedImageIDs
-                updated.reserveCapacity(updated.count + range.count)
-                updated.formUnion(sorted[range].lazy.map { $0.url })
-                viewModel.selectedImageIDs = updated
-            }
-            // Don't update lastClickedImageURL — anchor stays for subsequent shift-clicks
-        } else {
-            // Regular click: Single selection
-            viewModel.selectedImageIDs = [image.url]
-            viewModel.lastClickedImageURL = image.url
-        }
-    }
-
-    private func handleThumbnailClick(for image: ImageFile, clickCount: Int, modifiers: NSEvent.ModifierFlags) {
-        if clickCount == 2 {
-            viewModel.selectedImageIDs = [image.url]
-            viewModel.lastClickedImageURL = image.url
-            viewModel.isFullScreen = true
-        } else {
-            if modifiers.contains(.command) {
-                handleTap(image: image, modifiers: .command)
-            } else if modifiers.contains(.shift) {
-                handleTap(image: image, modifiers: .shift)
-            } else {
-                handleTap(image: image, modifiers: [])
-            }
-        }
-        if isTextFieldActive() {
-            NSApp.keyWindow?.makeFirstResponder(nil)
-        }
-        isGridFocused = true
-    }
-
     private func scrollToSelectionIfNeeded(_ proxy: ScrollViewProxy) {
         guard let target = viewModel.lastClickedImageURL,
               viewModel.urlToVisibleIndex[target] != nil else { return }
@@ -212,39 +200,38 @@ struct ThumbnailGridView: View {
 
 }
 
+// MARK: - Drag Coordinator
+
+private final class ThumbnailDragCoordinator {
+    var selectionProvider: () -> [URL] = { [] }
+    var onClick: (URL, Int, NSEvent.ModifierFlags) -> Void = { _, _, _ in }
+    var onDragStart: ([URL]) -> Void = { _ in }
+    var onDragEnd: () -> Void = {}
+    var thumbnailProvider: (URL) -> NSImage? = { _ in nil }
+}
+
 // MARK: - Drag Source (multi-file export)
 
 private struct ThumbnailDragSource: NSViewRepresentable {
     let itemURL: URL
-    let selectionProvider: () -> [URL]
-    let onClick: (Int, NSEvent.ModifierFlags) -> Void
-    let onDragStart: ([URL]) -> Void
-    let onDragEnd: () -> Void
+    let coordinator: ThumbnailDragCoordinator
 
     func makeNSView(context: Context) -> DragSourceView {
         let view = DragSourceView()
         view.itemURL = itemURL
-        view.selectionProvider = selectionProvider
-        view.onClick = onClick
-        view.onDragStart = onDragStart
-        view.onDragEnd = onDragEnd
+        view.coordinator = coordinator
         return view
     }
 
     func updateNSView(_ nsView: DragSourceView, context: Context) {
         nsView.itemURL = itemURL
-        nsView.selectionProvider = selectionProvider
-        nsView.onClick = onClick
-        nsView.onDragStart = onDragStart
-        nsView.onDragEnd = onDragEnd
     }
 
     final class DragSourceView: NSView, NSDraggingSource {
         var itemURL: URL?
-        var selectionProvider: (() -> [URL])?
-        var onClick: ((Int, NSEvent.ModifierFlags) -> Void)?
-        var onDragStart: (([URL]) -> Void)?
-        var onDragEnd: (() -> Void)?
+        var coordinator: ThumbnailDragCoordinator?
+
+        private static var extensionIconCache: [String: NSImage] = [:]
 
         private var isDragging = false
         private var mouseDownLocation: NSPoint?
@@ -266,8 +253,8 @@ private struct ThumbnailDragSource: NSViewRepresentable {
                 return
             }
 
-            guard let itemURL else { return }
-            let selection = selectionProvider?() ?? []
+            guard let itemURL, let coordinator else { return }
+            let selection = coordinator.selectionProvider()
             let urls: [URL]
             if selection.contains(itemURL) && selection.count > 1 {
                 urls = selection
@@ -276,7 +263,7 @@ private struct ThumbnailDragSource: NSViewRepresentable {
             }
 
             isDragging = true
-            onDragStart?(urls)
+            coordinator.onDragStart(urls)
 
             let items = makeDraggingItems(for: urls)
             beginDraggingSession(with: items, event: event, source: self)
@@ -284,8 +271,13 @@ private struct ThumbnailDragSource: NSViewRepresentable {
 
         override func mouseUp(with event: NSEvent) {
             mouseDownLocation = nil
-            if !isDragging {
-                onClick?(event.clickCount, event.modifierFlags)
+            if !isDragging, let itemURL {
+                // Dismiss any active text field before handling click
+                if let responder = window?.firstResponder,
+                   responder is NSText || responder is NSTextView {
+                    window?.makeFirstResponder(nil)
+                }
+                coordinator?.onClick(itemURL, event.clickCount, event.modifierFlags)
             }
             isDragging = false
         }
@@ -304,25 +296,44 @@ private struct ThumbnailDragSource: NSViewRepresentable {
 
         func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
             isDragging = false
-            onDragEnd?()
+            coordinator?.onDragEnd()
         }
 
         private func makeDraggingItems(for urls: [URL]) -> [NSDraggingItem] {
             var items: [NSDraggingItem] = []
             let baseFrame = bounds
+            let maxVisualItems = 5
 
             for (index, url) in urls.enumerated() {
                 let item = NSDraggingItem(pasteboardWriter: url as NSURL)
-                let icon = NSWorkspace.shared.icon(forFile: url.path)
-                icon.size = NSSize(width: 64, height: 64)
 
-                let offset = CGFloat(index) * 6
-                let frame = baseFrame.offsetBy(dx: offset, dy: -offset)
-                item.setDraggingFrame(frame, contents: icon)
+                if index < maxVisualItems {
+                    let icon = dragIcon(for: url)
+                    icon.size = NSSize(width: 64, height: 64)
+                    let offset = CGFloat(index) * 6
+                    let frame = baseFrame.offsetBy(dx: offset, dy: -offset)
+                    item.setDraggingFrame(frame, contents: icon)
+                }
+
                 items.append(item)
             }
 
             return items
+        }
+
+        private func dragIcon(for url: URL) -> NSImage {
+            // Try cached thumbnail first (O(1) NSCache lookup)
+            if let thumbnail = coordinator?.thumbnailProvider(url) {
+                return thumbnail
+            }
+            // Fall back to cached per-extension icon
+            let ext = url.pathExtension.lowercased()
+            if let cached = DragSourceView.extensionIconCache[ext] {
+                return cached
+            }
+            let icon = NSWorkspace.shared.icon(forFile: url.path)
+            DragSourceView.extensionIconCache[ext] = icon
+            return icon
         }
     }
 }

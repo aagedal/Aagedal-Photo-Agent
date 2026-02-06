@@ -6,7 +6,7 @@ nonisolated(unsafe) private let cacheLogger = Logger(subsystem: "com.aagedal.pho
 /// LRU image cache with directional prefetching for full-screen image navigation.
 /// Holds up to 7 screen-resolution images (~280MB). NSCache auto-evicts under memory pressure.
 final class FullScreenImageCache: @unchecked Sendable {
-    nonisolated(unsafe) private let cache = NSCache<NSURL, NSImage>()
+    nonisolated(unsafe) private let cache = NSCache<NSURL, CGImage>()
     nonisolated(unsafe) private var prefetchTasks: [URL: Task<Void, Never>] = [:]
     private let lock = NSLock()
 
@@ -16,11 +16,11 @@ final class FullScreenImageCache: @unchecked Sendable {
 
     // MARK: - Cache Access
 
-    nonisolated func cachedImage(for url: URL) -> NSImage? {
+    nonisolated func cachedImage(for url: URL) -> CGImage? {
         cache.object(forKey: url as NSURL)
     }
 
-    nonisolated func store(_ image: NSImage, for url: URL) {
+    nonisolated func store(_ image: CGImage, for url: URL) {
         cache.setObject(image, forKey: url as NSURL)
     }
 
@@ -76,7 +76,7 @@ final class FullScreenImageCache: @unchecked Sendable {
                 }
 
                 self.store(image, for: url)
-                cacheLogger.info("Prefetched \(filename) (\(image.size.width)x\(image.size.height))")
+                cacheLogger.info("Prefetched \(filename) (\(image.width)x\(image.height))")
                 self.removePrefetchTask(for: url)
             }
 
@@ -106,7 +106,7 @@ final class FullScreenImageCache: @unchecked Sendable {
 
     /// Load an image downsampled to the given max pixel size.
     /// For images already near the target size, loads at full resolution (faster).
-    nonisolated static func loadDownsampled(from url: URL, maxPixelSize: CGFloat) -> NSImage? {
+    nonisolated static func loadDownsampled(from url: URL, maxPixelSize: CGFloat) -> CGImage? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
 
         let needsDownsample: Bool
@@ -126,29 +126,28 @@ final class FullScreenImageCache: @unchecked Sendable {
                 kCGImageSourceCreateThumbnailWithTransform: true,
                 kCGImageSourceShouldCacheImmediately: true,
             ]
-            if let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) {
-                return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
-            }
+            return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
         }
 
-        return NSImage(contentsOf: url)
+        let options: [CFString: Any] = [
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+        ]
+        return CGImageSourceCreateImageAtIndex(source, 0, options as CFDictionary)
     }
 
     /// Load an image at full source resolution, preserving color space and bit depth.
-    nonisolated static func loadFullResolution(from url: URL) -> NSImage? {
+    nonisolated static func loadFullResolution(from url: URL) -> CGImage? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
         let options: [CFString: Any] = [
             kCGImageSourceShouldCacheImmediately: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
         ]
-        guard let cgImage = CGImageSourceCreateImageAtIndex(source, 0, options as CFDictionary) else {
-            return NSImage(contentsOf: url)
-        }
-        return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+        return CGImageSourceCreateImageAtIndex(source, 0, options as CFDictionary)
     }
 
     /// Extract the embedded JPEG preview from a RAW file.
-    nonisolated static func extractEmbeddedPreview(from url: URL) -> NSImage? {
+    nonisolated static func extractEmbeddedPreview(from url: URL) -> CGImage? {
         let filename = url.lastPathComponent
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
             cacheLogger.warning("\(filename): CGImageSourceCreateWithURL failed")
@@ -167,7 +166,7 @@ final class FullScreenImageCache: @unchecked Sendable {
         ]
         if let cgThumb = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbOptions as CFDictionary) {
             cacheLogger.info("\(filename): Got embedded thumbnail \(cgThumb.width)x\(cgThumb.height)")
-            return NSImage(cgImage: cgThumb, size: NSSize(width: cgThumb.width, height: cgThumb.height))
+            return cgThumb
         } else {
             cacheLogger.info("\(filename): No embedded thumbnail at index 0")
         }
@@ -181,9 +180,13 @@ final class FullScreenImageCache: @unchecked Sendable {
                     cacheLogger.info("\(filename): Image at index \(i): \(w)x\(h)")
                 }
             }
-            if let cgImage = CGImageSourceCreateImageAtIndex(source, 1, nil) {
+            let options: [CFString: Any] = [
+                kCGImageSourceShouldCacheImmediately: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+            ]
+            if let cgImage = CGImageSourceCreateImageAtIndex(source, 1, options as CFDictionary) {
                 cacheLogger.info("\(filename): Using secondary image \(cgImage.width)x\(cgImage.height)")
-                return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+                return cgImage
             }
         }
 
