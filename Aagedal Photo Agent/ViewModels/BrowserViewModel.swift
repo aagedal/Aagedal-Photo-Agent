@@ -889,6 +889,116 @@ final class BrowserViewModel {
         onImagesDeleted?(urlsToDelete)
     }
 
+    // MARK: - Move to Subfolder
+
+    func promptAddSelectedImagesToSubfolder() {
+        guard let folderURL = currentFolderURL else { return }
+        guard !selectedImageIDs.isEmpty else { return }
+
+        let alert = NSAlert()
+        alert.messageText = "Add to Subfolder"
+        alert.informativeText = "Enter a name for the subfolder."
+
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        input.placeholderString = "Subfolder name"
+        alert.accessoryView = input
+
+        alert.addButton(withTitle: "Add")
+        alert.addButton(withTitle: "Cancel")
+
+        let response = alert.runModal()
+        guard response == .alertFirstButtonReturn else { return }
+
+        let name = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.isEmpty {
+            presentMoveErrorAlert(message: "Subfolder name can't be empty.")
+            return
+        }
+        if name.rangeOfCharacter(from: CharacterSet(charactersIn: "/:")) != nil {
+            presentMoveErrorAlert(message: "Subfolder name can't contain / or : characters.")
+            return
+        }
+
+        moveSelectedImages(toSubfolderNamed: name, in: folderURL)
+    }
+
+    private func moveSelectedImages(toSubfolderNamed name: String, in folderURL: URL) {
+        let destinationFolder = folderURL.appendingPathComponent(name)
+        let fileManager = FileManager.default
+
+        if fileManager.fileExists(atPath: destinationFolder.path) {
+            var isDirectory: ObjCBool = false
+            if fileManager.fileExists(atPath: destinationFolder.path, isDirectory: &isDirectory), !isDirectory.boolValue {
+                presentMoveErrorAlert(message: "A file named \"\(name)\" already exists in this folder.")
+                return
+            }
+        } else {
+            do {
+                try fileManager.createDirectory(at: destinationFolder, withIntermediateDirectories: true)
+            } catch {
+                presentMoveErrorAlert(message: "Failed to create subfolder: \(error.localizedDescription)")
+                return
+            }
+        }
+
+        let urlsToMove = selectedImageIDs
+        var moved: Set<URL> = []
+        var failures: [String] = []
+
+        for url in urlsToMove {
+            let destinationURL = destinationFolder.appendingPathComponent(url.lastPathComponent)
+            if fileManager.fileExists(atPath: destinationURL.path) {
+                failures.append("\(url.lastPathComponent) already exists in \"\(name)\".")
+                continue
+            }
+            do {
+                try fileManager.moveItem(at: url, to: destinationURL)
+
+                let xmpSource = xmpSidecarService.sidecarURL(for: url)
+                if fileManager.fileExists(atPath: xmpSource.path) {
+                    let xmpDestination = xmpSidecarService.sidecarURL(for: destinationURL)
+                    try? fileManager.moveItem(at: xmpSource, to: xmpDestination)
+                }
+
+                try? sidecarService.moveSidecar(for: url, from: folderURL, to: destinationFolder)
+
+                moved.insert(url)
+            } catch {
+                failures.append("\(url.lastPathComponent): \(error.localizedDescription)")
+            }
+        }
+
+        if !moved.isEmpty {
+            images.removeAll { moved.contains($0.url) }
+            manualOrder.removeAll { moved.contains($0) }
+            selectedImageIDs.subtract(moved)
+            if let last = lastClickedImageURL, moved.contains(last) {
+                lastClickedImageURL = nil
+            }
+            onImagesDeleted?(moved)
+        }
+
+        if !failures.isEmpty {
+            presentMoveErrorAlert(message: "Failed to move \(failures.count) item(s).")
+        }
+
+        var subfolders = subfoldersByOpenFolder[folderURL] ?? []
+        if !subfolders.contains(destinationFolder) {
+            subfolders.append(destinationFolder)
+            subfolders.sort { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+            subfoldersByOpenFolder[folderURL] = subfolders
+        }
+        expandedFolders.insert(folderURL)
+    }
+
+    private func presentMoveErrorAlert(message: String) {
+        let alert = NSAlert()
+        alert.messageText = "Move Failed"
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
     // MARK: - Manual Sort
 
     func initializeManualOrder(from currentSorted: [ImageFile]) {

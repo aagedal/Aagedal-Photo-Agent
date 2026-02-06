@@ -65,3 +65,41 @@ struct TechnicalMetadataView: View {
         ByteCountFormatter.string(fromByteCount: fileSize, countStyle: .file)
     }
 }
+
+struct UpdatePillButton: View {
+    @AppStorage("updateLatestVersion") private var latestVersion: String = ""
+    @AppStorage("updateAvailable") private var updateAvailable: Bool = false
+
+    private var displayVersion: String {
+        if !latestVersion.isEmpty {
+            return latestVersion
+        }
+        return Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
+    }
+
+    var body: some View {
+        Button {
+            Task { await UpdateChecker.shared.checkNow() }
+        } label: {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Update")
+                    .font(.caption.weight(.semibold))
+                Text("version \(displayVersion)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.vertical, 6)
+            .padding(.horizontal, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(updateAvailable ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.08))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(updateAvailable ? Color.accentColor.opacity(0.35) : Color.secondary.opacity(0.2), lineWidth: 0.5)
+            )
+        }
+        .buttonStyle(.plain)
+        .help(updateAvailable ? "Update available" : "Check for updates")
+    }
+}

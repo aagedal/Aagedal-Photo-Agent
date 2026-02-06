@@ -189,7 +189,7 @@ final class ImportViewModel {
                     if configuration.processVariables {
                         // Per-file resolution: variables like {filename} differ per file
                         for url in copiedURLs {
-                            let resolved = resolveMetadataForFile(url)
+                            let resolved = await resolveMetadataForFile(url)
                             let fields = buildMetadataFields(from: resolved)
                             if !fields.isEmpty {
                                 try await exifToolService.writeFields(fields, to: [url])
@@ -221,22 +221,27 @@ final class ImportViewModel {
         }
     }
 
-    private func resolveMetadataForFile(_ url: URL) -> IPTCMetadata {
+    private func resolveMetadataForFile(_ url: URL) async -> IPTCMetadata {
         let filename = url.lastPathComponent
         let meta = configuration.metadata
-        var resolved = meta
+        var reference = meta
 
-        resolved.title = resolveField(meta.title, filename: filename, ref: meta)
-        resolved.description = resolveField(meta.description, filename: filename, ref: meta)
-        resolved.extendedDescription = resolveField(meta.extendedDescription, filename: filename, ref: meta)
-        resolved.creator = resolveField(meta.creator, filename: filename, ref: meta)
-        resolved.credit = resolveField(meta.credit, filename: filename, ref: meta)
-        resolved.copyright = resolveField(meta.copyright, filename: filename, ref: meta)
-        resolved.jobId = resolveField(meta.jobId, filename: filename, ref: meta)
-        resolved.dateCreated = resolveField(meta.dateCreated, filename: filename, ref: meta)
-        resolved.city = resolveField(meta.city, filename: filename, ref: meta)
-        resolved.country = resolveField(meta.country, filename: filename, ref: meta)
-        resolved.event = resolveField(meta.event, filename: filename, ref: meta)
+        if let fileMetadata = try? await exifToolService.readFullMetadata(url: url) {
+            reference = fileMetadata.merged(preferring: meta)
+        }
+
+        var resolved = meta
+        resolved.title = resolveField(meta.title, filename: filename, ref: reference)
+        resolved.description = resolveField(meta.description, filename: filename, ref: reference)
+        resolved.extendedDescription = resolveField(meta.extendedDescription, filename: filename, ref: reference)
+        resolved.creator = resolveField(meta.creator, filename: filename, ref: reference)
+        resolved.credit = resolveField(meta.credit, filename: filename, ref: reference)
+        resolved.copyright = resolveField(meta.copyright, filename: filename, ref: reference)
+        resolved.jobId = resolveField(meta.jobId, filename: filename, ref: reference)
+        resolved.dateCreated = resolveField(meta.dateCreated, filename: filename, ref: reference)
+        resolved.city = resolveField(meta.city, filename: filename, ref: reference)
+        resolved.country = resolveField(meta.country, filename: filename, ref: reference)
+        resolved.event = resolveField(meta.event, filename: filename, ref: reference)
 
         return resolved
     }

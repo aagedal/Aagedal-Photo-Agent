@@ -123,6 +123,19 @@ struct SettingsView: View {
                     }
                 }
             }
+
+            Section("Updates") {
+                Picker("Check for updates", selection: $settingsViewModel.updateCheckFrequency) {
+                    ForEach(UpdateCheckFrequency.allCases) { frequency in
+                        Text(frequency.displayName).tag(frequency)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Button("Check for Updates") {
+                    Task { await UpdateChecker.shared.checkNow() }
+                }
+            }
         }
         .formStyle(.grouped)
         .padding()
