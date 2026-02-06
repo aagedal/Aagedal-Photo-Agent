@@ -10,6 +10,7 @@ struct DetectedEditor: Identifiable, Hashable {
 @MainActor
 final class UpdateChecker {
     static let shared = UpdateChecker()
+    static let releasesURL = URL(string: "https://github.com/aagedal/aagedal-photo-agent/releases")!
 
     private let caskURL = URL(string: "https://raw.githubusercontent.com/aagedal/homebrew-casks/main/Casks/aagedal-photo-agent.rb")!
     private var isChecking = false
@@ -48,6 +49,10 @@ final class UpdateChecker {
         }
     }
 
+    func openReleasesPage() {
+        NSWorkspace.shared.open(Self.releasesURL)
+    }
+
     private var currentFrequency: UpdateCheckFrequency {
         let raw = UserDefaults.standard.string(forKey: Keys.updateCheckFrequency) ?? UpdateCheckFrequency.weekly.rawValue
         return UpdateCheckFrequency(rawValue: raw) ?? .weekly
@@ -61,6 +66,14 @@ final class UpdateChecker {
         let timestamp = UserDefaults.standard.double(forKey: Keys.updateLastChecked)
         guard timestamp > 0 else { return nil }
         return Date(timeIntervalSince1970: timestamp)
+    }
+
+    var latestVersion: String {
+        UserDefaults.standard.string(forKey: Keys.updateLatestVersion) ?? ""
+    }
+
+    var isUpdateAvailable: Bool {
+        UserDefaults.standard.bool(forKey: Keys.updateAvailable)
     }
 
     private func setLastChecked(_ date: Date) {

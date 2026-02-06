@@ -2,10 +2,10 @@ import SwiftUI
 
 struct TemplateListView: View {
     @Bindable var viewModel: TemplateViewModel
-    var onApply: ((MetadataTemplate) -> Void)?
+    var onApply: ((MetadataTemplate) -> Void)? = nil
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("Templates")
                     .font(.headline)
@@ -15,48 +15,35 @@ struct TemplateListView: View {
                 } label: {
                     Image(systemName: "plus")
                 }
-                .buttonStyle(.plain)
             }
 
             if viewModel.templates.isEmpty {
                 Text("No templates saved")
-                    .font(.caption)
                     .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             } else {
-                ForEach(viewModel.templates) { template in
-                    HStack {
-                        VStack(alignment: .leading) {
-                            Text(template.name)
-                                .font(.body)
-                            Text("\(template.fields.count) fields \u{2022} \(template.templateType.rawValue)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
+                List {
+                    ForEach(viewModel.templates) { template in
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text(template.name)
+                                    .font(.body)
+                                Text("\(template.fields.count) fields \u{2022} \(template.templateType.rawValue)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
 
-                        Spacer()
+                            Spacer()
 
-                        Button("Apply") {
-                            onApply?(template)
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-
-                        Menu {
                             Button("Edit") {
                                 viewModel.startEditing(template)
                             }
+
                             Button("Delete", role: .destructive) {
                                 viewModel.deleteTemplate(template)
                             }
-                        } label: {
-                            Image(systemName: "ellipsis.circle")
                         }
-                        .menuStyle(.borderlessButton)
-                        .frame(width: 24)
                     }
-                    .padding(.vertical, 2)
                 }
             }
 
@@ -66,5 +53,6 @@ struct TemplateListView: View {
                     .foregroundStyle(.red)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

@@ -71,7 +71,7 @@ struct UpdatePillButton: View {
     @AppStorage("updateAvailable") private var updateAvailable: Bool = false
 
     private var displayVersion: String {
-        if !latestVersion.isEmpty {
+        if updateAvailable, !latestVersion.isEmpty {
             return latestVersion
         }
         return Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
@@ -79,7 +79,7 @@ struct UpdatePillButton: View {
 
     var body: some View {
         Button {
-            Task { await UpdateChecker.shared.checkNow() }
+            UpdateChecker.shared.openReleasesPage()
         } label: {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Update")
@@ -100,6 +100,6 @@ struct UpdatePillButton: View {
             )
         }
         .buttonStyle(.plain)
-        .help(updateAvailable ? "Update available" : "Check for updates")
+        .help(updateAvailable ? "Update available" : "Open releases page")
     }
 }
