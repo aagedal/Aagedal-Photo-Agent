@@ -169,6 +169,8 @@ struct FullScreenImageView: View {
     @State private var currentImage: NSImage?
     @State private var isLoading = false
     @State private var fullLoadTask: Task<Void, Never>?
+    @State private var fullResTask: Task<Void, Never>?
+    @State private var isFullResLoaded = false
     @State private var showLabelPicker = false
     @State private var hideOverlays = false
     @FocusState private var isFocused: Bool
@@ -190,7 +192,7 @@ struct FullScreenImageView: View {
     private var minZoom: CGFloat {
         min(calculateZoomTo100(), 1.0)
     }
-    private let maxZoom: CGFloat = 10.0
+    private let maxZoom: CGFloat = 40.0
 
     private var currentImageFile: ImageFile? {
         viewModel.firstSelectedImage
@@ -258,6 +260,7 @@ struct FullScreenImageView: View {
             lastZoomScale = zoomScale
             lastOffset = offset
         }
+        loadFullResIfNeeded()
     }
 
     func handleScrollZoom(_ delta: CGFloat, at cursorLocation: CGPoint) {
@@ -300,6 +303,7 @@ struct FullScreenImageView: View {
             let zoom100 = calculateZoomTo100()
             isZoomedTo100 = abs(zoomScale - zoom100) < 0.01
         }
+        loadFullResIfNeeded()
     }
 
     func toggleUI() {
@@ -434,6 +438,9 @@ struct FullScreenImageView: View {
             offset = .zero
             lastOffset = .zero
             isZoomedTo100 = false
+            isFullResLoaded = false
+            fullResTask?.cancel()
+            fullResTask = nil
             await loadImage()
         }
     }
@@ -458,6 +465,7 @@ struct FullScreenImageView: View {
                 // Update isZoomedTo100 state
                 let zoom100 = calculateZoomTo100()
                 isZoomedTo100 = abs(zoomScale - zoom100) < 0.01
+                loadFullResIfNeeded()
             }
     }
 
@@ -592,11 +600,11 @@ struct FullScreenImageView: View {
             }
         }
 
-        // Phase 2: Full source resolution (for zoom and HDR fidelity)
+        // Phase 2: Retina-resolution decode (screen pixels, preserving HDR color space)
         let fullStart = CFAbsoluteTimeGetCurrent()
-        imageLogger.info("\(filename): Phase 2 starting (full resolution)")
+        imageLogger.info("\(filename): Phase 2 starting (retina resolution)")
         fullLoadTask = Task.detached(priority: .userInitiated) {
-            let image = FullScreenImageCache.loadFullResolution(from: url)
+            let image = FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: screenMaxPx)
             let fullElapsed = CFAbsoluteTimeGetCurrent() - fullStart
             guard !Task.isCancelled else {
                 imageLogger.info("\(filename): Phase 2 cancelled after \(String(format: "%.1f", fullElapsed * 1000))ms")
@@ -617,6 +625,37 @@ struct FullScreenImageView: View {
                 } else {
                     imageLogger.info("\(filename): Phase 2 done but image changed, discarding")
                 }
+            }
+        }
+    }
+
+    /// Lazily loads full source resolution when the user zooms past 100%.
+    /// This avoids decoding massive images during normal navigation.
+    private func loadFullResIfNeeded() {
+        guard !isFullResLoaded else { return }
+        let zoom100 = calculateZoomTo100()
+        guard zoom100 < 1.0, zoomScale >= zoom100 * 0.9 else { return } // only needed for images larger than screen
+        // Actually: we need full res when zoomed past the point where retina pixels run out.
+        // At zoomScale=1.0, we have screenMaxPx worth of pixels. We need more when zoomScale > 1.0
+        // and the image has more source pixels than screenMaxPx.
+        guard zoomScale > 1.0 else { return }
+        guard let url = currentImageFile?.url else { return }
+        guard fullResTask == nil else { return }
+
+        let filename = url.lastPathComponent
+        imageLogger.info("\(filename): Loading full resolution for zoom")
+        isLoading = true
+        fullResTask = Task.detached(priority: .userInitiated) {
+            let fullStart = CFAbsoluteTimeGetCurrent()
+            let image = FullScreenImageCache.loadFullResolution(from: url)
+            let elapsed = CFAbsoluteTimeGetCurrent() - fullStart
+            guard !Task.isCancelled, let image else { return }
+            await MainActor.run {
+                guard currentImageFile?.url == url else { return }
+                imageLogger.info("\(filename): Full resolution loaded in \(String(format: "%.1f", elapsed * 1000))ms (\(image.size.width)x\(image.size.height))")
+                currentImage = image
+                isFullResLoaded = true
+                isLoading = false
             }
         }
     }
@@ -743,6 +782,7 @@ struct FullScreenPresenter: ViewModifier {
     @Bindable var viewModel: BrowserViewModel
     @State private var fullScreenWindow: FullScreenWindow?
     @State private var zoomController: ZoomController?
+    @State private var resignObserver: Any?
 
     func body(content: Content) -> some View {
         content
@@ -812,9 +852,22 @@ struct FullScreenPresenter: ViewModifier {
         window.makeKeyAndOrderFront(nil)
 
         fullScreenWindow = window
+
+        // Close full screen when app loses focus (Cmd+Tab, clicking another app)
+        resignObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak viewModel] _ in
+            viewModel?.isFullScreen = false
+        }
     }
 
     private func closeFullScreen() {
+        if let resignObserver {
+            NotificationCenter.default.removeObserver(resignObserver)
+        }
+        resignObserver = nil
         fullScreenWindow?.orderOut(nil)
         fullScreenWindow = nil
         zoomController = nil
