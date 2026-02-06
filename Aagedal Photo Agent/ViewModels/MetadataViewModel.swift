@@ -227,21 +227,23 @@ final class MetadataViewModel {
 
     /// Load metadata for all selected images and compute common values
     private func loadBatchMetadata(for images: [ImageFile], selectionSnapshot: Set<URL>) async {
+        let urls = images.map(\.url)
         var allMetadata: [IPTCMetadata] = []
 
-        for image in images {
+        do {
+            let batchResults = try await exifToolService.readBatchFullMetadata(urls: urls)
             if Task.isCancelled { return }
-            do {
-                var meta = try await exifToolService.readFullMetadata(url: image.url)
-                if Task.isCancelled { return }
+
+            for image in images {
+                guard var meta = batchResults[image.url] else { continue }
                 if prefersXMPSidecar,
                    let xmpMeta = xmpSidecarService.loadSidecar(for: image.url) {
                     meta = meta.merged(preferring: xmpMeta)
                 }
                 allMetadata.append(meta)
-            } catch {
-                // Continue with other images
             }
+        } catch {
+            // Continue with whatever we got
         }
 
         guard !allMetadata.isEmpty else { return }

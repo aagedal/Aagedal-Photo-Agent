@@ -307,7 +307,38 @@ final class ExifToolService {
             return IPTCMetadata()
         }
 
-        return IPTCMetadata(
+        return metadataFromDict(dict)
+    }
+
+    /// Read full metadata for multiple files in a single ExifTool invocation.
+    /// Returns results keyed by URL. Files that fail to parse are omitted from the result.
+    func readBatchFullMetadata(urls: [URL]) async throws -> [URL: IPTCMetadata] {
+        guard !urls.isEmpty else { return [:] }
+
+        var args = [
+            "-json", "-n",
+            "-IPTC:All", "-XMP:All",
+            "-EXIF:DateTimeOriginal",
+            "-EXIF:GPSLatitude", "-EXIF:GPSLongitude",
+            "-struct"
+        ]
+        args += urls.map(\.path)
+
+        let output = try await execute(args)
+        let results = parseJSON(output)
+
+        var metadataByURL: [URL: IPTCMetadata] = [:]
+        metadataByURL.reserveCapacity(results.count)
+        for dict in results {
+            guard let sourcePath = dict[ExifToolReadKey.sourceFile] as? String else { continue }
+            let url = URL(fileURLWithPath: sourcePath)
+            metadataByURL[url] = metadataFromDict(dict)
+        }
+        return metadataByURL
+    }
+
+    private func metadataFromDict(_ dict: [String: Any]) -> IPTCMetadata {
+        IPTCMetadata(
             title: dict[ExifToolReadKey.headline] as? String
                 ?? dict[ExifToolReadKey.title] as? String
                 ?? dict[ExifToolReadKey.objectName] as? String,
