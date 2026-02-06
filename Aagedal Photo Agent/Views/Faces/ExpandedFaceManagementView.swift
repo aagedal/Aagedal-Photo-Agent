@@ -1464,7 +1464,7 @@ struct SuggestionRow: View {
     private func groupPreview(_ group: FaceGroup?) -> some View {
         VStack(spacing: 4) {
             if let group,
-               let image = viewModel.thumbnailCache[group.representativeFaceID] {
+               let image = viewModel.thumbnailImage(for: group.representativeFaceID) {
                 Image(nsImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)

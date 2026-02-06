@@ -362,19 +362,19 @@ struct ExpandedKnownPeopleView: View {
         isImporting = true
         importExportMessage = nil
 
-        do {
-            let count = try KnownPeopleService.shared.importFromZip(sourceURL: url)
-            isImporting = false
-            importExportMessage = "Imported \(count) people"
-            loadPeople()
+        Task {
+            do {
+                let count = try await KnownPeopleService.shared.importFromZip(sourceURL: url)
+                isImporting = false
+                importExportMessage = "Imported \(count) people"
+                loadPeople()
 
-            Task {
                 try? await Task.sleep(for: .seconds(3))
                 importExportMessage = nil
+            } catch {
+                isImporting = false
+                importExportMessage = "Import failed: \(error.localizedDescription)"
             }
-        } catch {
-            isImporting = false
-            importExportMessage = "Import failed: \(error.localizedDescription)"
         }
     }
 
@@ -389,19 +389,19 @@ struct ExpandedKnownPeopleView: View {
         isExporting = true
         importExportMessage = nil
 
-        do {
-            try KnownPeopleService.shared.exportToZip(destinationURL: url)
-            isExporting = false
-            importExportMessage = "Export complete"
-            loadPeople()
+        Task {
+            do {
+                try await KnownPeopleService.shared.exportToZip(destinationURL: url)
+                isExporting = false
+                importExportMessage = "Export complete"
+                loadPeople()
 
-            Task {
                 try? await Task.sleep(for: .seconds(3))
                 importExportMessage = nil
+            } catch {
+                isExporting = false
+                importExportMessage = "Export failed: \(error.localizedDescription)"
             }
-        } catch {
-            isExporting = false
-            importExportMessage = "Export failed: \(error.localizedDescription)"
         }
     }
 

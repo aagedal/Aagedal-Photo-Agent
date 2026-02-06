@@ -50,6 +50,7 @@ final class ExifToolService {
     private var pendingContinuation: CheckedContinuation<String, any Error>?
     private var commandQueue: [() -> Void] = []
     private var isExecuting = false
+    private let maxQueueSize = 100
 
     var exifToolPath: String? {
         let sourceRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.exifToolSource) ?? "bundled"
@@ -182,7 +183,6 @@ final class ExifToolService {
             sendCommand(["-stay_open", "False"])
         }
         try? stdinPipe?.fileHandleForWriting.close()
-        process?.waitUntilExit()
         stdoutPipe?.fileHandleForReading.readabilityHandler = nil
         process = nil
         isRunning = false
@@ -233,6 +233,11 @@ final class ExifToolService {
 
         let label = arguments.first(where: { $0.hasSuffix(".path") || !$0.hasPrefix("-") }) ?? arguments.prefix(3).joined(separator: " ")
         exifToolLog.debug("Queuing command: \(label, privacy: .public) (queue depth: \(self.commandQueue.count))")
+
+        guard commandQueue.count < maxQueueSize else {
+            throw NSError(domain: "ExifToolService", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Command queue full — ExifTool may be unresponsive"])
+        }
 
         return try await withCheckedThrowingContinuation { continuation in
             self.commandQueue.append { [weak self] in

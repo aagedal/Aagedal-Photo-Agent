@@ -6,6 +6,8 @@ struct SettingsView: View {
     @State private var settingsViewModel = SettingsViewModel()
     @State private var ftpViewModel = FTPViewModel()
     @State private var templateViewModel = TemplateViewModel()
+    @State private var isCheckingForUpdates = false
+    @State private var updateStatusMessage: String?
 
     // Known People state
     @State private var knownPeopleStats: (peopleCount: Int, embeddingCount: Int) = (0, 0)
@@ -133,7 +135,30 @@ struct SettingsView: View {
                 .pickerStyle(.segmented)
 
                 Button("Check for Updates") {
-                    Task { await UpdateChecker.shared.checkNow() }
+                    guard !isCheckingForUpdates else { return }
+                    isCheckingForUpdates = true
+                    updateStatusMessage = "Checking..."
+                    Task {
+                        await UpdateChecker.shared.checkNow()
+                        let latestVersion = UpdateChecker.shared.latestVersion
+                        if UpdateChecker.shared.isUpdateAvailable {
+                            if latestVersion.isEmpty {
+                                updateStatusMessage = "Update available"
+                            } else {
+                                updateStatusMessage = "Update available — version \(latestVersion)"
+                            }
+                        } else {
+                            updateStatusMessage = "No update available"
+                        }
+                        isCheckingForUpdates = false
+                    }
+                }
+                .disabled(isCheckingForUpdates)
+
+                if let updateStatusMessage {
+                    Text(updateStatusMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
         }
@@ -448,20 +473,19 @@ struct SettingsView: View {
         isImporting = true
         knownPeopleMessage = nil
 
-        do {
-            let count = try KnownPeopleService.shared.importFromZip(sourceURL: url)
-            isImporting = false
-            knownPeopleMessage = "Imported \(count) people"
-            refreshKnownPeopleStats()
+        Task {
+            do {
+                let count = try await KnownPeopleService.shared.importFromZip(sourceURL: url)
+                isImporting = false
+                knownPeopleMessage = "Imported \(count) people"
+                refreshKnownPeopleStats()
 
-            // Clear message after delay
-            Task {
                 try? await Task.sleep(for: .seconds(3))
                 knownPeopleMessage = nil
+            } catch {
+                isImporting = false
+                knownPeopleMessage = "Import failed: \(error.localizedDescription)"
             }
-        } catch {
-            isImporting = false
-            knownPeopleMessage = "Import failed: \(error.localizedDescription)"
         }
     }
 
@@ -476,20 +500,19 @@ struct SettingsView: View {
         isExporting = true
         knownPeopleMessage = nil
 
-        do {
-            try KnownPeopleService.shared.exportToZip(destinationURL: url)
-            isExporting = false
-            knownPeopleMessage = "Export complete"
-            refreshKnownPeopleStats()
+        Task {
+            do {
+                try await KnownPeopleService.shared.exportToZip(destinationURL: url)
+                isExporting = false
+                knownPeopleMessage = "Export complete"
+                refreshKnownPeopleStats()
 
-            // Clear message after delay
-            Task {
                 try? await Task.sleep(for: .seconds(3))
                 knownPeopleMessage = nil
+            } catch {
+                isExporting = false
+                knownPeopleMessage = "Export failed: \(error.localizedDescription)"
             }
-        } catch {
-            isExporting = false
-            knownPeopleMessage = "Export failed: \(error.localizedDescription)"
         }
     }
 

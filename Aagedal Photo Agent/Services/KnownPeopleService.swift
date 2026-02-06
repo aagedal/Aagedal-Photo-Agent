@@ -55,9 +55,9 @@ final class KnownPeopleService {
             database = loaded
             return loaded
         } catch {
-            let empty = KnownPeopleDatabase()
-            database = empty
-            return empty
+            print("⚠️ KnownPeopleService: Failed to load database: \(error.localizedDescription)")
+            // Return empty for operations but don't cache — avoids overwriting corrupted file on next save
+            return KnownPeopleDatabase()
         }
     }
 
@@ -507,7 +507,7 @@ final class KnownPeopleService {
 
     // MARK: - Export
 
-    func exportToZip(destinationURL: URL, exportedBy: String? = nil) throws {
+    func exportToZip(destinationURL: URL, exportedBy: String? = nil) async throws {
         let db = loadDatabase()
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
 
@@ -549,19 +549,28 @@ final class KnownPeopleService {
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
         process.arguments = ["-c", "-k", "--keepParent", tempDir.path, destinationURL.path]
 
-        try process.run()
-        process.waitUntilExit()
-
-        if process.terminationStatus != 0 {
-            throw NSError(domain: "KnownPeopleService", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "Failed to create zip archive"
-            ])
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+            process.terminationHandler = { proc in
+                if proc.terminationStatus == 0 {
+                    continuation.resume()
+                } else {
+                    continuation.resume(throwing: NSError(
+                        domain: "KnownPeopleService", code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: "Failed to create zip archive"]
+                    ))
+                }
+            }
+            do {
+                try process.run()
+            } catch {
+                continuation.resume(throwing: error)
+            }
         }
     }
 
     // MARK: - Import
 
-    func importFromZip(sourceURL: URL) throws -> Int {
+    func importFromZip(sourceURL: URL) async throws -> Int {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
 
         defer {
@@ -575,13 +584,22 @@ final class KnownPeopleService {
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
         process.arguments = ["-x", "-k", sourceURL.path, tempDir.path]
 
-        try process.run()
-        process.waitUntilExit()
-
-        if process.terminationStatus != 0 {
-            throw NSError(domain: "KnownPeopleService", code: 2, userInfo: [
-                NSLocalizedDescriptionKey: "Failed to extract zip archive"
-            ])
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+            process.terminationHandler = { proc in
+                if proc.terminationStatus == 0 {
+                    continuation.resume()
+                } else {
+                    continuation.resume(throwing: NSError(
+                        domain: "KnownPeopleService", code: 2,
+                        userInfo: [NSLocalizedDescriptionKey: "Failed to extract zip archive"]
+                    ))
+                }
+            }
+            do {
+                try process.run()
+            } catch {
+                continuation.resume(throwing: error)
+            }
         }
 
         // Find the extracted directory (ditto with --keepParent creates a subdirectory)

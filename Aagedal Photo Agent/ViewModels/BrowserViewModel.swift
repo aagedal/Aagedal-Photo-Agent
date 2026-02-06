@@ -556,7 +556,7 @@ final class BrowserViewModel {
         let lookup = Dictionary(uniqueKeysWithValues: images.map { ($0.url, $0) })
 
         for id in selectedImageIDs {
-            if let index = images.firstIndex(where: { $0.url == id }) {
+            if let index = urlToSortedIndex[id] {
                 images[index].starRating = rating
             }
         }
@@ -591,7 +591,11 @@ final class BrowserViewModel {
             }
 
             if exifToolService.isAvailable, !writeToFile.isEmpty {
-                try? await exifToolService.writeRating(rating, to: writeToFile)
+                do {
+                    try await exifToolService.writeRating(rating, to: writeToFile)
+                } catch {
+                    self.errorMessage = "Failed to write rating: \(error.localizedDescription)"
+                }
             }
 
             await MainActor.run {
@@ -606,7 +610,7 @@ final class BrowserViewModel {
         let lookup = Dictionary(uniqueKeysWithValues: images.map { ($0.url, $0) })
 
         for id in selectedImageIDs {
-            if let index = images.firstIndex(where: { $0.url == id }) {
+            if let index = urlToSortedIndex[id] {
                 images[index].colorLabel = label
             }
         }
@@ -641,7 +645,11 @@ final class BrowserViewModel {
             }
 
             if exifToolService.isAvailable, !writeToFile.isEmpty {
-                try? await exifToolService.writeLabel(label, to: writeToFile)
+                do {
+                    try await exifToolService.writeLabel(label, to: writeToFile)
+                } catch {
+                    self.errorMessage = "Failed to write label: \(error.localizedDescription)"
+                }
             }
 
             await MainActor.run {
