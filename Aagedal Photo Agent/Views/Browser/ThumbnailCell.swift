@@ -11,7 +11,13 @@ struct ThumbnailCell: View, Equatable {
     @State private var thumbnail: NSImage?
 
     static func == (lhs: ThumbnailCell, rhs: ThumbnailCell) -> Bool {
-        lhs.image == rhs.image && lhs.isSelected == rhs.isSelected
+        lhs.image.url == rhs.image.url
+            && lhs.isSelected == rhs.isSelected
+            && lhs.image.starRating == rhs.image.starRating
+            && lhs.image.colorLabel == rhs.image.colorLabel
+            && lhs.image.hasC2PA == rhs.image.hasC2PA
+            && lhs.image.hasPendingMetadataChanges == rhs.image.hasPendingMetadataChanges
+            && lhs.image.pendingFieldNames == rhs.image.pendingFieldNames
     }
 
     private var pendingFieldsTooltip: String {

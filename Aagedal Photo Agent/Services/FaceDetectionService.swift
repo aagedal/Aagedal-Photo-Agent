@@ -11,24 +11,31 @@ nonisolated struct FaceDetectionService: Sendable {
     /// Reduces NSKeyedUnarchiver calls from O(N³) to O(N) by deserializing each feature print only once.
     final class FeaturePrintCache: @unchecked Sendable {
         private var cache: [UUID: VNFeaturePrintObservation] = [:]
+        private let lock = NSLock()
+
+        private func withLock<T>(_ body: () -> T) -> T {
+            lock.lock()
+            defer { lock.unlock() }
+            return body()
+        }
 
         func getFeaturePrint(for face: DetectedFace) -> VNFeaturePrintObservation? {
-            if let cached = cache[face.id] { return cached }
+            if let cached = withLock({ cache[face.id] }) { return cached }
             guard let fp = try? NSKeyedUnarchiver.unarchivedObject(
                 ofClass: VNFeaturePrintObservation.self,
                 from: face.featurePrintData
             ) else { return nil }
-            cache[face.id] = fp
+            withLock { cache[face.id] = fp }
             return fp
         }
 
         func getFeaturePrint(for faceID: UUID, data: Data) -> VNFeaturePrintObservation? {
-            if let cached = cache[faceID] { return cached }
+            if let cached = withLock({ cache[faceID] }) { return cached }
             guard let fp = try? NSKeyedUnarchiver.unarchivedObject(
                 ofClass: VNFeaturePrintObservation.self,
                 from: data
             ) else { return nil }
-            cache[faceID] = fp
+            withLock { cache[faceID] = fp }
             return fp
         }
     }
@@ -99,25 +106,32 @@ nonisolated struct FaceDetectionService: Sendable {
     final class ExtendedFeatureCache: @unchecked Sendable {
         private var faceFeaturePrints: [UUID: VNFeaturePrintObservation] = [:]
         private var clothingFeaturePrints: [UUID: VNFeaturePrintObservation] = [:]
+        private let lock = NSLock()
+
+        private func withLock<T>(_ body: () -> T) -> T {
+            lock.lock()
+            defer { lock.unlock() }
+            return body()
+        }
 
         func getFaceFeaturePrint(for face: DetectedFace) -> VNFeaturePrintObservation? {
-            if let cached = faceFeaturePrints[face.id] { return cached }
+            if let cached = withLock({ faceFeaturePrints[face.id] }) { return cached }
             guard let fp = try? NSKeyedUnarchiver.unarchivedObject(
                 ofClass: VNFeaturePrintObservation.self,
                 from: face.featurePrintData
             ) else { return nil }
-            faceFeaturePrints[face.id] = fp
+            withLock { faceFeaturePrints[face.id] = fp }
             return fp
         }
 
         func getClothingFeaturePrint(for face: DetectedFace) -> VNFeaturePrintObservation? {
-            if let cached = clothingFeaturePrints[face.id] { return cached }
+            if let cached = withLock({ clothingFeaturePrints[face.id] }) { return cached }
             guard let data = face.clothingFeaturePrintData,
                   let fp = try? NSKeyedUnarchiver.unarchivedObject(
                       ofClass: VNFeaturePrintObservation.self,
                       from: data
                   ) else { return nil }
-            clothingFeaturePrints[face.id] = fp
+            withLock { clothingFeaturePrints[face.id] = fp }
             return fp
         }
     }

@@ -90,6 +90,15 @@ struct ContentView: View {
                 let suffix = count == 1 ? "image has" : "images have"
                 Text("\(count) pending \(suffix) C2PA content credentials in this folder. Writing metadata will invalidate the authenticity chain.")
             }
+            .alert("Move to Trash", isPresented: $browserViewModel.showDeleteConfirmation) {
+                Button("Cancel", role: .cancel) { }
+                Button("Move to Trash", role: .destructive) {
+                    browserViewModel.deleteSelectedImages()
+                }
+            } message: {
+                let count = browserViewModel.selectedImageIDs.count
+                Text("Are you sure you want to move \(count) \(count == 1 ? "image" : "images") to the Trash?")
+            }
             .overlay {
                 if isShowingTemplatePalette {
                     Color.black.opacity(0.3)
@@ -788,7 +797,7 @@ struct ContentViewModifiers: ViewModifier {
                 openSelectedInExternalEditor()
             }
             .onReceive(NotificationCenter.default.publisher(for: .deleteSelected)) { _ in
-                browserViewModel.deleteSelectedImages()
+                browserViewModel.confirmDeleteSelectedImages()
             }
             .onReceive(NotificationCenter.default.publisher(for: .selectPreviousImage)) { _ in
                 browserViewModel.selectPrevious()

@@ -881,6 +881,13 @@ final class BrowserViewModel {
 
     // MARK: - Delete
 
+    var showDeleteConfirmation = false
+
+    func confirmDeleteSelectedImages() {
+        guard !selectedImageIDs.isEmpty else { return }
+        showDeleteConfirmation = true
+    }
+
     func deleteSelectedImages() {
         let urlsToDelete = selectedImageIDs
         guard !urlsToDelete.isEmpty else { return }
