@@ -52,6 +52,14 @@ final class ExifToolService {
     private var isExecuting = false
     private let maxQueueSize = 100
 
+    deinit {
+        MainActor.assumeIsolated {
+            if process?.isRunning == true {
+                process?.terminate()
+            }
+        }
+    }
+
     var exifToolPath: String? {
         let sourceRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.exifToolSource) ?? "bundled"
 
