@@ -277,6 +277,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.5.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "aagedal.Aagedal-Photo-Agent";
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -310,6 +311,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.5.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "aagedal.Aagedal-Photo-Agent";
 				PRODUCT_NAME = "$(TARGET_NAME)";
