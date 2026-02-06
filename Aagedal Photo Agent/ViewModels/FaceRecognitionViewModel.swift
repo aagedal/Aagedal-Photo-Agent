@@ -658,7 +658,7 @@ final class FaceRecognitionViewModel {
     /// Returns the matched person ID if found.
     @discardableResult
     func matchGroupToKnownPeople(_ groupID: UUID) -> UUID? {
-        guard let data = faceData,
+        guard faceData != nil,
               let group = groupLookup[groupID],
               let face = faceLookup[group.representativeFaceID] else {
             return nil

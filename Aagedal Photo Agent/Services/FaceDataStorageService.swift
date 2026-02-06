@@ -1,7 +1,7 @@
 import Foundation
 import os.log
 
-nonisolated(unsafe) private let faceDataLog = Logger(subsystem: Bundle.main.bundleIdentifier ?? "AagedalPhotoAgent", category: "FaceDataStorageService")
+nonisolated private let faceDataLog = Logger(subsystem: Bundle.main.bundleIdentifier ?? "AagedalPhotoAgent", category: "FaceDataStorageService")
 
 nonisolated struct FaceDataStorageService: Sendable {
 

@@ -1,7 +1,7 @@
 import AppKit
 import os.log
 
-nonisolated(unsafe) private let cacheLogger = Logger(subsystem: "com.aagedal.photo-agent", category: "FullScreenCache")
+nonisolated private let cacheLogger = Logger(subsystem: "com.aagedal.photo-agent", category: "FullScreenCache")
 
 /// LRU image cache with directional prefetching for full-screen image navigation.
 /// Holds up to 7 screen-resolution images (~280MB). NSCache auto-evicts under memory pressure.
@@ -85,7 +85,7 @@ final class FullScreenImageCache: @unchecked Sendable {
     }
 
     nonisolated private func removePrefetchTask(for url: URL) {
-        lock.withLock { prefetchTasks.removeValue(forKey: url) }
+        _ = lock.withLock { prefetchTasks.removeValue(forKey: url) }
     }
 
     nonisolated func cancelAllPrefetch() {

@@ -1,7 +1,7 @@
 import Foundation
 import os
 
-nonisolated(unsafe) private let logger = Logger(subsystem: "com.aagedal.photo-agent", category: "AppPaths")
+nonisolated private let logger = Logger(subsystem: "com.aagedal.photo-agent", category: "AppPaths")
 
 enum AppPaths {
     static var applicationSupport: URL {
