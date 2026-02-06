@@ -492,9 +492,10 @@ final class FaceRecognitionViewModel {
         }
 
         // For each known person with matches, merge multiple groups and name them
-        // Build mutable index dicts for O(1) lookups during mutations
-        var faceIdx = Dictionary(uniqueKeysWithValues: data.faces.enumerated().map { ($1.id, $0) })
-        var groupIdx = Dictionary(uniqueKeysWithValues: data.groups.enumerated().map { ($1.id, $0) })
+        // Index dicts are stable because removals are deferred to after the loop
+        let faceIdx = Dictionary(uniqueKeysWithValues: data.faces.enumerated().map { ($1.id, $0) })
+        let groupIdx = Dictionary(uniqueKeysWithValues: data.groups.enumerated().map { ($1.id, $0) })
+        var groupIDsToRemove: Set<UUID> = []
 
         for (personID, groupMatches) in matchesByPerson {
             guard let knownPerson = KnownPeopleService.shared.person(byID: personID) else { continue }
@@ -503,14 +504,13 @@ final class FaceRecognitionViewModel {
             let sorted = groupMatches.sorted { $0.confidence > $1.confidence }
             guard let bestMatch = sorted.first else { continue }
             let targetGroupID = bestMatch.groupID
-            guard let initialTargetIndex = groupIdx[targetGroupID] else { continue }
+            guard let targetIndex = groupIdx[targetGroupID] else { continue }
 
             // Name the target group
-            data.groups[initialTargetIndex].name = knownPerson.name
+            data.groups[targetIndex].name = knownPerson.name
 
             // Merge other matching groups into the target
             for match in sorted.dropFirst() {
-                guard let targetIndex = groupIdx[targetGroupID] else { break }
                 guard let sourceIndex = groupIdx[match.groupID],
                       sourceIndex != targetIndex else { continue }
 
@@ -529,11 +529,12 @@ final class FaceRecognitionViewModel {
                 knownPersonMatchByGroup[match.groupID] = nil
                 knownPersonMatchByGroup[targetGroupID] = (personID: personID, confidence: bestMatch.confidence)
 
-                // Remove source group and rebuild group index
-                data.groups.remove(at: sourceIndex)
-                groupIdx = Dictionary(uniqueKeysWithValues: data.groups.enumerated().map { ($1.id, $0) })
+                groupIDsToRemove.insert(match.groupID)
             }
         }
+
+        // Remove all merged source groups in one pass
+        data.groups.removeAll { groupIDsToRemove.contains($0.id) }
 
         // Save updated data
         faceData = data
@@ -580,9 +581,10 @@ final class FaceRecognitionViewModel {
         }
 
         // For each known person with matches, merge multiple groups and name them
-        // Build mutable index dicts for O(1) lookups during mutations
-        var faceIdx = Dictionary(uniqueKeysWithValues: data.faces.enumerated().map { ($1.id, $0) })
-        var groupIdx = Dictionary(uniqueKeysWithValues: data.groups.enumerated().map { ($1.id, $0) })
+        // Index dicts are stable because removals are deferred to after the loop
+        let faceIdx = Dictionary(uniqueKeysWithValues: data.faces.enumerated().map { ($1.id, $0) })
+        let groupIdx = Dictionary(uniqueKeysWithValues: data.groups.enumerated().map { ($1.id, $0) })
+        var groupIDsToRemove: Set<UUID> = []
 
         for (personID, groupMatches) in matchesByPerson {
             guard let knownPerson = KnownPeopleService.shared.person(byID: personID) else { continue }
@@ -598,13 +600,12 @@ final class FaceRecognitionViewModel {
 
             // Merge other matching groups into the target
             for match in sorted.dropFirst() {
-                guard let currentTargetIndex = groupIdx[targetGroupID] else { break }
                 guard let sourceIndex = groupIdx[match.groupID],
-                      sourceIndex != currentTargetIndex else { continue }
+                      sourceIndex != targetIndex else { continue }
 
                 // Move faces from source to target
                 let sourceFaceIDs = data.groups[sourceIndex].faceIDs
-                data.groups[currentTargetIndex].faceIDs.append(contentsOf: sourceFaceIDs)
+                data.groups[targetIndex].faceIDs.append(contentsOf: sourceFaceIDs)
 
                 // Update face groupIDs
                 for faceID in sourceFaceIDs {
@@ -617,11 +618,12 @@ final class FaceRecognitionViewModel {
                 knownPersonMatchByGroup[match.groupID] = nil
                 knownPersonMatchByGroup[targetGroupID] = (personID: personID, confidence: bestMatch.confidence)
 
-                // Remove source group and rebuild group index
-                data.groups.remove(at: sourceIndex)
-                groupIdx = Dictionary(uniqueKeysWithValues: data.groups.enumerated().map { ($1.id, $0) })
+                groupIDsToRemove.insert(match.groupID)
             }
         }
+
+        // Remove all merged source groups in one pass
+        data.groups.removeAll { groupIDsToRemove.contains($0.id) }
 
         // Save updated data
         faceData = data
@@ -1132,11 +1134,12 @@ final class FaceRecognitionViewModel {
         let sources = sorted.dropFirst()
 
         let faceIdx = Dictionary(uniqueKeysWithValues: data.faces.enumerated().map { ($1.id, $0) })
-        var groupIdx = Dictionary(uniqueKeysWithValues: data.groups.enumerated().map { ($1.id, $0) })
+        let groupIdx = Dictionary(uniqueKeysWithValues: data.groups.enumerated().map { ($1.id, $0) })
+        guard let targetIndex = groupIdx[target.id] else { return }
+        var sourceIDs: Set<UUID> = []
 
         for source in sources {
-            guard let sourceIndex = groupIdx[source.id],
-                  let targetIndex = groupIdx[target.id] else { continue }
+            guard let sourceIndex = groupIdx[source.id] else { continue }
 
             let sourceFaceIDs = data.groups[sourceIndex].faceIDs
             data.groups[targetIndex].faceIDs.append(contentsOf: sourceFaceIDs)
@@ -1147,9 +1150,10 @@ final class FaceRecognitionViewModel {
                 }
             }
 
-            data.groups.remove(at: sourceIndex)
-            groupIdx = Dictionary(uniqueKeysWithValues: data.groups.enumerated().map { ($1.id, $0) })
+            sourceIDs.insert(source.id)
         }
+
+        data.groups.removeAll { sourceIDs.contains($0.id) }
 
         faceData = data
         do {
@@ -1164,7 +1168,7 @@ final class FaceRecognitionViewModel {
         guard var data = faceData else { return }
 
         let faceIdx = Dictionary(uniqueKeysWithValues: data.faces.enumerated().map { ($1.id, $0) })
-        var groupIdx = Dictionary(uniqueKeysWithValues: data.groups.enumerated().map { ($1.id, $0) })
+        let groupIdx = Dictionary(uniqueKeysWithValues: data.groups.enumerated().map { ($1.id, $0) })
 
         for groupID in groupIDs {
             guard let groupIndex = groupIdx[groupID] else { continue }
@@ -1187,7 +1191,6 @@ final class FaceRecognitionViewModel {
                     data.faces[fi].groupID = newGroup.id
                 }
             }
-            groupIdx = Dictionary(uniqueKeysWithValues: data.groups.enumerated().map { ($1.id, $0) })
         }
 
         faceData = data
@@ -1334,7 +1337,7 @@ final class FaceRecognitionViewModel {
     /// Mutates `data` in place without assigning to `faceData` or saving — caller is responsible.
     private func removeFacesFromGroups(_ faceIDs: Set<UUID>, in data: inout FolderFaceData) {
         let faceIdx = Dictionary(uniqueKeysWithValues: data.faces.enumerated().map { ($1.id, $0) })
-        var groupIdx = Dictionary(uniqueKeysWithValues: data.groups.enumerated().map { ($1.id, $0) })
+        let groupIdx = Dictionary(uniqueKeysWithValues: data.groups.enumerated().map { ($1.id, $0) })
 
         for faceID in faceIDs {
             guard let faceIndex = faceIdx[faceID],
@@ -1343,13 +1346,14 @@ final class FaceRecognitionViewModel {
 
             data.groups[oldGroupIndex].faceIDs.removeAll { $0 == faceID }
 
-            if data.groups[oldGroupIndex].faceIDs.isEmpty {
-                data.groups.remove(at: oldGroupIndex)
-                groupIdx = Dictionary(uniqueKeysWithValues: data.groups.enumerated().map { ($1.id, $0) })
-            } else if data.groups[oldGroupIndex].representativeFaceID == faceID {
+            if !data.groups[oldGroupIndex].faceIDs.isEmpty,
+               data.groups[oldGroupIndex].representativeFaceID == faceID {
                 data.groups[oldGroupIndex].representativeFaceID = data.groups[oldGroupIndex].faceIDs[0]
             }
         }
+
+        // Remove emptied groups in one pass
+        data.groups.removeAll { $0.faceIDs.isEmpty }
     }
 
     // MARK: - Delete Individual Faces
