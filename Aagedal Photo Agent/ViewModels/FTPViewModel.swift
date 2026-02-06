@@ -16,7 +16,7 @@ final class FTPViewModel {
     var editingPassword = ""
 
     private let ftpService = FTPService()
-    private let connectionsKey = "ftpConnections"
+    private let connectionsKey = UserDefaultsKeys.ftpConnections
 
     func loadConnections() {
         guard let data = UserDefaults.standard.data(forKey: connectionsKey),

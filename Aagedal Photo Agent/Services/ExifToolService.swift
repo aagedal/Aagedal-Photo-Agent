@@ -3,6 +3,40 @@ import os.log
 
 private let exifToolLog = Logger(subsystem: Bundle.main.bundleIdentifier ?? "AagedalPhotoAgent", category: "ExifToolService")
 
+enum ExifToolReadKey {
+    static let sourceFile = "SourceFile"
+    static let headline = "Headline"
+    static let title = "Title"
+    static let objectName = "ObjectName"
+    static let description = "Description"
+    static let captionAbstract = "Caption-Abstract"
+    static let extDescrAccessibility = "ExtDescrAccessibility"
+    static let subject = "Subject"
+    static let keywords = "Keywords"
+    static let personInImage = "PersonInImage"
+    static let digitalSourceType = "DigitalSourceType"
+    static let gpsLatitude = "GPSLatitude"
+    static let gpsLongitude = "GPSLongitude"
+    static let creator = "Creator"
+    static let byLine = "By-line"
+    static let credit = "Credit"
+    static let rights = "Rights"
+    static let copyrightNotice = "CopyrightNotice"
+    static let transmissionReference = "TransmissionReference"
+    static let jobID = "JobID"
+    static let originalTransmissionReference = "OriginalTransmissionReference"
+    static let dateCreated = "DateCreated"
+    static let createDate = "CreateDate"
+    static let dateTimeOriginal = "DateTimeOriginal"
+    static let city = "City"
+    static let country = "Country"
+    static let countryPrimaryLocationName = "Country-PrimaryLocationName"
+    static let event = "Event"
+    static let rating = "Rating"
+    static let label = "Label"
+    static let claimGenerator = "Claim_generator"
+}
+
 /// Manages a persistent ExifTool process in `-stay_open` mode for fast batch operations.
 @Observable
 final class ExifToolService {
@@ -18,7 +52,7 @@ final class ExifToolService {
     private var isExecuting = false
 
     var exifToolPath: String? {
-        let sourceRaw = UserDefaults.standard.string(forKey: "exifToolSource") ?? "bundled"
+        let sourceRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.exifToolSource) ?? "bundled"
 
         switch sourceRaw {
         case "bundled":
@@ -26,7 +60,7 @@ final class ExifToolService {
         case "homebrew":
             return homebrewExifToolPath
         case "custom":
-            if let customPath = UserDefaults.standard.string(forKey: "exifToolCustomPath"),
+            if let customPath = UserDefaults.standard.string(forKey: UserDefaultsKeys.exifToolCustomPath),
                FileManager.default.isExecutableFile(atPath: customPath) {
                 return customPath
             }
@@ -207,29 +241,29 @@ final class ExifToolService {
         }
 
         return IPTCMetadata(
-            title: dict["Headline"] as? String
-                ?? dict["Title"] as? String
-                ?? dict["ObjectName"] as? String,
-            description: dict["Description"] as? String ?? dict["Caption-Abstract"] as? String,
-            extendedDescription: dict["ExtDescrAccessibility"] as? String,
-            keywords: parseStringOrArray(dict["Subject"] ?? dict["Keywords"]),
-            personShown: parseStringOrArray(dict["PersonInImage"]),
-            digitalSourceType: (dict["DigitalSourceType"] as? String).flatMap { DigitalSourceType(rawValue: $0) },
-            latitude: dict["GPSLatitude"] as? Double,
-            longitude: dict["GPSLongitude"] as? Double,
-            creator: parseFirstString(dict["Creator"] ?? dict["By-line"]),
-            credit: dict["Credit"] as? String,
-            copyright: dict["Rights"] as? String ?? dict["CopyrightNotice"] as? String,
-            jobId: dict["TransmissionReference"] as? String
-                ?? dict["JobID"] as? String
-                ?? dict["OriginalTransmissionReference"] as? String,
-            dateCreated: dict["DateCreated"] as? String ?? dict["CreateDate"] as? String,
-            captureDate: dict["DateTimeOriginal"] as? String,
-            city: dict["City"] as? String,
-            country: dict["Country"] as? String ?? dict["Country-PrimaryLocationName"] as? String,
-            event: dict["Event"] as? String,
-            rating: dict["Rating"] as? Int,
-            label: ColorLabel.canonicalMetadataLabel(dict["Label"] as? String)
+            title: dict[ExifToolReadKey.headline] as? String
+                ?? dict[ExifToolReadKey.title] as? String
+                ?? dict[ExifToolReadKey.objectName] as? String,
+            description: dict[ExifToolReadKey.description] as? String ?? dict[ExifToolReadKey.captionAbstract] as? String,
+            extendedDescription: dict[ExifToolReadKey.extDescrAccessibility] as? String,
+            keywords: parseStringOrArray(dict[ExifToolReadKey.subject] ?? dict[ExifToolReadKey.keywords]),
+            personShown: parseStringOrArray(dict[ExifToolReadKey.personInImage]),
+            digitalSourceType: (dict[ExifToolReadKey.digitalSourceType] as? String).flatMap { DigitalSourceType(rawValue: $0) },
+            latitude: dict[ExifToolReadKey.gpsLatitude] as? Double,
+            longitude: dict[ExifToolReadKey.gpsLongitude] as? Double,
+            creator: parseFirstString(dict[ExifToolReadKey.creator] ?? dict[ExifToolReadKey.byLine]),
+            credit: dict[ExifToolReadKey.credit] as? String,
+            copyright: dict[ExifToolReadKey.rights] as? String ?? dict[ExifToolReadKey.copyrightNotice] as? String,
+            jobId: dict[ExifToolReadKey.transmissionReference] as? String
+                ?? dict[ExifToolReadKey.jobID] as? String
+                ?? dict[ExifToolReadKey.originalTransmissionReference] as? String,
+            dateCreated: dict[ExifToolReadKey.dateCreated] as? String ?? dict[ExifToolReadKey.createDate] as? String,
+            captureDate: dict[ExifToolReadKey.dateTimeOriginal] as? String,
+            city: dict[ExifToolReadKey.city] as? String,
+            country: dict[ExifToolReadKey.country] as? String ?? dict[ExifToolReadKey.countryPrimaryLocationName] as? String,
+            event: dict[ExifToolReadKey.event] as? String,
+            rating: dict[ExifToolReadKey.rating] as? Int,
+            label: ColorLabel.canonicalMetadataLabel(dict[ExifToolReadKey.label] as? String)
         )
     }
 
@@ -242,27 +276,27 @@ final class ExifToolService {
         var normalizedFields = fields
         // Bridge tends to prioritize IPTC Keywords/Copyright over XMP for some formats.
         // Mirror XMP writes into IPTC when not explicitly provided.
-        if let subject = normalizedFields["XMP:Subject"], normalizedFields["IPTC:Keywords"] == nil {
-            normalizedFields["IPTC:Keywords"] = subject
+        if let subject = normalizedFields[ExifToolWriteTag.subject], normalizedFields[ExifToolWriteTag.iptcKeywords] == nil {
+            normalizedFields[ExifToolWriteTag.iptcKeywords] = subject
         }
-        if let rights = normalizedFields["XMP:Rights"], normalizedFields["IPTC:CopyrightNotice"] == nil {
-            normalizedFields["IPTC:CopyrightNotice"] = rights
+        if let rights = normalizedFields[ExifToolWriteTag.rights], normalizedFields[ExifToolWriteTag.iptcCopyrightNotice] == nil {
+            normalizedFields[ExifToolWriteTag.iptcCopyrightNotice] = rights
         }
-        if let title = normalizedFields["XMP:Title"], normalizedFields["XMP-photoshop:Headline"] == nil {
-            normalizedFields["XMP-photoshop:Headline"] = title
+        if let title = normalizedFields[ExifToolWriteTag.xmpTitle], normalizedFields[ExifToolWriteTag.headline] == nil {
+            normalizedFields[ExifToolWriteTag.headline] = title
         }
-        if let headline = normalizedFields["XMP-photoshop:Headline"], normalizedFields["IPTC:Headline"] == nil {
-            normalizedFields["IPTC:Headline"] = headline
+        if let headline = normalizedFields[ExifToolWriteTag.headline], normalizedFields[ExifToolWriteTag.iptcHeadline] == nil {
+            normalizedFields[ExifToolWriteTag.iptcHeadline] = headline
         }
-        if let creator = normalizedFields["XMP:Creator"], normalizedFields["IPTC:By-line"] == nil {
-            normalizedFields["IPTC:By-line"] = creator
+        if let creator = normalizedFields[ExifToolWriteTag.creator], normalizedFields[ExifToolWriteTag.iptcByLine] == nil {
+            normalizedFields[ExifToolWriteTag.iptcByLine] = creator
         }
-        if let jobId = normalizedFields["XMP-photoshop:TransmissionReference"] {
-            if normalizedFields["IPTC:OriginalTransmissionReference"] == nil {
-                normalizedFields["IPTC:OriginalTransmissionReference"] = jobId
+        if let jobId = normalizedFields[ExifToolWriteTag.transmissionReference] {
+            if normalizedFields[ExifToolWriteTag.iptcOriginalTransmissionReference] == nil {
+                normalizedFields[ExifToolWriteTag.iptcOriginalTransmissionReference] = jobId
             }
-            if normalizedFields["IPTC:JobID"] == nil {
-                normalizedFields["IPTC:JobID"] = jobId
+            if normalizedFields[ExifToolWriteTag.iptcJobID] == nil {
+                normalizedFields[ExifToolWriteTag.iptcJobID] = jobId
             }
         }
 
@@ -324,12 +358,12 @@ final class ExifToolService {
     /// Write rating to files.
     func writeRating(_ rating: StarRating, to urls: [URL]) async throws {
         let value = rating == .none ? "" : String(rating.rawValue)
-        try await writeFields(["XMP:Rating": value], to: urls)
+        try await writeFields([ExifToolWriteTag.rating: value], to: urls)
     }
 
     /// Write color label to files.
     func writeLabel(_ label: ColorLabel, to urls: [URL]) async throws {
-        try await writeFields(["XMP:Label": label.xmpLabelValue ?? ""], to: urls)
+        try await writeFields([ExifToolWriteTag.label: label.xmpLabelValue ?? ""], to: urls)
     }
 
     /// Read technical/EXIF metadata for a single file.

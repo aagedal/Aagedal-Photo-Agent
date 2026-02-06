@@ -16,6 +16,23 @@ struct C2PAMetadata {
     let manifests: [C2PAManifest]
     var activeManifest: C2PAManifest? { manifests.last }
 
+    private enum C2PAKey {
+        static let jumdType = "JUMDType"
+        static let jumdLabel = "JUMDLabel"
+        static let c2ma = "c2ma"
+        static let c2paClaim = "c2pa.claim"
+        static let c2paActions = "c2pa.actions"
+        static let creativeWork = "stds.schema-org.CreativeWork"
+        static let c2paIngredientPrefix = "c2pa.ingredient"
+        static let claimGenerator = "Claim_generator"
+        static let claimGeneratorInfoName = "Claim_Generator_InfoName"
+        static let claimGeneratorInfoVersion = "Claim_Generator_InfoVersion"
+        static let alg = "Alg"
+        static let title = "Title"
+        static let actionsAction = "ActionsAction"
+        static let authorName = "AuthorName"
+    }
+
     /// Parse `-json -G3 -JUMBF:All` output into per-manifest data.
     ///
     /// Keys are prefixed like `Doc1-1:...`, `Doc1-2:...` where each `Doc1-N`
@@ -43,8 +60,8 @@ struct C2PAMetadata {
             groupedKeys[manifestPrefix]?.append((key: key, suffix: fieldName))
 
             // Detect manifest boxes by JUMDType containing "c2ma"
-            if fieldName == "JUMDType", docPrefix == manifestPrefix {
-                if let value = dict[key] as? String, value.contains("c2ma") {
+            if fieldName == C2PAKey.jumdType, docPrefix == manifestPrefix {
+                if let value = dict[key] as? String, value.contains(C2PAKey.c2ma) {
                     manifestPrefixes.append(manifestPrefix)
                 }
             }
@@ -90,20 +107,20 @@ struct C2PAMetadata {
                 let nodePrefix = String(key[..<colonRange.lowerBound])
 
                 // Claim fields
-                if manifestDict["\(nodePrefix):JUMDLabel"] as? String == "c2pa.claim" {
+                if manifestDict["\(nodePrefix):\(C2PAKey.jumdLabel)"] as? String == C2PAKey.c2paClaim {
                     switch field {
-                    case "Claim_generator": claimGenerator = value as? String
-                    case "Claim_Generator_InfoName": generatorName = value as? String
-                    case "Claim_Generator_InfoVersion": generatorVersion = value as? String
-                    case "Alg": algorithm = value as? String
-                    case "Title": title = value as? String
+                    case C2PAKey.claimGenerator: claimGenerator = value as? String
+                    case C2PAKey.claimGeneratorInfoName: generatorName = value as? String
+                    case C2PAKey.claimGeneratorInfoVersion: generatorVersion = value as? String
+                    case C2PAKey.alg: algorithm = value as? String
+                    case C2PAKey.title: title = value as? String
                     default: break
                     }
                 }
 
                 // Actions
-                if let label = manifestDict["\(nodePrefix):JUMDLabel"] as? String,
-                   label == "c2pa.actions", field == "ActionsAction" {
+                if let label = manifestDict["\(nodePrefix):\(C2PAKey.jumdLabel)"] as? String,
+                   label == C2PAKey.c2paActions, field == C2PAKey.actionsAction {
                     if let actionArray = value as? [String] {
                         actions = actionArray.map { Self.formatAction($0) }
                     } else if let single = value as? String {
@@ -112,20 +129,20 @@ struct C2PAMetadata {
                 }
 
                 // Author (CreativeWork)
-                if let label = manifestDict["\(nodePrefix):JUMDLabel"] as? String,
-                   label == "stds.schema-org.CreativeWork", field == "AuthorName" {
+                if let label = manifestDict["\(nodePrefix):\(C2PAKey.jumdLabel)"] as? String,
+                   label == C2PAKey.creativeWork, field == C2PAKey.authorName {
                     author = value as? String
                 }
 
                 // Ingredient
-                if let label = manifestDict["\(nodePrefix):JUMDLabel"] as? String,
-                   label.hasPrefix("c2pa.ingredient"), field == "Title" {
+                if let label = manifestDict["\(nodePrefix):\(C2PAKey.jumdLabel)"] as? String,
+                   label.hasPrefix(C2PAKey.c2paIngredientPrefix), field == C2PAKey.title {
                     ingredientTitle = value as? String
                 }
             }
 
             parsed.append(C2PAManifest(
-                label: manifestDict["\(prefix):JUMDLabel"] as? String ?? prefix,
+                label: manifestDict["\(prefix):\(C2PAKey.jumdLabel)"] as? String ?? prefix,
                 claimGenerator: claimGenerator,
                 generatorName: generatorName,
                 generatorVersion: generatorVersion,

@@ -55,39 +55,39 @@ final class FaceRecognitionViewModel {
         var config = FaceDetectionService.DetectionConfig()
 
         // Recognition mode settings
-        let modeRaw = UserDefaults.standard.string(forKey: "faceRecognitionMode") ?? "vision"
+        let modeRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.faceRecognitionMode) ?? "vision"
         config.recognitionMode = FaceRecognitionMode(rawValue: modeRaw) ?? .visionFeaturePrint
 
         // Mode-specific clustering thresholds
         let threshold: Double
         switch config.recognitionMode {
         case .visionFeaturePrint:
-            threshold = UserDefaults.standard.object(forKey: "visionClusteringThreshold") as? Double ?? 0.40
+            threshold = UserDefaults.standard.object(forKey: UserDefaultsKeys.visionClusteringThreshold) as? Double ?? 0.40
         case .faceAndClothing:
-            threshold = UserDefaults.standard.object(forKey: "faceClothingClusteringThreshold") as? Double ?? 0.48
+            threshold = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceClothingClusteringThreshold) as? Double ?? 0.48
         }
         config.clusteringThreshold = Float(threshold)
 
-        let confidence = UserDefaults.standard.object(forKey: "faceMinConfidence") as? Double
+        let confidence = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceMinConfidence) as? Double
         config.minConfidence = Float(confidence ?? 0.7)
-        let minSize = UserDefaults.standard.object(forKey: "faceMinFaceSize") as? Int
+        let minSize = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceMinFaceSize) as? Int
         config.minFaceSize = minSize ?? 50
 
-        let faceWeight = UserDefaults.standard.object(forKey: "faceFaceWeight") as? Double
+        let faceWeight = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceFaceWeight) as? Double
         config.faceWeight = Float(faceWeight ?? 0.7)
         config.clothingWeight = 1.0 - config.faceWeight
 
         // Clustering algorithm settings
-        let algorithmRaw = UserDefaults.standard.string(forKey: "faceClusteringAlgorithm") ?? "chineseWhispers"
+        let algorithmRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.faceClusteringAlgorithm) ?? "chineseWhispers"
         config.clusteringAlgorithm = FaceClusteringAlgorithm(rawValue: algorithmRaw) ?? .chineseWhispers
 
-        let qualityGate = UserDefaults.standard.object(forKey: "faceQualityGateThreshold") as? Double
+        let qualityGate = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceQualityGateThreshold) as? Double
         config.qualityGateThreshold = Float(qualityGate ?? 0.6)
 
-        let useQualityWeighted = UserDefaults.standard.object(forKey: "faceUseQualityWeightedEdges") as? Bool
+        let useQualityWeighted = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceUseQualityWeightedEdges) as? Bool
         config.useQualityWeightedEdges = useQualityWeighted ?? true
 
-        let attachSecondPass = UserDefaults.standard.object(forKey: "faceClothingSecondPassAttachToExisting") as? Bool
+        let attachSecondPass = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceClothingSecondPassAttachToExisting) as? Bool
         config.faceClothingSecondPassAttachToExisting = attachSecondPass ?? false
 
         return config
@@ -95,7 +95,7 @@ final class FaceRecognitionViewModel {
 
     /// Current recognition mode from settings
     var recognitionMode: FaceRecognitionMode {
-        let modeRaw = UserDefaults.standard.string(forKey: "faceRecognitionMode") ?? "vision"
+        let modeRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.faceRecognitionMode) ?? "vision"
         return FaceRecognitionMode(rawValue: modeRaw) ?? .visionFeaturePrint
     }
 
@@ -206,7 +206,7 @@ final class FaceRecognitionViewModel {
         guard !isScanning else { return }
 
         let config = detectionConfig
-        let visionThreshold = UserDefaults.standard.object(forKey: "visionClusteringThreshold") as? Double ?? 0.40
+        let visionThreshold = UserDefaults.standard.object(forKey: UserDefaultsKeys.visionClusteringThreshold) as? Double ?? 0.40
         let visionClusteringThreshold = Float(visionThreshold)
         let storageService = self.storageService
         let detectionService = self.detectionService
@@ -428,7 +428,7 @@ final class FaceRecognitionViewModel {
             }
 
             // Auto-match known people if Always On mode
-            let modeRaw = UserDefaults.standard.string(forKey: "knownPeopleMode") ?? "off"
+            let modeRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.knownPeopleMode) ?? "off"
             let mode = KnownPeopleMode(rawValue: modeRaw) ?? .off
             if mode == .alwaysOn {
                 await self.matchKnownPeopleIntegrated()
@@ -900,7 +900,7 @@ final class FaceRecognitionViewModel {
             let merged = mergePersons(existing: existing.personShown, adding: names)
             guard merged != existing.personShown else { return }
             let value = merged.joined(separator: ", ")
-            try await exifToolService.writeFields(["XMP-iptcExt:PersonInImage": value], to: [url])
+            try await exifToolService.writeFields([ExifToolWriteTag.personInImage: value], to: [url])
         } catch {
             // Continue with next image
         }
@@ -980,9 +980,9 @@ final class FaceRecognitionViewModel {
             let results = try await exifToolService.readBatchBasicMetadata(urls: urls)
             var lookup: [URL: Bool] = [:]
             for dict in results {
-                guard let sourcePath = dict["SourceFile"] as? String else { continue }
+                guard let sourcePath = dict[ExifToolReadKey.sourceFile] as? String else { continue }
                 let sourceURL = URL(fileURLWithPath: sourcePath)
-                let hasC2PA = dict.keys.contains { $0.hasPrefix("JUMD") || $0.hasPrefix("C2PA") || $0 == "Claim_generator" }
+                let hasC2PA = dict.keys.contains { $0.hasPrefix("JUMD") || $0.hasPrefix("C2PA") || $0 == ExifToolReadKey.claimGenerator }
                 lookup[sourceURL] = hasC2PA
             }
             return lookup
@@ -994,7 +994,7 @@ final class FaceRecognitionViewModel {
     private func loadBaseMetadata(url: URL, includeXmp: Bool) async -> IPTCMetadata? {
         do {
             var metadata = try await exifToolService.readFullMetadata(url: url)
-            let preferXmp = UserDefaults.standard.bool(forKey: "metadataPreferXMPSidecar")
+            let preferXmp = UserDefaults.standard.bool(forKey: UserDefaultsKeys.metadataPreferXMPSidecar)
             if (includeXmp || preferXmp), let xmpMetadata = xmpSidecarService.loadSidecar(for: url) {
                 metadata = metadata.merged(preferring: xmpMetadata)
             }

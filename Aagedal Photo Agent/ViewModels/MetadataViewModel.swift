@@ -74,7 +74,7 @@ final class MetadataViewModel {
     var isBatchEdit: Bool { selectedCount > 1 }
 
     private var prefersXMPSidecar: Bool {
-        UserDefaults.standard.bool(forKey: "metadataPreferXMPSidecar")
+        UserDefaults.standard.bool(forKey: UserDefaultsKeys.metadataPreferXMPSidecar)
     }
 
     private func defaultReferenceSource(hasXmp: Bool) -> MetadataReferenceSource {
@@ -443,66 +443,66 @@ final class MetadataViewModel {
 
                 if isBatch {
                     // Batch: only write non-empty fields
-                    if let v = edited.title, !v.isEmpty { fields["XMP-photoshop:Headline"] = v }
-                    if let v = edited.description, !v.isEmpty { fields["XMP:Description"] = v }
-                    if let v = edited.extendedDescription, !v.isEmpty { fields["XMP-iptcCore:ExtDescrAccessibility"] = v }
-                    if !edited.keywords.isEmpty { fields["XMP:Subject"] = edited.keywords.joined(separator: ", ") }
-                    if !edited.personShown.isEmpty { fields["XMP-iptcExt:PersonInImage"] = edited.personShown.joined(separator: ", ") }
-                    if let v = edited.digitalSourceType { fields["XMP-iptcExt:DigitalSourceType"] = v.rawValue }
+                    if let v = edited.title, !v.isEmpty { fields[ExifToolWriteTag.headline] = v }
+                    if let v = edited.description, !v.isEmpty { fields[ExifToolWriteTag.description] = v }
+                    if let v = edited.extendedDescription, !v.isEmpty { fields[ExifToolWriteTag.extendedDescription] = v }
+                    if !edited.keywords.isEmpty { fields[ExifToolWriteTag.subject] = edited.keywords.joined(separator: ", ") }
+                    if !edited.personShown.isEmpty { fields[ExifToolWriteTag.personInImage] = edited.personShown.joined(separator: ", ") }
+                    if let v = edited.digitalSourceType { fields[ExifToolWriteTag.digitalSourceType] = v.rawValue }
                     if let lat = edited.latitude, let lon = edited.longitude {
-                        fields["EXIF:GPSLatitude"] = String(abs(lat))
-                        fields["EXIF:GPSLatitudeRef"] = lat >= 0 ? "N" : "S"
-                        fields["EXIF:GPSLongitude"] = String(abs(lon))
-                        fields["EXIF:GPSLongitudeRef"] = lon >= 0 ? "E" : "W"
+                        fields[ExifToolWriteTag.gpsLatitude] = String(abs(lat))
+                        fields[ExifToolWriteTag.gpsLatitudeRef] = lat >= 0 ? "N" : "S"
+                        fields[ExifToolWriteTag.gpsLongitude] = String(abs(lon))
+                        fields[ExifToolWriteTag.gpsLongitudeRef] = lon >= 0 ? "E" : "W"
                     }
-                    if let v = edited.creator, !v.isEmpty { fields["XMP:Creator"] = v }
-                    if let v = edited.credit, !v.isEmpty { fields["XMP-photoshop:Credit"] = v }
-                    if let v = edited.copyright, !v.isEmpty { fields["XMP:Rights"] = v }
-                    if let v = edited.jobId, !v.isEmpty { fields["XMP-photoshop:TransmissionReference"] = v }
-                    if let v = edited.dateCreated, !v.isEmpty { fields["XMP:DateCreated"] = v }
-                    if let v = edited.city, !v.isEmpty { fields["XMP-photoshop:City"] = v }
-                    if let v = edited.country, !v.isEmpty { fields["XMP-photoshop:Country"] = v }
-                    if let v = edited.event, !v.isEmpty { fields["XMP-iptcExt:Event"] = v }
+                    if let v = edited.creator, !v.isEmpty { fields[ExifToolWriteTag.creator] = v }
+                    if let v = edited.credit, !v.isEmpty { fields[ExifToolWriteTag.credit] = v }
+                    if let v = edited.copyright, !v.isEmpty { fields[ExifToolWriteTag.rights] = v }
+                    if let v = edited.jobId, !v.isEmpty { fields[ExifToolWriteTag.transmissionReference] = v }
+                    if let v = edited.dateCreated, !v.isEmpty { fields[ExifToolWriteTag.dateCreated] = v }
+                    if let v = edited.city, !v.isEmpty { fields[ExifToolWriteTag.city] = v }
+                    if let v = edited.country, !v.isEmpty { fields[ExifToolWriteTag.country] = v }
+                    if let v = edited.event, !v.isEmpty { fields[ExifToolWriteTag.event] = v }
                 } else {
                     // Single: write all changed fields
-                    if edited.title != original?.title { fields["XMP-photoshop:Headline"] = edited.title ?? "" }
-                    if edited.description != original?.description { fields["XMP:Description"] = edited.description ?? "" }
+                    if edited.title != original?.title { fields[ExifToolWriteTag.headline] = edited.title ?? "" }
+                    if edited.description != original?.description { fields[ExifToolWriteTag.description] = edited.description ?? "" }
                     if edited.extendedDescription != original?.extendedDescription {
-                        fields["XMP-iptcCore:ExtDescrAccessibility"] = edited.extendedDescription ?? ""
+                        fields[ExifToolWriteTag.extendedDescription] = edited.extendedDescription ?? ""
                     }
                     if edited.keywords != original?.keywords {
                         // Clear then set keywords
-                        fields["XMP:Subject"] = edited.keywords.joined(separator: ", ")
+                        fields[ExifToolWriteTag.subject] = edited.keywords.joined(separator: ", ")
                     }
                     if edited.personShown != original?.personShown {
-                        fields["XMP-iptcExt:PersonInImage"] = edited.personShown.joined(separator: ", ")
+                        fields[ExifToolWriteTag.personInImage] = edited.personShown.joined(separator: ", ")
                     }
                     if edited.digitalSourceType != original?.digitalSourceType {
-                        fields["XMP-iptcExt:DigitalSourceType"] = edited.digitalSourceType?.rawValue ?? ""
+                        fields[ExifToolWriteTag.digitalSourceType] = edited.digitalSourceType?.rawValue ?? ""
                     }
                     if edited.latitude != original?.latitude || edited.longitude != original?.longitude {
                         if let lat = edited.latitude, let lon = edited.longitude {
-                            fields["EXIF:GPSLatitude"] = String(abs(lat))
-                            fields["EXIF:GPSLatitudeRef"] = lat >= 0 ? "N" : "S"
-                            fields["EXIF:GPSLongitude"] = String(abs(lon))
-                            fields["EXIF:GPSLongitudeRef"] = lon >= 0 ? "E" : "W"
+                            fields[ExifToolWriteTag.gpsLatitude] = String(abs(lat))
+                            fields[ExifToolWriteTag.gpsLatitudeRef] = lat >= 0 ? "N" : "S"
+                            fields[ExifToolWriteTag.gpsLongitude] = String(abs(lon))
+                            fields[ExifToolWriteTag.gpsLongitudeRef] = lon >= 0 ? "E" : "W"
                         } else {
-                            fields["EXIF:GPSLatitude"] = ""
-                            fields["EXIF:GPSLatitudeRef"] = ""
-                            fields["EXIF:GPSLongitude"] = ""
-                            fields["EXIF:GPSLongitudeRef"] = ""
+                            fields[ExifToolWriteTag.gpsLatitude] = ""
+                            fields[ExifToolWriteTag.gpsLatitudeRef] = ""
+                            fields[ExifToolWriteTag.gpsLongitude] = ""
+                            fields[ExifToolWriteTag.gpsLongitudeRef] = ""
                         }
                     }
-                    if edited.creator != original?.creator { fields["XMP:Creator"] = edited.creator ?? "" }
-                    if edited.credit != original?.credit { fields["XMP-photoshop:Credit"] = edited.credit ?? "" }
-                    if edited.copyright != original?.copyright { fields["XMP:Rights"] = edited.copyright ?? "" }
+                    if edited.creator != original?.creator { fields[ExifToolWriteTag.creator] = edited.creator ?? "" }
+                    if edited.credit != original?.credit { fields[ExifToolWriteTag.credit] = edited.credit ?? "" }
+                    if edited.copyright != original?.copyright { fields[ExifToolWriteTag.rights] = edited.copyright ?? "" }
                     if edited.jobId != original?.jobId {
-                        fields["XMP-photoshop:TransmissionReference"] = edited.jobId ?? ""
+                        fields[ExifToolWriteTag.transmissionReference] = edited.jobId ?? ""
                     }
-                    if edited.dateCreated != original?.dateCreated { fields["XMP:DateCreated"] = edited.dateCreated ?? "" }
-                    if edited.city != original?.city { fields["XMP-photoshop:City"] = edited.city ?? "" }
-                    if edited.country != original?.country { fields["XMP-photoshop:Country"] = edited.country ?? "" }
-                    if edited.event != original?.event { fields["XMP-iptcExt:Event"] = edited.event ?? "" }
+                    if edited.dateCreated != original?.dateCreated { fields[ExifToolWriteTag.dateCreated] = edited.dateCreated ?? "" }
+                    if edited.city != original?.city { fields[ExifToolWriteTag.city] = edited.city ?? "" }
+                    if edited.country != original?.country { fields[ExifToolWriteTag.country] = edited.country ?? "" }
+                    if edited.event != original?.event { fields[ExifToolWriteTag.event] = edited.event ?? "" }
                 }
 
                 if !fields.isEmpty {
@@ -617,31 +617,31 @@ final class MetadataViewModel {
 
     private func overwriteFields(from metadata: IPTCMetadata) -> [String: String] {
         var fields: [String: String] = [:]
-        fields["XMP-photoshop:Headline"] = metadata.title ?? ""
-        fields["XMP:Description"] = metadata.description ?? ""
-        fields["XMP-iptcCore:ExtDescrAccessibility"] = metadata.extendedDescription ?? ""
-        fields["XMP:Subject"] = metadata.keywords.joined(separator: ", ")
-        fields["XMP-iptcExt:PersonInImage"] = metadata.personShown.joined(separator: ", ")
-        fields["XMP-iptcExt:DigitalSourceType"] = metadata.digitalSourceType?.rawValue ?? ""
-        fields["XMP:Creator"] = metadata.creator ?? ""
-        fields["XMP-photoshop:Credit"] = metadata.credit ?? ""
-        fields["XMP:Rights"] = metadata.copyright ?? ""
-        fields["XMP-photoshop:TransmissionReference"] = metadata.jobId ?? ""
-        fields["XMP:DateCreated"] = metadata.dateCreated ?? ""
-        fields["XMP-photoshop:City"] = metadata.city ?? ""
-        fields["XMP-photoshop:Country"] = metadata.country ?? ""
-        fields["XMP-iptcExt:Event"] = metadata.event ?? ""
+        fields[ExifToolWriteTag.headline] = metadata.title ?? ""
+        fields[ExifToolWriteTag.description] = metadata.description ?? ""
+        fields[ExifToolWriteTag.extendedDescription] = metadata.extendedDescription ?? ""
+        fields[ExifToolWriteTag.subject] = metadata.keywords.joined(separator: ", ")
+        fields[ExifToolWriteTag.personInImage] = metadata.personShown.joined(separator: ", ")
+        fields[ExifToolWriteTag.digitalSourceType] = metadata.digitalSourceType?.rawValue ?? ""
+        fields[ExifToolWriteTag.creator] = metadata.creator ?? ""
+        fields[ExifToolWriteTag.credit] = metadata.credit ?? ""
+        fields[ExifToolWriteTag.rights] = metadata.copyright ?? ""
+        fields[ExifToolWriteTag.transmissionReference] = metadata.jobId ?? ""
+        fields[ExifToolWriteTag.dateCreated] = metadata.dateCreated ?? ""
+        fields[ExifToolWriteTag.city] = metadata.city ?? ""
+        fields[ExifToolWriteTag.country] = metadata.country ?? ""
+        fields[ExifToolWriteTag.event] = metadata.event ?? ""
 
         if let lat = metadata.latitude, let lon = metadata.longitude {
-            fields["EXIF:GPSLatitude"] = String(abs(lat))
-            fields["EXIF:GPSLatitudeRef"] = lat >= 0 ? "N" : "S"
-            fields["EXIF:GPSLongitude"] = String(abs(lon))
-            fields["EXIF:GPSLongitudeRef"] = lon >= 0 ? "E" : "W"
+            fields[ExifToolWriteTag.gpsLatitude] = String(abs(lat))
+            fields[ExifToolWriteTag.gpsLatitudeRef] = lat >= 0 ? "N" : "S"
+            fields[ExifToolWriteTag.gpsLongitude] = String(abs(lon))
+            fields[ExifToolWriteTag.gpsLongitudeRef] = lon >= 0 ? "E" : "W"
         } else {
-            fields["EXIF:GPSLatitude"] = ""
-            fields["EXIF:GPSLatitudeRef"] = ""
-            fields["EXIF:GPSLongitude"] = ""
-            fields["EXIF:GPSLongitudeRef"] = ""
+            fields[ExifToolWriteTag.gpsLatitude] = ""
+            fields[ExifToolWriteTag.gpsLatitudeRef] = ""
+            fields[ExifToolWriteTag.gpsLongitude] = ""
+            fields[ExifToolWriteTag.gpsLongitudeRef] = ""
         }
 
         return fields
@@ -841,21 +841,21 @@ final class MetadataViewModel {
 
                     if changed {
                         var fields: [String: String] = [:]
-                        if resolved.title != meta.title { fields["XMP-photoshop:Headline"] = resolved.title ?? "" }
-                        if resolved.description != meta.description { fields["XMP:Description"] = resolved.description ?? "" }
+                        if resolved.title != meta.title { fields[ExifToolWriteTag.headline] = resolved.title ?? "" }
+                        if resolved.description != meta.description { fields[ExifToolWriteTag.description] = resolved.description ?? "" }
                         if resolved.extendedDescription != meta.extendedDescription {
-                            fields["XMP-iptcCore:ExtDescrAccessibility"] = resolved.extendedDescription ?? ""
+                            fields[ExifToolWriteTag.extendedDescription] = resolved.extendedDescription ?? ""
                         }
-                        if resolved.creator != meta.creator { fields["XMP:Creator"] = resolved.creator ?? "" }
-                        if resolved.credit != meta.credit { fields["XMP-photoshop:Credit"] = resolved.credit ?? "" }
-                        if resolved.copyright != meta.copyright { fields["XMP:Rights"] = resolved.copyright ?? "" }
+                        if resolved.creator != meta.creator { fields[ExifToolWriteTag.creator] = resolved.creator ?? "" }
+                        if resolved.credit != meta.credit { fields[ExifToolWriteTag.credit] = resolved.credit ?? "" }
+                        if resolved.copyright != meta.copyright { fields[ExifToolWriteTag.rights] = resolved.copyright ?? "" }
                         if resolved.jobId != meta.jobId {
-                            fields["XMP-photoshop:TransmissionReference"] = resolved.jobId ?? ""
+                            fields[ExifToolWriteTag.transmissionReference] = resolved.jobId ?? ""
                         }
-                        if resolved.dateCreated != meta.dateCreated { fields["XMP:DateCreated"] = resolved.dateCreated ?? "" }
-                        if resolved.city != meta.city { fields["XMP-photoshop:City"] = resolved.city ?? "" }
-                        if resolved.country != meta.country { fields["XMP-photoshop:Country"] = resolved.country ?? "" }
-                        if resolved.event != meta.event { fields["XMP-iptcExt:Event"] = resolved.event ?? "" }
+                        if resolved.dateCreated != meta.dateCreated { fields[ExifToolWriteTag.dateCreated] = resolved.dateCreated ?? "" }
+                        if resolved.city != meta.city { fields[ExifToolWriteTag.city] = resolved.city ?? "" }
+                        if resolved.country != meta.country { fields[ExifToolWriteTag.country] = resolved.country ?? "" }
+                        if resolved.event != meta.event { fields[ExifToolWriteTag.event] = resolved.event ?? "" }
 
                         if !fields.isEmpty {
                             try await exifToolService.writeFields(fields, to: [url])
@@ -908,21 +908,21 @@ final class MetadataViewModel {
 
                     if changed {
                         var fields: [String: String] = [:]
-                        if resolved.title != meta.title { fields["XMP-photoshop:Headline"] = resolved.title ?? "" }
-                        if resolved.description != meta.description { fields["XMP:Description"] = resolved.description ?? "" }
+                        if resolved.title != meta.title { fields[ExifToolWriteTag.headline] = resolved.title ?? "" }
+                        if resolved.description != meta.description { fields[ExifToolWriteTag.description] = resolved.description ?? "" }
                         if resolved.extendedDescription != meta.extendedDescription {
-                            fields["XMP-iptcCore:ExtDescrAccessibility"] = resolved.extendedDescription ?? ""
+                            fields[ExifToolWriteTag.extendedDescription] = resolved.extendedDescription ?? ""
                         }
-                        if resolved.creator != meta.creator { fields["XMP:Creator"] = resolved.creator ?? "" }
-                        if resolved.credit != meta.credit { fields["XMP-photoshop:Credit"] = resolved.credit ?? "" }
-                        if resolved.copyright != meta.copyright { fields["XMP:Rights"] = resolved.copyright ?? "" }
+                        if resolved.creator != meta.creator { fields[ExifToolWriteTag.creator] = resolved.creator ?? "" }
+                        if resolved.credit != meta.credit { fields[ExifToolWriteTag.credit] = resolved.credit ?? "" }
+                        if resolved.copyright != meta.copyright { fields[ExifToolWriteTag.rights] = resolved.copyright ?? "" }
                         if resolved.jobId != meta.jobId {
-                            fields["XMP-photoshop:TransmissionReference"] = resolved.jobId ?? ""
+                            fields[ExifToolWriteTag.transmissionReference] = resolved.jobId ?? ""
                         }
-                        if resolved.dateCreated != meta.dateCreated { fields["XMP:DateCreated"] = resolved.dateCreated ?? "" }
-                        if resolved.city != meta.city { fields["XMP-photoshop:City"] = resolved.city ?? "" }
-                        if resolved.country != meta.country { fields["XMP-photoshop:Country"] = resolved.country ?? "" }
-                        if resolved.event != meta.event { fields["XMP-iptcExt:Event"] = resolved.event ?? "" }
+                        if resolved.dateCreated != meta.dateCreated { fields[ExifToolWriteTag.dateCreated] = resolved.dateCreated ?? "" }
+                        if resolved.city != meta.city { fields[ExifToolWriteTag.city] = resolved.city ?? "" }
+                        if resolved.country != meta.country { fields[ExifToolWriteTag.country] = resolved.country ?? "" }
+                        if resolved.event != meta.event { fields[ExifToolWriteTag.event] = resolved.event ?? "" }
 
                         if !fields.isEmpty {
                             try await exifToolService.writeFields(fields, to: [image.url])
@@ -999,8 +999,8 @@ final class MetadataViewModel {
                     let result = try await geocodingService.reverseGeocode(latitude: lat, longitude: lon)
 
                     var fields: [String: String] = [:]
-                    if let city = result.city { fields["XMP-photoshop:City"] = city }
-                    if let country = result.country { fields["XMP-photoshop:Country"] = country }
+                    if let city = result.city { fields[ExifToolWriteTag.city] = city }
+                    if let country = result.country { fields[ExifToolWriteTag.country] = country }
 
                     if !fields.isEmpty {
                         try await exifToolService.writeFields(fields, to: [url])

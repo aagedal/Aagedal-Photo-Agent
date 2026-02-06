@@ -375,7 +375,7 @@ final class KnownPeopleService {
     }
 
     private func currentAutoMatchPolicy() -> MatchPolicy {
-        let minConfidence = Float(UserDefaults.standard.object(forKey: "knownPeopleMinConfidence") as? Double ?? 0.60)
+        let minConfidence = Float(UserDefaults.standard.object(forKey: UserDefaultsKeys.knownPeopleMinConfidence) as? Double ?? 0.60)
         return MatchPolicy(
             threshold: 0.45,
             minConfidence: minConfidence,

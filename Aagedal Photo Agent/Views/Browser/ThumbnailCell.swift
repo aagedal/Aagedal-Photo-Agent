@@ -126,7 +126,7 @@ struct ThumbnailCell: View, Equatable {
                 NSWorkspace.shared.selectFile(image.url.path, inFileViewerRootedAtPath: image.url.deletingLastPathComponent().path)
             }
 
-            if let editorPath = UserDefaults.standard.string(forKey: "defaultExternalEditor"),
+            if let editorPath = UserDefaults.standard.string(forKey: UserDefaultsKeys.defaultExternalEditor),
                !editorPath.isEmpty {
                 Button("Open in External Editor") {
                     NSWorkspace.shared.open(
