@@ -98,16 +98,7 @@ final class MetadataViewModel {
         }
     }
 
-    var selectedHavePendingSidecars: Bool {
-        guard let folderURL = currentFolderURL else { return false }
-        for url in selectedURLs {
-            if let sidecar = sidecarService.loadSidecar(for: url, in: folderURL),
-               sidecar.pendingChanges {
-                return true
-            }
-        }
-        return false
-    }
+    private(set) var selectedHavePendingSidecars = false
 
     func loadMetadata(for images: [ImageFile], folderURL: URL? = nil) {
         metadataLoadTask?.cancel()
@@ -116,6 +107,7 @@ final class MetadataViewModel {
         selectedCount = images.count
         selectedURLs = images.map(\.url)
         hasChanges = false
+        selectedHavePendingSidecars = false
         saveError = nil
         selectedHasC2PA = images.contains { $0.hasC2PA }
         sidecarHistory = []
@@ -207,6 +199,7 @@ final class MetadataViewModel {
                 await loadBatchMetadata(for: images, selectionSnapshot: selectionSnapshot)
                 guard !Task.isCancelled else { return }
                 self.isLoadingBatchMetadata = false
+                self.refreshPendingSidecarsFlag(for: selectionSnapshot)
             }
         }
     }
@@ -385,6 +378,19 @@ final class MetadataViewModel {
         // Pre-populate editing metadata with common values
         self.editingMetadata = common
         self.previousEditingMetadata = common
+    }
+
+    /// Check for pending sidecars once after batch loading, instead of on every UI access.
+    private func refreshPendingSidecarsFlag(for selectionSnapshot: Set<URL>) {
+        guard let folderURL = currentFolderURL else { return }
+        guard Set(selectedURLs) == selectionSnapshot else { return }
+        for url in selectedURLs {
+            if let sidecar = sidecarService.loadSidecar(for: url, in: folderURL),
+               sidecar.pendingChanges {
+                selectedHavePendingSidecars = true
+                return
+            }
+        }
     }
 
     /// Returns the placeholder text for a batch field that has differing values
@@ -1177,6 +1183,9 @@ final class MetadataViewModel {
         }
 
         hasChanges = pendingChanges
+        if !pendingChanges {
+            selectedHavePendingSidecars = false
+        }
     }
 
     private func applyBatchEdits(_ batchMeta: IPTCMetadata, to metadata: inout IPTCMetadata) {
@@ -1294,6 +1303,7 @@ final class MetadataViewModel {
 
             self.isProcessingFolder = false
             self.folderProcessProgress = ""
+            self.selectedHavePendingSidecars = false
         }
     }
 
@@ -1375,6 +1385,7 @@ final class MetadataViewModel {
             }
             // Reset state since we're in batch mode
             hasChanges = false
+            selectedHavePendingSidecars = false
             editingMetadata = IPTCMetadata()
         }
     }
@@ -1392,6 +1403,7 @@ final class MetadataViewModel {
             editingMetadata = IPTCMetadata()
         }
         hasChanges = false
+        selectedHavePendingSidecars = false
         sidecarHistory = []
     }
 
