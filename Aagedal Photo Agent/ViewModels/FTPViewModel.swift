@@ -79,8 +79,9 @@ final class FTPViewModel {
                         password: password
                     ) { progress in
                         Task { @MainActor in
+                            let wasComplete = self.uploadProgress[progress.fileName]?.isComplete ?? false
                             self.uploadProgress[progress.fileName] = progress
-                            if progress.isComplete {
+                            if !wasComplete && progress.isComplete {
                                 self.completedCount += 1
                             }
                             self.overallProgress = Double(self.completedCount) / Double(self.totalCount)

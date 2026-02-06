@@ -126,13 +126,57 @@ final class ExifToolService {
             }
         }
 
+        // Detect unexpected process termination to resume pending continuations
+        proc.terminationHandler = { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.handleProcessTermination()
+            }
+        }
+
         try proc.run()
         isRunning = true
         runningPath = path
     }
 
+    /// Called when the ExifTool process terminates unexpectedly.
+    /// Resumes any pending continuation and drains the command queue.
+    private func handleProcessTermination() {
+        guard isRunning else { return }
+        exifToolLog.warning("ExifTool process terminated unexpectedly")
+
+        pendingContinuation?.resume(throwing: NSError(
+            domain: "ExifToolService", code: 2,
+            userInfo: [NSLocalizedDescriptionKey: "ExifTool process terminated unexpectedly"]
+        ))
+        pendingContinuation = nil
+
+        let queuedCommands = commandQueue
+        commandQueue = []
+        isExecuting = false
+
+        stdoutPipe?.fileHandleForReading.readabilityHandler = nil
+        process = nil
+        isRunning = false
+        runningPath = nil
+
+        // Drain queued commands — each runs sendCommand which will see the nil pipe and resume
+        for command in queuedCommands {
+            command()
+        }
+    }
+
     func stop() {
         guard isRunning else { return }
+
+        // Resume pending continuation and drain command queue to prevent hanging callers
+        let pendingError = CancellationError()
+        pendingContinuation?.resume(throwing: pendingError)
+        pendingContinuation = nil
+
+        let queuedCommands = commandQueue
+        commandQueue = []
+        isExecuting = false
+
         // Only try to send stop command if process is still running
         if process?.isRunning == true {
             sendCommand(["-stay_open", "False"])
@@ -143,6 +187,13 @@ final class ExifToolService {
         process = nil
         isRunning = false
         runningPath = nil
+
+        // Drain queued commands — each closure captures a continuation that must be resumed.
+        // Execute closures so they run against `self` (now stopped), which will immediately
+        // resume the continuation with an error via the guard in the closure.
+        for command in queuedCommands {
+            command()
+        }
     }
 
     private func handleOutput(_ str: String) {
@@ -201,7 +252,18 @@ final class ExifToolService {
     }
 
     private func sendCommand(_ arguments: [String]) {
-        guard let handle = stdinPipe?.fileHandleForWriting else { return }
+        guard let handle = stdinPipe?.fileHandleForWriting,
+              process?.isRunning == true else {
+            exifToolLog.error("Cannot send command: ExifTool process is not running")
+            pendingContinuation?.resume(throwing: NSError(
+                domain: "ExifToolService", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "ExifTool process is not running"]
+            ))
+            pendingContinuation = nil
+            isExecuting = false
+            dequeueNext()
+            return
+        }
         let command = arguments.joined(separator: "\n") + "\n-execute\n"
         if let data = command.data(using: .utf8) {
             handle.write(data)

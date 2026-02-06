@@ -477,7 +477,8 @@ final class FaceRecognitionViewModel {
 
             // Sort by confidence (highest first) - the best match becomes the target
             let sorted = groupMatches.sorted { $0.confidence > $1.confidence }
-            guard let targetGroupID = sorted.first?.groupID else { continue }
+            guard let bestMatch = sorted.first else { continue }
+            let targetGroupID = bestMatch.groupID
             guard let initialTargetIndex = data.groups.firstIndex(where: { $0.id == targetGroupID }) else { continue }
 
             // Name the target group
@@ -502,7 +503,7 @@ final class FaceRecognitionViewModel {
 
                 // Update the match tracking to point to merged group
                 knownPersonMatchByGroup[match.groupID] = nil
-                knownPersonMatchByGroup[targetGroupID] = (personID: personID, confidence: sorted.first!.confidence)
+                knownPersonMatchByGroup[targetGroupID] = (personID: personID, confidence: bestMatch.confidence)
 
                 // Remove source group (need to re-find index as it may have shifted)
                 if let currentSourceIndex = data.groups.firstIndex(where: { $0.id == match.groupID }) {
@@ -557,8 +558,9 @@ final class FaceRecognitionViewModel {
 
             // Sort by confidence (highest first) - the best match becomes the target
             let sorted = groupMatches.sorted { $0.confidence > $1.confidence }
-            guard let targetGroupID = sorted.first?.groupID,
-                  let targetIndex = data.groups.firstIndex(where: { $0.id == targetGroupID }) else { continue }
+            guard let bestMatch = sorted.first else { continue }
+            let targetGroupID = bestMatch.groupID
+            guard let targetIndex = data.groups.firstIndex(where: { $0.id == targetGroupID }) else { continue }
 
             // Name the target group
             data.groups[targetIndex].name = knownPerson.name
@@ -581,7 +583,7 @@ final class FaceRecognitionViewModel {
 
                 // Update match tracking to point to merged group
                 knownPersonMatchByGroup[match.groupID] = nil
-                knownPersonMatchByGroup[targetGroupID] = (personID: personID, confidence: sorted.first!.confidence)
+                knownPersonMatchByGroup[targetGroupID] = (personID: personID, confidence: bestMatch.confidence)
 
                 // Remove source group
                 if let currentSourceIndex = data.groups.firstIndex(where: { $0.id == match.groupID }) {
