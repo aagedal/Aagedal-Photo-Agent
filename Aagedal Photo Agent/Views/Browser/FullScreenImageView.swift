@@ -8,11 +8,16 @@ nonisolated private let imageLogger = Logger(subsystem: "com.aagedal.photo-agent
 
 // MARK: - HDR Image View (CALayer-based EDR rendering)
 
-/// Renders an NSImage using a CALayer with Extended Dynamic Range enabled.
+/// Renders a CGImage using a CALayer with Extended Dynamic Range enabled.
 /// This allows PQ/HLG HDR images to use the display's full brightness range
 /// instead of being tonemapped to SDR.
+private struct LoadedImage {
+    let cgImage: CGImage
+    let size: CGSize
+}
+
 private struct HDRImageView: NSViewRepresentable {
-    let image: NSImage
+    let cgImage: CGImage
     var useNearestNeighbor: Bool = false
 
     func makeNSView(context: Context) -> NSView {
@@ -34,7 +39,7 @@ private struct HDRImageView: NSViewRepresentable {
 
     private func updateLayer(_ view: NSView) {
         guard let layer = view.layer else { return }
-        layer.contents = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        layer.contents = cgImage
         let filter: CALayerContentsFilter = useNearestNeighbor ? .nearest : .linear
         layer.magnificationFilter = filter
         layer.minificationFilter = filter
@@ -166,7 +171,7 @@ struct FullScreenImageView: View {
     @Bindable var viewModel: BrowserViewModel
     fileprivate var zoomController: ZoomController?
 
-    @State private var currentImage: NSImage?
+    @State private var currentImage: LoadedImage?
     @State private var isLoading = false
     @State private var fullLoadTask: Task<Void, Never>?
     @State private var fullResTask: Task<Void, Never>?
@@ -316,7 +321,7 @@ struct FullScreenImageView: View {
                 Color.black
 
                 if let currentImage {
-                    HDRImageView(image: currentImage, useNearestNeighbor: useNearestNeighbor)
+                    HDRImageView(cgImage: currentImage.cgImage, useNearestNeighbor: useNearestNeighbor)
                         .aspectRatio(
                             currentImage.size.width / currentImage.size.height,
                             contentMode: .fit
@@ -552,16 +557,17 @@ struct FullScreenImageView: View {
         // Phase 0: Instant — check cache, then fall back to thumbnail
         if let cached = imageCache.cachedImage(for: url) {
             imageLogger.info("\(filename): Phase 0 cache hit")
-            currentImage = cached
+            currentImage = makeLoadedImage(from: cached)
             isLoading = false
             triggerPrefetch(for: url)
             return
         }
 
         // Cache miss — show thumbnail instantly (zero I/O) to avoid blank screen
-        if let thumb = viewModel.thumbnailService.thumbnail(for: url) {
+        if let thumb = viewModel.thumbnailService.thumbnail(for: url),
+           let thumbImage = makeLoadedImage(from: thumb) {
             imageLogger.info("\(filename): Phase 0 thumbnail placeholder")
-            currentImage = thumb
+            currentImage = thumbImage
         }
 
         isLoading = true
@@ -581,8 +587,8 @@ struct FullScreenImageView: View {
             }.value
             let previewElapsed = CFAbsoluteTimeGetCurrent() - previewStart
             if let preview {
-                imageLogger.info("\(filename): Phase 1 RAW preview in \(String(format: "%.1f", previewElapsed * 1000))ms (\(preview.size.width)x\(preview.size.height))")
-                currentImage = preview
+                imageLogger.info("\(filename): Phase 1 RAW preview in \(String(format: "%.1f", previewElapsed * 1000))ms (\(preview.width)x\(preview.height))")
+                currentImage = makeLoadedImage(from: preview)
             } else {
                 imageLogger.warning("\(filename): Phase 1 no embedded preview (\(String(format: "%.1f", previewElapsed * 1000))ms)")
             }
@@ -595,8 +601,8 @@ struct FullScreenImageView: View {
             let previewElapsed = CFAbsoluteTimeGetCurrent() - previewStart
             guard !Task.isCancelled else { return }
             if let preview, currentImageFile?.url == url {
-                imageLogger.info("\(filename): Phase 1 preview in \(String(format: "%.1f", previewElapsed * 1000))ms (\(preview.size.width)x\(preview.size.height))")
-                currentImage = preview
+                imageLogger.info("\(filename): Phase 1 preview in \(String(format: "%.1f", previewElapsed * 1000))ms (\(preview.width)x\(preview.height))")
+                currentImage = makeLoadedImage(from: preview)
             }
         }
 
@@ -612,10 +618,10 @@ struct FullScreenImageView: View {
             }
             await MainActor.run {
                 if currentImageFile?.url == url {
-                    let w = image?.size.width ?? 0
-                    let h = image?.size.height ?? 0
+                    let w = image?.width ?? 0
+                    let h = image?.height ?? 0
                     imageLogger.info("\(filename): Phase 2 done in \(String(format: "%.1f", fullElapsed * 1000))ms (\(w)x\(h))")
-                    currentImage = image
+                    currentImage = image.map { makeLoadedImage(from: $0) }
                     isLoading = false
                     // Store in cache and trigger prefetch
                     if let image {
@@ -652,8 +658,8 @@ struct FullScreenImageView: View {
             guard !Task.isCancelled, let image else { return }
             await MainActor.run {
                 guard currentImageFile?.url == url else { return }
-                imageLogger.info("\(filename): Full resolution loaded in \(String(format: "%.1f", elapsed * 1000))ms (\(image.size.width)x\(image.size.height))")
-                currentImage = image
+                imageLogger.info("\(filename): Full resolution loaded in \(String(format: "%.1f", elapsed * 1000))ms (\(image.width)x\(image.height))")
+                currentImage = makeLoadedImage(from: image)
                 isFullResLoaded = true
                 isLoading = false
             }
@@ -687,6 +693,15 @@ struct FullScreenImageView: View {
             direction: direction,
             screenMaxPx: screenMaxPx
         )
+    }
+
+    private func makeLoadedImage(from cgImage: CGImage) -> LoadedImage {
+        LoadedImage(cgImage: cgImage, size: CGSize(width: cgImage.width, height: cgImage.height))
+    }
+
+    private func makeLoadedImage(from nsImage: NSImage) -> LoadedImage? {
+        guard let cgImage = nsImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        return makeLoadedImage(from: cgImage)
     }
 
     private func colorLabelOverlay(for file: ImageFile) -> some View {

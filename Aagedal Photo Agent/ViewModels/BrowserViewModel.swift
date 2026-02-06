@@ -31,7 +31,7 @@ final class BrowserViewModel {
             if sortOrder == .manual { rebuildSortedCache() }
         }
     }
-    var draggedImageURLs: Set<URL> = []
+    @ObservationIgnored var draggedImageURLs: Set<URL> = []
     var searchText: String = "" {
         didSet { rebuildVisibleCache() }
     }
