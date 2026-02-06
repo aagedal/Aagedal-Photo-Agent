@@ -1,4 +1,7 @@
 import Foundation
+import os.log
+
+nonisolated(unsafe) private let faceDataLog = Logger(subsystem: Bundle.main.bundleIdentifier ?? "AagedalPhotoAgent", category: "FaceDataStorageService")
 
 nonisolated struct FaceDataStorageService: Sendable {
 
@@ -35,6 +38,7 @@ nonisolated struct FaceDataStorageService: Sendable {
             let faceData = try JSONDecoder().decode(FolderFaceData.self, from: data)
             return faceData
         } catch {
+            faceDataLog.error("Failed to decode face data at \(fileURL.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
             return nil
         }
     }
