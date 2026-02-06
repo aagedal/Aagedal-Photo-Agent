@@ -4,7 +4,10 @@ import AppKit
 @Observable
 final class BrowserViewModel {
     var images: [ImageFile] = [] {
-        didSet { rebuildSortedCache() }
+        didSet {
+            urlToImageIndex = Dictionary(uniqueKeysWithValues: images.enumerated().map { ($1.url, $0) })
+            rebuildSortedCache()
+        }
     }
     var selectedImageIDs: Set<URL> = [] {
         didSet {
@@ -79,6 +82,7 @@ final class BrowserViewModel {
 
     private(set) var sortedImages: [ImageFile] = []
     private(set) var urlToSortedIndex: [URL: Int] = [:]
+    private(set) var urlToImageIndex: [URL: Int] = [:]
     private(set) var visibleImages: [ImageFile] = []
     private(set) var urlToVisibleIndex: [URL: Int] = [:]
 
@@ -95,7 +99,8 @@ final class BrowserViewModel {
 
     var firstSelectedImage: ImageFile? {
         guard let firstID = selectedImageIDs.first else { return nil }
-        return images.first { $0.url == firstID }
+        if let index = urlToImageIndex[firstID] { return images[index] }
+        return nil
     }
 
     private func rebuildSortedCache() {
@@ -353,7 +358,7 @@ final class BrowserViewModel {
                     guard let sourcePath = dict[ExifToolReadKey.sourceFile] as? String else { continue }
                     let sourceURL = URL(fileURLWithPath: sourcePath)
 
-                    if let index = images.firstIndex(where: { $0.url == sourceURL }) {
+                    if let index = urlToImageIndex[sourceURL] {
                         if let rating = dict[ExifToolReadKey.rating] as? Int,
                            let starRating = StarRating(rawValue: rating) {
                             images[index].starRating = starRating
@@ -403,7 +408,7 @@ final class BrowserViewModel {
                     guard let sourcePath = dict[ExifToolReadKey.sourceFile] as? String else { continue }
                     let sourceURL = URL(fileURLWithPath: sourcePath)
 
-                    if let index = images.firstIndex(where: { $0.url == sourceURL }) {
+                    if let index = urlToImageIndex[sourceURL] {
                         if let rating = dict[ExifToolReadKey.rating] as? Int,
                            let starRating = StarRating(rawValue: rating) {
                             images[index].starRating = starRating
@@ -556,7 +561,7 @@ final class BrowserViewModel {
         let lookup = Dictionary(uniqueKeysWithValues: images.map { ($0.url, $0) })
 
         for id in selectedImageIDs {
-            if let index = urlToSortedIndex[id] {
+            if let index = urlToImageIndex[id] {
                 images[index].starRating = rating
             }
         }
@@ -610,7 +615,7 @@ final class BrowserViewModel {
         let lookup = Dictionary(uniqueKeysWithValues: images.map { ($0.url, $0) })
 
         for id in selectedImageIDs {
-            if let index = urlToSortedIndex[id] {
+            if let index = urlToImageIndex[id] {
                 images[index].colorLabel = label
             }
         }
@@ -889,7 +894,7 @@ final class BrowserViewModel {
     }
 
     func updatePendingStatus(for url: URL, hasPending: Bool) {
-        if let index = images.firstIndex(where: { $0.url == url }) {
+        if let index = urlToImageIndex[url] {
             images[index].hasPendingMetadataChanges = hasPending
         }
     }
