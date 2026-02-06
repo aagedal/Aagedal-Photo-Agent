@@ -4,6 +4,7 @@ import QuickLookThumbnailing
 @Observable
 final class ThumbnailService {
     nonisolated(unsafe) private let cache = NSCache<NSURL, NSImage>()
+    @ObservationIgnored private var inFlightTasks: [URL: Task<NSImage?, Never>] = [:]
     private let thumbnailSize = CGSize(width: 240, height: 240)
 
     init() {
@@ -19,19 +20,29 @@ final class ThumbnailService {
             return cached
         }
 
-        // Try QLThumbnailGenerator first
-        if let image = await generateQLThumbnail(for: url) {
-            cache.setObject(image, forKey: url as NSURL)
-            return image
+        // Coalesce with existing in-flight request
+        if let existingTask = inFlightTasks[url] {
+            return await existingTask.value
         }
 
-        // Fallback to CGImageSource
-        if let image = loadCGImageSourceThumbnail(for: url) {
-            cache.setObject(image, forKey: url as NSURL)
-            return image
+        // Create and register a new task
+        let task = Task<NSImage?, Never> {
+            if let image = await generateQLThumbnail(for: url) {
+                cache.setObject(image, forKey: url as NSURL)
+                return image
+            }
+            if let image = loadCGImageSourceThumbnail(for: url) {
+                cache.setObject(image, forKey: url as NSURL)
+                return image
+            }
+            return nil
         }
 
-        return nil
+        inFlightTasks[url] = task
+        let result = await task.value
+        inFlightTasks.removeValue(forKey: url)
+
+        return result
     }
 
     private func generateQLThumbnail(for url: URL) async -> NSImage? {
@@ -68,5 +79,9 @@ final class ThumbnailService {
 
     func clearCache() {
         cache.removeAllObjects()
+        for task in inFlightTasks.values {
+            task.cancel()
+        }
+        inFlightTasks.removeAll()
     }
 }
