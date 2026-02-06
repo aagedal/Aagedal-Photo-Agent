@@ -149,6 +149,7 @@ struct ContentView: View {
                 browserViewModel.loadFavorites()
                 templateViewModel.loadTemplates()
                 ftpViewModel.loadConnections()
+                Task { await UpdateChecker.shared.checkIfNeeded() }
             }
     }
 
@@ -568,6 +569,7 @@ struct ContentView: View {
                         }
                         Divider()
                     }
+                    UpdatePillButton()
                     TechnicalMetadataView(
                         metadata: technicalMetadata,
                         fileSize: selectedImage.fileSize

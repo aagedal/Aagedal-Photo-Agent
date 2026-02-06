@@ -6,6 +6,7 @@ struct ThumbnailCell: View, Equatable {
     let isSelected: Bool
     let thumbnailService: ThumbnailService
     var onDelete: (() -> Void)?
+    var onAddToSubfolder: (() -> Void)?
 
     @State private var thumbnail: NSImage?
 
@@ -137,6 +138,13 @@ struct ThumbnailCell: View, Equatable {
             }
 
             Divider()
+
+            if let onAddToSubfolder {
+                Button("Add to Subfolder...") {
+                    onAddToSubfolder()
+                }
+                Divider()
+            }
 
             Menu("Rating") {
                 ForEach(StarRating.allCases, id: \.self) { rating in

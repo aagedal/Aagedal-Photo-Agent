@@ -190,7 +190,14 @@ final class ExifToolService {
     /// Read full metadata for a single file.
     func readFullMetadata(url: URL) async throws -> IPTCMetadata {
         exifToolLog.debug("readFullMetadata: \(url.lastPathComponent, privacy: .public)")
-        let args = ["-json", "-n", "-IPTC:All", "-XMP:All", "-EXIF:GPSLatitude", "-EXIF:GPSLongitude", "-struct", url.path]
+        let args = [
+            "-json", "-n",
+            "-IPTC:All", "-XMP:All",
+            "-EXIF:DateTimeOriginal",
+            "-EXIF:GPSLatitude", "-EXIF:GPSLongitude",
+            "-struct",
+            url.path
+        ]
         let output = try await execute(args)
         exifToolLog.debug("readFullMetadata completed: \(url.lastPathComponent, privacy: .public)")
         let results = parseJSON(output)

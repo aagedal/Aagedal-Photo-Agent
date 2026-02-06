@@ -99,46 +99,41 @@ struct ThumbnailGridView: View {
             thumbnailService: viewModel.thumbnailService,
             onDelete: {
                 viewModel.deleteSelectedImages()
+            },
+            onAddToSubfolder: {
+                if !viewModel.selectedImageIDs.contains(image.url) {
+                    viewModel.selectedImageIDs = [image.url]
+                    viewModel.lastClickedImageURL = image.url
+                }
+                viewModel.promptAddSelectedImagesToSubfolder()
             }
         )
         .equatable()
-        .onTapGesture {
-            let clickCount = NSApp.currentEvent?.clickCount ?? 1
-            if clickCount == 2 {
-                viewModel.selectedImageIDs = [image.url]
-                viewModel.lastClickedImageURL = image.url
-                viewModel.isFullScreen = true
-            } else {
-                let flags = NSEvent.modifierFlags
-                if flags.contains(.command) {
-                    handleTap(image: image, modifiers: .command)
-                } else if flags.contains(.shift) {
-                    handleTap(image: image, modifiers: .shift)
-                } else {
-                    handleTap(image: image, modifiers: [])
-                }
-            }
-            // Clear any text field focus before focusing the grid
-            if isTextFieldActive() {
-                NSApp.keyWindow?.makeFirstResponder(nil)
-            }
-            isGridFocused = true
-        }
 
         baseCell
-            .onDrag {
-                if viewModel.sortOrder != .manual {
-                    viewModel.initializeManualOrder(from: viewModel.sortedImages)
-                    viewModel.sortOrder = .manual
-                }
-                // If dragging a selected image, drag all selected images together
-                if viewModel.selectedImageIDs.contains(image.url) && viewModel.selectedImageIDs.count > 1 {
-                    viewModel.draggedImageURLs = viewModel.selectedImageIDs
-                } else {
-                    viewModel.draggedImageURLs = [image.url]
-                }
-                return NSItemProvider(object: image.url as NSURL)
-            }
+            .overlay(
+                ThumbnailDragSource(
+                    itemURL: image.url,
+                    selectionProvider: {
+                        viewModel.visibleImages
+                            .filter { viewModel.selectedImageIDs.contains($0.url) }
+                            .map(\.url)
+                    },
+                    onClick: { clickCount, modifiers in
+                        handleThumbnailClick(for: image, clickCount: clickCount, modifiers: modifiers)
+                    },
+                    onDragStart: { urls in
+                        if viewModel.sortOrder != .manual {
+                            viewModel.initializeManualOrder(from: viewModel.sortedImages)
+                            viewModel.sortOrder = .manual
+                        }
+                        viewModel.draggedImageURLs = Set(urls)
+                    },
+                    onDragEnd: {
+                        viewModel.draggedImageURLs = []
+                    }
+                )
+            )
             .onDrop(of: [.fileURL], delegate: ImageReorderDelegate(
                 targetURL: image.url,
                 viewModel: viewModel
@@ -187,11 +182,147 @@ struct ThumbnailGridView: View {
         }
     }
 
+    private func handleThumbnailClick(for image: ImageFile, clickCount: Int, modifiers: NSEvent.ModifierFlags) {
+        if clickCount == 2 {
+            viewModel.selectedImageIDs = [image.url]
+            viewModel.lastClickedImageURL = image.url
+            viewModel.isFullScreen = true
+        } else {
+            if modifiers.contains(.command) {
+                handleTap(image: image, modifiers: .command)
+            } else if modifiers.contains(.shift) {
+                handleTap(image: image, modifiers: .shift)
+            } else {
+                handleTap(image: image, modifiers: [])
+            }
+        }
+        if isTextFieldActive() {
+            NSApp.keyWindow?.makeFirstResponder(nil)
+        }
+        isGridFocused = true
+    }
+
     private func scrollToSelectionIfNeeded(_ proxy: ScrollViewProxy) {
         guard let target = viewModel.lastClickedImageURL,
               viewModel.urlToVisibleIndex[target] != nil else { return }
         withAnimation(.easeInOut(duration: 0.15)) {
             proxy.scrollTo(target, anchor: .center)
+        }
+    }
+
+}
+
+// MARK: - Drag Source (multi-file export)
+
+private struct ThumbnailDragSource: NSViewRepresentable {
+    let itemURL: URL
+    let selectionProvider: () -> [URL]
+    let onClick: (Int, NSEvent.ModifierFlags) -> Void
+    let onDragStart: ([URL]) -> Void
+    let onDragEnd: () -> Void
+
+    func makeNSView(context: Context) -> DragSourceView {
+        let view = DragSourceView()
+        view.itemURL = itemURL
+        view.selectionProvider = selectionProvider
+        view.onClick = onClick
+        view.onDragStart = onDragStart
+        view.onDragEnd = onDragEnd
+        return view
+    }
+
+    func updateNSView(_ nsView: DragSourceView, context: Context) {
+        nsView.itemURL = itemURL
+        nsView.selectionProvider = selectionProvider
+        nsView.onClick = onClick
+        nsView.onDragStart = onDragStart
+        nsView.onDragEnd = onDragEnd
+    }
+
+    final class DragSourceView: NSView, NSDraggingSource {
+        var itemURL: URL?
+        var selectionProvider: (() -> [URL])?
+        var onClick: ((Int, NSEvent.ModifierFlags) -> Void)?
+        var onDragStart: (([URL]) -> Void)?
+        var onDragEnd: (() -> Void)?
+
+        private var isDragging = false
+        private var mouseDownLocation: NSPoint?
+
+        override func mouseDown(with event: NSEvent) {
+            mouseDownLocation = event.locationInWindow
+            isDragging = false
+        }
+
+        override func mouseDragged(with event: NSEvent) {
+            guard !isDragging, let start = mouseDownLocation else {
+                return
+            }
+
+            let deltaX = abs(event.locationInWindow.x - start.x)
+            let deltaY = abs(event.locationInWindow.y - start.y)
+            if deltaX < 3 && deltaY < 3 {
+                nextResponder?.mouseDragged(with: event)
+                return
+            }
+
+            guard let itemURL else { return }
+            let selection = selectionProvider?() ?? []
+            let urls: [URL]
+            if selection.contains(itemURL) && selection.count > 1 {
+                urls = selection
+            } else {
+                urls = [itemURL]
+            }
+
+            isDragging = true
+            onDragStart?(urls)
+
+            let items = makeDraggingItems(for: urls)
+            beginDraggingSession(with: items, event: event, source: self)
+        }
+
+        override func mouseUp(with event: NSEvent) {
+            mouseDownLocation = nil
+            if !isDragging {
+                onClick?(event.clickCount, event.modifierFlags)
+            }
+            isDragging = false
+        }
+
+        override func rightMouseDown(with event: NSEvent) {
+            nextResponder?.rightMouseDown(with: event)
+        }
+
+        override func rightMouseUp(with event: NSEvent) {
+            nextResponder?.rightMouseUp(with: event)
+        }
+
+        func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
+            context == .outsideApplication ? .copy : .move
+        }
+
+        func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+            isDragging = false
+            onDragEnd?()
+        }
+
+        private func makeDraggingItems(for urls: [URL]) -> [NSDraggingItem] {
+            var items: [NSDraggingItem] = []
+            let baseFrame = bounds
+
+            for (index, url) in urls.enumerated() {
+                let item = NSDraggingItem(pasteboardWriter: url as NSURL)
+                let icon = NSWorkspace.shared.icon(forFile: url.path)
+                icon.size = NSSize(width: 64, height: 64)
+
+                let offset = CGFloat(index) * 6
+                let frame = baseFrame.offsetBy(dx: offset, dy: -offset)
+                item.setDraggingFrame(frame, contents: icon)
+                items.append(item)
+            }
+
+            return items
         }
     }
 }

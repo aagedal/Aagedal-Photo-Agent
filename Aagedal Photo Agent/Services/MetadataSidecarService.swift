@@ -122,4 +122,18 @@ struct MetadataSidecarService: Sendable {
             try FileManager.default.removeItem(at: dir)
         }
     }
+
+    func moveSidecar(for imageURL: URL, from sourceFolderURL: URL, to destinationFolderURL: URL) throws {
+        let sourceURL = sidecarFileURL(for: imageURL, in: sourceFolderURL)
+        guard FileManager.default.fileExists(atPath: sourceURL.path) else { return }
+
+        let destinationDirectory = sidecarDirectory(for: destinationFolderURL)
+        try FileManager.default.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
+        let destinationURL = sidecarFileURL(for: imageURL, in: destinationFolderURL)
+
+        if FileManager.default.fileExists(atPath: destinationURL.path) {
+            try FileManager.default.removeItem(at: destinationURL)
+        }
+        try FileManager.default.moveItem(at: sourceURL, to: destinationURL)
+    }
 }

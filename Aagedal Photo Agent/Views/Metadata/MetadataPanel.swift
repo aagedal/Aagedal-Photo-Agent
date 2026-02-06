@@ -12,6 +12,7 @@ struct MetadataPanel: View {
 
     @State private var isShowingVariableReference = false
     @State private var variableInsertTarget: VariableInsertTarget = .description
+    @State private var fieldSelections: [String: NSRange] = [:]
     @State private var showExtendedDescription = false
     @State private var showingHistoryPopover = false
     @State private var showingC2PAWarning = false
@@ -49,6 +50,22 @@ struct MetadataPanel: View {
         case city
         case country
         case event
+
+        var focusKey: String {
+            switch self {
+            case .title: return "title"
+            case .description: return "description"
+            case .extendedDescription: return "extendedDescription"
+            case .creator: return "creator"
+            case .credit: return "credit"
+            case .copyright: return "copyright"
+            case .jobId: return "jobId"
+            case .dateCreated: return "dateCreated"
+            case .city: return "city"
+            case .country: return "country"
+            case .event: return "event"
+            }
+        }
     }
 
     private func addCurrentToQuickList(type: QuickListType, values: [String]) {
@@ -93,42 +110,110 @@ struct MetadataPanel: View {
     }
 
     private func insertVariable(_ variable: String) {
-        switch variableInsertTarget {
-        case .title:
-            let current = viewModel.editingMetadata.title ?? ""
-            viewModel.editingMetadata.title = current + variable
-        case .description:
-            let current = viewModel.editingMetadata.description ?? ""
-            viewModel.editingMetadata.description = current + variable
-        case .extendedDescription:
-            let current = viewModel.editingMetadata.extendedDescription ?? ""
-            viewModel.editingMetadata.extendedDescription = current + variable
-        case .creator:
-            let current = viewModel.editingMetadata.creator ?? ""
-            viewModel.editingMetadata.creator = current + variable
-        case .credit:
-            let current = viewModel.editingMetadata.credit ?? ""
-            viewModel.editingMetadata.credit = current + variable
-        case .copyright:
-            let current = viewModel.editingMetadata.copyright ?? ""
-            viewModel.editingMetadata.copyright = current + variable
-        case .jobId:
-            let current = viewModel.editingMetadata.jobId ?? ""
-            viewModel.editingMetadata.jobId = current + variable
-        case .dateCreated:
-            let current = viewModel.editingMetadata.dateCreated ?? ""
-            viewModel.editingMetadata.dateCreated = current + variable
-        case .city:
-            let current = viewModel.editingMetadata.city ?? ""
-            viewModel.editingMetadata.city = current + variable
-        case .country:
-            let current = viewModel.editingMetadata.country ?? ""
-            viewModel.editingMetadata.country = current + variable
-        case .event:
-            let current = viewModel.editingMetadata.event ?? ""
-            viewModel.editingMetadata.event = current + variable
+        applyInsertion(variable, to: variableInsertTarget)
+    }
+
+    private func openVariableReference(for target: VariableInsertTarget) {
+        variableInsertTarget = target
+        if fieldSelections[target.focusKey] == nil,
+           let editor = NSApp.keyWindow?.firstResponder as? NSTextView {
+            fieldSelections[target.focusKey] = editor.selectedRange()
+        }
+        isShowingVariableReference = true
+    }
+
+    private func openVariableReferenceFromShortcut() {
+        let target = targetForFocusKey(focusedField) ?? variableInsertTarget
+        openVariableReference(for: target)
+    }
+
+    private func targetForFocusKey(_ key: String?) -> VariableInsertTarget? {
+        switch key {
+        case "title": return .title
+        case "description": return .description
+        case "extendedDescription": return .extendedDescription
+        case "creator": return .creator
+        case "credit": return .credit
+        case "copyright": return .copyright
+        case "jobId": return .jobId
+        case "dateCreated": return .dateCreated
+        case "city": return .city
+        case "country": return .country
+        case "event": return .event
+        default: return nil
+        }
+    }
+
+    private func applyInsertion(_ insertion: String, to target: VariableInsertTarget) {
+        let current = fieldValue(for: target)
+        if focusedField == target.focusKey,
+           let editor = NSApp.keyWindow?.firstResponder as? NSTextView {
+            fieldSelections[target.focusKey] = editor.selectedRange()
+        }
+        let selection = selectionForTarget(target, text: current)
+        let (updated, newSelection) = insertText(insertion, into: current, selection: selection)
+        setFieldValue(updated, for: target)
+        fieldSelections[target.focusKey] = newSelection
+        if focusedField == target.focusKey,
+           let editor = NSApp.keyWindow?.firstResponder as? NSTextView {
+            editor.selectedRange = newSelection
         }
         viewModel.markChanged()
+    }
+
+    private func fieldValue(for target: VariableInsertTarget) -> String {
+        switch target {
+        case .title: return viewModel.editingMetadata.title ?? ""
+        case .description: return viewModel.editingMetadata.description ?? ""
+        case .extendedDescription: return viewModel.editingMetadata.extendedDescription ?? ""
+        case .creator: return viewModel.editingMetadata.creator ?? ""
+        case .credit: return viewModel.editingMetadata.credit ?? ""
+        case .copyright: return viewModel.editingMetadata.copyright ?? ""
+        case .jobId: return viewModel.editingMetadata.jobId ?? ""
+        case .dateCreated: return viewModel.editingMetadata.dateCreated ?? ""
+        case .city: return viewModel.editingMetadata.city ?? ""
+        case .country: return viewModel.editingMetadata.country ?? ""
+        case .event: return viewModel.editingMetadata.event ?? ""
+        }
+    }
+
+    private func setFieldValue(_ value: String, for target: VariableInsertTarget) {
+        let normalized: String? = value.isEmpty ? nil : value
+        switch target {
+        case .title: viewModel.editingMetadata.title = normalized
+        case .description: viewModel.editingMetadata.description = normalized
+        case .extendedDescription: viewModel.editingMetadata.extendedDescription = normalized
+        case .creator: viewModel.editingMetadata.creator = normalized
+        case .credit: viewModel.editingMetadata.credit = normalized
+        case .copyright: viewModel.editingMetadata.copyright = normalized
+        case .jobId: viewModel.editingMetadata.jobId = normalized
+        case .dateCreated: viewModel.editingMetadata.dateCreated = normalized
+        case .city: viewModel.editingMetadata.city = normalized
+        case .country: viewModel.editingMetadata.country = normalized
+        case .event: viewModel.editingMetadata.event = normalized
+        }
+    }
+
+    private func selectionForTarget(_ target: VariableInsertTarget, text: String) -> NSRange {
+        let maxLength = text.utf16.count
+        let selection = fieldSelections[target.focusKey] ?? NSRange(location: maxLength, length: 0)
+        return clampedSelection(selection, maxLength: maxLength)
+    }
+
+    private func clampedSelection(_ selection: NSRange, maxLength: Int) -> NSRange {
+        let location = min(maxLength, max(0, selection.location))
+        let length = min(maxLength - location, max(0, selection.length))
+        return NSRange(location: location, length: length)
+    }
+
+    private func insertText(_ insertion: String, into current: String, selection: NSRange) -> (String, NSRange) {
+        guard let range = Range(selection, in: current) else {
+            let updated = current + insertion
+            return (updated, NSRange(location: updated.utf16.count, length: 0))
+        }
+        let updated = current.replacingCharacters(in: range, with: insertion)
+        let newLocation = selection.location + insertion.utf16.count
+        return (updated, NSRange(location: newLocation, length: 0))
     }
 
     private func commitEdits() {
@@ -209,6 +294,31 @@ struct MetadataPanel: View {
             let next: MetadataReferenceSource = viewModel.metadataReferenceSource == .embedded ? .xmp : .embedded
             viewModel.applyReferenceSource(next)
             return .handled
+        }
+        .onKeyPress("v") {
+            let modifiers = NSEvent.modifierFlags
+            guard modifiers.contains(.option),
+                  !modifiers.contains(.command),
+                  !modifiers.contains(.shift),
+                  !modifiers.contains(.control) else {
+                return .ignored
+            }
+            openVariableReferenceFromShortcut()
+            return .handled
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSTextView.didChangeSelectionNotification)) { notification in
+            guard let key = focusedField,
+                  let editor = notification.object as? NSTextView else {
+                return
+            }
+            fieldSelections[key] = editor.selectedRange()
+        }
+        .onChange(of: focusedField) { _, newValue in
+            guard let key = newValue,
+                  let editor = NSApp.keyWindow?.firstResponder as? NSTextView else {
+                return
+            }
+            fieldSelections[key] = editor.selectedRange()
         }
         .alert("C2PA Protected Image", isPresented: $showingC2PAWarning) {
             Button("Cancel", role: .cancel) {
@@ -365,8 +475,7 @@ struct MetadataPanel: View {
             showsDifference: viewModel.fieldDiffers(\.title),
             hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("title"),
             onInsertVariable: {
-                variableInsertTarget = .title
-                isShowingVariableReference = true
+                openVariableReference(for: .title)
             },
             focusKey: "title",
             focusedField: $focusedField
@@ -383,8 +492,7 @@ struct MetadataPanel: View {
                 }
                 Spacer()
                 Button {
-                    variableInsertTarget = .description
-                    isShowingVariableReference = true
+                    openVariableReference(for: .description)
                 } label: {
                     Image(systemName: "curlybraces")
                         .font(.caption)
@@ -407,9 +515,7 @@ struct MetadataPanel: View {
             .focused($focusedField, equals: "description")
             .onKeyPress(.return) {
                 if NSEvent.modifierFlags.contains(.shift) {
-                    let current = viewModel.editingMetadata.description ?? ""
-                    viewModel.editingMetadata.description = current + "\n"
-                    viewModel.markChanged()
+                    applyInsertion("\n", to: .description)
                     return .handled
                 }
                 commitEdits()
@@ -428,8 +534,7 @@ struct MetadataPanel: View {
                 HStack {
                     Spacer()
                     Button {
-                        variableInsertTarget = .extendedDescription
-                        isShowingVariableReference = true
+                        openVariableReference(for: .extendedDescription)
                     } label: {
                         Image(systemName: "curlybraces")
                             .font(.caption)
@@ -452,9 +557,7 @@ struct MetadataPanel: View {
                 .focused($focusedField, equals: "extendedDescription")
                 .onKeyPress(.return) {
                     if NSEvent.modifierFlags.contains(.shift) {
-                        let current = viewModel.editingMetadata.extendedDescription ?? ""
-                        viewModel.editingMetadata.extendedDescription = current + "\n"
-                        viewModel.markChanged()
+                        applyInsertion("\n", to: .extendedDescription)
                         return .handled
                     }
                     commitEdits()
@@ -527,8 +630,7 @@ struct MetadataPanel: View {
             showsDifference: viewModel.fieldDiffers(\.copyright),
             hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("copyright"),
             onInsertVariable: {
-                variableInsertTarget = .copyright
-                isShowingVariableReference = true
+                openVariableReference(for: .copyright)
             },
             onAddCurrentToQuickList: {
                 addCurrentToQuickList(type: .copyright, value: viewModel.editingMetadata.copyright)
@@ -553,8 +655,7 @@ struct MetadataPanel: View {
             showsDifference: viewModel.fieldDiffers(\.jobId),
             hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("jobId"),
             onInsertVariable: {
-                variableInsertTarget = .jobId
-                isShowingVariableReference = true
+                openVariableReference(for: .jobId)
             },
             focusKey: "jobId",
             focusedField: $focusedField
@@ -616,8 +717,7 @@ struct MetadataPanel: View {
             showsDifference: viewModel.fieldDiffers(\.creator),
             hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("creator"),
             onInsertVariable: {
-                variableInsertTarget = .creator
-                isShowingVariableReference = true
+                openVariableReference(for: .creator)
             },
             onAddCurrentToQuickList: {
                 addCurrentToQuickList(type: .creator, value: viewModel.editingMetadata.creator)
@@ -641,8 +741,7 @@ struct MetadataPanel: View {
             showsDifference: viewModel.fieldDiffers(\.credit),
             hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("credit"),
             onInsertVariable: {
-                variableInsertTarget = .credit
-                isShowingVariableReference = true
+                openVariableReference(for: .credit)
             },
             onAddCurrentToQuickList: {
                 addCurrentToQuickList(type: .credit, value: viewModel.editingMetadata.credit)
@@ -666,8 +765,7 @@ struct MetadataPanel: View {
             showsDifference: viewModel.fieldDiffers(\.city),
             hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("city"),
             onInsertVariable: {
-                variableInsertTarget = .city
-                isShowingVariableReference = true
+                openVariableReference(for: .city)
             },
             onAddCurrentToQuickList: {
                 addCurrentToQuickList(type: .city, value: viewModel.editingMetadata.city)
@@ -691,8 +789,7 @@ struct MetadataPanel: View {
             showsDifference: viewModel.fieldDiffers(\.country),
             hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("country"),
             onInsertVariable: {
-                variableInsertTarget = .country
-                isShowingVariableReference = true
+                openVariableReference(for: .country)
             },
             onAddCurrentToQuickList: {
                 addCurrentToQuickList(type: .country, value: viewModel.editingMetadata.country)
@@ -716,8 +813,7 @@ struct MetadataPanel: View {
             showsDifference: viewModel.fieldDiffers(\.event),
             hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("event"),
             onInsertVariable: {
-                variableInsertTarget = .event
-                isShowingVariableReference = true
+                openVariableReference(for: .event)
             },
             onAddCurrentToQuickList: {
                 addCurrentToQuickList(type: .event, value: viewModel.editingMetadata.event)
