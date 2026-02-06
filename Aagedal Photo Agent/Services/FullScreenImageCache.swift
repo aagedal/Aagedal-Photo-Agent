@@ -56,11 +56,13 @@ final class FullScreenImageCache: @unchecked Sendable {
         }
 
         for url in targetURLs {
-            // Skip if already cached
-            if cachedImage(for: url) != nil { continue }
-
-            let alreadyPrefetching = lock.withLock { prefetchTasks[url] != nil }
-            if alreadyPrefetching { continue }
+            // Atomically check both cache and prefetch state to avoid duplicate tasks
+            let shouldPrefetch = lock.withLock {
+                if cachedImage(for: url) != nil { return false }
+                if prefetchTasks[url] != nil { return false }
+                return true
+            }
+            guard shouldPrefetch else { continue }
 
             let task = Task.detached(priority: .utility) { [weak self] in
                 guard let self, !Task.isCancelled else { return }

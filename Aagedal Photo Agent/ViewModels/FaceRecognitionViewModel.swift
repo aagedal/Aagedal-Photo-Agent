@@ -312,7 +312,11 @@ final class FaceRecognitionViewModel {
                     for result in results {
                         allFaces.append(result.face)
                         newFaces.append(result.face)
-                        try? storageService.saveThumbnail(result.thumbnail, for: result.face.id, folderURL: folderURL)
+                        do {
+                            try storageService.saveThumbnail(result.thumbnail, for: result.face.id, folderURL: folderURL)
+                        } catch {
+                            print("⚠️ FaceRecognition: Failed to save thumbnail for face \(result.face.id): \(error.localizedDescription)")
+                        }
                         let image = NSImage(data: result.thumbnail)
                         if let image {
                             await MainActor.run {
@@ -366,7 +370,13 @@ final class FaceRecognitionViewModel {
                             scannedFiles: scannedFiles,
                             recognitionMode: config.recognitionMode
                         )
-                        try? storageService.saveFaceData(progressData)
+                        do {
+                            try storageService.saveFaceData(progressData)
+                        } catch {
+                            await MainActor.run {
+                                self.errorMessage = "Failed to save face data: \(error.localizedDescription)"
+                            }
+                        }
                         batchesSinceLastSave = 0
 
                         // Update intermediate UI state for live face bar
@@ -419,7 +429,13 @@ final class FaceRecognitionViewModel {
                 recognitionMode: config.recognitionMode
             )
 
-            try? storageService.saveFaceData(folderData)
+            do {
+                try storageService.saveFaceData(folderData)
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = "Failed to save face data: \(error.localizedDescription)"
+                }
+            }
 
             await MainActor.run {
                 self.faceData = folderData
@@ -457,7 +473,7 @@ final class FaceRecognitionViewModel {
         var matchesByPerson: [UUID: [(groupID: UUID, confidence: Float)]] = [:]
 
         for group in data.groups where group.name == nil {
-            guard let face = data.faces.first(where: { $0.id == group.representativeFaceID }) else {
+            guard let face = faceLookup[group.representativeFaceID] else {
                 continue
             }
 
@@ -476,6 +492,10 @@ final class FaceRecognitionViewModel {
         }
 
         // For each known person with matches, merge multiple groups and name them
+        // Build mutable index dicts for O(1) lookups during mutations
+        var faceIdx = Dictionary(uniqueKeysWithValues: data.faces.enumerated().map { ($1.id, $0) })
+        var groupIdx = Dictionary(uniqueKeysWithValues: data.groups.enumerated().map { ($1.id, $0) })
+
         for (personID, groupMatches) in matchesByPerson {
             guard let knownPerson = KnownPeopleService.shared.person(byID: personID) else { continue }
 
@@ -483,15 +503,15 @@ final class FaceRecognitionViewModel {
             let sorted = groupMatches.sorted { $0.confidence > $1.confidence }
             guard let bestMatch = sorted.first else { continue }
             let targetGroupID = bestMatch.groupID
-            guard let initialTargetIndex = data.groups.firstIndex(where: { $0.id == targetGroupID }) else { continue }
+            guard let initialTargetIndex = groupIdx[targetGroupID] else { continue }
 
             // Name the target group
             data.groups[initialTargetIndex].name = knownPerson.name
 
             // Merge other matching groups into the target
             for match in sorted.dropFirst() {
-                guard let targetIndex = data.groups.firstIndex(where: { $0.id == targetGroupID }) else { break }
-                guard let sourceIndex = data.groups.firstIndex(where: { $0.id == match.groupID }),
+                guard let targetIndex = groupIdx[targetGroupID] else { break }
+                guard let sourceIndex = groupIdx[match.groupID],
                       sourceIndex != targetIndex else { continue }
 
                 // Move faces from source to target
@@ -500,7 +520,7 @@ final class FaceRecognitionViewModel {
 
                 // Update face groupIDs
                 for faceID in sourceFaceIDs {
-                    if let fi = data.faces.firstIndex(where: { $0.id == faceID }) {
+                    if let fi = faceIdx[faceID] {
                         data.faces[fi].groupID = targetGroupID
                     }
                 }
@@ -509,16 +529,19 @@ final class FaceRecognitionViewModel {
                 knownPersonMatchByGroup[match.groupID] = nil
                 knownPersonMatchByGroup[targetGroupID] = (personID: personID, confidence: bestMatch.confidence)
 
-                // Remove source group (need to re-find index as it may have shifted)
-                if let currentSourceIndex = data.groups.firstIndex(where: { $0.id == match.groupID }) {
-                    data.groups.remove(at: currentSourceIndex)
-                }
+                // Remove source group and rebuild group index
+                data.groups.remove(at: sourceIndex)
+                groupIdx = Dictionary(uniqueKeysWithValues: data.groups.enumerated().map { ($1.id, $0) })
             }
         }
 
         // Save updated data
         faceData = data
-        try? storageService.saveFaceData(data)
+        do {
+            try storageService.saveFaceData(data)
+        } catch {
+            errorMessage = "Failed to save face data: \(error.localizedDescription)"
+        }
     }
 
     // MARK: - Known People Matching
@@ -538,7 +561,7 @@ final class FaceRecognitionViewModel {
 
         let unnamedGroups = data.groups.filter { $0.name == nil }
         for group in unnamedGroups {
-            guard let face = data.faces.first(where: { $0.id == group.representativeFaceID }) else {
+            guard let face = faceLookup[group.representativeFaceID] else {
                 continue
             }
 
@@ -557,6 +580,10 @@ final class FaceRecognitionViewModel {
         }
 
         // For each known person with matches, merge multiple groups and name them
+        // Build mutable index dicts for O(1) lookups during mutations
+        var faceIdx = Dictionary(uniqueKeysWithValues: data.faces.enumerated().map { ($1.id, $0) })
+        var groupIdx = Dictionary(uniqueKeysWithValues: data.groups.enumerated().map { ($1.id, $0) })
+
         for (personID, groupMatches) in matchesByPerson {
             guard let knownPerson = KnownPeopleService.shared.person(byID: personID) else { continue }
 
@@ -564,23 +591,24 @@ final class FaceRecognitionViewModel {
             let sorted = groupMatches.sorted { $0.confidence > $1.confidence }
             guard let bestMatch = sorted.first else { continue }
             let targetGroupID = bestMatch.groupID
-            guard let targetIndex = data.groups.firstIndex(where: { $0.id == targetGroupID }) else { continue }
+            guard let targetIndex = groupIdx[targetGroupID] else { continue }
 
             // Name the target group
             data.groups[targetIndex].name = knownPerson.name
 
             // Merge other matching groups into the target
             for match in sorted.dropFirst() {
-                guard let sourceIndex = data.groups.firstIndex(where: { $0.id == match.groupID }),
-                      sourceIndex != targetIndex else { continue }
+                guard let currentTargetIndex = groupIdx[targetGroupID] else { break }
+                guard let sourceIndex = groupIdx[match.groupID],
+                      sourceIndex != currentTargetIndex else { continue }
 
                 // Move faces from source to target
                 let sourceFaceIDs = data.groups[sourceIndex].faceIDs
-                data.groups[targetIndex].faceIDs.append(contentsOf: sourceFaceIDs)
+                data.groups[currentTargetIndex].faceIDs.append(contentsOf: sourceFaceIDs)
 
                 // Update face groupIDs
                 for faceID in sourceFaceIDs {
-                    if let fi = data.faces.firstIndex(where: { $0.id == faceID }) {
+                    if let fi = faceIdx[faceID] {
                         data.faces[fi].groupID = targetGroupID
                     }
                 }
@@ -589,16 +617,19 @@ final class FaceRecognitionViewModel {
                 knownPersonMatchByGroup[match.groupID] = nil
                 knownPersonMatchByGroup[targetGroupID] = (personID: personID, confidence: bestMatch.confidence)
 
-                // Remove source group
-                if let currentSourceIndex = data.groups.firstIndex(where: { $0.id == match.groupID }) {
-                    data.groups.remove(at: currentSourceIndex)
-                }
+                // Remove source group and rebuild group index
+                data.groups.remove(at: sourceIndex)
+                groupIdx = Dictionary(uniqueKeysWithValues: data.groups.enumerated().map { ($1.id, $0) })
             }
         }
 
         // Save updated data
         faceData = data
-        try? storageService.saveFaceData(data)
+        do {
+            try storageService.saveFaceData(data)
+        } catch {
+            errorMessage = "Failed to save face data: \(error.localizedDescription)"
+        }
     }
 
     /// Match a specific group against Known People and track the match.
@@ -606,8 +637,8 @@ final class FaceRecognitionViewModel {
     @discardableResult
     func matchGroupToKnownPeople(_ groupID: UUID) -> UUID? {
         guard let data = faceData,
-              let group = data.groups.first(where: { $0.id == groupID }),
-              let face = data.faces.first(where: { $0.id == group.representativeFaceID }) else {
+              let group = groupLookup[groupID],
+              let face = faceLookup[group.representativeFaceID] else {
             return nil
         }
 
@@ -741,24 +772,29 @@ final class FaceRecognitionViewModel {
     // MARK: - Naming & Metadata
 
     func nameGroup(_ groupID: UUID, name: String) {
-        guard var data = faceData,
-              let index = data.groups.firstIndex(where: { $0.id == groupID }) else { return }
+        guard var data = faceData else { return }
+        let groupIdx = Dictionary(uniqueKeysWithValues: data.groups.enumerated().map { ($1.id, $0) })
+        guard let index = groupIdx[groupID] else { return }
 
         data.groups[index].name = name.isEmpty ? nil : name
         faceData = data
-        try? storageService.saveFaceData(data)
+        do {
+            try storageService.saveFaceData(data)
+        } catch {
+            errorMessage = "Failed to save face data: \(error.localizedDescription)"
+        }
     }
 
     func applyNameToMetadata(groupID: UUID) {
         guard let data = faceData,
-              let group = data.groups.first(where: { $0.id == groupID }),
+              let group = groupLookup[groupID],
               let name = group.name, !name.isEmpty else { return }
 
         let names = splitPersonNames(name)
         guard !names.isEmpty else { return }
 
         let imageURLs = group.faceIDs.compactMap { faceID in
-            data.faces.first(where: { $0.id == faceID })?.imageURL
+            faceLookup[faceID]?.imageURL
         }
         let uniqueURLs = Array(Set(imageURLs))
 
@@ -973,10 +1009,18 @@ final class FaceRecognitionViewModel {
             history: history
         )
 
-        try? sidecarService.saveSidecar(sidecar, for: url, in: folderURL)
+        do {
+            try sidecarService.saveSidecar(sidecar, for: url, in: folderURL)
+        } catch {
+            errorMessage = "Failed to save metadata sidecar: \(error.localizedDescription)"
+        }
 
         if writeXmpSidecar {
-            try? xmpSidecarService.saveSidecar(metadata: updatedMetadata, for: url)
+            do {
+                try xmpSidecarService.saveSidecar(metadata: updatedMetadata, for: url)
+            } catch {
+                errorMessage = "Failed to save XMP sidecar: \(error.localizedDescription)"
+            }
         }
     }
 
@@ -1014,9 +1058,11 @@ final class FaceRecognitionViewModel {
 
     /// Merge sourceGroup into targetGroup. All faces move to target; source is deleted.
     func mergeGroups(sourceID: UUID, into targetID: UUID) {
-        guard var data = faceData,
-              let sourceIndex = data.groups.firstIndex(where: { $0.id == sourceID }),
-              let targetIndex = data.groups.firstIndex(where: { $0.id == targetID }),
+        guard var data = faceData else { return }
+        let faceIdx = Dictionary(uniqueKeysWithValues: data.faces.enumerated().map { ($1.id, $0) })
+        let groupIdx = Dictionary(uniqueKeysWithValues: data.groups.enumerated().map { ($1.id, $0) })
+        guard let sourceIndex = groupIdx[sourceID],
+              let targetIndex = groupIdx[targetID],
               sourceIndex != targetIndex else { return }
 
         let sourceFaceIDs = data.groups[sourceIndex].faceIDs
@@ -1024,22 +1070,28 @@ final class FaceRecognitionViewModel {
 
         // Update face groupIDs
         for faceID in sourceFaceIDs {
-            if let fi = data.faces.firstIndex(where: { $0.id == faceID }) {
+            if let fi = faceIdx[faceID] {
                 data.faces[fi].groupID = targetID
             }
         }
 
         data.groups.remove(at: sourceIndex)
         faceData = data
-        try? storageService.saveFaceData(data)
+        do {
+            try storageService.saveFaceData(data)
+        } catch {
+            errorMessage = "Failed to save face data: \(error.localizedDescription)"
+        }
     }
 
     /// Remove a single face from its group and place it in a new solo group.
     func ungroupFace(_ faceID: UUID) {
-        guard var data = faceData,
-              let faceIndex = data.faces.firstIndex(where: { $0.id == faceID }),
+        guard var data = faceData else { return }
+        let faceIdx = Dictionary(uniqueKeysWithValues: data.faces.enumerated().map { ($1.id, $0) })
+        let groupIdx = Dictionary(uniqueKeysWithValues: data.groups.enumerated().map { ($1.id, $0) })
+        guard let faceIndex = faceIdx[faceID],
               let oldGroupID = data.faces[faceIndex].groupID,
-              let groupIndex = data.groups.firstIndex(where: { $0.id == oldGroupID }) else { return }
+              let groupIndex = groupIdx[oldGroupID] else { return }
 
         // Don't ungroup if it's the only face in the group
         guard data.groups[groupIndex].faceIDs.count > 1 else { return }
@@ -1063,7 +1115,11 @@ final class FaceRecognitionViewModel {
         data.faces[faceIndex].groupID = newGroup.id
 
         faceData = data
-        try? storageService.saveFaceData(data)
+        do {
+            try storageService.saveFaceData(data)
+        } catch {
+            errorMessage = "Failed to save face data: \(error.localizedDescription)"
+        }
     }
 
     /// Merge multiple groups into the first group in the set (by sort order).
@@ -1075,32 +1131,43 @@ final class FaceRecognitionViewModel {
         guard let target = sorted.first else { return }
         let sources = sorted.dropFirst()
 
+        let faceIdx = Dictionary(uniqueKeysWithValues: data.faces.enumerated().map { ($1.id, $0) })
+        var groupIdx = Dictionary(uniqueKeysWithValues: data.groups.enumerated().map { ($1.id, $0) })
+
         for source in sources {
-            guard let sourceIndex = data.groups.firstIndex(where: { $0.id == source.id }),
-                  let targetIndex = data.groups.firstIndex(where: { $0.id == target.id }) else { continue }
+            guard let sourceIndex = groupIdx[source.id],
+                  let targetIndex = groupIdx[target.id] else { continue }
 
             let sourceFaceIDs = data.groups[sourceIndex].faceIDs
             data.groups[targetIndex].faceIDs.append(contentsOf: sourceFaceIDs)
 
             for faceID in sourceFaceIDs {
-                if let fi = data.faces.firstIndex(where: { $0.id == faceID }) {
+                if let fi = faceIdx[faceID] {
                     data.faces[fi].groupID = target.id
                 }
             }
 
             data.groups.remove(at: sourceIndex)
+            groupIdx = Dictionary(uniqueKeysWithValues: data.groups.enumerated().map { ($1.id, $0) })
         }
 
         faceData = data
-        try? storageService.saveFaceData(data)
+        do {
+            try storageService.saveFaceData(data)
+        } catch {
+            errorMessage = "Failed to save face data: \(error.localizedDescription)"
+        }
     }
 
     /// Ungroup all selected groups — split every face into its own solo group.
     func ungroupMultiple(_ groupIDs: Set<UUID>) {
         guard var data = faceData else { return }
 
+        let faceIdx = Dictionary(uniqueKeysWithValues: data.faces.enumerated().map { ($1.id, $0) })
+        var groupIdx = Dictionary(uniqueKeysWithValues: data.groups.enumerated().map { ($1.id, $0) })
+
         for groupID in groupIDs {
-            guard let groupIndex = data.groups.firstIndex(where: { $0.id == groupID }) else { continue }
+            guard let groupIndex = groupIdx[groupID] else { continue }
             let group = data.groups[groupIndex]
             guard group.faceIDs.count > 1 else { continue }
 
@@ -1116,25 +1183,32 @@ final class FaceRecognitionViewModel {
                     faceIDs: [faceID]
                 )
                 data.groups.append(newGroup)
-                if let fi = data.faces.firstIndex(where: { $0.id == faceID }) {
+                if let fi = faceIdx[faceID] {
                     data.faces[fi].groupID = newGroup.id
                 }
             }
+            groupIdx = Dictionary(uniqueKeysWithValues: data.groups.enumerated().map { ($1.id, $0) })
         }
 
         faceData = data
-        try? storageService.saveFaceData(data)
+        do {
+            try storageService.saveFaceData(data)
+        } catch {
+            errorMessage = "Failed to save face data: \(error.localizedDescription)"
+        }
     }
 
     // MARK: - Move Faces Between Groups
 
     /// Move a single face from its current group to a target group.
     func moveFace(_ faceID: UUID, toGroup targetGroupID: UUID) {
-        guard var data = faceData,
-              let faceIndex = data.faces.firstIndex(where: { $0.id == faceID }),
+        guard var data = faceData else { return }
+        let faceIdx = Dictionary(uniqueKeysWithValues: data.faces.enumerated().map { ($1.id, $0) })
+        var groupIdx = Dictionary(uniqueKeysWithValues: data.groups.enumerated().map { ($1.id, $0) })
+        guard let faceIndex = faceIdx[faceID],
               let oldGroupID = data.faces[faceIndex].groupID,
-              let oldGroupIndex = data.groups.firstIndex(where: { $0.id == oldGroupID }),
-              data.groups.contains(where: { $0.id == targetGroupID }),
+              let oldGroupIndex = groupIdx[oldGroupID],
+              groupIdx[targetGroupID] != nil,
               oldGroupID != targetGroupID else { return }
 
         // Remove from old group
@@ -1147,15 +1221,20 @@ final class FaceRecognitionViewModel {
             data.groups[oldGroupIndex].representativeFaceID = data.groups[oldGroupIndex].faceIDs[0]
         }
 
-        // Re-fetch target index (may have shifted after removal)
-        guard let newTargetIndex = data.groups.firstIndex(where: { $0.id == targetGroupID }) else { return }
+        // Rebuild group index after potential removal
+        groupIdx = Dictionary(uniqueKeysWithValues: data.groups.enumerated().map { ($1.id, $0) })
+        guard let newTargetIndex = groupIdx[targetGroupID] else { return }
 
         // Add to target group
         data.groups[newTargetIndex].faceIDs.append(faceID)
         data.faces[faceIndex].groupID = targetGroupID
 
         faceData = data
-        try? storageService.saveFaceData(data)
+        do {
+            try storageService.saveFaceData(data)
+        } catch {
+            errorMessage = "Failed to save face data: \(error.localizedDescription)"
+        }
     }
 
     /// Move multiple faces to a target group (single mutation + single save).
@@ -1166,16 +1245,22 @@ final class FaceRecognitionViewModel {
         removeFacesFromGroups(faceIDs, in: &data)
 
         // Add all faces to the target group
-        guard let targetIndex = data.groups.firstIndex(where: { $0.id == targetGroupID }) else { return }
+        let faceIdx = Dictionary(uniqueKeysWithValues: data.faces.enumerated().map { ($1.id, $0) })
+        let groupIdx = Dictionary(uniqueKeysWithValues: data.groups.enumerated().map { ($1.id, $0) })
+        guard let targetIndex = groupIdx[targetGroupID] else { return }
         for faceID in faceIDs {
             data.groups[targetIndex].faceIDs.append(faceID)
-            if let fi = data.faces.firstIndex(where: { $0.id == faceID }) {
+            if let fi = faceIdx[faceID] {
                 data.faces[fi].groupID = targetGroupID
             }
         }
 
         faceData = data
-        try? storageService.saveFaceData(data)
+        do {
+            try storageService.saveFaceData(data)
+        } catch {
+            errorMessage = "Failed to save face data: \(error.localizedDescription)"
+        }
     }
 
     /// Remove faces from their current groups and create a new group with them (single mutation + single save).
@@ -1184,15 +1269,17 @@ final class FaceRecognitionViewModel {
         guard var data = faceData, !faceIDs.isEmpty else { return }
 
         // Find source group IDs before removal (to determine insertion position)
+        let preFaceIdx = Dictionary(uniqueKeysWithValues: data.faces.enumerated().map { ($1.id, $0) })
         let sourceGroupIDs = Set(faceIDs.compactMap { faceID -> UUID? in
-            guard let faceIndex = data.faces.firstIndex(where: { $0.id == faceID }) else { return nil }
+            guard let faceIndex = preFaceIdx[faceID] else { return nil }
             return data.faces[faceIndex].groupID
         })
 
         // Find the highest index among source groups (for insertion position)
+        let preGroupIdx = Dictionary(uniqueKeysWithValues: data.groups.enumerated().map { ($1.id, $0) })
         var maxSourceIndex = -1
-        for (index, group) in data.groups.enumerated() {
-            if sourceGroupIDs.contains(group.id) {
+        for groupID in sourceGroupIDs {
+            if let index = preGroupIdx[groupID] {
                 maxSourceIndex = max(maxSourceIndex, index)
             }
         }
@@ -1210,13 +1297,13 @@ final class FaceRecognitionViewModel {
         )
 
         // Insert after the last source group (accounting for potential removal of empty groups)
-        // We need to find the appropriate insertion index after removals
+        let postGroupIdx = Dictionary(uniqueKeysWithValues: data.groups.enumerated().map { ($1.id, $0) })
         let insertionIndex: Int
         if maxSourceIndex >= 0 {
             // Count how many source groups were removed (became empty)
             var removedCount = 0
             for groupID in sourceGroupIDs {
-                if !data.groups.contains(where: { $0.id == groupID }) {
+                if postGroupIdx[groupID] == nil {
                     removedCount += 1
                 }
             }
@@ -1228,28 +1315,37 @@ final class FaceRecognitionViewModel {
 
         data.groups.insert(newGroup, at: max(0, insertionIndex))
 
+        let faceIdx = Dictionary(uniqueKeysWithValues: data.faces.enumerated().map { ($1.id, $0) })
         for faceID in faceIDs {
-            if let fi = data.faces.firstIndex(where: { $0.id == faceID }) {
+            if let fi = faceIdx[faceID] {
                 data.faces[fi].groupID = newGroup.id
             }
         }
 
         faceData = data
-        try? storageService.saveFaceData(data)
+        do {
+            try storageService.saveFaceData(data)
+        } catch {
+            errorMessage = "Failed to save face data: \(error.localizedDescription)"
+        }
     }
 
     /// Remove faces from whatever groups they belong to, cleaning up empties and representatives.
     /// Mutates `data` in place without assigning to `faceData` or saving — caller is responsible.
     private func removeFacesFromGroups(_ faceIDs: Set<UUID>, in data: inout FolderFaceData) {
+        let faceIdx = Dictionary(uniqueKeysWithValues: data.faces.enumerated().map { ($1.id, $0) })
+        var groupIdx = Dictionary(uniqueKeysWithValues: data.groups.enumerated().map { ($1.id, $0) })
+
         for faceID in faceIDs {
-            guard let faceIndex = data.faces.firstIndex(where: { $0.id == faceID }),
+            guard let faceIndex = faceIdx[faceID],
                   let oldGroupID = data.faces[faceIndex].groupID,
-                  let oldGroupIndex = data.groups.firstIndex(where: { $0.id == oldGroupID }) else { continue }
+                  let oldGroupIndex = groupIdx[oldGroupID] else { continue }
 
             data.groups[oldGroupIndex].faceIDs.removeAll { $0 == faceID }
 
             if data.groups[oldGroupIndex].faceIDs.isEmpty {
                 data.groups.remove(at: oldGroupIndex)
+                groupIdx = Dictionary(uniqueKeysWithValues: data.groups.enumerated().map { ($1.id, $0) })
             } else if data.groups[oldGroupIndex].representativeFaceID == faceID {
                 data.groups[oldGroupIndex].representativeFaceID = data.groups[oldGroupIndex].faceIDs[0]
             }
@@ -1298,7 +1394,11 @@ final class FaceRecognitionViewModel {
         }
 
         faceData = data
-        try? storageService.saveFaceData(data)
+        do {
+            try storageService.saveFaceData(data)
+        } catch {
+            errorMessage = "Failed to save face data: \(error.localizedDescription)"
+        }
     }
 
     /// Delete an entire group: removes all face data and optionally trashes the source photos.
@@ -1306,7 +1406,7 @@ final class FaceRecognitionViewModel {
     @discardableResult
     func deleteGroup(_ groupID: UUID, includePhotos: Bool) -> Set<URL> {
         guard var data = faceData,
-              let group = data.groups.first(where: { $0.id == groupID }) else { return [] }
+              let group = groupLookup[groupID] else { return [] }
 
         let faceIDs = Set(group.faceIDs)
 
@@ -1314,7 +1414,7 @@ final class FaceRecognitionViewModel {
         var trashedURLs: Set<URL> = []
         if includePhotos {
             let urls = Set(group.faceIDs.compactMap { faceID in
-                data.faces.first(where: { $0.id == faceID })?.imageURL
+                faceLookup[faceID]?.imageURL
             })
             for url in urls {
                 do {
@@ -1339,7 +1439,11 @@ final class FaceRecognitionViewModel {
         }
 
         faceData = data
-        try? storageService.saveFaceData(data)
+        do {
+            try storageService.saveFaceData(data)
+        } catch {
+            errorMessage = "Failed to save face data: \(error.localizedDescription)"
+        }
         return trashedURLs
     }
 

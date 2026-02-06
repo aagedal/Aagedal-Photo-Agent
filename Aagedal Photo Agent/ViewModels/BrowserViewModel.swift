@@ -743,10 +743,18 @@ final class BrowserViewModel {
             history: history
         )
 
-        try? sidecarService.saveSidecar(sidecar, for: url, in: folderURL)
+        do {
+            try sidecarService.saveSidecar(sidecar, for: url, in: folderURL)
+        } catch {
+            errorMessage = "Failed to save metadata sidecar: \(error.localizedDescription)"
+        }
 
         if writeXmpSidecar {
-            try? xmpSidecarService.saveSidecar(metadata: metadata, for: url)
+            do {
+                try xmpSidecarService.saveSidecar(metadata: metadata, for: url)
+            } catch {
+                errorMessage = "Failed to save XMP sidecar: \(error.localizedDescription)"
+            }
         }
     }
 
@@ -799,10 +807,18 @@ final class BrowserViewModel {
             history: history
         )
 
-        try? sidecarService.saveSidecar(sidecar, for: url, in: folderURL)
+        do {
+            try sidecarService.saveSidecar(sidecar, for: url, in: folderURL)
+        } catch {
+            errorMessage = "Failed to save metadata sidecar: \(error.localizedDescription)"
+        }
 
         if writeXmpSidecar {
-            try? xmpSidecarService.saveSidecar(metadata: metadata, for: url)
+            do {
+                try xmpSidecarService.saveSidecar(metadata: metadata, for: url)
+            } catch {
+                errorMessage = "Failed to save XMP sidecar: \(error.localizedDescription)"
+            }
         }
     }
 
