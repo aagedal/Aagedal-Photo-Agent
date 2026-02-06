@@ -77,7 +77,7 @@ final class BrowserViewModel {
     private let sidecarService = MetadataSidecarService()
     private let xmpSidecarService = XMPSidecarService()
 
-    nonisolated(unsafe) private let logger = Logger(subsystem: "com.aagedal.photo-agent", category: "BrowserViewModel")
+    private let logger = Logger(subsystem: "com.aagedal.photo-agent", category: "BrowserViewModel")
     @ObservationIgnored var onImagesDeleted: ((Set<URL>) -> Void)?
     @ObservationIgnored private var searchDebounceTask: Task<Void, Never>?
     @ObservationIgnored private var filterDebounceTask: Task<Void, Never>?

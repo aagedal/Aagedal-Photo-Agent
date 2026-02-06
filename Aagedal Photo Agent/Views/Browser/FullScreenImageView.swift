@@ -980,7 +980,9 @@ struct FullScreenPresenter: ViewModifier {
             object: nil,
             queue: .main
         ) { [weak viewModel] _ in
-            viewModel?.isFullScreen = false
+            Task { @MainActor [weak viewModel] in
+                viewModel?.isFullScreen = false
+            }
         }
     }
 
