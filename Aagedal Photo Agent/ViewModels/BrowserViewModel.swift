@@ -30,7 +30,10 @@ final class BrowserViewModel {
     @ObservationIgnored var fullScreenFaceContext: FullScreenFaceContext?
     var errorMessage: String?
     var sortOrder: SortOrder = .name {
-        didSet { rebuildSortedCache() }
+        didSet {
+            UserDefaults.standard.set(sortOrder.rawValue, forKey: UserDefaultsKeys.thumbnailSortOrder)
+            rebuildSortedCache()
+        }
     }
     var favoriteFolders: [FavoriteFolder] = []
     var openFolders: [URL] = []
@@ -94,6 +97,13 @@ final class BrowserViewModel {
     }
 
     private(set) var selectedImagesCache: [ImageFile] = []
+
+    init() {
+        if let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.thumbnailSortOrder),
+           let stored = SortOrder(rawValue: raw) {
+            sortOrder = stored
+        }
+    }
 
     var selectedImages: [ImageFile] { selectedImagesCache }
 
