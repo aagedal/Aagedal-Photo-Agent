@@ -224,78 +224,92 @@ nonisolated struct FaceDetectionService: Sendable {
 
     // MARK: - Quality Scoring
 
-    /// Compute blur score using Laplacian variance. Higher = sharper.
+    /// Compute blur score using Laplacian variance (Accelerate-optimized). Higher = sharper.
     private func computeBlurScore(for cgImage: CGImage) -> Float {
         let width = cgImage.width
         let height = cgImage.height
         guard width > 2, height > 2 else { return 0 }
 
-        // Convert to grayscale
-        guard let grayscaleData = convertToGrayscale(cgImage) else { return 0 }
+        // Convert CGImage to Planar8 grayscale via vImageConverter
+        guard let sourceFormat = vImage_CGImageFormat(cgImage: cgImage),
+              let destFormat = vImage_CGImageFormat(
+                  bitsPerComponent: 8,
+                  bitsPerPixel: 8,
+                  colorSpace: CGColorSpaceCreateDeviceGray(),
+                  bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue)
+              ),
+              let converter = try? vImageConverter.make(
+                  sourceFormat: sourceFormat,
+                  destinationFormat: destFormat
+              ) else { return 0 }
 
-        // Compute Laplacian variance
-        var laplacianSum: Float = 0
-        var laplacianSumSq: Float = 0
-        var count: Float = 0
+        guard var sourceBuffer = try? vImage_Buffer(cgImage: cgImage) else { return 0 }
+        defer { sourceBuffer.free() }
 
-        // Simple 3x3 Laplacian kernel: [0, 1, 0], [1, -4, 1], [0, 1, 0]
-        for y in 1..<(height - 1) {
-            for x in 1..<(width - 1) {
-                let idx = y * width + x
-                let center = Float(grayscaleData[idx])
-                let top = Float(grayscaleData[(y - 1) * width + x])
-                let bottom = Float(grayscaleData[(y + 1) * width + x])
-                let left = Float(grayscaleData[y * width + (x - 1)])
-                let right = Float(grayscaleData[y * width + (x + 1)])
+        guard var grayBuffer = try? vImage_Buffer(
+            width: width,
+            height: height,
+            bitsPerPixel: 8
+        ) else { return 0 }
+        defer { grayBuffer.free() }
 
-                let laplacian = top + bottom + left + right - 4 * center
-                laplacianSum += laplacian
-                laplacianSumSq += laplacian * laplacian
-                count += 1
-            }
+        guard (try? converter.convert(source: sourceBuffer, destination: &grayBuffer)) != nil else {
+            return 0
         }
 
-        guard count > 0 else { return 0 }
+        // Convert Planar8 to PlanarF for convolution
+        var floatBuffer = try? vImage_Buffer(
+            width: width,
+            height: height,
+            bitsPerPixel: 32
+        )
+        guard floatBuffer != nil else { return 0 }
+        defer { floatBuffer!.free() }
 
-        let mean = laplacianSum / count
-        let variance = (laplacianSumSq / count) - (mean * mean)
+        let convertErr = vImageConvert_Planar8toPlanarF(
+            &grayBuffer,
+            &floatBuffer!,
+            0.0, 255.0,
+            vImage_Flags(kvImageNoFlags)
+        )
+        guard convertErr == kvImageNoError else { return 0 }
+
+        // Apply 3x3 Laplacian kernel via vImageConvolve_PlanarF
+        var laplacianBuffer = try? vImage_Buffer(
+            width: width,
+            height: height,
+            bitsPerPixel: 32
+        )
+        guard laplacianBuffer != nil else { return 0 }
+        defer { laplacianBuffer!.free() }
+
+        var kernel: [Float] = [
+            0,  1,  0,
+            1, -4,  1,
+            0,  1,  0
+        ]
+        let convolveErr = vImageConvolve_PlanarF(
+            &floatBuffer!,
+            &laplacianBuffer!,
+            nil,
+            0, 0,
+            &kernel,
+            3, 3,
+            0,
+            vImage_Flags(kvImageEdgeExtend)
+        )
+        guard convolveErr == kvImageNoError else { return 0 }
+
+        // Compute variance using vDSP: Var(X) = E[X²] - E[X]²
+        let pixelCount = width * height
+        let laplacianPtr = laplacianBuffer!.data.assumingMemoryBound(to: Float.self)
+        let laplacianData = UnsafeBufferPointer(start: laplacianPtr, count: pixelCount)
+        let mean = vDSP.mean(laplacianData)
+        let meanSquare = vDSP.meanSquare(laplacianData)
+        let variance = meanSquare - (mean * mean)
 
         // Normalize to 0-1 range (empirically, values > 500 are very sharp)
         return min(1.0, max(0.0, variance / 500.0))
-    }
-
-    private func convertToGrayscale(_ cgImage: CGImage) -> [UInt8]? {
-        let width = cgImage.width
-        let height = cgImage.height
-        let bytesPerPixel = 4
-        let bytesPerRow = width * bytesPerPixel
-        let bitsPerComponent = 8
-
-        var pixelData = [UInt8](repeating: 0, count: width * height * bytesPerPixel)
-
-        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
-              let context = CGContext(
-                  data: &pixelData,
-                  width: width,
-                  height: height,
-                  bitsPerComponent: bitsPerComponent,
-                  bytesPerRow: bytesPerRow,
-                  space: colorSpace,
-                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-              ) else { return nil }
-
-        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
-
-        // Convert to grayscale
-        var grayscale = [UInt8](repeating: 0, count: width * height)
-        for i in 0..<(width * height) {
-            let r = Float(pixelData[i * 4])
-            let g = Float(pixelData[i * 4 + 1])
-            let b = Float(pixelData[i * 4 + 2])
-            grayscale[i] = UInt8(0.299 * r + 0.587 * g + 0.114 * b)
-        }
-
-        return grayscale
     }
 
     /// Compute composite quality score from individual metrics
