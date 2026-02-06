@@ -538,7 +538,11 @@ final class MetadataViewModel {
         for imageURL in selectedURLs {
             var existing = xmpSidecarService.loadSidecar(for: imageURL) ?? IPTCMetadata()
             applyBatchEdits(batchMeta, to: &existing)
-            try? xmpSidecarService.saveSidecar(metadata: existing, for: imageURL)
+            do {
+                try xmpSidecarService.saveSidecar(metadata: existing, for: imageURL)
+            } catch {
+                saveError = "Failed to save XMP sidecar: \(error.localizedDescription)"
+            }
         }
     }
 
@@ -1165,7 +1169,11 @@ final class MetadataViewModel {
                 history: history
             )
 
-            try? sidecarService.saveSidecar(sidecar, for: imageURL, in: folderURL)
+            do {
+                try sidecarService.saveSidecar(sidecar, for: imageURL, in: folderURL)
+            } catch {
+                saveError = "Failed to save metadata sidecar: \(error.localizedDescription)"
+            }
         }
 
         hasChanges = pendingChanges
@@ -1401,7 +1409,11 @@ final class MetadataViewModel {
             imageMetadataSnapshot: originalImageMetadata,
             history: []
         )
-        try? sidecarService.saveSidecar(sidecar, for: imageURL, in: folderURL)
+        do {
+            try sidecarService.saveSidecar(sidecar, for: imageURL, in: folderURL)
+        } catch {
+            saveError = "Failed to save metadata sidecar: \(error.localizedDescription)"
+        }
     }
 
     func restoreToOriginal() {
@@ -1421,7 +1433,11 @@ final class MetadataViewModel {
                 imageMetadataSnapshot: originalImageMetadata,
                 history: sidecarHistory
             )
-            try? sidecarService.saveSidecar(sidecar, for: imageURL, in: folderURL)
+            do {
+                try sidecarService.saveSidecar(sidecar, for: imageURL, in: folderURL)
+            } catch {
+                saveError = "Failed to save metadata sidecar: \(error.localizedDescription)"
+            }
         }
     }
 
@@ -1452,7 +1468,11 @@ final class MetadataViewModel {
                 imageMetadataSnapshot: originalImageMetadata,
                 history: sidecarHistory
             )
-            try? sidecarService.saveSidecar(sidecar, for: imageURL, in: folderURL)
+            do {
+                try sidecarService.saveSidecar(sidecar, for: imageURL, in: folderURL)
+            } catch {
+                saveError = "Failed to save metadata sidecar: \(error.localizedDescription)"
+            }
         }
     }
 
