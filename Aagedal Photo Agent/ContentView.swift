@@ -153,6 +153,15 @@ struct ContentView: View {
             .onReceive(NotificationCenter.default.publisher(for: .showKnownPeopleDatabase)) { _ in
                 openPeopleDatabase()
             }
+            .onChange(of: browserViewModel.isFullScreen) { _, isFullScreen in
+                guard isFullScreen, browserViewModel.fullScreenFaceContext == nil else { return }
+                browserViewModel.fullScreenFaceContext = BrowserViewModel.FullScreenFaceContext(
+                    faceRecognitionViewModel: faceRecognitionViewModel,
+                    highlightedFaceID: nil,
+                    navigationItems: nil,
+                    onNavigateToFace: nil
+                )
+            }
             .fullScreenImagePresenter(viewModel: browserViewModel)
             .onAppear {
                 browserViewModel.loadFavorites()
@@ -216,7 +225,7 @@ struct ContentView: View {
                         browserViewModel.selectedImageIDs = [imageURL]
                         browserViewModel.lastClickedImageURL = imageURL
 
-                        let navigationImageURLs: [URL]? = {
+                        let navigationItems: [BrowserViewModel.FullScreenFaceNavigationItem]? = {
                             guard let highlightedFaceID,
                                   let selectedFace = faceRecognitionViewModel.face(byID: highlightedFaceID),
                                   let groupID = selectedFace.groupID,
@@ -224,24 +233,43 @@ struct ContentView: View {
                                 return nil
                             }
 
-                            var orderedImageURLs: [URL] = []
-                            var seenURLs: Set<URL> = []
+                            var orderedItems: [BrowserViewModel.FullScreenFaceNavigationItem] = []
+                            var indexByImageURL: [URL: Int] = [:]
+
                             for face in faceRecognitionViewModel.faces(in: group) {
-                                if seenURLs.insert(face.imageURL).inserted {
-                                    orderedImageURLs.append(face.imageURL)
+                                if let existingIndex = indexByImageURL[face.imageURL] {
+                                    if face.id == highlightedFaceID {
+                                        orderedItems[existingIndex] = BrowserViewModel.FullScreenFaceNavigationItem(
+                                            imageURL: face.imageURL,
+                                            faceID: face.id
+                                        )
+                                    }
+                                    continue
                                 }
+                                indexByImageURL[face.imageURL] = orderedItems.count
+                                orderedItems.append(BrowserViewModel.FullScreenFaceNavigationItem(
+                                    imageURL: face.imageURL,
+                                    faceID: face.id
+                                ))
                             }
 
-                            if !orderedImageURLs.contains(imageURL) {
-                                orderedImageURLs.insert(imageURL, at: 0)
+                            if !orderedItems.contains(where: { $0.imageURL == imageURL }) {
+                                orderedItems.insert(BrowserViewModel.FullScreenFaceNavigationItem(
+                                    imageURL: imageURL,
+                                    faceID: highlightedFaceID
+                                ), at: 0)
                             }
-                            return orderedImageURLs.isEmpty ? nil : orderedImageURLs
+                            return orderedItems.isEmpty ? nil : orderedItems
                         }()
 
                         browserViewModel.fullScreenFaceContext = BrowserViewModel.FullScreenFaceContext(
                             faceRecognitionViewModel: faceRecognitionViewModel,
                             highlightedFaceID: highlightedFaceID,
-                            navigationImageURLs: navigationImageURLs
+                            navigationItems: navigationItems,
+                            onNavigateToFace: { faceID in
+                                guard let faceID else { return }
+                                faceSelectionState.selectFace(faceID)
+                            }
                         )
                         browserViewModel.isFullScreen = true
                     }

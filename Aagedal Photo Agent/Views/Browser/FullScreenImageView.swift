@@ -436,7 +436,7 @@ struct FullScreenImageView: View {
         .onAppear {
             isFocused = true
             // Initialize face rectangles from context (visible by default when opened from face view)
-            showFaceRectangles = viewModel.fullScreenFaceContext != nil
+            showFaceRectangles = viewModel.fullScreenFaceContext?.highlightedFaceID != nil
             // Register actions with the controller
             zoomController?.toggleZoomAction = { [self] location in
                 toggleZoom(at: location)
