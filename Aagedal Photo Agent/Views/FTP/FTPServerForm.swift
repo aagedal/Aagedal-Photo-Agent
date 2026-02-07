@@ -30,6 +30,14 @@ struct FTPServerForm: View {
 
             Toggle("Use SFTP", isOn: $viewModel.editingConnection.useSFTP)
 
+            if viewModel.editingConnection.useSFTP {
+                Toggle("Allow insecure host verification", isOn: $viewModel.editingConnection.allowInsecureHostVerification)
+                    .font(.caption)
+                Text("Only enable this for legacy servers or testing.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
             Divider()
 
             HStack {

@@ -32,7 +32,9 @@ struct FTPService: Sendable {
         ]
 
         if connection.useSFTP {
-            arguments.append(contentsOf: ["--insecure"])
+            if connection.allowInsecureHostVerification {
+                arguments.append(contentsOf: ["--insecure"])
+            }
         } else {
             arguments.append(contentsOf: ["--ftp-create-dirs"])
         }

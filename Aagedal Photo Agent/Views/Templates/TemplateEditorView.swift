@@ -25,7 +25,7 @@ struct TemplateEditorView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(viewModel.editingTemplate.id == UUID() ? "New Template" : "Edit Template")
+            Text(viewModel.isEditingExistingTemplate ? "Edit Template" : "New Template")
                 .font(.headline)
 
             TextField("Template Name", text: $viewModel.editingTemplate.name)
