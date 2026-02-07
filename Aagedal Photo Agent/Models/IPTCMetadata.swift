@@ -1,5 +1,92 @@
 import Foundation
 
+struct CameraRawCrop: Codable, Sendable, Equatable {
+    var top: Double?
+    var left: Double?
+    var bottom: Double?
+    var right: Double?
+    var angle: Double?
+    var hasCrop: Bool?
+
+    var isEmpty: Bool {
+        top == nil
+            && left == nil
+            && bottom == nil
+            && right == nil
+            && angle == nil
+            && hasCrop == nil
+    }
+}
+
+struct CameraRawSettings: Codable, Sendable, Equatable {
+    var whiteBalance: String?
+    var temperature: Int?
+    var tint: Int?
+    var incrementalTemperature: Int?
+    var incrementalTint: Int?
+    var exposure2012: Double?
+    var contrast2012: Int?
+    var highlights2012: Int?
+    var shadows2012: Int?
+    var whites2012: Int?
+    var blacks2012: Int?
+    var hasSettings: Bool?
+    var crop: CameraRawCrop?
+
+    var isEmpty: Bool {
+        whiteBalance == nil
+            && temperature == nil
+            && tint == nil
+            && incrementalTemperature == nil
+            && incrementalTint == nil
+            && exposure2012 == nil
+            && contrast2012 == nil
+            && highlights2012 == nil
+            && shadows2012 == nil
+            && whites2012 == nil
+            && blacks2012 == nil
+            && hasSettings == nil
+            && (crop?.isEmpty ?? true)
+    }
+
+    func merged(preferring override: CameraRawSettings) -> CameraRawSettings {
+        var result = self
+        if let value = override.whiteBalance, !value.isEmpty { result.whiteBalance = value }
+        if let value = override.temperature { result.temperature = value }
+        if let value = override.tint { result.tint = value }
+        if let value = override.incrementalTemperature { result.incrementalTemperature = value }
+        if let value = override.incrementalTint { result.incrementalTint = value }
+        if let value = override.exposure2012 { result.exposure2012 = value }
+        if let value = override.contrast2012 { result.contrast2012 = value }
+        if let value = override.highlights2012 { result.highlights2012 = value }
+        if let value = override.shadows2012 { result.shadows2012 = value }
+        if let value = override.whites2012 { result.whites2012 = value }
+        if let value = override.blacks2012 { result.blacks2012 = value }
+        if let value = override.hasSettings { result.hasSettings = value }
+        if let crop = override.crop {
+            if let existing = result.crop {
+                result.crop = existing.merged(preferring: crop)
+            } else {
+                result.crop = crop
+            }
+        }
+        return result
+    }
+}
+
+extension CameraRawCrop {
+    func merged(preferring override: CameraRawCrop) -> CameraRawCrop {
+        var result = self
+        if let value = override.top { result.top = value }
+        if let value = override.left { result.left = value }
+        if let value = override.bottom { result.bottom = value }
+        if let value = override.right { result.right = value }
+        if let value = override.angle { result.angle = value }
+        if let value = override.hasCrop { result.hasCrop = value }
+        return result
+    }
+}
+
 struct IPTCMetadata: Codable, Sendable, Equatable {
     // Priority fields (always visible)
     var title: String?
@@ -29,6 +116,7 @@ struct IPTCMetadata: Codable, Sendable, Equatable {
     // XMP managed alongside
     var rating: Int?
     var label: String?
+    var cameraRaw: CameraRawSettings?
 
     init(
         title: String? = nil,
@@ -49,7 +137,8 @@ struct IPTCMetadata: Codable, Sendable, Equatable {
         country: String? = nil,
         event: String? = nil,
         rating: Int? = nil,
-        label: String? = nil
+        label: String? = nil,
+        cameraRaw: CameraRawSettings? = nil
     ) {
         self.title = title
         self.description = description
@@ -70,6 +159,7 @@ struct IPTCMetadata: Codable, Sendable, Equatable {
         self.event = event
         self.rating = rating
         self.label = label
+        self.cameraRaw = cameraRaw
     }
 }
 
@@ -96,6 +186,13 @@ extension IPTCMetadata {
         if let value = override.longitude { result.longitude = value }
         if let value = override.rating { result.rating = value }
         if let value = override.label, !value.isEmpty { result.label = value }
+        if let value = override.cameraRaw {
+            if let existing = result.cameraRaw {
+                result.cameraRaw = existing.merged(preferring: value)
+            } else {
+                result.cameraRaw = value
+            }
+        }
 
         return result
     }

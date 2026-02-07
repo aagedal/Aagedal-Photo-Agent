@@ -7,6 +7,7 @@ enum UserDefaultsKeys {
 
     // MARK: - External Editor
     static let defaultExternalEditor = "defaultExternalEditor"
+    static let defaultEditDestination = "defaultEditDestination"
 
     // MARK: - Update Checker
     static let updateCheckFrequency = "updateCheckFrequency"

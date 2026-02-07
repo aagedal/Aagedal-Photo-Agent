@@ -10,6 +10,7 @@ struct XMPSidecarService: Sendable {
         static let iptcCore = "http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/"
         static let iptcExt = "http://iptc.org/std/Iptc4xmpExt/2008-02-29/"
         static let exif = "http://ns.adobe.com/exif/1.0/"
+        static let crs = "http://ns.adobe.com/camera-raw-settings/1.0/"
     }
 
     private enum XMPPacket {
@@ -139,6 +140,7 @@ struct XMPSidecarService: Sendable {
         ensureNamespace(description, prefix: "Iptc4xmpCore", uri: Namespace.iptcCore)
         ensureNamespace(description, prefix: "Iptc4xmpExt", uri: Namespace.iptcExt)
         ensureNamespace(description, prefix: "exif", uri: Namespace.exif)
+        ensureNamespace(description, prefix: "crs", uri: Namespace.crs)
         if let rdf = description.parent as? XMLElement {
             ensureNamespace(rdf, prefix: "rdf", uri: Namespace.rdf)
         }
@@ -226,17 +228,115 @@ struct XMPSidecarService: Sendable {
             setSimple(on: description, prefix: "exif", localName: "GPSLatitude", value: nil)
             setSimple(on: description, prefix: "exif", localName: "GPSLongitude", value: nil)
         }
+
+        updateCameraRawSettings(on: description, settings: metadata.cameraRaw)
+    }
+
+    private func updateCameraRawSettings(on description: XMLElement, settings: CameraRawSettings?) {
+        guard let settings else {
+            removeCameraRawSettings(from: description)
+            return
+        }
+
+        setSimple(on: description, prefix: "crs", localName: "WhiteBalance", value: settings.whiteBalance)
+        setSimple(on: description, prefix: "crs", localName: "Temperature", value: settings.temperature.map(String.init))
+        setSimple(on: description, prefix: "crs", localName: "Tint", value: settings.tint.map(formatSignedInt))
+        setSimple(
+            on: description,
+            prefix: "crs",
+            localName: "IncrementalTemperature",
+            value: settings.incrementalTemperature.map(formatSignedInt)
+        )
+        setSimple(
+            on: description,
+            prefix: "crs",
+            localName: "IncrementalTint",
+            value: settings.incrementalTint.map(formatSignedInt)
+        )
+        setSimple(
+            on: description,
+            prefix: "crs",
+            localName: "Exposure2012",
+            value: settings.exposure2012.map { formatSignedDouble($0, precision: 2) }
+        )
+        setSimple(on: description, prefix: "crs", localName: "Contrast2012", value: settings.contrast2012.map(formatSignedInt))
+        setSimple(on: description, prefix: "crs", localName: "Highlights2012", value: settings.highlights2012.map(formatSignedInt))
+        setSimple(on: description, prefix: "crs", localName: "Shadows2012", value: settings.shadows2012.map(formatSignedInt))
+        setSimple(on: description, prefix: "crs", localName: "Whites2012", value: settings.whites2012.map(formatSignedInt))
+        setSimple(on: description, prefix: "crs", localName: "Blacks2012", value: settings.blacks2012.map(formatSignedInt))
+
+        let hasSettings = settings.hasSettings ?? !settings.isEmpty
+        setSimple(on: description, prefix: "crs", localName: "HasSettings", value: formatBool(hasSettings))
+
+        let crop = settings.crop
+        let hasCrop: Bool? = {
+            guard let crop else { return nil }
+            return crop.hasCrop ?? !crop.isEmpty
+        }()
+        setSimple(on: description, prefix: "crs", localName: "CropTop", value: crop?.top.map { formatUnsignedDouble($0, precision: 6) })
+        setSimple(on: description, prefix: "crs", localName: "CropLeft", value: crop?.left.map { formatUnsignedDouble($0, precision: 6) })
+        setSimple(on: description, prefix: "crs", localName: "CropBottom", value: crop?.bottom.map { formatUnsignedDouble($0, precision: 6) })
+        setSimple(on: description, prefix: "crs", localName: "CropRight", value: crop?.right.map { formatUnsignedDouble($0, precision: 6) })
+        setSimple(on: description, prefix: "crs", localName: "CropAngle", value: crop?.angle.map { formatUnsignedDouble($0, precision: 2) })
+        setSimple(on: description, prefix: "crs", localName: "HasCrop", value: hasCrop.map(formatBool))
+    }
+
+    private func removeCameraRawSettings(from description: XMLElement) {
+        let fields = [
+            "WhiteBalance",
+            "Temperature",
+            "Tint",
+            "IncrementalTemperature",
+            "IncrementalTint",
+            "Exposure2012",
+            "Contrast2012",
+            "Highlights2012",
+            "Shadows2012",
+            "Whites2012",
+            "Blacks2012",
+            "HasSettings",
+            "CropTop",
+            "CropLeft",
+            "CropBottom",
+            "CropRight",
+            "CropAngle",
+            "HasCrop",
+        ]
+        for field in fields {
+            removeProperty(from: description, prefix: "crs", localName: field)
+        }
+    }
+
+    private func formatSignedInt(_ value: Int) -> String {
+        value > 0 ? "+\(value)" : "\(value)"
+    }
+
+    private func formatSignedDouble(_ value: Double, precision: Int) -> String {
+        let absFormat = "%.\(precision)f"
+        let absValue = String(format: absFormat, abs(value))
+        if value > 0 { return "+\(absValue)" }
+        if value < 0 { return "-\(absValue)" }
+        return absValue
+    }
+
+    private func formatUnsignedDouble(_ value: Double, precision: Int) -> String {
+        String(format: "%.\(precision)f", value)
+    }
+
+    private func formatBool(_ value: Bool) -> String {
+        value ? "True" : "False"
     }
 
     private func setSimple(on description: XMLElement, prefix: String, localName: String, value: String?) {
-        removeChildren(from: description, localName: localName, namespace: namespaceURI(for: prefix))
+        removeProperty(from: description, prefix: prefix, localName: localName)
         guard let value, !value.isEmpty else { return }
-        let element = XMLElement(name: "\(prefix):\(localName)", stringValue: value)
-        description.addChild(element)
+        if let attribute = XMLNode.attribute(withName: "\(prefix):\(localName)", stringValue: value) as? XMLNode {
+            description.addAttribute(attribute)
+        }
     }
 
     private func setAltText(on description: XMLElement, prefix: String, localName: String, value: String?) {
-        removeChildren(from: description, localName: localName, namespace: namespaceURI(for: prefix))
+        removeProperty(from: description, prefix: prefix, localName: localName)
         guard let value, !value.isEmpty else { return }
 
         let element = XMLElement(name: "\(prefix):\(localName)")
@@ -251,7 +351,7 @@ struct XMPSidecarService: Sendable {
     }
 
     private func setBag(on description: XMLElement, prefix: String, localName: String, values: [String]) {
-        removeChildren(from: description, localName: localName, namespace: namespaceURI(for: prefix))
+        removeProperty(from: description, prefix: prefix, localName: localName)
         let cleaned = values.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
         guard !cleaned.isEmpty else { return }
 
@@ -265,7 +365,7 @@ struct XMPSidecarService: Sendable {
     }
 
     private func setSeq(on description: XMLElement, prefix: String, localName: String, values: [String]) {
-        removeChildren(from: description, localName: localName, namespace: namespaceURI(for: prefix))
+        removeProperty(from: description, prefix: prefix, localName: localName)
         let cleaned = values.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
         guard !cleaned.isEmpty else { return }
 
@@ -276,6 +376,19 @@ struct XMPSidecarService: Sendable {
         }
         element.addChild(seq)
         description.addChild(element)
+    }
+
+    private func removeProperty(from description: XMLElement, prefix: String, localName: String) {
+        let namespace = namespaceURI(for: prefix)
+        removeChildren(from: description, localName: localName, namespace: namespace)
+
+        if let exactNameMatch = description.attributes?.first(where: { $0.name == "\(prefix):\(localName)" }) {
+            exactNameMatch.detach()
+        }
+
+        if let namespaceMatch = description.attributes?.first(where: { $0.localName == localName && $0.uri == namespace }) {
+            namespaceMatch.detach()
+        }
     }
 
     private func removeChildren(from description: XMLElement, localName: String, namespace: String) {
@@ -303,6 +416,8 @@ struct XMPSidecarService: Sendable {
             return Namespace.iptcExt
         case "exif":
             return Namespace.exif
+        case "crs":
+            return Namespace.crs
         default:
             return ""
         }
@@ -332,6 +447,7 @@ struct XMPSidecarService: Sendable {
         let event = parseSimple(from: description, prefix: "Iptc4xmpExt", localName: "Event")
         let latValue = parseSimple(from: description, prefix: "exif", localName: "GPSLatitude")
         let lonValue = parseSimple(from: description, prefix: "exif", localName: "GPSLongitude")
+        let cameraRaw = parseCameraRawSettings(from: description)
 
         return IPTCMetadata(
             title: title,
@@ -351,11 +467,65 @@ struct XMPSidecarService: Sendable {
             country: country,
             event: event,
             rating: ratingValue.flatMap { Int($0) },
-            label: label
+            label: label,
+            cameraRaw: cameraRaw
         )
     }
 
+    private func parseCameraRawSettings(from description: XMLElement) -> CameraRawSettings? {
+        let whiteBalance = parseSimple(from: description, prefix: "crs", localName: "WhiteBalance")
+        let temperature = parseSimple(from: description, prefix: "crs", localName: "Temperature").flatMap(parseSignedInt)
+        let tint = parseSimple(from: description, prefix: "crs", localName: "Tint").flatMap(parseSignedInt)
+        let incrementalTemperature = parseSimple(
+            from: description,
+            prefix: "crs",
+            localName: "IncrementalTemperature"
+        ).flatMap(parseSignedInt)
+        let incrementalTint = parseSimple(
+            from: description,
+            prefix: "crs",
+            localName: "IncrementalTint"
+        ).flatMap(parseSignedInt)
+        let exposure2012 = parseSimple(from: description, prefix: "crs", localName: "Exposure2012").flatMap(parseSignedDouble)
+        let contrast2012 = parseSimple(from: description, prefix: "crs", localName: "Contrast2012").flatMap(parseSignedInt)
+        let highlights2012 = parseSimple(from: description, prefix: "crs", localName: "Highlights2012").flatMap(parseSignedInt)
+        let shadows2012 = parseSimple(from: description, prefix: "crs", localName: "Shadows2012").flatMap(parseSignedInt)
+        let whites2012 = parseSimple(from: description, prefix: "crs", localName: "Whites2012").flatMap(parseSignedInt)
+        let blacks2012 = parseSimple(from: description, prefix: "crs", localName: "Blacks2012").flatMap(parseSignedInt)
+        let hasSettings = parseSimple(from: description, prefix: "crs", localName: "HasSettings").flatMap(parseBool)
+
+        let crop = CameraRawCrop(
+            top: parseSimple(from: description, prefix: "crs", localName: "CropTop").flatMap(Double.init),
+            left: parseSimple(from: description, prefix: "crs", localName: "CropLeft").flatMap(Double.init),
+            bottom: parseSimple(from: description, prefix: "crs", localName: "CropBottom").flatMap(Double.init),
+            right: parseSimple(from: description, prefix: "crs", localName: "CropRight").flatMap(Double.init),
+            angle: parseSimple(from: description, prefix: "crs", localName: "CropAngle").flatMap(Double.init),
+            hasCrop: parseSimple(from: description, prefix: "crs", localName: "HasCrop").flatMap(parseBool)
+        )
+        let cropValue = crop.isEmpty ? nil : crop
+
+        let settings = CameraRawSettings(
+            whiteBalance: whiteBalance,
+            temperature: temperature,
+            tint: tint,
+            incrementalTemperature: incrementalTemperature,
+            incrementalTint: incrementalTint,
+            exposure2012: exposure2012,
+            contrast2012: contrast2012,
+            highlights2012: highlights2012,
+            shadows2012: shadows2012,
+            whites2012: whites2012,
+            blacks2012: blacks2012,
+            hasSettings: hasSettings,
+            crop: cropValue
+        )
+        return settings.isEmpty ? nil : settings
+    }
+
     private func parseSimple(from description: XMLElement, prefix: String, localName: String) -> String? {
+        if let attr = attributeValue(from: description, prefix: prefix, localName: localName) {
+            return attr
+        }
         guard let element = childElement(from: description, prefix: prefix, localName: localName) else { return nil }
         return element.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -390,6 +560,24 @@ struct XMPSidecarService: Sendable {
         return childElements(from: seq, prefix: "rdf", localName: "li")
             .compactMap { $0.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
+    }
+
+    private func attributeValue(from element: XMLElement, prefix: String, localName: String) -> String? {
+        let namespace = namespaceURI(for: prefix)
+
+        if let namespaceMatch = element.attributes?.first(where: { $0.localName == localName && $0.uri == namespace }),
+           let value = namespaceMatch.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !value.isEmpty {
+            return value
+        }
+
+        if let nameMatch = element.attributes?.first(where: { $0.name == "\(prefix):\(localName)" }),
+           let value = nameMatch.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !value.isEmpty {
+            return value
+        }
+
+        return nil
     }
 
     private func childElement(from parent: XMLElement, prefix: String, localName: String) -> XMLElement? {
@@ -443,5 +631,24 @@ struct XMPSidecarService: Sendable {
         }
 
         return nil
+    }
+
+    private func parseSignedInt(_ value: String) -> Int? {
+        Int(value.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    private func parseSignedDouble(_ value: String) -> Double? {
+        Double(value.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    private func parseBool(_ value: String) -> Bool? {
+        switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "true", "1":
+            return true
+        case "false", "0":
+            return false
+        default:
+            return nil
+        }
     }
 }

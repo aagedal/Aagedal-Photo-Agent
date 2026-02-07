@@ -568,6 +568,7 @@ final class MetadataViewModel {
             fields[ExifToolWriteTag.gpsLongitude] = String(abs(lon))
             fields[ExifToolWriteTag.gpsLongitudeRef] = lon >= 0 ? "E" : "W"
         }
+        appendCameraRawFields(from: metadata, into: &fields)
         return fields
     }
 
@@ -870,7 +871,71 @@ final class MetadataViewModel {
             fields[ExifToolWriteTag.gpsLongitudeRef] = ""
         }
 
+        appendCameraRawFields(from: metadata, into: &fields)
         return fields
+    }
+
+    private func appendCameraRawFields(from metadata: IPTCMetadata, into fields: inout [String: String]) {
+        guard let cameraRaw = metadata.cameraRaw else { return }
+
+        if let value = cameraRaw.whiteBalance, !value.isEmpty {
+            fields[ExifToolWriteTag.crsWhiteBalance] = value
+        }
+        if let value = cameraRaw.temperature {
+            fields[ExifToolWriteTag.crsTemperature] = String(value)
+        }
+        if let value = cameraRaw.tint {
+            fields[ExifToolWriteTag.crsTint] = formatSignedInt(value)
+        }
+        if let value = cameraRaw.incrementalTemperature {
+            fields[ExifToolWriteTag.crsIncrementalTemperature] = formatSignedInt(value)
+        }
+        if let value = cameraRaw.incrementalTint {
+            fields[ExifToolWriteTag.crsIncrementalTint] = formatSignedInt(value)
+        }
+        if let value = cameraRaw.exposure2012 {
+            fields[ExifToolWriteTag.crsExposure2012] = formatSignedDouble(value, precision: 2)
+        }
+        if let value = cameraRaw.contrast2012 {
+            fields[ExifToolWriteTag.crsContrast2012] = formatSignedInt(value)
+        }
+        if let value = cameraRaw.highlights2012 {
+            fields[ExifToolWriteTag.crsHighlights2012] = formatSignedInt(value)
+        }
+        if let value = cameraRaw.shadows2012 {
+            fields[ExifToolWriteTag.crsShadows2012] = formatSignedInt(value)
+        }
+        if let value = cameraRaw.whites2012 {
+            fields[ExifToolWriteTag.crsWhites2012] = formatSignedInt(value)
+        }
+        if let value = cameraRaw.blacks2012 {
+            fields[ExifToolWriteTag.crsBlacks2012] = formatSignedInt(value)
+        }
+
+        let hasSettings = cameraRaw.hasSettings ?? !cameraRaw.isEmpty
+        fields[ExifToolWriteTag.crsHasSettings] = hasSettings ? "True" : "False"
+
+        if let crop = cameraRaw.crop {
+            if let value = crop.top { fields[ExifToolWriteTag.crsCropTop] = String(format: "%.6f", value) }
+            if let value = crop.left { fields[ExifToolWriteTag.crsCropLeft] = String(format: "%.6f", value) }
+            if let value = crop.bottom { fields[ExifToolWriteTag.crsCropBottom] = String(format: "%.6f", value) }
+            if let value = crop.right { fields[ExifToolWriteTag.crsCropRight] = String(format: "%.6f", value) }
+            if let value = crop.angle { fields[ExifToolWriteTag.crsCropAngle] = String(format: "%.2f", value) }
+            let hasCrop = crop.hasCrop ?? !crop.isEmpty
+            fields[ExifToolWriteTag.crsHasCrop] = hasCrop ? "True" : "False"
+        }
+    }
+
+    private func formatSignedInt(_ value: Int) -> String {
+        value > 0 ? "+\(value)" : "\(value)"
+    }
+
+    private func formatSignedDouble(_ value: Double, precision: Int) -> String {
+        let format = "%.\(precision)f"
+        let absValue = String(format: format, abs(value))
+        if value > 0 { return "+\(absValue)" }
+        if value < 0 { return "-\(absValue)" }
+        return absValue
     }
 
     private func writeMetadataAndPreserveHistory(onComplete: (() -> Void)? = nil) {

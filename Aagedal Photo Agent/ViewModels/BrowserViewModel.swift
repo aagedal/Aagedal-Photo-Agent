@@ -315,6 +315,9 @@ final class BrowserViewModel {
                     updated.starRating = existing.starRating
                     updated.colorLabel = existing.colorLabel
                     updated.hasC2PA = existing.hasC2PA
+                    updated.hasDevelopEdits = existing.hasDevelopEdits
+                    updated.hasCropEdits = existing.hasCropEdits
+                    updated.cropRegion = existing.cropRegion
                     updated.hasPendingMetadataChanges = existing.hasPendingMetadataChanges
                     updated.pendingFieldNames = existing.pendingFieldNames
                     updated.metadata = existing.metadata
@@ -399,6 +402,9 @@ final class BrowserViewModel {
                         // C2PA detection: look for JUMD/C2PA keys from -JUMBF:All output
                         let hasC2PA = TechnicalMetadata.dictHasC2PA(dict)
                         images[index].hasC2PA = hasC2PA
+                        images[index].hasDevelopEdits = hasDevelopEdits(in: dict)
+                        images[index].hasCropEdits = hasCropEdits(in: dict)
+                        images[index].cropRegion = cropRegion(in: dict)
                         applyPendingSidecarOverrides(for: sourceURL, index: index, cachedSidecar: cachedSidecars[sourceURL])
                     }
                 }
@@ -448,6 +454,9 @@ final class BrowserViewModel {
                         images[index].personShown = parseStringOrArray(dict[ExifToolReadKey.personInImage])
                         let hasC2PA = TechnicalMetadata.dictHasC2PA(dict)
                         images[index].hasC2PA = hasC2PA
+                        images[index].hasDevelopEdits = hasDevelopEdits(in: dict)
+                        images[index].hasCropEdits = hasCropEdits(in: dict)
+                        images[index].cropRegion = cropRegion(in: dict)
                         applyPendingSidecarOverrides(for: sourceURL, index: index)
                     }
                 }
@@ -478,6 +487,87 @@ final class BrowserViewModel {
             return trimmed.isEmpty ? [] : [trimmed]
         }
         return []
+    }
+
+    private func hasDevelopEdits(in dict: [String: Any]) -> Bool {
+        if parseBoolValue(dict[ExifToolReadKey.crsHasSettings]) == true {
+            return true
+        }
+        if parseBoolValue(dict[ExifToolReadKey.crsHasCrop]) == true {
+            return true
+        }
+        let numericKeys: [String] = [
+            ExifToolReadKey.crsExposure2012,
+            ExifToolReadKey.crsContrast2012,
+            ExifToolReadKey.crsHighlights2012,
+            ExifToolReadKey.crsShadows2012,
+            ExifToolReadKey.crsWhites2012,
+            ExifToolReadKey.crsBlacks2012,
+            ExifToolReadKey.crsTemperature,
+            ExifToolReadKey.crsTint,
+            ExifToolReadKey.crsIncrementalTemperature,
+            ExifToolReadKey.crsIncrementalTint,
+            ExifToolReadKey.crsCropTop,
+            ExifToolReadKey.crsCropLeft,
+            ExifToolReadKey.crsCropBottom,
+            ExifToolReadKey.crsCropRight,
+        ]
+        for key in numericKeys {
+            if let value = parseDoubleValue(dict[key]), abs(value) > 0.0001 {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func hasCropEdits(in dict: [String: Any]) -> Bool {
+        if parseBoolValue(dict[ExifToolReadKey.crsHasCrop]) == true {
+            return true
+        }
+
+        let top = parseDoubleValue(dict[ExifToolReadKey.crsCropTop]) ?? 0
+        let left = parseDoubleValue(dict[ExifToolReadKey.crsCropLeft]) ?? 0
+        let bottom = parseDoubleValue(dict[ExifToolReadKey.crsCropBottom]) ?? 1
+        let right = parseDoubleValue(dict[ExifToolReadKey.crsCropRight]) ?? 1
+        let epsilon = 0.0001
+
+        return abs(top) > epsilon
+            || abs(left) > epsilon
+            || abs(bottom - 1) > epsilon
+            || abs(right - 1) > epsilon
+    }
+
+    private func cropRegion(in dict: [String: Any]) -> ThumbnailCropRegion? {
+        guard hasCropEdits(in: dict) else { return nil }
+        let top = parseDoubleValue(dict[ExifToolReadKey.crsCropTop]) ?? 0
+        let left = parseDoubleValue(dict[ExifToolReadKey.crsCropLeft]) ?? 0
+        let bottom = parseDoubleValue(dict[ExifToolReadKey.crsCropBottom]) ?? 1
+        let right = parseDoubleValue(dict[ExifToolReadKey.crsCropRight]) ?? 1
+        let region = ThumbnailCropRegion(top: top, left: left, bottom: bottom, right: right).clamped
+        guard region.right > region.left, region.bottom > region.top else { return nil }
+        return region
+    }
+
+    private func parseBoolValue(_ value: Any?) -> Bool? {
+        if let boolValue = value as? Bool { return boolValue }
+        if let intValue = value as? Int { return intValue != 0 }
+        if let number = value as? NSNumber { return number.intValue != 0 }
+        if let stringValue = value as? String {
+            let normalized = stringValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if ["1", "true", "yes"].contains(normalized) { return true }
+            if ["0", "false", "no"].contains(normalized) { return false }
+        }
+        return nil
+    }
+
+    private func parseDoubleValue(_ value: Any?) -> Double? {
+        if let doubleValue = value as? Double { return doubleValue }
+        if let intValue = value as? Int { return Double(intValue) }
+        if let number = value as? NSNumber { return number.doubleValue }
+        if let stringValue = value as? String {
+            return Double(stringValue.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return nil
     }
 
     // MARK: - Arrow Key Navigation

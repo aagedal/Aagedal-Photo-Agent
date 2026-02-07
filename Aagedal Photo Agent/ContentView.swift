@@ -1,4 +1,5 @@
 import AppKit
+import CoreImage
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -6,6 +7,7 @@ import UniformTypeIdentifiers
 
 enum MainViewMode {
     case browser           // Normal photo browsing
+    case editing           // Dedicated image editing workspace
     case faceManagement    // Expanded face management (existing)
     case peopleDatabase    // Known People database view
 }
@@ -37,6 +39,12 @@ struct ContentView: View {
     @State private var technicalMetadata: TechnicalMetadata?
     @State private var technicalMetadataCache: [URL: TechnicalMetadata] = [:]
     @State private var technicalMetadataTask: Task<Void, Never>?
+    @State private var isRenderingEditedFolder = false
+    @State private var renderEditedFolderProgress = ""
+    @State private var renderEditedFolderSuccessCount = 0
+    @State private var renderEditedFolderFailureCount = 0
+    @State private var renderedOutputFolderURL: URL?
+    @State private var isShowingRenderEditedFolderResult = false
 
     init() {
         let browser = BrowserViewModel()
@@ -51,6 +59,10 @@ struct ContentView: View {
     }
 
     var body: some View {
+        contentWithStateHandlers
+    }
+
+    private var contentBase: some View {
         mainContent
             .toolbar { toolbarContent }
             .navigationTitle(browserViewModel.currentFolderName ?? "Aagedal Photo Agent")
@@ -64,11 +76,19 @@ struct ContentView: View {
                 technicalMetadataCache: $technicalMetadataCache,
                 technicalMetadata: $technicalMetadata
             ))
+    }
+
+    private var contentWithSheets: some View {
+        contentBase
             .sheet(isPresented: $isShowingTemplatePicker) { templatePickerSheet }
             .sheet(isPresented: $isShowingSaveTemplateName) { saveTemplateSheet }
             .sheet(isPresented: $isShowingFTPUpload) { ftpUploadSheet }
             .sheet(isPresented: $isShowingImport) { importSheet }
             .sheet(isPresented: $isShowingC2PADetail) { c2paSheet }
+    }
+
+    private var contentWithAlerts: some View {
+        contentWithSheets
             .alert("C2PA Protected Images", isPresented: $isShowingWriteAllC2PAWarning) {
                 Button("Cancel", role: .cancel) { }
                 Button("Skip C2PA") {
@@ -99,6 +119,22 @@ struct ContentView: View {
                 let count = browserViewModel.selectedImageIDs.count
                 Text("Are you sure you want to move \(count) \(count == 1 ? "image" : "images") to the Trash?")
             }
+            .alert("Render Complete", isPresented: $isShowingRenderEditedFolderResult) {
+                if let outputURL = renderedOutputFolderURL {
+                    Button("Show Edited Folder") {
+                        NSWorkspace.shared.open(outputURL)
+                    }
+                }
+                Button("OK", role: .cancel) { }
+            } message: {
+                let success = renderEditedFolderSuccessCount
+                let failures = renderEditedFolderFailureCount
+                Text("Saved \(success) image\(success == 1 ? "" : "s") to Edited as sRGB JPEG.\(failures > 0 ? " Failed: \(failures)." : "")")
+            }
+    }
+
+    private var contentWithOverlay: some View {
+        contentWithAlerts
             .overlay {
                 if isShowingTemplatePalette {
                     Color.black.opacity(0.3)
@@ -122,6 +158,10 @@ struct ContentView: View {
                     )
                 }
             }
+    }
+
+    private var contentWithNotificationHandlers: some View {
+        contentWithOverlay
             .onReceive(NotificationCenter.default.publisher(for: .showImport)) { _ in
                 isShowingImport = true
             }
@@ -153,6 +193,13 @@ struct ContentView: View {
             .onReceive(NotificationCenter.default.publisher(for: .showKnownPeopleDatabase)) { _ in
                 openPeopleDatabase()
             }
+            .onReceive(NotificationCenter.default.publisher(for: .openInInternalEditor)) { _ in
+                openEditWorkspace()
+            }
+    }
+
+    private var contentWithStateHandlers: some View {
+        contentWithNotificationHandlers
             .onChange(of: browserViewModel.isFullScreen) { _, isFullScreen in
                 guard isFullScreen, browserViewModel.fullScreenFaceContext == nil else { return }
                 browserViewModel.fullScreenFaceContext = BrowserViewModel.FullScreenFaceContext(
@@ -183,7 +230,7 @@ struct ContentView: View {
     @ViewBuilder
     private var detailContent: some View {
         VStack(spacing: 0) {
-            if !browserViewModel.images.isEmpty {
+            if !browserViewModel.images.isEmpty, mainViewMode != .editing {
                 FaceBarView(
                     viewModel: faceRecognitionViewModel,
                     folderURL: browserViewModel.currentFolderURL,
@@ -211,6 +258,8 @@ struct ContentView: View {
             switch mainViewMode {
             case .browser:
                 browserAndMetadataPanel
+            case .editing:
+                editingWorkspaceView
             case .faceManagement:
                 ExpandedFaceManagementView(
                     viewModel: faceRecognitionViewModel,
@@ -303,6 +352,23 @@ struct ContentView: View {
         }
     }
 
+    private func toggleEditWorkspace() {
+        if mainViewMode == .editing {
+            mainViewMode = .browser
+            return
+        }
+        openEditWorkspace()
+    }
+
+    private func openEditWorkspace() {
+        if browserViewModel.selectedImageIDs.isEmpty,
+           let firstVisible = browserViewModel.visibleImages.first {
+            browserViewModel.selectedImageIDs = [firstVisible.url]
+            browserViewModel.lastClickedImageURL = firstVisible.url
+        }
+        mainViewMode = .editing
+    }
+
     @ViewBuilder
     private var browserAndMetadataPanel: some View {
         HStack(spacing: 0) {
@@ -340,10 +406,33 @@ struct ContentView: View {
         }
     }
 
+    @ViewBuilder
+    private var editingWorkspaceView: some View {
+        EditWorkspaceView(
+            metadataViewModel: metadataViewModel,
+            browserViewModel: browserViewModel,
+            settingsViewModel: settingsViewModel,
+            onExit: {
+                mainViewMode = .browser
+            },
+            onPendingStatusChanged: {
+                browserViewModel.refreshPendingStatus()
+            }
+        )
+    }
+
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .automatic) {
-            if metadataViewModel.isProcessingFolder {
+            if isRenderingEditedFolder {
+                HStack(spacing: 4) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text(renderEditedFolderProgress)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else if metadataViewModel.isProcessingFolder {
                 HStack(spacing: 4) {
                     ProgressView()
                         .controlSize(.small)
@@ -387,6 +476,28 @@ struct ContentView: View {
                             .labelStyle(.iconOnly)
                     }
                     .help("Open Known People database")
+
+                    Button {
+                        toggleEditWorkspace()
+                    } label: {
+                        Label(
+                            "Edit Workspace",
+                            systemImage: mainViewMode == .editing
+                                ? "xmark.circle.fill"
+                                : "slider.horizontal.3"
+                        )
+                        .labelStyle(.iconOnly)
+                    }
+                    .help(mainViewMode == .editing ? "Return to browser workspace" : "Open edit workspace")
+                    .disabled(browserViewModel.visibleImages.isEmpty)
+
+                    Button {
+                        renderAndSaveEditedFolder()
+                    } label: {
+                        Label("Render and Save Folder", systemImage: "photo.badge.arrow.down")
+                    }
+                    .help("Render all images in the folder to Edited/ as sRGB JPEG")
+                    .disabled(browserViewModel.images.isEmpty || isRenderingEditedFolder)
                 }
             }
         }
@@ -454,6 +565,12 @@ struct ContentView: View {
                                 Label(favorite.name, systemImage: "folder.fill")
                             }
                             .contextMenu {
+                                Button("Reveal in Finder") {
+                                    revealInFinder(favorite.url)
+                                }
+
+                                Divider()
+
                                 Button("Remove from Favorites", role: .destructive) {
                                     browserViewModel.removeFavorite(favorite)
                                 }
@@ -558,6 +675,11 @@ struct ContentView: View {
                                             .onTapGesture {
                                                 browserViewModel.loadFolder(url: subfolderURL)
                                             }
+                                            .contextMenu {
+                                                Button("Reveal in Finder") {
+                                                    revealInFinder(subfolderURL)
+                                                }
+                                            }
 
                                             // Sub-subfolders shown when this subfolder is active
                                             if isSubCurrent, !subSubfolders.isEmpty {
@@ -575,6 +697,11 @@ struct ContentView: View {
                                                     .onTapGesture {
                                                         browserViewModel.loadFolder(url: subSubURL)
                                                     }
+                                                    .contextMenu {
+                                                        Button("Reveal in Finder") {
+                                                            revealInFinder(subSubURL)
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
@@ -583,6 +710,12 @@ struct ContentView: View {
                             }
                             .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
                             .contextMenu {
+                                Button("Reveal in Finder") {
+                                    revealInFinder(folderURL)
+                                }
+
+                                Divider()
+
                                 Button {
                                     browserViewModel.addCurrentFolderToFavorites()
                                 } label: {
@@ -644,6 +777,11 @@ struct ContentView: View {
                         metadata: technicalMetadata,
                         fileSize: selectedImage.fileSize
                     )
+                }
+                .contextMenu {
+                    Button("Reveal in Finder") {
+                        revealInFinder(selectedImage.url)
+                    }
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
@@ -790,6 +928,66 @@ struct ContentView: View {
             } catch {
                 c2paMetadata = nil
             }
+        }
+    }
+
+    private func revealInFinder(_ url: URL) {
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    private func renderAndSaveEditedFolder() {
+        guard !isRenderingEditedFolder,
+              let folderURL = browserViewModel.currentFolderURL else { return }
+        let urls = browserViewModel.images.map(\.url)
+        guard !urls.isEmpty else { return }
+
+        isRenderingEditedFolder = true
+        renderEditedFolderProgress = "Preparing export..."
+        renderEditedFolderSuccessCount = 0
+        renderEditedFolderFailureCount = 0
+        renderedOutputFolderURL = nil
+
+        Task {
+            let outputFolder = folderURL.appendingPathComponent("Edited", isDirectory: true)
+            do {
+                try FileManager.default.createDirectory(at: outputFolder, withIntermediateDirectories: true)
+            } catch {
+                isRenderingEditedFolder = false
+                renderEditedFolderProgress = ""
+                browserViewModel.errorMessage = "Failed to create Edited folder: \(error.localizedDescription)"
+                return
+            }
+
+            let metadataByURL: [URL: IPTCMetadata]
+            do {
+                metadataByURL = try await browserViewModel.exifToolService.readBatchFullMetadata(urls: urls)
+            } catch {
+                isRenderingEditedFolder = false
+                renderEditedFolderProgress = ""
+                browserViewModel.errorMessage = "Failed to read metadata for export: \(error.localizedDescription)"
+                return
+            }
+
+            var successCount = 0
+            var failureCount = 0
+
+            for (index, url) in urls.enumerated() {
+                renderEditedFolderProgress = "Rendering \(index + 1)/\(urls.count)..."
+                let cameraRaw = metadataByURL[url]?.cameraRaw
+                do {
+                    try EditedImageRenderer.renderJPEG(from: url, cameraRaw: cameraRaw, outputFolder: outputFolder)
+                    successCount += 1
+                } catch {
+                    failureCount += 1
+                }
+            }
+
+            renderEditedFolderSuccessCount = successCount
+            renderEditedFolderFailureCount = failureCount
+            renderedOutputFolderURL = outputFolder
+            renderEditedFolderProgress = ""
+            isRenderingEditedFolder = false
+            isShowingRenderEditedFolderResult = true
         }
     }
 
