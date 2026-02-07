@@ -6,11 +6,40 @@ enum ImportFileTypeFilter: String, CaseIterable, Sendable {
     case both = "Both"
 }
 
+enum ImportConflictPolicy: String, CaseIterable, Sendable {
+    case skipExisting = "skipExisting"
+    case renameWithSuffix = "renameWithSuffix"
+    case overwrite = "overwrite"
+
+    var displayName: String {
+        switch self {
+        case .skipExisting:
+            return "Skip Existing"
+        case .renameWithSuffix:
+            return "Rename"
+        case .overwrite:
+            return "Overwrite"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .skipExisting:
+            return "Skip files that already exist at the destination."
+        case .renameWithSuffix:
+            return "Keep both files by appending a numeric suffix."
+        case .overwrite:
+            return "Replace files that already exist at the destination."
+        }
+    }
+}
+
 struct ImportConfiguration {
     var sourceURL: URL?
     var destinationBaseURL: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Photos")
     var importTitle: String = ""
     var fileTypeFilter: ImportFileTypeFilter = .both
+    var conflictPolicy: ImportConflictPolicy = .renameWithSuffix
     var createSubFolders: Bool = true
     var applyMetadata: Bool = false
     var processVariables: Bool = false
