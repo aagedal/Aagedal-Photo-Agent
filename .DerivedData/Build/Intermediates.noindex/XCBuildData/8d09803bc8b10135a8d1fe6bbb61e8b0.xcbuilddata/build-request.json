@@ -1,0 +1,65 @@
+{
+  "buildCommand" : {
+    "command" : "build",
+    "skipDependencies" : false,
+    "style" : "buildOnly"
+  },
+  "configuredTargets" : [
+    {
+      "guid" : "a055bbc557953fcc1c15112d89cd3e4376e29d510ec59ab349067b56e20996e3"
+    }
+  ],
+  "containerPath" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/Aagedal Photo Agent.xcodeproj",
+  "continueBuildingAfterErrors" : false,
+  "dependencyScope" : "workspace",
+  "enableIndexBuildArena" : false,
+  "hideShellScriptEnvironment" : false,
+  "parameters" : {
+    "action" : "build",
+    "activeArchitecture" : "arm64",
+    "activeRunDestination" : {
+      "disableOnlyActiveArch" : false,
+      "platform" : "macosx",
+      "sdk" : "macosx26.0",
+      "sdkVariant" : "macos",
+      "supportedArchitectures" : [
+        "arm64e",
+        "arm64",
+        "x86_64"
+      ],
+      "targetArchitecture" : "arm64"
+    },
+    "arenaInfo" : {
+      "buildIntermediatesPath" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Build/Intermediates.noindex",
+      "buildProductsPath" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Build/Products",
+      "derivedDataPath" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData",
+      "indexDataStoreFolderPath" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Index.noindex/DataStore",
+      "indexEnableDataStore" : true,
+      "indexPCHPath" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Index.noindex/PrecompiledHeaders",
+      "pchPath" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Build/Intermediates.noindex/PrecompiledHeaders"
+    },
+    "configurationName" : "Debug",
+    "overrides" : {
+      "commandLine" : {
+        "table" : {
+          "CODE_SIGNING_ALLOWED" : "NO",
+          "CODE_SIGNING_REQUIRED" : "NO"
+        }
+      },
+      "synthesized" : {
+        "table" : {
+          "ACTION" : "build",
+          "ENABLE_PREVIEWS" : "NO",
+          "ENABLE_XOJIT_PREVIEWS" : "YES",
+          "ONLY_ACTIVE_ARCH" : "YES"
+        }
+      }
+    }
+  },
+  "schemeCommand" : "launch",
+  "showNonLoggedProgress" : true,
+  "useDryRun" : false,
+  "useImplicitDependencies" : true,
+  "useLegacyBuildLocations" : false,
+  "useParallelTargets" : true
+}
