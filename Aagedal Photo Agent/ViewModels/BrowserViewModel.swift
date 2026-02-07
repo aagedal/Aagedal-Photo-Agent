@@ -23,10 +23,16 @@ final class BrowserViewModel {
     var isLoading = false
     var isFullScreen = false
 
+    struct FullScreenFaceNavigationItem {
+        let imageURL: URL
+        let faceID: UUID
+    }
+
     struct FullScreenFaceContext {
         let faceRecognitionViewModel: FaceRecognitionViewModel
-        let highlightedFaceID: UUID?
-        let navigationImageURLs: [URL]?
+        var highlightedFaceID: UUID?
+        let navigationItems: [FullScreenFaceNavigationItem]?
+        let onNavigateToFace: ((UUID?) -> Void)?
     }
 
     @ObservationIgnored var fullScreenFaceContext: FullScreenFaceContext?
@@ -479,24 +485,34 @@ final class BrowserViewModel {
     @discardableResult
     private func navigateFullScreenFaceSequence(step: Int) -> Bool {
         guard isFullScreen,
-              let navigationURLs = fullScreenFaceContext?.navigationImageURLs,
-              !navigationURLs.isEmpty else {
+              let navigationItems = fullScreenFaceContext?.navigationItems,
+              !navigationItems.isEmpty else {
             return false
         }
 
         let anchor = selectedImageIDs.first ?? lastClickedImageURL
         guard let anchorURL = anchor,
-              let currentIndex = navigationURLs.firstIndex(of: anchorURL) else {
-            let firstURL = navigationURLs[0]
-            selectedImageIDs = [firstURL]
-            lastClickedImageURL = firstURL
+              let currentIndex = navigationItems.firstIndex(where: { $0.imageURL == anchorURL }) else {
+            let firstItem = navigationItems[0]
+            selectedImageIDs = [firstItem.imageURL]
+            lastClickedImageURL = firstItem.imageURL
+            if var faceContext = fullScreenFaceContext {
+                faceContext.highlightedFaceID = firstItem.faceID
+                fullScreenFaceContext = faceContext
+                faceContext.onNavigateToFace?(firstItem.faceID)
+            }
             return true
         }
 
-        let targetIndex = max(0, min(currentIndex + step, navigationURLs.count - 1))
-        let targetURL = navigationURLs[targetIndex]
-        selectedImageIDs = [targetURL]
-        lastClickedImageURL = targetURL
+        let targetIndex = max(0, min(currentIndex + step, navigationItems.count - 1))
+        let targetItem = navigationItems[targetIndex]
+        selectedImageIDs = [targetItem.imageURL]
+        lastClickedImageURL = targetItem.imageURL
+        if var faceContext = fullScreenFaceContext {
+            faceContext.highlightedFaceID = targetItem.faceID
+            fullScreenFaceContext = faceContext
+            faceContext.onNavigateToFace?(targetItem.faceID)
+        }
         return true
     }
 
