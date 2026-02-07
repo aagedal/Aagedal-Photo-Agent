@@ -96,6 +96,7 @@ Notes:
 
 - ExifTool is bundled with the app target.
 - In Settings, ExifTool source can be switched to bundled, Homebrew, or a custom path.
+- Optional strict Photo Mechanic-compatible XMP mode is available in Metadata settings.
 - No automated test suite is currently configured.
 
 ## License

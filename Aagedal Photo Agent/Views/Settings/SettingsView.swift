@@ -448,6 +448,45 @@ struct SettingsView: View {
                 Text("When an XMP sidecar exists, use it as the primary metadata source for viewing and comparisons.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                Divider()
+
+                Picker("XMP Compatibility", selection: $settingsViewModel.pmXmpCompatibilityMode) {
+                    ForEach(PMXMPCompatibilityMode.allCases, id: \.self) { mode in
+                        Text(mode.displayName).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Text(settingsViewModel.pmXmpCompatibilityMode.description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if settingsViewModel.pmXmpCompatibilityMode == .strictPhotoMechanic {
+                    Picker("Non-RAW in XMP Mode", selection: $settingsViewModel.pmNonRawXmpBehavior) {
+                        ForEach(PMNonRAWXMPSidecarBehavior.allCases, id: \.self) { behavior in
+                            Text(behavior.displayName).tag(behavior)
+                        }
+                    }
+                    .pickerStyle(.menu)
+
+                    Text(settingsViewModel.pmNonRawXmpBehavior.description)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    if let remembered = settingsViewModel.pmRememberedNonRawChoice {
+                        HStack {
+                            Text("Remembered Ask Choice: \(remembered.displayName)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button("Clear") {
+                                settingsViewModel.clearRememberedNonRawXmpChoice()
+                            }
+                            .font(.caption)
+                        }
+                    }
+                }
             }
         }
         .formStyle(.grouped)

@@ -250,6 +250,18 @@ final class SettingsViewModel {
         didSet { UserDefaults.standard.set(preferXMPSidecar, forKey: UserDefaultsKeys.metadataPreferXMPSidecar) }
     }
 
+    var pmXmpCompatibilityMode: PMXMPCompatibilityMode {
+        didSet { UserDefaults.standard.set(pmXmpCompatibilityMode.rawValue, forKey: UserDefaultsKeys.pmXmpCompatibilityMode) }
+    }
+
+    var pmNonRawXmpBehavior: PMNonRAWXMPSidecarBehavior {
+        didSet { UserDefaults.standard.set(pmNonRawXmpBehavior.rawValue, forKey: UserDefaultsKeys.pmNonRawXmpBehavior) }
+    }
+
+    var pmRememberedNonRawChoice: PMNonRAWXMPSidecarChoice? {
+        PMXMPPolicy.rememberedChoice
+    }
+
     var quickListVersion: Int = 0
     var keywordsListPath: String = ""
     var personShownListPath: String = ""
@@ -259,6 +271,11 @@ final class SettingsViewModel {
     var cityListPath: String = ""
     var countryListPath: String = ""
     var eventListPath: String = ""
+
+    func clearRememberedNonRawXmpChoice() {
+        PMXMPPolicy.setRememberedChoice(nil)
+        pmNonRawXmpBehavior = pmNonRawXmpBehavior
+    }
 
     func setKeywordsListURL(_ url: URL) {
         saveBookmark(for: url, key: UserDefaultsKeys.keywordsListBookmark)
@@ -484,6 +501,14 @@ final class SettingsViewModel {
 
         let preferXmpStored = UserDefaults.standard.object(forKey: UserDefaultsKeys.metadataPreferXMPSidecar) as? Bool
         self.preferXMPSidecar = preferXmpStored ?? false
+
+        let pmModeRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.pmXmpCompatibilityMode)
+            ?? PMXMPCompatibilityMode.off.rawValue
+        self.pmXmpCompatibilityMode = PMXMPCompatibilityMode(rawValue: pmModeRaw) ?? .off
+
+        let pmBehaviorRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.pmNonRawXmpBehavior)
+            ?? PMNonRAWXMPSidecarBehavior.alwaysAsk.rawValue
+        self.pmNonRawXmpBehavior = PMNonRAWXMPSidecarBehavior(rawValue: pmBehaviorRaw) ?? .alwaysAsk
 
         // Face recognition settings with defaults
         // Mode-specific thresholds with optimized defaults
