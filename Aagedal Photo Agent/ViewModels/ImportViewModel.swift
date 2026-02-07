@@ -17,6 +17,10 @@ final class ImportViewModel {
     var importPhase: ImportPhase = .idle
     var copiedFiles: Int = 0
     var totalFiles: Int = 0
+    var skippedFiles: Int = 0
+    var renamedFiles: Int = 0
+    var failedFiles: Int = 0
+    var importSummary: String = ""
     var errorMessage: String?
 
     private let exifToolService: ExifToolService
@@ -136,6 +140,10 @@ final class ImportViewModel {
         importPhase = .copying
         copiedFiles = 0
         totalFiles = filesToCopy.count
+        skippedFiles = 0
+        renamedFiles = 0
+        failedFiles = 0
+        importSummary = ""
         errorMessage = nil
 
         Task {
@@ -167,11 +175,44 @@ final class ImportViewModel {
                         targetFolder = destURL
                     }
 
-                    let targetURL = targetFolder.appendingPathComponent(file.lastPathComponent)
-                    try fm.copyItem(at: file, to: targetURL)
-                    copiedURLs.append(targetURL)
+                    let desiredTargetURL = targetFolder.appendingPathComponent(file.lastPathComponent)
 
-                    copiedFiles += 1
+                    do {
+                        let resolution = try resolveDestinationURL(
+                            desiredURL: desiredTargetURL,
+                            policy: configuration.conflictPolicy,
+                            fileManager: fm
+                        )
+
+                        switch resolution {
+                        case .skipped:
+                            skippedFiles += 1
+                            continue
+                        case .resolved(let targetURL, let wasRenamed):
+                            try fm.copyItem(at: file, to: targetURL)
+                            copiedURLs.append(targetURL)
+                            copiedFiles += 1
+                            if wasRenamed {
+                                renamedFiles += 1
+                            }
+                        }
+                    } catch {
+                        failedFiles += 1
+                        continue
+                    }
+                }
+
+                if copiedURLs.isEmpty {
+                    if skippedFiles > 0 {
+                        importPhase = .complete
+                        importSummary = buildImportSummary()
+                        return
+                    }
+                    throw NSError(
+                        domain: "ImportViewModel",
+                        code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: "No files were imported."]
+                    )
                 }
 
                 // 3. Apply metadata if configured
@@ -210,6 +251,7 @@ final class ImportViewModel {
 
                 // 4. Complete
                 importPhase = .complete
+                importSummary = buildImportSummary()
 
                 // Post notification with folder URL
                 NotificationCenter.default.post(name: .importCompleted, object: destURL)
@@ -219,6 +261,49 @@ final class ImportViewModel {
                 errorMessage = error.localizedDescription
             }
         }
+    }
+
+    private enum DestinationResolution {
+        case skipped
+        case resolved(URL, wasRenamed: Bool)
+    }
+
+    private func resolveDestinationURL(
+        desiredURL: URL,
+        policy: ImportConflictPolicy,
+        fileManager: FileManager
+    ) throws -> DestinationResolution {
+        guard fileManager.fileExists(atPath: desiredURL.path) else {
+            return .resolved(desiredURL, wasRenamed: false)
+        }
+
+        switch policy {
+        case .skipExisting:
+            return .skipped
+        case .overwrite:
+            try fileManager.removeItem(at: desiredURL)
+            return .resolved(desiredURL, wasRenamed: false)
+        case .renameWithSuffix:
+            let directory = desiredURL.deletingLastPathComponent()
+            let basename = desiredURL.deletingPathExtension().lastPathComponent
+            let ext = desiredURL.pathExtension
+            var index = 1
+
+            while true {
+                let candidateName = ext.isEmpty
+                    ? "\(basename)-\(index)"
+                    : "\(basename)-\(index).\(ext)"
+                let candidate = directory.appendingPathComponent(candidateName)
+                if !fileManager.fileExists(atPath: candidate.path) {
+                    return .resolved(candidate, wasRenamed: true)
+                }
+                index += 1
+            }
+        }
+    }
+
+    private func buildImportSummary() -> String {
+        "Imported \(copiedFiles), renamed \(renamedFiles), skipped \(skippedFiles), failed \(failedFiles)."
     }
 
     private func resolveMetadataForFile(_ url: URL) async -> IPTCMetadata {
@@ -281,6 +366,10 @@ final class ImportViewModel {
         importPhase = .idle
         copiedFiles = 0
         totalFiles = 0
+        skippedFiles = 0
+        renamedFiles = 0
+        failedFiles = 0
+        importSummary = ""
         errorMessage = nil
     }
 }

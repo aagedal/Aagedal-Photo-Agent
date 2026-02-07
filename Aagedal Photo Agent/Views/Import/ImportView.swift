@@ -33,6 +33,7 @@ struct ImportView: View {
                 sourceSection
                 destinationSection
                 fileTypeSection
+                conflictSection
                 metadataSection
 
                 if let error = viewModel.errorMessage {
@@ -147,6 +148,25 @@ struct ImportView: View {
     }
 
     // MARK: - Metadata Section
+
+    @ViewBuilder
+    private var conflictSection: some View {
+        GroupBox("File Name Conflicts") {
+            VStack(alignment: .leading, spacing: 8) {
+                Picker("When destination file exists", selection: $viewModel.configuration.conflictPolicy) {
+                    ForEach(ImportConflictPolicy.allCases, id: \.self) { policy in
+                        Text(policy.displayName).tag(policy)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Text(viewModel.configuration.conflictPolicy.description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
 
     @ViewBuilder
     private var metadataSection: some View {
@@ -395,6 +415,11 @@ struct ImportView: View {
             Text(viewModel.configuration.destinationFolderName)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            if !viewModel.importSummary.isEmpty {
+                Text(viewModel.importSummary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             Spacer()
 
