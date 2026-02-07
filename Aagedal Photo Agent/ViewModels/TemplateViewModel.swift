@@ -5,6 +5,7 @@ final class TemplateViewModel {
     var templates: [MetadataTemplate] = []
     var selectedTemplate: MetadataTemplate?
     var isEditing = false
+    var isEditingExistingTemplate = false
     var editingTemplate = MetadataTemplate()
     var errorMessage: String?
 
@@ -39,15 +40,18 @@ final class TemplateViewModel {
 
     func startEditing(_ template: MetadataTemplate? = nil) {
         editingTemplate = template ?? MetadataTemplate()
+        isEditingExistingTemplate = template != nil
         isEditing = true
     }
 
     func saveEditingTemplate() {
         saveTemplate(editingTemplate)
+        isEditingExistingTemplate = false
         isEditing = false
     }
 
     func cancelEditing() {
+        isEditingExistingTemplate = false
         isEditing = false
     }
 

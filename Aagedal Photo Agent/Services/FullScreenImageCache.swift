@@ -66,6 +66,7 @@ final class FullScreenImageCache: @unchecked Sendable {
 
             let task = Task.detached(priority: .utility) { [weak self] in
                 guard let self, !Task.isCancelled else { return }
+                defer { self.removePrefetchTask(for: url) }
                 let filename = url.lastPathComponent
                 cacheLogger.info("Prefetching \(filename)")
 
@@ -77,7 +78,6 @@ final class FullScreenImageCache: @unchecked Sendable {
 
                 self.store(image, for: url)
                 cacheLogger.info("Prefetched \(filename) (\(image.width)x\(image.height))")
-                self.removePrefetchTask(for: url)
             }
 
             lock.withLock { prefetchTasks[url] = task }
