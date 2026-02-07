@@ -1,0 +1,51 @@
+{
+  "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/Aagedal Photo Agent/ViewModels/FTPViewModel.swift" : {
+    "const-values" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Build/Intermediates.noindex/Aagedal Photo Agent.build/Debug/Aagedal Photo Agent.build/Objects-normal/arm64/FTPViewModel.swiftconstvalues",
+    "dependencies" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Build/Intermediates.noindex/Aagedal Photo Agent.build/Debug/Aagedal Photo Agent.build/Objects-normal/arm64/FTPViewModel.d",
+    "diagnostics" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Build/Intermediates.noindex/Aagedal Photo Agent.build/Debug/Aagedal Photo Agent.build/Objects-normal/arm64/FTPViewModel.dia",
+    "object" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Build/Intermediates.noindex/Aagedal Photo Agent.build/Debug/Aagedal Photo Agent.build/Objects-normal/arm64/FTPViewModel.o",
+    "swift-dependencies" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Build/Intermediates.noindex/Aagedal Photo Agent.build/Debug/Aagedal Photo Agent.build/Objects-normal/arm64/FTPViewModel.swiftdeps"
+  },
+  "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/Aagedal Photo Agent/ViewModels/FaceRecognitionViewModel.swift" : {
+    "const-values" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Build/Intermediates.noindex/Aagedal Photo Agent.build/Debug/Aagedal Photo Agent.build/Objects-normal/arm64/FaceRecognitionViewModel.swiftconstvalues",
+    "dependencies" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Build/Intermediates.noindex/Aagedal Photo Agent.build/Debug/Aagedal Photo Agent.build/Objects-normal/arm64/FaceRecognitionViewModel.d",
+    "diagnostics" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Build/Intermediates.noindex/Aagedal Photo Agent.build/Debug/Aagedal Photo Agent.build/Objects-normal/arm64/FaceRecognitionViewModel.dia",
+    "object" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Build/Intermediates.noindex/Aagedal Photo Agent.build/Debug/Aagedal Photo Agent.build/Objects-normal/arm64/FaceRecognitionViewModel.o",
+    "swift-dependencies" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Build/Intermediates.noindex/Aagedal Photo Agent.build/Debug/Aagedal Photo Agent.build/Objects-normal/arm64/FaceRecognitionViewModel.swiftdeps"
+  },
+  "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/Aagedal Photo Agent/ViewModels/ImportViewModel.swift" : {
+    "const-values" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Build/Intermediates.noindex/Aagedal Photo Agent.build/Debug/Aagedal Photo Agent.build/Objects-normal/arm64/ImportViewModel.swiftconstvalues",
+    "dependencies" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Build/Intermediates.noindex/Aagedal Photo Agent.build/Debug/Aagedal Photo Agent.build/Objects-normal/arm64/ImportViewModel.d",
+    "diagnostics" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Build/Intermediates.noindex/Aagedal Photo Agent.build/Debug/Aagedal Photo Agent.build/Objects-normal/arm64/ImportViewModel.dia",
+    "object" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Build/Intermediates.noindex/Aagedal Photo Agent.build/Debug/Aagedal Photo Agent.build/Objects-normal/arm64/ImportViewModel.o",
+    "swift-dependencies" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Build/Intermediates.noindex/Aagedal Photo Agent.build/Debug/Aagedal Photo Agent.build/Objects-normal/arm64/ImportViewModel.swiftdeps"
+  },
+  "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/Aagedal Photo Agent/ViewModels/MetadataViewModel.swift" : {
+    "const-values" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Build/Intermediates.noindex/Aagedal Photo Agent.build/Debug/Aagedal Photo Agent.build/Objects-normal/arm64/MetadataViewModel.swiftconstvalues",
+    "dependencies" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Build/Intermediates.noindex/Aagedal Photo Agent.build/Debug/Aagedal Photo Agent.build/Objects-normal/arm64/MetadataViewModel.d",
+    "diagnostics" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Build/Intermediates.noindex/Aagedal Photo Agent.build/Debug/Aagedal Photo Agent.build/Objects-normal/arm64/MetadataViewModel.dia",
+    "object" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Build/Intermediates.noindex/Aagedal Photo Agent.build/Debug/Aagedal Photo Agent.build/Objects-normal/arm64/MetadataViewModel.o",
+    "swift-dependencies" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Build/Intermediates.noindex/Aagedal Photo Agent.build/Debug/Aagedal Photo Agent.build/Objects-normal/arm64/MetadataViewModel.swiftdeps"
+  },
+  "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/Aagedal Photo Agent/ViewModels/SettingsViewModel.swift" : {
+    "const-values" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Build/Intermediates.noindex/Aagedal Photo Agent.build/Debug/Aagedal Photo Agent.build/Objects-normal/arm64/SettingsViewModel.swiftconstvalues",
+    "dependencies" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Build/Intermediates.noindex/Aagedal Photo Agent.build/Debug/Aagedal Photo Agent.build/Objects-normal/arm64/SettingsViewModel.d",
+    "diagnostics" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Build/Intermediates.noindex/Aagedal Photo Agent.build/Debug/Aagedal Photo Agent.build/Objects-normal/arm64/SettingsViewModel.dia",
+    "object" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Build/Intermediates.noindex/Aagedal Photo Agent.build/Debug/Aagedal Photo Agent.build/Objects-normal/arm64/SettingsViewModel.o",
+    "swift-dependencies" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Build/Intermediates.noindex/Aagedal Photo Agent.build/Debug/Aagedal Photo Agent.build/Objects-normal/arm64/SettingsViewModel.swiftdeps"
+  },
+  "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/Aagedal Photo Agent/ViewModels/TemplateViewModel.swift" : {
+    "const-values" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Build/Intermediates.noindex/Aagedal Photo Agent.build/Debug/Aagedal Photo Agent.build/Objects-normal/arm64/TemplateViewModel.swiftconstvalues",
+    "dependencies" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Build/Intermediates.noindex/Aagedal Photo Agent.build/Debug/Aagedal Photo Agent.build/Objects-normal/arm64/TemplateViewModel.d",
+    "diagnostics" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Build/Intermediates.noindex/Aagedal Photo Agent.build/Debug/Aagedal Photo Agent.build/Objects-normal/arm64/TemplateViewModel.dia",
+    "object" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Build/Intermediates.noindex/Aagedal Photo Agent.build/Debug/Aagedal Photo Agent.build/Objects-normal/arm64/TemplateViewModel.o",
+    "swift-dependencies" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Build/Intermediates.noindex/Aagedal Photo Agent.build/Debug/Aagedal Photo Agent.build/Objects-normal/arm64/TemplateViewModel.swiftdeps"
+  },
+  "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/Aagedal Photo Agent/Views/Browser/BrowserView.swift" : {
+    "const-values" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Build/Intermediates.noindex/Aagedal Photo Agent.build/Debug/Aagedal Photo Agent.build/Objects-normal/arm64/BrowserView.swiftconstvalues",
+    "dependencies" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Build/Intermediates.noindex/Aagedal Photo Agent.build/Debug/Aagedal Photo Agent.build/Objects-normal/arm64/BrowserView.d",
+    "diagnostics" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Build/Intermediates.noindex/Aagedal Photo Agent.build/Debug/Aagedal Photo Agent.build/Objects-normal/arm64/BrowserView.dia",
+    "object" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Build/Intermediates.noindex/Aagedal Photo Agent.build/Debug/Aagedal Photo Agent.build/Objects-normal/arm64/BrowserView.o",
+    "swift-dependencies" : "/Users/traag222/Development/Aagedal_Photo_Agent/Aagedal Photo Agent/.DerivedData/Build/Intermediates.noindex/Aagedal Photo Agent.build/Debug/Aagedal Photo Agent.build/Objects-normal/arm64/BrowserView.swiftdeps"
+  }
+}

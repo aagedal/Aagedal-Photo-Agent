@@ -3,10 +3,6 @@
 
 Open-source macOS photo metadata and face-tagging tool, built as a fast workflow alternative to Photo Mechanic and Adobe Bridge.
 
-## Status
-
-Pre-beta.
-
 ## Features
 
 - IPTC/XMP editing for common newsroom/photo-library fields (title, caption, keywords, person shown, creator, credit, copyright, city, country, event, job ID, GPS).
