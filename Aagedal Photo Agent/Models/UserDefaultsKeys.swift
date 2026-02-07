@@ -19,6 +19,9 @@ enum UserDefaultsKeys {
     static let metadataWriteModeNonC2PA = "metadataWriteModeNonC2PA"
     static let metadataWriteModeC2PA = "metadataWriteModeC2PA"
     static let metadataPreferXMPSidecar = "metadataPreferXMPSidecar"
+    static let pmXmpCompatibilityMode = "pmXmpCompatibilityMode"
+    static let pmNonRawXmpBehavior = "pmNonRawXmpBehavior"
+    static let pmNonRawXmpRememberedChoice = "pmNonRawXmpRememberedChoice"
 
     // MARK: - Face Recognition
     static let faceCleanupPolicy = "faceCleanupPolicy"

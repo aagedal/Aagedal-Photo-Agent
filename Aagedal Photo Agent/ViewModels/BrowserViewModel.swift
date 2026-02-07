@@ -638,9 +638,29 @@ final class BrowserViewModel {
         }
 
         Task {
-            var writeToFile: [URL] = []
+            var writeToFileWithSidecar: [URL] = []
+            var writeToFileWithoutSidecar: [URL] = []
             var writeToSidecar: [URL] = []
             var writeToXmp: [URL] = []
+            var syncPairRawURLs: Set<URL> = []
+            var syncMissingPairs = 0
+            var syncMultiplePairs = 0
+
+            let strictPM = PMXMPPolicy.mode == .strictPhotoMechanic
+            var strictNonRawChoice: PMNonRAWXMPSidecarChoice?
+            if strictPM {
+                let hasNonRawXMPTarget = urls.contains { url in
+                    let hasC2PA = lookup[url]?.hasC2PA ?? false
+                    let mode = MetadataWriteMode.current(forC2PA: hasC2PA)
+                    return mode == .writeToXMPSidecar && !SupportedImageFormats.isRaw(url: url)
+                }
+                if hasNonRawXMPTarget {
+                    strictNonRawChoice = await MainActor.run {
+                        PMXMPPolicy.resolveNonRawChoiceWithPromptIfNeeded()
+                    }
+                    guard strictNonRawChoice != nil else { return }
+                }
+            }
 
             for url in urls {
                 let hasC2PA = lookup[url]?.hasC2PA ?? false
@@ -650,10 +670,33 @@ final class BrowserViewModel {
                 case .historyOnly:
                     writeToSidecar.append(url)
                 case .writeToXMPSidecar:
-                    writeToXmp.append(url)
+                    if strictPM, !SupportedImageFormats.isRaw(url: url), let choice = strictNonRawChoice {
+                        switch choice {
+                        case .historyOnly:
+                            writeToSidecar.append(url)
+                        case .embeddedWrite:
+                            writeToFileWithoutSidecar.append(url)
+                        case .syncRawJpegPair:
+                            writeToFileWithoutSidecar.append(url)
+                            if let pair = SupportedImageFormats.preferredRawSibling(for: url) {
+                                syncPairRawURLs.insert(pair.url)
+                                if pair.hadMultipleMatches {
+                                    syncMultiplePairs += 1
+                                }
+                            } else {
+                                syncMissingPairs += 1
+                            }
+                        }
+                    } else {
+                        writeToXmp.append(url)
+                    }
                 case .writeToFile:
-                    writeToFile.append(url)
+                    writeToFileWithSidecar.append(url)
                 }
+            }
+
+            for rawURL in syncPairRawURLs where !writeToXmp.contains(rawURL) {
+                writeToXmp.append(rawURL)
             }
 
             for url in writeToSidecar {
@@ -662,16 +705,29 @@ final class BrowserViewModel {
             for url in writeToXmp {
                 await applyRatingToSidecar(url: url, rating: rating, writeXmpSidecar: true, pendingChanges: false)
             }
-            for url in writeToFile {
+            for url in writeToFileWithSidecar {
                 await applyRatingToSidecar(url: url, rating: rating, writeXmpSidecar: false, pendingChanges: false)
             }
 
-            if exifToolService.isAvailable, !writeToFile.isEmpty {
+            let fileWriteTargets = writeToFileWithSidecar + writeToFileWithoutSidecar
+            if exifToolService.isAvailable, !fileWriteTargets.isEmpty {
                 do {
-                    try await exifToolService.writeRating(rating, to: writeToFile)
+                    try await exifToolService.writeRating(rating, to: fileWriteTargets)
+                    clearMetadataSidecars(for: writeToFileWithoutSidecar)
                 } catch {
                     self.errorMessage = "Failed to write rating: \(error.localizedDescription)"
                 }
+            }
+
+            if syncMissingPairs > 0 || syncMultiplePairs > 0 {
+                var notes: [String] = []
+                if syncMissingPairs > 0 {
+                    notes.append("\(syncMissingPairs) file(s) had no RAW sibling")
+                }
+                if syncMultiplePairs > 0 {
+                    notes.append("\(syncMultiplePairs) file(s) matched multiple RAW siblings")
+                }
+                self.errorMessage = "Sync RAW+JPEG: " + notes.joined(separator: ", ") + "."
             }
 
             await MainActor.run {
@@ -692,9 +748,29 @@ final class BrowserViewModel {
         }
 
         Task {
-            var writeToFile: [URL] = []
+            var writeToFileWithSidecar: [URL] = []
+            var writeToFileWithoutSidecar: [URL] = []
             var writeToSidecar: [URL] = []
             var writeToXmp: [URL] = []
+            var syncPairRawURLs: Set<URL> = []
+            var syncMissingPairs = 0
+            var syncMultiplePairs = 0
+
+            let strictPM = PMXMPPolicy.mode == .strictPhotoMechanic
+            var strictNonRawChoice: PMNonRAWXMPSidecarChoice?
+            if strictPM {
+                let hasNonRawXMPTarget = urls.contains { url in
+                    let hasC2PA = lookup[url]?.hasC2PA ?? false
+                    let mode = MetadataWriteMode.current(forC2PA: hasC2PA)
+                    return mode == .writeToXMPSidecar && !SupportedImageFormats.isRaw(url: url)
+                }
+                if hasNonRawXMPTarget {
+                    strictNonRawChoice = await MainActor.run {
+                        PMXMPPolicy.resolveNonRawChoiceWithPromptIfNeeded()
+                    }
+                    guard strictNonRawChoice != nil else { return }
+                }
+            }
 
             for url in urls {
                 let hasC2PA = lookup[url]?.hasC2PA ?? false
@@ -704,10 +780,33 @@ final class BrowserViewModel {
                 case .historyOnly:
                     writeToSidecar.append(url)
                 case .writeToXMPSidecar:
-                    writeToXmp.append(url)
+                    if strictPM, !SupportedImageFormats.isRaw(url: url), let choice = strictNonRawChoice {
+                        switch choice {
+                        case .historyOnly:
+                            writeToSidecar.append(url)
+                        case .embeddedWrite:
+                            writeToFileWithoutSidecar.append(url)
+                        case .syncRawJpegPair:
+                            writeToFileWithoutSidecar.append(url)
+                            if let pair = SupportedImageFormats.preferredRawSibling(for: url) {
+                                syncPairRawURLs.insert(pair.url)
+                                if pair.hadMultipleMatches {
+                                    syncMultiplePairs += 1
+                                }
+                            } else {
+                                syncMissingPairs += 1
+                            }
+                        }
+                    } else {
+                        writeToXmp.append(url)
+                    }
                 case .writeToFile:
-                    writeToFile.append(url)
+                    writeToFileWithSidecar.append(url)
                 }
+            }
+
+            for rawURL in syncPairRawURLs where !writeToXmp.contains(rawURL) {
+                writeToXmp.append(rawURL)
             }
 
             for url in writeToSidecar {
@@ -716,21 +815,41 @@ final class BrowserViewModel {
             for url in writeToXmp {
                 await applyLabelToSidecar(url: url, label: label, writeXmpSidecar: true, pendingChanges: false)
             }
-            for url in writeToFile {
+            for url in writeToFileWithSidecar {
                 await applyLabelToSidecar(url: url, label: label, writeXmpSidecar: false, pendingChanges: false)
             }
 
-            if exifToolService.isAvailable, !writeToFile.isEmpty {
+            let fileWriteTargets = writeToFileWithSidecar + writeToFileWithoutSidecar
+            if exifToolService.isAvailable, !fileWriteTargets.isEmpty {
                 do {
-                    try await exifToolService.writeLabel(label, to: writeToFile)
+                    try await exifToolService.writeLabel(label, to: fileWriteTargets)
+                    clearMetadataSidecars(for: writeToFileWithoutSidecar)
                 } catch {
                     self.errorMessage = "Failed to write label: \(error.localizedDescription)"
                 }
             }
 
+            if syncMissingPairs > 0 || syncMultiplePairs > 0 {
+                var notes: [String] = []
+                if syncMissingPairs > 0 {
+                    notes.append("\(syncMissingPairs) file(s) had no RAW sibling")
+                }
+                if syncMultiplePairs > 0 {
+                    notes.append("\(syncMultiplePairs) file(s) matched multiple RAW siblings")
+                }
+                self.errorMessage = "Sync RAW+JPEG: " + notes.joined(separator: ", ") + "."
+            }
+
             await MainActor.run {
                 self.refreshPendingStatus()
             }
+        }
+    }
+
+    private func clearMetadataSidecars(for urls: [URL]) {
+        guard let folderURL = currentFolderURL, !urls.isEmpty else { return }
+        for url in urls {
+            try? sidecarService.deleteSidecar(for: url, in: folderURL)
         }
     }
 
@@ -894,7 +1013,9 @@ final class BrowserViewModel {
         do {
             var metadata = try await exifToolService.readFullMetadata(url: url)
             let preferXmp = UserDefaults.standard.bool(forKey: UserDefaultsKeys.metadataPreferXMPSidecar)
-            if (includeXmp || preferXmp), let xmpMetadata = xmpSidecarService.loadSidecar(for: url) {
+            if (includeXmp || preferXmp),
+               PMXMPPolicy.shouldUseXMPReference(for: url),
+               let xmpMetadata = xmpSidecarService.loadSidecar(for: url) {
                 metadata = metadata.merged(preferring: xmpMetadata)
             }
             return metadata

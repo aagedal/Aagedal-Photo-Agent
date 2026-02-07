@@ -825,6 +825,24 @@ final class FaceRecognitionViewModel {
         Task {
             let c2paLookup = await loadC2PALookup(urls: uniqueURLs)
             let folderURL = data.folderURL
+            let strictPM = PMXMPPolicy.mode == .strictPhotoMechanic
+            var strictNonRawChoice: PMNonRAWXMPSidecarChoice?
+            var missingPairs = 0
+            var multiplePairs = 0
+
+            if strictPM {
+                let hasNonRawXMPTarget = uniqueURLs.contains { url in
+                    let hasC2PA = c2paLookup[url] ?? false
+                    let mode = MetadataWriteMode.current(forC2PA: hasC2PA)
+                    return mode == .writeToXMPSidecar && !SupportedImageFormats.isRaw(url: url)
+                }
+                if hasNonRawXMPTarget {
+                    strictNonRawChoice = await MainActor.run {
+                        PMXMPPolicy.resolveNonRawChoiceWithPromptIfNeeded()
+                    }
+                    guard strictNonRawChoice != nil else { return }
+                }
+            }
 
             for url in uniqueURLs {
                 let hasC2PA = c2paLookup[url] ?? false
@@ -840,13 +858,50 @@ final class FaceRecognitionViewModel {
                         pendingChanges: true
                     )
                 case .writeToXMPSidecar:
-                    await applyNamesToSidecar(
-                        url: url,
-                        folderURL: folderURL,
-                        names: names,
-                        writeXmpSidecar: true,
-                        pendingChanges: false
-                    )
+                    if strictPM, !SupportedImageFormats.isRaw(url: url), let choice = strictNonRawChoice {
+                        switch choice {
+                        case .historyOnly:
+                            await applyNamesToSidecar(
+                                url: url,
+                                folderURL: folderURL,
+                                names: names,
+                                writeXmpSidecar: false,
+                                pendingChanges: true
+                            )
+                        case .embeddedWrite:
+                            let wrote = await applyNamesToFile(url: url, names: names)
+                            if wrote {
+                                deleteMetadataSidecarIfPresent(url: url, folderURL: folderURL)
+                            }
+                        case .syncRawJpegPair:
+                            let wrote = await applyNamesToFile(url: url, names: names)
+                            if wrote {
+                                deleteMetadataSidecarIfPresent(url: url, folderURL: folderURL)
+                            }
+                            if let pair = SupportedImageFormats.preferredRawSibling(for: url) {
+                                await applyNamesToSidecar(
+                                    url: pair.url,
+                                    folderURL: folderURL,
+                                    names: names,
+                                    writeXmpSidecar: true,
+                                    pendingChanges: false
+                                )
+                                if pair.hadMultipleMatches {
+                                    multiplePairs += 1
+                                }
+                            } else {
+                                missingPairs += 1
+                            }
+                        }
+                    } else {
+                        await applyNamesToSidecar(
+                            url: url,
+                            folderURL: folderURL,
+                            names: names,
+                            writeXmpSidecar: true,
+                            pendingChanges: false
+                        )
+                    }
                 case .writeToFile:
                     await applyNamesToSidecar(
                         url: url,
@@ -857,6 +912,17 @@ final class FaceRecognitionViewModel {
                     )
                     await applyNamesToFile(url: url, names: names)
                 }
+            }
+
+            if missingPairs > 0 || multiplePairs > 0 {
+                var notes: [String] = []
+                if missingPairs > 0 {
+                    notes.append("\(missingPairs) file(s) had no RAW sibling")
+                }
+                if multiplePairs > 0 {
+                    notes.append("\(multiplePairs) file(s) matched multiple RAW siblings")
+                }
+                errorMessage = "Sync RAW+JPEG: " + notes.joined(separator: ", ") + "."
             }
 
             await MainActor.run {
@@ -903,6 +969,25 @@ final class FaceRecognitionViewModel {
         let c2paLookup = Dictionary(uniqueKeysWithValues: images.map { ($0.url, $0.hasC2PA) })
 
         Task {
+            let strictPM = PMXMPPolicy.mode == .strictPhotoMechanic
+            var strictNonRawChoice: PMNonRAWXMPSidecarChoice?
+            var missingPairs = 0
+            var multiplePairs = 0
+
+            if strictPM {
+                let hasNonRawXMPTarget = namesByURL.keys.contains { url in
+                    let hasC2PA = c2paLookup[url] ?? false
+                    let mode = MetadataWriteMode.current(forC2PA: hasC2PA)
+                    return mode == .writeToXMPSidecar && !SupportedImageFormats.isRaw(url: url)
+                }
+                if hasNonRawXMPTarget {
+                    strictNonRawChoice = await MainActor.run {
+                        PMXMPPolicy.resolveNonRawChoiceWithPromptIfNeeded()
+                    }
+                    guard strictNonRawChoice != nil else { return }
+                }
+            }
+
             for (url, names) in namesByURL {
                 let hasC2PA = c2paLookup[url] ?? false
                 let mode = MetadataWriteMode.current(forC2PA: hasC2PA)
@@ -917,13 +1002,50 @@ final class FaceRecognitionViewModel {
                         pendingChanges: true
                     )
                 case .writeToXMPSidecar:
-                    await applyNamesToSidecar(
-                        url: url,
-                        folderURL: folderURL,
-                        names: names,
-                        writeXmpSidecar: true,
-                        pendingChanges: false
-                    )
+                    if strictPM, !SupportedImageFormats.isRaw(url: url), let choice = strictNonRawChoice {
+                        switch choice {
+                        case .historyOnly:
+                            await applyNamesToSidecar(
+                                url: url,
+                                folderURL: folderURL,
+                                names: names,
+                                writeXmpSidecar: false,
+                                pendingChanges: true
+                            )
+                        case .embeddedWrite:
+                            let wrote = await applyNamesToFile(url: url, names: names)
+                            if wrote {
+                                deleteMetadataSidecarIfPresent(url: url, folderURL: folderURL)
+                            }
+                        case .syncRawJpegPair:
+                            let wrote = await applyNamesToFile(url: url, names: names)
+                            if wrote {
+                                deleteMetadataSidecarIfPresent(url: url, folderURL: folderURL)
+                            }
+                            if let pair = SupportedImageFormats.preferredRawSibling(for: url) {
+                                await applyNamesToSidecar(
+                                    url: pair.url,
+                                    folderURL: folderURL,
+                                    names: names,
+                                    writeXmpSidecar: true,
+                                    pendingChanges: false
+                                )
+                                if pair.hadMultipleMatches {
+                                    multiplePairs += 1
+                                }
+                            } else {
+                                missingPairs += 1
+                            }
+                        }
+                    } else {
+                        await applyNamesToSidecar(
+                            url: url,
+                            folderURL: folderURL,
+                            names: names,
+                            writeXmpSidecar: true,
+                            pendingChanges: false
+                        )
+                    }
                 case .writeToFile:
                     await applyNamesToSidecar(
                         url: url,
@@ -934,6 +1056,17 @@ final class FaceRecognitionViewModel {
                     )
                     await applyNamesToFile(url: url, names: names)
                 }
+            }
+
+            if missingPairs > 0 || multiplePairs > 0 {
+                var notes: [String] = []
+                if missingPairs > 0 {
+                    notes.append("\(missingPairs) file(s) had no RAW sibling")
+                }
+                if multiplePairs > 0 {
+                    notes.append("\(multiplePairs) file(s) matched multiple RAW siblings")
+                }
+                errorMessage = "Sync RAW+JPEG: " + notes.joined(separator: ", ") + "."
             }
 
             await MainActor.run {
@@ -958,16 +1091,24 @@ final class FaceRecognitionViewModel {
         return merged
     }
 
-    private func applyNamesToFile(url: URL, names: [String]) async {
+    @discardableResult
+    private func applyNamesToFile(url: URL, names: [String]) async -> Bool {
         do {
             let existing = try await exifToolService.readFullMetadata(url: url)
             let merged = mergePersons(existing: existing.personShown, adding: names)
-            guard merged != existing.personShown else { return }
+            guard merged != existing.personShown else { return true }
             let value = merged.joined(separator: ", ")
             try await exifToolService.writeFields([ExifToolWriteTag.personInImage: value], to: [url])
+            return true
         } catch {
             // Continue with next image
+            return false
         }
+    }
+
+    private func deleteMetadataSidecarIfPresent(url: URL, folderURL: URL?) {
+        guard let folderURL else { return }
+        try? sidecarService.deleteSidecar(for: url, in: folderURL)
     }
 
     private func applyNamesToSidecar(
@@ -1067,7 +1208,9 @@ final class FaceRecognitionViewModel {
         do {
             var metadata = try await exifToolService.readFullMetadata(url: url)
             let preferXmp = UserDefaults.standard.bool(forKey: UserDefaultsKeys.metadataPreferXMPSidecar)
-            if (includeXmp || preferXmp), let xmpMetadata = xmpSidecarService.loadSidecar(for: url) {
+            if (includeXmp || preferXmp),
+               PMXMPPolicy.shouldUseXMPReference(for: url),
+               let xmpMetadata = xmpSidecarService.loadSidecar(for: url) {
                 metadata = metadata.merged(preferring: xmpMetadata)
             }
             return metadata

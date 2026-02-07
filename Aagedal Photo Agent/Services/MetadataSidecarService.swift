@@ -11,28 +11,43 @@ struct MetadataSidecarService: Sendable {
     }
 
     private func sidecarFileURL(for imageURL: URL, in folderURL: URL) -> URL {
-        let filename = imageURL.deletingPathExtension().lastPathComponent
+        let filename = imageURL.lastPathComponent
         return sidecarDirectory(for: folderURL).appendingPathComponent("\(filename).meta.json")
+    }
+
+    private func legacySidecarFileURL(for imageURL: URL, in folderURL: URL) -> URL {
+        let basename = imageURL.deletingPathExtension().lastPathComponent
+        return sidecarDirectory(for: folderURL).appendingPathComponent("\(basename).meta.json")
+    }
+
+    private func sidecarCandidateURLs(for imageURL: URL, in folderURL: URL) -> [URL] {
+        let current = sidecarFileURL(for: imageURL, in: folderURL)
+        let legacy = legacySidecarFileURL(for: imageURL, in: folderURL)
+        if current == legacy { return [current] }
+        return [current, legacy]
     }
 
     // MARK: - Load
 
     func loadSidecar(for imageURL: URL, in folderURL: URL) -> MetadataSidecar? {
-        let fileURL = sidecarFileURL(for: imageURL, in: folderURL)
-        guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
 
-        do {
-            let data = try Data(contentsOf: fileURL)
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            let sidecar = try decoder.decode(MetadataSidecar.self, from: data)
-            guard !sidecar.sourceFile.contains("/"), !sidecar.sourceFile.contains("\\"), !sidecar.sourceFile.contains("..") else {
-                return nil
+        for fileURL in sidecarCandidateURLs(for: imageURL, in: folderURL) {
+            guard FileManager.default.fileExists(atPath: fileURL.path) else { continue }
+
+            do {
+                let data = try Data(contentsOf: fileURL)
+                let sidecar = try decoder.decode(MetadataSidecar.self, from: data)
+                guard !sidecar.sourceFile.contains("/"), !sidecar.sourceFile.contains("\\"), !sidecar.sourceFile.contains("..") else {
+                    continue
+                }
+                return sidecar
+            } catch {
+                continue
             }
-            return sidecar
-        } catch {
-            return nil
         }
+        return nil
     }
 
     func loadAllSidecars(in folderURL: URL) -> [URL: MetadataSidecar] {
@@ -110,15 +125,23 @@ struct MetadataSidecarService: Sendable {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(updatedSidecar)
-        try data.write(to: sidecarFileURL(for: imageURL, in: folderURL))
+        let currentURL = sidecarFileURL(for: imageURL, in: folderURL)
+        try data.write(to: currentURL)
+
+        let legacyURL = legacySidecarFileURL(for: imageURL, in: folderURL)
+        if legacyURL != currentURL,
+           FileManager.default.fileExists(atPath: legacyURL.path) {
+            try? FileManager.default.removeItem(at: legacyURL)
+        }
     }
 
     // MARK: - Delete
 
     func deleteSidecar(for imageURL: URL, in folderURL: URL) throws {
-        let fileURL = sidecarFileURL(for: imageURL, in: folderURL)
-        if FileManager.default.fileExists(atPath: fileURL.path) {
-            try FileManager.default.removeItem(at: fileURL)
+        for fileURL in sidecarCandidateURLs(for: imageURL, in: folderURL) {
+            if FileManager.default.fileExists(atPath: fileURL.path) {
+                try FileManager.default.removeItem(at: fileURL)
+            }
         }
     }
 
@@ -130,16 +153,24 @@ struct MetadataSidecarService: Sendable {
     }
 
     func moveSidecar(for imageURL: URL, from sourceFolderURL: URL, to destinationFolderURL: URL) throws {
-        let sourceURL = sidecarFileURL(for: imageURL, in: sourceFolderURL)
-        guard FileManager.default.fileExists(atPath: sourceURL.path) else { return }
+        let fm = FileManager.default
+        let sourceURLs = sidecarCandidateURLs(for: imageURL, in: sourceFolderURL).filter {
+            fm.fileExists(atPath: $0.path)
+        }
+        guard !sourceURLs.isEmpty else { return }
 
         let destinationDirectory = sidecarDirectory(for: destinationFolderURL)
-        try FileManager.default.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
+        try fm.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
         let destinationURL = sidecarFileURL(for: imageURL, in: destinationFolderURL)
 
-        if FileManager.default.fileExists(atPath: destinationURL.path) {
-            try FileManager.default.removeItem(at: destinationURL)
+        if fm.fileExists(atPath: destinationURL.path) {
+            try fm.removeItem(at: destinationURL)
         }
-        try FileManager.default.moveItem(at: sourceURL, to: destinationURL)
+        if let first = sourceURLs.first {
+            try fm.moveItem(at: first, to: destinationURL)
+        }
+        for extra in sourceURLs.dropFirst() {
+            try? fm.removeItem(at: extra)
+        }
     }
 }

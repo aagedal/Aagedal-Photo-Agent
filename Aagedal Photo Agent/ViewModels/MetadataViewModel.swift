@@ -100,6 +100,11 @@ final class MetadataViewModel {
 
     private(set) var selectedHavePendingSidecars = false
 
+    private func loadXMPMetadataIfAllowed(for imageURL: URL) -> IPTCMetadata? {
+        guard PMXMPPolicy.shouldUseXMPReference(for: imageURL) else { return nil }
+        return xmpSidecarService.loadSidecar(for: imageURL)
+    }
+
     func loadMetadata(for images: [ImageFile], folderURL: URL? = nil) {
         metadataLoadTask?.cancel()
         metadataLoadTask = nil
@@ -143,7 +148,7 @@ final class MetadataViewModel {
                 do {
                     let embedded = try await exifToolService.readFullMetadata(url: imageURL)
                     guard !Task.isCancelled else { return }
-                    let xmpMeta = xmpSidecarService.loadSidecar(for: imageURL)
+                    let xmpMeta = self.loadXMPMetadataIfAllowed(for: imageURL)
                     let referenceSource = self.defaultReferenceSource(hasXmp: xmpMeta != nil)
                     let baseMeta = self.referenceMetadata(
                         for: referenceSource,
@@ -237,7 +242,7 @@ final class MetadataViewModel {
             for image in images {
                 guard var meta = batchResults[image.url] else { continue }
                 if prefersXMPSidecar,
-                   let xmpMeta = xmpSidecarService.loadSidecar(for: image.url) {
+                   let xmpMeta = loadXMPMetadataIfAllowed(for: image.url) {
                     meta = meta.merged(preferring: xmpMeta)
                 }
                 allMetadata.append(meta)
@@ -423,6 +428,10 @@ final class MetadataViewModel {
             saveToSidecar()
             onComplete?()
         case .writeToXMPSidecar:
+            if PMXMPPolicy.mode == .strictPhotoMechanic {
+                writeStrictPhotoMechanicXMP(onComplete: onComplete)
+                return
+            }
             writeXMPSidecarAndPreserveHistory(onComplete: onComplete)
         case .writeToFile:
             if hasC2PA && !allowC2PAOverwrite {
@@ -524,6 +533,211 @@ final class MetadataViewModel {
                 self.saveError = error.localizedDescription
             }
             self.isSaving = false
+        }
+    }
+
+    private func resolveStrictNonRawChoice(for urls: [URL]) async throws -> PMNonRAWXMPSidecarChoice? {
+        let hasNonRaw = urls.contains { !SupportedImageFormats.isRaw(url: $0) }
+        guard hasNonRaw else { return nil }
+        let choice = await MainActor.run {
+            PMXMPPolicy.resolveNonRawChoiceWithPromptIfNeeded()
+        }
+        guard let choice else { throw CancellationError() }
+        return choice
+    }
+
+    private func batchWriteFields(from metadata: IPTCMetadata) -> [String: String] {
+        var fields: [String: String] = [:]
+        if let v = metadata.title, !v.isEmpty { fields[ExifToolWriteTag.headline] = v }
+        if let v = metadata.description, !v.isEmpty { fields[ExifToolWriteTag.description] = v }
+        if let v = metadata.extendedDescription, !v.isEmpty { fields[ExifToolWriteTag.extendedDescription] = v }
+        if !metadata.keywords.isEmpty { fields[ExifToolWriteTag.subject] = metadata.keywords.joined(separator: ", ") }
+        if !metadata.personShown.isEmpty { fields[ExifToolWriteTag.personInImage] = metadata.personShown.joined(separator: ", ") }
+        if let v = metadata.digitalSourceType { fields[ExifToolWriteTag.digitalSourceType] = v.rawValue }
+        if let v = metadata.creator, !v.isEmpty { fields[ExifToolWriteTag.creator] = v }
+        if let v = metadata.credit, !v.isEmpty { fields[ExifToolWriteTag.credit] = v }
+        if let v = metadata.copyright, !v.isEmpty { fields[ExifToolWriteTag.rights] = v }
+        if let v = metadata.jobId, !v.isEmpty { fields[ExifToolWriteTag.transmissionReference] = v }
+        if let v = metadata.dateCreated, !v.isEmpty { fields[ExifToolWriteTag.dateCreated] = v }
+        if let v = metadata.city, !v.isEmpty { fields[ExifToolWriteTag.city] = v }
+        if let v = metadata.country, !v.isEmpty { fields[ExifToolWriteTag.country] = v }
+        if let v = metadata.event, !v.isEmpty { fields[ExifToolWriteTag.event] = v }
+        if let lat = metadata.latitude, let lon = metadata.longitude {
+            fields[ExifToolWriteTag.gpsLatitude] = String(abs(lat))
+            fields[ExifToolWriteTag.gpsLatitudeRef] = lat >= 0 ? "N" : "S"
+            fields[ExifToolWriteTag.gpsLongitude] = String(abs(lon))
+            fields[ExifToolWriteTag.gpsLongitudeRef] = lon >= 0 ? "E" : "W"
+        }
+        return fields
+    }
+
+    private func writeStrictPhotoMechanicXMP(onComplete: (() -> Void)? = nil) {
+        guard let folderURL = currentFolderURL else {
+            writeXMPSidecar()
+            onComplete?()
+            return
+        }
+        guard !selectedURLs.isEmpty else {
+            onComplete?()
+            return
+        }
+
+        if selectedCount == 1, let imageURL = selectedURLs.first {
+            if SupportedImageFormats.isRaw(url: imageURL) {
+                writeXMPSidecarAndPreserveHistory(onComplete: onComplete)
+                return
+            }
+
+            Task {
+                do {
+                    guard let choice = try await resolveStrictNonRawChoice(for: [imageURL]) else {
+                        onComplete?()
+                        return
+                    }
+
+                    switch choice {
+                    case .historyOnly:
+                        saveToSidecar()
+                        onComplete?()
+                    case .embeddedWrite:
+                        writeMetadataAndClearSidecarForCurrentSelection(onComplete: onComplete)
+                    case .syncRawJpegPair:
+                        writeMetadataAndClearSidecarForCurrentSelection {
+                            Task {
+                                await self.syncRawPairForSingleNonRaw(
+                                    nonRawURL: imageURL,
+                                    metadata: self.editingMetadata
+                                )
+                                onComplete?()
+                            }
+                        }
+                    }
+                } catch is CancellationError {
+                    onComplete?()
+                } catch {
+                    saveError = error.localizedDescription
+                    onComplete?()
+                }
+            }
+            return
+        }
+
+        isSaving = true
+        saveError = nil
+
+        let urls = selectedURLs
+        let edited = editingMetadata
+
+        Task {
+            do {
+                let nonRawChoice = try await resolveStrictNonRawChoice(for: urls)
+                var rawXmpTargets = Set<URL>()
+                var nonRawHistoryTargets = Set<URL>()
+                var nonRawEmbeddedTargets = Set<URL>()
+                var pairRawTargets = Set<URL>()
+                var missingPairCount = 0
+                var multiplePairCount = 0
+
+                for url in urls {
+                    if SupportedImageFormats.isRaw(url: url) {
+                        rawXmpTargets.insert(url)
+                        continue
+                    }
+
+                    guard let nonRawChoice else {
+                        continue
+                    }
+                    switch nonRawChoice {
+                    case .historyOnly:
+                        nonRawHistoryTargets.insert(url)
+                    case .embeddedWrite:
+                        nonRawEmbeddedTargets.insert(url)
+                    case .syncRawJpegPair:
+                        nonRawEmbeddedTargets.insert(url)
+                        if let pair = SupportedImageFormats.preferredRawSibling(for: url) {
+                            pairRawTargets.insert(pair.url)
+                            if pair.hadMultipleMatches {
+                                multiplePairCount += 1
+                            }
+                        } else {
+                            missingPairCount += 1
+                        }
+                    }
+                }
+
+                let allRawXmpTargets = rawXmpTargets.union(pairRawTargets)
+                for rawURL in allRawXmpTargets {
+                    var existing = xmpSidecarService.loadSidecar(for: rawURL) ?? IPTCMetadata()
+                    applyBatchEdits(edited, to: &existing)
+                    try xmpSidecarService.saveSidecar(metadata: existing, for: rawURL)
+                }
+
+                let fields = batchWriteFields(from: edited)
+                if !nonRawEmbeddedTargets.isEmpty, !fields.isEmpty {
+                    try await exifToolService.writeFields(fields, to: Array(nonRawEmbeddedTargets))
+                }
+
+                if !allRawXmpTargets.isEmpty {
+                    saveBatchSidecars(
+                        folderURL: folderURL,
+                        pendingChanges: false,
+                        targetURLs: Array(allRawXmpTargets),
+                        updateState: false
+                    )
+                }
+                if !nonRawHistoryTargets.isEmpty {
+                    saveBatchSidecars(
+                        folderURL: folderURL,
+                        pendingChanges: true,
+                        targetURLs: Array(nonRawHistoryTargets),
+                        updateState: false
+                    )
+                }
+                if !nonRawEmbeddedTargets.isEmpty {
+                    removeSidecars(for: nonRawEmbeddedTargets, in: folderURL)
+                }
+
+                hasChanges = !nonRawHistoryTargets.isEmpty
+                selectedHavePendingSidecars = !nonRawHistoryTargets.isEmpty
+                if !nonRawHistoryTargets.isEmpty {
+                    saveError = "Saved \(nonRawHistoryTargets.count) non-RAW file(s) to history only."
+                } else if missingPairCount > 0 || multiplePairCount > 0 {
+                    var notes: [String] = []
+                    if missingPairCount > 0 {
+                        notes.append("\(missingPairCount) file(s) had no RAW sibling (embedded write only).")
+                    }
+                    if multiplePairCount > 0 {
+                        notes.append("\(multiplePairCount) file(s) matched multiple RAW siblings (first preferred extension used).")
+                    }
+                    saveError = notes.joined(separator: " ")
+                }
+            } catch is CancellationError {
+                // User cancelled prompt.
+            } catch {
+                saveError = "Failed to write metadata: \(error.localizedDescription)"
+            }
+
+            isSaving = false
+            onComplete?()
+        }
+    }
+
+    private func syncRawPairForSingleNonRaw(nonRawURL: URL, metadata: IPTCMetadata) async {
+        guard let pair = SupportedImageFormats.preferredRawSibling(for: nonRawURL) else {
+            saveError = "No RAW sibling found for \(nonRawURL.lastPathComponent). Wrote embedded metadata only."
+            return
+        }
+
+        do {
+            var existing = xmpSidecarService.loadSidecar(for: pair.url) ?? IPTCMetadata()
+            existing = existing.merged(preferring: metadata)
+            try xmpSidecarService.saveSidecar(metadata: existing, for: pair.url)
+
+            if pair.hadMultipleMatches {
+                saveError = "Multiple RAW siblings matched for \(nonRawURL.lastPathComponent). Used \(pair.url.lastPathComponent)."
+            }
+        } catch {
+            saveError = "Failed to sync RAW sidecar for \(pair.url.lastPathComponent): \(error.localizedDescription)"
         }
     }
 
@@ -714,6 +928,51 @@ final class MetadataViewModel {
         }
     }
 
+    private func writeMetadataAndClearSidecarForCurrentSelection(onComplete: (() -> Void)? = nil) {
+        guard selectedCount == 1,
+              let imageURL = selectedURLs.first,
+              let folderURL = currentFolderURL else {
+            writeMetadata()
+            onComplete?()
+            return
+        }
+
+        let edited = editingMetadata
+
+        isSaving = true
+        saveError = nil
+
+        Task {
+            do {
+                let fields = overwriteFields(from: edited)
+                try await exifToolService.writeFields(fields, to: [imageURL])
+
+                try? sidecarService.deleteSidecar(for: imageURL, in: folderURL)
+
+                let isStillSelected = self.selectedCount == 1 && self.selectedURLs.first == imageURL
+                if isStillSelected {
+                    self.metadata = edited
+                    self.originalImageMetadata = edited
+                    self.embeddedMetadata = edited
+                    self.sidecarHistory = []
+                    self.previousEditingMetadata = edited
+                    self.hasChanges = false
+                    self.selectedHavePendingSidecars = false
+                }
+            } catch {
+                self.saveError = error.localizedDescription
+            }
+            self.isSaving = false
+            onComplete?()
+        }
+    }
+
+    private func removeSidecars(for urls: Set<URL>, in folderURL: URL) {
+        for url in urls {
+            try? sidecarService.deleteSidecar(for: url, in: folderURL)
+        }
+    }
+
     func applyTemplateFields(_ template: [String: String], append: Bool = false) {
         for (key, value) in template {
             switch key {
@@ -829,6 +1088,9 @@ final class MetadataViewModel {
         Task {
             let interpolator = PresetVariableInterpolator()
             var processed = 0
+            var updated = 0
+            var unchanged = 0
+            var failed = 0
 
             for url in imageURLs {
                 let filename = url.deletingPathExtension().lastPathComponent
@@ -871,10 +1133,15 @@ final class MetadataViewModel {
 
                         if !fields.isEmpty {
                             try await exifToolService.writeFields(fields, to: [url])
+                            updated += 1
+                        } else {
+                            unchanged += 1
                         }
+                    } else {
+                        unchanged += 1
                     }
                 } catch {
-                    // Continue with next image
+                    failed += 1
                 }
 
                 processed += 1
@@ -883,6 +1150,11 @@ final class MetadataViewModel {
 
             self.isProcessingFolder = false
             self.folderProcessProgress = ""
+            if failed > 0 {
+                self.saveError = "Variable processing completed: updated \(updated), unchanged \(unchanged), failed \(failed)."
+            } else {
+                self.saveError = nil
+            }
         }
     }
 
@@ -897,6 +1169,9 @@ final class MetadataViewModel {
         Task {
             let interpolator = PresetVariableInterpolator()
             var processed = 0
+            var updated = 0
+            var unchanged = 0
+            var failed = 0
 
             for image in images {
                 do {
@@ -938,10 +1213,15 @@ final class MetadataViewModel {
 
                         if !fields.isEmpty {
                             try await exifToolService.writeFields(fields, to: [image.url])
+                            updated += 1
+                        } else {
+                            unchanged += 1
                         }
+                    } else {
+                        unchanged += 1
                     }
                 } catch {
-                    // Continue with next image
+                    failed += 1
                 }
 
                 processed += 1
@@ -950,6 +1230,11 @@ final class MetadataViewModel {
 
             self.isProcessingFolder = false
             self.folderProcessProgress = ""
+            if failed > 0 {
+                self.saveError = "Variable processing completed: updated \(updated), unchanged \(unchanged), failed \(failed)."
+            } else {
+                self.saveError = nil
+            }
         }
     }
 
@@ -1141,11 +1426,17 @@ final class MetadataViewModel {
         return history
     }
 
-    private func saveBatchSidecars(folderURL: URL, pendingChanges: Bool = true) {
+    private func saveBatchSidecars(
+        folderURL: URL,
+        pendingChanges: Bool = true,
+        targetURLs: [URL]? = nil,
+        updateState: Bool = true
+    ) {
         let now = Date()
         let batchMeta = editingMetadata
+        let urls = targetURLs ?? selectedURLs
 
-        for imageURL in selectedURLs {
+        for imageURL in urls {
             // Load existing sidecar or create base metadata
             var existingMeta: IPTCMetadata
             var existingHistory: [MetadataHistoryEntry] = []
@@ -1184,9 +1475,11 @@ final class MetadataViewModel {
             }
         }
 
-        hasChanges = pendingChanges
-        if !pendingChanges {
-            selectedHavePendingSidecars = false
+        if updateState {
+            hasChanges = pendingChanges
+            if !pendingChanges {
+                selectedHavePendingSidecars = false
+            }
         }
     }
 
@@ -1273,18 +1566,27 @@ final class MetadataViewModel {
         saveError = nil
 
         Task {
+            defer {
+                self.isProcessingFolder = false
+                self.folderProcessProgress = ""
+            }
+
             let sidecars = sidecarService.loadAllSidecars(in: folderURL)
             let pendingSidecars = sidecars.filter { $0.value.pendingChanges }
 
             var processed = 0
             let total = pendingSidecars.count
             self.folderProcessProgress = "0/\(total)"
+            var writtenCount = 0
+            var skippedCount = 0
+            var failedCount = 0
 
             let imagesByURL = Dictionary(images.map { ($0.url, $0) }, uniquingKeysWith: { _, last in last })
 
             for (imageURL, sidecar) in pendingSidecars {
                 if skipC2PA {
                     if let image = imagesByURL[imageURL], image.hasC2PA {
+                        skippedCount += 1
                         processed += 1
                         self.folderProcessProgress = "\(processed)/\(total)"
                         continue
@@ -1297,17 +1599,20 @@ final class MetadataViewModel {
                 do {
                     try await exifToolService.writeFields(fields, to: [imageURL])
                     try? sidecarService.deleteSidecar(for: imageURL, in: folderURL)
+                    writtenCount += 1
                 } catch {
-                    // Continue with next image
+                    failedCount += 1
                 }
 
                 processed += 1
                 self.folderProcessProgress = "\(processed)/\(total)"
             }
 
-            self.isProcessingFolder = false
-            self.folderProcessProgress = ""
-            self.selectedHavePendingSidecars = false
+            let remainingPending = sidecarService.imagesWithPendingChanges(in: folderURL)
+            self.selectedHavePendingSidecars = !remainingPending.isEmpty
+            if failedCount > 0 || skippedCount > 0 {
+                self.saveError = "Wrote \(writtenCount), skipped \(skippedCount), failed \(failedCount)."
+            }
         }
     }
 
