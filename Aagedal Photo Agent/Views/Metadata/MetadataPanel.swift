@@ -695,6 +695,301 @@ struct MetadataPanel: View {
         }
     }
 
+    // MARK: - Develop
+
+    private var usesIncrementalWhiteBalance: Bool {
+        let cameraRaw = viewModel.editingMetadata.cameraRaw
+        if cameraRaw?.temperature != nil || cameraRaw?.tint != nil {
+            return false
+        }
+        return cameraRaw?.incrementalTemperature != nil || cameraRaw?.incrementalTint != nil
+    }
+
+    private func updateCameraRaw(_ update: (inout CameraRawSettings) -> Void) {
+        var cameraRaw = viewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
+        update(&cameraRaw)
+        cameraRaw.hasSettings = cameraRawHasEdits(cameraRaw) ? true : nil
+        viewModel.editingMetadata.cameraRaw = cameraRawHasEdits(cameraRaw) ? cameraRaw : nil
+        viewModel.markChanged()
+    }
+
+    private func cameraRawHasEdits(_ cameraRaw: CameraRawSettings) -> Bool {
+        cameraRaw.whiteBalance != nil
+            || cameraRaw.temperature != nil
+            || cameraRaw.tint != nil
+            || cameraRaw.incrementalTemperature != nil
+            || cameraRaw.incrementalTint != nil
+            || cameraRaw.exposure2012 != nil
+            || cameraRaw.contrast2012 != nil
+            || cameraRaw.highlights2012 != nil
+            || cameraRaw.shadows2012 != nil
+            || cameraRaw.whites2012 != nil
+            || cameraRaw.blacks2012 != nil
+            || (cameraRaw.crop?.isEmpty == false)
+    }
+
+    private func toneSliderBinding(_ keyPath: WritableKeyPath<CameraRawSettings, Int?>) -> Binding<Double> {
+        Binding(
+            get: { Double(viewModel.editingMetadata.cameraRaw?[keyPath: keyPath] ?? 0) },
+            set: { newValue in
+                updateCameraRaw { cameraRaw in
+                    cameraRaw[keyPath: keyPath] = Int(newValue.rounded())
+                }
+            }
+        )
+    }
+
+    private var exposureBinding: Binding<Double> {
+        Binding(
+            get: { viewModel.editingMetadata.cameraRaw?.exposure2012 ?? 0.0 },
+            set: { newValue in
+                updateCameraRaw { cameraRaw in
+                    cameraRaw.exposure2012 = (newValue * 100).rounded() / 100
+                }
+            }
+        )
+    }
+
+    private var whiteBalanceBinding: Binding<String> {
+        Binding(
+            get: { viewModel.editingMetadata.cameraRaw?.whiteBalance ?? "Custom" },
+            set: { newValue in
+                updateCameraRaw { cameraRaw in
+                    cameraRaw.whiteBalance = newValue
+                }
+                commitEdits()
+            }
+        )
+    }
+
+    private var useIncrementalWhiteBalanceBinding: Binding<Bool> {
+        Binding(
+            get: { usesIncrementalWhiteBalance },
+            set: { enabled in
+                updateCameraRaw { cameraRaw in
+                    if enabled {
+                        cameraRaw.temperature = nil
+                        cameraRaw.tint = nil
+                        if cameraRaw.incrementalTemperature == nil { cameraRaw.incrementalTemperature = 0 }
+                        if cameraRaw.incrementalTint == nil { cameraRaw.incrementalTint = 0 }
+                    } else {
+                        cameraRaw.incrementalTemperature = nil
+                        cameraRaw.incrementalTint = nil
+                        if cameraRaw.temperature == nil { cameraRaw.temperature = 6500 }
+                        if cameraRaw.tint == nil { cameraRaw.tint = 0 }
+                    }
+                }
+                commitEdits()
+            }
+        )
+    }
+
+    private var whiteBalanceTemperatureBinding: Binding<Double> {
+        Binding(
+            get: {
+                if usesIncrementalWhiteBalance {
+                    return Double(viewModel.editingMetadata.cameraRaw?.incrementalTemperature ?? 0)
+                }
+                return Double(viewModel.editingMetadata.cameraRaw?.temperature ?? 6500)
+            },
+            set: { newValue in
+                updateCameraRaw { cameraRaw in
+                    if usesIncrementalWhiteBalance {
+                        cameraRaw.incrementalTemperature = Int(newValue.rounded())
+                    } else {
+                        cameraRaw.temperature = Int(newValue.rounded())
+                    }
+                }
+            }
+        )
+    }
+
+    private var whiteBalanceTintBinding: Binding<Double> {
+        Binding(
+            get: {
+                if usesIncrementalWhiteBalance {
+                    return Double(viewModel.editingMetadata.cameraRaw?.incrementalTint ?? 0)
+                }
+                return Double(viewModel.editingMetadata.cameraRaw?.tint ?? 0)
+            },
+            set: { newValue in
+                updateCameraRaw { cameraRaw in
+                    if usesIncrementalWhiteBalance {
+                        cameraRaw.incrementalTint = Int(newValue.rounded())
+                    } else {
+                        cameraRaw.tint = Int(newValue.rounded())
+                    }
+                }
+            }
+        )
+    }
+
+    private var cropEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { viewModel.editingMetadata.cameraRaw?.crop?.hasCrop ?? false },
+            set: { enabled in
+                updateCameraRaw { cameraRaw in
+                    if cameraRaw.crop == nil {
+                        cameraRaw.crop = CameraRawCrop()
+                    }
+                    cameraRaw.crop?.hasCrop = enabled
+                    if enabled {
+                        if cameraRaw.crop?.top == nil { cameraRaw.crop?.top = 0.0 }
+                        if cameraRaw.crop?.left == nil { cameraRaw.crop?.left = 0.0 }
+                        if cameraRaw.crop?.bottom == nil { cameraRaw.crop?.bottom = 1.0 }
+                        if cameraRaw.crop?.right == nil { cameraRaw.crop?.right = 1.0 }
+                        if cameraRaw.crop?.angle == nil { cameraRaw.crop?.angle = 0.0 }
+                    }
+                }
+                commitEdits()
+            }
+        )
+    }
+
+    private func cropBinding(_ keyPath: WritableKeyPath<CameraRawCrop, Double?>, defaultValue: Double) -> Binding<Double> {
+        Binding(
+            get: {
+                guard let crop = viewModel.editingMetadata.cameraRaw?.crop else { return defaultValue }
+                return crop[keyPath: keyPath] ?? defaultValue
+            },
+            set: { newValue in
+                updateCameraRaw { cameraRaw in
+                    var crop = cameraRaw.crop ?? CameraRawCrop()
+                    crop[keyPath: keyPath] = newValue
+                    crop.hasCrop = true
+                    cameraRaw.crop = crop
+                }
+            }
+        )
+    }
+
+    private func sliderRow(
+        _ label: String,
+        value: Binding<Double>,
+        range: ClosedRange<Double>,
+        step: Double,
+        formatter: @escaping (Double) -> String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(label)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(formatter(value.wrappedValue))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Slider(
+                value: value,
+                in: range,
+                step: step,
+                onEditingChanged: { editing in
+                    if !editing {
+                        commitEdits()
+                    }
+                }
+            )
+        }
+    }
+
+    private func signedIntString(_ value: Double) -> String {
+        let intValue = Int(value.rounded())
+        if intValue > 0 { return "+\(intValue)" }
+        return "\(intValue)"
+    }
+
+    private func signedDoubleString(_ value: Double, precision: Int = 2) -> String {
+        let format = "%.\(precision)f"
+        let absValue = String(format: format, abs(value))
+        if value > 0 { return "+\(absValue)" }
+        if value < 0 { return "-\(absValue)" }
+        return absValue
+    }
+
+    @ViewBuilder
+    private var developSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Develop (Camera Raw)")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if viewModel.isBatchEdit {
+                    Text("Single image only")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if !viewModel.isBatchEdit {
+                Picker("White Balance", selection: whiteBalanceBinding) {
+                    Text("As Shot").tag("As Shot")
+                    Text("Auto").tag("Auto")
+                    Text("Custom").tag("Custom")
+                }
+                .pickerStyle(.menu)
+                .font(.caption)
+
+                Toggle("Use incremental WB values", isOn: useIncrementalWhiteBalanceBinding)
+                    .toggleStyle(.switch)
+                    .font(.caption)
+
+                sliderRow(
+                    usesIncrementalWhiteBalance ? "WB Temp (Inc)" : "Temperature",
+                    value: whiteBalanceTemperatureBinding,
+                    range: usesIncrementalWhiteBalance ? -100...100 : 2000...50000,
+                    step: 1,
+                    formatter: signedIntString
+                )
+
+                sliderRow(
+                    usesIncrementalWhiteBalance ? "WB Tint (Inc)" : "Tint",
+                    value: whiteBalanceTintBinding,
+                    range: -150...150,
+                    step: 1,
+                    formatter: signedIntString
+                )
+
+                sliderRow(
+                    "Exposure",
+                    value: exposureBinding,
+                    range: -5...5,
+                    step: 0.01,
+                    formatter: { signedDoubleString($0, precision: 2) }
+                )
+
+                sliderRow("Contrast", value: toneSliderBinding(\.contrast2012), range: -100...100, step: 1, formatter: signedIntString)
+                sliderRow("Highlights", value: toneSliderBinding(\.highlights2012), range: -100...100, step: 1, formatter: signedIntString)
+                sliderRow("Shadows", value: toneSliderBinding(\.shadows2012), range: -100...100, step: 1, formatter: signedIntString)
+                sliderRow("Whites", value: toneSliderBinding(\.whites2012), range: -100...100, step: 1, formatter: signedIntString)
+                sliderRow("Blacks", value: toneSliderBinding(\.blacks2012), range: -100...100, step: 1, formatter: signedIntString)
+
+                Toggle("Enable Crop", isOn: cropEnabledBinding)
+                    .toggleStyle(.switch)
+                    .font(.caption)
+
+                if cropEnabledBinding.wrappedValue {
+                    sliderRow("Crop Top", value: cropBinding(\.top, defaultValue: 0.0), range: 0...1, step: 0.001) {
+                        String(format: "%.3f", $0)
+                    }
+                    sliderRow("Crop Left", value: cropBinding(\.left, defaultValue: 0.0), range: 0...1, step: 0.001) {
+                        String(format: "%.3f", $0)
+                    }
+                    sliderRow("Crop Bottom", value: cropBinding(\.bottom, defaultValue: 1.0), range: 0...1, step: 0.001) {
+                        String(format: "%.3f", $0)
+                    }
+                    sliderRow("Crop Right", value: cropBinding(\.right, defaultValue: 1.0), range: 0...1, step: 0.001) {
+                        String(format: "%.3f", $0)
+                    }
+                    sliderRow("Crop Angle", value: cropBinding(\.angle, defaultValue: 0.0), range: -45...45, step: 0.1) {
+                        String(format: "%.1f", $0)
+                    }
+                }
+            }
+        }
+    }
+
     // MARK: - Additional Fields
 
     @ViewBuilder

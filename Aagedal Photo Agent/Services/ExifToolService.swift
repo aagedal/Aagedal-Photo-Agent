@@ -35,6 +35,26 @@ enum ExifToolReadKey {
     static let rating = "Rating"
     static let label = "Label"
     static let claimGenerator = "Claim_generator"
+
+    // Camera Raw (crs)
+    static let crsWhiteBalance = "WhiteBalance"
+    static let crsTemperature = "Temperature"
+    static let crsTint = "Tint"
+    static let crsIncrementalTemperature = "IncrementalTemperature"
+    static let crsIncrementalTint = "IncrementalTint"
+    static let crsExposure2012 = "Exposure2012"
+    static let crsContrast2012 = "Contrast2012"
+    static let crsHighlights2012 = "Highlights2012"
+    static let crsShadows2012 = "Shadows2012"
+    static let crsWhites2012 = "Whites2012"
+    static let crsBlacks2012 = "Blacks2012"
+    static let crsHasSettings = "HasSettings"
+    static let crsCropTop = "CropTop"
+    static let crsCropLeft = "CropLeft"
+    static let crsCropBottom = "CropBottom"
+    static let crsCropRight = "CropRight"
+    static let crsCropAngle = "CropAngle"
+    static let crsHasCrop = "HasCrop"
 }
 
 /// Manages a persistent ExifTool process in `-stay_open` mode for fast batch operations.
@@ -305,7 +325,29 @@ final class ExifToolService {
     func readBatchBasicMetadata(urls: [URL]) async throws -> [[String: Any]] {
         guard !urls.isEmpty else { return [] }
 
-        var args = ["-json", "-XMP:Rating", "-XMP:Label", "-XMP-iptcExt:PersonInImage", "-JUMBF:All"]
+        var args = [
+            "-json",
+            "-XMP:Rating",
+            "-XMP:Label",
+            "-XMP-iptcExt:PersonInImage",
+            "-XMP-crs:HasSettings",
+            "-XMP-crs:HasCrop",
+            "-XMP-crs:Exposure2012",
+            "-XMP-crs:Contrast2012",
+            "-XMP-crs:Highlights2012",
+            "-XMP-crs:Shadows2012",
+            "-XMP-crs:Whites2012",
+            "-XMP-crs:Blacks2012",
+            "-XMP-crs:Temperature",
+            "-XMP-crs:Tint",
+            "-XMP-crs:IncrementalTemperature",
+            "-XMP-crs:IncrementalTint",
+            "-XMP-crs:CropTop",
+            "-XMP-crs:CropLeft",
+            "-XMP-crs:CropBottom",
+            "-XMP-crs:CropRight",
+            "-JUMBF:All"
+        ]
         args += urls.map(\.path)
 
         let output = try await execute(args)
@@ -362,7 +404,33 @@ final class ExifToolService {
     }
 
     private func metadataFromDict(_ dict: [String: Any]) -> IPTCMetadata {
-        IPTCMetadata(
+        let crop = CameraRawCrop(
+            top: parseDoubleValue(dict[ExifToolReadKey.crsCropTop]),
+            left: parseDoubleValue(dict[ExifToolReadKey.crsCropLeft]),
+            bottom: parseDoubleValue(dict[ExifToolReadKey.crsCropBottom]),
+            right: parseDoubleValue(dict[ExifToolReadKey.crsCropRight]),
+            angle: parseDoubleValue(dict[ExifToolReadKey.crsCropAngle]),
+            hasCrop: parseBoolValue(dict[ExifToolReadKey.crsHasCrop])
+        )
+        let cropValue = crop.isEmpty ? nil : crop
+
+        let cameraRaw = CameraRawSettings(
+            whiteBalance: dict[ExifToolReadKey.crsWhiteBalance] as? String,
+            temperature: parseIntValue(dict[ExifToolReadKey.crsTemperature]),
+            tint: parseIntValue(dict[ExifToolReadKey.crsTint]),
+            incrementalTemperature: parseIntValue(dict[ExifToolReadKey.crsIncrementalTemperature]),
+            incrementalTint: parseIntValue(dict[ExifToolReadKey.crsIncrementalTint]),
+            exposure2012: parseDoubleValue(dict[ExifToolReadKey.crsExposure2012]),
+            contrast2012: parseIntValue(dict[ExifToolReadKey.crsContrast2012]),
+            highlights2012: parseIntValue(dict[ExifToolReadKey.crsHighlights2012]),
+            shadows2012: parseIntValue(dict[ExifToolReadKey.crsShadows2012]),
+            whites2012: parseIntValue(dict[ExifToolReadKey.crsWhites2012]),
+            blacks2012: parseIntValue(dict[ExifToolReadKey.crsBlacks2012]),
+            hasSettings: parseBoolValue(dict[ExifToolReadKey.crsHasSettings]),
+            crop: cropValue
+        )
+
+        return IPTCMetadata(
             title: dict[ExifToolReadKey.headline] as? String
                 ?? dict[ExifToolReadKey.title] as? String
                 ?? dict[ExifToolReadKey.objectName] as? String,
@@ -385,7 +453,8 @@ final class ExifToolService {
             country: dict[ExifToolReadKey.country] as? String ?? dict[ExifToolReadKey.countryPrimaryLocationName] as? String,
             event: dict[ExifToolReadKey.event] as? String,
             rating: dict[ExifToolReadKey.rating] as? Int,
-            label: ColorLabel.canonicalMetadataLabel(dict[ExifToolReadKey.label] as? String)
+            label: ColorLabel.canonicalMetadataLabel(dict[ExifToolReadKey.label] as? String),
+            cameraRaw: cameraRaw.isEmpty ? nil : cameraRaw
         )
     }
 
@@ -545,6 +614,43 @@ final class ExifToolService {
     private func parseFirstString(_ value: Any?) -> String? {
         if let str = value as? String { return str }
         if let arr = value as? [String] { return arr.first }
+        return nil
+    }
+
+    private func parseIntValue(_ value: Any?) -> Int? {
+        if let intValue = value as? Int { return intValue }
+        if let doubleValue = value as? Double { return Int(doubleValue) }
+        if let stringValue = value as? String {
+            return Int(stringValue.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return nil
+    }
+
+    private func parseDoubleValue(_ value: Any?) -> Double? {
+        if let doubleValue = value as? Double { return doubleValue }
+        if let intValue = value as? Int { return Double(intValue) }
+        if let stringValue = value as? String {
+            return Double(stringValue.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return nil
+    }
+
+    private func parseBoolValue(_ value: Any?) -> Bool? {
+        if let boolValue = value as? Bool { return boolValue }
+        if let intValue = value as? Int {
+            if intValue == 0 { return false }
+            if intValue == 1 { return true }
+        }
+        if let stringValue = value as? String {
+            switch stringValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "true", "1":
+                return true
+            case "false", "0":
+                return false
+            default:
+                return nil
+            }
+        }
         return nil
     }
 

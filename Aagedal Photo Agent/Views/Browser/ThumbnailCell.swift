@@ -9,6 +9,7 @@ struct ThumbnailCell: View, Equatable {
     var onAddToSubfolder: (() -> Void)?
 
     @State private var thumbnail: NSImage?
+    private let thumbnailSize = CGSize(width: 180, height: 140)
 
     static func == (lhs: ThumbnailCell, rhs: ThumbnailCell) -> Bool {
         lhs.image.url == rhs.image.url
@@ -16,6 +17,9 @@ struct ThumbnailCell: View, Equatable {
             && lhs.image.starRating == rhs.image.starRating
             && lhs.image.colorLabel == rhs.image.colorLabel
             && lhs.image.hasC2PA == rhs.image.hasC2PA
+            && lhs.image.hasDevelopEdits == rhs.image.hasDevelopEdits
+            && lhs.image.hasCropEdits == rhs.image.hasCropEdits
+            && lhs.image.cropRegion == rhs.image.cropRegion
             && lhs.image.hasPendingMetadataChanges == rhs.image.hasPendingMetadataChanges
             && lhs.image.pendingFieldNames == rhs.image.pendingFieldNames
     }
@@ -48,18 +52,49 @@ struct ThumbnailCell: View, Equatable {
                 }
                 .frame(width: 180, height: 140)
                 .clipShape(RoundedRectangle(cornerRadius: 4))
+                .overlay {
+                    if image.hasCropEdits,
+                       let crop = image.cropRegion,
+                       let thumbnail {
+                        CropThumbnailOverlay(
+                            crop: crop,
+                            imageSize: thumbnail.size,
+                            containerSize: thumbnailSize
+                        )
+                    }
+                }
 
-                // C2PA badge (top right)
-                if image.hasC2PA {
+                // C2PA / edited / crop badges (top right)
+                if image.hasC2PA || image.hasDevelopEdits || image.hasCropEdits || image.hasPendingMetadataChanges {
                     VStack {
                         HStack {
                             Spacer()
-                            Image(systemName: "checkmark.seal.fill")
-                                .font(.caption)
-                                .foregroundStyle(.white)
-                                .padding(3)
-                                .background(.blue, in: Circle())
-                                .padding(4)
+                            VStack(alignment: .trailing, spacing: 4) {
+                                if image.hasC2PA {
+                                    Image(systemName: "checkmark.seal.fill")
+                                        .font(.caption)
+                                        .foregroundStyle(.white)
+                                        .padding(3)
+                                        .background(.blue, in: Circle())
+                                }
+                                if image.hasDevelopEdits || image.hasPendingMetadataChanges {
+                                    Image(systemName: "slider.horizontal.3")
+                                        .font(.caption2.weight(.semibold))
+                                        .foregroundStyle(.white)
+                                        .padding(4)
+                                        .background(.orange, in: Circle())
+                                        .help("Image has edits")
+                                }
+                                if image.hasCropEdits {
+                                    Image(systemName: "crop")
+                                        .font(.caption2.weight(.semibold))
+                                        .foregroundStyle(.white)
+                                        .padding(4)
+                                        .background(.green, in: Circle())
+                                        .help("Image is cropped")
+                                }
+                            }
+                            .padding(4)
                         }
                         Spacer()
                     }
@@ -179,5 +214,50 @@ struct ThumbnailCell: View, Equatable {
         .task(id: image.url) {
             thumbnail = await thumbnailService.loadThumbnail(for: image.url)
         }
+    }
+}
+
+private struct CropThumbnailOverlay: View {
+    let crop: ThumbnailCropRegion
+    let imageSize: CGSize
+    let containerSize: CGSize
+
+    var body: some View {
+        let fitted = fittedImageRect(in: containerSize, imageSize: imageSize)
+        let clamped = crop.clamped
+        let rect = CGRect(
+            x: fitted.minX + (clamped.left * fitted.width),
+            y: fitted.minY + (clamped.top * fitted.height),
+            width: max(1, (clamped.right - clamped.left) * fitted.width),
+            height: max(1, (clamped.bottom - clamped.top) * fitted.height)
+        )
+
+        ZStack {
+            Rectangle()
+                .strokeBorder(.white.opacity(0.95), lineWidth: 1)
+                .frame(width: rect.width, height: rect.height)
+                .position(x: rect.midX, y: rect.midY)
+
+            Rectangle()
+                .strokeBorder(.black.opacity(0.65), lineWidth: 0.5)
+                .frame(width: rect.width, height: rect.height)
+                .position(x: rect.midX, y: rect.midY)
+        }
+    }
+
+    private func fittedImageRect(in containerSize: CGSize, imageSize: CGSize) -> CGRect {
+        guard containerSize.width > 0,
+              containerSize.height > 0,
+              imageSize.width > 0,
+              imageSize.height > 0 else {
+            return CGRect(origin: .zero, size: containerSize)
+        }
+
+        let scale = min(containerSize.width / imageSize.width, containerSize.height / imageSize.height)
+        let width = imageSize.width * scale
+        let height = imageSize.height * scale
+        let x = (containerSize.width - width) * 0.5
+        let y = (containerSize.height - height) * 0.5
+        return CGRect(x: x, y: y, width: width, height: height)
     }
 }

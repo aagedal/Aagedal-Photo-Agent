@@ -97,6 +97,13 @@ struct SettingsView: View {
             }
 
             Section("External Editor") {
+                Picker("Command+E", selection: $settingsViewModel.defaultEditDestination) {
+                    ForEach(DefaultEditDestination.allCases) { destination in
+                        Text(destination.displayName).tag(destination)
+                    }
+                }
+                .pickerStyle(.segmented)
+
                 Picker("Default Editor", selection: $settingsViewModel.defaultExternalEditor) {
                     Text("Not set").tag("")
                     if !settingsViewModel.detectedEditors.isEmpty {
@@ -111,6 +118,7 @@ struct SettingsView: View {
                         Text(settingsViewModel.defaultExternalEditorName).tag(settingsViewModel.defaultExternalEditor)
                     }
                 }
+                .disabled(settingsViewModel.defaultEditDestination == .internalEditor)
                 HStack {
                     Spacer()
                     Button("Browse...") {
@@ -124,6 +132,7 @@ struct SettingsView: View {
                         }
                     }
                 }
+                .disabled(settingsViewModel.defaultEditDestination == .internalEditor)
             }
 
             Section("Updates") {

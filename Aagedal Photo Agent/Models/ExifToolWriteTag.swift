@@ -27,6 +27,26 @@ enum ExifToolWriteTag {
     static let rating = "XMP:Rating"
     static let label = "XMP:Label"
 
+    // MARK: - Camera Raw (crs)
+    static let crsWhiteBalance = "XMP-crs:WhiteBalance"
+    static let crsTemperature = "XMP-crs:Temperature"
+    static let crsTint = "XMP-crs:Tint"
+    static let crsIncrementalTemperature = "XMP-crs:IncrementalTemperature"
+    static let crsIncrementalTint = "XMP-crs:IncrementalTint"
+    static let crsExposure2012 = "XMP-crs:Exposure2012"
+    static let crsContrast2012 = "XMP-crs:Contrast2012"
+    static let crsHighlights2012 = "XMP-crs:Highlights2012"
+    static let crsShadows2012 = "XMP-crs:Shadows2012"
+    static let crsWhites2012 = "XMP-crs:Whites2012"
+    static let crsBlacks2012 = "XMP-crs:Blacks2012"
+    static let crsHasSettings = "XMP-crs:HasSettings"
+    static let crsCropTop = "XMP-crs:CropTop"
+    static let crsCropLeft = "XMP-crs:CropLeft"
+    static let crsCropBottom = "XMP-crs:CropBottom"
+    static let crsCropRight = "XMP-crs:CropRight"
+    static let crsCropAngle = "XMP-crs:CropAngle"
+    static let crsHasCrop = "XMP-crs:HasCrop"
+
     // MARK: - IPTC Mirrors (for cross-tool interoperability)
     static let iptcKeywords = "IPTC:Keywords"
     static let iptcCopyrightNotice = "IPTC:CopyrightNotice"

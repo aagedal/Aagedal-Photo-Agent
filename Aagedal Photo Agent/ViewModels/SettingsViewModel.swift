@@ -7,6 +7,22 @@ struct DetectedEditor: Identifiable, Hashable {
     var id: String { path }
 }
 
+enum DefaultEditDestination: String, CaseIterable, Identifiable {
+    case internalEditor = "internalEditor"
+    case externalEditor = "externalEditor"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .internalEditor:
+            return "Internal Editor"
+        case .externalEditor:
+            return "External App"
+        }
+    }
+}
+
 @MainActor
 final class UpdateChecker {
     static let shared = UpdateChecker()
@@ -223,6 +239,10 @@ final class SettingsViewModel {
 
     var defaultExternalEditor: String {
         didSet { UserDefaults.standard.set(defaultExternalEditor.isEmpty ? nil : defaultExternalEditor, forKey: UserDefaultsKeys.defaultExternalEditor) }
+    }
+
+    var defaultEditDestination: DefaultEditDestination {
+        didSet { UserDefaults.standard.set(defaultEditDestination.rawValue, forKey: UserDefaultsKeys.defaultEditDestination) }
     }
 
     var defaultExternalEditorName: String {
@@ -479,6 +499,9 @@ final class SettingsViewModel {
         self.exifToolSource = ExifToolSource(rawValue: sourceRaw) ?? .bundled
         self.exifToolCustomPath = UserDefaults.standard.string(forKey: UserDefaultsKeys.exifToolCustomPath) ?? ""
         self.defaultExternalEditor = UserDefaults.standard.string(forKey: UserDefaultsKeys.defaultExternalEditor) ?? ""
+        let editDestinationRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.defaultEditDestination)
+            ?? DefaultEditDestination.internalEditor.rawValue
+        self.defaultEditDestination = DefaultEditDestination(rawValue: editDestinationRaw) ?? .internalEditor
         let updateRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.updateCheckFrequency) ?? UpdateCheckFrequency.weekly.rawValue
         self.updateCheckFrequency = UpdateCheckFrequency(rawValue: updateRaw) ?? .weekly
         let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.faceCleanupPolicy) ?? "never"

@@ -624,7 +624,9 @@ struct FullScreenImageView: View {
         if isRAW {
             // RAW: extract embedded JPEG preview
             let previewStart = CFAbsoluteTimeGetCurrent()
-            let preview = await Task.detached(priority: .userInitiated) {
+            // ImageIO thumbnail generation uses Default-QoS worker threads internally.
+            // Running decode at .medium avoids user-initiated -> default QoS inversion warnings.
+            let preview = await Task.detached(priority: .medium) {
                 FullScreenImageCache.extractEmbeddedPreview(from: url)
             }.value
             let previewElapsed = CFAbsoluteTimeGetCurrent() - previewStart
@@ -637,7 +639,7 @@ struct FullScreenImageView: View {
         } else {
             // Non-RAW: quick downsample at logical resolution (no Retina multiplier)
             let previewStart = CFAbsoluteTimeGetCurrent()
-            let preview = await Task.detached(priority: .userInitiated) {
+            let preview = await Task.detached(priority: .medium) {
                 FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: screenLogicalPx)
             }.value
             let previewElapsed = CFAbsoluteTimeGetCurrent() - previewStart
@@ -651,7 +653,7 @@ struct FullScreenImageView: View {
         // Phase 2: Retina-resolution decode (screen pixels, preserving HDR color space)
         let fullStart = CFAbsoluteTimeGetCurrent()
         imageLogger.info("\(filename): Phase 2 starting (retina resolution)")
-        fullLoadTask = Task.detached(priority: .userInitiated) {
+        fullLoadTask = Task.detached(priority: .medium) {
             let image = FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: screenMaxPx)
             let fullElapsed = CFAbsoluteTimeGetCurrent() - fullStart
             guard !Task.isCancelled else {
@@ -693,7 +695,7 @@ struct FullScreenImageView: View {
         let filename = url.lastPathComponent
         imageLogger.info("\(filename): Loading full resolution for zoom")
         isLoading = true
-        fullResTask = Task.detached(priority: .userInitiated) {
+        fullResTask = Task.detached(priority: .medium) {
             let fullStart = CFAbsoluteTimeGetCurrent()
             let image = FullScreenImageCache.loadFullResolution(from: url)
             let elapsed = CFAbsoluteTimeGetCurrent() - fullStart

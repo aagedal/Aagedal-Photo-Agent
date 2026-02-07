@@ -37,8 +37,15 @@ struct Aagedal_Photo_AgentApp: App {
             }
 
             CommandGroup(after: .newItem) {
-                Button("Open in External Editor") {
-                    NotificationCenter.default.post(name: .openInExternalEditor, object: nil)
+                Button("Open in Editor") {
+                    let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.defaultEditDestination)
+                        ?? DefaultEditDestination.internalEditor.rawValue
+                    let destination = DefaultEditDestination(rawValue: raw) ?? .internalEditor
+                    if destination == .internalEditor {
+                        NotificationCenter.default.post(name: .openInInternalEditor, object: nil)
+                    } else {
+                        NotificationCenter.default.post(name: .openInExternalEditor, object: nil)
+                    }
                 }
                 .keyboardShortcut("e", modifiers: .command)
             }
@@ -124,6 +131,7 @@ extension Notification.Name {
     static let setLabel = Notification.Name("setLabel")
     static let faceMetadataDidChange = Notification.Name("faceMetadataDidChange")
     static let openInExternalEditor = Notification.Name("openInExternalEditor")
+    static let openInInternalEditor = Notification.Name("openInInternalEditor")
     static let deleteSelected = Notification.Name("deleteSelected")
     static let showImport = Notification.Name("showImport")
     static let importCompleted = Notification.Name("importCompleted")
