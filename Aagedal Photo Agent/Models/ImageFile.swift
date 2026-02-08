@@ -6,13 +6,15 @@ struct ThumbnailCropRegion: Sendable, Equatable {
     let left: Double
     let bottom: Double
     let right: Double
+    let angle: Double
 
     var clamped: ThumbnailCropRegion {
         ThumbnailCropRegion(
             top: min(max(top, 0), 1),
             left: min(max(left, 0), 1),
             bottom: min(max(bottom, 0), 1),
-            right: min(max(right, 0), 1)
+            right: min(max(right, 0), 1),
+            angle: min(max(angle, -45), 45)
         )
     }
 }

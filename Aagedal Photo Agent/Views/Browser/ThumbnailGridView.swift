@@ -98,6 +98,10 @@ struct ThumbnailGridView: View {
 
     @ViewBuilder
     private func makeThumbnailCell(for image: ImageFile) -> some View {
+        let selectedURLs = viewModel.selectedImageIDs.contains(image.url)
+            ? viewModel.selectedImages.map(\.url)
+            : [image.url]
+
         let baseCell = ThumbnailCell(
             image: image,
             isSelected: viewModel.selectedImageIDs.contains(image.url),
@@ -111,6 +115,29 @@ struct ThumbnailGridView: View {
                     viewModel.lastClickedImageURL = image.url
                 }
                 viewModel.promptAddSelectedImagesToSubfolder()
+            },
+            onRevealInFinder: {
+                if selectedURLs.count > 1 {
+                    NSWorkspace.shared.activateFileViewerSelecting(selectedURLs)
+                } else {
+                    NSWorkspace.shared.selectFile(image.url.path, inFileViewerRootedAtPath: image.url.deletingLastPathComponent().path)
+                }
+            },
+            onOpenInExternalEditor: {
+                if let editorPath = UserDefaults.standard.string(forKey: UserDefaultsKeys.defaultExternalEditor),
+                   !editorPath.isEmpty {
+                    NSWorkspace.shared.open(
+                        selectedURLs,
+                        withApplicationAt: URL(fileURLWithPath: editorPath),
+                        configuration: NSWorkspace.OpenConfiguration()
+                    )
+                }
+            },
+            onCopyFilePaths: {
+                let paths = selectedURLs.map(\.path).joined(separator: "\n")
+                let pasteboard = NSPasteboard.general
+                pasteboard.clearContents()
+                pasteboard.setString(paths, forType: .string)
             }
         )
         .equatable()

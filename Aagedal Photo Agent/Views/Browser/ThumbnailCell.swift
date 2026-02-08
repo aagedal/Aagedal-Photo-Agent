@@ -7,6 +7,9 @@ struct ThumbnailCell: View, Equatable {
     let thumbnailService: ThumbnailService
     var onDelete: (() -> Void)?
     var onAddToSubfolder: (() -> Void)?
+    var onRevealInFinder: (() -> Void)?
+    var onOpenInExternalEditor: (() -> Void)?
+    var onCopyFilePaths: (() -> Void)?
 
     @State private var thumbnail: NSImage?
     private let thumbnailSize = CGSize(width: 180, height: 140)
@@ -164,17 +167,35 @@ struct ThumbnailCell: View, Equatable {
         }
         .contextMenu {
             Button("Reveal in Finder") {
-                NSWorkspace.shared.selectFile(image.url.path, inFileViewerRootedAtPath: image.url.deletingLastPathComponent().path)
+                if let onRevealInFinder {
+                    onRevealInFinder()
+                } else {
+                    NSWorkspace.shared.selectFile(image.url.path, inFileViewerRootedAtPath: image.url.deletingLastPathComponent().path)
+                }
             }
 
             if let editorPath = UserDefaults.standard.string(forKey: UserDefaultsKeys.defaultExternalEditor),
                !editorPath.isEmpty {
                 Button("Open in External Editor") {
-                    NSWorkspace.shared.open(
-                        [image.url],
-                        withApplicationAt: URL(fileURLWithPath: editorPath),
-                        configuration: NSWorkspace.OpenConfiguration()
-                    )
+                    if let onOpenInExternalEditor {
+                        onOpenInExternalEditor()
+                    } else {
+                        NSWorkspace.shared.open(
+                            [image.url],
+                            withApplicationAt: URL(fileURLWithPath: editorPath),
+                            configuration: NSWorkspace.OpenConfiguration()
+                        )
+                    }
+                }
+            }
+
+            Button("Copy File Path(s)") {
+                if let onCopyFilePaths {
+                    onCopyFilePaths()
+                } else {
+                    let pasteboard = NSPasteboard.general
+                    pasteboard.clearContents()
+                    pasteboard.setString(image.url.path, forType: .string)
                 }
             }
 
@@ -225,23 +246,30 @@ private struct CropThumbnailOverlay: View {
     var body: some View {
         let fitted = fittedImageRect(in: containerSize, imageSize: imageSize)
         let clamped = crop.clamped
-        let rect = CGRect(
-            x: fitted.minX + (clamped.left * fitted.width),
-            y: fitted.minY + (clamped.top * fitted.height),
-            width: max(1, (clamped.right - clamped.left) * fitted.width),
-            height: max(1, (clamped.bottom - clamped.top) * fitted.height)
-        )
+        let aabbW = max(1, (clamped.right - clamped.left) * fitted.width)
+        let aabbH = max(1, (clamped.bottom - clamped.top) * fitted.height)
+        let cx = fitted.minX + ((clamped.left + clamped.right) * 0.5 * fitted.width)
+        let cy = fitted.minY + ((clamped.top + clamped.bottom) * 0.5 * fitted.height)
+
+        // Project diagonal onto rotated axes to get actual crop dimensions
+        let radians = clamped.angle * Double.pi / 180.0
+        let cosA = cos(radians)
+        let sinA = sin(radians)
+        let w = max(1, abs(aabbW * cosA + aabbH * sinA))
+        let h = max(1, abs(-aabbW * sinA + aabbH * cosA))
 
         ZStack {
             Rectangle()
                 .strokeBorder(.white.opacity(0.95), lineWidth: 1)
-                .frame(width: rect.width, height: rect.height)
-                .position(x: rect.midX, y: rect.midY)
+                .frame(width: w, height: h)
+                .rotationEffect(.degrees(clamped.angle))
+                .position(x: cx, y: cy)
 
             Rectangle()
                 .strokeBorder(.black.opacity(0.65), lineWidth: 0.5)
-                .frame(width: rect.width, height: rect.height)
-                .position(x: rect.midX, y: rect.midY)
+                .frame(width: w, height: h)
+                .rotationEffect(.degrees(clamped.angle))
+                .position(x: cx, y: cy)
         }
     }
 

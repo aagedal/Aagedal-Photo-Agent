@@ -346,6 +346,7 @@ final class ExifToolService {
             "-XMP-crs:CropLeft",
             "-XMP-crs:CropBottom",
             "-XMP-crs:CropRight",
+            "-XMP-crs:CropAngle",
             "-JUMBF:All"
         ]
         args += urls.map(\.path)
