@@ -28,6 +28,8 @@ enum ExifToolWriteTag {
     static let label = "XMP:Label"
 
     // MARK: - Camera Raw (crs)
+    static let crsVersion = "XMP-crs:Version"
+    static let crsProcessVersion = "XMP-crs:ProcessVersion"
     static let crsWhiteBalance = "XMP-crs:WhiteBalance"
     static let crsTemperature = "XMP-crs:Temperature"
     static let crsTint = "XMP-crs:Tint"
@@ -46,6 +48,8 @@ enum ExifToolWriteTag {
     static let crsCropRight = "XMP-crs:CropRight"
     static let crsCropAngle = "XMP-crs:CropAngle"
     static let crsHasCrop = "XMP-crs:HasCrop"
+    static let crsCropConstrainToWarp = "XMP-crs:CropConstrainToWarp"
+    static let crsCropConstrainToUnitSquare = "XMP-crs:CropConstrainToUnitSquare"
 
     // MARK: - IPTC Mirrors (for cross-tool interoperability)
     static let iptcKeywords = "IPTC:Keywords"

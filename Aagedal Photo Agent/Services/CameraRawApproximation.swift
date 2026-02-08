@@ -47,8 +47,8 @@ enum CameraRawApproximation {
 
         if let target = temperatureTintTarget(for: settings) {
             output = applyFilter(named: "CITemperatureAndTint", input: output, values: [
-                "inputNeutral": CIVector(x: 6500, y: 0),
-                "inputTargetNeutral": CIVector(x: target.temperature, y: target.tint),
+                "inputNeutral": CIVector(x: target.temperature, y: target.tint),
+                "inputTargetNeutral": CIVector(x: 6500, y: 0),
             ]) ?? output
         }
 

@@ -698,11 +698,18 @@ struct MetadataPanel: View {
     // MARK: - Develop
 
     private var usesIncrementalWhiteBalance: Bool {
+        // Non-RAW files always use incremental (relative) white balance
+        if let url = browserViewModel.firstSelectedImage?.url, !SupportedImageFormats.isRaw(url: url) {
+            return true
+        }
         let cameraRaw = viewModel.editingMetadata.cameraRaw
         if cameraRaw?.temperature != nil || cameraRaw?.tint != nil {
             return false
         }
-        return cameraRaw?.incrementalTemperature != nil || cameraRaw?.incrementalTint != nil
+        if cameraRaw?.incrementalTemperature != nil || cameraRaw?.incrementalTint != nil {
+            return true
+        }
+        return false
     }
 
     private func updateCameraRaw(_ update: (inout CameraRawSettings) -> Void) {

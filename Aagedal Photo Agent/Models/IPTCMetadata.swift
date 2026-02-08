@@ -19,6 +19,8 @@ struct CameraRawCrop: Codable, Sendable, Equatable {
 }
 
 struct CameraRawSettings: Codable, Sendable, Equatable {
+    var version: String?
+    var processVersion: String?
     var whiteBalance: String?
     var temperature: Int?
     var tint: Int?
@@ -34,7 +36,9 @@ struct CameraRawSettings: Codable, Sendable, Equatable {
     var crop: CameraRawCrop?
 
     var isEmpty: Bool {
-        whiteBalance == nil
+        version == nil
+            && processVersion == nil
+            && whiteBalance == nil
             && temperature == nil
             && tint == nil
             && incrementalTemperature == nil
@@ -51,6 +55,8 @@ struct CameraRawSettings: Codable, Sendable, Equatable {
 
     func merged(preferring override: CameraRawSettings) -> CameraRawSettings {
         var result = self
+        if let value = override.version, !value.isEmpty { result.version = value }
+        if let value = override.processVersion, !value.isEmpty { result.processVersion = value }
         if let value = override.whiteBalance, !value.isEmpty { result.whiteBalance = value }
         if let value = override.temperature { result.temperature = value }
         if let value = override.tint { result.tint = value }
