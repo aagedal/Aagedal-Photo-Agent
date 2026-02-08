@@ -77,6 +77,10 @@ final class ThumbnailService {
         return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
     }
 
+    func invalidateThumbnail(for url: URL) {
+        cache.removeObject(forKey: url as NSURL)
+    }
+
     func clearCache() {
         cache.removeAllObjects()
         for task in inFlightTasks.values {

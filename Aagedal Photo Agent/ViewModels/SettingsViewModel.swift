@@ -119,7 +119,7 @@ final class UpdateChecker {
         return version
     }
 
-    private static func isNewerVersion(_ remote: String, than current: String) -> Bool {
+    static func isNewerVersion(_ remote: String, than current: String) -> Bool {
         let remoteParts = parseVersionParts(remote)
         let currentParts = parseVersionParts(current)
         let maxCount = max(remoteParts.count, currentParts.count)

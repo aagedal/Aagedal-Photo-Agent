@@ -77,6 +77,8 @@ final class BrowserViewModel {
         didSet { scheduleFilterRebuild() }
     }
 
+    var copiedCameraRawSettings: CameraRawSettings?
+
     let fileSystemService = FileSystemService()
     let thumbnailService = ThumbnailService()
     let exifToolService = ExifToolService()
@@ -529,12 +531,14 @@ final class BrowserViewModel {
         let left = parseDoubleValue(dict[ExifToolReadKey.crsCropLeft]) ?? 0
         let bottom = parseDoubleValue(dict[ExifToolReadKey.crsCropBottom]) ?? 1
         let right = parseDoubleValue(dict[ExifToolReadKey.crsCropRight]) ?? 1
+        let angle = parseDoubleValue(dict[ExifToolReadKey.crsCropAngle]) ?? 0
         let epsilon = 0.0001
 
         return abs(top) > epsilon
             || abs(left) > epsilon
             || abs(bottom - 1) > epsilon
             || abs(right - 1) > epsilon
+            || abs(angle) > epsilon
     }
 
     private func cropRegion(in dict: [String: Any]) -> ThumbnailCropRegion? {
@@ -543,7 +547,8 @@ final class BrowserViewModel {
         let left = parseDoubleValue(dict[ExifToolReadKey.crsCropLeft]) ?? 0
         let bottom = parseDoubleValue(dict[ExifToolReadKey.crsCropBottom]) ?? 1
         let right = parseDoubleValue(dict[ExifToolReadKey.crsCropRight]) ?? 1
-        let region = ThumbnailCropRegion(top: top, left: left, bottom: bottom, right: right).clamped
+        let angle = parseDoubleValue(dict[ExifToolReadKey.crsCropAngle]) ?? 0
+        let region = ThumbnailCropRegion(top: top, left: left, bottom: bottom, right: right, angle: angle).clamped
         guard region.right > region.left, region.bottom > region.top else { return nil }
         return region
     }

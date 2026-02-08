@@ -766,13 +766,13 @@ struct ContentView: View {
                let selectedImage = browserViewModel.selectedImages.first {
                 Divider()
                 VStack(alignment: .leading, spacing: 8) {
+                    UpdatePillButton()
                     if let meta = technicalMetadata, meta.hasC2PA {
                         C2PAMetadataView(metadata: meta) {
                             loadC2PADetail()
                         }
                         Divider()
                     }
-                    UpdatePillButton()
                     TechnicalMetadataView(
                         metadata: technicalMetadata,
                         fileSize: selectedImage.fileSize

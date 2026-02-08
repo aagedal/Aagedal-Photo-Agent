@@ -68,38 +68,42 @@ struct TechnicalMetadataView: View {
 
 struct UpdatePillButton: View {
     @AppStorage("updateLatestVersion") private var latestVersion: String = ""
-    @AppStorage("updateAvailable") private var updateAvailable: Bool = false
 
-    private var displayVersion: String {
-        if updateAvailable, !latestVersion.isEmpty {
-            return latestVersion
-        }
-        return Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
+    private var currentVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
+    }
+
+    private var isNewerVersionAvailable: Bool {
+        guard !latestVersion.isEmpty else { return false }
+        return UpdateChecker.isNewerVersion(latestVersion, than: currentVersion)
     }
 
     var body: some View {
-        Button {
-            UpdateChecker.shared.openReleasesPage()
-        } label: {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Update")
-                    .font(.caption.weight(.semibold))
-                Text("version \(displayVersion)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+        if isNewerVersionAvailable {
+            Button {
+                UpdateChecker.shared.openReleasesPage()
+            } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Update")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.blue)
+                    Text("version \(latestVersion)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 6)
+                .padding(.horizontal, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.blue.opacity(0.14))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(Color.blue.opacity(0.45), lineWidth: 0.5)
+                )
             }
-            .padding(.vertical, 6)
-            .padding(.horizontal, 10)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(updateAvailable ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.08))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(updateAvailable ? Color.accentColor.opacity(0.35) : Color.secondary.opacity(0.2), lineWidth: 0.5)
-            )
+            .buttonStyle(.plain)
+            .help("Update available")
         }
-        .buttonStyle(.plain)
-        .help(updateAvailable ? "Update available" : "Open releases page")
     }
 }
