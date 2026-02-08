@@ -878,6 +878,11 @@ final class MetadataViewModel {
     private func appendCameraRawFields(from metadata: IPTCMetadata, into fields: inout [String: String]) {
         guard let cameraRaw = metadata.cameraRaw else { return }
 
+        // ACR requires Version and ProcessVersion to recognize settings.
+        // ProcessVersion 15.4 corresponds to the 2012-era tags we write.
+        fields[ExifToolWriteTag.crsVersion] = cameraRaw.version ?? "15.4"
+        fields[ExifToolWriteTag.crsProcessVersion] = cameraRaw.processVersion ?? "15.4"
+
         if let value = cameraRaw.whiteBalance, !value.isEmpty {
             fields[ExifToolWriteTag.crsWhiteBalance] = value
         }
@@ -923,6 +928,8 @@ final class MetadataViewModel {
             if let value = crop.angle { fields[ExifToolWriteTag.crsCropAngle] = String(format: "%.2f", value) }
             let hasCrop = crop.hasCrop ?? !crop.isEmpty
             fields[ExifToolWriteTag.crsHasCrop] = hasCrop ? "True" : "False"
+            fields[ExifToolWriteTag.crsCropConstrainToWarp] = "0"
+            fields[ExifToolWriteTag.crsCropConstrainToUnitSquare] = "1"
         }
     }
 

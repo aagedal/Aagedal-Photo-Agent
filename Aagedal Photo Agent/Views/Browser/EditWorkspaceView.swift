@@ -17,6 +17,11 @@ struct EditWorkspaceView: View {
     @State private var isLoadingPreview = false
     @State private var isSavingRenderedJPEG = false
     @State private var copyPasteFeedback: String?
+    @State private var cropZoomScale: CGFloat = 1.0
+    @State private var lastCropZoomScale: CGFloat = 1.0
+    @State private var isCursorOverPreview = false
+    @State private var scrollEventMonitor: Any?
+    @State private var isShowingBefore = false
     @FocusState private var isWorkspaceFocused: Bool
 
     private static let minKelvin = 2000.0
@@ -50,8 +55,27 @@ struct EditWorkspaceView: View {
         metadataViewModel.selectedCount == 1 && !metadataViewModel.isBatchEdit
     }
 
+    private var displayImage: NSImage? {
+        isShowingBefore ? sourceImage : previewImage
+    }
+
     private var isCropEnabled: Bool {
         metadataViewModel.editingMetadata.cameraRaw?.crop?.hasCrop ?? false
+    }
+
+    private var hasDevelopAdjustments: Bool {
+        guard let cameraRaw = metadataViewModel.editingMetadata.cameraRaw else { return false }
+        return cameraRaw.whiteBalance != nil
+            || cameraRaw.temperature != nil
+            || cameraRaw.tint != nil
+            || cameraRaw.incrementalTemperature != nil
+            || cameraRaw.incrementalTint != nil
+            || cameraRaw.exposure2012 != nil
+            || cameraRaw.contrast2012 != nil
+            || cameraRaw.highlights2012 != nil
+            || cameraRaw.shadows2012 != nil
+            || cameraRaw.whites2012 != nil
+            || cameraRaw.blacks2012 != nil
     }
 
     private var activeCrop: NormalizedCropRegion {
@@ -145,6 +169,15 @@ struct EditWorkspaceView: View {
             showCopyPasteFeedback(withCrop ? "Pasted (with crop)" : "Pasted")
             return .handled
         }
+        .onKeyPress("m", phases: .down) { _ in
+            guard !isTextFieldActive(), canEditSingleImage else { return .ignored }
+            isShowingBefore = true
+            return .handled
+        }
+        .onKeyPress("m", phases: .up) { _ in
+            isShowingBefore = false
+            return .handled
+        }
         .overlay(alignment: .top) {
             if let feedback = copyPasteFeedback {
                 Text(feedback)
@@ -165,17 +198,18 @@ struct EditWorkspaceView: View {
             ZStack {
                 Color(nsColor: .windowBackgroundColor)
 
-                if let previewImage {
-                    if isCropEnabled {
+                if let displayImage {
+                    if isCropEnabled, !isShowingBefore {
                         // Crop-centered: image scales/positions so crop fills view
                         let imageRect = cropFittedImageRect(
                             in: geometry.size,
-                            imageSize: previewImage.size,
+                            imageSize: displayImage.size,
                             crop: activeCrop,
-                            angleDegrees: activeCropAngle
+                            angleDegrees: activeCropAngle,
+                            zoom: cropZoomScale
                         )
 
-                        Image(nsImage: previewImage)
+                        Image(nsImage: displayImage)
                             .resizable()
                             .interpolation(.high)
                             .frame(width: imageRect.width, height: imageRect.height)
@@ -200,10 +234,10 @@ struct EditWorkspaceView: View {
                             )
                         }
                     } else {
-                        // Normal fit: image fits within view
-                        let imageRect = fittedImageRect(in: geometry.size, imageSize: previewImage.size)
+                        // Normal fit: image fits within view (also used for "before" preview)
+                        let imageRect = fittedImageRect(in: geometry.size, imageSize: displayImage.size)
 
-                        Image(nsImage: previewImage)
+                        Image(nsImage: displayImage)
                             .resizable()
                             .interpolation(.high)
                             .frame(width: imageRect.width, height: imageRect.height)
@@ -221,6 +255,45 @@ struct EditWorkspaceView: View {
                 }
             }
             .clipped()
+            .onContinuousHover { phase in
+                switch phase {
+                case .active:
+                    isCursorOverPreview = true
+                case .ended:
+                    isCursorOverPreview = false
+                }
+            }
+            .simultaneousGesture(
+                MagnifyGesture()
+                    .onChanged { value in
+                        guard isCropEnabled else { return }
+                        cropZoomScale = (lastCropZoomScale * value.magnification).clamped(to: 0.25...3.0)
+                    }
+                    .onEnded { _ in
+                        guard isCropEnabled else { return }
+                        lastCropZoomScale = cropZoomScale
+                    }
+            )
+            .onAppear {
+                scrollEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+                    guard isCursorOverPreview, isCropEnabled else { return event }
+                    // Only handle direct scroll input, ignore momentum to avoid drift
+                    guard event.phase != [] || event.momentumPhase == [] else { return event }
+                    let delta = event.scrollingDeltaY
+                    guard abs(delta) > 0.01 else { return event }
+                    let zoomFactor = 1.0 + (delta * 0.02)
+                    let newScale = (cropZoomScale * zoomFactor).clamped(to: 0.25...3.0)
+                    cropZoomScale = newScale
+                    lastCropZoomScale = newScale
+                    return nil
+                }
+            }
+            .onDisappear {
+                if let monitor = scrollEventMonitor {
+                    NSEvent.removeMonitor(monitor)
+                    scrollEventMonitor = nil
+                }
+            }
         }
     }
 
@@ -228,11 +301,32 @@ struct EditWorkspaceView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
+                    Button {
+                        onExit()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 16))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Exit Edit View (Esc)")
+                    Spacer()
+                }
+
+                HStack {
                     Text("Develop")
                         .font(.headline)
                     Spacer()
-                    Button("Exit Edit View") {
-                        onExit()
+                    if canEditSingleImage, hasDevelopAdjustments {
+                        Button {
+                            resetDevelopAdjustmentsKeepingCrop()
+                        } label: {
+                            Image(systemName: "arrow.counterclockwise")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Reset develop adjustments (keep crop)")
                     }
                 }
 
@@ -316,18 +410,51 @@ struct EditWorkspaceView: View {
                     )
                     .disabled(!isCropEnabled)
 
-                    Divider()
-
-                    HStack {
-                        Button(isSavingRenderedJPEG ? "Saving JPEG..." : "Save JPEG") {
-                            saveCurrentRenderedJPEG()
-                        }
-                        .disabled(!canEditSingleImage || selectedImageURL == nil || isSavingRenderedJPEG)
-
-                        Button("Reset") {
-                            resetDevelopAdjustments()
+                    if isCropEnabled {
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack {
+                                Text("Crop Zoom")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                if abs(cropZoomScale - 1.0) > 0.01 {
+                                    Button {
+                                        resetCropZoom()
+                                    } label: {
+                                        Image(systemName: "arrow.counterclockwise")
+                                            .font(.system(size: 9))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help("Reset to 100%")
+                                }
+                                Spacer()
+                                Text("\(Int((cropZoomScale * 100).rounded()))%")
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
+                            Slider(
+                                value: $cropZoomScale,
+                                in: 0.25...3.0,
+                                step: 0.01
+                            )
+                            .simultaneousGesture(
+                                TapGesture(count: 2)
+                                    .onEnded {
+                                        resetCropZoom()
+                                    }
+                            )
+                            .onChange(of: cropZoomScale) { _, _ in
+                                lastCropZoomScale = cropZoomScale
+                            }
                         }
                     }
+
+                    Divider()
+
+                    Button(isSavingRenderedJPEG ? "Saving JPEG..." : "Save JPEG") {
+                        saveCurrentRenderedJPEG()
+                    }
+                    .disabled(!canEditSingleImage || selectedImageURL == nil || isSavingRenderedJPEG)
                 } else {
                     Text("Select exactly one image to edit.")
                         .font(.subheadline)
@@ -377,6 +504,7 @@ struct EditWorkspaceView: View {
         sourceCIImage = nil
         previewImage = nil
         isLoadingPreview = false
+        resetCropZoom()
 
         guard let selectedImageURL else { return }
         let previewMaxPixelSize = previewWorkingMaxPixelSize
@@ -505,7 +633,7 @@ struct EditWorkspaceView: View {
 
     /// Scales and positions the image so the crop region fills the view (with padding for handles).
     /// The image may extend beyond the view bounds. The crop rectangle will be centered in the view.
-    private func cropFittedImageRect(in containerSize: CGSize, imageSize: CGSize, crop: NormalizedCropRegion, angleDegrees: Double) -> CGRect {
+    private func cropFittedImageRect(in containerSize: CGSize, imageSize: CGSize, crop: NormalizedCropRegion, angleDegrees: Double, zoom: CGFloat = 1.0) -> CGRect {
         guard containerSize.width > 0, containerSize.height > 0, imageSize.width > 0, imageSize.height > 0 else {
             return .zero
         }
@@ -532,8 +660,9 @@ struct EditWorkspaceView: View {
             actualH = aabbH
         }
 
-        // Scale so actual crop fills available area
-        let scale = min(availW / max(actualW, 1), availH / max(actualH, 1))
+        // Scale so actual crop fills available area, then apply zoom
+        let baseScale = min(availW / max(actualW, 1), availH / max(actualH, 1))
+        let scale = baseScale * zoom
         let imgW = imageSize.width * scale
         let imgH = imageSize.height * scale
 
@@ -564,11 +693,18 @@ struct EditWorkspaceView: View {
     }
 
     private var usesIncrementalWhiteBalance: Bool {
+        // Non-RAW files always use incremental (relative) white balance
+        if let url = selectedImageURL, !SupportedImageFormats.isRaw(url: url) {
+            return true
+        }
         let cameraRaw = metadataViewModel.editingMetadata.cameraRaw
         if cameraRaw?.temperature != nil || cameraRaw?.tint != nil {
             return false
         }
-        return cameraRaw?.incrementalTemperature != nil || cameraRaw?.incrementalTint != nil
+        if cameraRaw?.incrementalTemperature != nil || cameraRaw?.incrementalTint != nil {
+            return true
+        }
+        return false
     }
 
     private func updateCameraRaw(_ update: (inout CameraRawSettings) -> Void) {
@@ -824,6 +960,7 @@ struct EditWorkspaceView: View {
     }
 
     private func toggleCrop() {
+        resetCropZoom()
         updateCameraRaw { cameraRaw in
             var crop = cameraRaw.crop ?? CameraRawCrop()
             let enabled = !(crop.hasCrop ?? false)
@@ -841,6 +978,7 @@ struct EditWorkspaceView: View {
     }
 
     private func resetCrop() {
+        resetCropZoom()
         updateCameraRaw { cameraRaw in
             cameraRaw.crop = CameraRawCrop(
                 top: 0,
@@ -963,6 +1101,7 @@ struct EditWorkspaceView: View {
     }
 
     private func resetDevelopAdjustments() {
+        resetCropZoom()
         updateCameraRaw { cameraRaw in
             cameraRaw.whiteBalance = "Custom"
             cameraRaw.temperature = 6500
@@ -983,6 +1122,23 @@ struct EditWorkspaceView: View {
                 angle: 0,
                 hasCrop: false
             )
+        }
+        commitEditAdjustments()
+    }
+
+    private func resetDevelopAdjustmentsKeepingCrop() {
+        updateCameraRaw { cameraRaw in
+            cameraRaw.whiteBalance = nil
+            cameraRaw.temperature = nil
+            cameraRaw.tint = nil
+            cameraRaw.incrementalTemperature = nil
+            cameraRaw.incrementalTint = nil
+            cameraRaw.exposure2012 = nil
+            cameraRaw.contrast2012 = nil
+            cameraRaw.highlights2012 = nil
+            cameraRaw.shadows2012 = nil
+            cameraRaw.whites2012 = nil
+            cameraRaw.blacks2012 = nil
         }
         commitEditAdjustments()
     }
@@ -1055,5 +1211,16 @@ struct EditWorkspaceView: View {
             return responder is NSText || responder is NSTextView
         }
         return false
+    }
+
+    private func resetCropZoom() {
+        cropZoomScale = 1.0
+        lastCropZoomScale = 1.0
+    }
+}
+
+private extension CGFloat {
+    func clamped(to range: ClosedRange<CGFloat>) -> CGFloat {
+        Swift.min(Swift.max(self, range.lowerBound), range.upperBound)
     }
 }

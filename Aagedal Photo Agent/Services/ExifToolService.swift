@@ -37,6 +37,8 @@ enum ExifToolReadKey {
     static let claimGenerator = "Claim_generator"
 
     // Camera Raw (crs)
+    static let crsVersion = "Version"
+    static let crsProcessVersion = "ProcessVersion"
     static let crsWhiteBalance = "WhiteBalance"
     static let crsTemperature = "Temperature"
     static let crsTint = "Tint"
@@ -330,6 +332,8 @@ final class ExifToolService {
             "-XMP:Rating",
             "-XMP:Label",
             "-XMP-iptcExt:PersonInImage",
+            "-XMP-crs:Version",
+            "-XMP-crs:ProcessVersion",
             "-XMP-crs:HasSettings",
             "-XMP-crs:HasCrop",
             "-XMP-crs:Exposure2012",
@@ -416,6 +420,8 @@ final class ExifToolService {
         let cropValue = crop.isEmpty ? nil : crop
 
         let cameraRaw = CameraRawSettings(
+            version: dict[ExifToolReadKey.crsVersion] as? String,
+            processVersion: dict[ExifToolReadKey.crsProcessVersion] as? String,
             whiteBalance: dict[ExifToolReadKey.crsWhiteBalance] as? String,
             temperature: parseIntValue(dict[ExifToolReadKey.crsTemperature]),
             tint: parseIntValue(dict[ExifToolReadKey.crsTint]),

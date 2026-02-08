@@ -238,6 +238,9 @@ struct XMPSidecarService: Sendable {
             return
         }
 
+        // ACR requires Version and ProcessVersion to recognize settings.
+        setSimple(on: description, prefix: "crs", localName: "Version", value: settings.version ?? "15.4")
+        setSimple(on: description, prefix: "crs", localName: "ProcessVersion", value: settings.processVersion ?? "15.4")
         setSimple(on: description, prefix: "crs", localName: "WhiteBalance", value: settings.whiteBalance)
         setSimple(on: description, prefix: "crs", localName: "Temperature", value: settings.temperature.map(String.init))
         setSimple(on: description, prefix: "crs", localName: "Tint", value: settings.tint.map(formatSignedInt))
@@ -279,10 +282,14 @@ struct XMPSidecarService: Sendable {
         setSimple(on: description, prefix: "crs", localName: "CropRight", value: crop?.right.map { formatUnsignedDouble($0, precision: 6) })
         setSimple(on: description, prefix: "crs", localName: "CropAngle", value: crop?.angle.map { formatUnsignedDouble($0, precision: 2) })
         setSimple(on: description, prefix: "crs", localName: "HasCrop", value: hasCrop.map(formatBool))
+        setSimple(on: description, prefix: "crs", localName: "CropConstrainToWarp", value: hasCrop == true ? "0" : nil)
+        setSimple(on: description, prefix: "crs", localName: "CropConstrainToUnitSquare", value: hasCrop == true ? "1" : nil)
     }
 
     private func removeCameraRawSettings(from description: XMLElement) {
         let fields = [
+            "Version",
+            "ProcessVersion",
             "WhiteBalance",
             "Temperature",
             "Tint",
@@ -301,6 +308,8 @@ struct XMPSidecarService: Sendable {
             "CropRight",
             "CropAngle",
             "HasCrop",
+            "CropConstrainToWarp",
+            "CropConstrainToUnitSquare",
         ]
         for field in fields {
             removeProperty(from: description, prefix: "crs", localName: field)
@@ -473,6 +482,8 @@ struct XMPSidecarService: Sendable {
     }
 
     private func parseCameraRawSettings(from description: XMLElement) -> CameraRawSettings? {
+        let version = parseSimple(from: description, prefix: "crs", localName: "Version")
+        let processVersion = parseSimple(from: description, prefix: "crs", localName: "ProcessVersion")
         let whiteBalance = parseSimple(from: description, prefix: "crs", localName: "WhiteBalance")
         let temperature = parseSimple(from: description, prefix: "crs", localName: "Temperature").flatMap(parseSignedInt)
         let tint = parseSimple(from: description, prefix: "crs", localName: "Tint").flatMap(parseSignedInt)
@@ -505,6 +516,8 @@ struct XMPSidecarService: Sendable {
         let cropValue = crop.isEmpty ? nil : crop
 
         let settings = CameraRawSettings(
+            version: version,
+            processVersion: processVersion,
             whiteBalance: whiteBalance,
             temperature: temperature,
             tint: tint,
