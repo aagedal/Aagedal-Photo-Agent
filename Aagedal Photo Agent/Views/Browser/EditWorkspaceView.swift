@@ -16,6 +16,7 @@ struct EditWorkspaceView: View {
     @State private var previewRenderTask: Task<Void, Never>?
     @State private var isLoadingPreview = false
     @State private var isSavingRenderedJPEG = false
+    @State private var copyPasteFeedback: String?
     @FocusState private var isWorkspaceFocused: Bool
 
     private static let minKelvin = 2000.0
@@ -66,6 +67,11 @@ struct EditWorkspaceView: View {
 
     private var activeCropAngle: Double {
         metadataViewModel.editingMetadata.cameraRaw?.crop?.angle ?? 0
+    }
+
+    private var sourceAspectRatio: Double {
+        guard let size = sourceImage?.size, size.width > 0, size.height > 0 else { return 1.5 }
+        return size.width / size.height
     }
 
     var body: some View {
@@ -119,6 +125,39 @@ struct EditWorkspaceView: View {
             onExit()
             return .handled
         }
+        .onKeyPress("c") {
+            guard !isTextFieldActive() else { return .ignored }
+            if NSEvent.modifierFlags.contains(.command) {
+                guard canEditSingleImage else { return .ignored }
+                browserViewModel.copiedCameraRawSettings = metadataViewModel.editingMetadata.cameraRaw
+                showCopyPasteFeedback("Copied")
+                return .handled
+            }
+            guard canEditSingleImage else { return .ignored }
+            toggleCrop()
+            return .handled
+        }
+        .onKeyPress("v") {
+            guard NSEvent.modifierFlags.contains(.command), !isTextFieldActive() else { return .ignored }
+            guard canEditSingleImage, let copied = browserViewModel.copiedCameraRawSettings else { return .ignored }
+            let withCrop = NSEvent.modifierFlags.contains(.shift)
+            pasteCameraRawSettings(copied, includeCrop: withCrop)
+            showCopyPasteFeedback(withCrop ? "Pasted (with crop)" : "Pasted")
+            return .handled
+        }
+        .overlay(alignment: .top) {
+            if let feedback = copyPasteFeedback {
+                Text(feedback)
+                    .font(.caption.bold())
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(.black.opacity(0.7), in: Capsule())
+                    .padding(.top, 8)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: copyPasteFeedback)
     }
 
     private var previewPane: some View {
@@ -127,29 +166,48 @@ struct EditWorkspaceView: View {
                 Color(nsColor: .windowBackgroundColor)
 
                 if let previewImage {
-                    let imageRect = fittedImageRect(in: geometry.size, imageSize: previewImage.size)
-
-                    Image(nsImage: previewImage)
-                        .resizable()
-                        .interpolation(.high)
-                        .frame(width: imageRect.width, height: imageRect.height)
-                        .position(x: imageRect.midX, y: imageRect.midY)
-
-                    if isCropEnabled && canEditSingleImage {
-                        CropOverlayView(
-                            imageRect: imageRect,
+                    if isCropEnabled {
+                        // Crop-centered: image scales/positions so crop fills view
+                        let imageRect = cropFittedImageRect(
+                            in: geometry.size,
+                            imageSize: previewImage.size,
                             crop: activeCrop,
-                            angle: activeCropAngle,
-                            onChange: { newCrop in
-                                updateCrop(newCrop, commit: false)
-                            },
-                            onAngleChange: { newAngle in
-                                updateCropAngle(newAngle, commit: false)
-                            },
-                            onCommit: {
-                                commitEditAdjustments()
-                            }
+                            angleDegrees: activeCropAngle
                         )
+
+                        Image(nsImage: previewImage)
+                            .resizable()
+                            .interpolation(.high)
+                            .frame(width: imageRect.width, height: imageRect.height)
+                            .rotationEffect(.degrees(-activeCropAngle))
+                            .position(x: imageRect.midX, y: imageRect.midY)
+
+                        if canEditSingleImage {
+                            CropOverlayView(
+                                imageRect: imageRect,
+                                viewSize: geometry.size,
+                                crop: activeCrop,
+                                angle: activeCropAngle,
+                                onChange: { newCrop in
+                                    updateCrop(newCrop, commit: false)
+                                },
+                                onAngleChange: { newAngle in
+                                    updateCropAngle(newAngle, commit: false)
+                                },
+                                onCommit: {
+                                    commitEditAdjustments()
+                                }
+                            )
+                        }
+                    } else {
+                        // Normal fit: image fits within view
+                        let imageRect = fittedImageRect(in: geometry.size, imageSize: previewImage.size)
+
+                        Image(nsImage: previewImage)
+                            .resizable()
+                            .interpolation(.high)
+                            .frame(width: imageRect.width, height: imageRect.height)
+                            .position(x: geometry.size.width * 0.5, y: geometry.size.height * 0.5)
                     }
                 } else if isLoadingPreview {
                     ProgressView("Loading preview...")
@@ -162,6 +220,7 @@ struct EditWorkspaceView: View {
                     )
                 }
             }
+            .clipped()
         }
     }
 
@@ -426,6 +485,84 @@ struct EditWorkspaceView: View {
         return CGRect(x: x, y: y, width: width, height: height)
     }
 
+    /// Computes a smaller image rect so that the rotated bounding box fits within the view.
+    private func fittedImageRectForRotation(in containerSize: CGSize, imageSize: CGSize, angleDegrees: Double) -> CGRect {
+        guard containerSize.width > 0, containerSize.height > 0, imageSize.width > 0, imageSize.height > 0 else {
+            return .zero
+        }
+        let theta = abs(angleDegrees) * Double.pi / 180.0
+        let cosT = cos(theta)
+        let sinT = sin(theta)
+        let rotBoundsW = imageSize.width * cosT + imageSize.height * sinT
+        let rotBoundsH = imageSize.width * sinT + imageSize.height * cosT
+        let scale = min(containerSize.width / rotBoundsW, containerSize.height / rotBoundsH)
+        let width = imageSize.width * scale
+        let height = imageSize.height * scale
+        let x = (containerSize.width - width) * 0.5
+        let y = (containerSize.height - height) * 0.5
+        return CGRect(x: x, y: y, width: width, height: height)
+    }
+
+    /// Scales and positions the image so the crop region fills the view (with padding for handles).
+    /// The image may extend beyond the view bounds. The crop rectangle will be centered in the view.
+    private func cropFittedImageRect(in containerSize: CGSize, imageSize: CGSize, crop: NormalizedCropRegion, angleDegrees: Double) -> CGRect {
+        guard containerSize.width > 0, containerSize.height > 0, imageSize.width > 0, imageSize.height > 0 else {
+            return .zero
+        }
+
+        let handlePadding: Double = 48
+        let availW = max(containerSize.width - handlePadding * 2, 1)
+        let availH = max(containerSize.height - handlePadding * 2, 1)
+
+        // AABB crop dimensions in image pixels
+        let aabbW = crop.width * imageSize.width
+        let aabbH = crop.height * imageSize.height
+
+        // Forward project AABB to actual (rotated) crop pixel dimensions
+        let radians = angleDegrees * Double.pi / 180.0
+        let cosA = cos(radians)
+        let sinA = sin(radians)
+        let actualW: Double
+        let actualH: Double
+        if abs(radians) > 0.000001 {
+            actualW = abs(aabbW * cosA + aabbH * sinA)
+            actualH = abs(-aabbW * sinA + aabbH * cosA)
+        } else {
+            actualW = aabbW
+            actualH = aabbH
+        }
+
+        // Scale so actual crop fills available area
+        let scale = min(availW / max(actualW, 1), availH / max(actualH, 1))
+        let imgW = imageSize.width * scale
+        let imgH = imageSize.height * scale
+
+        // Position so crop center maps to view center
+        // Crop center offset from image center in scaled image coords
+        let imgCropOffX = (crop.centerX - 0.5) * imgW
+        let imgCropOffY = (crop.centerY - 0.5) * imgH
+
+        // Rotate center offset by view rotation (-angle)
+        let viewAngle = -angleDegrees * Double.pi / 180.0
+        let cosV = cos(viewAngle)
+        let sinV = sin(viewAngle)
+        let viewCropOffX = imgCropOffX * cosV - imgCropOffY * sinV
+        let viewCropOffY = imgCropOffX * sinV + imgCropOffY * cosV
+
+        // Image center = view center minus crop offset
+        let viewCenterX = containerSize.width * 0.5
+        let viewCenterY = containerSize.height * 0.5
+        let imgMidX = viewCenterX - viewCropOffX
+        let imgMidY = viewCenterY - viewCropOffY
+
+        return CGRect(
+            x: imgMidX - imgW * 0.5,
+            y: imgMidY - imgH * 0.5,
+            width: imgW,
+            height: imgH
+        )
+    }
+
     private var usesIncrementalWhiteBalance: Bool {
         let cameraRaw = metadataViewModel.editingMetadata.cameraRaw
         if cameraRaw?.temperature != nil || cameraRaw?.tint != nil {
@@ -607,6 +744,18 @@ struct EditWorkspaceView: View {
                 Text("Temperature (K)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if abs(whiteBalanceTemperatureBinding.wrappedValue - 6500) > 1 {
+                    Button {
+                        whiteBalanceTemperatureBinding.wrappedValue = 6500
+                        commitEditAdjustments()
+                    } label: {
+                        Image(systemName: "arrow.counterclockwise")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Reset to 6500K")
+                }
                 Spacer()
                 Text("\(Int(whiteBalanceTemperatureBinding.wrappedValue.rounded()))")
                     .font(.caption.monospacedDigit())
@@ -707,7 +856,7 @@ struct EditWorkspaceView: View {
 
     private func updateCrop(_ crop: NormalizedCropRegion, commit: Bool) {
         let angle = metadataViewModel.editingMetadata.cameraRaw?.crop?.angle ?? 0
-        let normalized = crop.clamped().fittingRotated(angleDegrees: angle)
+        let normalized = crop.clamped().fittingRotated(angleDegrees: angle, aspectRatio: sourceAspectRatio)
         updateCameraRaw { cameraRaw in
             var cameraCrop = cameraRaw.crop ?? CameraRawCrop()
             cameraCrop.top = normalized.top
@@ -727,6 +876,7 @@ struct EditWorkspaceView: View {
 
     private func updateCropAngle(_ angle: Double, commit: Bool) {
         let clampedAngle = min(max(angle, -45), 45)
+        let ar = sourceAspectRatio
         updateCameraRaw { cameraRaw in
             var cameraCrop = cameraRaw.crop ?? CameraRawCrop(
                 top: 0,
@@ -736,6 +886,7 @@ struct EditWorkspaceView: View {
                 angle: 0,
                 hasCrop: true
             )
+            let oldAngle = cameraCrop.angle ?? 0
             let region = NormalizedCropRegion(
                 top: cameraCrop.top ?? 0,
                 left: cameraCrop.left ?? 0,
@@ -743,7 +894,9 @@ struct EditWorkspaceView: View {
                 right: cameraCrop.right ?? 1
             )
             .clamped()
-            .fittingRotated(angleDegrees: clampedAngle)
+            .withAngle(from: oldAngle, to: clampedAngle, aspectRatio: ar)
+            .centerClampedForRotation(angleDegrees: clampedAngle, aspectRatio: ar)
+            .fittingRotated(angleDegrees: clampedAngle, aspectRatio: ar)
 
             cameraCrop.top = region.top
             cameraCrop.left = region.left
@@ -771,6 +924,18 @@ struct EditWorkspaceView: View {
                 Text(label)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if let onReset, abs(value.wrappedValue) > 0.001 {
+                    Button {
+                        onReset()
+                        commitEditAdjustments()
+                    } label: {
+                        Image(systemName: "arrow.counterclockwise")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Reset to default")
+                }
                 Spacer()
                 Text(formatter(value.wrappedValue))
                     .font(.caption.monospacedDigit())
@@ -833,6 +998,8 @@ struct EditWorkspaceView: View {
                 let outputFolder = selectedImageURL.deletingLastPathComponent().appendingPathComponent("Edited", isDirectory: true)
                 try FileManager.default.createDirectory(at: outputFolder, withIntermediateDirectories: true)
                 try EditedImageRenderer.renderJPEG(from: selectedImageURL, cameraRaw: settings, outputFolder: outputFolder)
+                let outputURL = EditedImageRenderer.outputURL(for: selectedImageURL, in: outputFolder)
+                browserViewModel.thumbnailService.invalidateThumbnail(for: outputURL)
             } catch {
                 browserViewModel.errorMessage = "Failed to save JPEG: \(error.localizedDescription)"
             }
@@ -852,6 +1019,34 @@ struct EditWorkspaceView: View {
         if value > 0 { return "+\(absValue)" }
         if value < 0 { return "-\(absValue)" }
         return absValue
+    }
+
+    private func pasteCameraRawSettings(_ source: CameraRawSettings, includeCrop: Bool) {
+        updateCameraRaw { cameraRaw in
+            cameraRaw.whiteBalance = source.whiteBalance
+            cameraRaw.temperature = source.temperature
+            cameraRaw.tint = source.tint
+            cameraRaw.incrementalTemperature = source.incrementalTemperature
+            cameraRaw.incrementalTint = source.incrementalTint
+            cameraRaw.exposure2012 = source.exposure2012
+            cameraRaw.contrast2012 = source.contrast2012
+            cameraRaw.highlights2012 = source.highlights2012
+            cameraRaw.shadows2012 = source.shadows2012
+            cameraRaw.whites2012 = source.whites2012
+            cameraRaw.blacks2012 = source.blacks2012
+            if includeCrop {
+                cameraRaw.crop = source.crop
+            }
+        }
+        commitEditAdjustments()
+    }
+
+    private func showCopyPasteFeedback(_ message: String) {
+        copyPasteFeedback = message
+        Task {
+            try? await Task.sleep(for: .seconds(1))
+            copyPasteFeedback = nil
+        }
     }
 
     private func isTextFieldActive() -> Bool {
