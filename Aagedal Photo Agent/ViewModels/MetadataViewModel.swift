@@ -1100,9 +1100,10 @@ final class MetadataViewModel {
         return existing + " " + new
     }
 
+    private static let variablePattern = /\{(date|date:[^}]+|dateCreated|dateCaptured|filename|persons|keywords|field:[^}]+)\}/
+
     /// Checks whether any text field in editingMetadata contains variable placeholders.
     var hasVariables: Bool {
-        let variablePattern = /\{(date|date:[^}]+|dateCreated|dateCaptured|filename|persons|keywords|field:[^}]+)\}/
         let fields: [String?] = [
             editingMetadata.title,
             editingMetadata.description,
@@ -1118,7 +1119,7 @@ final class MetadataViewModel {
         ]
         return fields.contains { field in
             guard let field else { return false }
-            return field.contains(variablePattern)
+            return field.contains(Self.variablePattern)
         }
     }
 

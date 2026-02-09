@@ -139,9 +139,17 @@ nonisolated struct FaceDetectionService: Sendable {
     /// Detect faces in a single image, generate feature prints and thumbnails.
     /// Returns an array of `DetectedFace` and their thumbnail JPEG data keyed by face ID.
     func detectFaces(in imageURL: URL, config: DetectionConfig = DetectionConfig()) async throws -> [(face: DetectedFace, thumbnail: Data)] {
-        guard let imageSource = CGImageSourceCreateWithURL(imageURL as CFURL, nil),
-              let rawCGImage = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) else {
-            return []
+        guard let imageSource = CGImageSourceCreateWithURL(imageURL as CFURL, nil) else {
+            throw NSError(
+                domain: "FaceDetectionService", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Failed to create image source for \(imageURL.lastPathComponent)"]
+            )
+        }
+        guard let rawCGImage = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) else {
+            throw NSError(
+                domain: "FaceDetectionService", code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Failed to decode image at index 0 for \(imageURL.lastPathComponent)"]
+            )
         }
 
         // Apply EXIF orientation to get correctly oriented image
@@ -432,23 +440,48 @@ nonisolated struct FaceDetectionService: Sendable {
             // Merge clusters i and j
             let mergedCluster = clusters[minI] + clusters[minJ]
 
+            // Build old→new index mapping before mutating
+            // After removing minI and minJ, surviving indices shift:
+            //   old k < minI        → new k
+            //   minI < old k < minJ → new k - 1
+            //   old k > minJ        → new k - 2
+            let oldCount = clusters.count
+            var oldToNew = [Int: Int]()
+            var newIdx = 0
+            for oldIdx in 0..<oldCount {
+                if oldIdx == minI || oldIdx == minJ { continue }
+                oldToNew[oldIdx] = newIdx
+                newIdx += 1
+            }
+            let mergedNewIndex = newIdx // the merged cluster goes at the end
+
             // Remove old clusters (j first since j > i)
             clusters.remove(at: minJ)
             clusters.remove(at: minI)
 
-            // Update distance matrix for the new merged cluster
-            var newDistances: [String: Float] = [:]
-            for (k, cluster) in clusters.enumerated() {
-                // Average linkage: average of all pairwise distances
-                let distance = computeAverageLinkageDistance(mergedCluster, cluster, cache: fpCache)
-                newDistances[distanceKey(k, clusters.count)] = distance
+            // Rebuild distance matrix: copy surviving pairs with remapped keys
+            var newMatrix: [String: Float] = [:]
+            newMatrix.reserveCapacity(distanceMatrix.count)
+
+            for oldI in 0..<oldCount {
+                guard let newI = oldToNew[oldI] else { continue }
+                for oldJ in (oldI + 1)..<oldCount {
+                    guard let newJ = oldToNew[oldJ] else { continue }
+                    if let d = distanceMatrix[distanceKey(oldI, oldJ)] {
+                        newMatrix[distanceKey(newI, newJ)] = d
+                    }
+                }
             }
 
-            // Add merged cluster
-            clusters.append(mergedCluster)
+            // Compute distances from the merged cluster to each surviving cluster
+            for (k, cluster) in clusters.enumerated() {
+                let distance = computeAverageLinkageDistance(mergedCluster, cluster, cache: fpCache)
+                newMatrix[distanceKey(k, mergedNewIndex)] = distance
+            }
 
-            // Rebuild distance matrix with new indices
-            distanceMatrix = rebuildDistanceMatrix(clusters: clusters, previousMatrix: distanceMatrix, newDistances: newDistances, cache: fpCache)
+            // Add merged cluster and swap in the new matrix
+            clusters.append(mergedCluster)
+            distanceMatrix = newMatrix
         }
 
         // Convert clusters to FaceGroups
@@ -477,26 +510,6 @@ nonisolated struct FaceDetectionService: Sendable {
                 }
             }
         }
-        return matrix
-    }
-
-    private func rebuildDistanceMatrix(clusters: [[DetectedFace]], previousMatrix: [String: Float], newDistances: [String: Float], cache: FeaturePrintCache) -> [String: Float] {
-        var matrix: [String: Float] = [:]
-
-        // For existing clusters (all except the last one), compute pairwise distances
-        for i in 0..<(clusters.count - 1) {
-            for j in (i + 1)..<(clusters.count - 1) {
-                // Average linkage between clusters i and j
-                let distance = computeAverageLinkageDistance(clusters[i], clusters[j], cache: cache)
-                matrix[distanceKey(i, j)] = distance
-            }
-        }
-
-        // Add distances to the new merged cluster
-        for (key, value) in newDistances {
-            matrix[key] = value
-        }
-
         return matrix
     }
 
@@ -582,29 +595,43 @@ nonisolated struct FaceDetectionService: Sendable {
             }
 
             let mergedCluster = clusters[minI] + clusters[minJ]
+
+            // Build old→new index mapping before mutating
+            let oldCount = clusters.count
+            var oldToNew = [Int: Int]()
+            var newIdx = 0
+            for oldIdx in 0..<oldCount {
+                if oldIdx == minI || oldIdx == minJ { continue }
+                oldToNew[oldIdx] = newIdx
+                newIdx += 1
+            }
+            let mergedNewIndex = newIdx
+
             clusters.remove(at: minJ)
             clusters.remove(at: minI)
 
-            var newDistances: [String: Float] = [:]
+            // Copy surviving pairwise distances with remapped keys
+            var newMatrix: [String: Float] = [:]
+            newMatrix.reserveCapacity(distanceMatrix.count)
+
+            for oldI in 0..<oldCount {
+                guard let newI = oldToNew[oldI] else { continue }
+                for oldJ in (oldI + 1)..<oldCount {
+                    guard let newJ = oldToNew[oldJ] else { continue }
+                    if let d = distanceMatrix[distanceKey(oldI, oldJ)] {
+                        newMatrix[distanceKey(newI, newJ)] = d
+                    }
+                }
+            }
+
+            // Compute distances from the merged cluster to each surviving cluster
             for (k, cluster) in clusters.enumerated() {
-                // Use median linkage instead of average
                 let distance = computeMedianLinkageDistance(mergedCluster, cluster, cache: fpCache)
-                newDistances[distanceKey(k, clusters.count)] = distance
+                newMatrix[distanceKey(k, mergedNewIndex)] = distance
             }
 
             clusters.append(mergedCluster)
-
-            // Rebuild with median distances
-            distanceMatrix = [:]
-            for i in 0..<(clusters.count - 1) {
-                for j in (i + 1)..<(clusters.count - 1) {
-                    let distance = computeMedianLinkageDistance(clusters[i], clusters[j], cache: fpCache)
-                    distanceMatrix[distanceKey(i, j)] = distance
-                }
-            }
-            for (key, value) in newDistances {
-                distanceMatrix[key] = value
-            }
+            distanceMatrix = newMatrix
         }
 
         return clusters.compactMap { clusterFaces in
@@ -1586,11 +1613,36 @@ nonisolated struct FaceDetectionService: Sendable {
 
             // Merge clusters
             let mergedCluster = clusters[minI] + clusters[minJ]
+
+            // Build old→new index mapping before mutating
+            let oldCount = clusters.count
+            var oldToNew = [Int: Int]()
+            var newIdx = 0
+            for oldIdx in 0..<oldCount {
+                if oldIdx == minI || oldIdx == minJ { continue }
+                oldToNew[oldIdx] = newIdx
+                newIdx += 1
+            }
+            let mergedNewIndex = newIdx
+
             clusters.remove(at: minJ)
             clusters.remove(at: minI)
 
-            // Compute distances to new merged cluster
-            var newDistances: [String: Float] = [:]
+            // Copy surviving pairwise distances with remapped keys
+            var newMatrix: [String: Float] = [:]
+            newMatrix.reserveCapacity(distanceMatrix.count)
+
+            for oldI in 0..<oldCount {
+                guard let newI = oldToNew[oldI] else { continue }
+                for oldJ in (oldI + 1)..<oldCount {
+                    guard let newJ = oldToNew[oldJ] else { continue }
+                    if let d = distanceMatrix[distanceKey(oldI, oldJ)] {
+                        newMatrix[distanceKey(newI, newJ)] = d
+                    }
+                }
+            }
+
+            // Compute distances from the merged cluster to each surviving cluster
             for (k, cluster) in clusters.enumerated() {
                 let distance = computeModeAwareAverageLinkage(
                     cluster1: mergedCluster,
@@ -1599,28 +1651,11 @@ nonisolated struct FaceDetectionService: Sendable {
                     config: config,
                     cache: cache
                 )
-                newDistances[distanceKey(k, clusters.count)] = distance
+                newMatrix[distanceKey(k, mergedNewIndex)] = distance
             }
 
             clusters.append(mergedCluster)
-
-            // Rebuild distance matrix
-            distanceMatrix = [:]
-            for i in 0..<(clusters.count - 1) {
-                for j in (i + 1)..<(clusters.count - 1) {
-                    let distance = computeModeAwareAverageLinkage(
-                        cluster1: clusters[i],
-                        cluster2: clusters[j],
-                        mode: mode,
-                        config: config,
-                        cache: cache
-                    )
-                    distanceMatrix[distanceKey(i, j)] = distance
-                }
-            }
-            for (key, value) in newDistances {
-                distanceMatrix[key] = value
-            }
+            distanceMatrix = newMatrix
         }
 
         // Convert clusters to FaceGroups

@@ -60,7 +60,7 @@ nonisolated struct FaceDataStorageService: Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(faceData)
-        try data.write(to: dataFileURL(for: faceData.folderURL))
+        try data.write(to: dataFileURL(for: faceData.folderURL), options: .atomic)
     }
 
     func saveThumbnail(_ jpegData: Data, for faceID: UUID, folderURL: URL) throws {

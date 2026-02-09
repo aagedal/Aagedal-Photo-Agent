@@ -126,9 +126,12 @@ final class ExifToolService {
     var isAvailable: Bool { exifToolPath != nil }
 
     func start() throws {
-        guard !isRunning, let path = exifToolPath else {
-            exifToolLog.error("Cannot start: isRunning=\(self.isRunning), path=\(self.exifToolPath ?? "nil", privacy: .public)")
-            return
+        guard !isRunning else { return }
+        guard let path = exifToolPath else {
+            throw NSError(
+                domain: "ExifToolService", code: 4,
+                userInfo: [NSLocalizedDescriptionKey: "ExifTool not found. Install via Homebrew (`brew install exiftool`) or configure the path in Settings."]
+            )
         }
 
         exifToolLog.info("Starting ExifTool at: \(path, privacy: .public)")
@@ -238,9 +241,11 @@ final class ExifToolService {
         // Guard against unbounded growth from a missing sentinel
         if accumulatedOutput.utf8.count > maxAccumulatedOutputSize {
             exifToolLog.error("ExifTool output exceeded \(self.maxAccumulatedOutputSize) bytes without sentinel — restarting")
-            let overflow = accumulatedOutput
             accumulatedOutput = ""
-            pendingContinuation?.resume(returning: overflow)
+            pendingContinuation?.resume(throwing: NSError(
+                domain: "ExifToolService", code: 3,
+                userInfo: [NSLocalizedDescriptionKey: "ExifTool output exceeded \(maxAccumulatedOutputSize) bytes without sentinel — possible malformed response"]
+            ))
             pendingContinuation = nil
             isExecuting = false
             stop()
@@ -361,7 +366,7 @@ final class ExifToolService {
         args += urls.map(\.path)
 
         let output = try await execute(args)
-        return parseJSON(output)
+        return try parseJSON(output)
     }
 
     /// Read full metadata for a single file.
@@ -377,7 +382,7 @@ final class ExifToolService {
         ]
         let output = try await execute(args)
         exifToolLog.debug("readFullMetadata completed: \(url.lastPathComponent, privacy: .public)")
-        let results = parseJSON(output)
+        let results = try parseJSON(output)
 
         guard let dict = results.first else {
             return IPTCMetadata()
@@ -401,7 +406,7 @@ final class ExifToolService {
         args += urls.map(\.path)
 
         let output = try await execute(args)
-        let results = parseJSON(output)
+        let results = try parseJSON(output)
 
         var metadataByURL: [URL: IPTCMetadata] = [:]
         metadataByURL.reserveCapacity(results.count)
@@ -510,6 +515,11 @@ final class ExifToolService {
 
         var args = ["-overwrite_original", "-sep", ", "]
         var tempFiles: [URL] = []
+        defer {
+            for file in tempFiles {
+                try? FileManager.default.removeItem(at: file)
+            }
+        }
 
         for (key, value) in normalizedFields {
             if value.contains("\n") || value.contains("\r") {
@@ -524,17 +534,7 @@ final class ExifToolService {
         }
         args += urls.map(\.path)
 
-        do {
-            _ = try await execute(args)
-        } catch {
-            for file in tempFiles {
-                try? FileManager.default.removeItem(at: file)
-            }
-            throw error
-        }
-        for file in tempFiles {
-            try? FileManager.default.removeItem(at: file)
-        }
+        _ = try await execute(args)
     }
 
     private func captureCreationDates(for urls: [URL]) -> [URL: Date] {
@@ -589,7 +589,7 @@ final class ExifToolService {
         ]
         let output = try await execute(args)
         exifToolLog.debug("readTechnicalMetadata completed: \(url.lastPathComponent, privacy: .public)")
-        let results = parseJSON(output)
+        let results = try parseJSON(output)
         guard let dict = results.first else {
             exifToolLog.warning("readTechnicalMetadata: no data returned for \(url.lastPathComponent, privacy: .public)")
             return TechnicalMetadata(from: [:])
@@ -601,7 +601,7 @@ final class ExifToolService {
     func readC2PAMetadata(url: URL) async throws -> C2PAMetadata {
         let args = ["-json", "-G3", "-JUMBF:All", url.path]
         let output = try await execute(args)
-        let results = parseJSON(output)
+        let results = try parseJSON(output)
         guard let dict = results.first else {
             return C2PAMetadata(from: [:])
         }
@@ -610,11 +610,20 @@ final class ExifToolService {
 
     // MARK: - Parsing Helpers
 
-    private func parseJSON(_ string: String) -> [[String: Any]] {
+    private func parseJSON(_ string: String) throws -> [[String: Any]] {
         let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let data = trimmed.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
-            return []
+        guard !trimmed.isEmpty else { return [] }
+        guard let data = trimmed.data(using: .utf8) else {
+            throw NSError(
+                domain: "ExifToolService", code: 5,
+                userInfo: [NSLocalizedDescriptionKey: "ExifTool returned non-UTF-8 output"]
+            )
+        }
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            throw NSError(
+                domain: "ExifToolService", code: 5,
+                userInfo: [NSLocalizedDescriptionKey: "ExifTool returned invalid JSON: \(String(trimmed.prefix(200)))"]
+            )
         }
         return json
     }

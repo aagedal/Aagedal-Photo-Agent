@@ -21,11 +21,23 @@ extension Process {
         process.standardError = stderrPipe
 
         return try await withCheckedThrowingContinuation { continuation in
-            process.terminationHandler = { _ in
+            process.terminationHandler = { proc in
                 let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
                 let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
                 let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
                 let stderr = String(data: stderrData, encoding: .utf8) ?? ""
+
+                if proc.terminationStatus != 0 {
+                    let message = stderr.isEmpty
+                        ? "Process exited with status \(proc.terminationStatus)"
+                        : "Process exited with status \(proc.terminationStatus): \(stderr.prefix(500))"
+                    continuation.resume(throwing: NSError(
+                        domain: "Process+Async", code: Int(proc.terminationStatus),
+                        userInfo: [NSLocalizedDescriptionKey: message]
+                    ))
+                    return
+                }
+
                 continuation.resume(returning: (stdout, stderr))
             }
             do {
