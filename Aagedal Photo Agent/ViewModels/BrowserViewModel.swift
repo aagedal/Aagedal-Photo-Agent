@@ -381,9 +381,10 @@ final class BrowserViewModel {
             return
         }
 
-        // Process in batches
+        // Process in batches — mutate a local copy, assign once to avoid repeated didSet cascades
         let batchSize = 50
         let urls = images.map(\.url)
+        var updated = images
 
         for batchStart in stride(from: 0, to: urls.count, by: batchSize) {
             let batchEnd = min(batchStart + batchSize, urls.count)
@@ -398,24 +399,24 @@ final class BrowserViewModel {
                     if let index = urlToImageIndex[sourceURL] {
                         if let rating = dict[ExifToolReadKey.rating] as? Int,
                            let starRating = StarRating(rawValue: rating) {
-                            images[index].starRating = starRating
+                            updated[index].starRating = starRating
                         }
-                        images[index].colorLabel = ColorLabel.fromMetadataLabel(dict[ExifToolReadKey.label] as? String)
-                        images[index].personShown = parseStringOrArray(dict[ExifToolReadKey.personInImage])
-                        // C2PA detection: look for JUMD/C2PA keys from -JUMBF:All output
+                        updated[index].colorLabel = ColorLabel.fromMetadataLabel(dict[ExifToolReadKey.label] as? String)
+                        updated[index].personShown = parseStringOrArray(dict[ExifToolReadKey.personInImage])
                         let hasC2PA = TechnicalMetadata.dictHasC2PA(dict)
-                        images[index].hasC2PA = hasC2PA
-                        images[index].hasDevelopEdits = hasDevelopEdits(in: dict)
-                        images[index].hasCropEdits = hasCropEdits(in: dict)
-                        images[index].cropRegion = cropRegion(in: dict)
-                        images[index].cameraRawSettings = cameraRawSettings(in: dict)
-                        applyPendingSidecarOverrides(for: sourceURL, index: index, cachedSidecar: cachedSidecars[sourceURL])
+                        updated[index].hasC2PA = hasC2PA
+                        updated[index].hasDevelopEdits = hasDevelopEdits(in: dict)
+                        updated[index].hasCropEdits = hasCropEdits(in: dict)
+                        updated[index].cropRegion = cropRegion(in: dict)
+                        updated[index].cameraRawSettings = cameraRawSettings(in: dict)
+                        applyPendingSidecarOverrides(to: &updated, for: sourceURL, index: index, cachedSidecar: cachedSidecars[sourceURL])
                     }
                 }
             } catch {
                 logger.warning("Batch metadata load failed (batch at offset \(batchStart)): \(error.localizedDescription)")
             }
         }
+        images = updated
     }
 
     private func loadBasicMetadata(for urls: [URL]) async {
@@ -438,6 +439,7 @@ final class BrowserViewModel {
         }
 
         let batchSize = 50
+        var updated = images
 
         for batchStart in stride(from: 0, to: urls.count, by: batchSize) {
             let batchEnd = min(batchStart + batchSize, urls.count)
@@ -452,23 +454,24 @@ final class BrowserViewModel {
                     if let index = urlToImageIndex[sourceURL] {
                         if let rating = dict[ExifToolReadKey.rating] as? Int,
                            let starRating = StarRating(rawValue: rating) {
-                            images[index].starRating = starRating
+                            updated[index].starRating = starRating
                         }
-                        images[index].colorLabel = ColorLabel.fromMetadataLabel(dict[ExifToolReadKey.label] as? String)
-                        images[index].personShown = parseStringOrArray(dict[ExifToolReadKey.personInImage])
+                        updated[index].colorLabel = ColorLabel.fromMetadataLabel(dict[ExifToolReadKey.label] as? String)
+                        updated[index].personShown = parseStringOrArray(dict[ExifToolReadKey.personInImage])
                         let hasC2PA = TechnicalMetadata.dictHasC2PA(dict)
-                        images[index].hasC2PA = hasC2PA
-                        images[index].hasDevelopEdits = hasDevelopEdits(in: dict)
-                        images[index].hasCropEdits = hasCropEdits(in: dict)
-                        images[index].cropRegion = cropRegion(in: dict)
-                        images[index].cameraRawSettings = cameraRawSettings(in: dict)
-                        applyPendingSidecarOverrides(for: sourceURL, index: index)
+                        updated[index].hasC2PA = hasC2PA
+                        updated[index].hasDevelopEdits = hasDevelopEdits(in: dict)
+                        updated[index].hasCropEdits = hasCropEdits(in: dict)
+                        updated[index].cropRegion = cropRegion(in: dict)
+                        updated[index].cameraRawSettings = cameraRawSettings(in: dict)
+                        applyPendingSidecarOverrides(to: &updated, for: sourceURL, index: index)
                     }
                 }
             } catch {
                 logger.warning("Incremental metadata load failed: \(error.localizedDescription)")
             }
         }
+        images = updated
     }
 
     private func drainPendingMetadataIfNeeded() {
@@ -772,11 +775,13 @@ final class BrowserViewModel {
         let urls = selectedImages.map(\.url)
         let lookup = Dictionary(uniqueKeysWithValues: images.map { ($0.url, $0) })
 
+        var updated = images
         for id in selectedImageIDs {
             if let index = urlToImageIndex[id] {
-                images[index].starRating = rating
+                updated[index].starRating = rating
             }
         }
+        images = updated
 
         Task {
             var writeToFileWithSidecar: [URL] = []
@@ -882,11 +887,13 @@ final class BrowserViewModel {
         let urls = selectedImages.map(\.url)
         let lookup = Dictionary(uniqueKeysWithValues: images.map { ($0.url, $0) })
 
+        var updated = images
         for id in selectedImageIDs {
             if let index = urlToImageIndex[id] {
-                images[index].colorLabel = label
+                updated[index].colorLabel = label
             }
         }
+        images = updated
 
         Task {
             var writeToFileWithSidecar: [URL] = []
@@ -995,6 +1002,10 @@ final class BrowserViewModel {
     }
 
     private func applyPendingSidecarOverrides(for url: URL, index: Int, cachedSidecar: MetadataSidecar? = nil) {
+        applyPendingSidecarOverrides(to: &images, for: url, index: index, cachedSidecar: cachedSidecar)
+    }
+
+    private func applyPendingSidecarOverrides(to array: inout [ImageFile], for url: URL, index: Int, cachedSidecar: MetadataSidecar? = nil) {
         let sidecar: MetadataSidecar
         if let cached = cachedSidecar {
             sidecar = cached
@@ -1009,16 +1020,16 @@ final class BrowserViewModel {
         if let snapshot = sidecar.imageMetadataSnapshot {
             if sidecar.metadata.rating != snapshot.rating {
                 let ratingValue = sidecar.metadata.rating ?? 0
-                images[index].starRating = StarRating(rawValue: ratingValue) ?? .none
+                array[index].starRating = StarRating(rawValue: ratingValue) ?? .none
             }
             if sidecar.metadata.label != snapshot.label {
-                images[index].colorLabel = ColorLabel.fromMetadataLabel(sidecar.metadata.label)
+                array[index].colorLabel = ColorLabel.fromMetadataLabel(sidecar.metadata.label)
             }
         } else {
             if let ratingValue = sidecar.metadata.rating {
-                images[index].starRating = StarRating(rawValue: ratingValue) ?? .none
+                array[index].starRating = StarRating(rawValue: ratingValue) ?? .none
             }
-            images[index].colorLabel = ColorLabel.fromMetadataLabel(sidecar.metadata.label)
+            array[index].colorLabel = ColorLabel.fromMetadataLabel(sidecar.metadata.label)
         }
     }
 
@@ -1263,15 +1274,17 @@ final class BrowserViewModel {
     func refreshPendingStatus() {
         guard let folderURL = currentFolderURL else { return }
         let allSidecars = sidecarService.loadAllSidecars(in: folderURL)
-        for i in images.indices {
-            if let sidecar = allSidecars[images[i].url], sidecar.pendingChanges {
-                images[i].hasPendingMetadataChanges = true
-                images[i].pendingFieldNames = extractPendingFieldNames(from: sidecar)
+        var updated = images
+        for i in updated.indices {
+            if let sidecar = allSidecars[updated[i].url], sidecar.pendingChanges {
+                updated[i].hasPendingMetadataChanges = true
+                updated[i].pendingFieldNames = extractPendingFieldNames(from: sidecar)
             } else {
-                images[i].hasPendingMetadataChanges = false
-                images[i].pendingFieldNames = []
+                updated[i].hasPendingMetadataChanges = false
+                updated[i].pendingFieldNames = []
             }
         }
+        images = updated
     }
 
     func updatePendingStatus(for url: URL, hasPending: Bool) {
