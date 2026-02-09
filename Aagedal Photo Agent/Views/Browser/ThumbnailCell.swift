@@ -17,6 +17,7 @@ struct ThumbnailCell: View, Equatable {
     var onCopyFilePaths: (() -> Void)?
 
     @State private var thumbnail: NSImage?
+    @State private var lastLoadedSettings: CameraRawSettings?
     private let thumbnailSize = CGSize(width: 180, height: 140)
 
     static func == (lhs: ThumbnailCell, rhs: ThumbnailCell) -> Bool {
@@ -231,8 +232,10 @@ struct ThumbnailCell: View, Equatable {
             }
         }
         .task(id: taskKey) {
-            // Invalidate stale cache when settings change
-            thumbnailService.invalidateThumbnail(for: image.url)
+            if lastLoadedSettings != image.cameraRawSettings {
+                thumbnailService.invalidateThumbnail(for: image.url)
+                lastLoadedSettings = image.cameraRawSettings
+            }
             thumbnail = await thumbnailService.loadThumbnail(for: image.url, cameraRawSettings: image.cameraRawSettings)
         }
     }
