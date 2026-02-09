@@ -33,6 +33,7 @@ struct CameraRawSettings: Codable, Sendable, Equatable {
     var whites2012: Int?
     var blacks2012: Int?
     var saturation: Int?
+    var vibrance: Int?
     var hasSettings: Bool?
     var crop: CameraRawCrop?
 
@@ -51,6 +52,7 @@ struct CameraRawSettings: Codable, Sendable, Equatable {
             && whites2012 == nil
             && blacks2012 == nil
             && saturation == nil
+            && vibrance == nil
             && hasSettings == nil
             && (crop?.isEmpty ?? true)
     }
@@ -71,6 +73,7 @@ struct CameraRawSettings: Codable, Sendable, Equatable {
         if let value = override.whites2012 { result.whites2012 = value }
         if let value = override.blacks2012 { result.blacks2012 = value }
         if let value = override.saturation { result.saturation = value }
+        if let value = override.vibrance { result.vibrance = value }
         if let value = override.hasSettings { result.hasSettings = value }
         if let crop = override.crop {
             if let existing = result.crop {
