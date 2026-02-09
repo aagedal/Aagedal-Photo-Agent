@@ -613,6 +613,7 @@ final class BrowserViewModel {
             shadows2012: parseIntValue(dict[ExifToolReadKey.crsShadows2012]),
             whites2012: parseIntValue(dict[ExifToolReadKey.crsWhites2012]),
             blacks2012: parseIntValue(dict[ExifToolReadKey.crsBlacks2012]),
+            saturation: parseIntValue(dict[ExifToolReadKey.crsSaturation]),
             hasSettings: parseBoolValue(dict[ExifToolReadKey.crsHasSettings]),
             crop: cropValue
         )
