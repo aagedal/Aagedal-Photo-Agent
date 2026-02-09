@@ -1,6 +1,12 @@
 import Foundation
 import Vision
 import AppKit
+import os.log
+
+nonisolated(unsafe) private let knownPeopleLog = Logger(
+    subsystem: Bundle.main.bundleIdentifier ?? "AagedalPhotoAgent",
+    category: "KnownPeopleService"
+)
 
 @MainActor
 final class KnownPeopleService {
@@ -67,9 +73,19 @@ final class KnownPeopleService {
             database = loaded
             return loaded
         } catch {
-            print("⚠️ KnownPeopleService: Failed to load database: \(error.localizedDescription)")
-            // Return empty for operations but don't cache — avoids overwriting corrupted file on next save
-            return KnownPeopleDatabase()
+            knownPeopleLog.error("Failed to load database: \(error.localizedDescription, privacy: .public)")
+
+            // Backup the corrupted file before allowing it to be overwritten
+            let timestamp = ISO8601DateFormatter().string(from: Date())
+                .replacingOccurrences(of: ":", with: "-")
+            let backupURL = databaseFileURL.deletingLastPathComponent()
+                .appendingPathComponent("database.json.corrupt.\(timestamp)")
+            try? FileManager.default.copyItem(at: databaseFileURL, to: backupURL)
+            knownPeopleLog.warning("Backed up corrupted database to \(backupURL.lastPathComponent, privacy: .public)")
+
+            let empty = KnownPeopleDatabase()
+            database = empty
+            return empty
         }
     }
 
@@ -79,7 +95,7 @@ final class KnownPeopleService {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(db)
-        try data.write(to: databaseFileURL)
+        try data.write(to: databaseFileURL, options: .atomic)
         NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
     }
 

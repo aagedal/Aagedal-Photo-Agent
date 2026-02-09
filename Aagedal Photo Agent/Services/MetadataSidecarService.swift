@@ -126,7 +126,7 @@ struct MetadataSidecarService: Sendable {
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(updatedSidecar)
         let currentURL = sidecarFileURL(for: imageURL, in: folderURL)
-        try data.write(to: currentURL)
+        try data.write(to: currentURL, options: .atomic)
 
         let legacyURL = legacySidecarFileURL(for: imageURL, in: folderURL)
         if legacyURL != currentURL,
