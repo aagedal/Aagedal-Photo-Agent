@@ -21,6 +21,7 @@ struct MetadataPanel: View {
     @FocusState private var focusedField: String?
     @State private var c2paOverwriteIntent: C2PAOverwriteIntent?
     @State private var pendingC2PASelection: [URL] = []
+    @State private var commitDebounceTask: Task<Void, Never>?
 
     enum ListFileTarget {
         case keywords
@@ -382,7 +383,12 @@ struct MetadataPanel: View {
         }
         .onChange(of: focusedField) { oldValue, newValue in
             guard oldValue != nil, oldValue != newValue else { return }
-            commitEdits()
+            commitDebounceTask?.cancel()
+            commitDebounceTask = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(200))
+                guard !Task.isCancelled else { return }
+                commitEdits()
+            }
         }
     }
 
