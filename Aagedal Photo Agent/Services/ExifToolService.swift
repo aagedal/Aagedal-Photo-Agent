@@ -51,6 +51,7 @@ enum ExifToolReadKey {
     static let crsWhites2012 = "Whites2012"
     static let crsBlacks2012 = "Blacks2012"
     static let crsSaturation = "Saturation"
+    static let crsVibrance = "Vibrance"
     static let crsHasSettings = "HasSettings"
     static let crsCropTop = "CropTop"
     static let crsCropLeft = "CropLeft"
@@ -349,6 +350,7 @@ final class ExifToolService {
             "-XMP-crs:IncrementalTemperature",
             "-XMP-crs:IncrementalTint",
             "-XMP-crs:Saturation",
+            "-XMP-crs:Vibrance",
             "-XMP-crs:CropTop",
             "-XMP-crs:CropLeft",
             "-XMP-crs:CropBottom",
@@ -437,6 +439,7 @@ final class ExifToolService {
             whites2012: parseIntValue(dict[ExifToolReadKey.crsWhites2012]),
             blacks2012: parseIntValue(dict[ExifToolReadKey.crsBlacks2012]),
             saturation: parseIntValue(dict[ExifToolReadKey.crsSaturation]),
+            vibrance: parseIntValue(dict[ExifToolReadKey.crsVibrance]),
             hasSettings: parseBoolValue(dict[ExifToolReadKey.crsHasSettings]),
             crop: cropValue
         )

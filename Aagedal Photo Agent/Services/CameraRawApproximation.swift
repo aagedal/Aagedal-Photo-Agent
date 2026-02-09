@@ -68,6 +68,13 @@ enum CameraRawApproximation {
             }
         }
 
+        if let vib = settings.vibrance, vib != 0 {
+            let amount = min(max(Double(vib) / 100.0, -1.0), 1.0)
+            output = applyFilter(named: "CIVibrance", input: output, values: [
+                "inputAmount": amount,
+            ]) ?? output
+        }
+
         if let sat = settings.saturation, sat != 0 {
             let saturation = min(max(1.0 + Double(sat) / 100.0, 0.0), 2.0)
             output = applyFilter(named: "CIColorControls", input: output, values: [
