@@ -68,6 +68,13 @@ enum CameraRawApproximation {
             }
         }
 
+        if let sat = settings.saturation, sat != 0 {
+            let saturation = min(max(1.0 + Double(sat) / 100.0, 0.0), 2.0)
+            output = applyFilter(named: "CIColorControls", input: output, values: [
+                kCIInputSaturationKey: saturation,
+            ]) ?? output
+        }
+
         if let target = temperatureTintTarget(for: settings) {
             output = applyFilter(named: "CITemperatureAndTint", input: output, values: [
                 "inputNeutral": CIVector(x: target.temperature, y: target.tint),
