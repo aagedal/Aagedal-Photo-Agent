@@ -283,6 +283,8 @@ final class SettingsViewModel {
     }
 
     var quickListVersion: Int = 0
+    @ObservationIgnored private var quickListCache: [String: [String]] = [:]
+    @ObservationIgnored private var cachedQuickListVersion: Int = -1
     var keywordsListPath: String = ""
     var personShownListPath: String = ""
     var copyrightListPath: String = ""
@@ -696,17 +698,32 @@ final class SettingsViewModel {
     }
 
     private func loadListFromBookmark(key: String) -> [String] {
-        guard let url = resolveBookmark(key: key) else { return [] }
-        guard url.startAccessingSecurityScopedResource() else { return [] }
+        if cachedQuickListVersion == quickListVersion, let cached = quickListCache[key] {
+            return cached
+        }
+        if cachedQuickListVersion != quickListVersion {
+            quickListCache.removeAll()
+            cachedQuickListVersion = quickListVersion
+        }
+        guard let url = resolveBookmark(key: key) else {
+            quickListCache[key] = []
+            return []
+        }
+        guard url.startAccessingSecurityScopedResource() else {
+            quickListCache[key] = []
+            return []
+        }
         defer { url.stopAccessingSecurityScopedResource() }
-
         do {
             let content = try String(contentsOf: url, encoding: .utf8)
-            return content
+            let list = content
                 .components(separatedBy: .newlines)
                 .map { $0.trimmingCharacters(in: .whitespaces) }
                 .filter { !$0.isEmpty }
+            quickListCache[key] = list
+            return list
         } catch {
+            quickListCache[key] = []
             return []
         }
     }
