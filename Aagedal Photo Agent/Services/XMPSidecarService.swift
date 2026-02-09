@@ -280,7 +280,7 @@ struct XMPSidecarService: Sendable {
         setSimple(on: description, prefix: "crs", localName: "CropLeft", value: crop?.left.map { formatUnsignedDouble($0, precision: 6) })
         setSimple(on: description, prefix: "crs", localName: "CropBottom", value: crop?.bottom.map { formatUnsignedDouble($0, precision: 6) })
         setSimple(on: description, prefix: "crs", localName: "CropRight", value: crop?.right.map { formatUnsignedDouble($0, precision: 6) })
-        setSimple(on: description, prefix: "crs", localName: "CropAngle", value: crop?.angle.map { formatUnsignedDouble($0, precision: 2) })
+        setSimple(on: description, prefix: "crs", localName: "CropAngle", value: crop?.angle.map { formatUnsignedDouble($0, precision: 6) })
         setSimple(on: description, prefix: "crs", localName: "HasCrop", value: hasCrop.map(formatBool))
         setSimple(on: description, prefix: "crs", localName: "CropConstrainToWarp", value: hasCrop == true ? "0" : nil)
         setSimple(on: description, prefix: "crs", localName: "CropConstrainToUnitSquare", value: hasCrop == true ? "1" : nil)

@@ -925,7 +925,7 @@ final class MetadataViewModel {
             if let value = crop.left { fields[ExifToolWriteTag.crsCropLeft] = String(format: "%.6f", value) }
             if let value = crop.bottom { fields[ExifToolWriteTag.crsCropBottom] = String(format: "%.6f", value) }
             if let value = crop.right { fields[ExifToolWriteTag.crsCropRight] = String(format: "%.6f", value) }
-            if let value = crop.angle { fields[ExifToolWriteTag.crsCropAngle] = String(format: "%.2f", value) }
+            if let value = crop.angle { fields[ExifToolWriteTag.crsCropAngle] = String(format: "%.6f", value) }
             let hasCrop = crop.hasCrop ?? !crop.isEmpty
             fields[ExifToolWriteTag.crsHasCrop] = hasCrop ? "True" : "False"
             fields[ExifToolWriteTag.crsCropConstrainToWarp] = "0"

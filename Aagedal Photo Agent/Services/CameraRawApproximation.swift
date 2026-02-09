@@ -1,7 +1,13 @@
 import CoreImage
+import CoreGraphics
 
 enum CameraRawApproximation {
-    nonisolated(unsafe) static let ciContext = CIContext(options: [.cacheIntermediates: false])
+    nonisolated(unsafe) static let workingColorSpace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
+    nonisolated(unsafe) static let ciContext = CIContext(options: [
+        .cacheIntermediates: false,
+        .workingFormat: CIFormat.RGBAh,
+        .workingColorSpace: workingColorSpace,
+    ])
     nonisolated(unsafe) private static let minKelvin = 2000.0
     nonisolated(unsafe) private static let maxKelvin = 12000.0
 

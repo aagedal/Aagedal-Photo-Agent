@@ -407,8 +407,8 @@ struct EditWorkspaceView: View {
                         "Crop Rotation",
                         value: cropAngleBinding,
                         range: -45...45,
-                        step: 0.1,
-                        formatter: { signedDoubleString($0, precision: 1) },
+                        step: 0.01,
+                        formatter: { signedDoubleString($0, precision: 2) },
                         onReset: {
                             cropAngleBinding.wrappedValue = 0
                         }
@@ -567,7 +567,13 @@ struct EditWorkspaceView: View {
         previewRenderTask = Task {
             let rendered = await Task.detached(priority: .userInitiated) { () -> NSImage? in
                 let output = CameraRawApproximation.apply(to: source, settings: settings)
-                guard let cgImage = CameraRawApproximation.ciContext.createCGImage(output, from: output.extent) else {
+                let ctx = CameraRawApproximation.ciContext
+                guard let cgImage = ctx.createCGImage(
+                    output,
+                    from: output.extent,
+                    format: .RGBAh,
+                    colorSpace: CameraRawApproximation.workingColorSpace
+                ) else {
                     return nil
                 }
                 return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
@@ -993,7 +999,7 @@ struct EditWorkspaceView: View {
             cameraCrop.left = region.left
             cameraCrop.bottom = region.bottom
             cameraCrop.right = region.right
-            cameraCrop.angle = (clampedAngle * 100).rounded() / 100
+            cameraCrop.angle = (clampedAngle * 1000000).rounded() / 1000000
             cameraCrop.hasCrop = true
             cameraRaw.crop = cameraCrop
         }
