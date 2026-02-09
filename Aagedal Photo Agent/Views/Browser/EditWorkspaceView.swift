@@ -26,7 +26,6 @@ struct EditWorkspaceView: View {
 
     private static let minKelvin = 2000.0
     private static let maxKelvin = 12000.0
-    private static let toneLogCurveExponent = 2.2
 
     private var previewWorkingMaxPixelSize: CGFloat {
         let screenSize = NSScreen.main?.frame.size ?? CGSize(width: 1920, height: 1080)
@@ -745,58 +744,6 @@ struct EditWorkspaceView: View {
                 }
             }
         )
-    }
-
-    @ViewBuilder
-    private func logarithmicToneSliderRow(
-        _ label: String,
-        keyPath: WritableKeyPath<CameraRawSettings, Int?>
-    ) -> some View {
-        let displayFormatter: (Double) -> String = { _ in
-            let current = Double(metadataViewModel.editingMetadata.cameraRaw?[keyPath: keyPath] ?? 0)
-            return signedIntString(current)
-        }
-        sliderRow(
-            label,
-            value: logarithmicToneSliderBinding(keyPath),
-            range: -100...100,
-            step: 0.1,
-            formatter: displayFormatter,
-            onReset: {
-                toneSliderBinding(keyPath).wrappedValue = 0
-            }
-        )
-    }
-
-    private func logarithmicToneSliderBinding(_ keyPath: WritableKeyPath<CameraRawSettings, Int?>) -> Binding<Double> {
-        Binding(
-            get: {
-                let actual = Double(metadataViewModel.editingMetadata.cameraRaw?[keyPath: keyPath] ?? 0)
-                return sliderValueForTone(actual)
-            },
-            set: { sliderValue in
-                let actual = toneValueForSlider(sliderValue)
-                updateCameraRaw { cameraRaw in
-                    cameraRaw[keyPath: keyPath] = Int(actual.rounded())
-                }
-            }
-        )
-    }
-
-    private func sliderValueForTone(_ toneValue: Double) -> Double {
-        let clamped = min(max(toneValue, -100), 100)
-        let sign = clamped >= 0 ? 1.0 : -1.0
-        let normalized = abs(clamped) / 100.0
-        let sliderNormalized = pow(normalized, 1.0 / Self.toneLogCurveExponent)
-        return sign * sliderNormalized * 100.0
-    }
-
-    private func toneValueForSlider(_ sliderValue: Double) -> Double {
-        let clamped = min(max(sliderValue, -100), 100)
-        let sign = clamped >= 0 ? 1.0 : -1.0
-        let normalized = abs(clamped) / 100.0
-        let toneNormalized = pow(normalized, Self.toneLogCurveExponent)
-        return sign * toneNormalized * 100.0
     }
 
     private var exposureBinding: Binding<Double> {
