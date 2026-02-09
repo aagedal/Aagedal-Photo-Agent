@@ -1,4 +1,5 @@
 import AppKit
+import CoreImage
 import os.log
 
 nonisolated private let cacheLogger = Logger(subsystem: "com.aagedal.photo-agent", category: "FullScreenCache")
@@ -28,7 +29,7 @@ final class FullScreenImageCache: @unchecked Sendable {
 
     /// Prefetch adjacent images based on navigation direction.
     /// Loads 2 images ahead in travel direction and 1 behind, at utility priority.
-    nonisolated func startPrefetch(currentIndex: Int, images: [URL], direction: NavigationDirection, screenMaxPx: CGFloat) {
+    nonisolated func startPrefetch(currentIndex: Int, images: [URL], direction: NavigationDirection, screenMaxPx: CGFloat, settingsForURL: (@Sendable (URL) -> CameraRawSettings?)? = nil) {
         let ahead: [Int]
         let behind: [Int]
 
@@ -70,10 +71,17 @@ final class FullScreenImageCache: @unchecked Sendable {
                 let filename = url.lastPathComponent
                 cacheLogger.info("Prefetching \(filename)")
 
-                let image = Self.loadDownsampled(from: url, maxPixelSize: screenMaxPx)
-                guard !Task.isCancelled, let image else {
-                    cacheLogger.info("Prefetch cancelled or failed: \(filename)")
+                guard var image = Self.loadDownsampled(from: url, maxPixelSize: screenMaxPx) else {
+                    cacheLogger.info("Prefetch failed: \(filename)")
                     return
+                }
+                guard !Task.isCancelled else {
+                    cacheLogger.info("Prefetch cancelled: \(filename)")
+                    return
+                }
+
+                if let settings = settingsForURL?(url) {
+                    image = Self.applyCameraRaw(to: image, settings: settings)
                 }
 
                 self.store(image, for: url)
@@ -96,6 +104,25 @@ final class FullScreenImageCache: @unchecked Sendable {
             prefetchTasks.removeAll()
         }
         cacheLogger.info("All prefetch tasks cancelled")
+    }
+
+    // MARK: - CameraRaw Processing
+
+    nonisolated static func applyCameraRaw(to cgImage: CGImage, settings: CameraRawSettings) -> CGImage {
+        let ciImage = CIImage(cgImage: cgImage)
+        let processed = CameraRawApproximation.applyWithCrop(to: ciImage, settings: settings)
+        let extent = processed.extent
+        guard extent.width > 0, extent.height > 0 else { return cgImage }
+
+        guard let result = CameraRawApproximation.ciContext.createCGImage(
+            processed,
+            from: extent,
+            format: .RGBAh,
+            colorSpace: CameraRawApproximation.workingColorSpace
+        ) else {
+            return cgImage
+        }
+        return result
     }
 
     // MARK: - Shared Image Loading

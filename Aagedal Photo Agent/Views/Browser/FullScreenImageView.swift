@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import QuartzCore
 import ImageIO
+import CoreImage
 import os.log
 
 nonisolated private let imageLogger = Logger(subsystem: "com.aagedal.photo-agent", category: "ImageLoading")
@@ -563,6 +564,25 @@ struct FullScreenImageView: View {
         }
     }
 
+    /// Apply CameraRaw adjustments + crop to a CGImage, preserving HDR color space.
+    nonisolated private static func applyCameraRaw(to cgImage: CGImage, settings: CameraRawSettings?) -> CGImage {
+        guard let settings else { return cgImage }
+        let ciImage = CIImage(cgImage: cgImage)
+        let processed = CameraRawApproximation.applyWithCrop(to: ciImage, settings: settings)
+        let extent = processed.extent
+        guard extent.width > 0, extent.height > 0 else { return cgImage }
+
+        guard let result = CameraRawApproximation.ciContext.createCGImage(
+            processed,
+            from: extent,
+            format: .RGBAh,
+            colorSpace: CameraRawApproximation.workingColorSpace
+        ) else {
+            return cgImage
+        }
+        return result
+    }
+
     private func loadImage() async {
         let filename = currentImageFile?.url.lastPathComponent ?? "nil"
         imageLogger.info("loadImage called for \(filename)")
@@ -581,6 +601,8 @@ struct FullScreenImageView: View {
             return
         }
 
+        let cameraRaw = currentImageFile?.cameraRawSettings
+
         // Read source pixel dimensions (cheap metadata-only, no pixel decode)
         // EXIF orientations 5-8 swap width/height after transform
         if let source = CGImageSourceCreateWithURL(url as CFURL, nil),
@@ -589,9 +611,30 @@ struct FullScreenImageView: View {
            let ph = props[kCGImagePropertyPixelHeight] as? Int {
             let orientation = props[kCGImagePropertyOrientation] as? Int ?? 1
             let swapped = orientation >= 5 && orientation <= 8
-            sourcePixelSize = swapped
+            var rawSize = swapped
                 ? CGSize(width: CGFloat(ph), height: CGFloat(pw))
                 : CGSize(width: CGFloat(pw), height: CGFloat(ph))
+
+            // Adjust for crop if present
+            if let crop = cameraRaw?.crop, !(crop.isEmpty) {
+                let cropW = (crop.right ?? 1) - (crop.left ?? 0)
+                let cropH = (crop.bottom ?? 1) - (crop.top ?? 0)
+                if cropW > 0.01, cropH > 0.01 {
+                    let angle = crop.angle ?? 0
+                    if abs(angle) > 0.0001 {
+                        let radians = -angle * .pi / 180.0
+                        let aabbW = cropW * rawSize.width
+                        let aabbH = cropH * rawSize.height
+                        rawSize = CGSize(
+                            width: abs(aabbW * cos(radians) - aabbH * sin(radians)),
+                            height: abs(aabbW * sin(radians) + aabbH * cos(radians))
+                        )
+                    } else {
+                        rawSize = CGSize(width: cropW * rawSize.width, height: cropH * rawSize.height)
+                    }
+                }
+            }
+            sourcePixelSize = rawSize
         } else {
             sourcePixelSize = nil
         }
@@ -627,7 +670,8 @@ struct FullScreenImageView: View {
             // ImageIO thumbnail generation uses Default-QoS worker threads internally.
             // Running decode at .medium avoids user-initiated -> default QoS inversion warnings.
             let preview = await Task.detached(priority: .medium) {
-                FullScreenImageCache.extractEmbeddedPreview(from: url)
+                guard let raw = FullScreenImageCache.extractEmbeddedPreview(from: url) else { return nil as CGImage? }
+                return Self.applyCameraRaw(to: raw, settings: cameraRaw)
             }.value
             let previewElapsed = CFAbsoluteTimeGetCurrent() - previewStart
             if let preview {
@@ -640,7 +684,8 @@ struct FullScreenImageView: View {
             // Non-RAW: quick downsample at logical resolution (no Retina multiplier)
             let previewStart = CFAbsoluteTimeGetCurrent()
             let preview = await Task.detached(priority: .medium) {
-                FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: screenLogicalPx)
+                guard let raw = FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: screenLogicalPx) else { return nil as CGImage? }
+                return Self.applyCameraRaw(to: raw, settings: cameraRaw)
             }.value
             let previewElapsed = CFAbsoluteTimeGetCurrent() - previewStart
             guard !Task.isCancelled else { return }
@@ -654,7 +699,13 @@ struct FullScreenImageView: View {
         let fullStart = CFAbsoluteTimeGetCurrent()
         imageLogger.info("\(filename): Phase 2 starting (retina resolution)")
         fullLoadTask = Task.detached(priority: .medium) {
-            let image = FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: screenMaxPx)
+            guard var image = FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: screenMaxPx) else {
+                await MainActor.run {
+                    if currentImageFile?.url == url { isLoading = false }
+                }
+                return
+            }
+            image = Self.applyCameraRaw(to: image, settings: cameraRaw)
             let fullElapsed = CFAbsoluteTimeGetCurrent() - fullStart
             guard !Task.isCancelled else {
                 imageLogger.info("\(filename): Phase 2 cancelled after \(String(format: "%.1f", fullElapsed * 1000))ms")
@@ -662,15 +713,10 @@ struct FullScreenImageView: View {
             }
             await MainActor.run {
                 if currentImageFile?.url == url {
-                    let w = image?.width ?? 0
-                    let h = image?.height ?? 0
-                    imageLogger.info("\(filename): Phase 2 done in \(String(format: "%.1f", fullElapsed * 1000))ms (\(w)x\(h))")
-                    currentImage = image.map { makeLoadedImage(from: $0) }
+                    imageLogger.info("\(filename): Phase 2 done in \(String(format: "%.1f", fullElapsed * 1000))ms (\(image.width)x\(image.height))")
+                    currentImage = makeLoadedImage(from: image)
                     isLoading = false
-                    // Store in cache and trigger prefetch
-                    if let image {
-                        imageCache.store(image, for: url)
-                    }
+                    imageCache.store(image, for: url)
                     triggerPrefetch(for: url)
                 } else {
                     imageLogger.info("\(filename): Phase 2 done but image changed, discarding")
@@ -693,13 +739,15 @@ struct FullScreenImageView: View {
         guard fullResTask == nil else { return }
 
         let filename = url.lastPathComponent
+        let cameraRaw = currentImageFile?.cameraRawSettings
         imageLogger.info("\(filename): Loading full resolution for zoom")
         isLoading = true
         fullResTask = Task.detached(priority: .medium) {
             let fullStart = CFAbsoluteTimeGetCurrent()
-            let image = FullScreenImageCache.loadFullResolution(from: url)
+            guard var image = FullScreenImageCache.loadFullResolution(from: url) else { return }
+            image = Self.applyCameraRaw(to: image, settings: cameraRaw)
             let elapsed = CFAbsoluteTimeGetCurrent() - fullStart
-            guard !Task.isCancelled, let image else { return }
+            guard !Task.isCancelled else { return }
             await MainActor.run {
                 guard currentImageFile?.url == url else { return }
                 imageLogger.info("\(filename): Full resolution loaded in \(String(format: "%.1f", elapsed * 1000))ms (\(image.width)x\(image.height))")
@@ -729,13 +777,26 @@ struct FullScreenImageView: View {
 
         let screenScale = NSScreen.main?.backingScaleFactor ?? 2.0
         let screenMaxPx = max(NSScreen.main?.frame.width ?? 3840, NSScreen.main?.frame.height ?? 2160) * screenScale
-        let imageURLs = viewModel.visibleImages.map(\.url)
+        let visibleImages = viewModel.visibleImages
+        let imageURLs = visibleImages.map(\.url)
+
+        // Build a lookup of CameraRaw settings for prefetch processing
+        let settingsLookup: [URL: CameraRawSettings] = {
+            var dict: [URL: CameraRawSettings] = [:]
+            for image in visibleImages {
+                if let settings = image.cameraRawSettings {
+                    dict[image.url] = settings
+                }
+            }
+            return dict
+        }()
 
         imageCache.startPrefetch(
             currentIndex: currentIndex,
             images: imageURLs,
             direction: direction,
-            screenMaxPx: screenMaxPx
+            screenMaxPx: screenMaxPx,
+            settingsForURL: { url in settingsLookup[url] }
         )
     }
 

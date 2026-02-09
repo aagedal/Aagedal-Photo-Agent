@@ -36,7 +36,7 @@ struct EditFilmstripItemView: View {
                 .frame(width: 94)
         }
         .task(id: image.url) {
-            thumbnail = await thumbnailService.loadThumbnail(for: image.url)
+            thumbnail = await thumbnailService.loadThumbnail(for: image.url, cameraRawSettings: image.cameraRawSettings)
         }
     }
 }
