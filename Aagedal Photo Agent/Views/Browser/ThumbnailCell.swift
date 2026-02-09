@@ -1,6 +1,11 @@
 import SwiftUI
 import AppKit
 
+private struct ThumbnailTaskKey: Equatable {
+    let url: URL
+    let settings: CameraRawSettings?
+}
+
 struct ThumbnailCell: View, Equatable {
     let image: ImageFile
     let isSelected: Bool
@@ -22,7 +27,7 @@ struct ThumbnailCell: View, Equatable {
             && lhs.image.hasC2PA == rhs.image.hasC2PA
             && lhs.image.hasDevelopEdits == rhs.image.hasDevelopEdits
             && lhs.image.hasCropEdits == rhs.image.hasCropEdits
-            && lhs.image.cropRegion == rhs.image.cropRegion
+            && lhs.image.cameraRawSettings == rhs.image.cameraRawSettings
             && lhs.image.hasPendingMetadataChanges == rhs.image.hasPendingMetadataChanges
             && lhs.image.pendingFieldNames == rhs.image.pendingFieldNames
     }
@@ -32,6 +37,10 @@ struct ThumbnailCell: View, Equatable {
             return "Pending metadata changes"
         }
         return "Pending: " + image.pendingFieldNames.joined(separator: ", ")
+    }
+
+    private var taskKey: ThumbnailTaskKey {
+        ThumbnailTaskKey(url: image.url, settings: image.cameraRawSettings)
     }
 
     var body: some View {
@@ -55,17 +64,6 @@ struct ThumbnailCell: View, Equatable {
                 }
                 .frame(width: 180, height: 140)
                 .clipShape(RoundedRectangle(cornerRadius: 4))
-                .overlay {
-                    if image.hasCropEdits,
-                       let crop = image.cropRegion,
-                       let thumbnail {
-                        CropThumbnailOverlay(
-                            crop: crop,
-                            imageSize: thumbnail.size,
-                            containerSize: thumbnailSize
-                        )
-                    }
-                }
 
                 // C2PA / edited / crop badges (top right)
                 if image.hasC2PA || image.hasDevelopEdits || image.hasCropEdits || image.hasPendingMetadataChanges {
@@ -232,60 +230,10 @@ struct ThumbnailCell: View, Equatable {
                 Label("Move to Trash", systemImage: "trash")
             }
         }
-        .task(id: image.url) {
-            thumbnail = await thumbnailService.loadThumbnail(for: image.url)
+        .task(id: taskKey) {
+            // Invalidate stale cache when settings change
+            thumbnailService.invalidateThumbnail(for: image.url)
+            thumbnail = await thumbnailService.loadThumbnail(for: image.url, cameraRawSettings: image.cameraRawSettings)
         }
-    }
-}
-
-private struct CropThumbnailOverlay: View {
-    let crop: ThumbnailCropRegion
-    let imageSize: CGSize
-    let containerSize: CGSize
-
-    var body: some View {
-        let fitted = fittedImageRect(in: containerSize, imageSize: imageSize)
-        let clamped = crop.clamped
-        let aabbW = max(1, (clamped.right - clamped.left) * fitted.width)
-        let aabbH = max(1, (clamped.bottom - clamped.top) * fitted.height)
-        let cx = fitted.minX + ((clamped.left + clamped.right) * 0.5 * fitted.width)
-        let cy = fitted.minY + ((clamped.top + clamped.bottom) * 0.5 * fitted.height)
-
-        // Project diagonal onto rotated axes to get actual crop dimensions
-        let radians = clamped.angle * Double.pi / 180.0
-        let cosA = cos(radians)
-        let sinA = sin(radians)
-        let w = max(1, abs(aabbW * cosA + aabbH * sinA))
-        let h = max(1, abs(-aabbW * sinA + aabbH * cosA))
-
-        ZStack {
-            Rectangle()
-                .strokeBorder(.white.opacity(0.95), lineWidth: 1)
-                .frame(width: w, height: h)
-                .rotationEffect(.degrees(clamped.angle))
-                .position(x: cx, y: cy)
-
-            Rectangle()
-                .strokeBorder(.black.opacity(0.65), lineWidth: 0.5)
-                .frame(width: w, height: h)
-                .rotationEffect(.degrees(clamped.angle))
-                .position(x: cx, y: cy)
-        }
-    }
-
-    private func fittedImageRect(in containerSize: CGSize, imageSize: CGSize) -> CGRect {
-        guard containerSize.width > 0,
-              containerSize.height > 0,
-              imageSize.width > 0,
-              imageSize.height > 0 else {
-            return CGRect(origin: .zero, size: containerSize)
-        }
-
-        let scale = min(containerSize.width / imageSize.width, containerSize.height / imageSize.height)
-        let width = imageSize.width * scale
-        let height = imageSize.height * scale
-        let x = (containerSize.width - width) * 0.5
-        let y = (containerSize.height - height) * 0.5
-        return CGRect(x: x, y: y, width: width, height: height)
     }
 }

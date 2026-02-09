@@ -1,5 +1,6 @@
 import AppKit
 import QuickLookThumbnailing
+import CoreImage
 
 @Observable
 final class ThumbnailService {
@@ -15,7 +16,7 @@ final class ThumbnailService {
         cache.object(forKey: url as NSURL)
     }
 
-    func loadThumbnail(for url: URL) async -> NSImage? {
+    func loadThumbnail(for url: URL, cameraRawSettings: CameraRawSettings? = nil) async -> NSImage? {
         if let cached = cache.object(forKey: url as NSURL) {
             return cached
         }
@@ -27,15 +28,24 @@ final class ThumbnailService {
 
         // Create and register a new task
         let task = Task<NSImage?, Never> {
-            if let image = await generateQLThumbnail(for: url) {
-                cache.setObject(image, forKey: url as NSURL)
-                return image
+            var image: NSImage?
+            if let ql = await generateQLThumbnail(for: url) {
+                image = ql
+            } else if let cg = loadCGImageSourceThumbnail(for: url) {
+                image = cg
             }
-            if let image = loadCGImageSourceThumbnail(for: url) {
-                cache.setObject(image, forKey: url as NSURL)
-                return image
+
+            guard let image else { return nil as NSImage? }
+
+            if let settings = cameraRawSettings, !settings.isEmpty {
+                if let processed = applyCameraRaw(to: image, settings: settings) {
+                    cache.setObject(processed, forKey: url as NSURL)
+                    return processed
+                }
             }
-            return nil
+
+            cache.setObject(image, forKey: url as NSURL)
+            return image
         }
 
         inFlightTasks[url] = task
@@ -75,6 +85,26 @@ final class ThumbnailService {
         }
 
         return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+    }
+
+    nonisolated private func applyCameraRaw(to nsImage: NSImage, settings: CameraRawSettings) -> NSImage? {
+        guard let cgImage = nsImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            return nil
+        }
+        let ciImage = CIImage(cgImage: cgImage)
+        let processed = CameraRawApproximation.applyWithCrop(to: ciImage, settings: settings)
+        let extent = processed.extent
+        guard extent.width > 0, extent.height > 0 else { return nil }
+
+        guard let outputCG = CameraRawApproximation.ciContext.createCGImage(
+            processed,
+            from: extent,
+            format: .RGBA8,
+            colorSpace: CGColorSpaceCreateDeviceRGB()
+        ) else {
+            return nil
+        }
+        return NSImage(cgImage: outputCG, size: NSSize(width: outputCG.width, height: outputCG.height))
     }
 
     func invalidateThumbnail(for url: URL) {

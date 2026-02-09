@@ -320,6 +320,7 @@ final class BrowserViewModel {
                     updated.hasDevelopEdits = existing.hasDevelopEdits
                     updated.hasCropEdits = existing.hasCropEdits
                     updated.cropRegion = existing.cropRegion
+                    updated.cameraRawSettings = existing.cameraRawSettings
                     updated.hasPendingMetadataChanges = existing.hasPendingMetadataChanges
                     updated.pendingFieldNames = existing.pendingFieldNames
                     updated.metadata = existing.metadata
@@ -407,6 +408,7 @@ final class BrowserViewModel {
                         images[index].hasDevelopEdits = hasDevelopEdits(in: dict)
                         images[index].hasCropEdits = hasCropEdits(in: dict)
                         images[index].cropRegion = cropRegion(in: dict)
+                        images[index].cameraRawSettings = cameraRawSettings(in: dict)
                         applyPendingSidecarOverrides(for: sourceURL, index: index, cachedSidecar: cachedSidecars[sourceURL])
                     }
                 }
@@ -459,6 +461,7 @@ final class BrowserViewModel {
                         images[index].hasDevelopEdits = hasDevelopEdits(in: dict)
                         images[index].hasCropEdits = hasCropEdits(in: dict)
                         images[index].cropRegion = cropRegion(in: dict)
+                        images[index].cameraRawSettings = cameraRawSettings(in: dict)
                         applyPendingSidecarOverrides(for: sourceURL, index: index)
                     }
                 }
@@ -573,6 +576,47 @@ final class BrowserViewModel {
             return Double(stringValue.trimmingCharacters(in: .whitespacesAndNewlines))
         }
         return nil
+    }
+
+    private func parseIntValue(_ value: Any?) -> Int? {
+        if let intValue = value as? Int { return intValue }
+        if let doubleValue = value as? Double { return Int(doubleValue) }
+        if let number = value as? NSNumber { return number.intValue }
+        if let stringValue = value as? String {
+            return Int(stringValue.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return nil
+    }
+
+    private func cameraRawSettings(in dict: [String: Any]) -> CameraRawSettings? {
+        let crop = CameraRawCrop(
+            top: parseDoubleValue(dict[ExifToolReadKey.crsCropTop]),
+            left: parseDoubleValue(dict[ExifToolReadKey.crsCropLeft]),
+            bottom: parseDoubleValue(dict[ExifToolReadKey.crsCropBottom]),
+            right: parseDoubleValue(dict[ExifToolReadKey.crsCropRight]),
+            angle: parseDoubleValue(dict[ExifToolReadKey.crsCropAngle]),
+            hasCrop: parseBoolValue(dict[ExifToolReadKey.crsHasCrop])
+        )
+        let cropValue = crop.isEmpty ? nil : crop
+
+        let settings = CameraRawSettings(
+            version: dict[ExifToolReadKey.crsVersion] as? String,
+            processVersion: dict[ExifToolReadKey.crsProcessVersion] as? String,
+            whiteBalance: dict[ExifToolReadKey.crsWhiteBalance] as? String,
+            temperature: parseIntValue(dict[ExifToolReadKey.crsTemperature]),
+            tint: parseIntValue(dict[ExifToolReadKey.crsTint]),
+            incrementalTemperature: parseIntValue(dict[ExifToolReadKey.crsIncrementalTemperature]),
+            incrementalTint: parseIntValue(dict[ExifToolReadKey.crsIncrementalTint]),
+            exposure2012: parseDoubleValue(dict[ExifToolReadKey.crsExposure2012]),
+            contrast2012: parseIntValue(dict[ExifToolReadKey.crsContrast2012]),
+            highlights2012: parseIntValue(dict[ExifToolReadKey.crsHighlights2012]),
+            shadows2012: parseIntValue(dict[ExifToolReadKey.crsShadows2012]),
+            whites2012: parseIntValue(dict[ExifToolReadKey.crsWhites2012]),
+            blacks2012: parseIntValue(dict[ExifToolReadKey.crsBlacks2012]),
+            hasSettings: parseBoolValue(dict[ExifToolReadKey.crsHasSettings]),
+            crop: cropValue
+        )
+        return settings.isEmpty ? nil : settings
     }
 
     // MARK: - Arrow Key Navigation

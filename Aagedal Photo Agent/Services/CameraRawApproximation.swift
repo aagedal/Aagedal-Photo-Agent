@@ -78,6 +78,71 @@ enum CameraRawApproximation {
         return output
     }
 
+    /// Applies tonal adjustments + crop/rotation in one pass.
+    nonisolated static func applyWithCrop(to input: CIImage, settings: CameraRawSettings?) -> CIImage {
+        guard let settings else { return input }
+        let originalExtent = input.extent
+        let adjusted = apply(to: input, settings: settings)
+        return applyCrop(to: adjusted, originalExtent: originalExtent, settings: settings)
+    }
+
+    /// Applies crop and rotation from CameraRawSettings to a CIImage.
+    nonisolated static func applyCrop(to input: CIImage, originalExtent: CGRect, settings: CameraRawSettings?) -> CIImage {
+        guard let crop = settings?.crop else { return input }
+        let hasCrop = crop.hasCrop ?? false
+        let angle = crop.angle ?? 0
+
+        // Inline clamping to avoid calling MainActor-isolated NormalizedCropRegion.clamped()
+        let regionTop = min(max(crop.top ?? 0, 0), 1)
+        let regionLeft = min(max(crop.left ?? 0, 0), 1)
+        let regionBottom = min(max(crop.bottom ?? 1, 0), 1)
+        let regionRight = min(max(crop.right ?? 1, 0), 1)
+
+        let epsilon = 0.0001
+        let hasNonDefaultBounds = abs(regionTop) > epsilon
+            || abs(regionLeft) > epsilon
+            || abs(regionBottom - 1) > epsilon
+            || abs(regionRight - 1) > epsilon
+        let hasRotation = abs(angle) > epsilon
+
+        guard hasCrop || hasNonDefaultBounds || hasRotation else { return input }
+        guard regionRight > regionLeft, regionBottom > regionTop else { return input }
+
+        let extent = originalExtent
+        let x = extent.minX + (regionLeft * extent.width)
+        let y = extent.minY + ((1 - regionBottom) * extent.height)
+        let width = (regionRight - regionLeft) * extent.width
+        let height = (regionBottom - regionTop) * extent.height
+        let cropRect = CGRect(x: x, y: y, width: width, height: height).intersection(input.extent)
+        guard !cropRect.isNull, cropRect.width > 1, cropRect.height > 1 else { return input }
+
+        guard hasRotation else {
+            return input.cropped(to: cropRect)
+        }
+
+        let radians = CGFloat(-angle * .pi / 180.0)
+        let cosA = cos(radians)
+        let sinA = sin(radians)
+        let actualWidth = abs(width * cosA - height * sinA)
+        let actualHeight = abs(width * sinA + height * cosA)
+
+        let center = CGPoint(x: cropRect.midX, y: cropRect.midY)
+        let transform = CGAffineTransform(translationX: center.x, y: center.y)
+            .rotated(by: radians)
+            .translatedBy(x: -center.x, y: -center.y)
+
+        let rotated = input.transformed(by: transform)
+        let actualCropRect = CGRect(
+            x: center.x - actualWidth / 2,
+            y: center.y - actualHeight / 2,
+            width: actualWidth,
+            height: actualHeight
+        ).intersection(rotated.extent)
+        guard !actualCropRect.isNull, actualCropRect.width > 1, actualCropRect.height > 1 else { return input }
+
+        return rotated.cropped(to: actualCropRect)
+    }
+
     nonisolated private static func applyFilter(named name: String, input: CIImage, values: [String: Any]) -> CIImage? {
         guard let filter = CIFilter(name: name) else { return nil }
         filter.setValue(input, forKey: kCIInputImageKey)

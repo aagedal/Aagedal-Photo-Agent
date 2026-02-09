@@ -33,6 +33,7 @@ struct ImageFile: Identifiable, Hashable, Sendable {
     var hasDevelopEdits: Bool
     var hasCropEdits: Bool
     var cropRegion: ThumbnailCropRegion?
+    var cameraRawSettings: CameraRawSettings?
     var hasPendingMetadataChanges: Bool
     var pendingFieldNames: [String] = []
     var metadata: IPTCMetadata?
@@ -53,6 +54,7 @@ struct ImageFile: Identifiable, Hashable, Sendable {
         self.hasDevelopEdits = false
         self.hasCropEdits = false
         self.cropRegion = nil
+        self.cameraRawSettings = nil
         self.hasPendingMetadataChanges = false
         self.metadata = nil
         self.personShown = []

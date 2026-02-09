@@ -334,6 +334,7 @@ final class ExifToolService {
             "-XMP-iptcExt:PersonInImage",
             "-XMP-crs:Version",
             "-XMP-crs:ProcessVersion",
+            "-XMP-crs:WhiteBalance",
             "-XMP-crs:HasSettings",
             "-XMP-crs:HasCrop",
             "-XMP-crs:Exposure2012",
