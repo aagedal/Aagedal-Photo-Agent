@@ -378,15 +378,21 @@ struct EditWorkspaceView: View {
                         }
                     )
 
-                    logarithmicToneSliderRow("Contrast", keyPath: \.contrast2012)
+                    sliderRow("Contrast", value: toneSliderBinding(\.contrast2012), range: -100...100, step: 1, formatter: signedIntString, onReset: {
+                        toneSliderBinding(\.contrast2012).wrappedValue = 0
+                    })
                     sliderRow("Highlights", value: toneSliderBinding(\.highlights2012), range: -100...100, step: 1, formatter: signedIntString, onReset: {
                         toneSliderBinding(\.highlights2012).wrappedValue = 0
                     })
                     sliderRow("Shadows", value: toneSliderBinding(\.shadows2012), range: -100...100, step: 1, formatter: signedIntString, onReset: {
                         toneSliderBinding(\.shadows2012).wrappedValue = 0
                     })
-                    logarithmicToneSliderRow("Whites", keyPath: \.whites2012)
-                    logarithmicToneSliderRow("Blacks", keyPath: \.blacks2012)
+                    sliderRow("Whites", value: toneSliderBinding(\.whites2012), range: -100...100, step: 1, formatter: signedIntString, onReset: {
+                        toneSliderBinding(\.whites2012).wrappedValue = 0
+                    })
+                    sliderRow("Blacks", value: toneSliderBinding(\.blacks2012), range: -100...100, step: 1, formatter: signedIntString, onReset: {
+                        toneSliderBinding(\.blacks2012).wrappedValue = 0
+                    })
 
                     HStack {
                         Button(isCropEnabled ? "Disable Crop" : "Enable Crop") {
