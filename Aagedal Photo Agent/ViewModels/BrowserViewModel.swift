@@ -115,7 +115,7 @@ final class BrowserViewModel {
             || personShownFilter != .any
     }
 
-    private(set) var selectedImagesCache: [ImageFile] = []
+    @ObservationIgnored private(set) var selectedImagesCache: [ImageFile] = []
 
     init() {
         if let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.thumbnailSortOrder),

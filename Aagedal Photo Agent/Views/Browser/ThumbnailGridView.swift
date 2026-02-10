@@ -119,13 +119,11 @@ struct ThumbnailGridView: View {
 
     @ViewBuilder
     private func makeThumbnailCell(for image: ImageFile) -> some View {
-        let selectedURLs = viewModel.selectedImageIDs.contains(image.url)
-            ? viewModel.selectedImages.map(\.url)
-            : [image.url]
+        let isSelected = viewModel.selectedImageIDs.contains(image.url)
 
         let baseCell = ThumbnailCell(
             image: image,
-            isSelected: viewModel.selectedImageIDs.contains(image.url),
+            isSelected: isSelected,
             thumbnailService: viewModel.thumbnailService,
             thumbnailScale: viewModel.thumbnailScale,
             onDelete: {
@@ -139,6 +137,9 @@ struct ThumbnailGridView: View {
                 viewModel.promptAddSelectedImagesToSubfolder()
             },
             onRevealInFinder: {
+                let selectedURLs = viewModel.selectedImageIDs.contains(image.url)
+                    ? viewModel.selectedImages.map(\.url)
+                    : [image.url]
                 if selectedURLs.count > 1 {
                     NSWorkspace.shared.activateFileViewerSelecting(selectedURLs)
                 } else {
@@ -146,6 +147,9 @@ struct ThumbnailGridView: View {
                 }
             },
             onOpenInExternalEditor: {
+                let selectedURLs = viewModel.selectedImageIDs.contains(image.url)
+                    ? viewModel.selectedImages.map(\.url)
+                    : [image.url]
                 if let editorPath = UserDefaults.standard.string(forKey: UserDefaultsKeys.defaultExternalEditor),
                    !editorPath.isEmpty {
                     NSWorkspace.shared.open(
@@ -156,6 +160,9 @@ struct ThumbnailGridView: View {
                 }
             },
             onCopyFilePaths: {
+                let selectedURLs = viewModel.selectedImageIDs.contains(image.url)
+                    ? viewModel.selectedImages.map(\.url)
+                    : [image.url]
                 let paths = selectedURLs.map(\.path).joined(separator: "\n")
                 let pasteboard = NSPasteboard.general
                 pasteboard.clearContents()
