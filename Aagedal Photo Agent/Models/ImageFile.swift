@@ -23,6 +23,7 @@ struct ImageFile: Identifiable, Hashable, Sendable {
     var id: URL { url }
     let url: URL
     let filename: String
+    let filenameLowercased: String
     let fileType: UTType?
     let fileSize: Int64
     let dateModified: Date
@@ -42,6 +43,7 @@ struct ImageFile: Identifiable, Hashable, Sendable {
     init(url: URL) {
         self.url = url
         self.filename = url.lastPathComponent
+        self.filenameLowercased = url.lastPathComponent.lowercased()
         self.fileType = UTType(filenameExtension: url.pathExtension)
 
         let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])

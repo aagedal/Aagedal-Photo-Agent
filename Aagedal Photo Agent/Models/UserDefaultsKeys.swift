@@ -47,6 +47,7 @@ enum UserDefaultsKeys {
 
     // MARK: - Browser
     static let thumbnailSortOrder = "thumbnailSortOrder"
+    static let thumbnailScale = "thumbnailScale"
 
     // MARK: - Quick List Bookmarks
     static let keywordsListBookmark = "keywordsListBookmark"

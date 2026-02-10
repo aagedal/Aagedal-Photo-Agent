@@ -10,6 +10,7 @@ struct ThumbnailCell: View, Equatable {
     let image: ImageFile
     let isSelected: Bool
     let thumbnailService: ThumbnailService
+    var thumbnailScale: Double = 1.0
     var onDelete: (() -> Void)?
     var onAddToSubfolder: (() -> Void)?
     var onRevealInFinder: (() -> Void)?
@@ -18,11 +19,15 @@ struct ThumbnailCell: View, Equatable {
 
     @State private var thumbnail: NSImage?
     @State private var lastLoadedSettings: CameraRawSettings?
-    private let thumbnailSize = CGSize(width: 180, height: 140)
+
+    private var thumbnailSize: CGSize {
+        CGSize(width: 180 * thumbnailScale, height: 140 * thumbnailScale)
+    }
 
     static func == (lhs: ThumbnailCell, rhs: ThumbnailCell) -> Bool {
         lhs.image.url == rhs.image.url
             && lhs.isSelected == rhs.isSelected
+            && lhs.thumbnailScale == rhs.thumbnailScale
             && lhs.image.starRating == rhs.image.starRating
             && lhs.image.colorLabel == rhs.image.colorLabel
             && lhs.image.hasC2PA == rhs.image.hasC2PA
@@ -63,7 +68,7 @@ struct ThumbnailCell: View, Equatable {
                             }
                     }
                 }
-                .frame(width: 180, height: 140)
+                .frame(width: thumbnailSize.width, height: thumbnailSize.height)
                 .clipShape(RoundedRectangle(cornerRadius: 4))
 
                 // C2PA / edited / crop badges (top right)
@@ -124,7 +129,7 @@ struct ThumbnailCell: View, Equatable {
                 RoundedRectangle(cornerRadius: 2)
                     .fill(color)
                     .frame(height: 4)
-                    .frame(maxWidth: 180)
+                    .frame(maxWidth: thumbnailSize.width)
             }
 
             // Filename
@@ -132,7 +137,7 @@ struct ThumbnailCell: View, Equatable {
                 .font(.caption)
                 .lineLimit(1)
                 .truncationMode(.middle)
-                .frame(maxWidth: 180)
+                .frame(maxWidth: thumbnailSize.width)
 
             // Star rating + color label
             HStack(spacing: 4) {

@@ -7,7 +7,8 @@ final class BrowserViewModel {
     var images: [ImageFile] = [] {
         didSet {
             urlToImageIndex = Dictionary(uniqueKeysWithValues: images.enumerated().map { ($1.url, $0) })
-            rebuildSortedCache()
+            let sameSet = images.count == oldValue.count
+            rebuildSortedCache(forceSort: !sameSet)
         }
     }
     var selectedImageIDs: Set<URL> = [] {
@@ -77,6 +78,12 @@ final class BrowserViewModel {
         didSet { scheduleFilterRebuild() }
     }
 
+    var thumbnailScale: Double = 1.0 {
+        didSet {
+            UserDefaults.standard.set(thumbnailScale, forKey: UserDefaultsKeys.thumbnailScale)
+        }
+    }
+
     var copiedCameraRawSettings: CameraRawSettings?
 
     let fileSystemService = FileSystemService()
@@ -115,6 +122,10 @@ final class BrowserViewModel {
            let stored = SortOrder(rawValue: raw) {
             sortOrder = stored
         }
+        let storedScale = UserDefaults.standard.double(forKey: UserDefaultsKeys.thumbnailScale)
+        if storedScale >= 0.5 && storedScale <= 2.0 {
+            thumbnailScale = storedScale
+        }
     }
 
     var selectedImages: [ImageFile] { selectedImagesCache }
@@ -125,39 +136,46 @@ final class BrowserViewModel {
         return nil
     }
 
-    private func rebuildSortedCache() {
-        let sorted: [ImageFile]
-        switch sortOrder {
-        case .name:
-            sorted = images.sorted { $0.filename.localizedStandardCompare($1.filename) == .orderedAscending }
-        case .dateModified:
-            sorted = images.sorted { $0.dateModified > $1.dateModified }
-        case .rating:
-            sorted = images.sorted { $0.starRating.rawValue > $1.starRating.rawValue }
-        case .label:
-            sorted = images.sorted { ($0.colorLabel.shortcutIndex ?? 0) < ($1.colorLabel.shortcutIndex ?? 0) }
-        case .fileType:
-            sorted = images.sorted {
-                let ext0 = $0.url.pathExtension.lowercased()
-                let ext1 = $1.url.pathExtension.lowercased()
-                if ext0 != ext1 {
-                    return ext0.localizedStandardCompare(ext1) == .orderedAscending
+    private func rebuildSortedCache(forceSort: Bool = true) {
+        let needsSort = forceSort || sortOrder == .rating || sortOrder == .label
+        if needsSort {
+            let sorted: [ImageFile]
+            switch sortOrder {
+            case .name:
+                sorted = images.sorted { $0.filename.localizedStandardCompare($1.filename) == .orderedAscending }
+            case .dateModified:
+                sorted = images.sorted { $0.dateModified > $1.dateModified }
+            case .rating:
+                sorted = images.sorted { $0.starRating.rawValue > $1.starRating.rawValue }
+            case .label:
+                sorted = images.sorted { ($0.colorLabel.shortcutIndex ?? 0) < ($1.colorLabel.shortcutIndex ?? 0) }
+            case .fileType:
+                sorted = images.sorted {
+                    let ext0 = $0.url.pathExtension.lowercased()
+                    let ext1 = $1.url.pathExtension.lowercased()
+                    if ext0 != ext1 {
+                        return ext0.localizedStandardCompare(ext1) == .orderedAscending
+                    }
+                    return $0.filename.localizedStandardCompare($1.filename) == .orderedAscending
                 }
-                return $0.filename.localizedStandardCompare($1.filename) == .orderedAscending
+            case .manual:
+                if manualOrder.isEmpty {
+                    sorted = images
+                } else {
+                    let imagesByURL = Dictionary(uniqueKeysWithValues: images.map { ($0.url, $0) })
+                    var result = manualOrder.compactMap { imagesByURL[$0] }
+                    let manualSet = Set(manualOrder)
+                    result.append(contentsOf: images.filter { !manualSet.contains($0.url) })
+                    sorted = result
+                }
             }
-        case .manual:
-            if manualOrder.isEmpty {
-                sorted = images
-            } else {
-                let imagesByURL = Dictionary(uniqueKeysWithValues: images.map { ($0.url, $0) })
-                var result = manualOrder.compactMap { imagesByURL[$0] }
-                let manualSet = Set(manualOrder)
-                result.append(contentsOf: images.filter { !manualSet.contains($0.url) })
-                sorted = result
-            }
+            sortedImages = sorted
+            urlToSortedIndex = Dictionary(uniqueKeysWithValues: sorted.enumerated().map { ($1.url, $0) })
+        } else {
+            // Same images, just updated properties — refresh sortedImages in existing order
+            let imageByURL = Dictionary(uniqueKeysWithValues: images.map { ($0.url, $0) })
+            sortedImages = sortedImages.compactMap { imageByURL[$0.url] }
         }
-        sortedImages = sorted
-        urlToSortedIndex = Dictionary(uniqueKeysWithValues: sorted.enumerated().map { ($1.url, $0) })
         rebuildVisibleCache()
     }
 
@@ -222,7 +240,7 @@ final class BrowserViewModel {
                 if image.personShown.isEmpty { return false }
             }
             guard !query.isEmpty else { return true }
-            if image.filename.lowercased().contains(query) {
+            if image.filenameLowercased.contains(query) {
                 return true
             }
             return image.personShown.contains { $0.lowercased().contains(query) }
@@ -771,118 +789,49 @@ final class BrowserViewModel {
     // MARK: - Rating & Labels
 
     func setRating(_ rating: StarRating) {
-        guard !selectedImageIDs.isEmpty else { return }
-        let urls = selectedImages.map(\.url)
-        let lookup = Dictionary(uniqueKeysWithValues: images.map { ($0.url, $0) })
-
-        var updated = images
-        for id in selectedImageIDs {
-            if let index = urlToImageIndex[id] {
-                updated[index].starRating = rating
-            }
-        }
-        images = updated
-
-        Task {
-            var writeToFileWithSidecar: [URL] = []
-            var writeToFileWithoutSidecar: [URL] = []
-            var writeToSidecar: [URL] = []
-            var writeToXmp: [URL] = []
-            var syncPairRawURLs: Set<URL> = []
-            var syncMissingPairs = 0
-            var syncMultiplePairs = 0
-
-            let strictPM = PMXMPPolicy.mode == .strictPhotoMechanic
-            var strictNonRawChoice: PMNonRAWXMPSidecarChoice?
-            if strictPM {
-                let hasNonRawXMPTarget = urls.contains { url in
-                    let hasC2PA = lookup[url]?.hasC2PA ?? false
-                    let mode = MetadataWriteMode.current(forC2PA: hasC2PA)
-                    return mode == .writeToXMPSidecar && !SupportedImageFormats.isRaw(url: url)
-                }
-                if hasNonRawXMPTarget {
-                    strictNonRawChoice = await MainActor.run {
-                        PMXMPPolicy.resolveNonRawChoiceWithPromptIfNeeded()
+        applyMetadataField(
+            updateImage: { $0.starRating = rating },
+            applySidecar: { url, writeXmp, pending in
+                await self.applyFieldToSidecar(
+                    url: url, writeXmpSidecar: writeXmp, pendingChanges: pending,
+                    fieldName: "Rating",
+                    getOld: { $0.rating.map(String.init) },
+                    applyNew: { metadata in
+                        metadata.rating = rating == .none ? nil : rating.rawValue
+                        return metadata.rating.map(String.init)
                     }
-                    guard strictNonRawChoice != nil else { return }
-                }
-            }
-
-            for url in urls {
-                let hasC2PA = lookup[url]?.hasC2PA ?? false
-                let mode = MetadataWriteMode.current(forC2PA: hasC2PA)
-
-                switch mode {
-                case .historyOnly:
-                    writeToSidecar.append(url)
-                case .writeToXMPSidecar:
-                    if strictPM, !SupportedImageFormats.isRaw(url: url), let choice = strictNonRawChoice {
-                        switch choice {
-                        case .historyOnly:
-                            writeToSidecar.append(url)
-                        case .embeddedWrite:
-                            writeToFileWithoutSidecar.append(url)
-                        case .syncRawJpegPair:
-                            writeToFileWithoutSidecar.append(url)
-                            if let pair = SupportedImageFormats.preferredRawSibling(for: url) {
-                                syncPairRawURLs.insert(pair.url)
-                                if pair.hadMultipleMatches {
-                                    syncMultiplePairs += 1
-                                }
-                            } else {
-                                syncMissingPairs += 1
-                            }
-                        }
-                    } else {
-                        writeToXmp.append(url)
-                    }
-                case .writeToFile:
-                    writeToFileWithSidecar.append(url)
-                }
-            }
-
-            for rawURL in syncPairRawURLs where !writeToXmp.contains(rawURL) {
-                writeToXmp.append(rawURL)
-            }
-
-            for url in writeToSidecar {
-                await applyRatingToSidecar(url: url, rating: rating, writeXmpSidecar: false, pendingChanges: true)
-            }
-            for url in writeToXmp {
-                await applyRatingToSidecar(url: url, rating: rating, writeXmpSidecar: true, pendingChanges: false)
-            }
-            for url in writeToFileWithSidecar {
-                await applyRatingToSidecar(url: url, rating: rating, writeXmpSidecar: false, pendingChanges: false)
-            }
-
-            let fileWriteTargets = writeToFileWithSidecar + writeToFileWithoutSidecar
-            if exifToolService.isAvailable, !fileWriteTargets.isEmpty {
-                do {
-                    try await exifToolService.writeRating(rating, to: fileWriteTargets)
-                    clearMetadataSidecars(for: writeToFileWithoutSidecar)
-                } catch {
-                    self.errorMessage = "Failed to write rating: \(error.localizedDescription)"
-                }
-            }
-
-            if syncMissingPairs > 0 || syncMultiplePairs > 0 {
-                var notes: [String] = []
-                if syncMissingPairs > 0 {
-                    notes.append("\(syncMissingPairs) file(s) had no RAW sibling")
-                }
-                if syncMultiplePairs > 0 {
-                    notes.append("\(syncMultiplePairs) file(s) matched multiple RAW siblings")
-                }
-                self.errorMessage = "Sync RAW+JPEG: " + notes.joined(separator: ", ") + "."
-            }
-
-            await MainActor.run {
-                self.refreshPendingStatus()
-            }
-        }
+                )
+            },
+            writeToExifTool: { try await self.exifToolService.writeRating(rating, to: $0) },
+            fieldDescription: "rating"
+        )
     }
 
     func setLabel(_ label: ColorLabel) {
+        applyMetadataField(
+            updateImage: { $0.colorLabel = label },
+            applySidecar: { url, writeXmp, pending in
+                await self.applyFieldToSidecar(
+                    url: url, writeXmpSidecar: writeXmp, pendingChanges: pending,
+                    fieldName: "Label",
+                    getOld: { $0.label },
+                    applyNew: { metadata in
+                        metadata.label = label.xmpLabelValue
+                        return metadata.label
+                    }
+                )
+            },
+            writeToExifTool: { try await self.exifToolService.writeLabel(label, to: $0) },
+            fieldDescription: "label"
+        )
+    }
+
+    private func applyMetadataField(
+        updateImage: (inout ImageFile) -> Void,
+        applySidecar: @escaping (URL, Bool, Bool) async -> Void,
+        writeToExifTool: @escaping ([URL]) async throws -> Void,
+        fieldDescription: String
+    ) {
         guard !selectedImageIDs.isEmpty else { return }
         let urls = selectedImages.map(\.url)
         let lookup = Dictionary(uniqueKeysWithValues: images.map { ($0.url, $0) })
@@ -890,7 +839,7 @@ final class BrowserViewModel {
         var updated = images
         for id in selectedImageIDs {
             if let index = urlToImageIndex[id] {
-                updated[index].colorLabel = label
+                updateImage(&updated[index])
             }
         }
         images = updated
@@ -958,22 +907,22 @@ final class BrowserViewModel {
             }
 
             for url in writeToSidecar {
-                await applyLabelToSidecar(url: url, label: label, writeXmpSidecar: false, pendingChanges: true)
+                await applySidecar(url, false, true)
             }
             for url in writeToXmp {
-                await applyLabelToSidecar(url: url, label: label, writeXmpSidecar: true, pendingChanges: false)
+                await applySidecar(url, true, false)
             }
             for url in writeToFileWithSidecar {
-                await applyLabelToSidecar(url: url, label: label, writeXmpSidecar: false, pendingChanges: false)
+                await applySidecar(url, false, false)
             }
 
             let fileWriteTargets = writeToFileWithSidecar + writeToFileWithoutSidecar
             if exifToolService.isAvailable, !fileWriteTargets.isEmpty {
                 do {
-                    try await exifToolService.writeLabel(label, to: fileWriteTargets)
+                    try await writeToExifTool(fileWriteTargets)
                     clearMetadataSidecars(for: writeToFileWithoutSidecar)
                 } catch {
-                    self.errorMessage = "Failed to write label: \(error.localizedDescription)"
+                    self.errorMessage = "Failed to write \(fieldDescription): \(error.localizedDescription)"
                 }
             }
 
@@ -1033,7 +982,14 @@ final class BrowserViewModel {
         }
     }
 
-    private func applyRatingToSidecar(url: URL, rating: StarRating, writeXmpSidecar: Bool, pendingChanges: Bool) async {
+    private func applyFieldToSidecar(
+        url: URL,
+        writeXmpSidecar: Bool,
+        pendingChanges: Bool,
+        fieldName: String,
+        getOld: (IPTCMetadata) -> String?,
+        applyNew: (inout IPTCMetadata) -> String?
+    ) async {
         guard let folderURL = currentFolderURL else { return }
 
         var metadata = IPTCMetadata()
@@ -1059,79 +1015,14 @@ final class BrowserViewModel {
             metadata = snapshot
         }
 
-        let oldValue = metadata.rating
-        metadata.rating = rating == .none ? nil : rating.rawValue
-        let newValue = metadata.rating
+        let oldValue = getOld(metadata)
+        let newValue = applyNew(&metadata)
 
         guard oldValue != newValue else { return }
 
         history.append(MetadataHistoryEntry(
             timestamp: Date(),
-            fieldName: "Rating",
-            oldValue: oldValue.map(String.init),
-            newValue: newValue.map(String.init)
-        ))
-        history.trimToHistoryLimit()
-
-        let sidecar = MetadataSidecar(
-            sourceFile: url.lastPathComponent,
-            lastModified: Date(),
-            pendingChanges: pendingChanges,
-            metadata: metadata,
-            imageMetadataSnapshot: pendingChanges ? snapshot : metadata,
-            history: history
-        )
-
-        do {
-            try sidecarService.saveSidecar(sidecar, for: url, in: folderURL)
-        } catch {
-            errorMessage = "Failed to save metadata sidecar: \(error.localizedDescription)"
-        }
-
-        if writeXmpSidecar {
-            do {
-                try xmpSidecarService.saveSidecar(metadata: metadata, for: url)
-            } catch {
-                errorMessage = "Failed to save XMP sidecar: \(error.localizedDescription)"
-            }
-        }
-    }
-
-    private func applyLabelToSidecar(url: URL, label: ColorLabel, writeXmpSidecar: Bool, pendingChanges: Bool) async {
-        guard let folderURL = currentFolderURL else { return }
-
-        var metadata = IPTCMetadata()
-        var history: [MetadataHistoryEntry] = []
-        var snapshot: IPTCMetadata?
-        let hadSidecar: Bool
-
-        if let existing = sidecarService.loadSidecar(for: url, in: folderURL) {
-            metadata = existing.metadata
-            history = existing.history
-            history.trimToHistoryLimit()
-            snapshot = existing.imageMetadataSnapshot
-            hadSidecar = true
-        } else {
-            hadSidecar = false
-        }
-
-        if snapshot == nil {
-            snapshot = await loadMetadataSnapshot(for: url, includeXmp: writeXmpSidecar)
-        }
-
-        if !hadSidecar, let snapshot {
-            metadata = snapshot
-        }
-
-        let oldValue = metadata.label
-        metadata.label = label.xmpLabelValue
-        let newValue = metadata.label
-
-        guard oldValue != newValue else { return }
-
-        history.append(MetadataHistoryEntry(
-            timestamp: Date(),
-            fieldName: "Label",
+            fieldName: fieldName,
             oldValue: oldValue,
             newValue: newValue
         ))
