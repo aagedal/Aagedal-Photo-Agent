@@ -8,50 +8,71 @@ struct ThumbnailGridView: View {
     @State private var gridWidth: CGFloat = 0
     @State private var dragCoordinator = ThumbnailDragCoordinator()
 
-    private let columns = [
-        GridItem(.adaptive(minimum: 190, maximum: 250), spacing: 8)
-    ]
-
-    private let itemMinWidth: CGFloat = 190
-    private let itemMaxWidth: CGFloat = 250
+    private let baseMinWidth: CGFloat = 190
     private let itemSpacing: CGFloat = 8
     private let gridPadding: CGFloat = 16 // .padding() default
+
+    private var columns: [GridItem] {
+        let minWidth = baseMinWidth * viewModel.thumbnailScale
+        return [GridItem(.adaptive(minimum: minWidth, maximum: minWidth * 1.3), spacing: itemSpacing)]
+    }
+
+    private var scaledMinWidth: CGFloat {
+        baseMinWidth * viewModel.thumbnailScale
+    }
 
     /// Calculate the number of columns based on the current grid width
     private var columnCount: Int {
         guard gridWidth > 0 else { return 1 }
         let availableWidth = gridWidth - gridPadding * 2
-        // With adaptive columns, SwiftUI fits as many items as possible with minimum width
-        let count = Int((availableWidth + itemSpacing) / (itemMinWidth + itemSpacing))
+        let count = Int((availableWidth + itemSpacing) / (scaledMinWidth + itemSpacing))
         return max(count, 1)
     }
 
     var body: some View {
         GeometryReader { geometry in
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVGrid(columns: columns, spacing: 8) {
-                        ForEach(viewModel.visibleImages) { image in
-                            makeThumbnailCell(for: image)
-                                .id(image.url)
+            ZStack(alignment: .bottomTrailing) {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVGrid(columns: columns, spacing: 8) {
+                            ForEach(viewModel.visibleImages) { image in
+                                makeThumbnailCell(for: image)
+                                    .id(image.url)
+                            }
+                        }
+                        .padding()
+                    }
+                    .onAppear {
+                        gridWidth = geometry.size.width
+                        scrollToSelectionIfNeeded(proxy)
+                        setupDragCoordinator()
+                    }
+                    .onChange(of: geometry.size.width) { _, newWidth in
+                        gridWidth = newWidth
+                    }
+                    .onChange(of: viewModel.lastClickedImageURL) { _, newValue in
+                        scrollToSelectionIfNeeded(proxy)
+                        if newValue != nil {
+                            isGridFocused = true
                         }
                     }
-                    .padding()
                 }
-                .onAppear {
-                    gridWidth = geometry.size.width
-                    scrollToSelectionIfNeeded(proxy)
-                    setupDragCoordinator()
+
+                // Thumbnail size slider
+                HStack(spacing: 4) {
+                    Image(systemName: "square.grid.3x3")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Slider(value: $viewModel.thumbnailScale, in: 0.5...2.0, step: 0.1)
+                        .frame(width: 80)
+                    Image(systemName: "square.grid.2x2")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
-                .onChange(of: geometry.size.width) { _, newWidth in
-                    gridWidth = newWidth
-                }
-                .onChange(of: viewModel.lastClickedImageURL) { _, newValue in
-                    scrollToSelectionIfNeeded(proxy)
-                    if newValue != nil {
-                        isGridFocused = true
-                    }
-                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
+                .padding(8)
             }
         }
         .focusable()
@@ -106,6 +127,7 @@ struct ThumbnailGridView: View {
             image: image,
             isSelected: viewModel.selectedImageIDs.contains(image.url),
             thumbnailService: viewModel.thumbnailService,
+            thumbnailScale: viewModel.thumbnailScale,
             onDelete: {
                 viewModel.confirmDeleteSelectedImages()
             },
