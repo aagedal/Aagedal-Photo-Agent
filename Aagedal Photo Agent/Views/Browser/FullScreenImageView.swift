@@ -379,6 +379,52 @@ struct FullScreenImageView: View {
                     }
 
                     if let file = currentImageFile {
+                        // Top-right: crop / edit / C2PA badges
+                        if file.hasC2PA || file.hasDevelopEdits || file.hasCropEdits || file.hasPendingMetadataChanges {
+                            VStack {
+                                HStack {
+                                    Spacer()
+                                    VStack(alignment: .trailing, spacing: 8) {
+                                        if file.hasC2PA {
+                                            Label("C2PA", systemImage: "checkmark.seal.fill")
+                                                .font(.caption)
+                                                .foregroundStyle(.white)
+                                                .padding(.horizontal, 10)
+                                                .padding(.vertical, 6)
+                                                .background(.blue.opacity(0.8), in: Capsule())
+                                        }
+                                        if file.hasDevelopEdits {
+                                            Label("Edited", systemImage: "slider.horizontal.3")
+                                                .font(.caption)
+                                                .foregroundStyle(.white)
+                                                .padding(.horizontal, 10)
+                                                .padding(.vertical, 6)
+                                                .background(.orange.opacity(0.8), in: Capsule())
+                                        }
+                                        if file.hasCropEdits {
+                                            Label("Cropped", systemImage: "crop")
+                                                .font(.caption)
+                                                .foregroundStyle(.white)
+                                                .padding(.horizontal, 10)
+                                                .padding(.vertical, 6)
+                                                .background(.green.opacity(0.8), in: Capsule())
+                                        }
+                                        if file.hasPendingMetadataChanges {
+                                            Label("Pending", systemImage: "circle.fill")
+                                                .font(.caption)
+                                                .foregroundStyle(.white)
+                                                .padding(.horizontal, 10)
+                                                .padding(.vertical, 6)
+                                                .background(.yellow.opacity(0.8), in: Capsule())
+                                        }
+                                    }
+                                    .padding(.trailing, 20)
+                                    .padding(.top, 20)
+                                }
+                                Spacer()
+                            }
+                        }
+
                         // Bottom-left: star rating + color label
                         VStack {
                             Spacer()
