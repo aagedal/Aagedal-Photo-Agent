@@ -94,13 +94,18 @@ struct EditWorkspaceView: View {
             || cameraRaw.blacks2012 != nil
     }
 
+    private var selectedImageOrientation: Int {
+        selectedImage?.exifOrientation ?? 1
+    }
+
     private var activeCrop: NormalizedCropRegion {
         guard let crop = metadataViewModel.editingMetadata.cameraRaw?.crop else { return .full }
+        let displayCrop = crop.transformedForDisplay(orientation: selectedImageOrientation)
         return NormalizedCropRegion(
-            top: crop.top ?? 0,
-            left: crop.left ?? 0,
-            bottom: crop.bottom ?? 1,
-            right: crop.right ?? 1
+            top: displayCrop.top ?? 0,
+            left: displayCrop.left ?? 0,
+            bottom: displayCrop.bottom ?? 1,
+            right: displayCrop.right ?? 1
         )
         .clamped()
     }
@@ -150,6 +155,9 @@ struct EditWorkspaceView: View {
         }
         .onChange(of: metadataViewModel.editingMetadata.cameraRaw) { _, _ in
             renderPreview()
+        }
+        .onChange(of: selectedImage?.exifOrientation) { _, _ in
+            loadSelectedImagePreview()
         }
         .onKeyPress(.leftArrow) {
             guard !isTextFieldActive() else { return .ignored }
@@ -1000,17 +1008,14 @@ struct EditWorkspaceView: View {
     private func updateCrop(_ crop: NormalizedCropRegion, commit: Bool) {
         let angle = metadataViewModel.editingMetadata.cameraRaw?.crop?.angle ?? 0
         let normalized = crop.clamped().fittingRotated(angleDegrees: angle, aspectRatio: sourceAspectRatio)
+        let displayCrop = CameraRawCrop(
+            top: normalized.top, left: normalized.left,
+            bottom: normalized.bottom, right: normalized.right,
+            angle: angle, hasCrop: true
+        )
+        let sensorCrop = displayCrop.transformedForSensor(orientation: selectedImageOrientation)
         updateCameraRaw { cameraRaw in
-            var cameraCrop = cameraRaw.crop ?? CameraRawCrop()
-            cameraCrop.top = normalized.top
-            cameraCrop.left = normalized.left
-            cameraCrop.bottom = normalized.bottom
-            cameraCrop.right = normalized.right
-            cameraCrop.hasCrop = true
-            if cameraCrop.angle == nil {
-                cameraCrop.angle = 0
-            }
-            cameraRaw.crop = cameraCrop
+            cameraRaw.crop = sensorCrop
         }
         if commit {
             commitEditAdjustments()
@@ -1020,34 +1025,30 @@ struct EditWorkspaceView: View {
     private func updateCropAngle(_ angle: Double, commit: Bool) {
         let clampedAngle = min(max(angle, -45), 45)
         let ar = sourceAspectRatio
+        let orientation = selectedImageOrientation
         updateCameraRaw { cameraRaw in
-            var cameraCrop = cameraRaw.crop ?? CameraRawCrop(
-                top: 0,
-                left: 0,
-                bottom: 1,
-                right: 1,
-                angle: 0,
-                hasCrop: true
-            )
-            let oldAngle = cameraCrop.angle ?? 0
+            // Read the current sensor crop and transform to display space for angle calculations
+            let sensorCrop = cameraRaw.crop ?? CameraRawCrop(top: 0, left: 0, bottom: 1, right: 1, angle: 0, hasCrop: true)
+            let displayCrop = sensorCrop.transformedForDisplay(orientation: orientation)
+            let oldAngle = displayCrop.angle ?? 0
             let region = NormalizedCropRegion(
-                top: cameraCrop.top ?? 0,
-                left: cameraCrop.left ?? 0,
-                bottom: cameraCrop.bottom ?? 1,
-                right: cameraCrop.right ?? 1
+                top: displayCrop.top ?? 0,
+                left: displayCrop.left ?? 0,
+                bottom: displayCrop.bottom ?? 1,
+                right: displayCrop.right ?? 1
             )
             .clamped()
             .withAngle(from: oldAngle, to: clampedAngle, aspectRatio: ar)
             .centerClampedForRotation(angleDegrees: clampedAngle, aspectRatio: ar)
             .fittingRotated(angleDegrees: clampedAngle, aspectRatio: ar)
 
-            cameraCrop.top = region.top
-            cameraCrop.left = region.left
-            cameraCrop.bottom = region.bottom
-            cameraCrop.right = region.right
-            cameraCrop.angle = (clampedAngle * 1000000).rounded() / 1000000
-            cameraCrop.hasCrop = true
-            cameraRaw.crop = cameraCrop
+            let updatedDisplay = CameraRawCrop(
+                top: region.top, left: region.left,
+                bottom: region.bottom, right: region.right,
+                angle: (clampedAngle * 1000000).rounded() / 1000000,
+                hasCrop: true
+            )
+            cameraRaw.crop = updatedDisplay.transformedForSensor(orientation: orientation)
         }
         if commit {
             commitEditAdjustments()

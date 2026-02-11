@@ -29,7 +29,7 @@ final class FullScreenImageCache: @unchecked Sendable {
 
     /// Prefetch adjacent images based on navigation direction.
     /// Loads 2 images ahead in travel direction and 1 behind, at utility priority.
-    nonisolated func startPrefetch(currentIndex: Int, images: [URL], direction: NavigationDirection, screenMaxPx: CGFloat, settingsForURL: (@Sendable (URL) -> CameraRawSettings?)? = nil) {
+    nonisolated func startPrefetch(currentIndex: Int, images: [URL], direction: NavigationDirection, screenMaxPx: CGFloat, settingsForURL: (@Sendable (URL) -> CameraRawSettings?)? = nil, orientationForURL: (@Sendable (URL) -> Int)? = nil) {
         let ahead: [Int]
         let behind: [Int]
 
@@ -81,7 +81,8 @@ final class FullScreenImageCache: @unchecked Sendable {
                 }
 
                 if let settings = settingsForURL?(url) {
-                    image = Self.applyCameraRaw(to: image, settings: settings)
+                    let orientation = orientationForURL?(url) ?? 1
+                    image = Self.applyCameraRaw(to: image, settings: settings, exifOrientation: orientation)
                 }
 
                 self.store(image, for: url)
@@ -108,9 +109,9 @@ final class FullScreenImageCache: @unchecked Sendable {
 
     // MARK: - CameraRaw Processing
 
-    nonisolated static func applyCameraRaw(to cgImage: CGImage, settings: CameraRawSettings) -> CGImage {
+    nonisolated static func applyCameraRaw(to cgImage: CGImage, settings: CameraRawSettings, exifOrientation: Int = 1) -> CGImage {
         let ciImage = CIImage(cgImage: cgImage)
-        let processed = CameraRawApproximation.applyWithCrop(to: ciImage, settings: settings)
+        let processed = CameraRawApproximation.applyWithCrop(to: ciImage, settings: settings, exifOrientation: exifOrientation)
         let extent = processed.extent
         guard extent.width > 0, extent.height > 0 else { return cgImage }
 

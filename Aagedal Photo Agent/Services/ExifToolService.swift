@@ -35,6 +35,7 @@ enum ExifToolReadKey {
     static let rating = "Rating"
     static let label = "Label"
     static let claimGenerator = "Claim_generator"
+    static let orientation = "Orientation"
 
     // Camera Raw (crs)
     static let crsVersion = "Version"
@@ -363,6 +364,7 @@ final class ExifToolService {
             "-XMP-crs:CropRight",
             "-XMP-crs:CropAngle",
             "-XMP-crs:HDREditMode",
+            "-EXIF:Orientation#",
             "-JUMBF:All"
         ]
         args += urls.map(\.path)
@@ -379,6 +381,7 @@ final class ExifToolService {
             "-IPTC:All", "-XMP:All",
             "-EXIF:DateTimeOriginal",
             "-EXIF:GPSLatitude", "-EXIF:GPSLongitude",
+            "-EXIF:Orientation",
             "-struct",
             url.path
         ]
@@ -403,6 +406,7 @@ final class ExifToolService {
             "-IPTC:All", "-XMP:All",
             "-EXIF:DateTimeOriginal",
             "-EXIF:GPSLatitude", "-EXIF:GPSLongitude",
+            "-EXIF:Orientation",
             "-struct"
         ]
         args += urls.map(\.path)
@@ -476,7 +480,8 @@ final class ExifToolService {
             event: dict[ExifToolReadKey.event] as? String,
             rating: dict[ExifToolReadKey.rating] as? Int,
             label: ColorLabel.canonicalMetadataLabel(dict[ExifToolReadKey.label] as? String),
-            cameraRaw: cameraRaw.isEmpty ? nil : cameraRaw
+            cameraRaw: cameraRaw.isEmpty ? nil : cameraRaw,
+            exifOrientation: parseIntValue(dict[ExifToolReadKey.orientation])
         )
     }
 
@@ -567,6 +572,11 @@ final class ExifToolService {
     func writeRating(_ rating: StarRating, to urls: [URL]) async throws {
         let value = rating == .none ? "" : String(rating.rawValue)
         try await writeFields([ExifToolWriteTag.rating: value], to: urls)
+    }
+
+    /// Write EXIF orientation to files.
+    func writeOrientation(_ orientation: Int, to urls: [URL]) async throws {
+        try await writeFields([ExifToolWriteTag.orientation: String(orientation)], to: urls)
     }
 
     /// Write color label to files.

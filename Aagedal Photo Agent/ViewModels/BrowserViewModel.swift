@@ -339,6 +339,7 @@ final class BrowserViewModel {
                     updated.hasCropEdits = existing.hasCropEdits
                     updated.cropRegion = existing.cropRegion
                     updated.cameraRawSettings = existing.cameraRawSettings
+                    updated.exifOrientation = existing.exifOrientation
                     updated.hasPendingMetadataChanges = existing.hasPendingMetadataChanges
                     updated.pendingFieldNames = existing.pendingFieldNames
                     updated.metadata = existing.metadata
@@ -425,7 +426,8 @@ final class BrowserViewModel {
                         updated[index].hasC2PA = hasC2PA
                         updated[index].hasDevelopEdits = hasDevelopEdits(in: dict)
                         updated[index].hasCropEdits = hasCropEdits(in: dict)
-                        updated[index].cropRegion = cropRegion(in: dict)
+                        updated[index].exifOrientation = parseIntValue(dict[ExifToolReadKey.orientation]) ?? 1
+                        updated[index].cropRegion = cropRegion(in: dict, exifOrientation: updated[index].exifOrientation)
                         updated[index].cameraRawSettings = cameraRawSettings(in: dict)
                         applyPendingSidecarOverrides(to: &updated, for: sourceURL, index: index, cachedSidecar: cachedSidecars[sourceURL])
                     }
@@ -480,7 +482,8 @@ final class BrowserViewModel {
                         updated[index].hasC2PA = hasC2PA
                         updated[index].hasDevelopEdits = hasDevelopEdits(in: dict)
                         updated[index].hasCropEdits = hasCropEdits(in: dict)
-                        updated[index].cropRegion = cropRegion(in: dict)
+                        updated[index].exifOrientation = parseIntValue(dict[ExifToolReadKey.orientation]) ?? 1
+                        updated[index].cropRegion = cropRegion(in: dict, exifOrientation: updated[index].exifOrientation)
                         updated[index].cameraRawSettings = cameraRawSettings(in: dict)
                         applyPendingSidecarOverrides(to: &updated, for: sourceURL, index: index)
                     }
@@ -565,13 +568,22 @@ final class BrowserViewModel {
             || abs(angle) > epsilon
     }
 
-    private func cropRegion(in dict: [String: Any]) -> ThumbnailCropRegion? {
+    private func cropRegion(in dict: [String: Any], exifOrientation: Int = 1) -> ThumbnailCropRegion? {
         guard hasCropEdits(in: dict) else { return nil }
-        let top = parseDoubleValue(dict[ExifToolReadKey.crsCropTop]) ?? 0
-        let left = parseDoubleValue(dict[ExifToolReadKey.crsCropLeft]) ?? 0
-        let bottom = parseDoubleValue(dict[ExifToolReadKey.crsCropBottom]) ?? 1
-        let right = parseDoubleValue(dict[ExifToolReadKey.crsCropRight]) ?? 1
-        let angle = parseDoubleValue(dict[ExifToolReadKey.crsCropAngle]) ?? 0
+        let sensorCrop = CameraRawCrop(
+            top: parseDoubleValue(dict[ExifToolReadKey.crsCropTop]),
+            left: parseDoubleValue(dict[ExifToolReadKey.crsCropLeft]),
+            bottom: parseDoubleValue(dict[ExifToolReadKey.crsCropBottom]),
+            right: parseDoubleValue(dict[ExifToolReadKey.crsCropRight]),
+            angle: parseDoubleValue(dict[ExifToolReadKey.crsCropAngle]),
+            hasCrop: parseBoolValue(dict[ExifToolReadKey.crsHasCrop])
+        )
+        let displayCrop = sensorCrop.transformedForDisplay(orientation: exifOrientation)
+        let top = displayCrop.top ?? 0
+        let left = displayCrop.left ?? 0
+        let bottom = displayCrop.bottom ?? 1
+        let right = displayCrop.right ?? 1
+        let angle = displayCrop.angle ?? 0
         let region = ThumbnailCropRegion(top: top, left: left, bottom: bottom, right: right, angle: angle).clamped
         guard region.right > region.left, region.bottom > region.top else { return nil }
         return region
@@ -824,6 +836,82 @@ final class BrowserViewModel {
             writeToExifTool: { try await self.exifToolService.writeLabel(label, to: $0) },
             fieldDescription: "label"
         )
+    }
+
+    func rotateClockwise() {
+        guard !selectedImageIDs.isEmpty else { return }
+        var newOrientations: [URL: Int] = [:]
+        for image in selectedImages {
+            newOrientations[image.url] = ImageFile.orientationAfterClockwiseRotation(image.exifOrientation)
+        }
+        applyMetadataField(
+            updateImage: { image in
+                image.exifOrientation = newOrientations[image.url] ?? image.exifOrientation
+            },
+            applySidecar: { url, writeXmp, pending in
+                await self.applyFieldToSidecar(
+                    url: url, writeXmpSidecar: writeXmp, pendingChanges: pending,
+                    fieldName: "Orientation",
+                    getOld: { $0.exifOrientation.map(String.init) },
+                    applyNew: { metadata in
+                        metadata.exifOrientation = newOrientations[url]
+                        return metadata.exifOrientation.map(String.init)
+                    }
+                )
+            },
+            writeToExifTool: { urls in
+                var byOrientation: [Int: [URL]] = [:]
+                for url in urls {
+                    let orientation = newOrientations[url] ?? 1
+                    byOrientation[orientation, default: []].append(url)
+                }
+                for (orientation, batchURLs) in byOrientation {
+                    try await self.exifToolService.writeOrientation(orientation, to: batchURLs)
+                }
+            },
+            fieldDescription: "orientation"
+        )
+        for url in selectedImages.map(\.url) {
+            thumbnailService.invalidateThumbnail(for: url)
+        }
+    }
+
+    func rotateCounterclockwise() {
+        guard !selectedImageIDs.isEmpty else { return }
+        var newOrientations: [URL: Int] = [:]
+        for image in selectedImages {
+            newOrientations[image.url] = ImageFile.orientationAfterCounterclockwiseRotation(image.exifOrientation)
+        }
+        applyMetadataField(
+            updateImage: { image in
+                image.exifOrientation = newOrientations[image.url] ?? image.exifOrientation
+            },
+            applySidecar: { url, writeXmp, pending in
+                await self.applyFieldToSidecar(
+                    url: url, writeXmpSidecar: writeXmp, pendingChanges: pending,
+                    fieldName: "Orientation",
+                    getOld: { $0.exifOrientation.map(String.init) },
+                    applyNew: { metadata in
+                        metadata.exifOrientation = newOrientations[url]
+                        return metadata.exifOrientation.map(String.init)
+                    }
+                )
+            },
+            writeToExifTool: { urls in
+                var byOrientation: [Int: [URL]] = [:]
+                for url in urls {
+                    let orientation = newOrientations[url] ?? 1
+                    byOrientation[orientation, default: []].append(url)
+                }
+                for (orientation, batchURLs) in byOrientation {
+                    try await self.exifToolService.writeOrientation(orientation, to: batchURLs)
+                }
+            },
+            fieldDescription: "orientation"
+        )
+        for url in selectedImages.map(\.url) {
+            thumbnailService.invalidateThumbnail(for: url)
+        }
     }
 
     private func applyMetadataField(
@@ -1160,6 +1248,7 @@ final class BrowserViewModel {
         if edited.country != original.country { names.append("Country") }
         if edited.event != original.event { names.append("Event") }
         if edited.digitalSourceType != original.digitalSourceType { names.append("Digital Source Type") }
+        if edited.exifOrientation != original.exifOrientation { names.append("Orientation") }
         return names
     }
 

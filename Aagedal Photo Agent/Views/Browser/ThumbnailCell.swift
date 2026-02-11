@@ -4,6 +4,7 @@ import AppKit
 private struct ThumbnailTaskKey: Equatable {
     let url: URL
     let settings: CameraRawSettings?
+    let exifOrientation: Int
 }
 
 struct ThumbnailCell: View, Equatable {
@@ -34,6 +35,7 @@ struct ThumbnailCell: View, Equatable {
             && lhs.image.hasDevelopEdits == rhs.image.hasDevelopEdits
             && lhs.image.hasCropEdits == rhs.image.hasCropEdits
             && lhs.image.cameraRawSettings == rhs.image.cameraRawSettings
+            && lhs.image.exifOrientation == rhs.image.exifOrientation
             && lhs.image.hasPendingMetadataChanges == rhs.image.hasPendingMetadataChanges
             && lhs.image.pendingFieldNames == rhs.image.pendingFieldNames
     }
@@ -46,7 +48,7 @@ struct ThumbnailCell: View, Equatable {
     }
 
     private var taskKey: ThumbnailTaskKey {
-        ThumbnailTaskKey(url: image.url, settings: image.cameraRawSettings)
+        ThumbnailTaskKey(url: image.url, settings: image.cameraRawSettings, exifOrientation: image.exifOrientation)
     }
 
     var body: some View {
@@ -242,7 +244,7 @@ struct ThumbnailCell: View, Equatable {
                 thumbnailService.invalidateThumbnail(for: image.url)
                 lastLoadedSettings = image.cameraRawSettings
             }
-            thumbnail = await thumbnailService.loadThumbnail(for: image.url, cameraRawSettings: image.cameraRawSettings)
+            thumbnail = await thumbnailService.loadThumbnail(for: image.url, cameraRawSettings: image.cameraRawSettings, exifOrientation: image.exifOrientation)
         }
     }
 }
