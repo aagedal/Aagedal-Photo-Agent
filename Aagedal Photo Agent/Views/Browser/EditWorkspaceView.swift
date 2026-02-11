@@ -12,6 +12,7 @@ struct EditWorkspaceView: View {
     @State private var sourceImage: NSImage?
     @State private var sourceCIImage: CIImage?
     @State private var previewImage: NSImage?
+    @State private var previewCGImage: CGImage?
     @State private var previewTask: Task<Void, Never>?
     @State private var previewRenderTask: Task<Void, Never>?
     @State private var isLoadingPreview = false
@@ -56,6 +57,22 @@ struct EditWorkspaceView: View {
 
     private var displayImage: NSImage? {
         isShowingBefore ? sourceImage : previewImage
+    }
+
+    private var isHDREnabled: Bool {
+        metadataViewModel.editingMetadata.cameraRaw?.hdrEditMode == 1
+    }
+
+    private var hdrToggleBinding: Binding<Bool> {
+        Binding(
+            get: { metadataViewModel.editingMetadata.cameraRaw?.hdrEditMode == 1 },
+            set: { newValue in
+                if metadataViewModel.editingMetadata.cameraRaw == nil {
+                    metadataViewModel.editingMetadata.cameraRaw = CameraRawSettings()
+                }
+                metadataViewModel.editingMetadata.cameraRaw?.hdrEditMode = newValue ? 1 : 0
+            }
+        )
     }
 
     private var isCropEnabled: Bool {
@@ -208,12 +225,19 @@ struct EditWorkspaceView: View {
                             zoom: cropZoomScale
                         )
 
-                        Image(nsImage: displayImage)
-                            .resizable()
-                            .interpolation(.high)
-                            .frame(width: imageRect.width, height: imageRect.height)
-                            .rotationEffect(.degrees(-activeCropAngle))
-                            .position(x: imageRect.midX, y: imageRect.midY)
+                        if isHDREnabled, let previewCGImage {
+                            HDRImageView(cgImage: previewCGImage, isHDR: true)
+                                .frame(width: imageRect.width, height: imageRect.height)
+                                .rotationEffect(.degrees(-activeCropAngle))
+                                .position(x: imageRect.midX, y: imageRect.midY)
+                        } else {
+                            Image(nsImage: displayImage)
+                                .resizable()
+                                .interpolation(.high)
+                                .frame(width: imageRect.width, height: imageRect.height)
+                                .rotationEffect(.degrees(-activeCropAngle))
+                                .position(x: imageRect.midX, y: imageRect.midY)
+                        }
 
                         if canEditSingleImage {
                             CropOverlayView(
@@ -236,11 +260,17 @@ struct EditWorkspaceView: View {
                         // Normal fit: image fits within view (also used for "before" preview)
                         let imageRect = fittedImageRect(in: geometry.size, imageSize: displayImage.size)
 
-                        Image(nsImage: displayImage)
-                            .resizable()
-                            .interpolation(.high)
-                            .frame(width: imageRect.width, height: imageRect.height)
-                            .position(x: geometry.size.width * 0.5, y: geometry.size.height * 0.5)
+                        if isHDREnabled, !isShowingBefore, let previewCGImage {
+                            HDRImageView(cgImage: previewCGImage, isHDR: true)
+                                .frame(width: imageRect.width, height: imageRect.height)
+                                .position(x: geometry.size.width * 0.5, y: geometry.size.height * 0.5)
+                        } else {
+                            Image(nsImage: displayImage)
+                                .resizable()
+                                .interpolation(.high)
+                                .frame(width: imageRect.width, height: imageRect.height)
+                                .position(x: geometry.size.width * 0.5, y: geometry.size.height * 0.5)
+                        }
                     }
                 } else if isLoadingPreview {
                     ProgressView("Loading preview...")
@@ -456,6 +486,14 @@ struct EditWorkspaceView: View {
 
                     Divider()
 
+                    Toggle(isOn: hdrToggleBinding) {
+                        Label("HDR", systemImage: "sun.max.fill")
+                    }
+                    .toggleStyle(.switch)
+                    .disabled(!canEditSingleImage)
+
+                    Divider()
+
                     Button(isSavingRenderedJPEG ? "Saving JPEG..." : "Save JPEG") {
                         saveCurrentRenderedJPEG()
                     }
@@ -556,6 +594,7 @@ struct EditWorkspaceView: View {
     private func renderPreview() {
         guard let sourceCIImage else {
             previewImage = sourceImage
+            previewCGImage = nil
             return
         }
 
@@ -565,7 +604,7 @@ struct EditWorkspaceView: View {
         let fallback = sourceImage
 
         previewRenderTask = Task {
-            let rendered = await Task.detached(priority: .userInitiated) { () -> NSImage? in
+            let result = await Task.detached(priority: .userInitiated) { () -> (NSImage, CGImage)? in
                 let output = CameraRawApproximation.apply(to: source, settings: settings)
                 let ctx = CameraRawApproximation.ciContext
                 guard let cgImage = ctx.createCGImage(
@@ -576,11 +615,18 @@ struct EditWorkspaceView: View {
                 ) else {
                     return nil
                 }
-                return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+                let nsImage = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+                return (nsImage, cgImage)
             }.value
 
             guard !Task.isCancelled else { return }
-            previewImage = rendered ?? fallback
+            if let result {
+                previewImage = result.0
+                previewCGImage = result.1
+            } else {
+                previewImage = fallback
+                previewCGImage = nil
+            }
         }
     }
 

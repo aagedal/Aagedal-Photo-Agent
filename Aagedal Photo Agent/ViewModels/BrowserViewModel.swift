@@ -937,8 +937,9 @@ final class BrowserViewModel {
                 self.errorMessage = "Sync RAW+JPEG: " + notes.joined(separator: ", ") + "."
             }
 
+            let allAffectedURLs = urls + Array(syncPairRawURLs)
             await MainActor.run {
-                self.refreshPendingStatus()
+                self.refreshPendingStatusBatch(for: allAffectedURLs)
             }
         }
     }
@@ -1168,6 +1169,23 @@ final class BrowserViewModel {
         var updated = images
         for i in updated.indices {
             if let sidecar = allSidecars[updated[i].url], sidecar.pendingChanges {
+                updated[i].hasPendingMetadataChanges = true
+                updated[i].pendingFieldNames = extractPendingFieldNames(from: sidecar)
+            } else {
+                updated[i].hasPendingMetadataChanges = false
+                updated[i].pendingFieldNames = []
+            }
+        }
+        images = updated
+    }
+
+    private func refreshPendingStatusBatch(for urls: [URL]) {
+        guard let folderURL = currentFolderURL, !urls.isEmpty else { return }
+        let urlSet = Set(urls)
+        var updated = images
+        for i in updated.indices where urlSet.contains(updated[i].url) {
+            let sidecar = sidecarService.loadSidecar(for: updated[i].url, in: folderURL)
+            if let sidecar, sidecar.pendingChanges {
                 updated[i].hasPendingMetadataChanges = true
                 updated[i].pendingFieldNames = extractPendingFieldNames(from: sidecar)
             } else {

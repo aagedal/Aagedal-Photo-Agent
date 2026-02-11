@@ -7,44 +7,11 @@ import os.log
 
 nonisolated private let imageLogger = Logger(subsystem: "com.aagedal.photo-agent", category: "ImageLoading")
 
-// MARK: - HDR Image View (CALayer-based EDR rendering)
+// MARK: - Loaded Image
 
-/// Renders a CGImage using a CALayer with Extended Dynamic Range enabled.
-/// This allows PQ/HLG HDR images to use the display's full brightness range
-/// instead of being tonemapped to SDR.
 private struct LoadedImage {
     let cgImage: CGImage
     let size: CGSize
-}
-
-private struct HDRImageView: NSViewRepresentable {
-    let cgImage: CGImage
-    var useNearestNeighbor: Bool = false
-
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        view.wantsLayer = true
-        view.layer?.contentsGravity = .resizeAspect
-        if #available(macOS 26.0, *) {
-            view.layer?.preferredDynamicRange = .high
-        } else {
-            view.layer?.wantsExtendedDynamicRangeContent = true
-        }
-        updateLayer(view)
-        return view
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {
-        updateLayer(nsView)
-    }
-
-    private func updateLayer(_ view: NSView) {
-        guard let layer = view.layer else { return }
-        layer.contents = cgImage
-        let filter: CALayerContentsFilter = useNearestNeighbor ? .nearest : .linear
-        layer.magnificationFilter = filter
-        layer.minificationFilter = filter
-    }
 }
 
 // MARK: - CGFloat Clamping Extension
@@ -219,6 +186,10 @@ struct FullScreenImageView: View {
         viewModel.firstSelectedImage
     }
 
+    private var isHDR: Bool {
+        currentImageFile?.cameraRawSettings?.hdrEditMode == 1
+    }
+
     /// Calculate the scale factor for 100% zoom (1:1 pixel mapping).
     /// Uses the original source file pixel dimensions, not the loaded NSImage size.
     private func calculateZoomTo100() -> CGFloat {
@@ -337,7 +308,7 @@ struct FullScreenImageView: View {
                 Color.black
 
                 if let currentImage {
-                    HDRImageView(cgImage: currentImage.cgImage, useNearestNeighbor: useNearestNeighbor)
+                    HDRImageView(cgImage: currentImage.cgImage, isHDR: isHDR, useNearestNeighbor: useNearestNeighbor)
                         .aspectRatio(
                             currentImage.size.width / currentImage.size.height,
                             contentMode: .fit

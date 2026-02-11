@@ -59,6 +59,7 @@ enum ExifToolReadKey {
     static let crsCropRight = "CropRight"
     static let crsCropAngle = "CropAngle"
     static let crsHasCrop = "HasCrop"
+    static let crsHDREditMode = "HDREditMode"
 }
 
 /// Manages a persistent ExifTool process in `-stay_open` mode for fast batch operations.
@@ -361,6 +362,7 @@ final class ExifToolService {
             "-XMP-crs:CropBottom",
             "-XMP-crs:CropRight",
             "-XMP-crs:CropAngle",
+            "-XMP-crs:HDREditMode",
             "-JUMBF:All"
         ]
         args += urls.map(\.path)
@@ -446,7 +448,8 @@ final class ExifToolService {
             saturation: parseIntValue(dict[ExifToolReadKey.crsSaturation]),
             vibrance: parseIntValue(dict[ExifToolReadKey.crsVibrance]),
             hasSettings: parseBoolValue(dict[ExifToolReadKey.crsHasSettings]),
-            crop: cropValue
+            crop: cropValue,
+            hdrEditMode: parseIntValue(dict[ExifToolReadKey.crsHDREditMode])
         )
 
         return IPTCMetadata(

@@ -36,6 +36,7 @@ struct CameraRawSettings: Codable, Sendable, Equatable {
     var vibrance: Int?
     var hasSettings: Bool?
     var crop: CameraRawCrop?
+    var hdrEditMode: Int?
 
     var isEmpty: Bool {
         version == nil
@@ -55,6 +56,7 @@ struct CameraRawSettings: Codable, Sendable, Equatable {
             && vibrance == nil
             && hasSettings == nil
             && (crop?.isEmpty ?? true)
+            && hdrEditMode == nil
     }
 
     func merged(preferring override: CameraRawSettings) -> CameraRawSettings {
@@ -82,6 +84,7 @@ struct CameraRawSettings: Codable, Sendable, Equatable {
                 result.crop = crop
             }
         }
+        if let value = override.hdrEditMode { result.hdrEditMode = value }
         return result
     }
 }
