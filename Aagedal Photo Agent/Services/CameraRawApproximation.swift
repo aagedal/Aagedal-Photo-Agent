@@ -93,16 +93,17 @@ enum CameraRawApproximation {
     }
 
     /// Applies tonal adjustments + crop/rotation in one pass.
-    nonisolated static func applyWithCrop(to input: CIImage, settings: CameraRawSettings?) -> CIImage {
+    nonisolated static func applyWithCrop(to input: CIImage, settings: CameraRawSettings?, exifOrientation: Int = 1) -> CIImage {
         guard let settings else { return input }
         let originalExtent = input.extent
         let adjusted = apply(to: input, settings: settings)
-        return applyCrop(to: adjusted, originalExtent: originalExtent, settings: settings)
+        return applyCrop(to: adjusted, originalExtent: originalExtent, settings: settings, exifOrientation: exifOrientation)
     }
 
     /// Applies crop and rotation from CameraRawSettings to a CIImage.
-    nonisolated static func applyCrop(to input: CIImage, originalExtent: CGRect, settings: CameraRawSettings?) -> CIImage {
-        guard let crop = settings?.crop else { return input }
+    nonisolated static func applyCrop(to input: CIImage, originalExtent: CGRect, settings: CameraRawSettings?, exifOrientation: Int = 1) -> CIImage {
+        guard let sensorCrop = settings?.crop else { return input }
+        let crop = sensorCrop.transformedForDisplay(orientation: exifOrientation)
         let hasCrop = crop.hasCrop ?? false
         let angle = crop.angle ?? 0
 

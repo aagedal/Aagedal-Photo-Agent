@@ -582,10 +582,10 @@ struct FullScreenImageView: View {
     }
 
     /// Apply CameraRaw adjustments + crop to a CGImage, preserving HDR color space.
-    nonisolated private static func applyCameraRaw(to cgImage: CGImage, settings: CameraRawSettings?) -> CGImage {
+    nonisolated private static func applyCameraRaw(to cgImage: CGImage, settings: CameraRawSettings?, exifOrientation: Int = 1) -> CGImage {
         guard let settings else { return cgImage }
         let ciImage = CIImage(cgImage: cgImage)
-        let processed = CameraRawApproximation.applyWithCrop(to: ciImage, settings: settings)
+        let processed = CameraRawApproximation.applyWithCrop(to: ciImage, settings: settings, exifOrientation: exifOrientation)
         let extent = processed.extent
         guard extent.width > 0, extent.height > 0 else { return cgImage }
 
@@ -619,6 +619,7 @@ struct FullScreenImageView: View {
         }
 
         let cameraRaw = currentImageFile?.cameraRawSettings
+        let imageOrientation = currentImageFile?.exifOrientation ?? 1
 
         // Read source pixel dimensions (cheap metadata-only, no pixel decode)
         // EXIF orientations 5-8 swap width/height after transform
@@ -632,10 +633,11 @@ struct FullScreenImageView: View {
                 ? CGSize(width: CGFloat(ph), height: CGFloat(pw))
                 : CGSize(width: CGFloat(pw), height: CGFloat(ph))
 
-            // Adjust for crop if present
+            // Adjust for crop if present (transform to display space first)
             if let crop = cameraRaw?.crop, !(crop.isEmpty) {
-                let cropW = (crop.right ?? 1) - (crop.left ?? 0)
-                let cropH = (crop.bottom ?? 1) - (crop.top ?? 0)
+                let displayCrop = crop.transformedForDisplay(orientation: orientation)
+                let cropW = (displayCrop.right ?? 1) - (displayCrop.left ?? 0)
+                let cropH = (displayCrop.bottom ?? 1) - (displayCrop.top ?? 0)
                 if cropW > 0.01, cropH > 0.01 {
                     let angle = crop.angle ?? 0
                     if abs(angle) > 0.0001 {
@@ -688,7 +690,7 @@ struct FullScreenImageView: View {
             // Running decode at .medium avoids user-initiated -> default QoS inversion warnings.
             let preview = await Task.detached(priority: .medium) {
                 guard let raw = FullScreenImageCache.extractEmbeddedPreview(from: url) else { return nil as CGImage? }
-                return Self.applyCameraRaw(to: raw, settings: cameraRaw)
+                return Self.applyCameraRaw(to: raw, settings: cameraRaw, exifOrientation: imageOrientation)
             }.value
             let previewElapsed = CFAbsoluteTimeGetCurrent() - previewStart
             if let preview {
@@ -702,7 +704,7 @@ struct FullScreenImageView: View {
             let previewStart = CFAbsoluteTimeGetCurrent()
             let preview = await Task.detached(priority: .medium) {
                 guard let raw = FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: screenLogicalPx) else { return nil as CGImage? }
-                return Self.applyCameraRaw(to: raw, settings: cameraRaw)
+                return Self.applyCameraRaw(to: raw, settings: cameraRaw, exifOrientation: imageOrientation)
             }.value
             let previewElapsed = CFAbsoluteTimeGetCurrent() - previewStart
             guard !Task.isCancelled else { return }
@@ -722,7 +724,7 @@ struct FullScreenImageView: View {
                 }
                 return
             }
-            image = Self.applyCameraRaw(to: image, settings: cameraRaw)
+            image = Self.applyCameraRaw(to: image, settings: cameraRaw, exifOrientation: imageOrientation)
             let fullElapsed = CFAbsoluteTimeGetCurrent() - fullStart
             guard !Task.isCancelled else {
                 imageLogger.info("\(filename): Phase 2 cancelled after \(String(format: "%.1f", fullElapsed * 1000))ms")
@@ -757,12 +759,13 @@ struct FullScreenImageView: View {
 
         let filename = url.lastPathComponent
         let cameraRaw = currentImageFile?.cameraRawSettings
+        let orientation = currentImageFile?.exifOrientation ?? 1
         imageLogger.info("\(filename): Loading full resolution for zoom")
         isLoading = true
         fullResTask = Task.detached(priority: .medium) {
             let fullStart = CFAbsoluteTimeGetCurrent()
             guard var image = FullScreenImageCache.loadFullResolution(from: url) else { return }
-            image = Self.applyCameraRaw(to: image, settings: cameraRaw)
+            image = Self.applyCameraRaw(to: image, settings: cameraRaw, exifOrientation: orientation)
             let elapsed = CFAbsoluteTimeGetCurrent() - fullStart
             guard !Task.isCancelled else { return }
             await MainActor.run {
@@ -797,7 +800,7 @@ struct FullScreenImageView: View {
         let visibleImages = viewModel.visibleImages
         let imageURLs = visibleImages.map(\.url)
 
-        // Build a lookup of CameraRaw settings for prefetch processing
+        // Build lookups of CameraRaw settings and orientation for prefetch processing
         let settingsLookup: [URL: CameraRawSettings] = {
             var dict: [URL: CameraRawSettings] = [:]
             for image in visibleImages {
@@ -807,13 +810,21 @@ struct FullScreenImageView: View {
             }
             return dict
         }()
+        let orientationLookup: [URL: Int] = {
+            var dict: [URL: Int] = [:]
+            for image in visibleImages {
+                dict[image.url] = image.exifOrientation
+            }
+            return dict
+        }()
 
         imageCache.startPrefetch(
             currentIndex: currentIndex,
             images: imageURLs,
             direction: direction,
             screenMaxPx: screenMaxPx,
-            settingsForURL: { url in settingsLookup[url] }
+            settingsForURL: { url in settingsLookup[url] },
+            orientationForURL: { url in orientationLookup[url] ?? 1 }
         )
     }
 

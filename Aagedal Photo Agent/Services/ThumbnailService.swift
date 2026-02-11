@@ -16,7 +16,7 @@ final class ThumbnailService {
         cache.object(forKey: url as NSURL)
     }
 
-    func loadThumbnail(for url: URL, cameraRawSettings: CameraRawSettings? = nil) async -> NSImage? {
+    func loadThumbnail(for url: URL, cameraRawSettings: CameraRawSettings? = nil, exifOrientation: Int = 1) async -> NSImage? {
         if let cached = cache.object(forKey: url as NSURL) {
             return cached
         }
@@ -38,7 +38,7 @@ final class ThumbnailService {
             guard let image else { return nil as NSImage? }
 
             if let settings = cameraRawSettings, !settings.isEmpty {
-                if let processed = applyCameraRaw(to: image, settings: settings) {
+                if let processed = applyCameraRaw(to: image, settings: settings, exifOrientation: exifOrientation) {
                     cache.setObject(processed, forKey: url as NSURL)
                     return processed
                 }
@@ -87,12 +87,12 @@ final class ThumbnailService {
         return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
     }
 
-    nonisolated private func applyCameraRaw(to nsImage: NSImage, settings: CameraRawSettings) -> NSImage? {
+    nonisolated private func applyCameraRaw(to nsImage: NSImage, settings: CameraRawSettings, exifOrientation: Int = 1) -> NSImage? {
         guard let cgImage = nsImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
             return nil
         }
         let ciImage = CIImage(cgImage: cgImage)
-        let processed = CameraRawApproximation.applyWithCrop(to: ciImage, settings: settings)
+        let processed = CameraRawApproximation.applyWithCrop(to: ciImage, settings: settings, exifOrientation: exifOrientation)
         let extent = processed.extent
         guard extent.width > 0, extent.height > 0 else { return nil }
 

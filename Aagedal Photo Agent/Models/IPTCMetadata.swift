@@ -90,6 +90,40 @@ struct CameraRawSettings: Codable, Sendable, Equatable {
 }
 
 extension CameraRawCrop {
+    /// Transform crop from sensor (XMP) orientation to display orientation.
+    nonisolated func transformedForDisplay(orientation: Int) -> CameraRawCrop {
+        let t = top ?? 0, l = left ?? 0, b = bottom ?? 1, r = right ?? 1
+        let (dt, dl, db, dr): (Double, Double, Double, Double)
+        switch orientation {
+        case 2: (dt, dl, db, dr) = (t, 1-r, b, 1-l)       // flip horizontal
+        case 3: (dt, dl, db, dr) = (1-b, 1-r, 1-t, 1-l)   // rotate 180°
+        case 4: (dt, dl, db, dr) = (1-b, l, 1-t, r)        // flip vertical
+        case 5: (dt, dl, db, dr) = (l, t, r, b)             // transpose
+        case 6: (dt, dl, db, dr) = (l, 1-b, r, 1-t)        // rotate 90° CW
+        case 7: (dt, dl, db, dr) = (1-r, 1-b, 1-l, 1-t)    // transverse
+        case 8: (dt, dl, db, dr) = (1-r, t, 1-l, b)         // rotate 90° CCW
+        default: return self                                  // O=1 or unknown
+        }
+        return CameraRawCrop(top: dt, left: dl, bottom: db, right: dr, angle: angle, hasCrop: hasCrop)
+    }
+
+    /// Inverse: transform crop from display orientation back to sensor (XMP) orientation.
+    nonisolated func transformedForSensor(orientation: Int) -> CameraRawCrop {
+        let t = top ?? 0, l = left ?? 0, b = bottom ?? 1, r = right ?? 1
+        let (st, sl, sb, sr): (Double, Double, Double, Double)
+        switch orientation {
+        case 2: (st, sl, sb, sr) = (t, 1-r, b, 1-l)       // flip H is self-inverse
+        case 3: (st, sl, sb, sr) = (1-b, 1-r, 1-t, 1-l)   // 180° is self-inverse
+        case 4: (st, sl, sb, sr) = (1-b, l, 1-t, r)        // flip V is self-inverse
+        case 5: (st, sl, sb, sr) = (l, t, r, b)             // transpose is self-inverse
+        case 6: (st, sl, sb, sr) = (1-l, t, 1-r, b)        // inverse of 90° CW = 90° CCW
+        case 7: (st, sl, sb, sr) = (1-r, 1-b, 1-l, 1-t)    // transverse is self-inverse
+        case 8: (st, sl, sb, sr) = (l, 1-b, r, 1-t)        // inverse of 90° CCW = 90° CW
+        default: return self
+        }
+        return CameraRawCrop(top: st, left: sl, bottom: sb, right: sr, angle: angle, hasCrop: hasCrop)
+    }
+
     func merged(preferring override: CameraRawCrop) -> CameraRawCrop {
         var result = self
         if let value = override.top { result.top = value }
@@ -132,6 +166,7 @@ struct IPTCMetadata: Codable, Sendable, Equatable {
     var rating: Int?
     var label: String?
     var cameraRaw: CameraRawSettings?
+    var exifOrientation: Int?
 
     init(
         title: String? = nil,
@@ -153,7 +188,8 @@ struct IPTCMetadata: Codable, Sendable, Equatable {
         event: String? = nil,
         rating: Int? = nil,
         label: String? = nil,
-        cameraRaw: CameraRawSettings? = nil
+        cameraRaw: CameraRawSettings? = nil,
+        exifOrientation: Int? = nil
     ) {
         self.title = title
         self.description = description
@@ -175,6 +211,7 @@ struct IPTCMetadata: Codable, Sendable, Equatable {
         self.rating = rating
         self.label = label
         self.cameraRaw = cameraRaw
+        self.exifOrientation = exifOrientation
     }
 }
 
@@ -208,6 +245,7 @@ extension IPTCMetadata {
                 result.cameraRaw = value
             }
         }
+        if let value = override.exifOrientation { result.exifOrientation = value }
 
         return result
     }

@@ -106,6 +106,18 @@ struct Aagedal_Photo_AgentApp: App {
                 .keyboardShortcut("t", modifiers: .command)
             }
 
+            CommandMenu("Image") {
+                Button("Rotate Right") {
+                    NotificationCenter.default.post(name: .rotateClockwise, object: nil)
+                }
+                .keyboardShortcut("r", modifiers: .command)
+
+                Button("Rotate Left") {
+                    NotificationCenter.default.post(name: .rotateCounterclockwise, object: nil)
+                }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+            }
+
             CommandMenu("Upload") {
                 Button("Upload Selected") {
                     NotificationCenter.default.post(name: .uploadSelected, object: nil)
@@ -144,4 +156,6 @@ extension Notification.Name {
     static let uploadAll = Notification.Name("uploadAll")
     static let showKnownPeopleDatabase = Notification.Name("showKnownPeopleDatabase")
     static let knownPeopleDatabaseDidChange = Notification.Name("knownPeopleDatabaseDidChange")
+    static let rotateClockwise = Notification.Name("rotateClockwise")
+    static let rotateCounterclockwise = Notification.Name("rotateCounterclockwise")
 }

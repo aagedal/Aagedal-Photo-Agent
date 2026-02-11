@@ -1064,6 +1064,12 @@ struct ContentViewModifiers: ViewModifier {
             .onReceive(NotificationCenter.default.publisher(for: .selectNextImage)) { _ in
                 browserViewModel.selectNext()
             }
+            .onReceive(NotificationCenter.default.publisher(for: .rotateClockwise)) { _ in
+                browserViewModel.rotateClockwise()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .rotateCounterclockwise)) { _ in
+                browserViewModel.rotateCounterclockwise()
+            }
             .onReceive(NotificationCenter.default.publisher(for: .faceMetadataDidChange)) { _ in
                 let selected = browserViewModel.selectedImages
                 metadataViewModel.loadMetadata(for: selected, folderURL: browserViewModel.currentFolderURL)

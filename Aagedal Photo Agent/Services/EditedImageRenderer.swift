@@ -1,4 +1,5 @@
 import CoreImage
+import ImageIO
 
 enum EditedImageRenderer {
 
@@ -7,7 +8,15 @@ enum EditedImageRenderer {
             throw RenderError.unreadableImage
         }
 
-        let output = CameraRawApproximation.applyWithCrop(to: input, settings: cameraRaw)
+        // Read EXIF orientation from the source file
+        var exifOrientation = 1
+        if let source = CGImageSourceCreateWithURL(sourceURL as CFURL, nil),
+           let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+           let orientation = props[kCGImagePropertyOrientation] as? Int {
+            exifOrientation = orientation
+        }
+
+        let output = CameraRawApproximation.applyWithCrop(to: input, settings: cameraRaw, exifOrientation: exifOrientation)
 
         let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
         guard let data = CameraRawApproximation.ciContext.jpegRepresentation(of: output, colorSpace: colorSpace, options: [:]) else {
