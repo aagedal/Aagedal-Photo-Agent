@@ -58,6 +58,7 @@ struct ThumbnailCell: View, Equatable {
                         Image(nsImage: thumbnail)
                             .resizable()
                             .aspectRatio(contentMode: .fit)
+                            .allowedDynamicRange(image.cameraRawSettings?.hdrEditMode == 1 ? .high : .standard)
                     } else {
                         Rectangle()
                             .fill(.quaternary)

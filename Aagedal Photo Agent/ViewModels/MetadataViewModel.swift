@@ -931,6 +931,10 @@ final class MetadataViewModel {
             fields[ExifToolWriteTag.crsCropConstrainToWarp] = "0"
             fields[ExifToolWriteTag.crsCropConstrainToUnitSquare] = "1"
         }
+
+        if let value = cameraRaw.hdrEditMode {
+            fields[ExifToolWriteTag.crsHDREditMode] = String(value)
+        }
     }
 
     private func formatSignedInt(_ value: Int) -> String {

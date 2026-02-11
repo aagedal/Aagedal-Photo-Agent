@@ -96,11 +96,15 @@ final class ThumbnailService {
         let extent = processed.extent
         guard extent.width > 0, extent.height > 0 else { return nil }
 
+        let isHDR = settings.hdrEditMode == 1
+        let format: CIFormat = isHDR ? .RGBAh : .RGBA8
+        let colorSpace = isHDR ? CameraRawApproximation.workingColorSpace : CGColorSpaceCreateDeviceRGB()
+
         guard let outputCG = CameraRawApproximation.ciContext.createCGImage(
             processed,
             from: extent,
-            format: .RGBA8,
-            colorSpace: CGColorSpaceCreateDeviceRGB()
+            format: format,
+            colorSpace: colorSpace
         ) else {
             return nil
         }
