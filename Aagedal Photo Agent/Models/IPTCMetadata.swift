@@ -37,6 +37,14 @@ struct CameraRawSettings: Codable, Sendable, Equatable {
     var hasSettings: Bool?
     var crop: CameraRawCrop?
     var hdrEditMode: Int?
+    var hdrMaxValue: String?
+    var sdrBrightness: Int?
+    var sdrContrast: Int?
+    var sdrClarity: Int?
+    var sdrHighlights: Int?
+    var sdrShadows: Int?
+    var sdrWhites: Int?
+    var sdrBlend: Int?
 
     var isEmpty: Bool {
         version == nil
@@ -57,6 +65,14 @@ struct CameraRawSettings: Codable, Sendable, Equatable {
             && hasSettings == nil
             && (crop?.isEmpty ?? true)
             && hdrEditMode == nil
+            && hdrMaxValue == nil
+            && sdrBrightness == nil
+            && sdrContrast == nil
+            && sdrClarity == nil
+            && sdrHighlights == nil
+            && sdrShadows == nil
+            && sdrWhites == nil
+            && sdrBlend == nil
     }
 
     func merged(preferring override: CameraRawSettings) -> CameraRawSettings {
@@ -85,6 +101,14 @@ struct CameraRawSettings: Codable, Sendable, Equatable {
             }
         }
         if let value = override.hdrEditMode { result.hdrEditMode = value }
+        if let value = override.hdrMaxValue, !value.isEmpty { result.hdrMaxValue = value }
+        if let value = override.sdrBrightness { result.sdrBrightness = value }
+        if let value = override.sdrContrast { result.sdrContrast = value }
+        if let value = override.sdrClarity { result.sdrClarity = value }
+        if let value = override.sdrHighlights { result.sdrHighlights = value }
+        if let value = override.sdrShadows { result.sdrShadows = value }
+        if let value = override.sdrWhites { result.sdrWhites = value }
+        if let value = override.sdrBlend { result.sdrBlend = value }
         return result
     }
 }

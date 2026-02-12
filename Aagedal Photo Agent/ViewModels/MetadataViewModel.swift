@@ -935,6 +935,30 @@ final class MetadataViewModel {
         if let value = cameraRaw.hdrEditMode {
             fields[ExifToolWriteTag.crsHDREditMode] = String(value)
         }
+        if let value = cameraRaw.hdrMaxValue, !value.isEmpty {
+            fields[ExifToolWriteTag.crsHDRMaxValue] = value
+        }
+        if let value = cameraRaw.sdrBrightness {
+            fields[ExifToolWriteTag.crsSDRBrightness] = formatSignedInt(value)
+        }
+        if let value = cameraRaw.sdrContrast {
+            fields[ExifToolWriteTag.crsSDRContrast] = formatSignedInt(value)
+        }
+        if let value = cameraRaw.sdrClarity {
+            fields[ExifToolWriteTag.crsSDRClarity] = formatSignedInt(value)
+        }
+        if let value = cameraRaw.sdrHighlights {
+            fields[ExifToolWriteTag.crsSDRHighlights] = formatSignedInt(value)
+        }
+        if let value = cameraRaw.sdrShadows {
+            fields[ExifToolWriteTag.crsSDRShadows] = formatSignedInt(value)
+        }
+        if let value = cameraRaw.sdrWhites {
+            fields[ExifToolWriteTag.crsSDRWhites] = formatSignedInt(value)
+        }
+        if let value = cameraRaw.sdrBlend {
+            fields[ExifToolWriteTag.crsSDRBlend] = formatSignedInt(value)
+        }
     }
 
     private func formatSignedInt(_ value: Int) -> String {

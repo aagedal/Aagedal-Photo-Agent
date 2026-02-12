@@ -351,7 +351,8 @@ struct FullScreenImageView: View {
 
                     if let file = currentImageFile {
                         // Top-right: crop / edit / C2PA badges
-                        if file.hasC2PA || file.hasDevelopEdits || file.hasCropEdits || file.hasPendingMetadataChanges {
+                        if file.hasC2PA || file.hasDevelopEdits || file.hasCropEdits
+                            || file.hasPendingMetadataChanges || file.cameraRawSettings?.hdrEditMode == 1 {
                             VStack {
                                 HStack {
                                     Spacer()
@@ -379,6 +380,14 @@ struct FullScreenImageView: View {
                                                 .padding(.horizontal, 10)
                                                 .padding(.vertical, 6)
                                                 .background(.green.opacity(0.8), in: Capsule())
+                                        }
+                                        if file.cameraRawSettings?.hdrEditMode == 1 {
+                                            Label("HDR", systemImage: "sun.max.fill")
+                                                .font(.caption)
+                                                .foregroundStyle(.white)
+                                                .padding(.horizontal, 10)
+                                                .padding(.vertical, 6)
+                                                .background(.purple.opacity(0.8), in: Capsule())
                                         }
                                         if file.hasPendingMetadataChanges {
                                             Label("Pending", systemImage: "circle.fill")
