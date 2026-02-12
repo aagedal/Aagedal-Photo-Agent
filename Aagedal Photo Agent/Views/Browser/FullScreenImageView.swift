@@ -634,23 +634,13 @@ struct FullScreenImageView: View {
                 : CGSize(width: CGFloat(pw), height: CGFloat(ph))
 
             // Adjust for crop if present (transform to display space first)
+            // Crop coordinates define the AABB — dimensions are used directly regardless of angle
             if let crop = cameraRaw?.crop, !(crop.isEmpty) {
                 let displayCrop = crop.transformedForDisplay(orientation: orientation)
                 let cropW = (displayCrop.right ?? 1) - (displayCrop.left ?? 0)
                 let cropH = (displayCrop.bottom ?? 1) - (displayCrop.top ?? 0)
                 if cropW > 0.01, cropH > 0.01 {
-                    let angle = crop.angle ?? 0
-                    if abs(angle) > 0.0001 {
-                        let radians = -angle * .pi / 180.0
-                        let aabbW = cropW * rawSize.width
-                        let aabbH = cropH * rawSize.height
-                        rawSize = CGSize(
-                            width: abs(aabbW * cos(radians) - aabbH * sin(radians)),
-                            height: abs(aabbW * sin(radians) + aabbH * cos(radians))
-                        )
-                    } else {
-                        rawSize = CGSize(width: cropW * rawSize.width, height: cropH * rawSize.height)
-                    }
+                    rawSize = CGSize(width: cropW * rawSize.width, height: cropH * rawSize.height)
                 }
             }
             sourcePixelSize = rawSize

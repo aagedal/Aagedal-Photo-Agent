@@ -96,6 +96,15 @@ struct ImageFile: Identifiable, Hashable, Sendable {
 
     static func == (lhs: ImageFile, rhs: ImageFile) -> Bool {
         lhs.url == rhs.url
+            && lhs.starRating == rhs.starRating
+            && lhs.colorLabel == rhs.colorLabel
+            && lhs.hasC2PA == rhs.hasC2PA
+            && lhs.hasDevelopEdits == rhs.hasDevelopEdits
+            && lhs.hasCropEdits == rhs.hasCropEdits
+            && lhs.cameraRawSettings == rhs.cameraRawSettings
+            && lhs.exifOrientation == rhs.exifOrientation
+            && lhs.hasPendingMetadataChanges == rhs.hasPendingMetadataChanges
+            && lhs.pendingFieldNames == rhs.pendingFieldNames
     }
 
     func hash(into hasher: inout Hasher) {

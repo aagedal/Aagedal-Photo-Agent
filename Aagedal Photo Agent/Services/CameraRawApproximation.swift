@@ -136,10 +136,6 @@ enum CameraRawApproximation {
         }
 
         let radians = CGFloat(-angle * .pi / 180.0)
-        let cosA = cos(radians)
-        let sinA = sin(radians)
-        let actualWidth = abs(width * cosA - height * sinA)
-        let actualHeight = abs(width * sinA + height * cosA)
 
         let center = CGPoint(x: cropRect.midX, y: cropRect.midY)
         let transform = CGAffineTransform(translationX: center.x, y: center.y)
@@ -147,15 +143,10 @@ enum CameraRawApproximation {
             .translatedBy(x: -center.x, y: -center.y)
 
         let rotated = input.transformed(by: transform)
-        let actualCropRect = CGRect(
-            x: center.x - actualWidth / 2,
-            y: center.y - actualHeight / 2,
-            width: actualWidth,
-            height: actualHeight
-        ).intersection(rotated.extent)
-        guard !actualCropRect.isNull, actualCropRect.width > 1, actualCropRect.height > 1 else { return input }
+        let finalCropRect = cropRect.intersection(rotated.extent)
+        guard !finalCropRect.isNull, finalCropRect.width > 1, finalCropRect.height > 1 else { return input }
 
-        return rotated.cropped(to: actualCropRect)
+        return rotated.cropped(to: finalCropRect)
     }
 
     nonisolated private static func applyFilter(named name: String, input: CIImage, values: [String: Any]) -> CIImage? {
