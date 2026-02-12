@@ -135,18 +135,38 @@ enum CameraRawApproximation {
             return input.cropped(to: cropRect)
         }
 
-        let radians = CGFloat(-angle * .pi / 180.0)
-
-        let center = CGPoint(x: cropRect.midX, y: cropRect.midY)
-        let transform = CGAffineTransform(translationX: center.x, y: center.y)
-            .rotated(by: radians)
-            .translatedBy(x: -center.x, y: -center.y)
-
+        // Replicate EditWorkspaceView / CropOverlayView crop geometry exactly.
+        // 1. Rotate full image around IMAGE center (matches .rotationEffect on the Image view).
+        //    CIImage is y-up; SwiftUI is y-down. The y-flip reverses rotation direction,
+        //    so we use +angle here to match SwiftUI's .rotationEffect(.degrees(-angle)).
+        let viewRadians = CGFloat(angle * .pi / 180.0)
+        let imageCenter = CGPoint(x: extent.midX, y: extent.midY)
+        let transform = CGAffineTransform(translationX: imageCenter.x, y: imageCenter.y)
+            .rotated(by: viewRadians)
+            .translatedBy(x: -imageCenter.x, y: -imageCenter.y)
         let rotated = input.transformed(by: transform)
-        let finalCropRect = cropRect.intersection(rotated.extent)
-        guard !finalCropRect.isNull, finalCropRect.width > 1, finalCropRect.height > 1 else { return input }
 
-        return rotated.cropped(to: finalCropRect)
+        // 2. Forward-project AABB to actual crop dims (CropOverlayView.forwardProjectDims).
+        //    Uses the POSITIVE crop angle, not the negated view rotation.
+        let fwdRadians = CGFloat(angle * .pi / 180.0)
+        let fwdCos = cos(fwdRadians)
+        let fwdSin = sin(fwdRadians)
+        let actualWidth = abs(width * fwdCos + height * fwdSin)
+        let actualHeight = abs(-width * fwdSin + height * fwdCos)
+
+        // 3. Place crop rect at the rotated AABB center (CropOverlayView.viewCropRect).
+        let cropCenter = CGPoint(x: cropRect.midX, y: cropRect.midY)
+        let newCenter = cropCenter.applying(transform)
+
+        let actualCropRect = CGRect(
+            x: newCenter.x - actualWidth / 2,
+            y: newCenter.y - actualHeight / 2,
+            width: actualWidth,
+            height: actualHeight
+        ).intersection(rotated.extent)
+        guard !actualCropRect.isNull, actualCropRect.width > 1, actualCropRect.height > 1 else { return input }
+
+        return rotated.cropped(to: actualCropRect)
     }
 
     nonisolated private static func applyFilter(named name: String, input: CIImage, values: [String: Any]) -> CIImage? {
