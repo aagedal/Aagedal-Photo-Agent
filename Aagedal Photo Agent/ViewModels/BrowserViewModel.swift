@@ -1260,6 +1260,7 @@ final class BrowserViewModel {
             if let sidecar = allSidecars[updated[i].url], sidecar.pendingChanges {
                 updated[i].hasPendingMetadataChanges = true
                 updated[i].pendingFieldNames = extractPendingFieldNames(from: sidecar)
+                applyPendingSidecarOverrides(to: &updated, for: updated[i].url, index: i, cachedSidecar: sidecar)
             } else {
                 updated[i].hasPendingMetadataChanges = false
                 updated[i].pendingFieldNames = []
@@ -1277,6 +1278,7 @@ final class BrowserViewModel {
             if let sidecar, sidecar.pendingChanges {
                 updated[i].hasPendingMetadataChanges = true
                 updated[i].pendingFieldNames = extractPendingFieldNames(from: sidecar)
+                applyPendingSidecarOverrides(to: &updated, for: updated[i].url, index: i, cachedSidecar: sidecar)
             } else {
                 updated[i].hasPendingMetadataChanges = false
                 updated[i].pendingFieldNames = []
