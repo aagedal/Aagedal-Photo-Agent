@@ -61,6 +61,14 @@ enum ExifToolReadKey {
     static let crsCropAngle = "CropAngle"
     static let crsHasCrop = "HasCrop"
     static let crsHDREditMode = "HDREditMode"
+    static let crsHDRMaxValue = "HDRMaxValue"
+    static let crsSDRBrightness = "SDRBrightness"
+    static let crsSDRContrast = "SDRContrast"
+    static let crsSDRClarity = "SDRClarity"
+    static let crsSDRHighlights = "SDRHighlights"
+    static let crsSDRShadows = "SDRShadows"
+    static let crsSDRWhites = "SDRWhites"
+    static let crsSDRBlend = "SDRBlend"
 }
 
 /// Manages a persistent ExifTool process in `-stay_open` mode for fast batch operations.
@@ -364,6 +372,14 @@ final class ExifToolService {
             "-XMP-crs:CropRight",
             "-XMP-crs:CropAngle",
             "-XMP-crs:HDREditMode",
+            "-XMP-crs:HDRMaxValue",
+            "-XMP-crs:SDRBrightness",
+            "-XMP-crs:SDRContrast",
+            "-XMP-crs:SDRClarity",
+            "-XMP-crs:SDRHighlights",
+            "-XMP-crs:SDRShadows",
+            "-XMP-crs:SDRWhites",
+            "-XMP-crs:SDRBlend",
             "-EXIF:Orientation#",
             "-JUMBF:All"
         ]
@@ -453,7 +469,15 @@ final class ExifToolService {
             vibrance: parseIntValue(dict[ExifToolReadKey.crsVibrance]),
             hasSettings: parseBoolValue(dict[ExifToolReadKey.crsHasSettings]),
             crop: cropValue,
-            hdrEditMode: parseIntValue(dict[ExifToolReadKey.crsHDREditMode])
+            hdrEditMode: parseIntValue(dict[ExifToolReadKey.crsHDREditMode]),
+            hdrMaxValue: dict[ExifToolReadKey.crsHDRMaxValue] as? String,
+            sdrBrightness: parseIntValue(dict[ExifToolReadKey.crsSDRBrightness]),
+            sdrContrast: parseIntValue(dict[ExifToolReadKey.crsSDRContrast]),
+            sdrClarity: parseIntValue(dict[ExifToolReadKey.crsSDRClarity]),
+            sdrHighlights: parseIntValue(dict[ExifToolReadKey.crsSDRHighlights]),
+            sdrShadows: parseIntValue(dict[ExifToolReadKey.crsSDRShadows]),
+            sdrWhites: parseIntValue(dict[ExifToolReadKey.crsSDRWhites]),
+            sdrBlend: parseIntValue(dict[ExifToolReadKey.crsSDRBlend])
         )
 
         return IPTCMetadata(

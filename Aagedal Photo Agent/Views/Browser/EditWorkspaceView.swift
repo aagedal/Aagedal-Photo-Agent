@@ -71,6 +71,16 @@ struct EditWorkspaceView: View {
                     metadataViewModel.editingMetadata.cameraRaw = CameraRawSettings()
                 }
                 metadataViewModel.editingMetadata.cameraRaw?.hdrEditMode = newValue ? 1 : 0
+
+                // Propagate to ImageFile for immediate thumbnail/fullscreen update
+                if let url = selectedImageURL,
+                   let index = browserViewModel.urlToImageIndex[url] {
+                    if browserViewModel.images[index].cameraRawSettings == nil {
+                        browserViewModel.images[index].cameraRawSettings = CameraRawSettings()
+                    }
+                    browserViewModel.images[index].cameraRawSettings?.hdrEditMode = newValue ? 1 : 0
+                    browserViewModel.thumbnailService.invalidateThumbnail(for: url)
+                }
             }
         )
     }
@@ -502,8 +512,10 @@ struct EditWorkspaceView: View {
 
                     Divider()
 
-                    Button(isSavingRenderedJPEG ? "Saving JPEG..." : "Save JPEG") {
-                        saveCurrentRenderedJPEG()
+                    Button(isSavingRenderedJPEG
+                        ? (isHDREnabled ? "Saving HDR HEIC..." : "Saving JPEG...")
+                        : (isHDREnabled ? "Save HDR HEIC" : "Save JPEG")) {
+                        saveCurrentRenderedImage()
                     }
                     .disabled(!canEditSingleImage || selectedImageURL == nil || isSavingRenderedJPEG)
                 } else {
@@ -1149,21 +1161,27 @@ struct EditWorkspaceView: View {
         commitEditAdjustments()
     }
 
-    private func saveCurrentRenderedJPEG() {
+    private func saveCurrentRenderedImage() {
         guard !isSavingRenderedJPEG,
               let selectedImageURL else { return }
         let settings = metadataViewModel.editingMetadata.cameraRaw
+        let hdr = isHDREnabled
         isSavingRenderedJPEG = true
 
         Task {
             do {
                 let outputFolder = selectedImageURL.deletingLastPathComponent().appendingPathComponent("Edited", isDirectory: true)
                 try FileManager.default.createDirectory(at: outputFolder, withIntermediateDirectories: true)
-                try EditedImageRenderer.renderJPEG(from: selectedImageURL, cameraRaw: settings, outputFolder: outputFolder)
-                let outputURL = EditedImageRenderer.outputURL(for: selectedImageURL, in: outputFolder)
-                browserViewModel.thumbnailService.invalidateThumbnail(for: outputURL)
+                if hdr {
+                    let outputURL = try EditedImageRenderer.renderHDR(from: selectedImageURL, cameraRaw: settings, outputFolder: outputFolder)
+                    browserViewModel.thumbnailService.invalidateThumbnail(for: outputURL)
+                } else {
+                    try EditedImageRenderer.renderJPEG(from: selectedImageURL, cameraRaw: settings, outputFolder: outputFolder)
+                    let outputURL = EditedImageRenderer.outputURL(for: selectedImageURL, in: outputFolder)
+                    browserViewModel.thumbnailService.invalidateThumbnail(for: outputURL)
+                }
             } catch {
-                browserViewModel.errorMessage = "Failed to save JPEG: \(error.localizedDescription)"
+                browserViewModel.errorMessage = "Failed to save image: \(error.localizedDescription)"
             }
             isSavingRenderedJPEG = false
         }

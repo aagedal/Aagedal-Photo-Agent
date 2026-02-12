@@ -649,7 +649,16 @@ final class BrowserViewModel {
             saturation: parseIntValue(dict[ExifToolReadKey.crsSaturation]),
             vibrance: parseIntValue(dict[ExifToolReadKey.crsVibrance]),
             hasSettings: parseBoolValue(dict[ExifToolReadKey.crsHasSettings]),
-            crop: cropValue
+            crop: cropValue,
+            hdrEditMode: parseIntValue(dict[ExifToolReadKey.crsHDREditMode]),
+            hdrMaxValue: dict[ExifToolReadKey.crsHDRMaxValue] as? String,
+            sdrBrightness: parseIntValue(dict[ExifToolReadKey.crsSDRBrightness]),
+            sdrContrast: parseIntValue(dict[ExifToolReadKey.crsSDRContrast]),
+            sdrClarity: parseIntValue(dict[ExifToolReadKey.crsSDRClarity]),
+            sdrHighlights: parseIntValue(dict[ExifToolReadKey.crsSDRHighlights]),
+            sdrShadows: parseIntValue(dict[ExifToolReadKey.crsSDRShadows]),
+            sdrWhites: parseIntValue(dict[ExifToolReadKey.crsSDRWhites]),
+            sdrBlend: parseIntValue(dict[ExifToolReadKey.crsSDRBlend])
         )
         return settings.isEmpty ? nil : settings
     }

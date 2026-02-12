@@ -284,6 +284,16 @@ struct XMPSidecarService: Sendable {
         setSimple(on: description, prefix: "crs", localName: "HasCrop", value: hasCrop.map(formatBool))
         setSimple(on: description, prefix: "crs", localName: "CropConstrainToWarp", value: hasCrop == true ? "0" : nil)
         setSimple(on: description, prefix: "crs", localName: "CropConstrainToUnitSquare", value: hasCrop == true ? "1" : nil)
+
+        setSimple(on: description, prefix: "crs", localName: "HDREditMode", value: settings.hdrEditMode.map(String.init))
+        setSimple(on: description, prefix: "crs", localName: "HDRMaxValue", value: settings.hdrMaxValue)
+        setSimple(on: description, prefix: "crs", localName: "SDRBrightness", value: settings.sdrBrightness.map(formatSignedInt))
+        setSimple(on: description, prefix: "crs", localName: "SDRContrast", value: settings.sdrContrast.map(formatSignedInt))
+        setSimple(on: description, prefix: "crs", localName: "SDRClarity", value: settings.sdrClarity.map(formatSignedInt))
+        setSimple(on: description, prefix: "crs", localName: "SDRHighlights", value: settings.sdrHighlights.map(formatSignedInt))
+        setSimple(on: description, prefix: "crs", localName: "SDRShadows", value: settings.sdrShadows.map(formatSignedInt))
+        setSimple(on: description, prefix: "crs", localName: "SDRWhites", value: settings.sdrWhites.map(formatSignedInt))
+        setSimple(on: description, prefix: "crs", localName: "SDRBlend", value: settings.sdrBlend.map(formatSignedInt))
     }
 
     private func removeCameraRawSettings(from description: XMLElement) {
@@ -310,6 +320,15 @@ struct XMPSidecarService: Sendable {
             "HasCrop",
             "CropConstrainToWarp",
             "CropConstrainToUnitSquare",
+            "HDREditMode",
+            "HDRMaxValue",
+            "SDRBrightness",
+            "SDRContrast",
+            "SDRClarity",
+            "SDRHighlights",
+            "SDRShadows",
+            "SDRWhites",
+            "SDRBlend",
         ]
         for field in fields {
             removeProperty(from: description, prefix: "crs", localName: field)
@@ -515,6 +534,16 @@ struct XMPSidecarService: Sendable {
         )
         let cropValue = crop.isEmpty ? nil : crop
 
+        let hdrEditMode = parseSimple(from: description, prefix: "crs", localName: "HDREditMode").flatMap(parseSignedInt)
+        let hdrMaxValue = parseSimple(from: description, prefix: "crs", localName: "HDRMaxValue")
+        let sdrBrightness = parseSimple(from: description, prefix: "crs", localName: "SDRBrightness").flatMap(parseSignedInt)
+        let sdrContrast = parseSimple(from: description, prefix: "crs", localName: "SDRContrast").flatMap(parseSignedInt)
+        let sdrClarity = parseSimple(from: description, prefix: "crs", localName: "SDRClarity").flatMap(parseSignedInt)
+        let sdrHighlights = parseSimple(from: description, prefix: "crs", localName: "SDRHighlights").flatMap(parseSignedInt)
+        let sdrShadows = parseSimple(from: description, prefix: "crs", localName: "SDRShadows").flatMap(parseSignedInt)
+        let sdrWhites = parseSimple(from: description, prefix: "crs", localName: "SDRWhites").flatMap(parseSignedInt)
+        let sdrBlend = parseSimple(from: description, prefix: "crs", localName: "SDRBlend").flatMap(parseSignedInt)
+
         let settings = CameraRawSettings(
             version: version,
             processVersion: processVersion,
@@ -530,7 +559,16 @@ struct XMPSidecarService: Sendable {
             whites2012: whites2012,
             blacks2012: blacks2012,
             hasSettings: hasSettings,
-            crop: cropValue
+            crop: cropValue,
+            hdrEditMode: hdrEditMode,
+            hdrMaxValue: hdrMaxValue,
+            sdrBrightness: sdrBrightness,
+            sdrContrast: sdrContrast,
+            sdrClarity: sdrClarity,
+            sdrHighlights: sdrHighlights,
+            sdrShadows: sdrShadows,
+            sdrWhites: sdrWhites,
+            sdrBlend: sdrBlend
         )
         return settings.isEmpty ? nil : settings
     }

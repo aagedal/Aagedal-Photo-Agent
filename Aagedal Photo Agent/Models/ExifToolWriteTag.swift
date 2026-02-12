@@ -51,6 +51,14 @@ enum ExifToolWriteTag {
     static let crsCropConstrainToWarp = "XMP-crs:CropConstrainToWarp"
     static let crsCropConstrainToUnitSquare = "XMP-crs:CropConstrainToUnitSquare"
     static let crsHDREditMode = "XMP-crs:HDREditMode"
+    static let crsHDRMaxValue = "XMP-crs:HDRMaxValue"
+    static let crsSDRBrightness = "XMP-crs:SDRBrightness"
+    static let crsSDRContrast = "XMP-crs:SDRContrast"
+    static let crsSDRClarity = "XMP-crs:SDRClarity"
+    static let crsSDRHighlights = "XMP-crs:SDRHighlights"
+    static let crsSDRShadows = "XMP-crs:SDRShadows"
+    static let crsSDRWhites = "XMP-crs:SDRWhites"
+    static let crsSDRBlend = "XMP-crs:SDRBlend"
 
     // MARK: - IPTC Mirrors (for cross-tool interoperability)
     static let iptcKeywords = "IPTC:Keywords"

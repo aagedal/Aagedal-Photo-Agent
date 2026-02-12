@@ -75,7 +75,8 @@ struct ThumbnailCell: View, Equatable {
                 .clipShape(RoundedRectangle(cornerRadius: 4))
 
                 // C2PA / edited / crop badges (top right)
-                if image.hasC2PA || image.hasDevelopEdits || image.hasCropEdits || image.hasPendingMetadataChanges {
+                if image.hasC2PA || image.hasDevelopEdits || image.hasCropEdits
+                    || image.hasPendingMetadataChanges || image.cameraRawSettings?.hdrEditMode == 1 {
                     VStack {
                         HStack {
                             Spacer()
@@ -102,6 +103,14 @@ struct ThumbnailCell: View, Equatable {
                                         .padding(4)
                                         .background(.green, in: Circle())
                                         .help("Image is cropped")
+                                }
+                                if image.cameraRawSettings?.hdrEditMode == 1 {
+                                    Image(systemName: "sun.max.fill")
+                                        .font(.caption2.weight(.semibold))
+                                        .foregroundStyle(.white)
+                                        .padding(4)
+                                        .background(.purple, in: Circle())
+                                        .help("HDR enabled")
                                 }
                             }
                             .padding(4)
