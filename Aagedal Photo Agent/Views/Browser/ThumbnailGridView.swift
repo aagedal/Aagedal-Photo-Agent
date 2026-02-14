@@ -31,7 +31,7 @@ struct ThumbnailGridView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            ZStack(alignment: .bottomTrailing) {
+            ZStack {
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVGrid(columns: columns, spacing: 8) {
@@ -58,21 +58,45 @@ struct ThumbnailGridView: View {
                     }
                 }
 
-                // Thumbnail size slider
-                HStack(spacing: 4) {
-                    Image(systemName: "square.grid.3x3")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    Slider(value: $viewModel.thumbnailScale, in: 0.5...2.0, step: 0.1)
-                        .frame(width: 80)
-                    Image(systemName: "square.grid.2x2")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                // Thumbnail generation progress (bottom-left)
+                if viewModel.thumbnailService.isPreGenerating {
+                    VStack {
+                        Spacer()
+                        HStack {
+                            ThumbnailGenerationProgressView(
+                                completed: viewModel.thumbnailService.preGenerateCompleted,
+                                total: viewModel.thumbnailService.preGenerateTotal,
+                                onCancel: { viewModel.thumbnailService.cancelBackgroundGeneration() }
+                            )
+                            .padding(8)
+                            Spacer()
+                        }
+                    }
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .animation(.easeInOut(duration: 0.25), value: viewModel.thumbnailService.isPreGenerating)
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
-                .padding(8)
+
+                // Thumbnail size slider (bottom-right)
+                VStack {
+                    Spacer()
+                    HStack {
+                        Spacer()
+                        HStack(spacing: 4) {
+                            Image(systemName: "square.grid.3x3")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            Slider(value: $viewModel.thumbnailScale, in: 0.5...2.0, step: 0.1)
+                                .frame(width: 80)
+                            Image(systemName: "square.grid.2x2")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
+                        .padding(8)
+                    }
+                }
             }
         }
         .focusable()

@@ -8,6 +8,12 @@ final class ThumbnailService {
     @ObservationIgnored private var inFlightTasks: [URL: Task<NSImage?, Never>] = [:]
     private let thumbnailSize = CGSize(width: 240, height: 240)
 
+    // Background pre-generation state
+    var isPreGenerating = false
+    var preGenerateCompleted = 0
+    var preGenerateTotal = 0
+    @ObservationIgnored private var backgroundGenerationTask: Task<Void, Never>?
+
     init() {
         cache.countLimit = 500
     }
@@ -116,10 +122,52 @@ final class ThumbnailService {
     }
 
     func clearCache() {
+        cancelBackgroundGeneration()
         cache.removeAllObjects()
         for task in inFlightTasks.values {
             task.cancel()
         }
         inFlightTasks.removeAll()
+    }
+
+    // MARK: - Background Pre-generation
+
+    func startBackgroundGeneration(for urls: [URL]) {
+        cancelBackgroundGeneration()
+        let uncached = urls.filter { cache.object(forKey: $0 as NSURL) == nil }
+        guard !uncached.isEmpty else { return }
+
+        preGenerateTotal = uncached.count
+        preGenerateCompleted = 0
+        isPreGenerating = true
+
+        backgroundGenerationTask = Task {
+            let batchSize = 6
+            for batchStart in stride(from: 0, to: uncached.count, by: batchSize) {
+                guard !Task.isCancelled else { break }
+                let batchEnd = min(batchStart + batchSize, uncached.count)
+                let batch = Array(uncached[batchStart..<batchEnd])
+
+                await withTaskGroup(of: Void.self) { group in
+                    for url in batch {
+                        group.addTask {
+                            _ = await self.loadThumbnail(for: url)
+                        }
+                    }
+                }
+
+                guard !Task.isCancelled else { break }
+                self.preGenerateCompleted = batchEnd
+            }
+            self.isPreGenerating = false
+        }
+    }
+
+    func cancelBackgroundGeneration() {
+        backgroundGenerationTask?.cancel()
+        backgroundGenerationTask = nil
+        isPreGenerating = false
+        preGenerateCompleted = 0
+        preGenerateTotal = 0
     }
 }
