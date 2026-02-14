@@ -272,6 +272,7 @@ final class BrowserViewModel {
         selectedImageIDs.removeAll()
         lastClickedImageURL = nil
         manualOrder.removeAll()
+        thumbnailService.cancelBackgroundGeneration()
 
         // Add to open folders if not already there, unless it's a subfolder of an existing open folder
         if !openFolders.contains(url) && !isSubfolderOfOpenFolder(url) {
@@ -295,6 +296,7 @@ final class BrowserViewModel {
                 }
                 self.images = files
                 self.isLoading = false
+                self.thumbnailService.startBackgroundGeneration(for: self.visibleImages.map(\.url))
                 await loadBasicMetadata(cachedSidecars: allSidecars)
             } catch {
                 self.errorMessage = error.localizedDescription
@@ -404,6 +406,7 @@ final class BrowserViewModel {
         let batchSize = 50
         let urls = images.map(\.url)
         var updated = images
+        let localIndex = Dictionary(uniqueKeysWithValues: updated.enumerated().map { ($1.url, $0) })
 
         for batchStart in stride(from: 0, to: urls.count, by: batchSize) {
             let batchEnd = min(batchStart + batchSize, urls.count)
@@ -415,7 +418,7 @@ final class BrowserViewModel {
                     guard let sourcePath = dict[ExifToolReadKey.sourceFile] as? String else { continue }
                     let sourceURL = URL(fileURLWithPath: sourcePath)
 
-                    if let index = urlToImageIndex[sourceURL] {
+                    if let index = localIndex[sourceURL] {
                         if let rating = dict[ExifToolReadKey.rating] as? Int,
                            let starRating = StarRating(rawValue: rating) {
                             updated[index].starRating = starRating
@@ -460,6 +463,7 @@ final class BrowserViewModel {
 
         let batchSize = 50
         var updated = images
+        let localIndex = Dictionary(uniqueKeysWithValues: updated.enumerated().map { ($1.url, $0) })
 
         for batchStart in stride(from: 0, to: urls.count, by: batchSize) {
             let batchEnd = min(batchStart + batchSize, urls.count)
@@ -471,7 +475,7 @@ final class BrowserViewModel {
                     guard let sourcePath = dict[ExifToolReadKey.sourceFile] as? String else { continue }
                     let sourceURL = URL(fileURLWithPath: sourcePath)
 
-                    if let index = urlToImageIndex[sourceURL] {
+                    if let index = localIndex[sourceURL] {
                         if let rating = dict[ExifToolReadKey.rating] as? Int,
                            let starRating = StarRating(rawValue: rating) {
                             updated[index].starRating = starRating
@@ -934,8 +938,9 @@ final class BrowserViewModel {
         let lookup = Dictionary(uniqueKeysWithValues: images.map { ($0.url, $0) })
 
         var updated = images
+        let localIndex = Dictionary(uniqueKeysWithValues: updated.enumerated().map { ($1.url, $0) })
         for id in selectedImageIDs {
-            if let index = urlToImageIndex[id] {
+            if let index = localIndex[id] {
                 updateImage(&updated[index])
             }
         }
