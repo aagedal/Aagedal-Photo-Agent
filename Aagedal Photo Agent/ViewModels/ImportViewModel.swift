@@ -68,25 +68,33 @@ final class ImportViewModel {
         importPhase = .scanning
         sourceFiles = []
 
+        Task.detached(priority: .userInitiated) {
+            let allURLs = Self.enumerateFiles(at: url)
+            await MainActor.run {
+                self.sourceFiles = allURLs
+                    .filter { SupportedImageFormats.isSupported(url: $0) }
+                    .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+                self.importPhase = .idle
+            }
+        }
+    }
+
+    /// Enumerate all regular files under `url` off the main actor.
+    nonisolated private static func enumerateFiles(at url: URL) -> [URL] {
         let fm = FileManager.default
         guard let enumerator = fm.enumerator(
             at: url,
             includingPropertiesForKeys: [.isRegularFileKey],
             options: [.skipsHiddenFiles, .skipsPackageDescendants]
         ) else {
-            importPhase = .idle
-            return
+            return []
         }
 
         var found: [URL] = []
-        for case let fileURL as URL in enumerator {
-            if SupportedImageFormats.isSupported(url: fileURL) {
-                found.append(fileURL)
-            }
+        while let fileURL = enumerator.nextObject() as? URL {
+            found.append(fileURL)
         }
-
-        sourceFiles = found.sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
-        importPhase = .idle
+        return found
     }
 
     // MARK: - Destination Selection
