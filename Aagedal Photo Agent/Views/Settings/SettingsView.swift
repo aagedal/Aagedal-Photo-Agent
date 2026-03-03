@@ -422,6 +422,26 @@ struct SettingsView: View {
     @ViewBuilder
     private var metadataTab: some View {
         Form {
+            Section("Multi-Select Behavior") {
+                Picker("Keywords", selection: $settingsViewModel.multiSelectKeywordsMode) {
+                    ForEach(MultiSelectFieldMode.allCases, id: \.self) { mode in
+                        Text(mode.displayName).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Picker("Person Shown", selection: $settingsViewModel.multiSelectPersonShownMode) {
+                    ForEach(MultiSelectFieldMode.allCases, id: \.self) { mode in
+                        Text(mode.displayName).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Text("Add: new items are merged into each image's existing values. Overwrite: all images get exactly the entered values.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Write Behavior") {
                 Picker("Non-C2PA Images", selection: $settingsViewModel.metadataWriteModeNonC2PA) {
                     ForEach(MetadataWriteMode.allCases) { mode in

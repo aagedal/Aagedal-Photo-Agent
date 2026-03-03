@@ -49,6 +49,10 @@ enum UserDefaultsKeys {
     static let thumbnailSortOrder = "thumbnailSortOrder"
     static let thumbnailScale = "thumbnailScale"
 
+    // MARK: - Multi-Select Behavior
+    static let multiSelectKeywordsMode = "multiSelectKeywordsMode"
+    static let multiSelectPersonShownMode = "multiSelectPersonShownMode"
+
     // MARK: - Quick List Bookmarks
     static let keywordsListBookmark = "keywordsListBookmark"
     static let personShownListBookmark = "personShownListBookmark"

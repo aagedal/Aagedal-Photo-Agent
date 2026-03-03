@@ -569,6 +569,51 @@ final class ExifToolService {
         _ = try await execute(args)
     }
 
+    /// Add and/or remove individual list values using ExifTool's `+=` and `-=` operators.
+    /// This is used for additive multi-select edits where each image keeps its existing values
+    /// and only the diff is applied.
+    func addRemoveListValues(
+        add: [String: [String]],
+        remove: [String: [String]],
+        to urls: [URL]
+    ) async throws {
+        guard !urls.isEmpty else { return }
+        let hasAdd = add.values.contains { !$0.isEmpty }
+        let hasRemove = remove.values.contains { !$0.isEmpty }
+        guard hasAdd || hasRemove else { return }
+
+        let creationDates = captureCreationDates(for: urls)
+        defer { restoreCreationDates(creationDates) }
+
+        var args = ["-overwrite_original"]
+
+        for (tag, values) in remove {
+            for value in values {
+                args.append("-\(tag)-=\(value)")
+                // Mirror IPTC for Subject → Keywords
+                if tag == ExifToolWriteTag.subject {
+                    args.append("-\(ExifToolWriteTag.iptcKeywords)-=\(value)")
+                }
+                if tag == ExifToolWriteTag.personInImage {
+                    // PersonInImage is XMP-only, no IPTC mirror needed
+                }
+            }
+        }
+
+        for (tag, values) in add {
+            for value in values {
+                args.append("-\(tag)+=\(value)")
+                // Mirror IPTC for Subject → Keywords
+                if tag == ExifToolWriteTag.subject {
+                    args.append("-\(ExifToolWriteTag.iptcKeywords)+=\(value)")
+                }
+            }
+        }
+
+        args += urls.map(\.path)
+        _ = try await execute(args)
+    }
+
     private func captureCreationDates(for urls: [URL]) -> [URL: Date] {
         var result: [URL: Date] = [:]
         for url in urls {
