@@ -1,6 +1,9 @@
 import AppKit
 import QuickLookThumbnailing
 import CoreImage
+import os
+
+nonisolated(unsafe) private let thumbnailLogger = Logger(subsystem: "com.aagedal.photo-agent", category: "ThumbnailService")
 
 @Observable
 final class ThumbnailService {
@@ -73,6 +76,7 @@ final class ThumbnailService {
             let thumbnail = try await QLThumbnailGenerator.shared.generateBestRepresentation(for: request)
             return thumbnail.nsImage
         } catch {
+            thumbnailLogger.debug("QLThumbnail failed for \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
             return nil
         }
     }

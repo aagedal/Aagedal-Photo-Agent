@@ -1263,6 +1263,8 @@ final class BrowserViewModel {
         if edited.event != original.event { names.append("Event") }
         if edited.digitalSourceType != original.digitalSourceType { names.append("Digital Source Type") }
         if edited.exifOrientation != original.exifOrientation { names.append("Orientation") }
+        if edited.latitude != original.latitude || edited.longitude != original.longitude { names.append("GPS Coordinates") }
+        if edited.captureDate != original.captureDate { names.append("Capture Date") }
         return names
     }
 

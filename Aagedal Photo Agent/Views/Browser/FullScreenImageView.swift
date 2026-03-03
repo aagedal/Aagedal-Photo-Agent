@@ -890,7 +890,7 @@ struct FullScreenImageView: View {
 
         if let faceVM = faceContext?.faceRecognitionViewModel,
            let url = currentImageFile?.url {
-            let facesInImage = faceVM.faceData?.faces.filter { $0.imageURL == url } ?? []
+            let facesInImage = faceVM.facesForImage(url)
             Canvas { context, _ in
                 for face in facesInImage {
                     let isHighlighted = face.id == highlightedFaceID
