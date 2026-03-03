@@ -47,7 +47,14 @@ struct MetadataSidecarService: Sendable {
                 }
                 return sidecar
             } catch {
-                sidecarLogger.warning("Failed to decode sidecar \(fileURL.lastPathComponent): \(error.localizedDescription)")
+                sidecarLogger.error("Failed to decode sidecar \(fileURL.lastPathComponent): \(error.localizedDescription)")
+                // Move corrupt file aside so it doesn't block future loads
+                let timestamp = ISO8601DateFormatter().string(from: Date())
+                    .replacingOccurrences(of: ":", with: "-")
+                let backupURL = fileURL.deletingLastPathComponent()
+                    .appendingPathComponent("\(fileURL.lastPathComponent).corrupt.\(timestamp)")
+                try? FileManager.default.moveItem(at: fileURL, to: backupURL)
+                sidecarLogger.error("Moved corrupt sidecar to \(backupURL.lastPathComponent, privacy: .public)")
                 continue
             }
         }
@@ -80,7 +87,14 @@ struct MetadataSidecarService: Sendable {
                 let imageURL = folderURL.appendingPathComponent(sidecar.sourceFile)
                 result[imageURL] = sidecar
             } catch {
-                sidecarLogger.warning("Failed to decode sidecar \(file.lastPathComponent): \(error.localizedDescription)")
+                sidecarLogger.error("Failed to decode sidecar \(file.lastPathComponent): \(error.localizedDescription)")
+                // Move corrupt file aside so it doesn't block future loads
+                let timestamp = ISO8601DateFormatter().string(from: Date())
+                    .replacingOccurrences(of: ":", with: "-")
+                let backupURL = file.deletingLastPathComponent()
+                    .appendingPathComponent("\(file.lastPathComponent).corrupt.\(timestamp)")
+                try? FileManager.default.moveItem(at: file, to: backupURL)
+                sidecarLogger.error("Moved corrupt sidecar to \(backupURL.lastPathComponent, privacy: .public)")
                 continue
             }
         }
