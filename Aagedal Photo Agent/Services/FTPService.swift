@@ -24,9 +24,18 @@ struct FTPService: Sendable {
 
         let fileSize = try localURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
 
+        // Write credentials to a temporary .netrc file so the password
+        // is not visible to other processes via `ps`.
+        let netrcURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("netrc")
+        let netrcContent = "machine \(connection.host) login \(connection.username) password \(password)\n"
+        try netrcContent.data(using: .utf8)!.write(to: netrcURL, options: .atomic)
+        defer { try? FileManager.default.removeItem(at: netrcURL) }
+
         var arguments = [
             "-T", localURL.path,
-            "-u", "\(connection.username):\(password)",
+            "--netrc-file", netrcURL.path,
             "--progress-bar",
             remoteURL,
         ]

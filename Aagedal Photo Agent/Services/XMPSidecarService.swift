@@ -44,7 +44,7 @@ struct XMPSidecarService: Sendable {
         updateDescription(description, with: metadata)
 
         let data = serializeXMP(document)
-        try data.write(to: url)
+        try data.write(to: url, options: .atomic)
     }
 
     // MARK: - Document Helpers
