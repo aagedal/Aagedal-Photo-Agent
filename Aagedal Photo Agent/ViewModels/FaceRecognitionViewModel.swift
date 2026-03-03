@@ -1656,6 +1656,28 @@ final class FaceRecognitionViewModel {
         groupLookup[groupID]
     }
 
+    /// All detected faces in a specific image
+    func facesForImage(_ imageURL: URL) -> [DetectedFace] {
+        guard let faces = faceData?.faces else { return [] }
+        return faces.filter { $0.imageURL == imageURL }
+    }
+
+    /// Face+group pairs for an image, sorted named-first then by face rect position
+    func faceGroupPairs(forImageURL imageURL: URL) -> [(face: DetectedFace, group: FaceGroup?)] {
+        let faces = facesForImage(imageURL)
+        let pairs = faces.map { face in
+            (face: face, group: face.groupID.flatMap { groupLookup[$0] })
+        }
+        return pairs.sorted { a, b in
+            // Named groups first
+            switch (a.group?.name, b.group?.name) {
+            case (_?, nil): return true
+            case (nil, _?): return false
+            default: return a.face.faceRect.origin.x < b.face.faceRect.origin.x
+            }
+        }
+    }
+
     func imageURLs(for group: FaceGroup) -> Set<URL> {
         let faces = faces(in: group)
         return Set(faces.map(\.imageURL))

@@ -230,28 +230,9 @@ struct ContentView: View {
     @ViewBuilder
     private var detailContent: some View {
         VStack(spacing: 0) {
-            if !browserViewModel.images.isEmpty, mainViewMode != .editing {
-                FaceBarView(
-                    viewModel: faceRecognitionViewModel,
-                    folderURL: browserViewModel.currentFolderURL,
-                    images: browserViewModel.images,
-                    settingsViewModel: settingsViewModel,
-                    isExpanded: mainViewMode == .faceManagement,
-                    selectionState: mainViewMode == .faceManagement ? faceSelectionState : nil,
-                    onSelectImages: { urls in
-                        browserViewModel.selectedImageIDs = urls
-                    },
-                    onPhotosDeleted: { trashedURLs in
-                        browserViewModel.images.removeAll { trashedURLs.contains($0.url) }
-                        browserViewModel.selectedImageIDs.subtract(trashedURLs)
-                    },
-                    onToggleExpanded: {
-                        mainViewMode = mainViewMode == .faceManagement ? .browser : .faceManagement
-                    },
-                    onOpenPeopleDatabase: {
-                        togglePeopleDatabase()
-                    }
-                )
+            // Face bar shown full-width for non-browser, non-editing modes
+            if !browserViewModel.images.isEmpty, mainViewMode != .editing, mainViewMode != .browser {
+                faceBar
                 Divider()
             }
 
@@ -372,11 +353,18 @@ struct ContentView: View {
     @ViewBuilder
     private var browserAndMetadataPanel: some View {
         HStack(spacing: 0) {
-            BrowserView(
-                viewModel: browserViewModel,
-                faceCount: faceRecognitionViewModel.faceData?.faces.count ?? 0,
-                faceGroupCount: faceRecognitionViewModel.faceData?.groups.count ?? 0
-            )
+            // Left column: face bar + browser
+            VStack(spacing: 0) {
+                if !browserViewModel.images.isEmpty {
+                    faceBar
+                    Divider()
+                }
+
+                BrowserView(
+                    viewModel: browserViewModel,
+                    faceCount: faceRecognitionViewModel.faceData?.faces.count ?? 0,
+                    faceGroupCount: faceRecognitionViewModel.faceData?.groups.count ?? 0
+                )
                 .frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity)
                 .onKeyPress("m") {
                     guard NSEvent.modifierFlags.contains(.option),
@@ -389,21 +377,57 @@ struct ContentView: View {
                     metadataViewModel.applyReferenceSource(next)
                     return .handled
                 }
+            }
 
             MetadataPanelDivider(panelWidth: $metadataPanelWidth)
 
-            MetadataPanel(
-                viewModel: metadataViewModel,
-                browserViewModel: browserViewModel,
-                settingsViewModel: settingsViewModel,
-                onApplyTemplate: { isShowingTemplatePalette = true },
-                onSaveTemplate: { isShowingSaveTemplateName = true },
-                onPendingStatusChanged: {
-                    browserViewModel.refreshPendingStatus()
-                }
-            )
+            // Right column: faces-in-image + metadata (full height)
+            VStack(spacing: 0) {
+                ImageFacesSection(
+                    viewModel: faceRecognitionViewModel,
+                    settingsViewModel: settingsViewModel,
+                    selectedImageURL: browserViewModel.lastClickedImageURL,
+                    selectedCount: browserViewModel.selectedImageIDs.count
+                )
+
+                MetadataPanel(
+                    viewModel: metadataViewModel,
+                    browserViewModel: browserViewModel,
+                    settingsViewModel: settingsViewModel,
+                    onApplyTemplate: { isShowingTemplatePalette = true },
+                    onSaveTemplate: { isShowingSaveTemplateName = true },
+                    onPendingStatusChanged: {
+                        browserViewModel.refreshPendingStatus()
+                    }
+                )
+            }
             .frame(width: metadataPanelWidth)
         }
+    }
+
+    @ViewBuilder
+    private var faceBar: some View {
+        FaceBarView(
+            viewModel: faceRecognitionViewModel,
+            folderURL: browserViewModel.currentFolderURL,
+            images: browserViewModel.images,
+            settingsViewModel: settingsViewModel,
+            isExpanded: mainViewMode == .faceManagement,
+            selectionState: mainViewMode == .faceManagement ? faceSelectionState : nil,
+            onSelectImages: { urls in
+                browserViewModel.selectedImageIDs = urls
+            },
+            onPhotosDeleted: { trashedURLs in
+                browserViewModel.images.removeAll { trashedURLs.contains($0.url) }
+                browserViewModel.selectedImageIDs.subtract(trashedURLs)
+            },
+            onToggleExpanded: {
+                mainViewMode = mainViewMode == .faceManagement ? .browser : .faceManagement
+            },
+            onOpenPeopleDatabase: {
+                togglePeopleDatabase()
+            }
+        )
     }
 
     @ViewBuilder
