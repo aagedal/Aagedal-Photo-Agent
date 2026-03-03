@@ -788,9 +788,17 @@ nonisolated struct FaceDetectionService: Sendable {
 
         let fpCache = cache ?? FeaturePrintCache()
 
-        // Partition faces by quality
-        let highQualityFaces = faces.filter { ($0.qualityScore ?? 0) >= config.qualityGateThreshold }
-        let lowQualityFaces = faces.filter { ($0.qualityScore ?? 0) < config.qualityGateThreshold }
+        // Partition faces by quality (single pass)
+        var highQualityFaces: [DetectedFace] = []
+        var lowQualityFaces: [DetectedFace] = []
+        for face in faces {
+            if (face.qualityScore ?? 0) >= config.qualityGateThreshold {
+                highQualityFaces.append(face)
+            } else {
+                lowQualityFaces.append(face)
+            }
+        }
+        let highQualityByID = Dictionary(uniqueKeysWithValues: highQualityFaces.map { ($0.id, $0) })
 
         // Pass 1: Cluster high-quality faces using Chinese Whispers
         var groups: [FaceGroup]
@@ -819,7 +827,7 @@ nonisolated struct FaceDetectionService: Sendable {
             // Find the best matching group
             for (index, group) in groups.enumerated() {
                 // Use the representative face for comparison (high-quality)
-                guard let repFace = highQualityFaces.first(where: { $0.id == group.representativeFaceID }),
+                guard let repFace = highQualityByID[group.representativeFaceID],
                       let repFP = fpCache.getFeaturePrint(for: repFace),
                       let distance = computeDistanceCached(faceFP, repFP) else { continue }
 

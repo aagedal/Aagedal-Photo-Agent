@@ -1404,10 +1404,18 @@ final class BrowserViewModel {
                 let xmpSource = xmpSidecarService.sidecarURL(for: url)
                 if fileManager.fileExists(atPath: xmpSource.path) {
                     let xmpDestination = xmpSidecarService.sidecarURL(for: destinationURL)
-                    try? fileManager.moveItem(at: xmpSource, to: xmpDestination)
+                    do {
+                        try fileManager.moveItem(at: xmpSource, to: xmpDestination)
+                    } catch {
+                        failures.append("\(url.lastPathComponent) XMP sidecar: \(error.localizedDescription)")
+                    }
                 }
 
-                try? sidecarService.moveSidecar(for: url, from: folderURL, to: destinationFolder)
+                do {
+                    try sidecarService.moveSidecar(for: url, from: folderURL, to: destinationFolder)
+                } catch {
+                    failures.append("\(url.lastPathComponent) metadata sidecar: \(error.localizedDescription)")
+                }
 
                 moved.insert(url)
             } catch {

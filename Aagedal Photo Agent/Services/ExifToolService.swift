@@ -84,6 +84,7 @@ final class ExifToolService {
     private var pendingContinuation: CheckedContinuation<String, any Error>?
     private var commandQueue: [() -> Void] = []
     private var isExecuting = false
+    private var generation = 0
     private let maxQueueSize = 100
 
     deinit {
@@ -146,6 +147,9 @@ final class ExifToolService {
 
         exifToolLog.info("Starting ExifTool at: \(path, privacy: .public)")
 
+        generation += 1
+        let currentGeneration = generation
+
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: path)
         proc.arguments = ["-stay_open", "True", "-@", "-"]
@@ -168,14 +172,16 @@ final class ExifToolService {
             let data = handle.availableData
             guard !data.isEmpty, let str = String(data: data, encoding: .utf8) else { return }
             Task { @MainActor [weak self] in
-                self?.handleOutput(str)
+                guard let self, self.generation == currentGeneration else { return }
+                self.handleOutput(str)
             }
         }
 
         // Detect unexpected process termination to resume pending continuations
         proc.terminationHandler = { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.handleProcessTermination()
+                guard let self, self.generation == currentGeneration else { return }
+                self.handleProcessTermination()
             }
         }
 
