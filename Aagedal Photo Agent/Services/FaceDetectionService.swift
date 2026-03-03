@@ -266,30 +266,28 @@ nonisolated struct FaceDetectionService: Sendable {
         }
 
         // Convert Planar8 to PlanarF for convolution
-        var floatBuffer = try? vImage_Buffer(
+        guard var floatBuffer = try? vImage_Buffer(
             width: width,
             height: height,
             bitsPerPixel: 32
-        )
-        guard floatBuffer != nil else { return 0 }
-        defer { floatBuffer!.free() }
+        ) else { return 0 }
+        defer { floatBuffer.free() }
 
         let convertErr = vImageConvert_Planar8toPlanarF(
             &grayBuffer,
-            &floatBuffer!,
+            &floatBuffer,
             0.0, 255.0,
             vImage_Flags(kvImageNoFlags)
         )
         guard convertErr == kvImageNoError else { return 0 }
 
         // Apply 3x3 Laplacian kernel via vImageConvolve_PlanarF
-        var laplacianBuffer = try? vImage_Buffer(
+        guard var laplacianBuffer = try? vImage_Buffer(
             width: width,
             height: height,
             bitsPerPixel: 32
-        )
-        guard laplacianBuffer != nil else { return 0 }
-        defer { laplacianBuffer!.free() }
+        ) else { return 0 }
+        defer { laplacianBuffer.free() }
 
         var kernel: [Float] = [
             0,  1,  0,
@@ -297,8 +295,8 @@ nonisolated struct FaceDetectionService: Sendable {
             0,  1,  0
         ]
         let convolveErr = vImageConvolve_PlanarF(
-            &floatBuffer!,
-            &laplacianBuffer!,
+            &floatBuffer,
+            &laplacianBuffer,
             nil,
             0, 0,
             &kernel,
@@ -310,7 +308,7 @@ nonisolated struct FaceDetectionService: Sendable {
 
         // Compute variance using vDSP: Var(X) = E[X²] - E[X]²
         let pixelCount = width * height
-        let laplacianPtr = laplacianBuffer!.data.assumingMemoryBound(to: Float.self)
+        let laplacianPtr = laplacianBuffer.data.assumingMemoryBound(to: Float.self)
         let laplacianData = UnsafeBufferPointer(start: laplacianPtr, count: pixelCount)
         let mean = vDSP.mean(laplacianData)
         let meanSquare = vDSP.meanSquare(laplacianData)
@@ -460,7 +458,7 @@ nonisolated struct FaceDetectionService: Sendable {
             clusters.remove(at: minI)
 
             // Rebuild distance matrix: copy surviving pairs with remapped keys
-            var newMatrix: [String: Float] = [:]
+            var newMatrix: [Int64: Float] = [:]
             newMatrix.reserveCapacity(distanceMatrix.count)
 
             for oldI in 0..<oldCount {
@@ -499,8 +497,8 @@ nonisolated struct FaceDetectionService: Sendable {
         }
     }
 
-    private func buildDistanceMatrix(_ faces: [DetectedFace], cache: FeaturePrintCache) -> [String: Float] {
-        var matrix: [String: Float] = [:]
+    private func buildDistanceMatrix(_ faces: [DetectedFace], cache: FeaturePrintCache) -> [Int64: Float] {
+        var matrix: [Int64: Float] = [:]
         for i in 0..<faces.count {
             for j in (i + 1)..<faces.count {
                 if let fp1 = cache.getFeaturePrint(for: faces[i]),
@@ -537,9 +535,9 @@ nonisolated struct FaceDetectionService: Sendable {
         return computeAverageLinkageDistance(cluster1, cluster2, cache: cache)
     }
 
-    private func distanceKey(_ i: Int, _ j: Int) -> String {
+    private func distanceKey(_ i: Int, _ j: Int) -> Int64 {
         let (a, b) = i < j ? (i, j) : (j, i)
-        return "\(a)-\(b)"
+        return Int64(a) &<< 32 | Int64(b)
     }
 
     // MARK: - Median Linkage Clustering
@@ -611,7 +609,7 @@ nonisolated struct FaceDetectionService: Sendable {
             clusters.remove(at: minI)
 
             // Copy surviving pairwise distances with remapped keys
-            var newMatrix: [String: Float] = [:]
+            var newMatrix: [Int64: Float] = [:]
             newMatrix.reserveCapacity(distanceMatrix.count)
 
             for oldI in 0..<oldCount {
@@ -1583,7 +1581,7 @@ nonisolated struct FaceDetectionService: Sendable {
         var clusters: [[DetectedFace]] = faces.map { [$0] }
 
         // Build initial distance matrix
-        var distanceMatrix: [String: Float] = [:]
+        var distanceMatrix: [Int64: Float] = [:]
         for i in 0..<faces.count {
             for j in (i + 1)..<faces.count {
                 if let distance = computeModeAwareDistance(
@@ -1637,7 +1635,7 @@ nonisolated struct FaceDetectionService: Sendable {
             clusters.remove(at: minI)
 
             // Copy surviving pairwise distances with remapped keys
-            var newMatrix: [String: Float] = [:]
+            var newMatrix: [Int64: Float] = [:]
             newMatrix.reserveCapacity(distanceMatrix.count)
 
             for oldI in 0..<oldCount {

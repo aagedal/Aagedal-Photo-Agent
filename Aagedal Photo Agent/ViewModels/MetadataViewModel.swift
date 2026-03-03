@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 enum MetadataReferenceSource: String, CaseIterable, Identifiable, Sendable {
     case embedded
@@ -64,6 +65,7 @@ final class MetadataViewModel {
     private let sidecarService = MetadataSidecarService()
     private let xmpSidecarService = XMPSidecarService()
     private let geocodingService = GeocodingService()
+    private let logger = Logger(subsystem: "com.aagedal.photo-agent", category: "MetadataViewModel")
     private var previousEditingMetadata: IPTCMetadata?
     @ObservationIgnored private var metadataLoadTask: Task<Void, Never>?
 
@@ -263,7 +265,7 @@ final class MetadataViewModel {
                 allMetadata.append(meta)
             }
         } catch {
-            // Continue with whatever we got
+            logger.error("Failed to load batch metadata: \(error.localizedDescription)")
         }
 
         guard !allMetadata.isEmpty else { return }
