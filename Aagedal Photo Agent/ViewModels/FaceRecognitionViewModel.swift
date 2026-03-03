@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import os
 
 enum FaceGroupSortMode: String, CaseIterable {
     case manual = "Insertion Order"
@@ -53,6 +54,9 @@ final class FaceRecognitionViewModel {
     // Fast group lookup by ID (invalidated when faceData changes)
     // Not observed - always rebuilt alongside sortedGroups
     @ObservationIgnored private var groupLookup: [UUID: FaceGroup] = [:]
+
+    // Fast face lookup by image URL (invalidated when faceData changes)
+    @ObservationIgnored private var facesByImageURL: [URL: [DetectedFace]] = [:]
 
     // Detection configuration from settings
     var detectionConfig: FaceDetectionService.DetectionConfig {
@@ -117,6 +121,7 @@ final class FaceRecognitionViewModel {
     private let exifToolService: ExifToolService
     private let sidecarService = MetadataSidecarService()
     private let xmpSidecarService = XMPSidecarService()
+    private let logger = Logger(subsystem: "com.aagedal.photo-agent", category: "FaceRecognitionViewModel")
 
     init(exifToolService: ExifToolService) {
         self.exifToolService = exifToolService
@@ -130,6 +135,7 @@ final class FaceRecognitionViewModel {
             sortedGroups = []
             faceLookup = [:]
             groupLookup = [:]
+            facesByImageURL = [:]
             return
         }
 
@@ -171,11 +177,13 @@ final class FaceRecognitionViewModel {
             groupLookup[group.id] = group
         }
 
-        // Rebuild face lookup
+        // Rebuild face lookup and per-image index
         faceLookup = [:]
+        facesByImageURL = [:]
         if let faces = faceData?.faces {
             for face in faces {
                 faceLookup[face.id] = face
+                facesByImageURL[face.imageURL, default: []].append(face)
             }
         }
     }
@@ -324,7 +332,7 @@ final class FaceRecognitionViewModel {
                         do {
                             try storageService.saveThumbnail(result.thumbnail, for: result.face.id, folderURL: folderURL)
                         } catch {
-                            print("⚠️ FaceRecognition: Failed to save thumbnail for face \(result.face.id): \(error.localizedDescription)")
+                            logger.warning("Failed to save thumbnail for face \(result.face.id): \(error.localizedDescription)")
                         }
                         let image = NSImage(data: result.thumbnail)
                         if let image {
@@ -1658,8 +1666,7 @@ final class FaceRecognitionViewModel {
 
     /// All detected faces in a specific image
     func facesForImage(_ imageURL: URL) -> [DetectedFace] {
-        guard let faces = faceData?.faces else { return [] }
-        return faces.filter { $0.imageURL == imageURL }
+        facesByImageURL[imageURL] ?? []
     }
 
     /// Face+group pairs for an image, sorted named-first then by face rect position

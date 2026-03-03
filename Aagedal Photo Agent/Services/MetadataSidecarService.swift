@@ -1,4 +1,7 @@
 import Foundation
+import os
+
+nonisolated(unsafe) private let sidecarLogger = Logger(subsystem: "com.aagedal.photo-agent", category: "MetadataSidecarService")
 
 struct MetadataSidecarService: Sendable {
 
@@ -44,6 +47,7 @@ struct MetadataSidecarService: Sendable {
                 }
                 return sidecar
             } catch {
+                sidecarLogger.warning("Failed to decode sidecar \(fileURL.lastPathComponent): \(error.localizedDescription)")
                 continue
             }
         }
@@ -67,15 +71,18 @@ struct MetadataSidecarService: Sendable {
         }
 
         for file in files where file.pathExtension == "json" {
-            guard let data = try? Data(contentsOf: file),
-                  let sidecar = try? decoder.decode(MetadataSidecar.self, from: data) else {
+            do {
+                let data = try Data(contentsOf: file)
+                let sidecar = try decoder.decode(MetadataSidecar.self, from: data)
+                guard !sidecar.sourceFile.contains("/"), !sidecar.sourceFile.contains("\\"), !sidecar.sourceFile.contains("..") else {
+                    continue
+                }
+                let imageURL = folderURL.appendingPathComponent(sidecar.sourceFile)
+                result[imageURL] = sidecar
+            } catch {
+                sidecarLogger.warning("Failed to decode sidecar \(file.lastPathComponent): \(error.localizedDescription)")
                 continue
             }
-            guard !sidecar.sourceFile.contains("/"), !sidecar.sourceFile.contains("\\"), !sidecar.sourceFile.contains("..") else {
-                continue
-            }
-            let imageURL = folderURL.appendingPathComponent(sidecar.sourceFile)
-            result[imageURL] = sidecar
         }
 
         return result
