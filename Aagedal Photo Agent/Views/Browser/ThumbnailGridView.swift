@@ -144,10 +144,12 @@ struct ThumbnailGridView: View {
     @ViewBuilder
     private func makeThumbnailCell(for image: ImageFile) -> some View {
         let isSelected = viewModel.selectedImageIDs.contains(image.url)
+        let isActive = isSelected && image.url == viewModel.lastClickedImageURL
 
         let baseCell = ThumbnailCell(
             image: image,
             isSelected: isSelected,
+            isActive: isActive,
             thumbnailService: viewModel.thumbnailService,
             thumbnailScale: viewModel.thumbnailScale,
             onDelete: {

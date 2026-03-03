@@ -10,6 +10,7 @@ private struct ThumbnailTaskKey: Equatable {
 struct ThumbnailCell: View, Equatable {
     let image: ImageFile
     let isSelected: Bool
+    var isActive: Bool = false
     let thumbnailService: ThumbnailService
     var thumbnailScale: Double = 1.0
     var onDelete: (() -> Void)?
@@ -28,6 +29,7 @@ struct ThumbnailCell: View, Equatable {
     static func == (lhs: ThumbnailCell, rhs: ThumbnailCell) -> Bool {
         lhs.image.url == rhs.image.url
             && lhs.isSelected == rhs.isSelected
+            && lhs.isActive == rhs.isActive
             && lhs.thumbnailScale == rhs.thumbnailScale
             && lhs.image.starRating == rhs.image.starRating
             && lhs.image.colorLabel == rhs.image.colorLabel
@@ -179,7 +181,7 @@ struct ThumbnailCell: View, Equatable {
         }
         .overlay {
             RoundedRectangle(cornerRadius: 6)
-                .strokeBorder(isSelected ? Color.accentColor : Color.clear, lineWidth: 2)
+                .strokeBorder(isSelected ? Color.accentColor : Color.clear, lineWidth: isActive ? 3 : 1)
         }
         .contextMenu {
             Button("Reveal in Finder") {
