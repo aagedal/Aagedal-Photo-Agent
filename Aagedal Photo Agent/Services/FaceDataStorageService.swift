@@ -39,6 +39,13 @@ nonisolated struct FaceDataStorageService: Sendable {
             return faceData
         } catch {
             faceDataLog.error("Failed to decode face data at \(fileURL.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            // Move corrupt file aside so it doesn't block future loads
+            let timestamp = ISO8601DateFormatter().string(from: Date())
+                .replacingOccurrences(of: ":", with: "-")
+            let backupURL = fileURL.deletingLastPathComponent()
+                .appendingPathComponent("\(Self.dataFileName).corrupt.\(timestamp)")
+            try? FileManager.default.moveItem(at: fileURL, to: backupURL)
+            faceDataLog.error("Moved corrupt face data to \(backupURL.lastPathComponent, privacy: .public)")
             return nil
         }
     }

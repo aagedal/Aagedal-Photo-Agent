@@ -89,9 +89,7 @@ final class KnownPeopleService {
         }
     }
 
-    private func saveDatabase() throws {
-        guard let db = database else { return }
-
+    private func saveDatabase(_ db: KnownPeopleDatabase) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(db)
@@ -136,13 +134,13 @@ final class KnownPeopleService {
 
         db.people.append(person)
         db.lastModified = Date()
-        database = db
 
         if let thumbData = thumbnailData {
             try saveThumbnail(thumbData, for: person.id)
         }
 
-        try saveDatabase()
+        try saveDatabase(db)
+        database = db
         clearFeaturePrintCache()
 
         return person
@@ -160,9 +158,9 @@ final class KnownPeopleService {
         updated.updatedAt = Date()
         db.people[index] = updated
         db.lastModified = Date()
-        database = db
 
-        try saveDatabase()
+        try saveDatabase(db)
+        database = db
         clearFeaturePrintCache()
     }
 
@@ -171,10 +169,10 @@ final class KnownPeopleService {
 
         db.people.removeAll { $0.id == id }
         db.lastModified = Date()
-        database = db
 
+        try saveDatabase(db)
+        database = db
         deleteThumbnail(for: id)
-        try saveDatabase()
         clearFeaturePrintCache()
     }
 
@@ -189,9 +187,9 @@ final class KnownPeopleService {
         db.people[index].embeddings.append(embedding)
         db.people[index].updatedAt = Date()
         db.lastModified = Date()
-        database = db
 
-        try saveDatabase()
+        try saveDatabase(db)
+        database = db
         clearFeaturePrintCache()
     }
 
@@ -297,9 +295,9 @@ final class KnownPeopleService {
         db.people[index].embeddings.append(contentsOf: newEmbeddings)
         db.people[index].updatedAt = Date()
         db.lastModified = Date()
-        database = db
 
-        try saveDatabase()
+        try saveDatabase(db)
+        database = db
         clearFeaturePrintCache()
     }
 
@@ -340,8 +338,9 @@ final class KnownPeopleService {
         deleteThumbnail(for: sourcePersonID)
 
         db.lastModified = Date()
+
+        try saveDatabase(db)
         database = db
-        try saveDatabase()
         clearFeaturePrintCache()
     }
 
@@ -354,8 +353,8 @@ final class KnownPeopleService {
         if let index = peopleIndex[personID] {
             db.people[index].updatedAt = Date()
             db.lastModified = Date()
+            try saveDatabase(db)
             database = db
-            try saveDatabase()
         }
     }
 
@@ -373,8 +372,8 @@ final class KnownPeopleService {
 
         db.people[index].updatedAt = Date()
         db.lastModified = Date()
+        try saveDatabase(db)
         database = db
-        try saveDatabase()
         clearFeaturePrintCache()
     }
 
@@ -386,7 +385,7 @@ final class KnownPeopleService {
     }
 
     func clearDatabase() throws {
-        database = KnownPeopleDatabase()
+        let emptyDB = KnownPeopleDatabase()
         featurePrintCache.removeAllObjects()
 
         // Remove all files
@@ -396,7 +395,8 @@ final class KnownPeopleService {
 
         // Recreate empty directory structure
         try FileManager.default.createDirectory(at: thumbnailsDirectory, withIntermediateDirectories: true)
-        try saveDatabase()
+        try saveDatabase(emptyDB)
+        database = emptyDB
     }
 
     // MARK: - Matching
@@ -658,7 +658,6 @@ final class KnownPeopleService {
 
         db.people.append(contentsOf: newPeople)
         db.lastModified = Date()
-        database = db
 
         // Copy thumbnails only for newly imported people
         let importedThumbnailsDir = extractedDir.appendingPathComponent("thumbnails")
@@ -670,7 +669,8 @@ final class KnownPeopleService {
             }
         }
 
-        try saveDatabase()
+        try saveDatabase(db)
+        database = db
         clearFeaturePrintCache()
 
         return newPeople.count
