@@ -123,6 +123,26 @@ struct FaceBarView: View {
                         ClusteringSettingsPopover(settingsViewModel: settingsViewModel)
                     }
                 }
+
+                // Expand/collapse button
+                if viewModel.scanComplete {
+                    Button {
+                        selectedGroup = nil
+                        showMergeSuggestions = false
+                        onToggleExpanded?()
+                    } label: {
+                        VStack(spacing: 2) {
+                            Image(systemName: isExpanded ? "rectangle.compress.vertical" : "rectangle.expand.vertical")
+                                .font(.system(size: 16))
+                            Text(isExpanded ? "Collapse" : "Expand")
+                                .font(.system(size: 9))
+                        }
+                        .frame(width: 52, height: 48)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(isExpanded ? "Collapse face manager" : "Expand face manager")
+                }
             }
 
             Divider()
@@ -242,50 +262,6 @@ struct FaceBarView: View {
                 .help("Review merge suggestions for similar face groups")
             }
 
-            // Refine button (when there are named and unnamed groups)
-            if viewModel.canRefine {
-                Divider()
-                    .frame(height: 58)
-
-                Button {
-                    refinementCount = viewModel.refineWithNamedGroups()
-                    // Clear the badge after a delay
-                    if refinementCount > 0 {
-                        Task {
-                            try? await Task.sleep(for: .seconds(5))
-                            await MainActor.run {
-                                refinementCount = 0
-                            }
-                        }
-                    }
-                } label: {
-                    ZStack(alignment: .topTrailing) {
-                        VStack(spacing: 2) {
-                            Image(systemName: "arrow.triangle.2.circlepath")
-                                .font(.system(size: 16))
-                            Text("Refine")
-                                .font(.system(size: 9))
-                        }
-                        .frame(width: 52, height: 48)
-
-                        // Badge showing new suggestions found
-                        if refinementCount > 0 {
-                            Text("\(refinementCount)")
-                                .font(.system(size: 9, weight: .bold))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 2)
-                                .background(Color.blue)
-                                .clipShape(Capsule())
-                                .offset(x: 4, y: -2)
-                        }
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("Find matches for unnamed groups using named groups as reference")
-            }
-
             // Check Known People button (On Demand mode)
             if knownPeopleMode == "onDemand" && viewModel.scanComplete {
                 Divider()
@@ -328,27 +304,6 @@ struct FaceBarView: View {
             }
 
             Spacer()
-
-            // Expand/collapse button
-            if viewModel.scanComplete {
-                Button {
-                    // Dismiss any open popovers before toggling
-                    selectedGroup = nil
-                    showMergeSuggestions = false
-                    onToggleExpanded?()
-                } label: {
-                    VStack(spacing: 2) {
-                        Image(systemName: isExpanded ? "rectangle.compress.vertical" : "rectangle.expand.vertical")
-                            .font(.system(size: 16))
-                        Text(isExpanded ? "Collapse" : "Expand")
-                            .font(.system(size: 9))
-                    }
-                    .frame(width: 52, height: 48)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help(isExpanded ? "Collapse face manager" : "Expand face manager")
-            }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
@@ -441,6 +396,7 @@ struct FaceBarView: View {
     private var scanButton: some View {
         Group {
             if viewModel.isScanning {
+                // Scanning in progress — show spinner
                 VStack(spacing: 2) {
                     ProgressView()
                         .controlSize(.small)
@@ -449,10 +405,58 @@ struct FaceBarView: View {
                         .foregroundStyle(.secondary)
                 }
                 .frame(width: 56, height: 56)
+            } else if viewModel.scanComplete && viewModel.canRefine {
+                // Scan done + has both named & unnamed → Refine button
+                Button {
+                    refinementCount = viewModel.refineWithNamedGroups()
+                    if refinementCount > 0 {
+                        Task {
+                            try? await Task.sleep(for: .seconds(5))
+                            await MainActor.run {
+                                refinementCount = 0
+                            }
+                        }
+                    }
+                } label: {
+                    ZStack(alignment: .topTrailing) {
+                        VStack(spacing: 2) {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                                .font(.system(size: 20))
+                                .foregroundStyle(.blue)
+                            Text("Refine")
+                                .font(.system(size: 10))
+                        }
+                        .frame(width: 56, height: 56)
+
+                        if refinementCount > 0 {
+                            Text("\(refinementCount)")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .background(Color.blue)
+                                .clipShape(Capsule())
+                                .offset(x: 4, y: -2)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Find matches for unnamed groups using named groups as reference")
+                .contextMenu {
+                    Button("Rescan Folder (Force Full)") {
+                        guard let folderURL else { return }
+                        viewModel.scanFolder(imageURLs: imageURLs, folderURL: folderURL, forceFullScan: true)
+                    }
+                    Button("Delete Face Data", role: .destructive) {
+                        guard let folderURL else { return }
+                        viewModel.deleteFaceData(for: folderURL)
+                    }
+                }
             } else {
+                // Not scanned yet, or scan done with all groups named/unnamed → Scan button
                 Button {
                     guard let folderURL else { return }
-                    // Option+click triggers full rescan
                     let forceFullScan = NSEvent.modifierFlags.contains(.option)
                     viewModel.scanFolder(imageURLs: imageURLs, folderURL: folderURL, forceFullScan: forceFullScan)
                 } label: {
