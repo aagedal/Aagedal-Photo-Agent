@@ -73,6 +73,21 @@ final class MetadataViewModel {
 
     var isBatchEdit: Bool { selectedCount > 1 }
 
+    private func multiSelectMode(for field: String) -> MultiSelectFieldMode {
+        switch field {
+        case "keywords":
+            let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.multiSelectKeywordsMode)
+                ?? MultiSelectFieldMode.add.rawValue
+            return MultiSelectFieldMode(rawValue: raw) ?? .add
+        case "personShown":
+            let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.multiSelectPersonShownMode)
+                ?? MultiSelectFieldMode.add.rawValue
+            return MultiSelectFieldMode(rawValue: raw) ?? .add
+        default:
+            return .overwrite
+        }
+    }
+
     private var prefersXMPSidecar: Bool {
         UserDefaults.standard.bool(forKey: UserDefaultsKeys.metadataPreferXMPSidecar)
     }
@@ -451,6 +466,7 @@ final class MetadataViewModel {
         let edited = editingMetadata
         let original = metadata
         let isBatch = isBatchEdit
+        let prevEditing = previousEditingMetadata
         isSaving = true
         saveError = nil
 
@@ -463,8 +479,25 @@ final class MetadataViewModel {
                     if let v = edited.title, !v.isEmpty { fields[ExifToolWriteTag.headline] = v }
                     if let v = edited.description, !v.isEmpty { fields[ExifToolWriteTag.description] = v }
                     if let v = edited.extendedDescription, !v.isEmpty { fields[ExifToolWriteTag.extendedDescription] = v }
-                    if !edited.keywords.isEmpty { fields[ExifToolWriteTag.subject] = edited.keywords.joined(separator: ", ") }
-                    if !edited.personShown.isEmpty { fields[ExifToolWriteTag.personInImage] = edited.personShown.joined(separator: ", ") }
+
+                    // Keywords — check add vs overwrite mode
+                    let keywordsMode = self.multiSelectMode(for: "keywords")
+                    if keywordsMode == .overwrite {
+                        if !edited.keywords.isEmpty {
+                            fields[ExifToolWriteTag.subject] = edited.keywords.joined(separator: ", ")
+                        }
+                    }
+                    // Add mode keywords handled below via addRemoveListValues
+
+                    // Person Shown — check add vs overwrite mode
+                    let personMode = self.multiSelectMode(for: "personShown")
+                    if personMode == .overwrite {
+                        if !edited.personShown.isEmpty {
+                            fields[ExifToolWriteTag.personInImage] = edited.personShown.joined(separator: ", ")
+                        }
+                    }
+                    // Add mode personShown handled below via addRemoveListValues
+
                     if let v = edited.digitalSourceType { fields[ExifToolWriteTag.digitalSourceType] = v.rawValue }
                     if let lat = edited.latitude, let lon = edited.longitude {
                         fields[ExifToolWriteTag.gpsLatitude] = String(abs(lat))
@@ -525,6 +558,19 @@ final class MetadataViewModel {
                 if !fields.isEmpty {
                     try await exifToolService.writeFields(fields, to: urls)
                 }
+
+                // Handle additive list fields via += / -=
+                if isBatch, let prev = prevEditing {
+                    let diffs = additiveListDiffs(from: edited, previous: prev)
+                    if !diffs.add.isEmpty || !diffs.remove.isEmpty {
+                        try await exifToolService.addRemoveListValues(
+                            add: diffs.add,
+                            remove: diffs.remove,
+                            to: urls
+                        )
+                    }
+                }
+
                 if Set(self.selectedURLs) == selectionSnapshot {
                     self.metadata = edited
                     self.hasChanges = false
@@ -551,8 +597,12 @@ final class MetadataViewModel {
         if let v = metadata.title, !v.isEmpty { fields[ExifToolWriteTag.headline] = v }
         if let v = metadata.description, !v.isEmpty { fields[ExifToolWriteTag.description] = v }
         if let v = metadata.extendedDescription, !v.isEmpty { fields[ExifToolWriteTag.extendedDescription] = v }
-        if !metadata.keywords.isEmpty { fields[ExifToolWriteTag.subject] = metadata.keywords.joined(separator: ", ") }
-        if !metadata.personShown.isEmpty { fields[ExifToolWriteTag.personInImage] = metadata.personShown.joined(separator: ", ") }
+        if multiSelectMode(for: "keywords") == .overwrite, !metadata.keywords.isEmpty {
+            fields[ExifToolWriteTag.subject] = metadata.keywords.joined(separator: ", ")
+        }
+        if multiSelectMode(for: "personShown") == .overwrite, !metadata.personShown.isEmpty {
+            fields[ExifToolWriteTag.personInImage] = metadata.personShown.joined(separator: ", ")
+        }
         if let v = metadata.digitalSourceType { fields[ExifToolWriteTag.digitalSourceType] = v.rawValue }
         if let v = metadata.creator, !v.isEmpty { fields[ExifToolWriteTag.creator] = v }
         if let v = metadata.credit, !v.isEmpty { fields[ExifToolWriteTag.credit] = v }
@@ -570,6 +620,31 @@ final class MetadataViewModel {
         }
         appendCameraRawFields(from: metadata, into: &fields)
         return fields
+    }
+
+    /// Compute add/remove diffs for list fields in add mode, relative to previousEditingMetadata.
+    private func additiveListDiffs(
+        from edited: IPTCMetadata,
+        previous: IPTCMetadata
+    ) -> (add: [String: [String]], remove: [String: [String]]) {
+        var addTags: [String: [String]] = [:]
+        var removeTags: [String: [String]] = [:]
+
+        if multiSelectMode(for: "keywords") == .add {
+            let added = Array(Set(edited.keywords).subtracting(previous.keywords))
+            let removed = Array(Set(previous.keywords).subtracting(edited.keywords))
+            if !added.isEmpty { addTags[ExifToolWriteTag.subject] = added }
+            if !removed.isEmpty { removeTags[ExifToolWriteTag.subject] = removed }
+        }
+
+        if multiSelectMode(for: "personShown") == .add {
+            let added = Array(Set(edited.personShown).subtracting(previous.personShown))
+            let removed = Array(Set(previous.personShown).subtracting(edited.personShown))
+            if !added.isEmpty { addTags[ExifToolWriteTag.personInImage] = added }
+            if !removed.isEmpty { removeTags[ExifToolWriteTag.personInImage] = removed }
+        }
+
+        return (addTags, removeTags)
     }
 
     private func writeStrictPhotoMechanicXMP(onComplete: (() -> Void)? = nil) {
@@ -667,15 +742,28 @@ final class MetadataViewModel {
                 }
 
                 let allRawXmpTargets = rawXmpTargets.union(pairRawTargets)
+                let prevCommon = self.previousEditingMetadata
                 for rawURL in allRawXmpTargets {
                     var existing = xmpSidecarService.loadSidecar(for: rawURL) ?? IPTCMetadata()
-                    applyBatchEdits(edited, to: &existing)
+                    applyBatchEdits(edited, to: &existing, previousCommon: prevCommon)
                     try xmpSidecarService.saveSidecar(metadata: existing, for: rawURL)
                 }
 
                 let fields = batchWriteFields(from: edited)
                 if !nonRawEmbeddedTargets.isEmpty, !fields.isEmpty {
                     try await exifToolService.writeFields(fields, to: Array(nonRawEmbeddedTargets))
+                }
+
+                // Handle additive list fields for non-RAW embedded targets
+                if !nonRawEmbeddedTargets.isEmpty, let prev = prevCommon {
+                    let diffs = additiveListDiffs(from: edited, previous: prev)
+                    if !diffs.add.isEmpty || !diffs.remove.isEmpty {
+                        try await exifToolService.addRemoveListValues(
+                            add: diffs.add,
+                            remove: diffs.remove,
+                            to: Array(nonRawEmbeddedTargets)
+                        )
+                    }
                 }
 
                 if !allRawXmpTargets.isEmpty {
@@ -758,9 +846,10 @@ final class MetadataViewModel {
         }
 
         let batchMeta = editingMetadata
+        let prevCommon = previousEditingMetadata
         for imageURL in selectedURLs {
             var existing = xmpSidecarService.loadSidecar(for: imageURL) ?? IPTCMetadata()
-            applyBatchEdits(batchMeta, to: &existing)
+            applyBatchEdits(batchMeta, to: &existing, previousCommon: prevCommon)
             do {
                 try xmpSidecarService.saveSidecar(metadata: existing, for: imageURL)
             } catch {
@@ -1535,6 +1624,7 @@ final class MetadataViewModel {
     ) {
         let now = Date()
         let batchMeta = editingMetadata
+        let prevCommon = previousEditingMetadata
         let urls = targetURLs ?? selectedURLs
 
         for imageURL in urls {
@@ -1552,7 +1642,7 @@ final class MetadataViewModel {
             }
 
             let previousMeta = existingMeta
-            applyBatchEdits(batchMeta, to: &existingMeta)
+            applyBatchEdits(batchMeta, to: &existingMeta, previousCommon: prevCommon)
             let history = buildHistory(
                 previous: previousMeta,
                 edited: existingMeta,
@@ -1584,7 +1674,11 @@ final class MetadataViewModel {
         }
     }
 
-    private func applyBatchEdits(_ batchMeta: IPTCMetadata, to metadata: inout IPTCMetadata) {
+    private func applyBatchEdits(
+        _ batchMeta: IPTCMetadata,
+        to metadata: inout IPTCMetadata,
+        previousCommon: IPTCMetadata? = nil
+    ) {
         if let title = batchMeta.title, !title.isEmpty {
             metadata.title = title
         }
@@ -1594,14 +1688,35 @@ final class MetadataViewModel {
         if let extDesc = batchMeta.extendedDescription, !extDesc.isEmpty {
             metadata.extendedDescription = extDesc
         }
-        if !batchMeta.keywords.isEmpty {
+
+        // Keywords — add vs overwrite
+        if multiSelectMode(for: "keywords") == .add, let prev = previousCommon {
+            let added = Set(batchMeta.keywords).subtracting(prev.keywords)
+            let removed = Set(prev.keywords).subtracting(batchMeta.keywords)
+            if !added.isEmpty || !removed.isEmpty {
+                metadata.keywords = metadata.keywords.filter { !removed.contains($0) }
+                let existingSet = Set(metadata.keywords)
+                metadata.keywords += added.filter { !existingSet.contains($0) }
+            }
+        } else if !batchMeta.keywords.isEmpty {
             let existing = Set(metadata.keywords)
             metadata.keywords += batchMeta.keywords.filter { !existing.contains($0) }
         }
-        if !batchMeta.personShown.isEmpty {
+
+        // Person Shown — add vs overwrite
+        if multiSelectMode(for: "personShown") == .add, let prev = previousCommon {
+            let added = Set(batchMeta.personShown).subtracting(prev.personShown)
+            let removed = Set(prev.personShown).subtracting(batchMeta.personShown)
+            if !added.isEmpty || !removed.isEmpty {
+                metadata.personShown = metadata.personShown.filter { !removed.contains($0) }
+                let existingSet = Set(metadata.personShown)
+                metadata.personShown += added.filter { !existingSet.contains($0) }
+            }
+        } else if !batchMeta.personShown.isEmpty {
             let existing = Set(metadata.personShown)
             metadata.personShown += batchMeta.personShown.filter { !existing.contains($0) }
         }
+
         if let copyright = batchMeta.copyright, !copyright.isEmpty {
             metadata.copyright = copyright
         }

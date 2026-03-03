@@ -278,6 +278,14 @@ final class SettingsViewModel {
         didSet { UserDefaults.standard.set(pmNonRawXmpBehavior.rawValue, forKey: UserDefaultsKeys.pmNonRawXmpBehavior) }
     }
 
+    var multiSelectKeywordsMode: MultiSelectFieldMode {
+        didSet { UserDefaults.standard.set(multiSelectKeywordsMode.rawValue, forKey: UserDefaultsKeys.multiSelectKeywordsMode) }
+    }
+
+    var multiSelectPersonShownMode: MultiSelectFieldMode {
+        didSet { UserDefaults.standard.set(multiSelectPersonShownMode.rawValue, forKey: UserDefaultsKeys.multiSelectPersonShownMode) }
+    }
+
     var pmRememberedNonRawChoice: PMNonRAWXMPSidecarChoice? {
         PMXMPPolicy.rememberedChoice
     }
@@ -534,6 +542,12 @@ final class SettingsViewModel {
         let pmBehaviorRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.pmNonRawXmpBehavior)
             ?? PMNonRAWXMPSidecarBehavior.alwaysAsk.rawValue
         self.pmNonRawXmpBehavior = PMNonRAWXMPSidecarBehavior(rawValue: pmBehaviorRaw) ?? .alwaysAsk
+
+        let keywordsModeRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.multiSelectKeywordsMode) ?? MultiSelectFieldMode.add.rawValue
+        self.multiSelectKeywordsMode = MultiSelectFieldMode(rawValue: keywordsModeRaw) ?? .add
+
+        let personShownModeRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.multiSelectPersonShownMode) ?? MultiSelectFieldMode.add.rawValue
+        self.multiSelectPersonShownMode = MultiSelectFieldMode(rawValue: personShownModeRaw) ?? .add
 
         // Face recognition settings with defaults
         // Mode-specific thresholds with optimized defaults
