@@ -25,16 +25,6 @@ struct FaceBarView: View {
     @State private var isDraggingOverBar: Bool = false
     @AppStorage("knownPeopleMode") private var knownPeopleMode: String = "off"
 
-    /// Named groups (shown first in the bar)
-    private var namedGroups: [FaceGroup] {
-        viewModel.sortedGroups.filter { $0.name != nil }
-    }
-
-    /// Unnamed groups (shown after the divider)
-    private var unnamedGroups: [FaceGroup] {
-        viewModel.sortedGroups.filter { $0.name == nil }
-    }
-
     /// Height of the face bar
     private let barHeight: CGFloat = 100
 
@@ -44,10 +34,6 @@ struct FaceBarView: View {
 
     private var isMultiSelecting: Bool {
         multiSelectedGroupIDs.count >= 2
-    }
-
-    private var canApplyAllNames: Bool {
-        viewModel.scanComplete && !namedGroups.isEmpty && !isApplyingAllNames
     }
 
     private var canUnmergeSelection: Bool {
@@ -67,6 +53,10 @@ struct FaceBarView: View {
     }
 
     var body: some View {
+        let namedGroups = viewModel.sortedGroups.filter { $0.name != nil }
+        let unnamedGroups = viewModel.sortedGroups.filter { $0.name == nil }
+        let canApplyAllNames = viewModel.scanComplete && !namedGroups.isEmpty && !isApplyingAllNames
+
         HStack(spacing: 8) {
             // Scan button with settings
             HStack(spacing: 4) {

@@ -426,10 +426,17 @@ final class KnownPeopleService {
             return cached
         }
 
-        guard let fp = try? NSKeyedUnarchiver.unarchivedObject(
-            ofClass: VNFeaturePrintObservation.self,
-            from: embedding.featurePrintData
-        ) else {
+        let fp: VNFeaturePrintObservation
+        do {
+            guard let unarchived = try NSKeyedUnarchiver.unarchivedObject(
+                ofClass: VNFeaturePrintObservation.self,
+                from: embedding.featurePrintData
+            ) else {
+                return nil
+            }
+            fp = unarchived
+        } catch {
+            knownPeopleLog.error("Failed to unarchive feature print for embedding \(embedding.id): \(error.localizedDescription, privacy: .public)")
             return nil
         }
 
@@ -448,10 +455,17 @@ final class KnownPeopleService {
         threshold: Float = 0.45,
         maxResults: Int = 5
     ) -> [KnownPersonMatch] {
-        guard let queryFP = try? NSKeyedUnarchiver.unarchivedObject(
-            ofClass: VNFeaturePrintObservation.self,
-            from: featurePrintData
-        ) else {
+        let queryFP: VNFeaturePrintObservation
+        do {
+            guard let unarchived = try NSKeyedUnarchiver.unarchivedObject(
+                ofClass: VNFeaturePrintObservation.self,
+                from: featurePrintData
+            ) else {
+                return []
+            }
+            queryFP = unarchived
+        } catch {
+            knownPeopleLog.error("Failed to unarchive query feature print: \(error.localizedDescription, privacy: .public)")
             return []
         }
 
@@ -473,6 +487,7 @@ final class KnownPeopleService {
                         bestEmbeddingID = embedding.id
                     }
                 } catch {
+                    knownPeopleLog.debug("Failed to compute distance for person \(person.name, privacy: .public): \(error.localizedDescription, privacy: .public)")
                     continue
                 }
             }

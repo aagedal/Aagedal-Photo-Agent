@@ -53,8 +53,12 @@ struct MetadataSidecarService: Sendable {
                     .replacingOccurrences(of: ":", with: "-")
                 let backupURL = fileURL.deletingLastPathComponent()
                     .appendingPathComponent("\(fileURL.lastPathComponent).corrupt.\(timestamp)")
-                try? FileManager.default.moveItem(at: fileURL, to: backupURL)
-                sidecarLogger.error("Moved corrupt sidecar to \(backupURL.lastPathComponent, privacy: .public)")
+                do {
+                    try FileManager.default.moveItem(at: fileURL, to: backupURL)
+                    sidecarLogger.warning("Moved corrupt sidecar to \(backupURL.lastPathComponent, privacy: .public)")
+                } catch {
+                    sidecarLogger.error("Failed to move corrupt sidecar \(fileURL.lastPathComponent): \(error.localizedDescription, privacy: .public)")
+                }
                 continue
             }
         }
@@ -93,8 +97,12 @@ struct MetadataSidecarService: Sendable {
                     .replacingOccurrences(of: ":", with: "-")
                 let backupURL = file.deletingLastPathComponent()
                     .appendingPathComponent("\(file.lastPathComponent).corrupt.\(timestamp)")
-                try? FileManager.default.moveItem(at: file, to: backupURL)
-                sidecarLogger.error("Moved corrupt sidecar to \(backupURL.lastPathComponent, privacy: .public)")
+                do {
+                    try FileManager.default.moveItem(at: file, to: backupURL)
+                    sidecarLogger.warning("Moved corrupt sidecar to \(backupURL.lastPathComponent, privacy: .public)")
+                } catch {
+                    sidecarLogger.error("Failed to move corrupt sidecar \(file.lastPathComponent): \(error.localizedDescription, privacy: .public)")
+                }
                 continue
             }
         }
@@ -130,6 +138,9 @@ struct MetadataSidecarService: Sendable {
         if edited.country != original.country { names.append("Country") }
         if edited.event != original.event { names.append("Event") }
         if edited.digitalSourceType != original.digitalSourceType { names.append("Digital Source Type") }
+        if edited.exifOrientation != original.exifOrientation { names.append("Orientation") }
+        if edited.latitude != original.latitude || edited.longitude != original.longitude { names.append("GPS Coordinates") }
+        if edited.captureDate != original.captureDate { names.append("Capture Date") }
         return names
     }
 
@@ -152,7 +163,11 @@ struct MetadataSidecarService: Sendable {
         let legacyURL = legacySidecarFileURL(for: imageURL, in: folderURL)
         if legacyURL != currentURL,
            FileManager.default.fileExists(atPath: legacyURL.path) {
-            try? FileManager.default.removeItem(at: legacyURL)
+            do {
+                try FileManager.default.removeItem(at: legacyURL)
+            } catch {
+                sidecarLogger.warning("Failed to remove legacy sidecar \(legacyURL.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            }
         }
     }
 

@@ -1877,6 +1877,10 @@ final class MetadataViewModel {
         if editingMetadata.country != original.country { names.append("Country") }
         if editingMetadata.event != original.event { names.append("Event") }
         if editingMetadata.digitalSourceType != original.digitalSourceType { names.append("Digital Source Type") }
+        if editingMetadata.rating != original.rating { names.append("Rating") }
+        if editingMetadata.label != original.label { names.append("Label") }
+        if editingMetadata.latitude != original.latitude || editingMetadata.longitude != original.longitude { names.append("GPS Coordinates") }
+        if editingMetadata.captureDate != original.captureDate { names.append("Capture Date") }
         return names
     }
 

@@ -147,16 +147,18 @@ enum CoordinateParser {
     }
 
     private static func decimalToDMS(_ decimal: Double) -> (degrees: Int, minutes: Int, seconds: Double) {
-        let degrees = Int(decimal)
-        let minutesDecimal = (decimal - Double(degrees)) * 60
+        let value = abs(decimal)
+        let degrees = Int(value)
+        let minutesDecimal = (value - Double(degrees)) * 60
         let minutes = Int(minutesDecimal)
         let seconds = (minutesDecimal - Double(minutes)) * 60
         return (degrees, minutes, seconds)
     }
 
     private static func decimalToDDM(_ decimal: Double) -> (degrees: Int, minutes: Double) {
-        let degrees = Int(decimal)
-        let minutes = (decimal - Double(degrees)) * 60
+        let value = abs(decimal)
+        let degrees = Int(value)
+        let minutes = (value - Double(degrees)) * 60
         return (degrees, minutes)
     }
 }
