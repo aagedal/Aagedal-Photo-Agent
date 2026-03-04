@@ -1,6 +1,6 @@
 import Foundation
 
-nonisolated enum FaceCleanupPolicy: String, Codable, CaseIterable {
+nonisolated enum FaceCleanupPolicy: String, Codable, CaseIterable, Sendable {
     case sevenDays = "7days"
     case thirtyDays = "30days"
     case never = "never"
