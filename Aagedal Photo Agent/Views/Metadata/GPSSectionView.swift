@@ -1,5 +1,5 @@
 import SwiftUI
-import MapKit
+@preconcurrency import MapKit
 
 struct GPSSectionView: View {
     @Binding var latitude: Double?
@@ -19,6 +19,12 @@ struct GPSSectionView: View {
     @State private var parseError: String?
     @State private var displayFormat: CoordinateFormat = .decimalDegrees
     @State private var mapPosition: MapCameraPosition = .automatic
+    @AppStorage("gpsLocationCollapsed") private var isCollapsed = false
+
+    // Search state
+    @State private var isSearching = false
+    @State private var searchText = ""
+    @State private var searchCompleter = LocationSearchCompleter()
 
     private var hasGPS: Bool {
         latitude != nil && longitude != nil
@@ -36,32 +42,115 @@ struct GPSSectionView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text("GPS Location")
-                .font(.headline)
+            // Header row: chevron + title + search button
+            HStack {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        isCollapsed.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .rotationEffect(.degrees(isCollapsed ? 0 : 90))
+                        Text("GPS Location")
+                            .font(.headline)
+                    }
+                }
+                .buttonStyle(.plain)
 
-            mapView
+                Spacer()
 
-            if coordinate != nil {
-                coordinateDisplay
+                Button {
+                    isSearching.toggle()
+                    if !isSearching {
+                        searchText = ""
+                        searchCompleter.results = []
+                    }
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                        .font(.caption)
+                }
+                .buttonStyle(.plain)
+                .help("Search for a location")
             }
 
-            coordinateInputField
-
-            if let error = parseError {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.red)
+            // Search field (always visible when searching, regardless of collapse)
+            if isSearching {
+                searchView
             }
 
-            if let error = geocodingError {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.orange)
+            if !isCollapsed {
+                mapView
+
+                if coordinate != nil {
+                    coordinateDisplay
+                }
+
+                coordinateInputField
+
+                if let error = parseError {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+
+                if let error = geocodingError {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
             }
         }
         .onChange(of: latitude) { updateMapPosition() }
         .onChange(of: longitude) { updateMapPosition() }
         .onAppear { updateMapPosition() }
+    }
+
+    // MARK: - Search
+
+    @ViewBuilder
+    private var searchView: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            TextField("Search location...", text: $searchText)
+                .textFieldStyle(.roundedBorder)
+                .font(.caption)
+                .onChange(of: searchText) { _, newValue in
+                    searchCompleter.search(query: newValue)
+                }
+
+            if !searchCompleter.results.isEmpty {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(searchCompleter.results, id: \.self) { result in
+                            Button {
+                                selectSearchResult(result)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(result.title)
+                                        .font(.caption)
+                                        .lineLimit(1)
+                                    if !result.subtitle.isEmpty {
+                                        Text(result.subtitle)
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.vertical, 3)
+                                .padding(.horizontal, 6)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .frame(maxHeight: 120)
+                .background(RoundedRectangle(cornerRadius: 6).fill(.background))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3), lineWidth: 0.5))
+            }
+        }
     }
 
     // MARK: - Map
@@ -229,5 +318,53 @@ struct GPSSectionView: View {
         } else {
             mapPosition = .region(Self.defaultRegion)
         }
+    }
+
+    private func selectSearchResult(_ result: MKLocalSearchCompletion) {
+        let request = MKLocalSearch.Request(completion: result)
+        let search = MKLocalSearch(request: request)
+        search.start { response, error in
+            guard let item = response?.mapItems.first else { return }
+            let coord = item.placemark.coordinate
+            latitude = coord.latitude
+            longitude = coord.longitude
+            onChanged()
+            isSearching = false
+            searchText = ""
+            searchCompleter.results = []
+        }
+    }
+}
+
+// MARK: - Location Search Completer
+
+@Observable
+class LocationSearchCompleter: NSObject, MKLocalSearchCompleterDelegate {
+    var results: [MKLocalSearchCompletion] = []
+    private let completer = MKLocalSearchCompleter()
+
+    override init() {
+        super.init()
+        completer.delegate = self
+        completer.resultTypes = [.address, .pointOfInterest]
+    }
+
+    func search(query: String) {
+        if query.isEmpty {
+            results = []
+        } else {
+            completer.queryFragment = query
+        }
+    }
+
+    nonisolated func completerDidUpdateResults(_ completer: MKLocalSearchCompleter) {
+        let completionResults = completer.results
+        Task { @MainActor in
+            self.results = completionResults
+        }
+    }
+
+    nonisolated func completer(_ completer: MKLocalSearchCompleter, didFailWithError error: Error) {
+        // Silently handle search errors
     }
 }
