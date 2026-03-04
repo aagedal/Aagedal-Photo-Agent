@@ -1027,8 +1027,13 @@ struct ContentView: View {
             for (index, url) in urls.enumerated() {
                 renderEditedFolderProgress = "Rendering \(index + 1)/\(urls.count)..."
                 let cameraRaw = metadataByURL[url]?.cameraRaw
+                let isHDR = cameraRaw?.hdrEditMode == 1
                 do {
-                    try EditedImageRenderer.renderJPEG(from: url, cameraRaw: cameraRaw, outputFolder: outputFolder)
+                    if isHDR {
+                        try EditedImageRenderer.renderHDR(from: url, cameraRaw: cameraRaw, outputFolder: outputFolder)
+                    } else {
+                        try EditedImageRenderer.renderJPEG(from: url, cameraRaw: cameraRaw, outputFolder: outputFolder)
+                    }
                     successCount += 1
                 } catch {
                     failureCount += 1

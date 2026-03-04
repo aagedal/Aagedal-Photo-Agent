@@ -346,10 +346,16 @@ final class BrowserViewModel {
                     updated.pendingFieldNames = existing.pendingFieldNames
                     updated.metadata = existing.metadata
                     updated.personShown = existing.personShown
-                    merged.append(updated)
                     if isModified {
+                        // File changed on disk — clear stale develop/crop state so
+                        // thumbnails reflect the actual file content
+                        updated.cameraRawSettings = nil
+                        updated.hasDevelopEdits = false
+                        updated.hasCropEdits = false
+                        updated.cropRegion = nil
                         modifiedURLs.append(item.url)
                     }
+                    merged.append(updated)
                 } else {
                     merged.append(item)
                     newURLs.append(item.url)
@@ -375,6 +381,11 @@ final class BrowserViewModel {
             }
 
             self.images = merged
+
+            // Invalidate thumbnail cache for modified files so they regenerate
+            for url in modifiedURLs {
+                thumbnailService.invalidateThumbnail(for: url)
+            }
 
             let metadataRefreshURLs = newURLs + modifiedURLs
             if !metadataRefreshURLs.isEmpty {

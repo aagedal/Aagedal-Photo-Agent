@@ -69,8 +69,9 @@ struct TemplateEditorView: View {
 
                     variableMenu(for: $field)
 
+                    let fieldID = field.id
                     Button {
-                        viewModel.editingTemplate.fields.removeAll { $0.id == field.id }
+                        viewModel.editingTemplate.fields.removeAll { $0.id == fieldID }
                     } label: {
                         Image(systemName: "minus.circle")
                             .foregroundStyle(.red)
