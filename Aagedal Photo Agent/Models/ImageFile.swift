@@ -105,6 +105,8 @@ struct ImageFile: Identifiable, Hashable, Sendable {
             && lhs.exifOrientation == rhs.exifOrientation
             && lhs.hasPendingMetadataChanges == rhs.hasPendingMetadataChanges
             && lhs.pendingFieldNames == rhs.pendingFieldNames
+            && lhs.cropRegion == rhs.cropRegion
+            && lhs.personShown == rhs.personShown
     }
 
     func hash(into hasher: inout Hasher) {

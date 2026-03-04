@@ -529,12 +529,6 @@ nonisolated struct FaceDetectionService: Sendable {
         return count > 0 ? totalDistance / Float(count) : .infinity
     }
 
-    /// Convenience overload that creates a temporary cache for one-off distance calculations.
-    private func computeAverageLinkageDistance(_ cluster1: [DetectedFace], _ cluster2: [DetectedFace]) -> Float {
-        let cache = FeaturePrintCache()
-        return computeAverageLinkageDistance(cluster1, cluster2, cache: cache)
-    }
-
     private func distanceKey(_ i: Int, _ j: Int) -> Int64 {
         let (a, b) = i < j ? (i, j) : (j, i)
         return Int64(a) &<< 32 | Int64(b)
