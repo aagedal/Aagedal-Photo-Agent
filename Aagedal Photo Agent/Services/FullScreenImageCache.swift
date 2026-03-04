@@ -48,13 +48,15 @@ final class FullScreenImageCache: @unchecked Sendable {
         let targetIndices = (ahead + behind).filter { $0 >= 0 && $0 < images.count }
         let targetURLs = Set(targetIndices.map { images[$0] })
 
-        lock.withLock {
-            // Cancel prefetch tasks for URLs no longer needed
+        let tasksToCancel = lock.withLock { () -> [Task<Void, Never>] in
+            var toCancel: [Task<Void, Never>] = []
             for (url, task) in prefetchTasks where !targetURLs.contains(url) {
-                task.cancel()
+                toCancel.append(task)
                 prefetchTasks.removeValue(forKey: url)
             }
+            return toCancel
         }
+        for task in tasksToCancel { task.cancel() }
 
         for url in targetURLs {
             // Atomically check both cache and prefetch state to avoid duplicate tasks
@@ -98,12 +100,12 @@ final class FullScreenImageCache: @unchecked Sendable {
     }
 
     nonisolated func cancelAllPrefetch() {
-        lock.withLock {
-            for (_, task) in prefetchTasks {
-                task.cancel()
-            }
+        let tasksToCancel = lock.withLock {
+            let tasks = Array(prefetchTasks.values)
             prefetchTasks.removeAll()
+            return tasks
         }
+        for task in tasksToCancel { task.cancel() }
         cacheLogger.info("All prefetch tasks cancelled")
     }
 

@@ -30,7 +30,10 @@ struct FTPService: Sendable {
             .appendingPathComponent(UUID().uuidString)
             .appendingPathExtension("netrc")
         let netrcContent = "machine \(connection.host) login \(connection.username) password \(password)\n"
-        try netrcContent.data(using: .utf8)!.write(to: netrcURL, options: .atomic)
+        guard let netrcData = netrcContent.data(using: .utf8) else {
+            throw FTPError.encodingFailed
+        }
+        try netrcData.write(to: netrcURL, options: .atomic)
         defer { try? FileManager.default.removeItem(at: netrcURL) }
 
         var arguments = [
@@ -106,11 +109,14 @@ struct FTPService: Sendable {
 
     enum FTPError: LocalizedError {
         case uploadFailed(Int32)
+        case encodingFailed
 
         var errorDescription: String? {
             switch self {
             case .uploadFailed(let code):
                 return "FTP upload failed (exit code: \(code))"
+            case .encodingFailed:
+                return "Failed to encode FTP credentials as UTF-8"
             }
         }
     }

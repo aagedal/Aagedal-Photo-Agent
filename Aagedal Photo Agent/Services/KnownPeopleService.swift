@@ -97,6 +97,16 @@ final class KnownPeopleService {
         NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
     }
 
+    /// Load → mutate → save → update cache. Centralizes the repeated CRUD pattern.
+    private func mutateDatabase(_ transform: (inout KnownPeopleDatabase) throws -> Void) throws {
+        var db = loadDatabase()
+        try transform(&db)
+        db.lastModified = Date()
+        try saveDatabase(db)
+        database = db
+        clearFeaturePrintCache()
+    }
+
     // MARK: - Thumbnails
 
     func loadThumbnail(for personID: UUID) -> NSImage? {
@@ -123,8 +133,6 @@ final class KnownPeopleService {
         embeddings: [PersonEmbedding],
         thumbnailData: Data? = nil
     ) throws -> KnownPerson {
-        var db = loadDatabase()
-
         let person = KnownPerson(
             name: name,
             role: role,
@@ -132,65 +140,47 @@ final class KnownPeopleService {
             representativeThumbnailID: embeddings.first?.id
         )
 
-        db.people.append(person)
-        db.lastModified = Date()
-
         if let thumbData = thumbnailData {
             try saveThumbnail(thumbData, for: person.id)
         }
 
-        try saveDatabase(db)
-        database = db
-        clearFeaturePrintCache()
+        try mutateDatabase { db in
+            db.people.append(person)
+        }
 
         return person
     }
 
     func updatePerson(_ person: KnownPerson) throws {
-        var db = loadDatabase()
-
         guard let index = peopleIndex[person.id] else {
             throw NSError(domain: "KnownPeopleService", code: 10,
                           userInfo: [NSLocalizedDescriptionKey: "Person not found: \(person.name)"])
         }
 
-        var updated = person
-        updated.updatedAt = Date()
-        db.people[index] = updated
-        db.lastModified = Date()
-
-        try saveDatabase(db)
-        database = db
-        clearFeaturePrintCache()
+        try mutateDatabase { db in
+            var updated = person
+            updated.updatedAt = Date()
+            db.people[index] = updated
+        }
     }
 
     func removePerson(id: UUID) throws {
-        var db = loadDatabase()
-
-        db.people.removeAll { $0.id == id }
-        db.lastModified = Date()
-
-        try saveDatabase(db)
-        database = db
+        try mutateDatabase { db in
+            db.people.removeAll { $0.id == id }
+        }
         deleteThumbnail(for: id)
-        clearFeaturePrintCache()
     }
 
     func addEmbedding(_ embedding: PersonEmbedding, toPersonID personID: UUID) throws {
-        var db = loadDatabase()
-
         guard let index = peopleIndex[personID] else {
             throw NSError(domain: "KnownPeopleService", code: 10,
                           userInfo: [NSLocalizedDescriptionKey: "Person not found with ID: \(personID)"])
         }
 
-        db.people[index].embeddings.append(embedding)
-        db.people[index].updatedAt = Date()
-        db.lastModified = Date()
-
-        try saveDatabase(db)
-        database = db
-        clearFeaturePrintCache()
+        try mutateDatabase { db in
+            db.people[index].embeddings.append(embedding)
+            db.people[index].updatedAt = Date()
+        }
     }
 
     // MARK: - Duplicate Detection
@@ -277,28 +267,21 @@ final class KnownPeopleService {
 
     /// Add embeddings to a person, skipping any that are duplicates (same featurePrintData).
     func addEmbeddingsDeduped(_ embeddings: [PersonEmbedding], toPersonID personID: UUID) throws {
-        var db = loadDatabase()
-
         guard let index = peopleIndex[personID] else {
             throw NSError(domain: "KnownPeopleService", code: 10,
                           userInfo: [NSLocalizedDescriptionKey: "Person not found with ID: \(personID)"])
         }
 
-        // Get existing embedding data for comparison
+        let db = loadDatabase()
         let existingData = Set(db.people[index].embeddings.map { $0.featurePrintData })
-
-        // Filter to only new embeddings
         let newEmbeddings = embeddings.filter { !existingData.contains($0.featurePrintData) }
 
         guard !newEmbeddings.isEmpty else { return }
 
-        db.people[index].embeddings.append(contentsOf: newEmbeddings)
-        db.people[index].updatedAt = Date()
-        db.lastModified = Date()
-
-        try saveDatabase(db)
-        database = db
-        clearFeaturePrintCache()
+        try mutateDatabase { db in
+            db.people[index].embeddings.append(contentsOf: newEmbeddings)
+            db.people[index].updatedAt = Date()
+        }
     }
 
     /// Find a person by name (case-insensitive).
@@ -313,68 +296,49 @@ final class KnownPeopleService {
     /// Merge people: combine embeddings from source into target, delete source.
     /// Deduplicates embeddings to avoid storing the same face data multiple times.
     func mergePeople(sourceID: UUID, intoTargetID: UUID) throws {
-        var db = loadDatabase()
         guard let sourceIndex = peopleIndex[sourceID],
               let targetIndex = peopleIndex[intoTargetID],
               sourceIndex != targetIndex else {
             return
         }
 
-        // Get existing embedding data for deduplication
+        let db = loadDatabase()
         let existingData = Set(db.people[targetIndex].embeddings.map { $0.featurePrintData })
-
-        // Filter source embeddings to only include those not already in target
         let newEmbeddings = db.people[sourceIndex].embeddings.filter { embedding in
             !existingData.contains(embedding.featurePrintData)
         }
 
-        // Append only non-duplicate embeddings to target
-        db.people[targetIndex].embeddings.append(contentsOf: newEmbeddings)
-        db.people[targetIndex].updatedAt = Date()
-
-        // Delete source person and thumbnail
-        let sourcePersonID = db.people[sourceIndex].id
-        db.people.remove(at: sourceIndex)
-        deleteThumbnail(for: sourcePersonID)
-
-        db.lastModified = Date()
-
-        try saveDatabase(db)
-        database = db
-        clearFeaturePrintCache()
+        try mutateDatabase { db in
+            db.people[targetIndex].embeddings.append(contentsOf: newEmbeddings)
+            db.people[targetIndex].updatedAt = Date()
+            db.people.remove(at: sourceIndex)
+        }
+        deleteThumbnail(for: sourceID)
     }
 
     /// Replace the thumbnail for a known person
     func replaceThumbnail(for personID: UUID, newThumbnailData: Data) throws {
         try saveThumbnail(newThumbnailData, for: personID)
 
-        // Update timestamp
-        var db = loadDatabase()
-        if let index = peopleIndex[personID] {
+        guard let index = peopleIndex[personID] else { return }
+        try mutateDatabase { db in
             db.people[index].updatedAt = Date()
-            db.lastModified = Date()
-            try saveDatabase(db)
-            database = db
         }
     }
 
     /// Delete a single embedding from a person
     func removeEmbedding(_ embeddingID: UUID, fromPersonID personID: UUID) throws {
-        var db = loadDatabase()
         guard let index = peopleIndex[personID] else { return }
 
-        db.people[index].embeddings.removeAll { $0.id == embeddingID }
+        try mutateDatabase { db in
+            db.people[index].embeddings.removeAll { $0.id == embeddingID }
 
-        // Update representative if it was the removed one
-        if db.people[index].representativeThumbnailID == embeddingID {
-            db.people[index].representativeThumbnailID = db.people[index].embeddings.first?.id
+            if db.people[index].representativeThumbnailID == embeddingID {
+                db.people[index].representativeThumbnailID = db.people[index].embeddings.first?.id
+            }
+
+            db.people[index].updatedAt = Date()
         }
-
-        db.people[index].updatedAt = Date()
-        db.lastModified = Date()
-        try saveDatabase(db)
-        database = db
-        clearFeaturePrintCache()
     }
 
     /// Get a person by ID
@@ -485,6 +449,7 @@ final class KnownPeopleService {
                     if distance < bestDistance {
                         bestDistance = distance
                         bestEmbeddingID = embedding.id
+                        if bestDistance < 0.05 { break }
                     }
                 } catch {
                     knownPeopleLog.debug("Failed to compute distance for person \(person.name, privacy: .public): \(error.localizedDescription, privacy: .public)")
