@@ -258,6 +258,42 @@ struct NormalizedCropRegion: Equatable {
         ).clamped()
     }
 
+    /// Resizes the crop to match a target aspect ratio while preserving the crop area.
+    /// Unlike `constrainedToAspectRatio` (which only shrinks), this can grow one dimension
+    /// to maintain constant area — preventing progressive shrinking when switching ratios.
+    /// `targetRatio` is desired cropWidth/cropHeight in normalized coords.
+    func resizedToAspectRatio(_ targetRatio: Double) -> NormalizedCropRegion {
+        let currentW = width
+        let currentH = height
+        guard currentW > 0, currentH > 0, targetRatio > 0 else { return self }
+
+        let area = currentW * currentH
+        var newW = Foundation.sqrt(area * targetRatio)
+        var newH = Foundation.sqrt(area / targetRatio)
+
+        let cx = centerX
+        let cy = centerY
+
+        // Clamp to [0,1] bounds, shrinking proportionally if needed
+        let maxW = Swift.min(cx, 1 - cx) * 2
+        let maxH = Swift.min(cy, 1 - cy) * 2
+
+        if newW > maxW || newH > maxH {
+            let scaleW = maxW > 0 ? newW / maxW : Double.greatestFiniteMagnitude
+            let scaleH = maxH > 0 ? newH / maxH : Double.greatestFiniteMagnitude
+            let scale = Swift.max(scaleW, scaleH)
+            newW /= scale
+            newH /= scale
+        }
+
+        return NormalizedCropRegion(
+            top: cy - newH / 2,
+            left: cx - newW / 2,
+            bottom: cy + newH / 2,
+            right: cx + newW / 2
+        ).clamped()
+    }
+
     /// Constrains dimensions to match a target aspect ratio (width/height in normalized image space,
     /// i.e. accounting for the image's own aspect ratio).
     /// `targetRatio` is desired cropWidth/cropHeight in normalized coords.
