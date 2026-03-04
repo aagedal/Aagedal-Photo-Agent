@@ -267,18 +267,17 @@ final class KnownPeopleService {
 
     /// Add embeddings to a person, skipping any that are duplicates (same featurePrintData).
     func addEmbeddingsDeduped(_ embeddings: [PersonEmbedding], toPersonID personID: UUID) throws {
-        guard let index = peopleIndex[personID] else {
-            throw NSError(domain: "KnownPeopleService", code: 10,
-                          userInfo: [NSLocalizedDescriptionKey: "Person not found with ID: \(personID)"])
-        }
-
-        let db = loadDatabase()
-        let existingData = Set(db.people[index].embeddings.map { $0.featurePrintData })
-        let newEmbeddings = embeddings.filter { !existingData.contains($0.featurePrintData) }
-
-        guard !newEmbeddings.isEmpty else { return }
-
         try mutateDatabase { db in
+            guard let index = db.people.firstIndex(where: { $0.id == personID }) else {
+                throw NSError(domain: "KnownPeopleService", code: 10,
+                              userInfo: [NSLocalizedDescriptionKey: "Person not found with ID: \(personID)"])
+            }
+
+            let existingData = Set(db.people[index].embeddings.map { $0.featurePrintData })
+            let newEmbeddings = embeddings.filter { !existingData.contains($0.featurePrintData) }
+
+            guard !newEmbeddings.isEmpty else { return }
+
             db.people[index].embeddings.append(contentsOf: newEmbeddings)
             db.people[index].updatedAt = Date()
         }
@@ -296,22 +295,22 @@ final class KnownPeopleService {
     /// Merge people: combine embeddings from source into target, delete source.
     /// Deduplicates embeddings to avoid storing the same face data multiple times.
     func mergePeople(sourceID: UUID, intoTargetID: UUID) throws {
-        guard let sourceIndex = peopleIndex[sourceID],
-              let targetIndex = peopleIndex[intoTargetID],
-              sourceIndex != targetIndex else {
-            return
-        }
-
-        let db = loadDatabase()
-        let existingData = Set(db.people[targetIndex].embeddings.map { $0.featurePrintData })
-        let newEmbeddings = db.people[sourceIndex].embeddings.filter { embedding in
-            !existingData.contains(embedding.featurePrintData)
-        }
+        guard sourceID != intoTargetID else { return }
 
         try mutateDatabase { db in
+            guard let sourceIndex = db.people.firstIndex(where: { $0.id == sourceID }),
+                  let targetIndex = db.people.firstIndex(where: { $0.id == intoTargetID }) else {
+                return
+            }
+
+            let existingData = Set(db.people[targetIndex].embeddings.map { $0.featurePrintData })
+            let newEmbeddings = db.people[sourceIndex].embeddings.filter { embedding in
+                !existingData.contains(embedding.featurePrintData)
+            }
+
             db.people[targetIndex].embeddings.append(contentsOf: newEmbeddings)
             db.people[targetIndex].updatedAt = Date()
-            db.people.remove(at: sourceIndex)
+            db.people.removeAll { $0.id == sourceID }
         }
         deleteThumbnail(for: sourceID)
     }
@@ -408,6 +407,53 @@ final class KnownPeopleService {
         return fp
     }
 
+    /// Core matching loop: compare a query feature print against a pre-loaded database snapshot.
+    /// Extracted so that `matchFaces()` can load the database once and reuse it across all faces.
+    private func matchFaceAgainstDatabase(
+        queryFP: VNFeaturePrintObservation,
+        database: KnownPeopleDatabase,
+        threshold: Float,
+        maxResults: Int
+    ) -> [KnownPersonMatch] {
+        var matches: [KnownPersonMatch] = []
+
+        for person in database.people {
+            var bestDistance: Float = .infinity
+            var bestEmbeddingID: UUID?
+
+            for embedding in person.embeddings {
+                guard let personFP = getFeaturePrint(for: embedding) else { continue }
+
+                var distance: Float = 0
+                do {
+                    try queryFP.computeDistance(&distance, to: personFP)
+                    if distance < bestDistance {
+                        bestDistance = distance
+                        bestEmbeddingID = embedding.id
+                        if bestDistance < 0.05 { break }
+                    }
+                } catch {
+                    knownPeopleLog.debug("Failed to compute distance for person \(person.name, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                    continue
+                }
+            }
+
+            if let embeddingID = bestEmbeddingID, bestDistance < threshold {
+                let confidence = max(0, 1.0 - bestDistance)
+                matches.append(KnownPersonMatch(
+                    person: person,
+                    confidence: confidence,
+                    matchedEmbeddingID: embeddingID
+                ))
+            }
+        }
+
+        return matches
+            .sorted { $0.confidence > $1.confidence }
+            .prefix(maxResults)
+            .map { $0 }
+    }
+
     /// Match a face embedding against all known people.
     /// Returns matches sorted by confidence (highest first).
     ///
@@ -433,45 +479,12 @@ final class KnownPeopleService {
             return []
         }
 
-        let db = loadDatabase()
-        var matches: [KnownPersonMatch] = []
-
-        for person in db.people {
-            var bestDistance: Float = .infinity
-            var bestEmbeddingID: UUID?
-
-            for embedding in person.embeddings {
-                guard let personFP = getFeaturePrint(for: embedding) else { continue }
-
-                var distance: Float = 0
-                do {
-                    try queryFP.computeDistance(&distance, to: personFP)
-                    if distance < bestDistance {
-                        bestDistance = distance
-                        bestEmbeddingID = embedding.id
-                        if bestDistance < 0.05 { break }
-                    }
-                } catch {
-                    knownPeopleLog.debug("Failed to compute distance for person \(person.name, privacy: .public): \(error.localizedDescription, privacy: .public)")
-                    continue
-                }
-            }
-
-            if let embeddingID = bestEmbeddingID, bestDistance < threshold {
-                // Convert distance to confidence (0-1, higher = more confident)
-                let confidence = max(0, 1.0 - bestDistance)
-                matches.append(KnownPersonMatch(
-                    person: person,
-                    confidence: confidence,
-                    matchedEmbeddingID: embeddingID
-                ))
-            }
-        }
-
-        return matches
-            .sorted { $0.confidence > $1.confidence }
-            .prefix(maxResults)
-            .map { $0 }
+        return matchFaceAgainstDatabase(
+            queryFP: queryFP,
+            database: loadDatabase(),
+            threshold: threshold,
+            maxResults: maxResults
+        )
     }
 
     /// Returns the best match only if it clears a stricter auto-match policy.
@@ -500,15 +513,36 @@ final class KnownPeopleService {
     }
 
     /// Match multiple faces at once for efficiency.
+    /// Loads the database once and reuses it for all faces, avoiding N redundant loads.
     /// Returns a dictionary mapping face IDs to their best match (if any).
     func matchFaces(
         _ faces: [(id: UUID, featurePrintData: Data)],
         threshold: Float = 0.45
     ) -> [UUID: KnownPersonMatch] {
+        let db = loadDatabase()
         var results: [UUID: KnownPersonMatch] = [:]
 
         for face in faces {
-            if let bestMatch = matchFace(featurePrintData: face.featurePrintData, threshold: threshold, maxResults: 1).first {
+            let queryFP: VNFeaturePrintObservation
+            do {
+                guard let unarchived = try NSKeyedUnarchiver.unarchivedObject(
+                    ofClass: VNFeaturePrintObservation.self,
+                    from: face.featurePrintData
+                ) else {
+                    continue
+                }
+                queryFP = unarchived
+            } catch {
+                knownPeopleLog.error("Failed to unarchive feature print for face \(face.id): \(error.localizedDescription, privacy: .public)")
+                continue
+            }
+
+            if let bestMatch = matchFaceAgainstDatabase(
+                queryFP: queryFP,
+                database: db,
+                threshold: threshold,
+                maxResults: 1
+            ).first {
                 results[face.id] = bestMatch
             }
         }
