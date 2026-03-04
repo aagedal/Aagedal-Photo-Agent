@@ -5,6 +5,8 @@ struct CropOverlayView: View {
     let viewSize: CGSize
     let crop: NormalizedCropRegion
     let angle: Double
+    let aspectRatio: CropAspectRatio
+    let imageAspectRatio: Double
     let onChange: (NormalizedCropRegion) -> Void
     let onAngleChange: (Double) -> Void
     let onCommit: () -> Void
@@ -45,6 +47,15 @@ struct CropOverlayView: View {
     /// Returns the locked image rect during resize, or the live image rect otherwise.
     private var activeImageRect: CGRect {
         gestureImageRect ?? imageRect
+    }
+
+    /// The effective aspect ratio for the current mode. Returns width/height in normalized
+    /// image coordinates, or nil if unconstrained.
+    private var effectiveRatio: Double? {
+        if aspectRatio == .original {
+            return imageAspectRatio > 0 ? imageAspectRatio : nil
+        }
+        return aspectRatio.value
     }
 
     // MARK: - View-space computed properties
@@ -255,17 +266,25 @@ struct CropOverlayView: View {
     @ViewBuilder
     private func edgeHandle(for kind: HandleKind, at point: CGPoint) -> some View {
         let isVerticalEdge = kind == .left || kind == .right
-        RoundedRectangle(cornerRadius: 2)
-            .fill(.white)
-            .frame(
-                width: isVerticalEdge ? 6 : 10,
-                height: isVerticalEdge ? 10 : 6
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 2)
-                    .stroke(Color.black.opacity(0.5), lineWidth: 0.5)
-            )
-            .position(point)
+        ZStack {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(.white)
+                .frame(
+                    width: isVerticalEdge ? 6 : 10,
+                    height: isVerticalEdge ? 10 : 6
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 2)
+                        .stroke(Color.black.opacity(0.5), lineWidth: 0.5)
+                )
+
+            // Invisible expanded hit area
+            Rectangle()
+                .fill(Color.clear)
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+        }
+        .position(point)
     }
 
     @ViewBuilder
@@ -368,10 +387,11 @@ struct CropOverlayView: View {
                 let dvx = Double(value.translation.width)
                 let dvy = Double(value.translation.height)
                 let symmetric = NSEvent.modifierFlags.contains(.option)
+                let shiftHeld = NSEvent.modifierFlags.contains(.shift)
                 let mh = Double(kind.movesHorizontal)
                 let mv = Double(kind.movesVertical)
 
-                let newRect: CGRect
+                var newRect: CGRect
 
                 if symmetric {
                     // Center-anchored: resize equally from center
@@ -406,6 +426,66 @@ struct CropOverlayView: View {
                         width: Swift.max(2, maxX - minX),
                         height: Swift.max(2, maxY - minY)
                     )
+                }
+
+                // Determine if aspect ratio should be enforced
+                let lockedRatio: Double?
+                if let r = effectiveRatio {
+                    lockedRatio = r
+                } else if shiftHeld {
+                    // Shift in free mode: lock to current crop ratio
+                    lockedRatio = startViewRect.height > 0 ? startViewRect.width / startViewRect.height : nil
+                } else {
+                    lockedRatio = nil
+                }
+
+                if let ratio = lockedRatio, ratio > 0 {
+                    let w = newRect.width
+                    let h = newRect.height
+
+                    if kind.isCorner {
+                        // Fit ratio within dragged rect, anchor opposite corner
+                        let fitW: Double
+                        let fitH: Double
+                        if w / h > ratio {
+                            fitH = h; fitW = h * ratio
+                        } else {
+                            fitW = w; fitH = w / ratio
+                        }
+
+                        if symmetric {
+                            newRect = CGRect(
+                                x: newRect.midX - fitW / 2,
+                                y: newRect.midY - fitH / 2,
+                                width: fitW, height: fitH
+                            )
+                        } else {
+                            let anchorRight = kind.movesHorizontal < 0
+                            let anchorBottom = kind.movesVertical < 0
+                            newRect = CGRect(
+                                x: anchorRight ? newRect.maxX - fitW : newRect.minX,
+                                y: anchorBottom ? newRect.maxY - fitH : newRect.minY,
+                                width: fitW, height: fitH
+                            )
+                        }
+                    } else {
+                        // Edge handles: dragged dimension drives, adjust perpendicular
+                        if kind.movesHorizontal != 0 {
+                            let fitH = w / ratio
+                            newRect = CGRect(
+                                x: newRect.origin.x,
+                                y: newRect.midY - fitH / 2,
+                                width: w, height: fitH
+                            )
+                        } else {
+                            let fitW = h * ratio
+                            newRect = CGRect(
+                                x: newRect.midX - fitW / 2,
+                                y: newRect.origin.y,
+                                width: fitW, height: h
+                            )
+                        }
+                    }
                 }
 
                 // Convert view rect back to image-space AABB

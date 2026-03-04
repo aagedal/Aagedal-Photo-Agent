@@ -20,6 +20,7 @@ struct EditWorkspaceView: View {
     @State private var copyPasteFeedback: String?
     @State private var cropZoomScale: CGFloat = 1.0
     @State private var lastCropZoomScale: CGFloat = 1.0
+    @State private var cropAspectRatio: CropAspectRatio = .free
     @State private var isCursorOverPreview = false
     @State private var scrollEventMonitor: Any?
     @State private var isShowingBefore = false
@@ -263,6 +264,8 @@ struct EditWorkspaceView: View {
                                 viewSize: geometry.size,
                                 crop: activeCrop,
                                 angle: activeCropAngle,
+                                aspectRatio: cropAspectRatio,
+                                imageAspectRatio: sourceAspectRatio,
                                 onChange: { newCrop in
                                     updateCrop(newCrop, commit: false)
                                 },
@@ -449,6 +452,18 @@ struct EditWorkspaceView: View {
                             resetCrop()
                         }
                         .disabled(!isCropEnabled)
+                    }
+
+                    if isCropEnabled {
+                        Picker("Aspect Ratio", selection: $cropAspectRatio) {
+                            ForEach(CropAspectRatio.allCases) { ratio in
+                                Text(ratio.label).tag(ratio)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .onChange(of: cropAspectRatio) { _, newRatio in
+                            applyAspectRatioToCrop(newRatio)
+                        }
                     }
 
                     sliderRow(
@@ -986,6 +1001,7 @@ struct EditWorkspaceView: View {
 
     private func toggleCrop() {
         resetCropZoom()
+        let wasEnabled = isCropEnabled
         updateCameraRaw { cameraRaw in
             var crop = cameraRaw.crop ?? CameraRawCrop()
             let enabled = !(crop.hasCrop ?? false)
@@ -999,11 +1015,19 @@ struct EditWorkspaceView: View {
             }
             cameraRaw.crop = crop
         }
+        if wasEnabled {
+            // Was enabled, now disabled
+            cropAspectRatio = .free
+        } else if cropAspectRatio != .free {
+            // Just enabled with a non-free ratio selected
+            applyAspectRatioToCrop(cropAspectRatio)
+        }
         commitEditAdjustments()
     }
 
     private func resetCrop() {
         resetCropZoom()
+        cropAspectRatio = .free
         updateCameraRaw { cameraRaw in
             cameraRaw.crop = CameraRawCrop(
                 top: 0,
@@ -1015,6 +1039,24 @@ struct EditWorkspaceView: View {
             )
         }
         commitEditAdjustments()
+    }
+
+    private func applyAspectRatioToCrop(_ ratio: CropAspectRatio) {
+        guard isCropEnabled else { return }
+        let targetRatio: Double?
+        if ratio == .original {
+            targetRatio = sourceAspectRatio > 0 ? sourceAspectRatio : nil
+        } else {
+            targetRatio = ratio.value
+        }
+        guard let targetRatio, targetRatio > 0 else { return }
+
+        // Convert output ratio to normalized image-space ratio
+        let normalizedRatio = targetRatio / sourceAspectRatio
+
+        let current = activeCrop
+        let constrained = current.constrainedToAspectRatio(normalizedRatio)
+        updateCrop(constrained, commit: true)
     }
 
     private func updateCrop(_ crop: NormalizedCropRegion, commit: Bool) {
