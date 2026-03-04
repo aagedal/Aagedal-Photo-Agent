@@ -1,5 +1,53 @@
 import Foundation
 
+enum CropAspectRatio: String, CaseIterable, Identifiable {
+    case free
+    case original
+    case square
+    case ratio4x3
+    case ratio3x2
+    case ratio16x9
+    case ratio5x7
+    case ratio3x4
+    case ratio2x3
+    case ratio9x16
+    case ratio7x5
+
+    var id: String { rawValue }
+
+    /// Width/height ratio, nil for free/original (original handled externally)
+    var value: Double? {
+        switch self {
+        case .free, .original: return nil
+        case .square: return 1.0
+        case .ratio4x3: return 4.0 / 3.0
+        case .ratio3x2: return 3.0 / 2.0
+        case .ratio16x9: return 16.0 / 9.0
+        case .ratio5x7: return 5.0 / 7.0
+        case .ratio3x4: return 3.0 / 4.0
+        case .ratio2x3: return 2.0 / 3.0
+        case .ratio9x16: return 9.0 / 16.0
+        case .ratio7x5: return 7.0 / 5.0
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .free: return "Free"
+        case .original: return "Original"
+        case .square: return "1:1"
+        case .ratio4x3: return "4:3"
+        case .ratio3x2: return "3:2"
+        case .ratio16x9: return "16:9"
+        case .ratio5x7: return "5:7"
+        case .ratio3x4: return "3:4"
+        case .ratio2x3: return "2:3"
+        case .ratio9x16: return "9:16"
+        case .ratio7x5: return "7:5"
+        }
+    }
+}
+
 struct NormalizedCropRegion: Equatable {
     var top: Double
     var left: Double
@@ -207,6 +255,40 @@ struct NormalizedCropRegion: Equatable {
             left: cx - newHalfW,
             bottom: cy + newHalfH,
             right: cx + newHalfW
+        ).clamped()
+    }
+
+    /// Constrains dimensions to match a target aspect ratio (width/height in normalized image space,
+    /// i.e. accounting for the image's own aspect ratio).
+    /// `targetRatio` is desired cropWidth/cropHeight in normalized coords.
+    /// `anchorX`/`anchorY`: 0 = anchor left/top edge, 1 = anchor right/bottom edge, 0.5 = anchor center.
+    func constrainedToAspectRatio(_ targetRatio: Double, anchorX: Double = 0.5, anchorY: Double = 0.5) -> NormalizedCropRegion {
+        let currentW = width
+        let currentH = height
+        guard currentW > 0, currentH > 0, targetRatio > 0 else { return self }
+
+        let newW: Double
+        let newH: Double
+
+        // Fit within current bounds: shrink the dimension that's too large
+        if currentW / currentH > targetRatio {
+            // Too wide — shrink width
+            newW = currentH * targetRatio
+            newH = currentH
+        } else {
+            // Too tall — shrink height
+            newW = currentW
+            newH = currentW / targetRatio
+        }
+
+        let dW = currentW - newW
+        let dH = currentH - newH
+
+        return NormalizedCropRegion(
+            top: top + dH * anchorY,
+            left: left + dW * anchorX,
+            bottom: top + dH * anchorY + newH,
+            right: left + dW * anchorX + newW
         ).clamped()
     }
 }
