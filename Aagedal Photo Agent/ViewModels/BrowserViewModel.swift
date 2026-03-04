@@ -264,7 +264,12 @@ final class BrowserViewModel {
         loadFolder(url: url)
     }
 
+    @ObservationIgnored private var loadFolderTask: Task<Void, Never>?
+
     func loadFolder(url: URL) {
+        // Cancel any in-flight folder load to prevent stale results overwriting
+        loadFolderTask?.cancel()
+
         currentFolderURL = url
         currentFolderName = url.lastPathComponent
         isLoading = true
@@ -279,14 +284,16 @@ final class BrowserViewModel {
             openFolders.append(url)
         }
 
-        Task {
+        loadFolderTask = Task {
             let discoveredSubfolders = (try? fileSystemService.listSubfolders(at: url)) ?? []
+            guard !Task.isCancelled, self.currentFolderURL == url else { return }
             self.subfoldersByOpenFolder[url] = discoveredSubfolders
             if !discoveredSubfolders.isEmpty {
                 self.expandedFolders.insert(url)
             }
             do {
                 var files = try fileSystemService.scanFolder(at: url)
+                guard !Task.isCancelled, self.currentFolderURL == url else { return }
                 let allSidecars = sidecarService.loadAllSidecars(in: url)
                 for i in files.indices {
                     if let sidecar = allSidecars[files[i].url], sidecar.pendingChanges {
@@ -294,11 +301,13 @@ final class BrowserViewModel {
                         files[i].pendingFieldNames = extractPendingFieldNames(from: sidecar)
                     }
                 }
+                guard !Task.isCancelled, self.currentFolderURL == url else { return }
                 self.images = files
                 self.isLoading = false
                 self.thumbnailService.startBackgroundGeneration(for: self.visibleImages.map(\.url))
                 await loadBasicMetadata(cachedSidecars: allSidecars)
             } catch {
+                guard !Task.isCancelled, self.currentFolderURL == url else { return }
                 self.errorMessage = error.localizedDescription
                 self.isLoading = false
             }
@@ -402,6 +411,7 @@ final class BrowserViewModel {
             return
         }
         isMetadataLoading = true
+        let folderURL = currentFolderURL
         defer {
             isMetadataLoading = false
             drainPendingMetadataIfNeeded()
@@ -420,6 +430,7 @@ final class BrowserViewModel {
         let localIndex = Dictionary(uniqueKeysWithValues: updated.enumerated().map { ($1.url, $0) })
 
         for batchStart in stride(from: 0, to: urls.count, by: batchSize) {
+            guard !Task.isCancelled, currentFolderURL == folderURL else { return }
             let batchEnd = min(batchStart + batchSize, urls.count)
             let batchURLs = Array(urls[batchStart..<batchEnd])
 
@@ -450,6 +461,7 @@ final class BrowserViewModel {
                 logger.warning("Batch metadata load failed (batch at offset \(batchStart)): \(error.localizedDescription)")
             }
         }
+        guard !Task.isCancelled, currentFolderURL == folderURL else { return }
         images = updated
     }
 
@@ -461,6 +473,7 @@ final class BrowserViewModel {
             return
         }
         isMetadataLoading = true
+        let folderURL = currentFolderURL
         defer {
             isMetadataLoading = false
             drainPendingMetadataIfNeeded()
@@ -477,6 +490,7 @@ final class BrowserViewModel {
         let localIndex = Dictionary(uniqueKeysWithValues: updated.enumerated().map { ($1.url, $0) })
 
         for batchStart in stride(from: 0, to: urls.count, by: batchSize) {
+            guard !Task.isCancelled, currentFolderURL == folderURL else { return }
             let batchEnd = min(batchStart + batchSize, urls.count)
             let batchURLs = Array(urls[batchStart..<batchEnd])
 
@@ -507,6 +521,7 @@ final class BrowserViewModel {
                 logger.warning("Incremental metadata load failed: \(error.localizedDescription)")
             }
         }
+        guard !Task.isCancelled, currentFolderURL == folderURL else { return }
         images = updated
     }
 
