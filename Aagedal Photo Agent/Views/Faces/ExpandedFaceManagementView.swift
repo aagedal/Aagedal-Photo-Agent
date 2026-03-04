@@ -214,10 +214,11 @@ struct ExpandedFaceManagementView: View {
         guard !allFaces.isEmpty else { return }
 
         // If no focus, start from first face or first selected
-        let currentFocusID = selectionState.focusedFaceID ?? selectionState.selectedFaceIDs.first ?? allFaces[0]
+        guard let fallbackFaceID = allFaces.first else { return }
+        let currentFocusID = selectionState.focusedFaceID ?? selectionState.selectedFaceIDs.first ?? fallbackFaceID
         guard let currentIndex = allFaces.firstIndex(of: currentFocusID) else {
             // Focus not in visible list, select first face
-            selectionState.selectFace(allFaces[0])
+            selectionState.selectFace(fallbackFaceID)
             return
         }
 

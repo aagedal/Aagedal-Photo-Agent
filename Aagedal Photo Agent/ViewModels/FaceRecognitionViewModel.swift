@@ -1281,8 +1281,9 @@ final class FaceRecognitionViewModel {
         data.groups[groupIndex].faceIDs.removeAll { $0 == faceID }
 
         // If the representative was removed, pick a new one
-        if data.groups[groupIndex].representativeFaceID == faceID {
-            data.groups[groupIndex].representativeFaceID = data.groups[groupIndex].faceIDs[0]
+        if data.groups[groupIndex].representativeFaceID == faceID,
+           let newRep = data.groups[groupIndex].faceIDs.first {
+            data.groups[groupIndex].representativeFaceID = newRep
         }
 
         // Create new solo group
@@ -1356,7 +1357,8 @@ final class FaceRecognitionViewModel {
 
             // Create solo groups for each face except the first (which stays as representative)
             let remaining = Array(group.faceIDs.dropFirst())
-            data.groups[groupIndex].faceIDs = [group.faceIDs[0]]
+            guard let firstFaceID = group.faceIDs.first else { continue }
+            data.groups[groupIndex].faceIDs = [firstFaceID]
 
             for faceID in remaining {
                 let newGroup = FaceGroup(
@@ -1399,8 +1401,9 @@ final class FaceRecognitionViewModel {
         // Clean up empty group or update representative
         if data.groups[oldGroupIndex].faceIDs.isEmpty {
             data.groups.remove(at: oldGroupIndex)
-        } else if data.groups[oldGroupIndex].representativeFaceID == faceID {
-            data.groups[oldGroupIndex].representativeFaceID = data.groups[oldGroupIndex].faceIDs[0]
+        } else if data.groups[oldGroupIndex].representativeFaceID == faceID,
+                  let newRep = data.groups[oldGroupIndex].faceIDs.first {
+            data.groups[oldGroupIndex].representativeFaceID = newRep
         }
 
         // Rebuild group index after potential removal
@@ -1471,10 +1474,11 @@ final class FaceRecognitionViewModel {
 
         // Create new group
         let faceIDArray = Array(faceIDs)
+        guard let representativeID = faceIDArray.first else { return }
         let newGroup = FaceGroup(
             id: UUID(),
             name: nil,
-            representativeFaceID: faceIDArray[0],
+            representativeFaceID: representativeID,
             faceIDs: faceIDArray
         )
 
@@ -1526,8 +1530,9 @@ final class FaceRecognitionViewModel {
             data.groups[oldGroupIndex].faceIDs.removeAll { $0 == faceID }
 
             if !data.groups[oldGroupIndex].faceIDs.isEmpty,
-               data.groups[oldGroupIndex].representativeFaceID == faceID {
-                data.groups[oldGroupIndex].representativeFaceID = data.groups[oldGroupIndex].faceIDs[0]
+               data.groups[oldGroupIndex].representativeFaceID == faceID,
+               let newRep = data.groups[oldGroupIndex].faceIDs.first {
+                data.groups[oldGroupIndex].representativeFaceID = newRep
             }
         }
 
