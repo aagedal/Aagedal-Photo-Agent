@@ -100,6 +100,13 @@ struct Aagedal_Photo_AgentApp: App {
 
                 Divider()
 
+                Button("Write All Pending Metadata") {
+                    NotificationCenter.default.post(name: .writeAllPendingMetadata, object: nil)
+                }
+                .keyboardShortcut("s", modifiers: [.command, .shift])
+
+                Divider()
+
                 Button("Apply Template...") {
                     NotificationCenter.default.post(name: .showTemplatePalette, object: nil)
                 }
@@ -158,4 +165,5 @@ extension Notification.Name {
     static let knownPeopleDatabaseDidChange = Notification.Name("knownPeopleDatabaseDidChange")
     static let rotateClockwise = Notification.Name("rotateClockwise")
     static let rotateCounterclockwise = Notification.Name("rotateCounterclockwise")
+    static let writeAllPendingMetadata = Notification.Name("writeAllPendingMetadata")
 }

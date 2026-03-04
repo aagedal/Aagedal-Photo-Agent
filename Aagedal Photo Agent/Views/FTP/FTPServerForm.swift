@@ -17,6 +17,9 @@ struct FTPServerForm: View {
                 TextField("Port", value: $viewModel.editingConnection.port, format: .number)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 70)
+                    .onChange(of: viewModel.editingConnection.port) {
+                        viewModel.editingConnection.port = min(max(viewModel.editingConnection.port, 1), 65535)
+                    }
             }
 
             TextField("Username", text: $viewModel.editingConnection.username)
@@ -49,7 +52,7 @@ struct FTPServerForm: View {
                     viewModel.saveEditingConnection()
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(viewModel.editingConnection.name.isEmpty || viewModel.editingConnection.host.isEmpty)
+                .disabled(viewModel.editingConnection.name.isEmpty || viewModel.editingConnection.host.isEmpty || viewModel.editingConnection.port < 1 || viewModel.editingConnection.port > 65535)
             }
         }
         .padding()
