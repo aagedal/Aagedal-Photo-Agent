@@ -24,6 +24,7 @@ struct EditWorkspaceView: View {
     @State private var isCursorOverPreview = false
     @State private var scrollEventMonitor: Any?
     @State private var isShowingBefore = false
+    @State private var lockedCropImageRect: CGRect?
     @FocusState private var isWorkspaceFocused: Bool
 
     private static let minKelvin = 2000.0
@@ -236,13 +237,16 @@ struct EditWorkspaceView: View {
                 if let displayImage {
                     if isCropEnabled, !isShowingBefore {
                         // Crop-centered: image scales/positions so crop fills view
-                        let imageRect = cropFittedImageRect(
+                        let computedImageRect = cropFittedImageRect(
                             in: geometry.size,
                             imageSize: displayImage.size,
                             crop: activeCrop,
                             angleDegrees: activeCropAngle,
                             zoom: cropZoomScale
                         )
+                        // Lock image rect during crop interaction to prevent
+                        // image rescaling while the overlay stays stable
+                        let imageRect = lockedCropImageRect ?? computedImageRect
 
                         if isHDREnabled, let previewCGImage {
                             HDRImageView(cgImage: previewCGImage, isHDR: true)
@@ -267,12 +271,19 @@ struct EditWorkspaceView: View {
                                 aspectRatio: cropAspectRatio,
                                 imageAspectRatio: sourceAspectRatio,
                                 onChange: { newCrop in
+                                    if lockedCropImageRect == nil {
+                                        lockedCropImageRect = computedImageRect
+                                    }
                                     updateCrop(newCrop, commit: false)
                                 },
                                 onAngleChange: { newAngle in
+                                    if lockedCropImageRect == nil {
+                                        lockedCropImageRect = computedImageRect
+                                    }
                                     updateCropAngle(newAngle, commit: false)
                                 },
                                 onCommit: {
+                                    lockedCropImageRect = nil
                                     commitEditAdjustments()
                                 }
                             )
@@ -317,7 +328,9 @@ struct EditWorkspaceView: View {
                 MagnifyGesture()
                     .onChanged { value in
                         guard isCropEnabled else { return }
-                        cropZoomScale = (lastCropZoomScale * value.magnification).clamped(to: 0.25...3.0)
+                        // Dampen magnification: lerp between 1.0 (no change) and raw value
+                        let dampened = 1.0 + (value.magnification - 1.0) * 0.4
+                        cropZoomScale = (lastCropZoomScale * dampened).clamped(to: 0.25...3.0)
                     }
                     .onEnded { _ in
                         guard isCropEnabled else { return }
@@ -331,7 +344,7 @@ struct EditWorkspaceView: View {
                     guard event.phase != [] || event.momentumPhase == [] else { return event }
                     let delta = event.scrollingDeltaY
                     guard abs(delta) > 0.01 else { return event }
-                    let zoomFactor = 1.0 + (delta * 0.02)
+                    let zoomFactor = 1.0 + (delta * 0.005)
                     let newScale = (cropZoomScale * zoomFactor).clamped(to: 0.25...3.0)
                     cropZoomScale = newScale
                     lastCropZoomScale = newScale
@@ -1055,8 +1068,8 @@ struct EditWorkspaceView: View {
         let normalizedRatio = targetRatio / sourceAspectRatio
 
         let current = activeCrop
-        let constrained = current.constrainedToAspectRatio(normalizedRatio)
-        updateCrop(constrained, commit: true)
+        let resized = current.resizedToAspectRatio(normalizedRatio)
+        updateCrop(resized, commit: true)
     }
 
     private func updateCrop(_ crop: NormalizedCropRegion, commit: Bool) {

@@ -15,6 +15,60 @@ struct CropOverlayView: View {
     @State private var interactionStartAngle: Double?
     @State private var interactionStartViewRect: CGRect?
     @State private var gestureImageRect: CGRect?
+    @State private var isShowingRotateCursor = false
+
+    // MARK: - Rotation cursor
+
+    nonisolated(unsafe) private static let rotateCursor: NSCursor = {
+        let size: CGFloat = 24
+        let img = NSImage(size: NSSize(width: size, height: size), flipped: false) { _ in
+            guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
+            let c = CGPoint(x: size / 2, y: size / 2)
+            let r: CGFloat = 8
+
+            // 288° arc with 72° gap centered at top (pi/2)
+            let halfGap: CGFloat = .pi / 5
+            let arcStart = .pi / 2 + halfGap  // 126°
+            let arcEnd = .pi / 2 - halfGap    // 54°
+
+            // CCW from 126° to 54° is the long way around (288°)
+            ctx.setStrokeColor(CGColor(gray: 0, alpha: 0.55))
+            ctx.setLineWidth(3.5)
+            ctx.setLineCap(.round)
+            ctx.addArc(center: c, radius: r, startAngle: arcStart, endAngle: arcEnd, clockwise: false)
+            ctx.strokePath()
+
+            ctx.setStrokeColor(CGColor(gray: 1, alpha: 1))
+            ctx.setLineWidth(1.5)
+            ctx.addArc(center: c, radius: r, startAngle: arcStart, endAngle: arcEnd, clockwise: false)
+            ctx.strokePath()
+
+            // Arrowheads pointing into the gap (toward 90°)
+            let al: CGFloat = 5.0
+            let aw: CGFloat = 2.5
+            func drawArrow(atAngle a: CGFloat, tangentX tx: CGFloat, tangentY ty: CGFloat) {
+                let px = c.x + r * cos(a)
+                let py = c.y + r * sin(a)
+                let nx = cos(a), ny = sin(a)
+                let tip = CGPoint(x: px + tx * al, y: py + ty * al)
+                let w1 = CGPoint(x: px + nx * aw, y: py + ny * aw)
+                let w2 = CGPoint(x: px - nx * aw, y: py - ny * aw)
+                ctx.setFillColor(CGColor(gray: 0, alpha: 0.55))
+                ctx.move(to: tip); ctx.addLine(to: w1); ctx.addLine(to: w2)
+                ctx.closePath(); ctx.fillPath()
+                ctx.setFillColor(CGColor(gray: 1, alpha: 1))
+                ctx.move(to: tip); ctx.addLine(to: w1); ctx.addLine(to: w2)
+                ctx.closePath(); ctx.fillPath()
+            }
+            // At 126°: CW tangent (toward 90°) = (sin θ, -cos θ)
+            drawArrow(atAngle: arcStart, tangentX: sin(arcStart), tangentY: -cos(arcStart))
+            // At 54°: CCW tangent (toward 90°) = (-sin θ, cos θ)
+            drawArrow(atAngle: arcEnd, tangentX: -sin(arcEnd), tangentY: cos(arcEnd))
+
+            return true
+        }
+        return NSCursor(image: img, hotSpot: NSPoint(x: size / 2, y: size / 2))
+    }()
 
     private enum HandleKind: Hashable {
         case topLeft, top, topRight
@@ -180,6 +234,11 @@ struct CropOverlayView: View {
             // Rule of thirds — straight lines
             ruleOfThirdsGrid(in: rect)
 
+            // Rotation gesture area — full view, behind move area and handles
+            Color.clear
+                .contentShape(Rectangle())
+                .gesture(rotationGesture(center: CGPoint(x: rect.midX, y: rect.midY)))
+
             // Move gesture area — straight rectangle
             Rectangle()
                 .fill(.clear)
@@ -199,9 +258,33 @@ struct CropOverlayView: View {
             ) { handle in
                 cropHandle(for: handle, in: rect)
             }
-
-            // Rotation handle
-            rotationHandle(in: rect)
+        }
+        .onContinuousHover { phase in
+            switch phase {
+            case .active(let location):
+                // Expand crop rect by handle hit radius so cursor doesn't flicker at edges
+                let handleBuffer: CGFloat = 14
+                let expandedRect = rect.insetBy(dx: -handleBuffer, dy: -handleBuffer)
+                let outside = !expandedRect.contains(location)
+                if outside, !isShowingRotateCursor {
+                    isShowingRotateCursor = true
+                    Self.rotateCursor.push()
+                } else if !outside, isShowingRotateCursor {
+                    isShowingRotateCursor = false
+                    NSCursor.pop()
+                }
+            case .ended:
+                if isShowingRotateCursor {
+                    isShowingRotateCursor = false
+                    NSCursor.pop()
+                }
+            }
+        }
+        .onDisappear {
+            if isShowingRotateCursor {
+                isShowingRotateCursor = false
+                NSCursor.pop()
+            }
         }
     }
 
@@ -270,8 +353,8 @@ struct CropOverlayView: View {
             RoundedRectangle(cornerRadius: 2)
                 .fill(.white)
                 .frame(
-                    width: isVerticalEdge ? 6 : 10,
-                    height: isVerticalEdge ? 10 : 6
+                    width: isVerticalEdge ? 4 : 24,
+                    height: isVerticalEdge ? 24 : 4
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 2)
@@ -285,26 +368,6 @@ struct CropOverlayView: View {
                 .contentShape(Rectangle())
         }
         .position(point)
-    }
-
-    @ViewBuilder
-    private func rotationHandle(in rect: CGRect) -> some View {
-        let topCenter = CGPoint(x: rect.midX, y: rect.minY)
-        let handlePoint = CGPoint(x: rect.midX, y: rect.minY - 26)
-        let viewCenter = CGPoint(x: rect.midX, y: rect.midY)
-
-        Path { path in
-            path.move(to: topCenter)
-            path.addLine(to: handlePoint)
-        }
-        .stroke(Color.white.opacity(0.9), lineWidth: 1)
-
-        Circle()
-            .fill(Color.white)
-            .frame(width: 12, height: 12)
-            .overlay(Circle().stroke(Color.black.opacity(0.7), lineWidth: 1))
-            .position(handlePoint)
-            .gesture(rotationGesture(center: viewCenter))
     }
 
     @ViewBuilder
@@ -350,9 +413,8 @@ struct CropOverlayView: View {
                 let dy = imgDY / ir.height
 
                 let ar = ir.width / ir.height
-                // Inverted: crop center moves opposite to drag (image pans under stable crop)
-                let newCX = start.centerX - dx
-                let newCY = start.centerY - dy
+                let newCX = start.centerX + dx
+                let newCY = start.centerY + dy
                 let halfW = start.width * 0.5
                 let halfH = start.height * 0.5
                 let moved = NormalizedCropRegion(
