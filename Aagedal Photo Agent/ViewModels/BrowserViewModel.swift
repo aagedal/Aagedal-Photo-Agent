@@ -680,7 +680,7 @@ final class BrowserViewModel {
         let anchor = selectedImageIDs.first ?? lastClickedImageURL
         guard let anchorURL = anchor,
               let currentIndex = navigationItems.firstIndex(where: { $0.imageURL == anchorURL }) else {
-            let firstItem = navigationItems[0]
+            guard let firstItem = navigationItems.first else { return false }
             selectedImageIDs = [firstItem.imageURL]
             lastClickedImageURL = firstItem.imageURL
             if var faceContext = fullScreenFaceContext {
@@ -709,8 +709,9 @@ final class BrowserViewModel {
         let anchor = lastClickedImageURL ?? selectedImageIDs.first
         guard let anchorURL = anchor,
               let currentIndex = urlToVisibleIndex[anchorURL] else {
-            selectedImageIDs = [visibleImages[0].url]
-            lastClickedImageURL = visibleImages[0].url
+            guard let first = visibleImages.first else { return }
+            selectedImageIDs = [first.url]
+            lastClickedImageURL = first.url
             return
         }
         let nextIndex = min(currentIndex + 1, visibleImages.count - 1)
@@ -731,8 +732,9 @@ final class BrowserViewModel {
         let anchor = lastClickedImageURL ?? selectedImageIDs.first
         guard let anchorURL = anchor,
               let currentIndex = urlToVisibleIndex[anchorURL] else {
-            selectedImageIDs = [visibleImages[0].url]
-            lastClickedImageURL = visibleImages[0].url
+            guard let first = visibleImages.first else { return }
+            selectedImageIDs = [first.url]
+            lastClickedImageURL = first.url
             return
         }
         let prevIndex = max(currentIndex - 1, 0)
@@ -753,8 +755,9 @@ final class BrowserViewModel {
         let anchor = lastClickedImageURL ?? selectedImageIDs.first
         guard let anchorURL = anchor,
               let currentIndex = urlToVisibleIndex[anchorURL] else {
-            selectedImageIDs = [visibleImages[0].url]
-            lastClickedImageURL = visibleImages[0].url
+            guard let first = visibleImages.first else { return }
+            selectedImageIDs = [first.url]
+            lastClickedImageURL = first.url
             return
         }
         let targetIndex = min(currentIndex + columns, visibleImages.count - 1)
@@ -780,8 +783,9 @@ final class BrowserViewModel {
         let anchor = lastClickedImageURL ?? selectedImageIDs.first
         guard let anchorURL = anchor,
               let currentIndex = urlToVisibleIndex[anchorURL] else {
-            selectedImageIDs = [visibleImages[0].url]
-            lastClickedImageURL = visibleImages[0].url
+            guard let first = visibleImages.first else { return }
+            selectedImageIDs = [first.url]
+            lastClickedImageURL = first.url
             return
         }
         let targetIndex = max(currentIndex - columns, 0)
