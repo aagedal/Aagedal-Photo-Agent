@@ -339,8 +339,25 @@ final class ExifToolService {
             return
         }
         let command = arguments.joined(separator: "\n") + "\n-execute\n"
-        if let data = command.data(using: .utf8) {
-            handle.write(data)
+        guard let data = command.data(using: .utf8) else {
+            exifToolLog.error("Failed to encode command as UTF-8")
+            pendingContinuation?.resume(throwing: NSError(
+                domain: "ExifToolService", code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Failed to encode command as UTF-8"]
+            ))
+            pendingContinuation = nil
+            isExecuting = false
+            dequeueNext()
+            return
+        }
+        do {
+            try handle.write(contentsOf: data)
+        } catch {
+            exifToolLog.error("Failed to write to ExifTool stdin: \(error.localizedDescription)")
+            pendingContinuation?.resume(throwing: error)
+            pendingContinuation = nil
+            isExecuting = false
+            dequeueNext()
         }
     }
 
