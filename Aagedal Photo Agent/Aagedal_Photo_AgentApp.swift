@@ -19,7 +19,7 @@ struct Aagedal_Photo_AgentApp: App {
                 .keyboardShortcut("i", modifiers: [.command, .shift])
             }
 
-            CommandMenu("Rating") {
+            CommandMenu("Rating & Label") {
                 Button("No Rating") {
                     NotificationCenter.default.post(name: .setRating, object: StarRating.none)
                 }
@@ -33,6 +33,23 @@ struct Aagedal_Photo_AgentApp: App {
                         )
                     }
                     .keyboardShortcut(KeyEquivalent(Character(String(rating))), modifiers: .command)
+                }
+
+                Divider()
+
+                Button("No Label") {
+                    NotificationCenter.default.post(name: .setLabel, object: ColorLabel.none)
+                }
+                .keyboardShortcut("0", modifiers: .option)
+
+                ForEach(Array(ColorLabel.allCases.dropFirst().enumerated()), id: \.element) { index, label in
+                    Button(label.displayName) {
+                        NotificationCenter.default.post(name: .setLabel, object: label)
+                    }
+                    .keyboardShortcut(
+                        KeyEquivalent(Character(String(index + 1))),
+                        modifiers: .option
+                    )
                 }
             }
 
@@ -58,34 +75,8 @@ struct Aagedal_Photo_AgentApp: App {
                 .keyboardShortcut(.delete, modifiers: .command)
             }
 
-            CommandMenu("Label") {
-                Button("No Label") {
-                    NotificationCenter.default.post(name: .setLabel, object: ColorLabel.none)
-                }
-                .keyboardShortcut("0", modifiers: .option)
 
-                ForEach(Array(ColorLabel.allCases.dropFirst().enumerated()), id: \.element) { index, label in
-                    Button(label.displayName) {
-                        NotificationCenter.default.post(name: .setLabel, object: label)
-                    }
-                    .keyboardShortcut(
-                        KeyEquivalent(Character(String(index + 1))),
-                        modifiers: .option
-                    )
-                }
-            }
 
-            CommandMenu("Navigation") {
-                Button("Previous Image") {
-                    NotificationCenter.default.post(name: .selectPreviousImage, object: nil)
-                }
-                .keyboardShortcut("b", modifiers: .command)
-
-                Button("Next Image") {
-                    NotificationCenter.default.post(name: .selectNextImage, object: nil)
-                }
-                .keyboardShortcut("n", modifiers: .command)
-            }
 
             CommandMenu("Metadata") {
                 Button("Process Variables") {
@@ -103,7 +94,7 @@ struct Aagedal_Photo_AgentApp: App {
                 Button("Write All Pending Metadata") {
                     NotificationCenter.default.post(name: .writeAllPendingMetadata, object: nil)
                 }
-                .keyboardShortcut("s", modifiers: [.command, .shift])
+                .keyboardShortcut("w", modifiers: [.command, .shift])
 
                 Divider()
 
@@ -114,6 +105,18 @@ struct Aagedal_Photo_AgentApp: App {
             }
 
             CommandMenu("Image") {
+                Button("Previous Image") {
+                    NotificationCenter.default.post(name: .selectPreviousImage, object: nil)
+                }
+                .keyboardShortcut("b", modifiers: .command)
+
+                Button("Next Image") {
+                    NotificationCenter.default.post(name: .selectNextImage, object: nil)
+                }
+                .keyboardShortcut("n", modifiers: .command)
+
+                Divider()
+
                 Button("Rotate Right") {
                     NotificationCenter.default.post(name: .rotateClockwise, object: nil)
                 }
@@ -123,6 +126,18 @@ struct Aagedal_Photo_AgentApp: App {
                     NotificationCenter.default.post(name: .rotateCounterclockwise, object: nil)
                 }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
+
+                Divider()
+
+                Button("Render Selected") {
+                    NotificationCenter.default.post(name: .renderSelected, object: nil)
+                }
+                .keyboardShortcut("s", modifiers: .command)
+
+                Button("Render All") {
+                    NotificationCenter.default.post(name: .renderAll, object: nil)
+                }
+                .keyboardShortcut("s", modifiers: [.command, .shift])
             }
 
             CommandMenu("Upload") {
@@ -166,4 +181,6 @@ extension Notification.Name {
     static let rotateClockwise = Notification.Name("rotateClockwise")
     static let rotateCounterclockwise = Notification.Name("rotateCounterclockwise")
     static let writeAllPendingMetadata = Notification.Name("writeAllPendingMetadata")
+    static let renderSelected = Notification.Name("renderSelected")
+    static let renderAll = Notification.Name("renderAll")
 }

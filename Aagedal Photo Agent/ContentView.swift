@@ -210,6 +210,13 @@ struct ContentView: View {
                     )
                 }
             }
+            .onReceive(NotificationCenter.default.publisher(for: .renderSelected)) { _ in
+                let urls = browserViewModel.selectedImages.map(\.url)
+                renderAndSaveEditedFolder(urls: urls)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .renderAll)) { _ in
+                renderAndSaveEditedFolder()
+            }
     }
 
     private var contentWithStateHandlers: some View {
@@ -582,15 +589,22 @@ struct ContentView: View {
         VStack(spacing: 0) {
             List {
                 Section {
-                    Button {
-                        browserViewModel.openFolder()
-                    } label: {
-                        Label("Open Folder", systemImage: "folder.badge.plus")
-                    }
-                    Button {
-                        isShowingImport = true
-                    } label: {
-                        Label("Import...", systemImage: "square.and.arrow.down")
+                    HStack(spacing: 8) {
+                        Button {
+                            browserViewModel.openFolder()
+                        } label: {
+                            Image(systemName: "folder.badge.plus")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Open Folder")
+
+                        Button {
+                            isShowingImport = true
+                        } label: {
+                            Image(systemName: "square.and.arrow.down")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Import Photos")
                     }
                 }
 
@@ -602,6 +616,7 @@ struct ContentView: View {
                             } label: {
                                 Label(favorite.name, systemImage: "folder.fill")
                             }
+                            .listRowInsets(EdgeInsets(top: 1, leading: 8, bottom: 1, trailing: 8))
                             .contextMenu {
                                 Button("Reveal in Finder") {
                                     revealInFinder(favorite.url)
@@ -973,10 +988,10 @@ struct ContentView: View {
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
-    private func renderAndSaveEditedFolder() {
+    private func renderAndSaveEditedFolder(urls: [URL]? = nil) {
         guard !isRenderingEditedFolder,
               let folderURL = browserViewModel.currentFolderURL else { return }
-        let urls = browserViewModel.images.map(\.url)
+        let urls = urls ?? browserViewModel.images.map(\.url)
         guard !urls.isEmpty else { return }
 
         isRenderingEditedFolder = true

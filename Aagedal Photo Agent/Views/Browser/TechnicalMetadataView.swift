@@ -6,11 +6,6 @@ struct TechnicalMetadataView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text("Technical")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.bottom, 2)
-
             if let m = metadata {
                 if let camera = m.camera {
                     row("Camera", camera)
