@@ -94,6 +94,15 @@ struct ImageFile: Identifiable, Hashable, Sendable {
         }
     }
 
+    // MARK: - Hashable / Equatable
+    //
+    // hash(into:) uses only `url` while == checks all mutable display properties.
+    // This is intentional and satisfies the Hashable contract (equal objects must have
+    // equal hashes, but not vice versa). The coarse hash is fine because ImageFile is
+    // never used as a Set element or Dictionary key — URL is used instead. The detailed
+    // == drives SwiftUI diffing (e.g. ThumbnailCell) so that cells redraw when ratings,
+    // labels, or other visual state changes on the same file.
+
     static func == (lhs: ImageFile, rhs: ImageFile) -> Bool {
         lhs.url == rhs.url
             && lhs.starRating == rhs.starRating

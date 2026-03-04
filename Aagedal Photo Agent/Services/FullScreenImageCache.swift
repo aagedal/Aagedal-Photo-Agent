@@ -59,39 +59,40 @@ final class FullScreenImageCache: @unchecked Sendable {
         for task in tasksToCancel { task.cancel() }
 
         for url in targetURLs {
-            // Atomically check both cache and prefetch state to avoid duplicate tasks
-            let shouldPrefetch = lock.withLock {
-                if cachedImage(for: url) != nil { return false }
-                if prefetchTasks[url] != nil { return false }
-                return true
+            // Atomically check cache/prefetch state AND register the task to prevent
+            // a race where two concurrent callers both pass the guard and create duplicates.
+            let alreadyHandled = lock.withLock { () -> Bool in
+                if cachedImage(for: url) != nil { return true }
+                if prefetchTasks[url] != nil { return true }
+
+                let task = Task.detached(priority: .utility) { [weak self] in
+                    guard let self, !Task.isCancelled else { return }
+                    defer { self.removePrefetchTask(for: url) }
+                    let filename = url.lastPathComponent
+                    cacheLogger.info("Prefetching \(filename)")
+
+                    guard var image = Self.loadDownsampled(from: url, maxPixelSize: screenMaxPx) else {
+                        cacheLogger.info("Prefetch failed: \(filename)")
+                        return
+                    }
+                    guard !Task.isCancelled else {
+                        cacheLogger.info("Prefetch cancelled: \(filename)")
+                        return
+                    }
+
+                    if let settings = settingsForURL?(url) {
+                        let orientation = orientationForURL?(url) ?? 1
+                        image = Self.applyCameraRaw(to: image, settings: settings, exifOrientation: orientation)
+                    }
+
+                    self.store(image, for: url)
+                    cacheLogger.info("Prefetched \(filename) (\(image.width)x\(image.height))")
+                }
+
+                prefetchTasks[url] = task
+                return false
             }
-            guard shouldPrefetch else { continue }
-
-            let task = Task.detached(priority: .utility) { [weak self] in
-                guard let self, !Task.isCancelled else { return }
-                defer { self.removePrefetchTask(for: url) }
-                let filename = url.lastPathComponent
-                cacheLogger.info("Prefetching \(filename)")
-
-                guard var image = Self.loadDownsampled(from: url, maxPixelSize: screenMaxPx) else {
-                    cacheLogger.info("Prefetch failed: \(filename)")
-                    return
-                }
-                guard !Task.isCancelled else {
-                    cacheLogger.info("Prefetch cancelled: \(filename)")
-                    return
-                }
-
-                if let settings = settingsForURL?(url) {
-                    let orientation = orientationForURL?(url) ?? 1
-                    image = Self.applyCameraRaw(to: image, settings: settings, exifOrientation: orientation)
-                }
-
-                self.store(image, for: url)
-                cacheLogger.info("Prefetched \(filename) (\(image.width)x\(image.height))")
-            }
-
-            lock.withLock { prefetchTasks[url] = task }
+            if alreadyHandled { continue }
         }
     }
 
