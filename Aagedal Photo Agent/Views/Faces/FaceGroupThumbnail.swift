@@ -47,7 +47,7 @@ struct FaceGroupThumbnail: View {
                         .foregroundStyle(.white)
                         .padding(.horizontal, 4)
                         .padding(.vertical, 1)
-                        .background(.secondary, in: Capsule())
+                        .background(.black.opacity(0.6), in: Capsule())
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                         .padding(2)
                 }

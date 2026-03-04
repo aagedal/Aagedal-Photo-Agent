@@ -196,6 +196,20 @@ struct ContentView: View {
             .onReceive(NotificationCenter.default.publisher(for: .openInInternalEditor)) { _ in
                 openEditWorkspace()
             }
+            .onReceive(NotificationCenter.default.publisher(for: .writeAllPendingMetadata)) { _ in
+                let c2paPending = browserViewModel.images.filter { image in
+                    image.hasPendingMetadataChanges && image.hasC2PA
+                }
+                if !c2paPending.isEmpty {
+                    pendingWriteAllC2PACount = c2paPending.count
+                    isShowingWriteAllC2PAWarning = true
+                } else {
+                    metadataViewModel.writeAllPendingChanges(
+                        in: browserViewModel.currentFolderURL,
+                        images: browserViewModel.images
+                    )
+                }
+            }
     }
 
     private var contentWithStateHandlers: some View {

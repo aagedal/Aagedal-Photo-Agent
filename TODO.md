@@ -1,8 +1,8 @@
 # TODO
 
 ## Priority
-[] In the Template edit view, accessible from settings, I am able to add the same metadata field twice to the same template. This will likely break things, and should not be possible.
-[] Add keyboard shortcuts: Process variable, process all variables in folder, write all pending metadata in folder.
+[x] In the Template edit view, accessible from settings, I am able to add the same metadata field twice to the same template. This will likely break things, and should not be possible.
+[x] Add keyboard shortcuts: Process variable, process all variables in folder, write all pending metadata in folder.
 [x] App becomes very slow when scanning for faces, this should happen on a background thread and not block the main app UI.
 [] Make scrolling follow selection on selection change outside the visible view area.
 [] Add option to filter images: Hide images with less than n-stars, or with specific color labels, or with/without Person Shown data
@@ -22,4 +22,4 @@
 [] Add option to discard metadata changes that aren't written to file. Both on individual photos and all photos in folder.
 [] Add view to see metadata history.
 [] Add progress bar and status icon for file upload
-[] Make the contrast clearer between the number background and the bumber text in the face group bar.
+[x] Make the contrast clearer between the number background and the bumber text in the face group bar.
