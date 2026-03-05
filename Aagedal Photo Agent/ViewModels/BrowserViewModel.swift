@@ -1107,11 +1107,40 @@ final class BrowserViewModel {
             if sidecar.metadata.label != snapshot.label {
                 array[index].colorLabel = ColorLabel.fromMetadataLabel(sidecar.metadata.label)
             }
+            if sidecar.metadata.cameraRaw != snapshot.cameraRaw {
+                array[index].cameraRawSettings = sidecar.metadata.cameraRaw
+                applySidecarCropState(to: &array[index], cameraRaw: sidecar.metadata.cameraRaw)
+            }
         } else {
             if let ratingValue = sidecar.metadata.rating {
                 array[index].starRating = StarRating(rawValue: ratingValue) ?? .none
             }
             array[index].colorLabel = ColorLabel.fromMetadataLabel(sidecar.metadata.label)
+            if let cameraRaw = sidecar.metadata.cameraRaw {
+                array[index].cameraRawSettings = cameraRaw
+                applySidecarCropState(to: &array[index], cameraRaw: cameraRaw)
+            }
+        }
+    }
+
+    private func applySidecarCropState(to imageFile: inout ImageFile, cameraRaw: CameraRawSettings?) {
+        if let cameraRaw, let crop = cameraRaw.crop, !crop.isEmpty {
+            imageFile.hasCropEdits = true
+            imageFile.hasDevelopEdits = true
+            let displayCrop = crop.transformedForDisplay(orientation: imageFile.exifOrientation)
+            let top = displayCrop.top ?? 0
+            let left = displayCrop.left ?? 0
+            let bottom = displayCrop.bottom ?? 1
+            let right = displayCrop.right ?? 1
+            let angle = displayCrop.angle ?? 0
+            let region = ThumbnailCropRegion(top: top, left: left, bottom: bottom, right: right, angle: angle).clamped
+            imageFile.cropRegion = (region.right > region.left && region.bottom > region.top) ? region : nil
+        } else {
+            imageFile.hasCropEdits = false
+            imageFile.cropRegion = nil
+            if let cameraRaw, !cameraRaw.isEmpty {
+                imageFile.hasDevelopEdits = true
+            }
         }
     }
 
