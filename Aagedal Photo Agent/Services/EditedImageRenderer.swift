@@ -139,7 +139,7 @@ enum EditedImageRenderer {
         let colorSpace: CGColorSpace
         let format: CIFormat
         if isHDR {
-            colorSpace = CGColorSpace(name: CGColorSpace.displayP3_HLG) ?? CGColorSpace(name: CGColorSpace.displayP3)!
+            colorSpace = CGColorSpace(name: CGColorSpace.itur_2100_PQ) ?? CGColorSpace(name: CGColorSpace.displayP3)!
             format = .RGBA16
         } else {
             colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
