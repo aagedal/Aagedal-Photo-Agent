@@ -23,6 +23,11 @@ struct SettingsView: View {
                     Label("General", systemImage: "gear")
                 }
 
+            formatTab
+                .tabItem {
+                    Label("Format", systemImage: "doc.richtext")
+                }
+
             metadataTab
                 .tabItem {
                     Label("Metadata", systemImage: "tag")
@@ -42,8 +47,13 @@ struct SettingsView: View {
                 .tabItem {
                     Label("Templates", systemImage: "doc.on.clipboard")
                 }
+
+            updatesTab
+                .tabItem {
+                    Label("Updates", systemImage: "arrow.triangle.2.circlepath")
+                }
         }
-        .frame(width: 500, height: 520)
+        .frame(width: 500, height: 540)
         .onAppear {
             ftpViewModel.loadConnections()
             templateViewModel.loadTemplates()
@@ -135,41 +145,6 @@ struct SettingsView: View {
                 .disabled(settingsViewModel.defaultEditDestination == .internalEditor)
             }
 
-            Section("Updates") {
-                Picker("Check for updates", selection: $settingsViewModel.updateCheckFrequency) {
-                    ForEach(UpdateCheckFrequency.allCases) { frequency in
-                        Text(frequency.displayName).tag(frequency)
-                    }
-                }
-                .pickerStyle(.segmented)
-
-                Button("Check for Updates") {
-                    guard !isCheckingForUpdates else { return }
-                    isCheckingForUpdates = true
-                    updateStatusMessage = "Checking..."
-                    Task {
-                        await UpdateChecker.shared.checkNow()
-                        let latestVersion = UpdateChecker.shared.latestVersion
-                        if UpdateChecker.shared.isUpdateAvailable {
-                            if latestVersion.isEmpty {
-                                updateStatusMessage = "Update available"
-                            } else {
-                                updateStatusMessage = "Update available — version \(latestVersion)"
-                            }
-                        } else {
-                            updateStatusMessage = "No update available"
-                        }
-                        isCheckingForUpdates = false
-                    }
-                }
-                .disabled(isCheckingForUpdates)
-
-                if let updateStatusMessage {
-                    Text(updateStatusMessage)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
         }
         .formStyle(.grouped)
         .padding()
@@ -417,6 +392,98 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - Format Tab
+
+    @ViewBuilder
+    private var formatTab: some View {
+        Form {
+            Section("SDR Format") {
+                Picker("Default Format", selection: $settingsViewModel.exportFormatSDR) {
+                    ForEach(ExportFormatSDR.allCases) { format in
+                        Text(format.displayName).tag(format)
+                    }
+                }
+
+                Text(settingsViewModel.exportFormatSDR.description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if settingsViewModel.exportFormatSDR.supportsQuality {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("Quality")
+                            Spacer()
+                            Text("\(Int(settingsViewModel.exportQualitySDR * 100))%")
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        }
+                        Slider(value: $settingsViewModel.exportQualitySDR, in: 0.5...1.0, step: 0.01)
+                        HStack {
+                            Text("Smaller file")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text("Higher quality")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+
+            Section("HDR Format") {
+                Picker("Default Format", selection: $settingsViewModel.exportFormatHDR) {
+                    ForEach(ExportFormatHDR.allCases) { format in
+                        Text(format.displayName).tag(format)
+                    }
+                }
+
+                Text(settingsViewModel.exportFormatHDR.description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if settingsViewModel.exportFormatHDR.supportsQuality {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("Quality")
+                            Spacer()
+                            Text("\(Int(settingsViewModel.exportQualityHDR * 100))%")
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        }
+                        Slider(value: $settingsViewModel.exportQualityHDR, in: 0.5...1.0, step: 0.01)
+                        HStack {
+                            Text("Smaller file")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text("Higher quality")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+
+            if settingsViewModel.exportFormatSDR == .tiff || settingsViewModel.exportFormatHDR == .tiff16bit {
+                Section("TIFF Options") {
+                    Picker("Compression", selection: $settingsViewModel.exportTIFFCompression) {
+                        ForEach(TIFFCompression.allCases) { compression in
+                            Text(compression.displayName).tag(compression)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    Text(settingsViewModel.exportTIFFCompression.description)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
+    }
+
     // MARK: - Metadata Tab
 
     @ViewBuilder
@@ -598,6 +665,73 @@ struct SettingsView: View {
         } catch {
             knownPeopleMessage = "Clear failed: \(error.localizedDescription)"
         }
+    }
+
+    // MARK: - Updates Tab
+
+    @ViewBuilder
+    private var updatesTab: some View {
+        Form {
+            Section("Current Version") {
+                LabeledContent("Installed") {
+                    Text(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown")
+                        .foregroundStyle(.secondary)
+                }
+
+                if UpdateChecker.shared.isUpdateAvailable, !UpdateChecker.shared.latestVersion.isEmpty {
+                    LabeledContent("Latest") {
+                        Text(UpdateChecker.shared.latestVersion)
+                            .foregroundStyle(.green)
+                    }
+                }
+            }
+
+            Section("Check Frequency") {
+                Picker("Check for updates", selection: $settingsViewModel.updateCheckFrequency) {
+                    ForEach(UpdateCheckFrequency.allCases) { frequency in
+                        Text(frequency.displayName).tag(frequency)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+
+            Section {
+                Button("Check Now") {
+                    guard !isCheckingForUpdates else { return }
+                    isCheckingForUpdates = true
+                    updateStatusMessage = "Checking..."
+                    Task {
+                        await UpdateChecker.shared.checkNow()
+                        let latestVersion = UpdateChecker.shared.latestVersion
+                        if UpdateChecker.shared.isUpdateAvailable {
+                            if latestVersion.isEmpty {
+                                updateStatusMessage = "Update available"
+                            } else {
+                                updateStatusMessage = "Update available — version \(latestVersion)"
+                            }
+                        } else {
+                            updateStatusMessage = "You're up to date"
+                        }
+                        isCheckingForUpdates = false
+                    }
+                }
+                .disabled(isCheckingForUpdates)
+
+                if let updateStatusMessage {
+                    Text(updateStatusMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if UpdateChecker.shared.isUpdateAvailable {
+                    Button("Download Latest Release") {
+                        UpdateChecker.shared.openReleasesPage()
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
     }
 
     // MARK: - FTP Tab

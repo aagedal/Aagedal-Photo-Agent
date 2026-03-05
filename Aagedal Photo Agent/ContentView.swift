@@ -1032,11 +1032,7 @@ struct ContentView: View {
                 let cameraRaw = metadataByURL[url]?.cameraRaw
                 let isHDR = cameraRaw?.hdrEditMode == 1
                 do {
-                    if isHDR {
-                        try EditedImageRenderer.renderHDR(from: url, cameraRaw: cameraRaw, outputFolder: outputFolder)
-                    } else {
-                        try EditedImageRenderer.renderJPEG(from: url, cameraRaw: cameraRaw, outputFolder: outputFolder)
-                    }
+                    try EditedImageRenderer.render(from: url, cameraRaw: cameraRaw, isHDR: isHDR, outputFolder: outputFolder)
                     successCount += 1
                 } catch {
                     failureCount += 1

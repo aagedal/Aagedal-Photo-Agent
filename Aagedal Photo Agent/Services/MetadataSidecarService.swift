@@ -1,7 +1,7 @@
 import Foundation
 import os
 
-nonisolated(unsafe) private let sidecarLogger = Logger(subsystem: "com.aagedal.photo-agent", category: "MetadataSidecarService")
+private let sidecarLogger = Logger(subsystem: "com.aagedal.photo-agent", category: "MetadataSidecarService")
 
 struct MetadataSidecarService: Sendable {
 

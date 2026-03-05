@@ -3,7 +3,7 @@ import Vision
 import AppKit
 import os.log
 
-nonisolated(unsafe) private let knownPeopleLog = Logger(
+private let knownPeopleLog = Logger(
     subsystem: Bundle.main.bundleIdentifier ?? "AagedalPhotoAgent",
     category: "KnownPeopleService"
 )

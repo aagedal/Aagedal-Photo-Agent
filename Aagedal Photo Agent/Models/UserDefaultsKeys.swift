@@ -53,6 +53,13 @@ enum UserDefaultsKeys {
     static let multiSelectKeywordsMode = "multiSelectKeywordsMode"
     static let multiSelectPersonShownMode = "multiSelectPersonShownMode"
 
+    // MARK: - Format & Compression
+    static let exportFormatSDR = "exportFormatSDR"
+    static let exportFormatHDR = "exportFormatHDR"
+    static let exportQualitySDR = "exportQualitySDR"
+    static let exportQualityHDR = "exportQualityHDR"
+    static let exportTIFFCompression = "exportTIFFCompression"
+
     // MARK: - Quick List Bookmarks
     static let keywordsListBookmark = "keywordsListBookmark"
     static let personShownListBookmark = "personShownListBookmark"

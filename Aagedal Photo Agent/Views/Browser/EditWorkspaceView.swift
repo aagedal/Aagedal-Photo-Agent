@@ -543,9 +543,7 @@ struct EditWorkspaceView: View {
 
                     Divider()
 
-                    Button(isSavingRenderedJPEG
-                        ? (isHDREnabled ? "Saving HDR HEIC..." : "Saving JPEG...")
-                        : (isHDREnabled ? "Save HDR HEIC" : "Save JPEG")) {
+                    Button(saveButtonLabel) {
                         saveCurrentRenderedImage()
                     }
                     .disabled(!canEditSingleImage || selectedImageURL == nil || isSavingRenderedJPEG)
@@ -1250,6 +1248,18 @@ struct EditWorkspaceView: View {
         commitEditAdjustments()
     }
 
+    private var saveButtonLabel: String {
+        let formatName: String
+        if isHDREnabled {
+            let format = ExportFormatHDR(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportFormatHDR) ?? "") ?? .jxl
+            formatName = "HDR \(format.displayName)"
+        } else {
+            let format = ExportFormatSDR(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportFormatSDR) ?? "") ?? .jpeg
+            formatName = format.displayName
+        }
+        return isSavingRenderedJPEG ? "Saving \(formatName)..." : "Save \(formatName)"
+    }
+
     private func saveCurrentRenderedImage() {
         guard !isSavingRenderedJPEG,
               let selectedImageURL else { return }
@@ -1261,14 +1271,8 @@ struct EditWorkspaceView: View {
             do {
                 let outputFolder = selectedImageURL.deletingLastPathComponent().appendingPathComponent("Edited", isDirectory: true)
                 try FileManager.default.createDirectory(at: outputFolder, withIntermediateDirectories: true)
-                if hdr {
-                    let outputURL = try EditedImageRenderer.renderHDR(from: selectedImageURL, cameraRaw: settings, outputFolder: outputFolder)
-                    browserViewModel.thumbnailService.invalidateThumbnail(for: outputURL)
-                } else {
-                    try EditedImageRenderer.renderJPEG(from: selectedImageURL, cameraRaw: settings, outputFolder: outputFolder)
-                    let outputURL = EditedImageRenderer.outputURL(for: selectedImageURL, in: outputFolder)
-                    browserViewModel.thumbnailService.invalidateThumbnail(for: outputURL)
-                }
+                let outputURL = try EditedImageRenderer.render(from: selectedImageURL, cameraRaw: settings, isHDR: hdr, outputFolder: outputFolder)
+                browserViewModel.thumbnailService.invalidateThumbnail(for: outputURL)
             } catch {
                 browserViewModel.errorMessage = "Failed to save image: \(error.localizedDescription)"
             }

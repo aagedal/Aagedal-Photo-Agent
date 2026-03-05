@@ -3,7 +3,7 @@ import QuickLookThumbnailing
 import CoreImage
 import os
 
-nonisolated(unsafe) private let thumbnailLogger = Logger(subsystem: "com.aagedal.photo-agent", category: "ThumbnailService")
+private let thumbnailLogger = Logger(subsystem: "com.aagedal.photo-agent", category: "ThumbnailService")
 
 @Observable
 final class ThumbnailService {
