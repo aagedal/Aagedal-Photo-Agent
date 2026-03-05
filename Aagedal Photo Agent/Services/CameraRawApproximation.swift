@@ -9,7 +9,7 @@ enum CameraRawApproximation {
         .workingColorSpace: workingColorSpace,
     ])
     nonisolated(unsafe) private static let minKelvin = 2000.0
-    nonisolated(unsafe) private static let maxKelvin = 12000.0
+    nonisolated(unsafe) private static let maxKelvin = 50000.0
 
     nonisolated static func apply(to input: CIImage, settings: CameraRawSettings?) -> CIImage {
         guard let settings else { return input }
@@ -38,32 +38,53 @@ enum CameraRawApproximation {
             let whites = Double(settings.whites2012 ?? 0)
             let shadows = Double(settings.shadows2012 ?? 0)
 
-            // CIHighlightShadowAdjust: inputHighlightAmount 0..1 (1 = no change, 0 = full recovery)
-            // Negative highlights/whites reduce bright areas; combine both for the recovery direction.
+            // CIHighlightShadowAdjust for Highlights recovery only (not Whites).
             let negHighlight = min(highlights, 0) / 100.0  // -1..0
-            let negWhites = min(whites, 0) / 100.0          // -1..0
-            let highlightAmount = max(1.0 + (negHighlight + negWhites) * 0.5, 0.0)
-            let shadowAmount = min(max(shadows / 1000.0, -1.0), 1.0)
+            let highlightAmount = max(1.0 + negHighlight * 0.8, 0.0)
+            // Shadows: map -100..100 to -0.5..0.5 (was /1000 = only 10% of range)
+            let shadowAmount = min(max(shadows / 200.0, -1.0), 1.0)
 
             output = applyFilter(named: "CIHighlightShadowAdjust", input: output, values: [
                 "inputHighlightAmount": highlightAmount,
                 "inputShadowAmount": shadowAmount,
             ]) ?? output
 
-            // Positive highlights/whites boost the upper tonal range via a tone curve.
+            // Positive highlights: lift the upper-mid tonal range (point3 at 0.75)
             let posHighlight = max(highlights, 0) / 100.0  // 0..1
-            let posWhites = max(whites, 0) / 100.0          // 0..1
-            let boost = (posHighlight + posWhites) * 0.5
-            if boost > 0.001 {
-                // Lift the upper quarter of the tone curve to brighten highlights.
-                let midPoint = min(0.75 + boost * 0.1, 0.95)
-                let topPoint = min(1.0 + boost * 0.15, 1.2)
+            if posHighlight > 0.001 {
+                let p3y = min(0.75 + posHighlight * 0.15, 0.95)
                 output = applyFilter(named: "CIToneCurve", input: output, values: [
                     "inputPoint0": CIVector(x: 0.0, y: 0.0),
                     "inputPoint1": CIVector(x: 0.25, y: 0.25),
                     "inputPoint2": CIVector(x: 0.5, y: 0.5),
-                    "inputPoint3": CIVector(x: CGFloat(midPoint), y: CGFloat(midPoint)),
-                    "inputPoint4": CIVector(x: 1.0, y: CGFloat(topPoint)),
+                    "inputPoint3": CIVector(x: 0.75, y: CGFloat(p3y)),
+                    "inputPoint4": CIVector(x: 1.0, y: 1.0),
+                ]) ?? output
+            }
+
+            // Whites: separate white point control via tone curve point4
+            let whitesNorm = whites / 100.0  // -1..1
+            if abs(whitesNorm) > 0.001 {
+                // Negative whites pull white point down; positive lifts it
+                let p4y = min(max(1.0 + whitesNorm * 0.25, 0.6), 1.3)
+                output = applyFilter(named: "CIToneCurve", input: output, values: [
+                    "inputPoint0": CIVector(x: 0.0, y: 0.0),
+                    "inputPoint1": CIVector(x: 0.25, y: 0.25),
+                    "inputPoint2": CIVector(x: 0.5, y: 0.5),
+                    "inputPoint3": CIVector(x: 0.75, y: 0.75),
+                    "inputPoint4": CIVector(x: 1.0, y: CGFloat(p4y)),
+                ]) ?? output
+            }
+
+            // Positive shadows: additional tone curve lift in shadow region
+            if shadows > 0 {
+                let shadowLift = (shadows / 100.0) * 0.15  // up to 0.15 lift at point1
+                output = applyFilter(named: "CIToneCurve", input: output, values: [
+                    "inputPoint0": CIVector(x: 0.0, y: 0.0),
+                    "inputPoint1": CIVector(x: 0.25, y: CGFloat(0.25 + shadowLift)),
+                    "inputPoint2": CIVector(x: 0.5, y: 0.5),
+                    "inputPoint3": CIVector(x: 0.75, y: 0.75),
+                    "inputPoint4": CIVector(x: 1.0, y: 1.0),
                 ]) ?? output
             }
         }

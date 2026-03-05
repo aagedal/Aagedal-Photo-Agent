@@ -23,12 +23,14 @@ struct EditWorkspaceView: View {
     @State private var cropAspectRatio: CropAspectRatio = .free
     @State private var isCursorOverPreview = false
     @State private var scrollEventMonitor: Any?
+    @State private var escEventMonitor: Any?
     @State private var isShowingBefore = false
     @State private var lockedCropImageRect: CGRect?
+    @State private var editUndoManager = UndoManager()
     @FocusState private var isWorkspaceFocused: Bool
 
     private static let minKelvin = 2000.0
-    private static let maxKelvin = 12000.0
+    private static let maxKelvin = 50000.0
 
     private var previewWorkingMaxPixelSize: CGFloat {
         let screenSize = NSScreen.main?.frame.size ?? CGSize(width: 1920, height: 1080)
@@ -153,12 +155,22 @@ struct EditWorkspaceView: View {
         .onAppear {
             ensureSingleSelection()
             loadSelectedImagePreview()
+            escEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                guard event.keyCode == 53 else { return event }  // 53 = Escape
+                guard !isTextFieldActive() else { return event }
+                onExit()
+                return nil
+            }
         }
         .onDisappear {
             previewTask?.cancel()
             previewTask = nil
             previewRenderTask?.cancel()
             previewRenderTask = nil
+            if let monitor = escEventMonitor {
+                NSEvent.removeMonitor(monitor)
+                escEventMonitor = nil
+            }
         }
         .onChange(of: browserViewModel.selectedImageIDs) { _, _ in
             ensureAtLeastOneSelected()
@@ -180,10 +192,6 @@ struct EditWorkspaceView: View {
         .onKeyPress(.rightArrow) {
             guard !isTextFieldActive() else { return .ignored }
             browserViewModel.selectNext()
-            return .handled
-        }
-        .onKeyPress(.escape) {
-            onExit()
             return .handled
         }
         .onKeyPress("c") {
@@ -216,13 +224,22 @@ struct EditWorkspaceView: View {
             }
             return .handled
         }
-        .onKeyPress("m", phases: .down) { _ in
+        .onKeyPress("m", phases: [.down, .repeat]) { _ in
             guard !isTextFieldActive(), canEditSingleImage else { return .ignored }
             isShowingBefore = true
             return .handled
         }
         .onKeyPress("m", phases: .up) { _ in
             isShowingBefore = false
+            return .handled
+        }
+        .onKeyPress("z") {
+            guard !isTextFieldActive(), NSEvent.modifierFlags.contains(.command) else { return .ignored }
+            if NSEvent.modifierFlags.contains(.shift) {
+                editUndoManager.redo()
+            } else {
+                editUndoManager.undo()
+            }
             return .handled
         }
         .overlay(alignment: .top) {
@@ -391,6 +408,29 @@ struct EditWorkspaceView: View {
                     Text("Develop")
                         .font(.headline)
                     Spacer()
+                    if canEditSingleImage {
+                        Button {
+                            editUndoManager.undo()
+                        } label: {
+                            Image(systemName: "arrow.uturn.backward")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!editUndoManager.canUndo)
+                        .help("Undo (⌘Z)")
+
+                        Button {
+                            editUndoManager.redo()
+                        } label: {
+                            Image(systemName: "arrow.uturn.forward")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!editUndoManager.canRedo)
+                        .help("Redo (⇧⌘Z)")
+                    }
                     if canEditSingleImage, hasDevelopAdjustments {
                         Button {
                             resetDevelopAdjustmentsKeepingCrop()
@@ -424,6 +464,7 @@ struct EditWorkspaceView: View {
                             value: whiteBalanceTemperatureBinding,
                             range: -100...100,
                             step: 1,
+                            gradient: LinearGradient(colors: [.blue, .yellow], startPoint: .leading, endPoint: .trailing),
                             formatter: signedIntString,
                             onReset: {
                                 whiteBalanceTemperatureBinding.wrappedValue = 0
@@ -438,13 +479,14 @@ struct EditWorkspaceView: View {
                         value: whiteBalanceTintBinding,
                         range: -150...150,
                         step: 1,
+                        gradient: LinearGradient(colors: [.green, .pink], startPoint: .leading, endPoint: .trailing),
                         formatter: signedIntString,
                         onReset: {
                             whiteBalanceTintBinding.wrappedValue = 0
                         }
                     )
 
-                    sliderRow("Saturation", value: toneSliderBinding(\.saturation), range: -100...100, step: 1, formatter: signedIntString, onReset: {
+                    sliderRow("Saturation", value: toneSliderBinding(\.saturation), range: -100...100, step: 1, gradient: LinearGradient(colors: [.gray, .red], startPoint: .leading, endPoint: .trailing), formatter: signedIntString, onReset: {
                         toneSliderBinding(\.saturation).wrappedValue = 0
                     })
 
@@ -526,7 +568,7 @@ struct EditWorkspaceView: View {
                     if isCropEnabled {
                         VStack(alignment: .leading, spacing: 2) {
                             HStack {
-                                Text("Crop Zoom")
+                                Text("Zoom")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                 if abs(cropZoomScale - 1.0) > 0.01 {
@@ -545,17 +587,14 @@ struct EditWorkspaceView: View {
                                     .font(.caption.monospacedDigit())
                                     .foregroundStyle(.secondary)
                             }
-                            Slider(
-                                value: $cropZoomScale,
-                                in: 0.25...3.0,
+                            EditSlider(
+                                value: cropZoomBinding,
+                                range: 0.25...3.0,
                                 step: 0.01
                             )
-                            .simultaneousGesture(
-                                TapGesture(count: 2)
-                                    .onEnded {
-                                        resetCropZoom()
-                                    }
-                            )
+                            .onTapGesture(count: 2) {
+                                resetCropZoom()
+                            }
                             .onChange(of: cropZoomScale) { _, _ in
                                 lastCropZoomScale = cropZoomScale
                             }
@@ -873,11 +912,18 @@ struct EditWorkspaceView: View {
     }
 
     private func updateCameraRaw(_ update: (inout CameraRawSettings) -> Void) {
-        var cameraRaw = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
+        let oldSettings = metadataViewModel.editingMetadata.cameraRaw
+        var cameraRaw = oldSettings ?? CameraRawSettings()
         update(&cameraRaw)
         cameraRaw.hasSettings = cameraRawHasEdits(cameraRaw) ? true : nil
-        metadataViewModel.editingMetadata.cameraRaw = cameraRawHasEdits(cameraRaw) ? cameraRaw : nil
+        let newSettings = cameraRawHasEdits(cameraRaw) ? cameraRaw : nil
+        metadataViewModel.editingMetadata.cameraRaw = newSettings
         metadataViewModel.markChanged()
+
+        editUndoManager.registerUndo(withTarget: metadataViewModel) { vm in
+            vm.editingMetadata.cameraRaw = oldSettings
+            vm.markChanged()
+        }
     }
 
     private func cameraRawHasEdits(_ cameraRaw: CameraRawSettings) -> Bool {
@@ -1011,22 +1057,21 @@ struct EditWorkspaceView: View {
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
-            Slider(
+            EditSlider(
                 value: whiteBalanceTemperatureLogBinding,
-                in: 0...1,
+                range: 0...1,
+                step: 0,
+                gradient: LinearGradient(colors: [.blue, .yellow], startPoint: .leading, endPoint: .trailing),
                 onEditingChanged: { editing in
                     if !editing {
                         commitEditAdjustments()
                     }
                 }
             )
-            .simultaneousGesture(
-                TapGesture(count: 2)
-                    .onEnded {
-                        whiteBalanceTemperatureBinding.wrappedValue = 6500
-                        commitEditAdjustments()
-                    }
-            )
+            .onTapGesture(count: 2) {
+                whiteBalanceTemperatureBinding.wrappedValue = 6500
+                commitEditAdjustments()
+            }
         }
     }
 
@@ -1061,6 +1106,13 @@ struct EditWorkspaceView: View {
                     }
                 }
             }
+        )
+    }
+
+    private var cropZoomBinding: Binding<Double> {
+        Binding(
+            get: { Double(cropZoomScale) },
+            set: { cropZoomScale = CGFloat($0) }
         )
     }
 
@@ -1188,6 +1240,7 @@ struct EditWorkspaceView: View {
         value: Binding<Double>,
         range: ClosedRange<Double>,
         step: Double,
+        gradient: LinearGradient? = nil,
         formatter: @escaping (Double) -> String,
         onReset: (() -> Void)? = nil
     ) -> some View {
@@ -1213,24 +1266,22 @@ struct EditWorkspaceView: View {
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
-            Slider(
+            EditSlider(
                 value: value,
-                in: range,
+                range: range,
                 step: step,
+                gradient: gradient,
                 onEditingChanged: { editing in
                     if !editing {
                         commitEditAdjustments()
                     }
                 }
             )
-            .simultaneousGesture(
-                TapGesture(count: 2)
-                    .onEnded {
-                        guard let onReset else { return }
-                        onReset()
-                        commitEditAdjustments()
-                    }
-            )
+            .onTapGesture(count: 2) {
+                guard let onReset else { return }
+                onReset()
+                commitEditAdjustments()
+            }
         }
     }
 
