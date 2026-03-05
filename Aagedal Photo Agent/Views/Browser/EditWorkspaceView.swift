@@ -634,7 +634,9 @@ struct EditWorkspaceView: View {
         previewTask = Task {
             guard !Task.isCancelled else { return }
 
-            let previewSource = await Task.detached(priority: .userInitiated) { () -> (image: NSImage?, ciImage: CIImage?) in
+            // ImageIO thumbnail generation uses Default-QoS worker threads internally.
+            // Running decode at .medium avoids user-initiated -> default QoS inversion warnings.
+            let previewSource = await Task.detached(priority: .medium) { () -> (image: NSImage?, ciImage: CIImage?) in
                 if let cgImage = FullScreenImageCache.loadDownsampled(
                     from: selectedImageURL,
                     maxPixelSize: previewMaxPixelSize
