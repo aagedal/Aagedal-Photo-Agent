@@ -25,6 +25,7 @@ struct EditWorkspaceView: View {
     @State private var scrollEventMonitor: Any?
     @State private var keyEventMonitor: Any?
     @State private var isShowingBefore = false
+    @State private var showCropControls = false
     @State private var lockedCropImageRect: CGRect?
     @State private var editUndoManager = UndoManager()
     @FocusState private var isWorkspaceFocused: Bool
@@ -202,7 +203,7 @@ struct EditWorkspaceView: View {
                 Color(nsColor: .windowBackgroundColor)
 
                 if let displayImage {
-                    if isCropEnabled, !isShowingBefore {
+                    if showCropControls, !isShowingBefore {
                         // Crop-centered: image scales/positions so crop fills view
                         let computedImageRect = cropFittedImageRect(
                             in: geometry.size,
@@ -294,19 +295,19 @@ struct EditWorkspaceView: View {
             .simultaneousGesture(
                 MagnifyGesture()
                     .onChanged { value in
-                        guard isCropEnabled else { return }
+                        guard showCropControls else { return }
                         // Dampen magnification: lerp between 1.0 (no change) and raw value
                         let dampened = 1.0 + (value.magnification - 1.0) * 0.4
                         cropZoomScale = (lastCropZoomScale * dampened).clamped(to: 0.25...3.0)
                     }
                     .onEnded { _ in
-                        guard isCropEnabled else { return }
+                        guard showCropControls else { return }
                         lastCropZoomScale = cropZoomScale
                     }
             )
             .onAppear {
                 scrollEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
-                    guard isCursorOverPreview, isCropEnabled else { return event }
+                    guard isCursorOverPreview, showCropControls else { return event }
                     // Only handle direct scroll input, ignore momentum to avoid drift
                     guard event.phase != [] || event.momentumPhase == [] else { return event }
                     let delta = event.scrollingDeltaY
@@ -466,17 +467,14 @@ struct EditWorkspaceView: View {
                         .padding(.top, 4)
                     Divider()
 
-                    HStack {
-                        Button(isCropEnabled ? "Disable Crop" : "Enable Crop") {
-                            toggleCrop()
+                    if showCropControls {
+                        HStack {
+                            Button("Reset Crop") {
+                                resetCrop()
+                            }
+                            .disabled(!isCropEnabled)
                         }
-                        Button("Reset Crop") {
-                            resetCrop()
-                        }
-                        .disabled(!isCropEnabled)
-                    }
 
-                    if isCropEnabled {
                         Picker("Aspect Ratio", selection: $cropAspectRatio) {
                             ForEach(CropAspectRatio.allCases) { ratio in
                                 Text(ratio.label).tag(ratio)
@@ -486,21 +484,20 @@ struct EditWorkspaceView: View {
                         .onChange(of: cropAspectRatio) { _, newRatio in
                             applyAspectRatioToCrop(newRatio)
                         }
+
+                        sliderRow(
+                            "Crop Rotation",
+                            value: cropAngleBinding,
+                            range: -45...45,
+                            step: 0.01,
+                            formatter: { signedDoubleString($0, precision: 2) },
+                            onReset: {
+                                cropAngleBinding.wrappedValue = 0
+                            }
+                        )
                     }
 
-                    sliderRow(
-                        "Crop Rotation",
-                        value: cropAngleBinding,
-                        range: -45...45,
-                        step: 0.01,
-                        formatter: { signedDoubleString($0, precision: 2) },
-                        onReset: {
-                            cropAngleBinding.wrappedValue = 0
-                        }
-                    )
-                    .disabled(!isCropEnabled)
-
-                    if isCropEnabled {
+                    if showCropControls {
                         VStack(alignment: .leading, spacing: 2) {
                             HStack {
                                 Text("Zoom")
@@ -630,6 +627,7 @@ struct EditWorkspaceView: View {
         previewImage = nil
         isLoadingPreview = false
         resetCropZoom()
+        showCropControls = isCropEnabled
 
         guard let selectedImageURL else { return }
         let previewMaxPixelSize = previewWorkingMaxPixelSize
@@ -1042,35 +1040,32 @@ struct EditWorkspaceView: View {
         )
     }
 
-    private func toggleCrop() {
-        resetCropZoom()
-        let wasEnabled = isCropEnabled
-        updateCameraRaw { cameraRaw in
-            var crop = cameraRaw.crop ?? CameraRawCrop()
-            let enabled = !(crop.hasCrop ?? false)
-            crop.hasCrop = enabled
-            if enabled {
+    private func toggleCropControls() {
+        showCropControls.toggle()
+        if showCropControls && !isCropEnabled {
+            // Showing controls — enable crop if not already active
+            resetCropZoom()
+            updateCameraRaw { cameraRaw in
+                var crop = cameraRaw.crop ?? CameraRawCrop()
+                crop.hasCrop = true
                 if crop.top == nil { crop.top = 0 }
                 if crop.left == nil { crop.left = 0 }
                 if crop.bottom == nil { crop.bottom = 1 }
                 if crop.right == nil { crop.right = 1 }
                 if crop.angle == nil { crop.angle = 0 }
+                cameraRaw.crop = crop
             }
-            cameraRaw.crop = crop
+            if cropAspectRatio != .free {
+                applyAspectRatioToCrop(cropAspectRatio)
+            }
+            commitEditAdjustments()
         }
-        if wasEnabled {
-            // Was enabled, now disabled
-            cropAspectRatio = .original
-        } else if cropAspectRatio != .free {
-            // Just enabled with a non-free ratio selected
-            applyAspectRatioToCrop(cropAspectRatio)
-        }
-        commitEditAdjustments()
     }
 
     private func resetCrop() {
         resetCropZoom()
         cropAspectRatio = .original
+        showCropControls = false
         updateCameraRaw { cameraRaw in
             cameraRaw.crop = CameraRawCrop(
                 top: 0,
@@ -1444,10 +1439,10 @@ struct EditWorkspaceView: View {
             return nil
         }
 
-        // C — toggle crop
+        // C — toggle crop controls
         if chars == "c" && modifiers.isDisjoint(with: [.command, .option, .control]) {
             guard canEditSingleImage else { return event }
-            toggleCrop()
+            toggleCropControls()
             return nil
         }
 
