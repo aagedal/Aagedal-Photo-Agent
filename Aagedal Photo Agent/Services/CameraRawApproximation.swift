@@ -62,16 +62,20 @@ enum CameraRawApproximation {
                 ]) ?? output
             }
 
-            // Whites: separate white point control via tone curve point4
+            // Whites: ACR-style white clipping point adjustment.
+            // Positive whites boosts upper tones and can increase overall brightness;
+            // negative whites compresses highlights toward black.
             let whitesNorm = whites / 100.0  // -1..1
             if abs(whitesNorm) > 0.001 {
-                // Negative whites pull white point down; positive lifts it
-                let p4y = min(max(1.0 + whitesNorm * 0.25, 0.6), 1.3)
+                let p3adj = whitesNorm > 0 ? whitesNorm * 0.12 : whitesNorm * 0.08
+                let p4adj = whitesNorm > 0 ? whitesNorm * 0.5 : whitesNorm * 0.35
+                let p3y = min(max(0.75 + p3adj, 0.4), 1.0)
+                let p4y = min(max(1.0 + p4adj, 0.5), 1.5)
                 output = applyFilter(named: "CIToneCurve", input: output, values: [
                     "inputPoint0": CIVector(x: 0.0, y: 0.0),
                     "inputPoint1": CIVector(x: 0.25, y: 0.25),
                     "inputPoint2": CIVector(x: 0.5, y: 0.5),
-                    "inputPoint3": CIVector(x: 0.75, y: 0.75),
+                    "inputPoint3": CIVector(x: 0.75, y: CGFloat(p3y)),
                     "inputPoint4": CIVector(x: 1.0, y: CGFloat(p4y)),
                 ]) ?? output
             }
@@ -200,6 +204,9 @@ enum CameraRawApproximation {
     }
 
     nonisolated private static func temperatureTintTarget(for settings: CameraRawSettings) -> (temperature: CGFloat, tint: CGFloat)? {
+        // "As Shot" means no white balance adjustment
+        if settings.whiteBalance == "As Shot" { return nil }
+
         let temperature: Double?
         if let absolute = settings.temperature {
             temperature = Double(absolute)

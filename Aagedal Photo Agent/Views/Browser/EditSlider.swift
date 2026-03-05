@@ -3,19 +3,23 @@ import SwiftUI
 /// A custom slider matching the playhead/timeline design from Aagedal Media Player.
 /// Thin 4pt track with a 2pt vertical playhead line instead of the default circle knob.
 /// Hold Option while dragging for 10x precision scrubbing.
+/// Double-click to reset to default via `onReset` callback.
 struct EditSlider: View {
     @Binding var value: Double
     let range: ClosedRange<Double>
     let step: Double
     var gradient: LinearGradient?
     var onEditingChanged: ((Bool) -> Void)?
+    var onReset: (() -> Void)?
 
     @State private var isDragging = false
     @State private var wasPrecision = false
     @State private var precisionAnchorFraction: Double = 0
     @State private var precisionAnchorX: CGFloat = 0
+    @State private var lastDragStartTime: Date = .distantPast
 
     private let precisionFactor: Double = 10.0
+    private let doubleClickInterval: TimeInterval = 0.3
 
     private var fraction: Double {
         let span = range.upperBound - range.lowerBound
@@ -66,6 +70,16 @@ struct EditSlider: View {
                 DragGesture(minimumDistance: 0)
                     .onChanged { drag in
                         if !isDragging {
+                            let now = Date()
+                            if now.timeIntervalSince(lastDragStartTime) < doubleClickInterval,
+                               let onReset
+                            {
+                                // Double-click detected — reset and cancel this drag
+                                onReset()
+                                lastDragStartTime = .distantPast
+                                return
+                            }
+                            lastDragStartTime = now
                             isDragging = true
                             wasPrecision = false
                             onEditingChanged?(true)
