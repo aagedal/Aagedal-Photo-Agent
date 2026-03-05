@@ -40,11 +40,11 @@ struct ContentView: View {
     @State private var technicalMetadataCache: [URL: TechnicalMetadata] = [:]
     @State private var technicalMetadataTask: Task<Void, Never>?
     @State private var isRenderingEditedFolder = false
-    @State private var renderEditedFolderProgress = ""
+    @State private var renderExportCurrent = 0
+    @State private var renderExportTotal = 0
     @State private var renderEditedFolderSuccessCount = 0
     @State private var renderEditedFolderFailureCount = 0
     @State private var renderedOutputFolderURL: URL?
-    @State private var isShowingRenderEditedFolderResult = false
 
     init() {
         let browser = BrowserViewModel()
@@ -118,18 +118,6 @@ struct ContentView: View {
             } message: {
                 let count = browserViewModel.selectedImageIDs.count
                 Text("Are you sure you want to move \(count) \(count == 1 ? "image" : "images") to the Trash?")
-            }
-            .alert("Render Complete", isPresented: $isShowingRenderEditedFolderResult) {
-                if let outputURL = renderedOutputFolderURL {
-                    Button("Show Edited Folder") {
-                        NSWorkspace.shared.open(outputURL)
-                    }
-                }
-                Button("OK", role: .cancel) { }
-            } message: {
-                let success = renderEditedFolderSuccessCount
-                let failures = renderEditedFolderFailureCount
-                Text("Saved \(success) image\(success == 1 ? "" : "s") to Edited as sRGB JPEG.\(failures > 0 ? " Failed: \(failures)." : "")")
             }
     }
 
@@ -472,15 +460,7 @@ struct ContentView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .automatic) {
-            if isRenderingEditedFolder {
-                HStack(spacing: 4) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text(renderEditedFolderProgress)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            } else if metadataViewModel.isProcessingFolder {
+            if metadataViewModel.isProcessingFolder {
                 HStack(spacing: 4) {
                     ProgressView()
                         .controlSize(.small)
@@ -823,6 +803,15 @@ struct ContentView: View {
                 Divider()
                 VStack(alignment: .leading, spacing: 8) {
                     UpdatePillButton()
+                    if isRenderingEditedFolder {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Exporting image \(renderExportCurrent) of \(renderExportTotal)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            ProgressView(value: Double(renderExportCurrent), total: Double(max(renderExportTotal, 1)))
+                        }
+                        Divider()
+                    }
                     if let meta = technicalMetadata, meta.hasC2PA {
                         C2PAMetadataView(metadata: meta) {
                             loadC2PADetail()
@@ -998,7 +987,8 @@ struct ContentView: View {
         guard !urls.isEmpty else { return }
 
         isRenderingEditedFolder = true
-        renderEditedFolderProgress = "Preparing export..."
+        renderExportCurrent = 0
+        renderExportTotal = urls.count
         renderEditedFolderSuccessCount = 0
         renderEditedFolderFailureCount = 0
         renderedOutputFolderURL = nil
@@ -1009,7 +999,6 @@ struct ContentView: View {
                 try FileManager.default.createDirectory(at: outputFolder, withIntermediateDirectories: true)
             } catch {
                 isRenderingEditedFolder = false
-                renderEditedFolderProgress = ""
                 browserViewModel.errorMessage = "Failed to create Edited folder: \(error.localizedDescription)"
                 return
             }
@@ -1019,7 +1008,6 @@ struct ContentView: View {
                 metadataByURL = try await browserViewModel.exifToolService.readBatchFullMetadata(urls: urls)
             } catch {
                 isRenderingEditedFolder = false
-                renderEditedFolderProgress = ""
                 browserViewModel.errorMessage = "Failed to read metadata for export: \(error.localizedDescription)"
                 return
             }
@@ -1028,7 +1016,7 @@ struct ContentView: View {
             var failureCount = 0
 
             for (index, url) in urls.enumerated() {
-                renderEditedFolderProgress = "Rendering \(index + 1)/\(urls.count)..."
+                renderExportCurrent = index + 1
                 let cameraRaw = metadataByURL[url]?.cameraRaw
                 let isHDR = cameraRaw?.hdrEditMode == 1
                 do {
@@ -1042,9 +1030,7 @@ struct ContentView: View {
             renderEditedFolderSuccessCount = successCount
             renderEditedFolderFailureCount = failureCount
             renderedOutputFolderURL = outputFolder
-            renderEditedFolderProgress = ""
             isRenderingEditedFolder = false
-            isShowingRenderEditedFolderResult = true
         }
     }
 

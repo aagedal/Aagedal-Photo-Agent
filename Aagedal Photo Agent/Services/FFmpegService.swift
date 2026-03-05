@@ -69,10 +69,8 @@ nonisolated enum FFmpegService {
         var args = ["-hide_banner", "-y", "-i", input]
 
         if isHDR {
+            args += ["-vf", "setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc"]
             args += ["-pix_fmt", "yuv420p10le"]
-            args += ["-color_primaries", "bt2020"]
-            args += ["-color_trc", "arib-std-b67"]  // HLG
-            args += ["-colorspace", "bt2020nc"]
         } else {
             args += ["-pix_fmt", "yuv420p"]
         }
@@ -102,10 +100,8 @@ nonisolated enum FFmpegService {
         var args = ["-hide_banner", "-y", "-i", input]
 
         if isHDR {
+            args += ["-vf", "setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc"]
             args += ["-pix_fmt", "rgb48le"]
-            args += ["-color_primaries", "bt2020"]
-            args += ["-color_trc", "arib-std-b67"]  // HLG
-            args += ["-colorspace", "bt2020nc"]
         }
 
         args += ["-c:v", "libjxl", "-distance", String(format: "%.1f", distance)]
