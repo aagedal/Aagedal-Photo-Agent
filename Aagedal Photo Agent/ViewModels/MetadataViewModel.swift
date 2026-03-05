@@ -1007,6 +1007,12 @@ final class MetadataViewModel {
         if let value = cameraRaw.blacks2012 {
             fields[ExifToolWriteTag.crsBlacks2012] = formatSignedInt(value)
         }
+        if let value = cameraRaw.saturation {
+            fields[ExifToolWriteTag.crsSaturation] = formatSignedInt(value)
+        }
+        if let value = cameraRaw.vibrance {
+            fields[ExifToolWriteTag.crsVibrance] = formatSignedInt(value)
+        }
 
         let hasSettings = cameraRaw.hasSettings ?? !cameraRaw.isEmpty
         fields[ExifToolWriteTag.crsHasSettings] = hasSettings ? "True" : "False"

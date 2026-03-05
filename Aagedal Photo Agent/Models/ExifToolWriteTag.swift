@@ -41,6 +41,8 @@ enum ExifToolWriteTag {
     static let crsShadows2012 = "XMP-crs:Shadows2012"
     static let crsWhites2012 = "XMP-crs:Whites2012"
     static let crsBlacks2012 = "XMP-crs:Blacks2012"
+    static let crsSaturation = "XMP-crs:Saturation"
+    static let crsVibrance = "XMP-crs:Vibrance"
     static let crsHasSettings = "XMP-crs:HasSettings"
     static let crsCropTop = "XMP-crs:CropTop"
     static let crsCropLeft = "XMP-crs:CropLeft"

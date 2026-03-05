@@ -453,41 +453,45 @@ struct EditWorkspaceView: View {
 
                     Picker("White Balance", selection: whiteBalanceBinding) {
                         Text("As Shot").tag("As Shot")
-                        Text("Auto").tag("Auto")
                         Text("Custom").tag("Custom")
                     }
                     .pickerStyle(.segmented)
 
-                    if usesIncrementalWhiteBalance {
+                    if isCustomWhiteBalance {
+                        if usesIncrementalWhiteBalance {
+                            sliderRow(
+                                "WB Temp",
+                                value: whiteBalanceTemperatureBinding,
+                                range: -100...100,
+                                step: 1,
+                                gradient: LinearGradient(colors: [.blue, .yellow], startPoint: .leading, endPoint: .trailing),
+                                formatter: signedIntString,
+                                onReset: {
+                                    whiteBalanceTemperatureBinding.wrappedValue = 0
+                                }
+                            )
+                        } else {
+                            kelvinTemperatureSliderRow
+                        }
+
                         sliderRow(
-                            "WB Temp",
-                            value: whiteBalanceTemperatureBinding,
-                            range: -100...100,
+                            "Tint",
+                            value: whiteBalanceTintBinding,
+                            range: -150...150,
                             step: 1,
-                            gradient: LinearGradient(colors: [.blue, .yellow], startPoint: .leading, endPoint: .trailing),
+                            gradient: LinearGradient(colors: [.green, .pink], startPoint: .leading, endPoint: .trailing),
                             formatter: signedIntString,
                             onReset: {
-                                whiteBalanceTemperatureBinding.wrappedValue = 0
+                                whiteBalanceTintBinding.wrappedValue = 0
                             }
                         )
-                    } else {
-                        kelvinTemperatureSliderRow
                     }
-
-                    sliderRow(
-                        "Tint",
-                        value: whiteBalanceTintBinding,
-                        range: -150...150,
-                        step: 1,
-                        gradient: LinearGradient(colors: [.green, .pink], startPoint: .leading, endPoint: .trailing),
-                        formatter: signedIntString,
-                        onReset: {
-                            whiteBalanceTintBinding.wrappedValue = 0
-                        }
-                    )
 
                     sliderRow("Saturation", value: toneSliderBinding(\.saturation), range: -100...100, step: 1, gradient: LinearGradient(colors: [.gray, .red], startPoint: .leading, endPoint: .trailing), formatter: signedIntString, onReset: {
                         toneSliderBinding(\.saturation).wrappedValue = 0
+                    })
+                    sliderRow("Vibrance", value: toneSliderBinding(\.vibrance), range: -100...100, step: 1, gradient: LinearGradient(colors: [.gray, .orange], startPoint: .leading, endPoint: .trailing), formatter: signedIntString, onReset: {
+                        toneSliderBinding(\.vibrance).wrappedValue = 0
                     })
 
                     // ── Exposure ──
@@ -896,16 +900,14 @@ struct EditWorkspaceView: View {
         )
     }
 
+    private var isCustomWhiteBalance: Bool {
+        let wb = metadataViewModel.editingMetadata.cameraRaw?.whiteBalance ?? "As Shot"
+        return wb == "Custom"
+    }
+
     private var usesIncrementalWhiteBalance: Bool {
         // Non-RAW files always use incremental (relative) white balance
         if let url = selectedImageURL, !SupportedImageFormats.isRaw(url: url) {
-            return true
-        }
-        let cameraRaw = metadataViewModel.editingMetadata.cameraRaw
-        if cameraRaw?.temperature != nil || cameraRaw?.tint != nil {
-            return false
-        }
-        if cameraRaw?.incrementalTemperature != nil || cameraRaw?.incrementalTint != nil {
             return true
         }
         return false
@@ -927,7 +929,7 @@ struct EditWorkspaceView: View {
     }
 
     private func cameraRawHasEdits(_ cameraRaw: CameraRawSettings) -> Bool {
-        cameraRaw.whiteBalance != nil
+        (cameraRaw.whiteBalance != nil && cameraRaw.whiteBalance != "As Shot")
             || cameraRaw.temperature != nil
             || cameraRaw.tint != nil
             || cameraRaw.incrementalTemperature != nil
@@ -939,6 +941,7 @@ struct EditWorkspaceView: View {
             || cameraRaw.whites2012 != nil
             || cameraRaw.blacks2012 != nil
             || cameraRaw.saturation != nil
+            || cameraRaw.vibrance != nil
             || (cameraRaw.crop?.isEmpty == false)
     }
 
@@ -966,31 +969,25 @@ struct EditWorkspaceView: View {
 
     private var whiteBalanceBinding: Binding<String> {
         Binding(
-            get: { metadataViewModel.editingMetadata.cameraRaw?.whiteBalance ?? "Custom" },
+            get: { metadataViewModel.editingMetadata.cameraRaw?.whiteBalance ?? "As Shot" },
             set: { newValue in
                 updateCameraRaw { cameraRaw in
                     cameraRaw.whiteBalance = newValue
-                }
-                commitEditAdjustments()
-            }
-        )
-    }
-
-    private var useIncrementalWhiteBalanceBinding: Binding<Bool> {
-        Binding(
-            get: { usesIncrementalWhiteBalance },
-            set: { enabled in
-                updateCameraRaw { cameraRaw in
-                    if enabled {
+                    if newValue == "As Shot" {
+                        // Clear all WB adjustments
                         cameraRaw.temperature = nil
                         cameraRaw.tint = nil
-                        if cameraRaw.incrementalTemperature == nil { cameraRaw.incrementalTemperature = 0 }
-                        if cameraRaw.incrementalTint == nil { cameraRaw.incrementalTint = 0 }
-                    } else {
                         cameraRaw.incrementalTemperature = nil
                         cameraRaw.incrementalTint = nil
-                        if cameraRaw.temperature == nil { cameraRaw.temperature = 6500 }
-                        if cameraRaw.tint == nil { cameraRaw.tint = 0 }
+                    } else if newValue == "Custom" {
+                        // Initialize sliders to neutral defaults
+                        if usesIncrementalWhiteBalance {
+                            if cameraRaw.incrementalTemperature == nil { cameraRaw.incrementalTemperature = 0 }
+                            if cameraRaw.incrementalTint == nil { cameraRaw.incrementalTint = 0 }
+                        } else {
+                            if cameraRaw.temperature == nil { cameraRaw.temperature = 6500 }
+                            if cameraRaw.tint == nil { cameraRaw.tint = 0 }
+                        }
                     }
                 }
                 commitEditAdjustments()
@@ -1066,12 +1063,12 @@ struct EditWorkspaceView: View {
                     if !editing {
                         commitEditAdjustments()
                     }
+                },
+                onReset: {
+                    whiteBalanceTemperatureBinding.wrappedValue = 6500
+                    commitEditAdjustments()
                 }
             )
-            .onTapGesture(count: 2) {
-                whiteBalanceTemperatureBinding.wrappedValue = 6500
-                commitEditAdjustments()
-            }
         }
     }
 
@@ -1275,22 +1272,23 @@ struct EditWorkspaceView: View {
                     if !editing {
                         commitEditAdjustments()
                     }
+                },
+                onReset: onReset.map { resetFn in
+                    {
+                        resetFn()
+                        commitEditAdjustments()
+                    }
                 }
             )
-            .onTapGesture(count: 2) {
-                guard let onReset else { return }
-                onReset()
-                commitEditAdjustments()
-            }
         }
     }
 
     private func resetDevelopAdjustments() {
         resetCropZoom()
         updateCameraRaw { cameraRaw in
-            cameraRaw.whiteBalance = "Custom"
-            cameraRaw.temperature = 6500
-            cameraRaw.tint = 0
+            cameraRaw.whiteBalance = "As Shot"
+            cameraRaw.temperature = nil
+            cameraRaw.tint = nil
             cameraRaw.incrementalTemperature = nil
             cameraRaw.incrementalTint = nil
             cameraRaw.exposure2012 = 0
@@ -1300,6 +1298,7 @@ struct EditWorkspaceView: View {
             cameraRaw.whites2012 = 0
             cameraRaw.blacks2012 = 0
             cameraRaw.saturation = 0
+            cameraRaw.vibrance = 0
             cameraRaw.crop = CameraRawCrop(
                 top: 0,
                 left: 0,
@@ -1326,6 +1325,7 @@ struct EditWorkspaceView: View {
             cameraRaw.whites2012 = nil
             cameraRaw.blacks2012 = nil
             cameraRaw.saturation = nil
+            cameraRaw.vibrance = nil
         }
         commitEditAdjustments()
     }
