@@ -299,12 +299,14 @@ final class BrowserViewModel {
                     if let sidecar = allSidecars[files[i].url], sidecar.pendingChanges {
                         files[i].hasPendingMetadataChanges = true
                         files[i].pendingFieldNames = extractPendingFieldNames(from: sidecar)
+                        // Apply cameraRaw/crop from sidecar so thumbnails render with crop immediately
+                        applySidecarCropAndDevelopState(to: &files[i], sidecar: sidecar)
                     }
                 }
                 guard !Task.isCancelled, self.currentFolderURL == url else { return }
                 self.images = files
                 self.isLoading = false
-                self.thumbnailService.startBackgroundGeneration(for: self.visibleImages.map(\.url))
+                self.thumbnailService.startBackgroundGeneration(for: self.visibleImages)
                 await loadBasicMetadata(cachedSidecars: allSidecars)
             } catch {
                 guard !Task.isCancelled, self.currentFolderURL == url else { return }
@@ -1121,6 +1123,20 @@ final class BrowserViewModel {
                 applySidecarCropState(to: &array[index], cameraRaw: cameraRaw)
             }
         }
+    }
+
+    /// Apply cameraRaw and crop state from a pending sidecar during initial folder load.
+    /// This ensures thumbnails render with crop/develop edits before ExifTool metadata is read.
+    private func applySidecarCropAndDevelopState(to imageFile: inout ImageFile, sidecar: MetadataSidecar) {
+        let cameraRaw: CameraRawSettings?
+        if let snapshot = sidecar.imageMetadataSnapshot {
+            cameraRaw = sidecar.metadata.cameraRaw != snapshot.cameraRaw ? sidecar.metadata.cameraRaw : nil
+        } else {
+            cameraRaw = sidecar.metadata.cameraRaw
+        }
+        guard let cameraRaw else { return }
+        imageFile.cameraRawSettings = cameraRaw
+        applySidecarCropState(to: &imageFile, cameraRaw: cameraRaw)
     }
 
     private func applySidecarCropState(to imageFile: inout ImageFile, cameraRaw: CameraRawSettings?) {

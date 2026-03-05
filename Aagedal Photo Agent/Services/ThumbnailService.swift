@@ -136,9 +136,9 @@ final class ThumbnailService {
 
     // MARK: - Background Pre-generation
 
-    func startBackgroundGeneration(for urls: [URL]) {
+    func startBackgroundGeneration(for images: [ImageFile]) {
         cancelBackgroundGeneration()
-        let uncached = urls.filter { cache.object(forKey: $0 as NSURL) == nil }
+        let uncached = images.filter { cache.object(forKey: $0.url as NSURL) == nil }
         guard !uncached.isEmpty else { return }
 
         preGenerateTotal = uncached.count
@@ -153,9 +153,9 @@ final class ThumbnailService {
                 let batch = Array(uncached[batchStart..<batchEnd])
 
                 await withTaskGroup(of: Void.self) { group in
-                    for url in batch {
+                    for image in batch {
                         group.addTask {
-                            _ = await self.loadThumbnail(for: url)
+                            _ = await self.loadThumbnail(for: image.url, cameraRawSettings: image.cameraRawSettings, exifOrientation: image.exifOrientation)
                         }
                     }
                 }
