@@ -726,6 +726,9 @@ struct EditWorkspaceView: View {
             return .writeToFile
         }()
 
+        // Sync cameraRaw to ImageFile so the thumbnail reflects edits immediately
+        syncCameraRawToImageFile()
+
         if hasC2PA, effectiveMode == .writeToFile {
             // Can't write to file — save to JSON sidecar + XMP sidecar
             metadataViewModel.commitEdits(
@@ -743,6 +746,18 @@ struct EditWorkspaceView: View {
         ) {
             onPendingStatusChanged?()
         }
+    }
+
+    private func syncCameraRawToImageFile() {
+        guard let url = selectedImageURL,
+              let index = browserViewModel.urlToImageIndex[url] else { return }
+        let newSettings = metadataViewModel.editingMetadata.cameraRaw
+        let oldSettings = browserViewModel.images[index].cameraRawSettings
+        guard newSettings != oldSettings else { return }
+        browserViewModel.images[index].cameraRawSettings = newSettings
+        browserViewModel.images[index].hasDevelopEdits = newSettings != nil && !newSettings!.isEmpty
+        browserViewModel.images[index].hasCropEdits = newSettings?.crop?.isEmpty == false
+        browserViewModel.thumbnailService.invalidateThumbnail(for: url)
     }
 
     private func fittedImageRect(in containerSize: CGSize, imageSize: CGSize) -> CGRect {
