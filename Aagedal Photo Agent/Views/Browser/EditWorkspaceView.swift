@@ -104,6 +104,7 @@ struct EditWorkspaceView: View {
             || cameraRaw.shadows2012 != nil
             || cameraRaw.whites2012 != nil
             || cameraRaw.blacks2012 != nil
+            || cameraRaw.saturation != nil
     }
 
     private var selectedImageOrientation: Int {
@@ -160,7 +161,7 @@ struct EditWorkspaceView: View {
             previewRenderTask = nil
         }
         .onChange(of: browserViewModel.selectedImageIDs) { _, _ in
-            ensureSingleSelection()
+            ensureAtLeastOneSelected()
         }
         .onChange(of: selectedImageURL) { _, _ in
             loadSelectedImagePreview()
@@ -199,10 +200,20 @@ struct EditWorkspaceView: View {
         }
         .onKeyPress("v") {
             guard NSEvent.modifierFlags.contains(.command), !isTextFieldActive() else { return .ignored }
-            guard canEditSingleImage, let copied = browserViewModel.copiedCameraRawSettings else { return .ignored }
+            guard let copied = browserViewModel.copiedCameraRawSettings else { return .ignored }
             let withCrop = NSEvent.modifierFlags.contains(.shift)
-            pasteCameraRawSettings(copied, includeCrop: withCrop)
-            showCopyPasteFeedback(withCrop ? "Pasted (with crop)" : "Pasted")
+            let selectedURLs = browserViewModel.selectedImageIDs
+            guard !selectedURLs.isEmpty else { return .ignored }
+
+            if selectedURLs.count == 1 {
+                // Single image: paste via current editing metadata
+                pasteCameraRawSettings(copied, includeCrop: withCrop)
+                showCopyPasteFeedback(withCrop ? "Pasted (with crop)" : "Pasted")
+            } else {
+                // Multi-image: paste to all selected via sidecars
+                pasteToMultipleImages(copied, urls: selectedURLs, includeCrop: withCrop)
+                showCopyPasteFeedback("Pasted to \(selectedURLs.count) images")
+            }
             return .handled
         }
         .onKeyPress("m", phases: .down) { _ in
@@ -394,6 +405,12 @@ struct EditWorkspaceView: View {
                 }
 
                 if canEditSingleImage {
+                    // ── Color ──
+                    Text("Color")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    Divider()
+
                     Picker("White Balance", selection: whiteBalanceBinding) {
                         Text("As Shot").tag("As Shot")
                         Text("Auto").tag("Auto")
@@ -401,12 +418,9 @@ struct EditWorkspaceView: View {
                     }
                     .pickerStyle(.segmented)
 
-                    Toggle("Use incremental WB values", isOn: useIncrementalWhiteBalanceBinding)
-                        .toggleStyle(.switch)
-
                     if usesIncrementalWhiteBalance {
                         sliderRow(
-                            "WB Temp (Inc)",
+                            "WB Temp",
                             value: whiteBalanceTemperatureBinding,
                             range: -100...100,
                             step: 1,
@@ -420,7 +434,7 @@ struct EditWorkspaceView: View {
                     }
 
                     sliderRow(
-                        usesIncrementalWhiteBalance ? "WB Tint (Inc)" : "Tint",
+                        "Tint",
                         value: whiteBalanceTintBinding,
                         range: -150...150,
                         step: 1,
@@ -429,6 +443,17 @@ struct EditWorkspaceView: View {
                             whiteBalanceTintBinding.wrappedValue = 0
                         }
                     )
+
+                    sliderRow("Saturation", value: toneSliderBinding(\.saturation), range: -100...100, step: 1, formatter: signedIntString, onReset: {
+                        toneSliderBinding(\.saturation).wrappedValue = 0
+                    })
+
+                    // ── Exposure ──
+                    Text("Exposure")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 4)
+                    Divider()
 
                     sliderRow(
                         "Exposure",
@@ -456,6 +481,13 @@ struct EditWorkspaceView: View {
                     sliderRow("Blacks", value: toneSliderBinding(\.blacks2012), range: -100...100, step: 1, formatter: signedIntString, onReset: {
                         toneSliderBinding(\.blacks2012).wrappedValue = 0
                     })
+
+                    // ── Crop ──
+                    Text("Crop")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 4)
+                    Divider()
 
                     HStack {
                         Button(isCropEnabled ? "Disable Crop" : "Enable Crop") {
@@ -563,10 +595,31 @@ struct EditWorkspaceView: View {
                     EditFilmstripItemView(
                         image: image,
                         thumbnailService: browserViewModel.thumbnailService,
-                        isSelected: image.url == selectedImageURL
+                        isSelected: browserViewModel.selectedImageIDs.contains(image.url)
                     )
                     .onTapGesture {
-                        browserViewModel.selectedImageIDs = [image.url]
+                        let modifiers = NSEvent.modifierFlags
+                        if modifiers.contains(.command) {
+                            // ⌘-click: toggle selection
+                            if browserViewModel.selectedImageIDs.contains(image.url) {
+                                browserViewModel.selectedImageIDs.remove(image.url)
+                            } else {
+                                browserViewModel.selectedImageIDs.insert(image.url)
+                            }
+                        } else if modifiers.contains(.shift), let anchor = browserViewModel.lastClickedImageURL {
+                            // Shift-click: range select
+                            let images = browserViewModel.visibleImages
+                            if let anchorIdx = images.firstIndex(where: { $0.url == anchor }),
+                               let clickIdx = images.firstIndex(where: { $0.url == image.url }) {
+                                let range = min(anchorIdx, clickIdx)...max(anchorIdx, clickIdx)
+                                for i in range {
+                                    browserViewModel.selectedImageIDs.insert(images[i].url)
+                                }
+                            }
+                        } else {
+                            // Normal click: single select
+                            browserViewModel.selectedImageIDs = [image.url]
+                        }
                         browserViewModel.lastClickedImageURL = image.url
                         isWorkspaceFocused = true
                     }
@@ -581,6 +634,13 @@ struct EditWorkspaceView: View {
 
     private func ensureSingleSelection() {
         if browserViewModel.selectedImageIDs.count == 1 { return }
+        guard let fallback = browserViewModel.lastClickedImageURL ?? browserViewModel.visibleImages.first?.url else { return }
+        browserViewModel.selectedImageIDs = [fallback]
+        browserViewModel.lastClickedImageURL = fallback
+    }
+
+    private func ensureAtLeastOneSelected() {
+        if !browserViewModel.selectedImageIDs.isEmpty { return }
         guard let fallback = browserViewModel.lastClickedImageURL ?? browserViewModel.visibleImages.first?.url else { return }
         browserViewModel.selectedImageIDs = [fallback]
         browserViewModel.lastClickedImageURL = fallback
@@ -832,6 +892,7 @@ struct EditWorkspaceView: View {
             || cameraRaw.shadows2012 != nil
             || cameraRaw.whites2012 != nil
             || cameraRaw.blacks2012 != nil
+            || cameraRaw.saturation != nil
             || (cameraRaw.crop?.isEmpty == false)
     }
 
@@ -1187,6 +1248,7 @@ struct EditWorkspaceView: View {
             cameraRaw.shadows2012 = 0
             cameraRaw.whites2012 = 0
             cameraRaw.blacks2012 = 0
+            cameraRaw.saturation = 0
             cameraRaw.crop = CameraRawCrop(
                 top: 0,
                 left: 0,
@@ -1212,6 +1274,7 @@ struct EditWorkspaceView: View {
             cameraRaw.shadows2012 = nil
             cameraRaw.whites2012 = nil
             cameraRaw.blacks2012 = nil
+            cameraRaw.saturation = nil
         }
         commitEditAdjustments()
     }
@@ -1269,11 +1332,71 @@ struct EditWorkspaceView: View {
             cameraRaw.shadows2012 = source.shadows2012
             cameraRaw.whites2012 = source.whites2012
             cameraRaw.blacks2012 = source.blacks2012
+            cameraRaw.saturation = source.saturation
             if includeCrop {
                 cameraRaw.crop = source.crop
             }
         }
         commitEditAdjustments()
+    }
+
+    private func pasteToMultipleImages(_ source: CameraRawSettings, urls: Set<URL>, includeCrop: Bool) {
+        guard let folderURL = metadataViewModel.currentFolderURL else { return }
+        let sidecarService = MetadataSidecarService()
+
+        for url in urls {
+            // Load existing sidecar or create new one
+            var sidecar = sidecarService.loadSidecar(for: url, in: folderURL)
+            var metadata = sidecar?.metadata ?? IPTCMetadata()
+            var cameraRaw = metadata.cameraRaw ?? CameraRawSettings()
+
+            cameraRaw.whiteBalance = source.whiteBalance
+            cameraRaw.temperature = source.temperature
+            cameraRaw.tint = source.tint
+            cameraRaw.incrementalTemperature = source.incrementalTemperature
+            cameraRaw.incrementalTint = source.incrementalTint
+            cameraRaw.exposure2012 = source.exposure2012
+            cameraRaw.contrast2012 = source.contrast2012
+            cameraRaw.highlights2012 = source.highlights2012
+            cameraRaw.shadows2012 = source.shadows2012
+            cameraRaw.whites2012 = source.whites2012
+            cameraRaw.blacks2012 = source.blacks2012
+            cameraRaw.saturation = source.saturation
+            if includeCrop {
+                cameraRaw.crop = source.crop
+            }
+            cameraRaw.hasSettings = true
+            metadata.cameraRaw = cameraRaw
+
+            let updatedSidecar = MetadataSidecar(
+                sourceFile: url.lastPathComponent,
+                lastModified: Date(),
+                pendingChanges: true,
+                metadata: metadata,
+                imageMetadataSnapshot: sidecar?.imageMetadataSnapshot,
+                history: sidecar?.history ?? []
+            )
+            try? sidecarService.saveSidecar(updatedSidecar, for: url, in: folderURL)
+
+            // Update in-memory ImageFile state
+            if let index = browserViewModel.urlToImageIndex[url] {
+                browserViewModel.images[index].cameraRawSettings = cameraRaw
+                browserViewModel.images[index].hasDevelopEdits = true
+                browserViewModel.images[index].hasPendingMetadataChanges = true
+                if includeCrop, cameraRaw.crop?.hasCrop == true {
+                    browserViewModel.images[index].hasCropEdits = true
+                }
+                browserViewModel.thumbnailService.invalidateThumbnail(for: url)
+            }
+        }
+
+        // Reload the currently displayed image's metadata if it was in the paste set
+        if let currentURL = selectedImageURL, urls.contains(currentURL) {
+            metadataViewModel.loadMetadata(for: browserViewModel.selectedImages, folderURL: folderURL)
+            loadSelectedImagePreview()
+        }
+
+        onPendingStatusChanged?()
     }
 
     private func showCopyPasteFeedback(_ message: String) {
