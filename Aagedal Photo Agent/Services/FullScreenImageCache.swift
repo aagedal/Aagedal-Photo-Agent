@@ -152,7 +152,6 @@ final class FullScreenImageCache: @unchecked Sendable {
             kCGImageSourceThumbnailMaxPixelSize: targetSize,
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceShouldCacheImmediately: true,
         ]
         return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
     }

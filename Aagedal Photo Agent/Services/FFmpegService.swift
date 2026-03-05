@@ -1,7 +1,7 @@
 import Foundation
 import os
 
-private let ffmpegLogger = Logger(subsystem: "com.aagedal.photo-agent", category: "FFmpeg")
+nonisolated(unsafe) private let ffmpegLogger = Logger(subsystem: "com.aagedal.photo-agent", category: "FFmpeg")
 
 enum FFmpegError: Error, LocalizedError {
     case ffmpegMissing
