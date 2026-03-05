@@ -20,10 +20,10 @@ struct EditWorkspaceView: View {
     @State private var copyPasteFeedback: String?
     @State private var cropZoomScale: CGFloat = 1.0
     @State private var lastCropZoomScale: CGFloat = 1.0
-    @State private var cropAspectRatio: CropAspectRatio = .free
+    @State private var cropAspectRatio: CropAspectRatio = .original
     @State private var isCursorOverPreview = false
     @State private var scrollEventMonitor: Any?
-    @State private var escEventMonitor: Any?
+    @State private var keyEventMonitor: Any?
     @State private var isShowingBefore = false
     @State private var lockedCropImageRect: CGRect?
     @State private var editUndoManager = UndoManager()
@@ -155,11 +155,8 @@ struct EditWorkspaceView: View {
         .onAppear {
             ensureSingleSelection()
             loadSelectedImagePreview()
-            escEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-                guard event.keyCode == 53 else { return event }  // 53 = Escape
-                guard !isTextFieldActive() else { return event }
-                onExit()
-                return nil
+            keyEventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { event in
+                return handleKeyEvent(event)
             }
         }
         .onDisappear {
@@ -167,9 +164,9 @@ struct EditWorkspaceView: View {
             previewTask = nil
             previewRenderTask?.cancel()
             previewRenderTask = nil
-            if let monitor = escEventMonitor {
+            if let monitor = keyEventMonitor {
                 NSEvent.removeMonitor(monitor)
-                escEventMonitor = nil
+                keyEventMonitor = nil
             }
         }
         .onChange(of: browserViewModel.selectedImageIDs) { _, _ in
@@ -183,64 +180,6 @@ struct EditWorkspaceView: View {
         }
         .onChange(of: selectedImage?.exifOrientation) { _, _ in
             loadSelectedImagePreview()
-        }
-        .onKeyPress(.leftArrow) {
-            guard !isTextFieldActive() else { return .ignored }
-            browserViewModel.selectPrevious()
-            return .handled
-        }
-        .onKeyPress(.rightArrow) {
-            guard !isTextFieldActive() else { return .ignored }
-            browserViewModel.selectNext()
-            return .handled
-        }
-        .onKeyPress("c") {
-            guard !isTextFieldActive() else { return .ignored }
-            if NSEvent.modifierFlags.contains(.command) {
-                guard canEditSingleImage else { return .ignored }
-                browserViewModel.copiedCameraRawSettings = metadataViewModel.editingMetadata.cameraRaw
-                showCopyPasteFeedback("Copied")
-                return .handled
-            }
-            guard canEditSingleImage else { return .ignored }
-            toggleCrop()
-            return .handled
-        }
-        .onKeyPress("v") {
-            guard NSEvent.modifierFlags.contains(.command), !isTextFieldActive() else { return .ignored }
-            guard let copied = browserViewModel.copiedCameraRawSettings else { return .ignored }
-            let withCrop = NSEvent.modifierFlags.contains(.shift)
-            let selectedURLs = browserViewModel.selectedImageIDs
-            guard !selectedURLs.isEmpty else { return .ignored }
-
-            if selectedURLs.count == 1 {
-                // Single image: paste via current editing metadata
-                pasteCameraRawSettings(copied, includeCrop: withCrop)
-                showCopyPasteFeedback(withCrop ? "Pasted (with crop)" : "Pasted")
-            } else {
-                // Multi-image: paste to all selected via sidecars
-                pasteToMultipleImages(copied, urls: selectedURLs, includeCrop: withCrop)
-                showCopyPasteFeedback("Pasted to \(selectedURLs.count) images")
-            }
-            return .handled
-        }
-        .onKeyPress("m", phases: [.down, .repeat]) { _ in
-            guard !isTextFieldActive(), canEditSingleImage else { return .ignored }
-            isShowingBefore = true
-            return .handled
-        }
-        .onKeyPress("m", phases: .up) { _ in
-            isShowingBefore = false
-            return .handled
-        }
-        .onKeyPress("z") {
-            guard !isTextFieldActive(), NSEvent.modifierFlags.contains(.command) else { return .ignored }
-            if NSEvent.modifierFlags.contains(.shift) {
-                editUndoManager.redo()
-            } else {
-                editUndoManager.undo()
-            }
-            return .handled
         }
         .overlay(alignment: .top) {
             if let feedback = copyPasteFeedback {
@@ -788,8 +727,13 @@ struct EditWorkspaceView: View {
         }()
 
         if hasC2PA, effectiveMode == .writeToFile {
-            metadataViewModel.saveToSidecar()
-            onPendingStatusChanged?()
+            // Can't write to file — save to JSON sidecar + XMP sidecar
+            metadataViewModel.commitEdits(
+                mode: .writeToXMPSidecar,
+                hasC2PA: hasC2PA
+            ) {
+                onPendingStatusChanged?()
+            }
             return
         }
 
@@ -1101,7 +1045,7 @@ struct EditWorkspaceView: View {
         }
         if wasEnabled {
             // Was enabled, now disabled
-            cropAspectRatio = .free
+            cropAspectRatio = .original
         } else if cropAspectRatio != .free {
             // Just enabled with a non-free ratio selected
             applyAspectRatioToCrop(cropAspectRatio)
@@ -1111,7 +1055,7 @@ struct EditWorkspaceView: View {
 
     private func resetCrop() {
         resetCropZoom()
-        cropAspectRatio = .free
+        cropAspectRatio = .original
         updateCameraRaw { cameraRaw in
             cameraRaw.crop = CameraRawCrop(
                 top: 0,
@@ -1435,6 +1379,91 @@ struct EditWorkspaceView: View {
     private func resetCropZoom() {
         cropZoomScale = 1.0
         lastCropZoomScale = 1.0
+    }
+
+    // MARK: - Key Event Handling
+
+    private func handleKeyEvent(_ event: NSEvent) -> NSEvent? {
+        let chars = event.charactersIgnoringModifiers ?? ""
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let isKeyDown = event.type == .keyDown
+        let isKeyUp = event.type == .keyUp
+
+        // Escape
+        if event.keyCode == 53, isKeyDown {
+            guard !isTextFieldActive() else { return event }
+            onExit()
+            return nil
+        }
+
+        // M key — hold to show before, release to hide
+        if chars == "m" {
+            if isKeyUp {
+                isShowingBefore = false
+                return nil
+            }
+            guard !isTextFieldActive(), canEditSingleImage else { return event }
+            isShowingBefore = true
+            return nil
+        }
+
+        // All remaining handlers are key-down only
+        guard isKeyDown else { return event }
+        guard !isTextFieldActive() else { return event }
+
+        // Arrow keys
+        if event.keyCode == 123 { // left arrow
+            browserViewModel.selectPrevious()
+            return nil
+        }
+        if event.keyCode == 124 { // right arrow
+            browserViewModel.selectNext()
+            return nil
+        }
+
+        // Cmd+C — copy develop settings
+        if chars == "c" && modifiers.contains(.command) {
+            guard canEditSingleImage else { return event }
+            browserViewModel.copiedCameraRawSettings = metadataViewModel.editingMetadata.cameraRaw
+            showCopyPasteFeedback("Copied")
+            return nil
+        }
+
+        // C — toggle crop
+        if chars == "c" && modifiers.isDisjoint(with: [.command, .option, .control]) {
+            guard canEditSingleImage else { return event }
+            toggleCrop()
+            return nil
+        }
+
+        // Cmd+V / Cmd+Shift+V — paste develop settings
+        if chars == "v" && modifiers.contains(.command) {
+            guard let copied = browserViewModel.copiedCameraRawSettings else { return event }
+            let withCrop = modifiers.contains(.shift)
+            let selectedURLs = browserViewModel.selectedImageIDs
+            guard !selectedURLs.isEmpty else { return event }
+
+            if selectedURLs.count == 1 {
+                pasteCameraRawSettings(copied, includeCrop: withCrop)
+                showCopyPasteFeedback(withCrop ? "Pasted (with crop)" : "Pasted")
+            } else {
+                pasteToMultipleImages(copied, urls: selectedURLs, includeCrop: withCrop)
+                showCopyPasteFeedback("Pasted to \(selectedURLs.count) images")
+            }
+            return nil
+        }
+
+        // Cmd+Z / Cmd+Shift+Z — undo/redo
+        if chars == "z" && modifiers.contains(.command) {
+            if modifiers.contains(.shift) {
+                editUndoManager.redo()
+            } else {
+                editUndoManager.undo()
+            }
+            return nil
+        }
+
+        return event
     }
 }
 
