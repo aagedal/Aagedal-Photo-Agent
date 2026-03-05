@@ -6,7 +6,10 @@ import UniformTypeIdentifiers
 enum EditedImageRenderer {
 
     private static func loadAndProcess(from sourceURL: URL, cameraRaw: CameraRawSettings?) throws -> CIImage {
-        guard let input = CIImage(contentsOf: sourceURL, options: [.applyOrientationProperty: true]) else {
+        guard let input = CIImage(contentsOf: sourceURL, options: [
+            .applyOrientationProperty: true,
+            .toneMapHDRtoSDR: false
+        ]) else {
             throw RenderError.unreadableImage
         }
 
@@ -88,12 +91,13 @@ enum EditedImageRenderer {
         let quality = UserDefaults.standard.object(forKey: UserDefaultsKeys.exportQualityHDR) as? Double ?? 0.92
 
         let destURL = outputURL(for: sourceURL, in: outputFolder, extension: format.fileExtension)
-        let hdrColorSpace = CGColorSpace(name: CGColorSpace.displayP3_HLG) ?? CGColorSpace(name: CGColorSpace.displayP3)!
+        let heicColorSpace = CGColorSpace(name: CGColorSpace.displayP3_HLG) ?? CGColorSpace(name: CGColorSpace.displayP3)!
+        let pqColorSpace = CGColorSpace(name: CGColorSpace.itur_2100_PQ) ?? CGColorSpace(name: CGColorSpace.displayP3)!
         let ctx = CameraRawApproximation.ciContext
 
         switch format {
         case .heic10bit:
-            let data = try ctx.heif10Representation(of: ciImage, colorSpace: hdrColorSpace, options: [
+            let data = try ctx.heif10Representation(of: ciImage, colorSpace: heicColorSpace, options: [
                 CIImageRepresentationOption(rawValue: kCGImageDestinationLossyCompressionQuality as String): quality
             ])
             try data.write(to: destURL, options: .atomic)
@@ -105,13 +109,13 @@ enum EditedImageRenderer {
             try encodeViaFFmpeg(ciImage, to: destURL, quality: quality, isHDR: true, encoder: .jxl)
 
         case .tiff16bit:
-            guard let cgImage = ctx.createCGImage(ciImage, from: ciImage.extent, format: .RGBA16, colorSpace: hdrColorSpace) else {
+            guard let cgImage = ctx.createCGImage(ciImage, from: ciImage.extent, format: .RGBA16, colorSpace: pqColorSpace) else {
                 throw RenderError.encodeFailed
             }
             try writeTIFF(cgImage: cgImage, to: destURL)
 
         case .png16bit:
-            guard let data = ctx.pngRepresentation(of: ciImage, format: .RGBA16, colorSpace: hdrColorSpace, options: [:]) else {
+            guard let data = ctx.pngRepresentation(of: ciImage, format: .RGBA16, colorSpace: pqColorSpace, options: [:]) else {
                 throw RenderError.encodeFailed
             }
             try data.write(to: destURL, options: .atomic)
