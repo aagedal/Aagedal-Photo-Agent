@@ -652,10 +652,11 @@ struct FullScreenImageView: View {
                     if abs(angle) > 0.0001 {
                         // Forward-project AABB to actual crop dims (matches CropOverlayView.forwardProjectDims)
                         let r = angle * .pi / 180.0
-                        rawSize = CGSize(
-                            width: abs(aabbW * cos(r) + aabbH * sin(r)),
-                            height: abs(-aabbW * sin(r) + aabbH * cos(r))
-                        )
+                        let cosR = cos(r)
+                        let sinR = sin(r)
+                        let projW = abs(aabbW * cosR + aabbH * sinR)
+                        let projH = abs(-aabbW * sinR + aabbH * cosR)
+                        rawSize = CGSize(width: projW, height: projH)
                     } else {
                         rawSize = CGSize(width: aabbW, height: aabbH)
                     }

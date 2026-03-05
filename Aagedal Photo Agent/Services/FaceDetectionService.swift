@@ -251,7 +251,7 @@ nonisolated struct FaceDetectionService: Sendable {
                   destinationFormat: destFormat
               ) else { return 0 }
 
-        guard var sourceBuffer = try? vImage_Buffer(cgImage: cgImage) else { return 0 }
+        guard let sourceBuffer = try? vImage_Buffer(cgImage: cgImage) else { return 0 }
         defer { sourceBuffer.free() }
 
         guard var grayBuffer = try? vImage_Buffer(

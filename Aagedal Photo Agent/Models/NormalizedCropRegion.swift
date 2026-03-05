@@ -92,7 +92,7 @@ struct NormalizedCropRegion: Equatable {
     /// Constrains the crop so all 4 corners of the rotated rectangle stay within the image.
     /// `aspectRatio` is imageWidth / imageHeight.
     func fittingRotated(angleDegrees: Double, aspectRatio: Double) -> NormalizedCropRegion {
-        var result = clamped()
+        let result = clamped()
         let radians = angleDegrees * Double.pi / 180.0
         if abs(radians) < 0.000001 {
             return result

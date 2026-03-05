@@ -460,6 +460,33 @@ final class SettingsViewModel {
         }
     }
 
+    // MARK: - Format & Compression
+
+    /// Default export format for SDR images. Default: JPEG
+    var exportFormatSDR: ExportFormatSDR {
+        didSet { UserDefaults.standard.set(exportFormatSDR.rawValue, forKey: UserDefaultsKeys.exportFormatSDR) }
+    }
+
+    /// Default export format for HDR images. Default: HEIC 10-bit
+    var exportFormatHDR: ExportFormatHDR {
+        didSet { UserDefaults.standard.set(exportFormatHDR.rawValue, forKey: UserDefaultsKeys.exportFormatHDR) }
+    }
+
+    /// SDR export quality (0.0 - 1.0). Default: 0.92
+    var exportQualitySDR: Double {
+        didSet { UserDefaults.standard.set(exportQualitySDR, forKey: UserDefaultsKeys.exportQualitySDR) }
+    }
+
+    /// HDR export quality (0.0 - 1.0). Default: 0.92
+    var exportQualityHDR: Double {
+        didSet { UserDefaults.standard.set(exportQualityHDR, forKey: UserDefaultsKeys.exportQualityHDR) }
+    }
+
+    /// TIFF compression method. Default: LZW
+    var exportTIFFCompression: TIFFCompression {
+        didSet { UserDefaults.standard.set(exportTIFFCompression.rawValue, forKey: UserDefaultsKeys.exportTIFFCompression) }
+    }
+
     /// Known People database mode. Default: off
     var knownPeopleMode: KnownPeopleMode {
         didSet {
@@ -585,6 +612,22 @@ final class SettingsViewModel {
         self.knownPeopleMode = KnownPeopleMode(rawValue: storedKnownPeopleMode) ?? .off
         let storedKnownPeopleMinConfidence = UserDefaults.standard.object(forKey: UserDefaultsKeys.knownPeopleMinConfidence) as? Double
         self.knownPeopleMinConfidence = storedKnownPeopleMinConfidence ?? 0.60
+
+        // Format & Compression settings
+        let storedFormatSDR = UserDefaults.standard.string(forKey: UserDefaultsKeys.exportFormatSDR) ?? ExportFormatSDR.jpeg.rawValue
+        self.exportFormatSDR = ExportFormatSDR(rawValue: storedFormatSDR) ?? .jpeg
+
+        let storedFormatHDR = UserDefaults.standard.string(forKey: UserDefaultsKeys.exportFormatHDR) ?? ExportFormatHDR.jxl.rawValue
+        self.exportFormatHDR = ExportFormatHDR(rawValue: storedFormatHDR) ?? .jxl
+
+        let storedQualitySDR = UserDefaults.standard.object(forKey: UserDefaultsKeys.exportQualitySDR) as? Double
+        self.exportQualitySDR = storedQualitySDR ?? 0.92
+
+        let storedQualityHDR = UserDefaults.standard.object(forKey: UserDefaultsKeys.exportQualityHDR) as? Double
+        self.exportQualityHDR = storedQualityHDR ?? 0.92
+
+        let storedTIFFCompression = UserDefaults.standard.string(forKey: UserDefaultsKeys.exportTIFFCompression) ?? TIFFCompression.lzw.rawValue
+        self.exportTIFFCompression = TIFFCompression(rawValue: storedTIFFCompression) ?? .lzw
 
         self.detectedEditors = Self.detectEditors()
 
