@@ -142,6 +142,9 @@ struct ContentView: View {
                         .onTapGesture {
                             isShowingTemplatePalette = false
                         }
+                        .onAppear {
+                            templateViewModel.loadTemplates()
+                        }
                     TemplatePaletteView(
                         templates: templateViewModel.templates,
                         onApply: { template, append in
