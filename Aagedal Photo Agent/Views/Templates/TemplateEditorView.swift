@@ -31,13 +31,6 @@ struct TemplateEditorView: View {
             TextField("Template Name", text: $viewModel.editingTemplate.name)
                 .textFieldStyle(.roundedBorder)
 
-            Picker("Type", selection: $viewModel.editingTemplate.templateType) {
-                ForEach(MetadataTemplate.TemplateType.allCases, id: \.self) { type in
-                    Text(type.rawValue).tag(type)
-                }
-            }
-            .pickerStyle(.segmented)
-
             Divider()
 
             HStack {

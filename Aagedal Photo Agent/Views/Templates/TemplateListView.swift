@@ -28,7 +28,7 @@ struct TemplateListView: View {
                             VStack(alignment: .leading) {
                                 Text(template.name)
                                     .font(.body)
-                                Text("\(template.fields.count) fields \u{2022} \(template.templateType.rawValue)")
+                                Text("\(template.fields.count) fields")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
