@@ -18,6 +18,12 @@ struct ThumbnailCell: View, Equatable {
     var onRevealInFinder: (() -> Void)?
     var onOpenInExternalEditor: (() -> Void)?
     var onCopyFilePaths: (() -> Void)?
+    var onSaveAsJPEG: (() -> Void)?
+    var onSaveAsPNG: (() -> Void)?
+    var onRename: (() -> Void)?
+    var onDuplicate: (() -> Void)?
+    var onResetAllEdits: (() -> Void)?
+    var onRemoveAllIPTC: (() -> Void)?
 
     @State private var thumbnail: NSImage?
     @State private var lastLoadedSettings: CameraRawSettings?
@@ -240,6 +246,38 @@ struct ThumbnailCell: View, Equatable {
                         NotificationCenter.default.post(name: .setLabel, object: label)
                     }
                 }
+            }
+
+            Divider()
+
+            Button("Save as JPEG") {
+                onSaveAsJPEG?()
+            }
+
+            Button("Save as PNG") {
+                onSaveAsPNG?()
+            }
+
+            Divider()
+
+            Button("Rename...") {
+                onRename?()
+            }
+
+            Button("Duplicate") {
+                onDuplicate?()
+            }
+
+            Divider()
+
+            Button("Reset All Edits") {
+                onResetAllEdits?()
+            }
+
+            Button(role: .destructive) {
+                onRemoveAllIPTC?()
+            } label: {
+                Text("Remove All IPTC Metadata")
             }
 
             Divider()

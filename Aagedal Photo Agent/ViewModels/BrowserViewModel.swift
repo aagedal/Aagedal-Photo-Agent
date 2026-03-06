@@ -1531,6 +1531,297 @@ final class BrowserViewModel {
         alert.runModal()
     }
 
+    // MARK: - Rename
+
+    func renameSelected() {
+        guard !selectedImageIDs.isEmpty else { return }
+        if selectedImageIDs.count == 1 {
+            renameSelectedImage()
+        } else {
+            batchRenameSelectedImages()
+        }
+    }
+
+    private func renameSelectedImage() {
+        guard let url = selectedImageIDs.first,
+              let index = urlToImageIndex[url],
+              let folderURL = currentFolderURL else { return }
+
+        let currentName = url.deletingPathExtension().lastPathComponent
+        let ext = url.pathExtension
+
+        let alert = NSAlert()
+        alert.messageText = "Rename"
+        alert.informativeText = "Enter a new name for the file."
+
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+        input.stringValue = currentName
+        alert.accessoryView = input
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let newName = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !newName.isEmpty, newName != currentName else { return }
+
+        let newURL = url.deletingLastPathComponent()
+            .appendingPathComponent(newName)
+            .appendingPathExtension(ext)
+
+        guard !FileManager.default.fileExists(atPath: newURL.path) else {
+            presentMoveErrorAlert(message: "A file named \"\(newName).\(ext)\" already exists.")
+            return
+        }
+
+        do {
+            try FileManager.default.moveItem(at: url, to: newURL)
+        } catch {
+            presentMoveErrorAlert(message: "Rename failed: \(error.localizedDescription)")
+            return
+        }
+
+        // Move XMP sidecar
+        let xmpSource = xmpSidecarService.sidecarURL(for: url)
+        if FileManager.default.fileExists(atPath: xmpSource.path) {
+            let xmpDest = xmpSidecarService.sidecarURL(for: newURL)
+            try? FileManager.default.moveItem(at: xmpSource, to: xmpDest)
+        }
+
+        // Move metadata sidecar
+        try? sidecarService.moveSidecar(for: url, from: folderURL, to: folderURL)
+
+        // Update images array
+        let newImage = ImageFile(url: newURL, copyingFrom: images[index])
+        images[index] = newImage
+
+        // Update selection
+        selectedImageIDs = [newURL]
+        lastClickedImageURL = newURL
+
+        // Update manual order
+        if let manualIndex = manualOrder.firstIndex(of: url) {
+            manualOrder[manualIndex] = newURL
+        }
+
+        thumbnailService.invalidateThumbnail(for: url)
+    }
+
+    private func batchRenameSelectedImages() {
+        let alert = NSAlert()
+        alert.messageText = "Batch Rename"
+        alert.informativeText = "Enter a rename pattern.\nVariables: {original} (original name), {n} (sequence number), {date} (file date YYYYMMDD)"
+
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+        input.stringValue = "{original}"
+        input.placeholderString = "{original}_{n}"
+        alert.accessoryView = input
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let pattern = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !pattern.isEmpty else { return }
+
+        guard let folderURL = currentFolderURL else { return }
+
+        // Get selected images in sort order
+        let sorted = sortedImages.filter { selectedImageIDs.contains($0.url) }
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyyMMdd"
+
+        var newSelectionURLs: Set<URL> = []
+        var renames: [(oldURL: URL, newURL: URL, index: Int)] = []
+
+        for (seqIndex, image) in sorted.enumerated() {
+            guard let index = urlToImageIndex[image.url] else { continue }
+            let ext = image.url.pathExtension
+            let originalName = image.url.deletingPathExtension().lastPathComponent
+
+            var newName = pattern
+            newName = newName.replacingOccurrences(of: "{original}", with: originalName)
+            newName = newName.replacingOccurrences(of: "{n}", with: String(seqIndex + 1))
+            newName = newName.replacingOccurrences(of: "{date}", with: dateFormatter.string(from: image.dateModified))
+
+            var newURL = image.url.deletingLastPathComponent()
+                .appendingPathComponent(newName)
+                .appendingPathExtension(ext)
+
+            // Handle name collision
+            var counter = 2
+            while FileManager.default.fileExists(atPath: newURL.path) && newURL != image.url {
+                newURL = image.url.deletingLastPathComponent()
+                    .appendingPathComponent("\(newName) \(counter)")
+                    .appendingPathExtension(ext)
+                counter += 1
+            }
+
+            guard newURL != image.url else {
+                newSelectionURLs.insert(image.url)
+                continue
+            }
+
+            renames.append((oldURL: image.url, newURL: newURL, index: index))
+        }
+
+        // Execute renames
+        for rename in renames {
+            do {
+                try FileManager.default.moveItem(at: rename.oldURL, to: rename.newURL)
+
+                let xmpSource = xmpSidecarService.sidecarURL(for: rename.oldURL)
+                if FileManager.default.fileExists(atPath: xmpSource.path) {
+                    let xmpDest = xmpSidecarService.sidecarURL(for: rename.newURL)
+                    try? FileManager.default.moveItem(at: xmpSource, to: xmpDest)
+                }
+                try? sidecarService.moveSidecar(for: rename.oldURL, from: folderURL, to: folderURL)
+
+                let newImage = ImageFile(url: rename.newURL, copyingFrom: images[rename.index])
+                images[rename.index] = newImage
+                newSelectionURLs.insert(rename.newURL)
+
+                if let manualIndex = manualOrder.firstIndex(of: rename.oldURL) {
+                    manualOrder[manualIndex] = rename.newURL
+                }
+
+                thumbnailService.invalidateThumbnail(for: rename.oldURL)
+            } catch {
+                logger.error("Batch rename failed for \(rename.oldURL.lastPathComponent): \(error.localizedDescription)")
+                newSelectionURLs.insert(rename.oldURL)
+            }
+        }
+
+        selectedImageIDs = newSelectionURLs
+        lastClickedImageURL = newSelectionURLs.first
+    }
+
+    // MARK: - Duplicate
+
+    func duplicateSelectedImages() {
+        guard let folderURL = currentFolderURL, !selectedImageIDs.isEmpty else { return }
+
+        let sorted = sortedImages.filter { selectedImageIDs.contains($0.url) }
+        var newSelectionURLs: Set<URL> = []
+        var insertions: [(afterIndex: Int, image: ImageFile)] = []
+
+        for source in sorted {
+            guard let sourceIndex = urlToImageIndex[source.url] else { continue }
+            let ext = source.url.pathExtension
+            let baseName = source.url.deletingPathExtension().lastPathComponent
+
+            // Find available "copy" name
+            var copyName = "\(baseName) copy"
+            var destURL = folderURL.appendingPathComponent(copyName).appendingPathExtension(ext)
+            var counter = 2
+            while FileManager.default.fileExists(atPath: destURL.path) {
+                copyName = "\(baseName) copy \(counter)"
+                destURL = folderURL.appendingPathComponent(copyName).appendingPathExtension(ext)
+                counter += 1
+            }
+
+            do {
+                try FileManager.default.copyItem(at: source.url, to: destURL)
+
+                // Copy metadata sidecar
+                if let sidecar = sidecarService.loadSidecar(for: source.url, in: folderURL) {
+                    try? sidecarService.saveSidecar(sidecar, for: destURL, in: folderURL)
+                }
+
+                let newImage = ImageFile(url: destURL, copyingFrom: source)
+                insertions.append((afterIndex: sourceIndex, image: newImage))
+                newSelectionURLs.insert(destURL)
+            } catch {
+                logger.error("Duplicate failed for \(source.filename): \(error.localizedDescription)")
+            }
+        }
+
+        // Insert duplicates after their originals (process in reverse to maintain indices)
+        for insertion in insertions.reversed() {
+            let insertAt = min(insertion.afterIndex + 1, images.count)
+            images.insert(insertion.image, at: insertAt)
+        }
+
+        // Update manual order
+        for insertion in insertions {
+            if let manualIndex = manualOrder.firstIndex(of: sorted.first(where: { urlToImageIndex[$0.url] == insertion.afterIndex })?.url ?? insertion.image.url) {
+                manualOrder.insert(insertion.image.url, at: manualIndex + 1)
+            } else {
+                manualOrder.append(insertion.image.url)
+            }
+        }
+
+        selectedImageIDs = newSelectionURLs
+        lastClickedImageURL = newSelectionURLs.first
+    }
+
+    // MARK: - Reset All Edits
+
+    var showResetEditsConfirmation = false
+
+    func confirmResetAllEdits() {
+        guard selectedImageIDs.contains(where: { url in
+            guard let index = urlToImageIndex[url] else { return false }
+            return images[index].hasDevelopEdits || images[index].hasCropEdits
+        }) else { return }
+        showResetEditsConfirmation = true
+    }
+
+    func resetAllEditsOnSelected() {
+        guard let folderURL = currentFolderURL else { return }
+
+        for url in selectedImageIDs {
+            guard let index = urlToImageIndex[url] else { continue }
+            images[index].cameraRawSettings = nil
+            images[index].hasDevelopEdits = false
+            images[index].hasCropEdits = false
+            images[index].cropRegion = nil
+
+            // Update sidecar
+            if var sidecar = sidecarService.loadSidecar(for: url, in: folderURL) {
+                sidecar.metadata.cameraRaw = nil
+                try? sidecarService.saveSidecar(sidecar, for: url, in: folderURL)
+            }
+
+            thumbnailService.invalidateThumbnail(for: url)
+        }
+    }
+
+    // MARK: - Remove All IPTC Metadata
+
+    var showRemoveIPTCConfirmation = false
+
+    func confirmRemoveAllIPTC() {
+        guard !selectedImageIDs.isEmpty else { return }
+        showRemoveIPTCConfirmation = true
+    }
+
+    func removeAllIPTCFromSelected() {
+        guard let folderURL = currentFolderURL else { return }
+        let urls = Array(selectedImageIDs)
+
+        Task {
+            do {
+                try await exifToolService.stripIPTCAndXMP(from: urls)
+            } catch {
+                self.errorMessage = "Failed to remove IPTC metadata: \(error.localizedDescription)"
+                return
+            }
+
+            for url in urls {
+                guard let index = urlToImageIndex[url] else { continue }
+                images[index].starRating = .none
+                images[index].colorLabel = .none
+                images[index].metadata = nil
+                images[index].personShown = []
+                images[index].hasPendingMetadataChanges = false
+                images[index].pendingFieldNames = []
+
+                try? sidecarService.deleteSidecar(for: url, in: folderURL)
+            }
+        }
+    }
+
     // MARK: - Manual Sort
 
     func initializeManualOrder(from currentSorted: [ImageFile]) {

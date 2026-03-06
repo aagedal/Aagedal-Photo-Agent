@@ -138,6 +138,37 @@ struct Aagedal_Photo_AgentApp: App {
                     NotificationCenter.default.post(name: .renderAll, object: nil)
                 }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
+
+                Divider()
+
+                Button("Save as JPEG") {
+                    NotificationCenter.default.post(name: .saveAsJPEG, object: nil)
+                }
+
+                Button("Save as PNG") {
+                    NotificationCenter.default.post(name: .saveAsPNG, object: nil)
+                }
+
+                Divider()
+
+                Button("Rename...") {
+                    NotificationCenter.default.post(name: .renameSelected, object: nil)
+                }
+
+                Button("Duplicate") {
+                    NotificationCenter.default.post(name: .duplicateSelected, object: nil)
+                }
+                .keyboardShortcut("d", modifiers: .command)
+
+                Divider()
+
+                Button("Reset All Edits") {
+                    NotificationCenter.default.post(name: .resetAllEdits, object: nil)
+                }
+
+                Button("Remove All IPTC Metadata") {
+                    NotificationCenter.default.post(name: .removeAllIPTC, object: nil)
+                }
             }
 
             CommandMenu("Upload") {
@@ -183,4 +214,10 @@ extension Notification.Name {
     static let writeAllPendingMetadata = Notification.Name("writeAllPendingMetadata")
     static let renderSelected = Notification.Name("renderSelected")
     static let renderAll = Notification.Name("renderAll")
+    static let saveAsJPEG = Notification.Name("saveAsJPEG")
+    static let saveAsPNG = Notification.Name("saveAsPNG")
+    static let renameSelected = Notification.Name("renameSelected")
+    static let duplicateSelected = Notification.Name("duplicateSelected")
+    static let resetAllEdits = Notification.Name("resetAllEdits")
+    static let removeAllIPTC = Notification.Name("removeAllIPTC")
 }

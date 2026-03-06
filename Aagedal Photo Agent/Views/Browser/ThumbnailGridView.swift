@@ -193,6 +193,30 @@ struct ThumbnailGridView: View {
                 let pasteboard = NSPasteboard.general
                 pasteboard.clearContents()
                 pasteboard.setString(paths, forType: .string)
+            },
+            onSaveAsJPEG: {
+                ensureSelected(image)
+                NotificationCenter.default.post(name: .saveAsJPEG, object: nil)
+            },
+            onSaveAsPNG: {
+                ensureSelected(image)
+                NotificationCenter.default.post(name: .saveAsPNG, object: nil)
+            },
+            onRename: {
+                ensureSelected(image)
+                NotificationCenter.default.post(name: .renameSelected, object: nil)
+            },
+            onDuplicate: {
+                ensureSelected(image)
+                NotificationCenter.default.post(name: .duplicateSelected, object: nil)
+            },
+            onResetAllEdits: {
+                ensureSelected(image)
+                NotificationCenter.default.post(name: .resetAllEdits, object: nil)
+            },
+            onRemoveAllIPTC: {
+                ensureSelected(image)
+                NotificationCenter.default.post(name: .removeAllIPTC, object: nil)
             }
         )
         .equatable()
@@ -259,6 +283,14 @@ struct ThumbnailGridView: View {
         }
         dragCoordinator.thumbnailProvider = { url in
             vm.thumbnailService.thumbnail(for: url)
+        }
+    }
+
+    /// If the right-clicked image isn't in the current selection, select only that image
+    private func ensureSelected(_ image: ImageFile) {
+        if !viewModel.selectedImageIDs.contains(image.url) {
+            viewModel.selectedImageIDs = [image.url]
+            viewModel.lastClickedImageURL = image.url
         }
     }
 
@@ -365,11 +397,17 @@ private struct ThumbnailDragSource: NSViewRepresentable {
         }
 
         override func rightMouseDown(with event: NSEvent) {
-            nextResponder?.rightMouseDown(with: event)
+            // Don't handle right-click — let SwiftUI's .contextMenu handle it
+            super.rightMouseDown(with: event)
         }
 
         override func rightMouseUp(with event: NSEvent) {
-            nextResponder?.rightMouseUp(with: event)
+            super.rightMouseUp(with: event)
+        }
+
+        override func menu(for event: NSEvent) -> NSMenu? {
+            // Return nil so the SwiftUI context menu can handle it
+            nil
         }
 
         func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
