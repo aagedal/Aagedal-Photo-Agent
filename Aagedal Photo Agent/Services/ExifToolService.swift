@@ -671,6 +671,19 @@ final class ExifToolService {
         try await writeFields([ExifToolWriteTag.orientation: String(orientation)], to: urls)
     }
 
+    /// Strip all IPTC and XMP metadata from files.
+    func stripIPTCAndXMP(from urls: [URL]) async throws {
+        guard !urls.isEmpty else { return }
+
+        let creationDates = captureCreationDates(for: urls)
+        defer { restoreCreationDates(creationDates) }
+
+        var args = ["-overwrite_original", "-IPTC:all=", "-XMP:all="]
+        args += urls.map(\.path)
+
+        _ = try await execute(args)
+    }
+
     /// Write color label to files.
     func writeLabel(_ label: ColorLabel, to urls: [URL]) async throws {
         try await writeFields([ExifToolWriteTag.label: label.xmpLabelValue ?? ""], to: urls)

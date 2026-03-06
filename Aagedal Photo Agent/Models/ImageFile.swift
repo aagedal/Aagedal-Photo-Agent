@@ -64,6 +64,30 @@ struct ImageFile: Identifiable, Hashable, Sendable {
         self.personShown = []
     }
 
+    init(url: URL, copyingFrom source: ImageFile) {
+        self.url = url
+        self.filename = url.lastPathComponent
+        self.filenameLowercased = url.lastPathComponent.lowercased()
+        self.fileType = UTType(filenameExtension: url.pathExtension)
+
+        let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        self.fileSize = Int64(values?.fileSize ?? 0)
+        self.dateModified = values?.contentModificationDate ?? Date.distantPast
+
+        self.starRating = source.starRating
+        self.colorLabel = source.colorLabel
+        self.hasC2PA = source.hasC2PA
+        self.hasDevelopEdits = source.hasDevelopEdits
+        self.hasCropEdits = source.hasCropEdits
+        self.cropRegion = source.cropRegion
+        self.cameraRawSettings = source.cameraRawSettings
+        self.exifOrientation = source.exifOrientation
+        self.hasPendingMetadataChanges = source.hasPendingMetadataChanges
+        self.pendingFieldNames = source.pendingFieldNames
+        self.metadata = source.metadata
+        self.personShown = source.personShown
+    }
+
     /// Compute next EXIF orientation after 90° CW rotation.
     static func orientationAfterClockwiseRotation(_ current: Int) -> Int {
         switch current {

@@ -119,6 +119,24 @@ struct ContentView: View {
                 let count = browserViewModel.selectedImageIDs.count
                 Text("Are you sure you want to move \(count) \(count == 1 ? "image" : "images") to the Trash?")
             }
+            .alert("Reset All Edits", isPresented: $browserViewModel.showResetEditsConfirmation) {
+                Button("Cancel", role: .cancel) { }
+                Button("Reset", role: .destructive) {
+                    browserViewModel.resetAllEditsOnSelected()
+                }
+            } message: {
+                let count = browserViewModel.selectedImageIDs.count
+                Text("Reset camera raw edits and crop on \(count) \(count == 1 ? "image" : "images")? This cannot be undone.")
+            }
+            .alert("Remove All IPTC Metadata", isPresented: $browserViewModel.showRemoveIPTCConfirmation) {
+                Button("Cancel", role: .cancel) { }
+                Button("Remove", role: .destructive) {
+                    browserViewModel.removeAllIPTCFromSelected()
+                }
+            } message: {
+                let count = browserViewModel.selectedImageIDs.count
+                Text("Remove all IPTC and XMP metadata from \(count) \(count == 1 ? "image" : "images")? This writes directly to the files and cannot be undone.")
+            }
     }
 
     private var contentWithOverlay: some View {
@@ -151,8 +169,37 @@ struct ContentView: View {
             }
     }
 
-    private var contentWithNotificationHandlers: some View {
+    private var contentWithFileOperationHandlers: some View {
         contentWithOverlay
+            .onReceive(NotificationCenter.default.publisher(for: .renderSelected)) { _ in
+                let urls = browserViewModel.selectedImages.map(\.url)
+                renderAndSaveEditedFolder(urls: urls)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .renderAll)) { _ in
+                renderAndSaveEditedFolder()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .saveAsJPEG)) { _ in
+                saveSelectedAs(format: .jpeg)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .saveAsPNG)) { _ in
+                saveSelectedAs(format: .png)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .renameSelected)) { _ in
+                browserViewModel.renameSelected()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .duplicateSelected)) { _ in
+                browserViewModel.duplicateSelectedImages()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .resetAllEdits)) { _ in
+                browserViewModel.confirmResetAllEdits()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .removeAllIPTC)) { _ in
+                browserViewModel.confirmRemoveAllIPTC()
+            }
+    }
+
+    private var contentWithNotificationHandlers: some View {
+        contentWithFileOperationHandlers
             .onReceive(NotificationCenter.default.publisher(for: .showImport)) { _ in
                 isShowingImport = true
             }
@@ -200,13 +247,6 @@ struct ContentView: View {
                         images: browserViewModel.images
                     )
                 }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .renderSelected)) { _ in
-                let urls = browserViewModel.selectedImages.map(\.url)
-                renderAndSaveEditedFolder(urls: urls)
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .renderAll)) { _ in
-                renderAndSaveEditedFolder()
             }
     }
 
@@ -978,6 +1018,49 @@ struct ContentView: View {
 
     private func revealInFinder(_ url: URL) {
         NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    private func saveSelectedAs(format: EditedImageRenderer.SaveAsFormat) {
+        guard !isRenderingEditedFolder else { return }
+        let urls = browserViewModel.selectedImages.map(\.url)
+        guard !urls.isEmpty else { return }
+
+        isRenderingEditedFolder = true
+        renderExportCurrent = 0
+        renderExportTotal = urls.count
+
+        Task {
+            let metadataByURL: [URL: IPTCMetadata]
+            do {
+                metadataByURL = try await browserViewModel.exifToolService.readBatchFullMetadata(urls: urls)
+            } catch {
+                isRenderingEditedFolder = false
+                browserViewModel.errorMessage = "Failed to read metadata: \(error.localizedDescription)"
+                return
+            }
+
+            var savedURLs: [URL] = []
+            for (index, url) in urls.enumerated() {
+                renderExportCurrent = index + 1
+                let cameraRaw = metadataByURL[url]?.cameraRaw
+                do {
+                    let outputURL = try EditedImageRenderer.saveAs(from: url, cameraRaw: cameraRaw, format: format)
+                    savedURLs.append(outputURL)
+                } catch {
+                    browserViewModel.errorMessage = "Save As failed for \(url.lastPathComponent): \(error.localizedDescription)"
+                }
+            }
+
+            isRenderingEditedFolder = false
+
+            // Add saved files to browser if they're in the same folder
+            if let folderURL = browserViewModel.currentFolderURL {
+                let newFiles = savedURLs.filter { $0.deletingLastPathComponent() == folderURL }
+                if !newFiles.isEmpty {
+                    browserViewModel.refreshCurrentFolderIfNeeded()
+                }
+            }
+        }
     }
 
     private func renderAndSaveEditedFolder(urls: [URL]? = nil) {

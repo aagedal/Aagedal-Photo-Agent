@@ -242,6 +242,55 @@ enum EditedImageRenderer {
         return try renderHDRFormat(output, sourceURL: sourceURL, outputFolder: outputFolder)
     }
 
+    enum SaveAsFormat {
+        case jpeg
+        case png
+
+        var fileExtension: String {
+            switch self {
+            case .jpeg: return "jpg"
+            case .png: return "png"
+            }
+        }
+    }
+
+    /// Render and save next to the original file in a specific format (JPEG or PNG).
+    /// Returns the output URL. Handles name collisions by appending a number.
+    @discardableResult
+    static func saveAs(from sourceURL: URL, cameraRaw: CameraRawSettings?, format: SaveAsFormat) throws -> URL {
+        let output = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw)
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        let ctx = CameraRawApproximation.ciContext
+
+        let parentFolder = sourceURL.deletingLastPathComponent()
+        let baseName = sourceURL.deletingPathExtension().lastPathComponent
+        var destURL = parentFolder.appendingPathComponent(baseName).appendingPathExtension(format.fileExtension)
+
+        // Handle name collision
+        var counter = 2
+        while FileManager.default.fileExists(atPath: destURL.path) {
+            destURL = parentFolder.appendingPathComponent("\(baseName) \(counter)").appendingPathExtension(format.fileExtension)
+            counter += 1
+        }
+
+        switch format {
+        case .jpeg:
+            guard let data = ctx.jpegRepresentation(of: output, colorSpace: colorSpace, options: [:]) else {
+                throw RenderError.encodeFailed
+            }
+            try data.write(to: destURL, options: .atomic)
+
+        case .png:
+            guard let data = ctx.pngRepresentation(of: output, format: .RGBA8, colorSpace: colorSpace, options: [:]) else {
+                throw RenderError.encodeFailed
+            }
+            try data.write(to: destURL, options: .atomic)
+        }
+
+        copyMetadata(from: sourceURL, to: destURL)
+        return destURL
+    }
+
     // MARK: - Metadata Copy
 
     private static var exifToolPath: String? {
