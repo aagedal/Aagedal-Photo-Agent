@@ -431,7 +431,7 @@ struct SettingsView: View {
                 }
             }
 
-            Section("HDR Format") {
+            Section("HDR Format (Experimental)") {
                 Picker("Default Format", selection: $settingsViewModel.exportFormatHDR) {
                     ForEach(ExportFormatHDR.allCases) { format in
                         Text(format.displayName).tag(format)
@@ -441,6 +441,10 @@ struct SettingsView: View {
                 Text(settingsViewModel.exportFormatHDR.description)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                Text("HDR export is experimental. Brightness may vary across viewers due to inconsistent HDR support.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
 
                 if settingsViewModel.exportFormatHDR.supportsQuality {
                     VStack(alignment: .leading, spacing: 4) {
