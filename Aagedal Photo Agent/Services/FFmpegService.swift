@@ -68,13 +68,7 @@ nonisolated enum FFmpegService {
 
         var args = ["-hide_banner", "-y", "-i", input]
 
-        if isHDR {
-            args += ["-vf", "setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc"]
-            args += ["-pix_fmt", "yuv420p10le"]
-        } else {
-            args += ["-pix_fmt", "yuv420p"]
-        }
-
+        args += ["-pix_fmt", isHDR ? "yuv420p10le" : "yuv420p"]
         args += ["-c:v", "libaom-av1", "-crf", "\(crf)", "-b:v", "0"]
         args += ["-cpu-used", "6"]  // faster encoding (0=slowest, 8=fastest)
         args += ["-still-picture", "1"]
@@ -100,7 +94,6 @@ nonisolated enum FFmpegService {
         var args = ["-hide_banner", "-y", "-i", input]
 
         if isHDR {
-            args += ["-vf", "setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc"]
             args += ["-pix_fmt", "rgb48le"]
         }
 

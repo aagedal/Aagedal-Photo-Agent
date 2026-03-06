@@ -540,6 +540,7 @@ struct EditWorkspaceView: View {
                     }
                     .toggleStyle(.switch)
                     .disabled(!canEditSingleImage)
+                    .help("HDR export is experimental — brightness may vary across viewers")
 
                     Divider()
 
@@ -1211,14 +1212,14 @@ struct EditWorkspaceView: View {
             cameraRaw.tint = nil
             cameraRaw.incrementalTemperature = nil
             cameraRaw.incrementalTint = nil
-            cameraRaw.exposure2012 = 0
-            cameraRaw.contrast2012 = 0
-            cameraRaw.highlights2012 = 0
-            cameraRaw.shadows2012 = 0
-            cameraRaw.whites2012 = 0
-            cameraRaw.blacks2012 = 0
-            cameraRaw.saturation = 0
-            cameraRaw.vibrance = 0
+            cameraRaw.exposure2012 = nil
+            cameraRaw.contrast2012 = nil
+            cameraRaw.highlights2012 = nil
+            cameraRaw.shadows2012 = nil
+            cameraRaw.whites2012 = nil
+            cameraRaw.blacks2012 = nil
+            cameraRaw.saturation = nil
+            cameraRaw.vibrance = nil
             cameraRaw.crop = CameraRawCrop(
                 top: 0,
                 left: 0,

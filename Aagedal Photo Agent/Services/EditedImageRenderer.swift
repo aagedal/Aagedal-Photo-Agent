@@ -30,11 +30,14 @@ enum EditedImageRenderer {
     static func render(from sourceURL: URL, cameraRaw: CameraRawSettings?, isHDR: Bool, outputFolder: URL) throws -> URL {
         let output = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw)
 
+        let destURL: URL
         if isHDR {
-            return try renderHDRFormat(output, sourceURL: sourceURL, outputFolder: outputFolder)
+            destURL = try renderHDRFormat(output, sourceURL: sourceURL, outputFolder: outputFolder)
         } else {
-            return try renderSDRFormat(output, sourceURL: sourceURL, outputFolder: outputFolder)
+            destURL = try renderSDRFormat(output, sourceURL: sourceURL, outputFolder: outputFolder)
         }
+        copyMetadata(from: sourceURL, to: destURL)
+        return destURL
     }
 
     // MARK: - SDR Encoding
@@ -91,13 +94,12 @@ enum EditedImageRenderer {
         let quality = UserDefaults.standard.object(forKey: UserDefaultsKeys.exportQualityHDR) as? Double ?? 0.92
 
         let destURL = outputURL(for: sourceURL, in: outputFolder, extension: format.fileExtension)
-        let heicColorSpace = CGColorSpace(name: CGColorSpace.displayP3_HLG) ?? CGColorSpace(name: CGColorSpace.displayP3)!
-        let pqColorSpace = CGColorSpace(name: CGColorSpace.itur_2100_PQ) ?? CGColorSpace(name: CGColorSpace.displayP3)!
+        let hdrColorSpace = CGColorSpace(name: CGColorSpace.displayP3_HLG) ?? CGColorSpace(name: CGColorSpace.displayP3)!
         let ctx = CameraRawApproximation.ciContext
 
         switch format {
         case .heic10bit:
-            let data = try ctx.heif10Representation(of: ciImage, colorSpace: heicColorSpace, options: [
+            let data = try ctx.heif10Representation(of: ciImage, colorSpace: hdrColorSpace, options: [
                 CIImageRepresentationOption(rawValue: kCGImageDestinationLossyCompressionQuality as String): quality
             ])
             try data.write(to: destURL, options: .atomic)
@@ -109,13 +111,16 @@ enum EditedImageRenderer {
             try encodeViaFFmpeg(ciImage, to: destURL, quality: quality, isHDR: true, encoder: .jxl)
 
         case .tiff16bit:
-            guard let cgImage = ctx.createCGImage(ciImage, from: ciImage.extent, format: .RGBA16, colorSpace: pqColorSpace) else {
+            // Half-float linear preserves HDR values >1.0 without needing OETF application
+            let linearP3 = CGColorSpace(name: CGColorSpace.extendedLinearDisplayP3) ?? CGColorSpace(name: CGColorSpace.displayP3)!
+            guard let cgImage = ctx.createCGImage(ciImage, from: ciImage.extent, format: .RGBAh, colorSpace: linearP3) else {
                 throw RenderError.encodeFailed
             }
             try writeTIFF(cgImage: cgImage, to: destURL)
 
         case .png16bit:
-            guard let data = ctx.pngRepresentation(of: ciImage, format: .RGBA16, colorSpace: pqColorSpace, options: [:]) else {
+            // PNG is integer-only; use HLG for best-effort HDR (viewer support varies)
+            guard let data = ctx.pngRepresentation(of: ciImage, format: .RGBA16, colorSpace: hdrColorSpace, options: [:]) else {
                 throw RenderError.encodeFailed
             }
             try data.write(to: destURL, options: .atomic)
@@ -131,35 +136,45 @@ enum EditedImageRenderer {
         case jxl
     }
 
-    /// Encode via FFmpeg: render to a temporary 16-bit TIFF, then transcode to the target format.
+    /// Encode via FFmpeg: render to a temporary intermediate, then transcode to the target format.
+    /// HDR uses a HEIC intermediate (heif10Representation correctly applies HLG OETF).
+    /// SDR uses a TIFF intermediate.
     private static func encodeViaFFmpeg(_ ciImage: CIImage, to destURL: URL, quality: Double, isHDR: Bool, encoder: FFmpegEncoder) throws {
         let ctx = CameraRawApproximation.ciContext
-
-        // Write a 16-bit TIFF intermediate to preserve full quality/HDR data
         let tempDir = FileManager.default.temporaryDirectory
-        let tempTIFF = tempDir.appendingPathComponent(UUID().uuidString).appendingPathExtension("tiff")
-        defer { try? FileManager.default.removeItem(at: tempTIFF) }
 
-        let colorSpace: CGColorSpace
-        let format: CIFormat
         if isHDR {
-            colorSpace = CGColorSpace(name: CGColorSpace.itur_2100_PQ) ?? CGColorSpace(name: CGColorSpace.displayP3)!
-            format = .RGBA16
+            let tempPNG = tempDir.appendingPathComponent(UUID().uuidString).appendingPathExtension("png")
+            defer { try? FileManager.default.removeItem(at: tempPNG) }
+
+            let hdrColorSpace = CGColorSpace(name: CGColorSpace.displayP3_HLG) ?? CGColorSpace(name: CGColorSpace.displayP3)!
+            guard let pngData = ctx.pngRepresentation(of: ciImage, format: .RGBA16, colorSpace: hdrColorSpace, options: [:]) else {
+                throw RenderError.encodeFailed
+            }
+            try pngData.write(to: tempPNG, options: .atomic)
+
+            switch encoder {
+            case .avif:
+                try FFmpegService.encodeAVIF(input: tempPNG.path, output: destURL.path, quality: quality, isHDR: true)
+            case .jxl:
+                try FFmpegService.encodeJXL(input: tempPNG.path, output: destURL.path, quality: quality, isHDR: true)
+            }
         } else {
-            colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
-            format = .RGBA8
-        }
+            let tempTIFF = tempDir.appendingPathComponent(UUID().uuidString).appendingPathExtension("tiff")
+            defer { try? FileManager.default.removeItem(at: tempTIFF) }
 
-        guard let cgImage = ctx.createCGImage(ciImage, from: ciImage.extent, format: format, colorSpace: colorSpace) else {
-            throw RenderError.encodeFailed
-        }
-        try writeTIFF(cgImage: cgImage, to: tempTIFF)
+            let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+            guard let cgImage = ctx.createCGImage(ciImage, from: ciImage.extent, format: .RGBA8, colorSpace: colorSpace) else {
+                throw RenderError.encodeFailed
+            }
+            try writeTIFF(cgImage: cgImage, to: tempTIFF)
 
-        switch encoder {
-        case .avif:
-            try FFmpegService.encodeAVIF(input: tempTIFF.path, output: destURL.path, quality: quality, isHDR: isHDR)
-        case .jxl:
-            try FFmpegService.encodeJXL(input: tempTIFF.path, output: destURL.path, quality: quality, isHDR: isHDR)
+            switch encoder {
+            case .avif:
+                try FFmpegService.encodeAVIF(input: tempTIFF.path, output: destURL.path, quality: quality, isHDR: false)
+            case .jxl:
+                try FFmpegService.encodeJXL(input: tempTIFF.path, output: destURL.path, quality: quality, isHDR: false)
+            }
         }
     }
 
@@ -225,6 +240,47 @@ enum EditedImageRenderer {
     static func renderHDR(from sourceURL: URL, cameraRaw: CameraRawSettings?, outputFolder: URL) throws -> URL {
         let output = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw)
         return try renderHDRFormat(output, sourceURL: sourceURL, outputFolder: outputFolder)
+    }
+
+    // MARK: - Metadata Copy
+
+    private static var exifToolPath: String? {
+        if let bundledDir = Bundle.main.path(forResource: "ExifTool", ofType: nil) {
+            let path = (bundledDir as NSString).appendingPathComponent("exiftool")
+            if FileManager.default.isExecutableFile(atPath: path) { return path }
+        }
+        if let path = Bundle.main.path(forResource: "exiftool", ofType: nil) { return path }
+        for path in ["/opt/homebrew/bin/exiftool", "/usr/local/bin/exiftool"] {
+            if FileManager.default.isExecutableFile(atPath: path) { return path }
+        }
+        return nil
+    }
+
+    /// Copy IPTC/XMP/EXIF metadata from source to destination using ExifTool.
+    /// Copies IPTC and XMP (excluding Camera Raw edit settings which are already baked in).
+    private static func copyMetadata(from source: URL, to destination: URL) {
+        guard let exiftool = exifToolPath else { return }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: exiftool)
+        process.arguments = [
+            "-m",
+            "-TagsFromFile", source.path,
+            "-IPTC:all",
+            "-XMP:all",
+            "--XMP-crs:all",
+            "-overwrite_original",
+            destination.path
+        ]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            // Metadata copy is best-effort
+        }
     }
 
     enum RenderError: LocalizedError {
