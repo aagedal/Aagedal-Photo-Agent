@@ -350,6 +350,14 @@ private struct ThumbnailDragSource: NSViewRepresentable {
         private var isDragging = false
         private var mouseDownLocation: NSPoint?
 
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            // Let right-clicks pass through to SwiftUI's .contextMenu
+            if let event = NSApp.currentEvent, event.type == .rightMouseDown {
+                return nil
+            }
+            return super.hitTest(point)
+        }
+
         override func mouseDown(with event: NSEvent) {
             mouseDownLocation = event.locationInWindow
             isDragging = false
@@ -396,19 +404,8 @@ private struct ThumbnailDragSource: NSViewRepresentable {
             isDragging = false
         }
 
-        override func rightMouseDown(with event: NSEvent) {
-            // Don't handle right-click — let SwiftUI's .contextMenu handle it
-            super.rightMouseDown(with: event)
-        }
-
-        override func rightMouseUp(with event: NSEvent) {
-            super.rightMouseUp(with: event)
-        }
-
-        override func menu(for event: NSEvent) -> NSMenu? {
-            // Return nil so the SwiftUI context menu can handle it
-            nil
-        }
+        // Note: right-click events are excluded in hitTest(_:) above,
+        // so they pass through to SwiftUI's .contextMenu on ThumbnailCell.
 
         func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
             context == .outsideApplication ? .copy : .move

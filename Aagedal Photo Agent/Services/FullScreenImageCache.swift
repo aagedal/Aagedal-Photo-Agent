@@ -131,6 +131,23 @@ final class FullScreenImageCache: @unchecked Sendable {
 
     // MARK: - Shared Image Loading
 
+    /// Load an HDR-preserving preview via CoreImage, keeping float values >1.0.
+    /// Returns CIImage directly so the edit pipeline can work in extended linear sRGB.
+    /// Falls back to nil for formats CIImage can't decode (caller should use `loadDownsampled`).
+    nonisolated static func loadHDRPreview(from url: URL, maxPixelSize: CGFloat) -> CIImage? {
+        guard let ciImage = CIImage(contentsOf: url, options: [
+            .applyOrientationProperty: true,
+            .toneMapHDRtoSDR: false
+        ]) else { return nil }
+
+        let extent = ciImage.extent
+        let longestSide = max(extent.width, extent.height)
+        guard longestSide > maxPixelSize * 1.5 else { return ciImage }
+
+        let scale = maxPixelSize / longestSide
+        return ciImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+    }
+
     /// Load an image downsampled to the given max pixel size.
     /// Always uses CGImageSourceCreateThumbnailAtIndex to ensure EXIF orientation is applied.
     nonisolated static func loadDownsampled(from url: URL, maxPixelSize: CGFloat) -> CGImage? {
