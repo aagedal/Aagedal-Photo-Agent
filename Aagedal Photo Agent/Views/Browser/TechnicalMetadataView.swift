@@ -3,6 +3,7 @@ import SwiftUI
 struct TechnicalMetadataView: View {
     let metadata: TechnicalMetadata?
     let fileSize: Int64
+    var croppedResolution: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -33,6 +34,9 @@ struct TechnicalMetadataView: View {
                 }
                 if let res = m.resolution {
                     row("Resolution", res)
+                }
+                if let cropped = croppedResolution {
+                    row("Cropped", cropped)
                 }
                 if let bd = m.bitDepth {
                     row("Bit Depth", "\(bd)-bit")
