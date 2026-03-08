@@ -39,26 +39,33 @@ enum CameraRawApproximation {
             let shadows = Double(settings.shadows2012 ?? 0)
 
             // CIHighlightShadowAdjust for Highlights recovery only (not Whites).
+            // Guard: only apply when highlights or shadows are actually non-zero.
+            // This filter may clip HDR headroom even at identity settings.
             let negHighlight = min(highlights, 0) / 100.0  // -1..0
             let highlightAmount = max(1.0 + negHighlight * 0.8, 0.0)
             // Shadows: map -100..100 to -0.5..0.5 (was /1000 = only 10% of range)
             let shadowAmount = min(max(shadows / 200.0, -1.0), 1.0)
 
-            output = applyFilter(named: "CIHighlightShadowAdjust", input: output, values: [
-                "inputHighlightAmount": highlightAmount,
-                "inputShadowAmount": shadowAmount,
-            ]) ?? output
+            if negHighlight < -0.001 || abs(shadowAmount) > 0.001 {
+                output = applyFilter(named: "CIHighlightShadowAdjust", input: output, values: [
+                    "inputHighlightAmount": highlightAmount,
+                    "inputShadowAmount": shadowAmount,
+                ]) ?? output
+            }
 
             // Positive highlights: lift the upper-mid tonal range (point3 at 0.75)
+            // p4y gets a small HDR-preserving boost so the slope at 1.0 stays close to 1.0,
+            // preventing HDR headroom compression during Catmull-Rom extrapolation.
             let posHighlight = max(highlights, 0) / 100.0  // 0..1
             if posHighlight > 0.001 {
                 let p3y = min(0.75 + posHighlight * 0.15, 0.95)
+                let p4y = 1.0 + posHighlight * 0.10
                 output = applyFilter(named: "CIToneCurve", input: output, values: [
                     "inputPoint0": CIVector(x: 0.0, y: 0.0),
                     "inputPoint1": CIVector(x: 0.25, y: 0.25),
                     "inputPoint2": CIVector(x: 0.5, y: 0.5),
                     "inputPoint3": CIVector(x: 0.75, y: CGFloat(p3y)),
-                    "inputPoint4": CIVector(x: 1.0, y: 1.0),
+                    "inputPoint4": CIVector(x: 1.0, y: CGFloat(p4y)),
                 ]) ?? output
             }
 

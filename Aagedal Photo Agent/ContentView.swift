@@ -45,6 +45,8 @@ struct ContentView: View {
     @State private var renderEditedFolderSuccessCount = 0
     @State private var renderEditedFolderFailureCount = 0
     @State private var renderedOutputFolderURL: URL?
+    @State private var scopeViewModel = ScopeViewModel()
+    @State private var scopeImageTask: Task<Void, Never>?
 
     init() {
         let browser = BrowserViewModel()
@@ -809,23 +811,6 @@ struct ContentView: View {
                     }
                 }
 
-                if !browserViewModel.images.isEmpty {
-                    Divider()
-
-                    Section("Folder Info") {
-                        LabeledContent("Images", value: "\(browserViewModel.images.count)")
-                        LabeledContent("Selected", value: "\(browserViewModel.selectedImageIDs.count)")
-                    }
-
-                    Section {
-                        Button {
-                            isShowingFTPUpload = true
-                        } label: {
-                            Label("Upload...", systemImage: "arrow.up.to.line")
-                        }
-                    }
-                }
-
                 if !browserViewModel.exifToolService.isAvailable {
                     Section {
                         Label("ExifTool not found", systemImage: "exclamationmark.triangle")
@@ -852,6 +837,8 @@ struct ContentView: View {
                         }
                         Divider()
                     }
+                    ScopeDisplayView(scopeViewModel: scopeViewModel)
+                    Divider()
                     if let meta = technicalMetadata, meta.hasC2PA {
                         C2PAMetadataView(metadata: meta) {
                             loadC2PADetail()
@@ -870,6 +857,13 @@ struct ContentView: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
+                .onReceive(NotificationCenter.default.publisher(for: .scopeSourceImageDidChange)) { notification in
+                    if let info = notification.userInfo, let image = info["cgImage"] {
+                        scopeViewModel.updateImage((image as! CGImage))
+                    } else {
+                        scopeViewModel.updateImage(nil)
+                    }
+                }
             }
         }
         .frame(minWidth: 180)
@@ -979,7 +973,13 @@ struct ContentView: View {
         guard browserViewModel.selectedImageIDs.count == 1,
               let image = browserViewModel.selectedImages.first else {
             technicalMetadata = nil
+            loadScopeImage(for: nil)
             return
+        }
+
+        // Load scope for browse mode (edit mode posts its own notification)
+        if mainViewMode != .editing {
+            loadScopeImage(for: image.url)
         }
 
         if let cached = technicalMetadataCache[image.url] {
@@ -999,6 +999,24 @@ struct ContentView: View {
                 guard !Task.isCancelled else { return }
                 technicalMetadata = nil
             }
+        }
+    }
+
+    private func loadScopeImage(for url: URL?) {
+        scopeImageTask?.cancel()
+        scopeImageTask = nil
+
+        guard let url else {
+            scopeViewModel.updateImage(nil)
+            return
+        }
+
+        scopeImageTask = Task {
+            let cgImage = await Task.detached(priority: .utility) {
+                FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: 720)
+            }.value
+            guard !Task.isCancelled else { return }
+            scopeViewModel.updateImage(cgImage)
         }
     }
 

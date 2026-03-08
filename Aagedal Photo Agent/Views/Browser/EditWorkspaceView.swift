@@ -635,9 +635,18 @@ struct EditWorkspaceView: View {
         previewTask = Task {
             guard !Task.isCancelled else { return }
 
-            // ImageIO thumbnail generation uses Default-QoS worker threads internally.
-            // Running decode at .medium avoids user-initiated -> default QoS inversion warnings.
+            // Try HDR-preserving path first (keeps float values >1.0 for RAW, HEIC-HLG, AVIF, JXL).
+            // Falls back to SDR CGImageSource path for formats CIImage can't decode.
             let previewSource = await Task.detached(priority: .medium) { () -> (image: NSImage?, ciImage: CIImage?) in
+                // HDR path: CIImage(contentsOf:) preserves extended-range float data
+                if let ciImage = FullScreenImageCache.loadHDRPreview(from: selectedImageURL, maxPixelSize: previewMaxPixelSize) {
+                    let ctx = CameraRawApproximation.ciContext
+                    if let cgImage = ctx.createCGImage(ciImage, from: ciImage.extent, format: .RGBAh, colorSpace: CameraRawApproximation.workingColorSpace) {
+                        let nsImage = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+                        return (image: nsImage, ciImage: ciImage)
+                    }
+                }
+                // SDR fallback: CGImageSource thumbnail (fast, but clamps to SDR)
                 if let cgImage = FullScreenImageCache.loadDownsampled(
                     from: selectedImageURL,
                     maxPixelSize: previewMaxPixelSize
@@ -676,6 +685,7 @@ struct EditWorkspaceView: View {
         guard let sourceCIImage else {
             previewImage = sourceImage
             previewCGImage = nil
+            NotificationCenter.default.post(name: .scopeSourceImageDidChange, object: nil, userInfo: nil)
             return
         }
 
@@ -704,9 +714,11 @@ struct EditWorkspaceView: View {
             if let result {
                 previewImage = result.0
                 previewCGImage = result.1
+                NotificationCenter.default.post(name: .scopeSourceImageDidChange, object: nil, userInfo: ["cgImage": result.1])
             } else {
                 previewImage = fallback
                 previewCGImage = nil
+                NotificationCenter.default.post(name: .scopeSourceImageDidChange, object: nil, userInfo: nil)
             }
         }
     }

@@ -68,15 +68,14 @@ struct BrowserView: View {
             }
 
             ToolbarItem(placement: .automatic) {
-                searchField
-            }
-
-            ToolbarItem(placement: .automatic) {
                 HStack(spacing: 12) {
                     if viewModel.isFilteringActive {
                         Text("\(viewModel.visibleImages.count) of \(viewModel.images.count) images")
                     } else {
                         Text("\(viewModel.images.count) images")
+                    }
+                    if viewModel.selectedImageIDs.count > 0 {
+                        Text("\(viewModel.selectedImageIDs.count) selected")
                     }
                     if faceCount > 0 {
                         if faceGroupCount > 0 {
@@ -90,6 +89,10 @@ struct BrowserView: View {
                 .font(.caption)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 5)
+            }
+
+            ToolbarItem(placement: .automatic) {
+                searchField
             }
         }
     }
