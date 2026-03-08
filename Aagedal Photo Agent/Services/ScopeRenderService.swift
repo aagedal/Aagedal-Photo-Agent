@@ -364,11 +364,11 @@ nonisolated struct ScopeRenderService: Sendable {
                 let g = Float(pixelData[px + 1]) / 255.0
                 let b = Float(pixelData[px + 2]) / 255.0
 
-                let cb = -0.1687 * r - 0.3313 * g + 0.5 * b
-                let cr =  0.5 * r - 0.4187 * g - 0.0813 * b
+                let cb = -0.1146 * r - 0.3854 * g + 0.5 * b
+                let cr =  0.5 * r - 0.4542 * g - 0.0458 * b
 
                 let outX = Int(centerX + cb * radius * 2)
-                let outY = Int(centerY - cr * radius * 2)
+                let outY = Int(centerY + cr * radius * 2)
 
                 guard outX >= 0, outX < outW, outY >= 0, outY < outH else { continue }
                 let idx = outY * outW + outX
@@ -409,13 +409,15 @@ nonisolated struct ScopeRenderService: Sendable {
         ctx.move(to: CGPoint(x: CGFloat(centerX), y: CGFloat(centerY)))
         ctx.addLine(to: CGPoint(
             x: CGFloat(centerX + cos(skinAngle) * radius),
-            y: CGFloat(centerY - sin(skinAngle) * radius)
+            y: CGFloat(centerY + sin(skinAngle) * radius)
         ))
         ctx.strokePath()
 
         drawColorTargets(ctx, centerX: centerX, centerY: centerY, radius: radius)
 
-        let normFactor = 1.0 / (Float(maxCount) * 0.2)
+        // Logarithmic intensity: makes sparse bins visible while keeping dense areas bright
+        let logMax = log2f(1 + Float(maxCount))
+        let gain: Float = 3.0
         guard let outputData = ctx.data?.bindMemory(to: UInt8.self, capacity: outW * outH * 4) else {
             return ctx.makeImage()
         }
@@ -427,7 +429,7 @@ nonisolated struct ScopeRenderService: Sendable {
                 let count = bins[idx].count
                 guard count > 0 else { continue }
 
-                let intensity = min(Float(count) * normFactor, 1.0)
+                let intensity = min(log2f(1 + Float(count)) / logMax * gain, 1.0)
                 let invCount = 1.0 / Float(count)
                 var avgR = bins[idx].sumR * invCount
                 var avgG = bins[idx].sumG * invCount
@@ -551,22 +553,23 @@ nonisolated struct ScopeRenderService: Sendable {
     // MARK: - Vectorscope Helpers
 
     private func drawColorTargets(_ ctx: CGContext, centerX: Float, centerY: Float, radius: Float) {
+        // BT.709 75% color bar targets
         let targets: [(cb: Float, cr: Float, r: CGFloat, g: CGFloat, b: CGFloat)] = [
-            (-0.169, 0.500, 0.7, 0.15, 0.15),
-            (0.331, 0.419, 0.7, 0.15, 0.7),
-            (0.500, -0.081, 0.15, 0.15, 0.7),
-            (0.169, -0.500, 0.15, 0.7, 0.7),
-            (-0.331, -0.419, 0.15, 0.7, 0.15),
-            (-0.500, 0.081, 0.7, 0.7, 0.15),
+            (-0.0860,  0.3750, 0.7, 0.15, 0.15),   // Red
+            ( 0.2891,  0.3407, 0.7, 0.15, 0.7),     // Magenta
+            ( 0.3750, -0.0344, 0.15, 0.15, 0.7),    // Blue
+            ( 0.0860, -0.3750, 0.15, 0.7, 0.7),     // Cyan
+            (-0.2891, -0.3407, 0.15, 0.7, 0.15),    // Green
+            (-0.3750,  0.0344, 0.7, 0.7, 0.15),     // Yellow
         ]
 
-        ctx.setLineWidth(1.5)
-        let boxSize: CGFloat = 12
+        ctx.setLineWidth(2.5)
+        let boxSize: CGFloat = 18
         for target in targets {
             let x = CGFloat(centerX + target.cb * radius * 2)
             let y = CGFloat(centerY + target.cr * radius * 2)
             let rect = CGRect(x: x - boxSize / 2, y: y - boxSize / 2, width: boxSize, height: boxSize)
-            ctx.setStrokeColor(red: target.r, green: target.g, blue: target.b, alpha: 0.5)
+            ctx.setStrokeColor(red: target.r, green: target.g, blue: target.b, alpha: 0.85)
             ctx.stroke(rect)
         }
     }
@@ -574,16 +577,18 @@ nonisolated struct ScopeRenderService: Sendable {
     // MARK: - Pixel Helpers
 
     /// Downsample to 8-bit RGBA (clips HDR values to 0-255).
+    /// Uses explicit sRGB so linear-space inputs (e.g. from the edit pipeline) are gamma-converted correctly.
     private func downsampledPixels(from cgImage: CGImage, width: Int, height: Int) -> [UInt8]? {
         let bytesPerRow = width * 4
         var pixels = [UInt8](repeating: 0, count: height * bytesPerRow)
-        guard let ctx = CGContext(
+        guard let srgb = CGColorSpace(name: CGColorSpace.sRGB),
+              let ctx = CGContext(
             data: &pixels,
             width: width,
             height: height,
             bitsPerComponent: 8,
             bytesPerRow: bytesPerRow,
-            space: CGColorSpaceCreateDeviceRGB(),
+            space: srgb,
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         ) else { return nil }
 
@@ -628,7 +633,7 @@ nonisolated struct ScopeRenderService: Sendable {
     }
 
     private func fillBackground(_ ctx: CGContext, width: Int, height: Int) {
-        ctx.setFillColor(red: 0.1, green: 0.1, blue: 0.1, alpha: 1)
+        ctx.setFillColor(red: 0, green: 0, blue: 0, alpha: 1)
         ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
     }
 }
