@@ -36,6 +36,25 @@ struct XMPSidecarService: Sendable {
         }
     }
 
+    /// Removes all IPTC/descriptive metadata from the sidecar while preserving
+    /// Camera Raw edit settings. Deletes the sidecar entirely if no edit settings remain.
+    func stripIPTCFromSidecar(for imageURL: URL) {
+        let url = sidecarURL(for: imageURL)
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+
+        guard let metadata = loadSidecar(for: imageURL) else {
+            try? FileManager.default.removeItem(at: url)
+            return
+        }
+
+        if let cameraRaw = metadata.cameraRaw, !cameraRaw.isEmpty {
+            let editOnly = IPTCMetadata(cameraRaw: cameraRaw, exifOrientation: metadata.exifOrientation)
+            try? saveSidecar(metadata: editOnly, for: imageURL)
+        } else {
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
     func saveSidecar(metadata: IPTCMetadata, for imageURL: URL) throws {
         let url = sidecarURL(for: imageURL)
         let document = try loadOrCreateDocument(at: url)

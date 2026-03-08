@@ -133,11 +133,30 @@ struct ContentView: View {
             .alert("Remove All IPTC Metadata", isPresented: $browserViewModel.showRemoveIPTCConfirmation) {
                 Button("Cancel", role: .cancel) { }
                 Button("Remove", role: .destructive) {
-                    browserViewModel.removeAllIPTCFromSelected()
+                    browserViewModel.removeIPTCFromImageFiles()
                 }
             } message: {
-                let count = browserViewModel.selectedImageIDs.count
+                let count = browserViewModel.removeIPTCSelectedURLs.count
                 Text("Remove all IPTC and XMP metadata from \(count) \(count == 1 ? "image" : "images")? This writes directly to the files and cannot be undone.")
+            }
+            .confirmationDialog(
+                "Remove All IPTC Metadata",
+                isPresented: $browserViewModel.showRemoveIPTCSidecarChoice,
+                titleVisibility: .visible
+            ) {
+                Button("Remove from Image Files Only", role: .destructive) {
+                    browserViewModel.removeIPTCFromImageFiles()
+                }
+                Button("Delete XMP Sidecars Only", role: .destructive) {
+                    browserViewModel.removeIPTCFromXMPSidecars()
+                }
+                Button("Remove from Both", role: .destructive) {
+                    browserViewModel.removeIPTCFromBoth()
+                }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                let count = browserViewModel.removeIPTCSelectedURLs.count
+                Text("Some of the \(count) selected \(count == 1 ? "image has" : "images have") an XMP sidecar file. Where do you want to remove metadata from?")
             }
     }
 

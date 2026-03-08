@@ -1789,16 +1789,37 @@ final class BrowserViewModel {
 
     // MARK: - Remove All IPTC Metadata
 
+    enum RemoveIPTCMode {
+        /// No XMP sidecars found — simple confirmation
+        case noSidecars
+        /// XMP sidecars exist — let user choose what to remove
+        case hasSidecars
+    }
+
     var showRemoveIPTCConfirmation = false
+    var showRemoveIPTCSidecarChoice = false
+    private(set) var removeIPTCSelectedURLs: [URL] = []
 
     func confirmRemoveAllIPTC() {
         guard !selectedImageIDs.isEmpty else { return }
-        showRemoveIPTCConfirmation = true
+        let urls = Array(selectedImageIDs)
+        removeIPTCSelectedURLs = urls
+
+        let hasAnySidecar = urls.contains { url in
+            let sidecarURL = xmpSidecarService.sidecarURL(for: url)
+            return FileManager.default.fileExists(atPath: sidecarURL.path)
+        }
+
+        if hasAnySidecar {
+            showRemoveIPTCSidecarChoice = true
+        } else {
+            showRemoveIPTCConfirmation = true
+        }
     }
 
-    func removeAllIPTCFromSelected() {
+    func removeIPTCFromImageFiles() {
         guard let folderURL = currentFolderURL else { return }
-        let urls = Array(selectedImageIDs)
+        let urls = removeIPTCSelectedURLs
 
         Task {
             do {
@@ -1820,6 +1841,19 @@ final class BrowserViewModel {
                 try? sidecarService.deleteSidecar(for: url, in: folderURL)
             }
         }
+    }
+
+    func removeIPTCFromXMPSidecars() {
+        let urls = removeIPTCSelectedURLs
+
+        for url in urls {
+            xmpSidecarService.stripIPTCFromSidecar(for: url)
+        }
+    }
+
+    func removeIPTCFromBoth() {
+        removeIPTCFromImageFiles()
+        removeIPTCFromXMPSidecars()
     }
 
     // MARK: - Manual Sort
