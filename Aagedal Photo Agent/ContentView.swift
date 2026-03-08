@@ -866,7 +866,11 @@ struct ContentView: View {
                     }
                     TechnicalMetadataView(
                         metadata: technicalMetadata,
-                        fileSize: selectedImage.fileSize
+                        fileSize: selectedImage.fileSize,
+                        croppedResolution: croppedResolutionString(
+                            metadata: technicalMetadata,
+                            orientation: selectedImage.exifOrientation
+                        )
                     )
                 }
                 .contextMenu {
@@ -1037,6 +1041,32 @@ struct ContentView: View {
             guard !Task.isCancelled else { return }
             scopeViewModel.updateImage(cgImage)
         }
+    }
+
+    private func croppedResolutionString(metadata: TechnicalMetadata?, orientation: Int) -> String? {
+        guard let meta = metadata,
+              let w = meta.imageWidth, let h = meta.imageHeight,
+              let crop = metadataViewModel.editingMetadata.cameraRaw?.crop,
+              crop.hasCrop == true else { return nil }
+
+        let displayCrop = crop.transformedForDisplay(orientation: orientation)
+        let cropW = (displayCrop.right ?? 1) - (displayCrop.left ?? 0)
+        let cropH = (displayCrop.bottom ?? 1) - (displayCrop.top ?? 0)
+
+        // Swap dimensions for rotated orientations (5–8)
+        let (displayW, displayH): (Int, Int)
+        switch orientation {
+        case 5, 6, 7, 8: (displayW, displayH) = (h, w)
+        default: (displayW, displayH) = (w, h)
+        }
+
+        let croppedW = Int(round(Double(displayW) * cropW))
+        let croppedH = Int(round(Double(displayH) * cropH))
+
+        // Don't show if essentially full resolution
+        if croppedW >= displayW && croppedH >= displayH { return nil }
+
+        return "\(croppedW) x \(croppedH)"
     }
 
     private func loadC2PADetail() {
