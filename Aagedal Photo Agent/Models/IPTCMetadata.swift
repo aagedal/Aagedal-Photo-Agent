@@ -116,7 +116,9 @@ struct CameraRawSettings: Codable, Sendable, Equatable {
 extension CameraRawCrop {
     /// Transform crop from sensor (XMP) orientation to display orientation.
     nonisolated func transformedForDisplay(orientation: Int) -> CameraRawCrop {
-        let t = top ?? 0, l = left ?? 0, b = bottom ?? 1, r = right ?? 1
+        // Normalize: Adobe XMP can store top > bottom or left > right
+        let rawT = top ?? 0, rawL = left ?? 0, rawB = bottom ?? 1, rawR = right ?? 1
+        let t = min(rawT, rawB), l = min(rawL, rawR), b = max(rawT, rawB), r = max(rawL, rawR)
         let (dt, dl, db, dr): (Double, Double, Double, Double)
         switch orientation {
         case 2: (dt, dl, db, dr) = (t, 1-r, b, 1-l)       // flip horizontal
@@ -133,7 +135,9 @@ extension CameraRawCrop {
 
     /// Inverse: transform crop from display orientation back to sensor (XMP) orientation.
     nonisolated func transformedForSensor(orientation: Int) -> CameraRawCrop {
-        let t = top ?? 0, l = left ?? 0, b = bottom ?? 1, r = right ?? 1
+        // Normalize: ensure proper coordinate ordering
+        let rawT = top ?? 0, rawL = left ?? 0, rawB = bottom ?? 1, rawR = right ?? 1
+        let t = min(rawT, rawB), l = min(rawL, rawR), b = max(rawT, rawB), r = max(rawL, rawR)
         let (st, sl, sb, sr): (Double, Double, Double, Double)
         switch orientation {
         case 2: (st, sl, sb, sr) = (t, 1-r, b, 1-l)       // flip H is self-inverse
