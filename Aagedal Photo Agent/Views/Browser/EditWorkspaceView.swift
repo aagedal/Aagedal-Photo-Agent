@@ -203,14 +203,15 @@ struct EditWorkspaceView: View {
                 Color(nsColor: .windowBackgroundColor)
 
                 if let displayImage {
-                    if showCropControls, !isShowingBefore {
+                    if (showCropControls || isCropEnabled), !isShowingBefore {
                         // Crop-centered: image scales/positions so crop fills view
+                        let zoom = showCropControls ? cropZoomScale : 1.0
                         let computedImageRect = cropFittedImageRect(
                             in: geometry.size,
                             imageSize: displayImage.size,
                             crop: activeCrop,
                             angleDegrees: activeCropAngle,
-                            zoom: cropZoomScale
+                            zoom: zoom
                         )
                         // Lock image rect during crop interaction to prevent
                         // image rescaling while the overlay stays stable
@@ -230,7 +231,7 @@ struct EditWorkspaceView: View {
                                 .position(x: imageRect.midX, y: imageRect.midY)
                         }
 
-                        if canEditSingleImage {
+                        if showCropControls, canEditSingleImage {
                             CropOverlayView(
                                 imageRect: imageRect,
                                 viewSize: geometry.size,
@@ -1072,6 +1073,11 @@ struct EditWorkspaceView: View {
                 applyAspectRatioToCrop(cropAspectRatio)
             }
             commitEditAdjustments()
+        }
+        if !showCropControls {
+            // Reset zoom and unlock image rect when hiding controls
+            resetCropZoom()
+            lockedCropImageRect = nil
         }
     }
 
