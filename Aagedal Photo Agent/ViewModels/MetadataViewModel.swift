@@ -39,6 +39,11 @@ final class MetadataViewModel {
     var metadataReferenceSource: MetadataReferenceSource = .embedded
 
     var hasXmpMetadata: Bool { xmpMetadata != nil }
+    var hasEmbeddedCropNotLoaded: Bool {
+        guard let embeddedCrop = embeddedMetadata?.cameraRaw?.crop,
+              embeddedCrop.hasCrop == true else { return false }
+        return editingMetadata.cameraRaw?.crop?.hasCrop != true
+    }
     var referenceMetadata: IPTCMetadata? {
         referenceMetadata(for: metadataReferenceSource, embedded: embeddedMetadata, xmp: xmpMetadata)
     }
@@ -432,6 +437,16 @@ final class MetadataViewModel {
 
     func markChanged() {
         hasChanges = true
+    }
+
+    func importEmbeddedCrop() {
+        guard let embeddedCrop = embeddedMetadata?.cameraRaw?.crop,
+              embeddedCrop.hasCrop == true else { return }
+        if editingMetadata.cameraRaw == nil {
+            editingMetadata.cameraRaw = CameraRawSettings()
+        }
+        editingMetadata.cameraRaw?.crop = embeddedCrop
+        markChanged()
     }
 
     func commitEdits(

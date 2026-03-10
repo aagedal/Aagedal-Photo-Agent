@@ -438,6 +438,17 @@ struct MetadataPanel: View {
                 if !viewModel.isBatchEdit, viewModel.hasXmpMetadata {
                     referenceSourcePicker
                 }
+                if !viewModel.isBatchEdit, viewModel.hasEmbeddedCropNotLoaded {
+                    Button {
+                        viewModel.importEmbeddedCrop()
+                    } label: {
+                        Image(systemName: "crop")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Image has embedded crop metadata — click to load")
+                }
                 Spacer()
                 Button {
                     showingHistoryPopover = true
