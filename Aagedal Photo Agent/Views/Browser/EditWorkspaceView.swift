@@ -468,6 +468,20 @@ struct EditWorkspaceView: View {
                         .padding(.top, 4)
                     Divider()
 
+                    if metadataViewModel.hasEmbeddedCropNotLoaded {
+                        Button {
+                            metadataViewModel.importEmbeddedCrop()
+                            showCropControls = true
+                            commitEditAdjustments()
+                        } label: {
+                            Label("Load Embedded Crop", systemImage: "square.and.arrow.down")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.orange)
+                        .help("Load crop from embedded image metadata")
+                    }
+
                     if showCropControls {
                         HStack {
                             Button("Reset Crop") {
