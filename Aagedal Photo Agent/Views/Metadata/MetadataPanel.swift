@@ -216,7 +216,33 @@ struct MetadataPanel: View {
         return (updated, NSRange(location: newLocation, length: 0))
     }
 
+    /// Reads the current text from the active NSTextView for buffered fields
+    /// and pushes it to editingMetadata. Call before any commit/write operation
+    /// to ensure the view model has the latest text.
+    private func flushBufferedFields() {
+        guard let key = focusedField,
+              (key == "description" || key == "extendedDescription"),
+              let editor = NSApp.keyWindow?.firstResponder as? NSTextView else { return }
+        let text = editor.string
+        let normalized = text.isEmpty ? nil : text
+        switch key {
+        case "description":
+            if normalized != viewModel.editingMetadata.description {
+                viewModel.editingMetadata.description = normalized
+                viewModel.markChanged()
+            }
+        case "extendedDescription":
+            if normalized != viewModel.editingMetadata.extendedDescription {
+                viewModel.editingMetadata.extendedDescription = normalized
+                viewModel.markChanged()
+            }
+        default:
+            break
+        }
+    }
+
     private func commitEdits() {
+        flushBufferedFields()
         guard viewModel.hasChanges else { return }
         let hasC2PA = browserViewModel.selectedImages.contains { $0.hasC2PA }
         let mode = hasC2PA ? settingsViewModel.metadataWriteModeC2PA : settingsViewModel.metadataWriteModeNonC2PA
@@ -524,26 +550,20 @@ struct MetadataPanel: View {
                 .buttonStyle(.plain)
                 .help("Variable Reference")
             }
-            TextField(
-                viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "description") : "Enter description",
-                text: Binding(
-                    get: { viewModel.editingMetadata.description ?? "" },
-                    set: { viewModel.editingMetadata.description = $0.isEmpty ? nil : $0; viewModel.markChanged() }
-                ),
-                axis: .vertical
+            BufferedTextField(
+                currentValue: viewModel.editingMetadata.description ?? "",
+                placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "description") : "Enter description",
+                lineLimit: 4...8,
+                focusedField: $focusedField,
+                focusKey: "description",
+                onTextFinished: { newValue in
+                    if newValue != viewModel.editingMetadata.description {
+                        viewModel.editingMetadata.description = newValue
+                        viewModel.markChanged()
+                    }
+                },
+                onCommit: { commitEdits() }
             )
-            .lineLimit(4...8)
-            .textFieldStyle(.roundedBorder)
-            .font(.body)
-            .focused($focusedField, equals: "description")
-            .onKeyPress(.return) {
-                if NSEvent.modifierFlags.contains(.shift) {
-                    applyInsertion("\n", to: .description)
-                    return .handled
-                }
-                commitEdits()
-                return .handled
-            }
         }
         .sheet(isPresented: $isShowingVariableReference) {
             VariableReferenceView(
@@ -566,26 +586,20 @@ struct MetadataPanel: View {
                     .buttonStyle(.plain)
                     .help("Variable Reference")
                 }
-                TextField(
-                    viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "extendedDescription") : "Enter extended description",
-                    text: Binding(
-                        get: { viewModel.editingMetadata.extendedDescription ?? "" },
-                        set: { viewModel.editingMetadata.extendedDescription = $0.isEmpty ? nil : $0; viewModel.markChanged() }
-                    ),
-                    axis: .vertical
+                BufferedTextField(
+                    currentValue: viewModel.editingMetadata.extendedDescription ?? "",
+                    placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "extendedDescription") : "Enter extended description",
+                    lineLimit: 4...8,
+                    focusedField: $focusedField,
+                    focusKey: "extendedDescription",
+                    onTextFinished: { newValue in
+                        if newValue != viewModel.editingMetadata.extendedDescription {
+                            viewModel.editingMetadata.extendedDescription = newValue
+                            viewModel.markChanged()
+                        }
+                    },
+                    onCommit: { commitEdits() }
                 )
-                .lineLimit(4...8)
-                .textFieldStyle(.roundedBorder)
-                .font(.body)
-                .focused($focusedField, equals: "extendedDescription")
-                .onKeyPress(.return) {
-                    if NSEvent.modifierFlags.contains(.shift) {
-                        applyInsertion("\n", to: .extendedDescription)
-                        return .handled
-                    }
-                    commitEdits()
-                    return .handled
-                }
             }
             .padding(.top, 2)
         } label: {
@@ -1235,6 +1249,7 @@ struct MetadataPanel: View {
                 }
 
                 Button {
+                    flushBufferedFields()
                     let filename = browserViewModel.firstSelectedImage?.filename ?? ""
                     viewModel.processVariables(filename: filename)
                 } label: {
@@ -1252,6 +1267,7 @@ struct MetadataPanel: View {
 
                 if mode != .writeToFile {
                     Button {
+                        flushBufferedFields()
                         if browserViewModel.firstSelectedImage?.hasC2PA == true {
                             c2paOverwriteIntent = .manualWrite
                             showingC2PAWarning = true
@@ -1561,6 +1577,73 @@ struct EditableTextEditor: View {
                 .lineLimit(3...6)
                 .textFieldStyle(.roundedBorder)
                 .font(.body)
+        }
+    }
+}
+
+/// Text field that buffers keystrokes locally to prevent per-keystroke
+/// re-evaluation of the parent view. Syncs on focus loss or Return.
+private struct BufferedTextField: View {
+    let currentValue: String
+    let placeholder: String
+    let lineLimit: ClosedRange<Int>
+    let focusedField: FocusState<String?>.Binding
+    let focusKey: String
+    var onTextFinished: (String?) -> Void
+    var onCommit: () -> Void
+
+    @State private var localText = ""
+
+    var body: some View {
+        let isFocused = focusedField.wrappedValue == focusKey
+        TextField(placeholder, text: $localText, axis: .vertical)
+            .lineLimit(lineLimit)
+            .textFieldStyle(.roundedBorder)
+            .font(.body)
+            .focused(focusedField, equals: focusKey)
+            .onAppear { localText = currentValue }
+            .onChange(of: currentValue) { _, newValue in
+                if newValue != localText {
+                    localText = newValue
+                }
+            }
+            .onChange(of: isFocused) { _, focused in
+                if !focused {
+                    flush()
+                }
+            }
+            .onKeyPress(.return) {
+                if NSEvent.modifierFlags.contains(.shift) {
+                    insertNewlineAtCursor()
+                    return .handled
+                }
+                flush()
+                onCommit()
+                return .handled
+            }
+    }
+
+    private func flush() {
+        let normalized = localText.isEmpty ? nil : localText
+        onTextFinished(normalized)
+    }
+
+    private func insertNewlineAtCursor() {
+        if let editor = NSApp.keyWindow?.firstResponder as? NSTextView {
+            let selection = editor.selectedRange()
+            if let range = Range(selection, in: localText) {
+                localText = localText.replacingCharacters(in: range, with: "\n")
+                let newLocation = selection.location + 1
+                DispatchQueue.main.async {
+                    if let editor = NSApp.keyWindow?.firstResponder as? NSTextView {
+                        editor.setSelectedRange(NSRange(location: newLocation, length: 0))
+                    }
+                }
+            } else {
+                localText.append("\n")
+            }
+        } else {
+            localText.append("\n")
         }
     }
 }
