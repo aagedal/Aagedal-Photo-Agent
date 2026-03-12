@@ -13,6 +13,7 @@ struct EditSlider: View {
     var onReset: (() -> Void)?
 
     @State private var isDragging = false
+    @State private var isResetting = false
     @State private var wasPrecision = false
     @State private var precisionAnchorFraction: Double = 0
     @State private var precisionAnchorX: CGFloat = 0
@@ -69,6 +70,8 @@ struct EditSlider: View {
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { drag in
+                        if isResetting { return }
+
                         if !isDragging {
                             let now = Date()
                             if now.timeIntervalSince(lastDragStartTime) < doubleClickInterval,
@@ -77,6 +80,7 @@ struct EditSlider: View {
                                 // Double-click detected — reset and cancel this drag
                                 onReset()
                                 lastDragStartTime = .distantPast
+                                isResetting = true
                                 return
                             }
                             lastDragStartTime = now
@@ -109,6 +113,10 @@ struct EditSlider: View {
                         }
                     }
                     .onEnded { drag in
+                        if isResetting {
+                            isResetting = false
+                            return
+                        }
                         let isPrecision = NSEvent.modifierFlags.contains(.option)
                         if isPrecision && wasPrecision {
                             let delta = (drag.location.x - precisionAnchorX) / width

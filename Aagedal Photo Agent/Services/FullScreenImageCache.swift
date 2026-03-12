@@ -5,14 +5,20 @@ import os.log
 nonisolated private let cacheLogger = Logger(subsystem: "com.aagedal.photo-agent", category: "FullScreenCache")
 
 /// LRU image cache with directional prefetching for full-screen image navigation.
-/// Holds up to 7 screen-resolution images (~280MB). NSCache auto-evicts under memory pressure.
+/// Holds up to 12 screen-resolution images (~480MB). NSCache auto-evicts under memory pressure.
 final class FullScreenImageCache: @unchecked Sendable {
     nonisolated(unsafe) private let cache = NSCache<NSURL, CGImage>()
+    nonisolated(unsafe) private let displayPreviewCache = NSCache<NSURL, CGImage>()
     nonisolated(unsafe) private var prefetchTasks: [URL: Task<Void, Never>] = [:]
+    nonisolated(unsafe) private var previewGenerationTask: Task<Void, Never>?
+    nonisolated(unsafe) private var _isGeneratingPreviews = false
+    nonisolated(unsafe) private var _previewsCompleted = 0
+    nonisolated(unsafe) private var _previewsTotal = 0
     private let lock = NSLock()
 
     init() {
-        cache.countLimit = 7
+        cache.countLimit = 12
+        displayPreviewCache.countLimit = 50
     }
 
     // MARK: - Cache Access
@@ -25,24 +31,108 @@ final class FullScreenImageCache: @unchecked Sendable {
         cache.setObject(image, forKey: url as NSURL)
     }
 
+    // MARK: - Display Preview Cache (960px)
+
+    nonisolated func cachedDisplayPreview(for url: URL) -> CGImage? {
+        displayPreviewCache.object(forKey: url as NSURL)
+    }
+
+    nonisolated func storeDisplayPreview(_ image: CGImage, for url: URL) {
+        displayPreviewCache.setObject(image, forKey: url as NSURL)
+    }
+
+    nonisolated func clearDisplayPreviews() {
+        displayPreviewCache.removeAllObjects()
+    }
+
+    /// Clear all cached images (retina + display preview).
+    /// Call when rendering mode changes (e.g. edit toggle) to avoid stale cache hits.
+    nonisolated func clearAll() {
+        cache.removeAllObjects()
+        displayPreviewCache.removeAllObjects()
+    }
+
+    nonisolated var isGeneratingPreviews: Bool {
+        lock.withLock { _isGeneratingPreviews }
+    }
+
+    nonisolated var previewsCompleted: Int {
+        lock.withLock { _previewsCompleted }
+    }
+
+    nonisolated var previewsTotal: Int {
+        lock.withLock { _previewsTotal }
+    }
+
+    // MARK: - Background Display Preview Generation
+
+    nonisolated func startBackgroundPreviewGeneration(for urls: [URL], screenMaxPx: CGFloat) {
+        cancelPreviewGeneration()
+        let uncached = urls.filter { displayPreviewCache.object(forKey: $0 as NSURL) == nil }
+        guard !uncached.isEmpty else { return }
+
+        lock.withLock {
+            _isGeneratingPreviews = true
+            _previewsCompleted = 0
+            _previewsTotal = uncached.count
+        }
+
+        let task = Task.detached(priority: .utility) { [weak self] in
+            guard let self else { return }
+            let batchSize = 4
+            for batchStart in stride(from: 0, to: uncached.count, by: batchSize) {
+                guard !Task.isCancelled else { break }
+                let batchEnd = min(batchStart + batchSize, uncached.count)
+                let batch = uncached[batchStart..<batchEnd]
+
+                await withTaskGroup(of: Void.self) { group in
+                    for url in batch {
+                        group.addTask {
+                            guard !Task.isCancelled else { return }
+                            guard self.displayPreviewCache.object(forKey: url as NSURL) == nil else { return }
+                            guard let image = Self.loadDownsampled(from: url, maxPixelSize: screenMaxPx) else { return }
+                            guard !Task.isCancelled else { return }
+                            self.displayPreviewCache.setObject(image, forKey: url as NSURL)
+                        }
+                    }
+                }
+
+                self.lock.withLock { self._previewsCompleted = batchEnd }
+            }
+            self.lock.withLock { self._isGeneratingPreviews = false }
+        }
+
+        lock.withLock { previewGenerationTask = task }
+    }
+
+    nonisolated func cancelPreviewGeneration() {
+        lock.withLock {
+            previewGenerationTask?.cancel()
+            previewGenerationTask = nil
+            _isGeneratingPreviews = false
+            _previewsCompleted = 0
+            _previewsTotal = 0
+        }
+    }
+
     // MARK: - Prefetching
 
     /// Prefetch adjacent images based on navigation direction.
-    /// Loads 2 images ahead in travel direction and 1 behind, at utility priority.
+    /// Loads 4 images ahead in travel direction and 2 behind, at medium priority.
     nonisolated func startPrefetch(currentIndex: Int, images: [URL], direction: NavigationDirection, screenMaxPx: CGFloat, settingsForURL: (@Sendable (URL) -> CameraRawSettings?)? = nil, orientationForURL: (@Sendable (URL) -> Int)? = nil) {
         let ahead: [Int]
         let behind: [Int]
 
         switch direction {
         case .forward:
-            ahead = [currentIndex + 1, currentIndex + 2]
-            behind = [currentIndex - 1]
+            ahead = [currentIndex + 1, currentIndex + 2, currentIndex + 3, currentIndex + 4]
+            behind = [currentIndex - 1, currentIndex - 2]
         case .backward:
-            ahead = [currentIndex - 1, currentIndex - 2]
-            behind = [currentIndex + 1]
+            ahead = [currentIndex - 1, currentIndex - 2, currentIndex - 3, currentIndex - 4]
+            behind = [currentIndex + 1, currentIndex + 2]
         case .none:
-            ahead = [currentIndex + 1, currentIndex - 1]
-            behind = [currentIndex + 2, currentIndex - 2]
+            ahead = [currentIndex + 1, currentIndex - 1, currentIndex + 2, currentIndex - 2]
+            behind = [currentIndex + 3, currentIndex - 3]
         }
 
         let targetIndices = (ahead + behind).filter { $0 >= 0 && $0 < images.count }
@@ -65,24 +155,40 @@ final class FullScreenImageCache: @unchecked Sendable {
                 if cachedImage(for: url) != nil { return true }
                 if prefetchTasks[url] != nil { return true }
 
-                let task = Task.detached(priority: .utility) { [weak self] in
+                let task = Task.detached(priority: .medium) { [weak self] in
                     guard let self, !Task.isCancelled else { return }
                     defer { self.removePrefetchTask(for: url) }
                     let filename = url.lastPathComponent
                     cacheLogger.info("Prefetching \(filename)")
 
-                    guard var image = Self.loadDownsampled(from: url, maxPixelSize: screenMaxPx) else {
-                        cacheLogger.info("Prefetch failed: \(filename)")
-                        return
+                    let settings = settingsForURL?(url)
+                    let orientation = orientationForURL?(url) ?? 1
+                    var image: CGImage?
+
+                    if settings != nil,
+                       let ciImage = Self.loadHDRPreview(from: url, maxPixelSize: screenMaxPx) {
+                        // HDR-preserving path: same decoder as EditWorkspaceView
+                        let processed = settings.map { CameraRawApproximation.applyWithCrop(to: ciImage, settings: $0, exifOrientation: orientation) } ?? ciImage
+                        image = CameraRawApproximation.ciContext.createCGImage(
+                            processed, from: processed.extent,
+                            format: .RGBAh,
+                            colorSpace: CameraRawApproximation.workingColorSpace
+                        )
                     }
-                    guard !Task.isCancelled else {
+                    if image == nil {
+                        // SDR fallback (or no edits active)
+                        guard var loaded = Self.loadDownsampled(from: url, maxPixelSize: screenMaxPx) else {
+                            cacheLogger.info("Prefetch failed: \(filename)")
+                            return
+                        }
+                        if let settings {
+                            loaded = Self.applyCameraRaw(to: loaded, settings: settings, exifOrientation: orientation)
+                        }
+                        image = loaded
+                    }
+                    guard let image, !Task.isCancelled else {
                         cacheLogger.info("Prefetch cancelled: \(filename)")
                         return
-                    }
-
-                    if let settings = settingsForURL?(url) {
-                        let orientation = orientationForURL?(url) ?? 1
-                        image = Self.applyCameraRaw(to: image, settings: settings, exifOrientation: orientation)
                     }
 
                     self.store(image, for: url)
@@ -171,6 +277,15 @@ final class FullScreenImageCache: @unchecked Sendable {
             kCGImageSourceCreateThumbnailWithTransform: true,
         ]
         return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+    }
+
+    /// Load an HDR-preserving full-resolution image via CoreImage.
+    /// Returns CIImage directly so the caller can process in extended linear sRGB.
+    nonisolated static func loadHDRFullResolution(from url: URL) -> CIImage? {
+        CIImage(contentsOf: url, options: [
+            .applyOrientationProperty: true,
+            .toneMapHDRtoSDR: false
+        ])
     }
 
     /// Load an image at full source resolution, preserving color space and bit depth.

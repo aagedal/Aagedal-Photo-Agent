@@ -227,8 +227,31 @@ enum QuickListType: String, CaseIterable {
     }
 }
 
+enum PreviewMode: String, CaseIterable {
+    case performance
+    case editing
+
+    var displayName: String {
+        switch self {
+        case .performance: return "Performance"
+        case .editing: return "Editing"
+        }
+    }
+}
+
 @Observable
 final class SettingsViewModel {
+    var showAllFiles: Bool {
+        didSet {
+            UserDefaults.standard.set(showAllFiles, forKey: UserDefaultsKeys.showAllFiles)
+            NotificationCenter.default.post(name: .showAllFilesChanged, object: nil)
+        }
+    }
+
+    var previewMode: PreviewMode {
+        didSet { UserDefaults.standard.set(previewMode.rawValue, forKey: UserDefaultsKeys.previewMode) }
+    }
+
     var exifToolSource: ExifToolSource {
         didSet { UserDefaults.standard.set(exifToolSource.rawValue, forKey: UserDefaultsKeys.exifToolSource) }
     }
@@ -532,6 +555,11 @@ final class SettingsViewModel {
     }
 
     init() {
+        self.showAllFiles = UserDefaults.standard.bool(forKey: UserDefaultsKeys.showAllFiles)
+
+        let storedPreviewMode = UserDefaults.standard.string(forKey: UserDefaultsKeys.previewMode) ?? PreviewMode.performance.rawValue
+        self.previewMode = PreviewMode(rawValue: storedPreviewMode) ?? .performance
+
         let sourceRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.exifToolSource) ?? "bundled"
         self.exifToolSource = ExifToolSource(rawValue: sourceRaw) ?? .bundled
         self.exifToolCustomPath = UserDefaults.standard.string(forKey: UserDefaultsKeys.exifToolCustomPath) ?? ""

@@ -31,6 +31,7 @@ fileprivate class ZoomController {
     var toggleUIAction: (() -> Void)?
     var toggleScalingAction: (() -> Void)?
     var toggleFaceRectanglesAction: (() -> Void)?
+    var toggleEditRenderingAction: (() -> Void)?
 
     func toggleZoom(at location: CGPoint) {
         toggleZoomAction?(location)
@@ -51,6 +52,10 @@ fileprivate class ZoomController {
     func toggleFaceRectangles() {
         toggleFaceRectanglesAction?()
     }
+
+    func toggleEditRendering() {
+        toggleEditRenderingAction?()
+    }
 }
 
 // MARK: - Custom NSWindow that intercepts Escape and Space
@@ -64,6 +69,7 @@ private class FullScreenWindow: NSWindow {
     var onToggleUI: (() -> Void)?
     var onToggleScaling: (() -> Void)?
     var onToggleFaceRectangles: (() -> Void)?
+    var onToggleEditRendering: (() -> Void)?
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
@@ -107,6 +113,12 @@ private class FullScreenWindow: NSWindow {
         // G key (keyCode 5) → toggle face rectangles
         if keyCode == 5 && !hasCmd && !hasOption {
             onToggleFaceRectangles?()
+            return
+        }
+
+        // E key (keyCode 14) → toggle edit rendering
+        if keyCode == 14 && !hasCmd && !hasOption {
+            onToggleEditRendering?()
             return
         }
 
@@ -161,8 +173,11 @@ struct FullScreenImageView: View {
     @FocusState private var isFocused: Bool
 
     // Image cache and prefetch
-    @State private var imageCache = FullScreenImageCache()
+    private var imageCache: FullScreenImageCache { viewModel.fullScreenImageCache }
     @State private var lastNavigationIndex: Int?
+
+    // Edit rendering state (E key toggle)
+    @State private var renderEdits: Bool = false
 
     // Face overlay state
     @State private var showFaceRectangles: Bool = false
@@ -187,7 +202,7 @@ struct FullScreenImageView: View {
     }
 
     private var isHDR: Bool {
-        currentImageFile?.cameraRawSettings?.hdrEditMode == 1
+        renderEdits && currentImageFile?.cameraRawSettings?.hdrEditMode == 1
     }
 
     /// Calculate the scale factor for 100% zoom (1:1 pixel mapping).
@@ -441,6 +456,12 @@ struct FullScreenImageView: View {
                                         .foregroundStyle(.white.opacity(0.7))
                                 }
 
+                                if renderEdits {
+                                    Text("Edits")
+                                        .font(.caption)
+                                        .foregroundStyle(.white.opacity(0.7))
+                                }
+
                                 if useNearestNeighbor {
                                     Text("NN")
                                         .font(.caption)
@@ -462,6 +483,9 @@ struct FullScreenImageView: View {
         .focusEffectDisabled()
         .onAppear {
             isFocused = true
+            // Initialize render edits from UserDefaults
+            let previewMode = UserDefaults.standard.string(forKey: UserDefaultsKeys.previewMode) ?? "performance"
+            renderEdits = previewMode == "editing"
             // Initialize face rectangles from context (visible by default when opened from face view)
             showFaceRectangles = viewModel.fullScreenFaceContext?.highlightedFaceID != nil
             // Register actions with the controller
@@ -479,6 +503,9 @@ struct FullScreenImageView: View {
             }
             zoomController?.toggleFaceRectanglesAction = { [self] in
                 showFaceRectangles.toggle()
+            }
+            zoomController?.toggleEditRenderingAction = { [self] in
+                renderEdits.toggle()
             }
         }
         .onDisappear {
@@ -500,7 +527,7 @@ struct FullScreenImageView: View {
             viewModel.selectNext()
             return .handled
         }
-        .task(id: currentImageFile?.url) {
+        .task(id: "\(currentImageFile?.url.absoluteString ?? "nil")|\(renderEdits)") {
             // Reset zoom when changing images
             zoomScale = 1.0
             lastZoomScale = 1.0
@@ -511,6 +538,10 @@ struct FullScreenImageView: View {
             fullResTask?.cancel()
             fullResTask = nil
             await loadImage()
+        }
+        .onChange(of: renderEdits) {
+            imageCache.clearAll()
+            imageCache.cancelAllPrefetch()
         }
     }
 
@@ -609,6 +640,23 @@ struct FullScreenImageView: View {
         return result
     }
 
+    /// Apply CameraRaw adjustments + crop to a CIImage source, preserving HDR float values.
+    nonisolated private static func applyCameraRaw(to ciImage: CIImage, settings: CameraRawSettings?, exifOrientation: Int = 1) -> CGImage? {
+        let processed: CIImage
+        if let settings {
+            processed = CameraRawApproximation.applyWithCrop(to: ciImage, settings: settings, exifOrientation: exifOrientation)
+        } else {
+            processed = ciImage
+        }
+        let extent = processed.extent
+        guard extent.width > 0, extent.height > 0 else { return nil }
+        return CameraRawApproximation.ciContext.createCGImage(
+            processed, from: extent,
+            format: .RGBAh,
+            colorSpace: CameraRawApproximation.workingColorSpace
+        )
+    }
+
     private func loadImage() async {
         let filename = currentImageFile?.url.lastPathComponent ?? "nil"
         imageLogger.info("loadImage called for \(filename)")
@@ -627,7 +675,18 @@ struct FullScreenImageView: View {
             return
         }
 
-        let cameraRaw = currentImageFile?.cameraRawSettings
+        // Non-image files: show system icon and return
+        guard SupportedImageFormats.isSupported(url: url) else {
+            let icon = NSWorkspace.shared.icon(forFile: url.path)
+            if let cgIcon = icon.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+                currentImage = makeLoadedImage(from: cgIcon)
+            }
+            sourcePixelSize = nil
+            isLoading = false
+            return
+        }
+
+        let cameraRaw = renderEdits ? currentImageFile?.cameraRawSettings : nil
         let imageOrientation = currentImageFile?.exifOrientation ?? 1
 
         // Read source pixel dimensions (cheap metadata-only, no pixel decode)
@@ -642,8 +701,8 @@ struct FullScreenImageView: View {
                 ? CGSize(width: CGFloat(ph), height: CGFloat(pw))
                 : CGSize(width: CGFloat(pw), height: CGFloat(ph))
 
-            // Adjust for crop if present (transform to display space first)
-            if let crop = cameraRaw?.crop, !(crop.isEmpty) {
+            // Adjust for crop if present (only when rendering edits)
+            if renderEdits, let crop = cameraRaw?.crop, !(crop.isEmpty) {
                 let displayCrop = crop.transformedForDisplay(orientation: orientation)
                 let aabbW = ((displayCrop.right ?? 1) - (displayCrop.left ?? 0)) * rawSize.width
                 let aabbH = ((displayCrop.bottom ?? 1) - (displayCrop.top ?? 0)) * rawSize.height
@@ -667,12 +726,50 @@ struct FullScreenImageView: View {
             sourcePixelSize = nil
         }
 
-        // Phase 0: Instant — check cache, then fall back to thumbnail
+        // Phase 0: Instant — check retina cache, then display preview cache, then thumbnail
         if let cached = imageCache.cachedImage(for: url) {
             imageLogger.info("\(filename): Phase 0 cache hit")
             currentImage = makeLoadedImage(from: cached)
             isLoading = false
             triggerPrefetch(for: url)
+            return
+        }
+
+        if let displayPreview = imageCache.cachedDisplayPreview(for: url) {
+            imageLogger.info("\(filename): Phase 0 display preview cache hit")
+            currentImage = makeLoadedImage(from: displayPreview)
+            isLoading = false
+            // Skip Phase 0.5, go directly to Phase 2 for retina upgrade
+            let screenScale = NSScreen.main?.backingScaleFactor ?? 2.0
+            let screenLogicalPx = max(NSScreen.main?.frame.width ?? 3840, NSScreen.main?.frame.height ?? 2160)
+            let screenMaxPx = screenLogicalPx * screenScale
+            let fullStart = CFAbsoluteTimeGetCurrent()
+            fullLoadTask = Task.detached(priority: .medium) {
+                var image: CGImage?
+                if cameraRaw != nil {
+                    // HDR-preserving path: same decoder as EditWorkspaceView
+                    if let ciImage = FullScreenImageCache.loadHDRPreview(from: url, maxPixelSize: screenMaxPx) {
+                        image = Self.applyCameraRaw(to: ciImage, settings: cameraRaw, exifOrientation: imageOrientation)
+                    }
+                }
+                if image == nil {
+                    guard var loaded = FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: screenMaxPx) else {
+                        return
+                    }
+                    loaded = Self.applyCameraRaw(to: loaded, settings: cameraRaw, exifOrientation: imageOrientation)
+                    image = loaded
+                }
+                guard let image, !Task.isCancelled else { return }
+                let fullElapsed = CFAbsoluteTimeGetCurrent() - fullStart
+                await MainActor.run {
+                    if currentImageFile?.url == url {
+                        imageLogger.info("\(filename): Phase 2 done in \(String(format: "%.1f", fullElapsed * 1000))ms (\(image.width)x\(image.height))")
+                        currentImage = makeLoadedImage(from: image)
+                        imageCache.store(image, for: url)
+                        triggerPrefetch(for: url)
+                    }
+                }
+            }
             return
         }
 
@@ -691,49 +788,61 @@ struct FullScreenImageView: View {
         let screenMaxPx = screenLogicalPx * screenScale
         imageLogger.info("\(filename): isRAW=\(isRAW)")
 
-        // Phase 1: Fast preview (~20-80ms)
+        // Phase 0.5: Quick 960px preview (<5ms non-RAW)
+        let previewStart = CFAbsoluteTimeGetCurrent()
+        let preview: CGImage?
         if isRAW {
-            // RAW: extract embedded JPEG preview
-            let previewStart = CFAbsoluteTimeGetCurrent()
-            // ImageIO thumbnail generation uses Default-QoS worker threads internally.
-            // Running decode at .medium avoids user-initiated -> default QoS inversion warnings.
-            let preview = await Task.detached(priority: .medium) {
+            // RAW: extract embedded JPEG preview (already small, ~1-3MP)
+            preview = await Task.detached(priority: .medium) {
                 guard let raw = FullScreenImageCache.extractEmbeddedPreview(from: url) else { return nil as CGImage? }
                 return Self.applyCameraRaw(to: raw, settings: cameraRaw, exifOrientation: imageOrientation)
             }.value
-            let previewElapsed = CFAbsoluteTimeGetCurrent() - previewStart
-            if let preview {
-                imageLogger.info("\(filename): Phase 1 RAW preview in \(String(format: "%.1f", previewElapsed * 1000))ms (\(preview.width)x\(preview.height))")
-                currentImage = makeLoadedImage(from: preview)
-            } else {
-                imageLogger.warning("\(filename): Phase 1 no embedded preview (\(String(format: "%.1f", previewElapsed * 1000))ms)")
-            }
-        } else {
-            // Non-RAW: quick downsample at logical resolution (no Retina multiplier)
-            let previewStart = CFAbsoluteTimeGetCurrent()
-            let preview = await Task.detached(priority: .medium) {
-                guard let raw = FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: screenLogicalPx) else { return nil as CGImage? }
+        } else if cameraRaw != nil {
+            // HDR-preserving path: same decoder as EditWorkspaceView for consistent rendering
+            preview = await Task.detached(priority: .medium) {
+                if let ciImage = FullScreenImageCache.loadHDRPreview(from: url, maxPixelSize: 960) {
+                    return Self.applyCameraRaw(to: ciImage, settings: cameraRaw, exifOrientation: imageOrientation)
+                }
+                guard let raw = FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: 960) else { return nil as CGImage? }
                 return Self.applyCameraRaw(to: raw, settings: cameraRaw, exifOrientation: imageOrientation)
             }.value
-            let previewElapsed = CFAbsoluteTimeGetCurrent() - previewStart
-            guard !Task.isCancelled else { return }
-            if let preview, currentImageFile?.url == url {
-                imageLogger.info("\(filename): Phase 1 preview in \(String(format: "%.1f", previewElapsed * 1000))ms (\(preview.width)x\(preview.height))")
-                currentImage = makeLoadedImage(from: preview)
-            }
+        } else {
+            // Non-RAW, no edits: quick downsample at 960px
+            preview = await Task.detached(priority: .medium) {
+                guard let raw = FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: 960) else { return nil as CGImage? }
+                return Self.applyCameraRaw(to: raw, settings: cameraRaw, exifOrientation: imageOrientation)
+            }.value
+        }
+        let previewElapsed = CFAbsoluteTimeGetCurrent() - previewStart
+        guard !Task.isCancelled else { return }
+        if let preview, currentImageFile?.url == url {
+            imageLogger.info("\(filename): Phase 0.5 in \(String(format: "%.1f", previewElapsed * 1000))ms (\(preview.width)x\(preview.height))")
+            currentImage = makeLoadedImage(from: preview)
+            imageCache.storeDisplayPreview(preview, for: url)
         }
 
         // Phase 2: Retina-resolution decode (screen pixels, preserving HDR color space)
         let fullStart = CFAbsoluteTimeGetCurrent()
         imageLogger.info("\(filename): Phase 2 starting (retina resolution)")
         fullLoadTask = Task.detached(priority: .medium) {
-            guard var image = FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: screenMaxPx) else {
-                await MainActor.run {
-                    if currentImageFile?.url == url { isLoading = false }
+            var image: CGImage?
+            if cameraRaw != nil {
+                // HDR-preserving path: same decoder as EditWorkspaceView
+                if let ciImage = FullScreenImageCache.loadHDRPreview(from: url, maxPixelSize: screenMaxPx) {
+                    image = Self.applyCameraRaw(to: ciImage, settings: cameraRaw, exifOrientation: imageOrientation)
                 }
-                return
             }
-            image = Self.applyCameraRaw(to: image, settings: cameraRaw, exifOrientation: imageOrientation)
+            if image == nil {
+                guard var loaded = FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: screenMaxPx) else {
+                    await MainActor.run {
+                        if currentImageFile?.url == url { isLoading = false }
+                    }
+                    return
+                }
+                loaded = Self.applyCameraRaw(to: loaded, settings: cameraRaw, exifOrientation: imageOrientation)
+                image = loaded
+            }
+            guard let image else { return }
             let fullElapsed = CFAbsoluteTimeGetCurrent() - fullStart
             guard !Task.isCancelled else {
                 imageLogger.info("\(filename): Phase 2 cancelled after \(String(format: "%.1f", fullElapsed * 1000))ms")
@@ -767,14 +876,25 @@ struct FullScreenImageView: View {
         guard fullResTask == nil else { return }
 
         let filename = url.lastPathComponent
-        let cameraRaw = currentImageFile?.cameraRawSettings
+        let cameraRaw = renderEdits ? currentImageFile?.cameraRawSettings : nil
         let orientation = currentImageFile?.exifOrientation ?? 1
         imageLogger.info("\(filename): Loading full resolution for zoom")
         isLoading = true
         fullResTask = Task.detached(priority: .medium) {
             let fullStart = CFAbsoluteTimeGetCurrent()
-            guard var image = FullScreenImageCache.loadFullResolution(from: url) else { return }
-            image = Self.applyCameraRaw(to: image, settings: cameraRaw, exifOrientation: orientation)
+            var image: CGImage?
+            if cameraRaw != nil {
+                // HDR-preserving path: same decoder as EditWorkspaceView
+                if let ciImage = FullScreenImageCache.loadHDRFullResolution(from: url) {
+                    image = Self.applyCameraRaw(to: ciImage, settings: cameraRaw, exifOrientation: orientation)
+                }
+            }
+            if image == nil {
+                guard var loaded = FullScreenImageCache.loadFullResolution(from: url) else { return }
+                loaded = Self.applyCameraRaw(to: loaded, settings: cameraRaw, exifOrientation: orientation)
+                image = loaded
+            }
+            guard let image else { return }
             let elapsed = CFAbsoluteTimeGetCurrent() - fullStart
             guard !Task.isCancelled else { return }
             await MainActor.run {
@@ -827,14 +947,24 @@ struct FullScreenImageView: View {
             return dict
         }()
 
-        imageCache.startPrefetch(
-            currentIndex: currentIndex,
-            images: imageURLs,
-            direction: direction,
-            screenMaxPx: screenMaxPx,
-            settingsForURL: { url in settingsLookup[url] },
-            orientationForURL: { url in orientationLookup[url] ?? 1 }
-        )
+        if renderEdits {
+            imageCache.startPrefetch(
+                currentIndex: currentIndex,
+                images: imageURLs,
+                direction: direction,
+                screenMaxPx: screenMaxPx,
+                settingsForURL: { url in settingsLookup[url] },
+                orientationForURL: { url in orientationLookup[url] ?? 1 }
+            )
+        } else {
+            imageCache.startPrefetch(
+                currentIndex: currentIndex,
+                images: imageURLs,
+                direction: direction,
+                screenMaxPx: screenMaxPx,
+                orientationForURL: { url in orientationLookup[url] ?? 1 }
+            )
+        }
     }
 
     private func makeLoadedImage(from cgImage: CGImage) -> LoadedImage {
@@ -1057,6 +1187,9 @@ struct FullScreenPresenter: ViewModifier {
         }
         window.onToggleFaceRectangles = { [weak controller] in
             controller?.toggleFaceRectangles()
+        }
+        window.onToggleEditRendering = { [weak controller] in
+            controller?.toggleEditRendering()
         }
 
         let hostingView = NSHostingView(

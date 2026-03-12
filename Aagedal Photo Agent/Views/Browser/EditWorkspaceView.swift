@@ -11,6 +11,8 @@ struct EditWorkspaceView: View {
 
     @State private var sourceImage: NSImage?
     @State private var sourceCIImage: CIImage?
+    @State private var isDraggingEditSlider = false
+    @State private var previewCIImage: CIImage?
     @State private var previewImage: NSImage?
     @State private var previewCGImage: CGImage?
     @State private var previewTask: Task<Void, Never>?
@@ -28,6 +30,8 @@ struct EditWorkspaceView: View {
     @State private var showCropControls = false
     @State private var lockedCropImageRect: CGRect?
     @State private var editUndoManager = UndoManager()
+    @State private var metalPipeline: MetalEditPipeline?
+    @State private var metalCoordinator = MetalPreviewView.Coordinator()
     @FocusState private var isWorkspaceFocused: Bool
 
     private static let minKelvin = 2000.0
@@ -62,6 +66,18 @@ struct EditWorkspaceView: View {
 
     private var displayImage: NSImage? {
         isShowingBefore ? sourceImage : previewImage
+    }
+
+    /// CIImage for MetalPreviewView — shows unedited source during "before" toggle,
+    /// or the lazy CIFilter chain output during editing.
+    private var displayCIImage: CIImage? {
+        isShowingBefore ? sourceCIImage : (previewCIImage ?? sourceCIImage)
+    }
+
+    /// Image dimensions for layout calculations (stable across edits since filters
+    /// don't change image size — crop is handled by the overlay, not the filter chain).
+    private var currentImageSize: CGSize? {
+        sourceCIImage?.extent.size ?? sourceImage?.size
     }
 
     private var isHDREnabled: Bool {
@@ -110,6 +126,18 @@ struct EditWorkspaceView: View {
             || cameraRaw.saturation != nil
     }
 
+    /// Whether the compute shader can handle all active edit operations.
+    /// Returns false when contrast, highlights, shadows, whites, or blacks are set,
+    /// since those require CIFilter for accurate extended-range rendering.
+    private var canUseComputeShader: Bool {
+        guard let cameraRaw = metadataViewModel.editingMetadata.cameraRaw else { return true }
+        return cameraRaw.contrast2012 == nil
+            && cameraRaw.highlights2012 == nil
+            && cameraRaw.shadows2012 == nil
+            && cameraRaw.whites2012 == nil
+            && cameraRaw.blacks2012 == nil
+    }
+
     private var selectedImageOrientation: Int {
         selectedImage?.exifOrientation ?? 1
     }
@@ -155,6 +183,11 @@ struct EditWorkspaceView: View {
         }
         .onAppear {
             ensureSingleSelection()
+            if metalPipeline == nil {
+                let device = MetalPreviewView.Coordinator.device
+                let queue = MetalPreviewView.Coordinator.commandQueue
+                metalPipeline = MetalEditPipeline(device: device, commandQueue: queue)
+            }
             loadSelectedImagePreview()
             keyEventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { event in
                 return handleKeyEvent(event)
@@ -179,6 +212,11 @@ struct EditWorkspaceView: View {
         .onChange(of: metadataViewModel.editingMetadata.cameraRaw) { _, _ in
             renderPreview()
         }
+        .onChange(of: isDraggingEditSlider) { wasDragging, isDragging in
+            if wasDragging, !isDragging {
+                renderPreview()
+            }
+        }
         .onChange(of: selectedImage?.exifOrientation) { _, _ in
             loadSelectedImagePreview()
         }
@@ -202,13 +240,13 @@ struct EditWorkspaceView: View {
             ZStack {
                 Color(nsColor: .windowBackgroundColor)
 
-                if let displayImage {
+                if let imageSize = currentImageSize, displayCIImage != nil {
                     if (showCropControls || isCropEnabled), !isShowingBefore {
                         // Crop-centered: image scales/positions so crop fills view
                         let zoom = showCropControls ? cropZoomScale : 1.0
                         let computedImageRect = cropFittedImageRect(
                             in: geometry.size,
-                            imageSize: displayImage.size,
+                            imageSize: imageSize,
                             crop: activeCrop,
                             angleDegrees: activeCropAngle,
                             zoom: zoom
@@ -217,19 +255,16 @@ struct EditWorkspaceView: View {
                         // image rescaling while the overlay stays stable
                         let imageRect = lockedCropImageRect ?? computedImageRect
 
-                        if isHDREnabled, let previewCGImage {
-                            HDRImageView(cgImage: previewCGImage, isHDR: true)
-                                .frame(width: imageRect.width, height: imageRect.height)
-                                .rotationEffect(.degrees(-activeCropAngle))
-                                .position(x: imageRect.midX, y: imageRect.midY)
-                        } else {
-                            Image(nsImage: displayImage)
-                                .resizable()
-                                .interpolation(.high)
-                                .frame(width: imageRect.width, height: imageRect.height)
-                                .rotationEffect(.degrees(-activeCropAngle))
-                                .position(x: imageRect.midX, y: imageRect.midY)
-                        }
+                        MetalPreviewView(
+                            ciImage: displayCIImage,
+                            isHDR: isHDREnabled,
+                            metalPipeline: metalPipeline,
+                            useComputeShader: isDraggingEditSlider && canUseComputeShader && metalPipeline?.hasSourceTexture == true,
+                            coordinator: metalCoordinator
+                        )
+                            .frame(width: imageRect.width, height: imageRect.height)
+                            .rotationEffect(.degrees(-activeCropAngle))
+                            .position(x: imageRect.midX, y: imageRect.midY)
 
                         if showCropControls, canEditSingleImage {
                             CropOverlayView(
@@ -259,19 +294,17 @@ struct EditWorkspaceView: View {
                         }
                     } else {
                         // Normal fit: image fits within view (also used for "before" preview)
-                        let imageRect = fittedImageRect(in: geometry.size, imageSize: displayImage.size)
+                        let imageRect = fittedImageRect(in: geometry.size, imageSize: imageSize)
 
-                        if isHDREnabled, !isShowingBefore, let previewCGImage {
-                            HDRImageView(cgImage: previewCGImage, isHDR: true)
-                                .frame(width: imageRect.width, height: imageRect.height)
-                                .position(x: geometry.size.width * 0.5, y: geometry.size.height * 0.5)
-                        } else {
-                            Image(nsImage: displayImage)
-                                .resizable()
-                                .interpolation(.high)
-                                .frame(width: imageRect.width, height: imageRect.height)
-                                .position(x: geometry.size.width * 0.5, y: geometry.size.height * 0.5)
-                        }
+                        MetalPreviewView(
+                            ciImage: displayCIImage,
+                            isHDR: isHDREnabled && !isShowingBefore,
+                            metalPipeline: metalPipeline,
+                            useComputeShader: isDraggingEditSlider && canUseComputeShader && metalPipeline?.hasSourceTexture == true,
+                            coordinator: metalCoordinator
+                        )
+                            .frame(width: imageRect.width, height: imageRect.height)
+                            .position(x: geometry.size.width * 0.5, y: geometry.size.height * 0.5)
                     }
                 } else if isLoadingPreview {
                     ProgressView("Loading preview...")
@@ -331,7 +364,7 @@ struct EditWorkspaceView: View {
 
     private var controlsPane: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Button {
                         onExit()
@@ -550,12 +583,19 @@ struct EditWorkspaceView: View {
 
                     Divider()
 
-                    Toggle(isOn: hdrToggleBinding) {
-                        Label("HDR", systemImage: "sun.max.fill")
+                    VStack(spacing: 1) {
+                        Toggle(isOn: hdrToggleBinding) {
+                            Text("HDR")
+                                .font(.caption)
+                        }
+                        .toggleStyle(.switch)
+                        .controlSize(.mini)
+                        .disabled(!canEditSingleImage)
+                        Text("Experimental")
+                            .font(.system(size: 8))
+                            .foregroundStyle(.secondary)
                     }
-                    .toggleStyle(.switch)
-                    .disabled(!canEditSingleImage)
-                    .help("HDR export is experimental — brightness may vary across viewers")
+                    .help("HDR export brightness may vary across viewers")
 
                     Divider()
 
@@ -638,8 +678,10 @@ struct EditWorkspaceView: View {
         previewRenderTask = nil
         sourceImage = nil
         sourceCIImage = nil
+        previewCIImage = nil
         previewImage = nil
         isLoadingPreview = false
+        metalPipeline?.clearSourceTexture()
         resetCropZoom()
         showCropControls = isCropEnabled
 
@@ -691,6 +733,14 @@ struct EditWorkspaceView: View {
                 sourceCIImage = thumbnail?.tiffRepresentation.flatMap { CIImage(data: $0) }
             }
 
+            // Upload source to Metal texture for compute shader fast path
+            if let ci = sourceCIImage, let pipeline = metalPipeline {
+                let ciCopy = ci
+                Task.detached(priority: .medium) {
+                    pipeline.uploadSourceImage(ciCopy)
+                }
+            }
+
             renderPreview()
             isLoadingPreview = false
         }
@@ -698,20 +748,40 @@ struct EditWorkspaceView: View {
 
     private func renderPreview() {
         guard let sourceCIImage else {
+            previewCIImage = nil
             previewImage = sourceImage
             previewCGImage = nil
             NotificationCenter.default.post(name: .scopeSourceImageDidChange, object: nil, userInfo: nil)
             return
         }
 
-        previewRenderTask?.cancel()
-        let source = sourceCIImage
         let settings = metadataViewModel.editingMetadata.cameraRaw
+
+        // Metal compute fast path: only when the shader can handle ALL active operations
+        // (exposure, vibrance, saturation, WB). Falls through to CIFilter path when
+        // contrast/highlights/shadows/whites/blacks are set.
+        if isDraggingEditSlider, canUseComputeShader,
+           let pipeline = metalPipeline, pipeline.hasSourceTexture {
+            pipeline.updateParams(settings)
+            metalCoordinator.requestRedraw()
+            return
+        }
+
+        // Build lazy CIFilter chain — nearly free, no GPU work happens here.
+        // MetalPreviewView renders this directly to its drawable texture.
+        previewCIImage = CameraRawApproximation.apply(to: sourceCIImage, settings: settings)
+
+        // During drag: Metal handles display, skip expensive CGImage generation
+        if isDraggingEditSlider { return }
+
+        // On release / initial load: also produce CGImage for scope display and export
+        previewRenderTask?.cancel()
+        let fullSource = sourceCIImage
         let fallback = sourceImage
 
         previewRenderTask = Task {
             let result = await Task.detached(priority: .userInitiated) { () -> (NSImage, CGImage)? in
-                let output = CameraRawApproximation.apply(to: source, settings: settings)
+                let output = CameraRawApproximation.apply(to: fullSource, settings: settings)
                 let ctx = CameraRawApproximation.ciContext
                 guard let cgImage = ctx.createCGImage(
                     output,
@@ -1005,6 +1075,7 @@ struct EditWorkspaceView: View {
                 step: 0,
                 gradient: LinearGradient(colors: [.blue, .yellow], startPoint: .leading, endPoint: .trailing),
                 onEditingChanged: { editing in
+                    isDraggingEditSlider = editing
                     if !editing {
                         commitEditAdjustments()
                     }
@@ -1217,6 +1288,7 @@ struct EditWorkspaceView: View {
                 step: step,
                 gradient: gradient,
                 onEditingChanged: { editing in
+                    isDraggingEditSlider = editing
                     if !editing {
                         commitEditAdjustments()
                     }
@@ -1306,7 +1378,9 @@ struct EditWorkspaceView: View {
             do {
                 let outputFolder = selectedImageURL.deletingLastPathComponent().appendingPathComponent("Edited", isDirectory: true)
                 try FileManager.default.createDirectory(at: outputFolder, withIntermediateDirectories: true)
-                let outputURL = try EditedImageRenderer.render(from: selectedImageURL, cameraRaw: settings, isHDR: hdr, outputFolder: outputFolder)
+                let outputURL = try await Task.detached(priority: .userInitiated) {
+                    try EditedImageRenderer.render(from: selectedImageURL, cameraRaw: settings, isHDR: hdr, outputFolder: outputFolder)
+                }.value
                 browserViewModel.thumbnailService.invalidateThumbnail(for: outputURL)
             } catch {
                 browserViewModel.errorMessage = "Failed to save image: \(error.localizedDescription)"

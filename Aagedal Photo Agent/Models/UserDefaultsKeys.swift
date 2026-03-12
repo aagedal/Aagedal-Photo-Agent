@@ -1,6 +1,6 @@
 import Foundation
 
-enum UserDefaultsKeys {
+nonisolated enum UserDefaultsKeys {
     // MARK: - ExifTool
     static let exifToolSource = "exifToolSource"
     static let exifToolCustomPath = "exifToolCustomPath"
@@ -46,8 +46,11 @@ enum UserDefaultsKeys {
     static let ftpConnections = "ftpConnections"
 
     // MARK: - Browser
+    static let showAllFiles = "showAllFiles"
     static let thumbnailSortOrder = "thumbnailSortOrder"
+    static let thumbnailSortReversed = "thumbnailSortReversed"
     static let thumbnailScale = "thumbnailScale"
+    static let previewMode = "previewMode"
 
     // MARK: - Multi-Select Behavior
     static let multiSelectKeywordsMode = "multiSelectKeywordsMode"

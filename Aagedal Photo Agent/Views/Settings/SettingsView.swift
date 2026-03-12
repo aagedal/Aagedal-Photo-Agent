@@ -145,6 +145,27 @@ struct SettingsView: View {
                 .disabled(settingsViewModel.defaultEditDestination == .internalEditor)
             }
 
+            Section("Browser") {
+                Toggle("Show all files", isOn: $settingsViewModel.showAllFiles)
+                Text("Show non-image files in the thumbnail grid with their system icon.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Preview") {
+                Picker("Mode", selection: $settingsViewModel.previewMode) {
+                    ForEach(PreviewMode.allCases, id: \.self) { mode in
+                        Text(mode.displayName).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Text(settingsViewModel.previewMode == .performance
+                    ? "Thumbnails and full screen show the original image. Faster browsing and selection."
+                    : "Thumbnails and full screen show develop edits (crop, tone). Slower but accurate preview.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .padding()

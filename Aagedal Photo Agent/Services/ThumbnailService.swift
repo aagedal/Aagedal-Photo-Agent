@@ -40,11 +40,20 @@ final class ThumbnailService {
             var image: NSImage?
             if let ql = await generateQLThumbnail(for: url) {
                 image = ql
-            } else if let cg = loadCGImageSourceThumbnail(for: url) {
+            } else if let cg = await loadCGImageSourceThumbnail(for: url) {
                 image = cg
             }
 
-            guard let image else { return nil as NSImage? }
+            guard let image else {
+            // For non-image files, use system file icon
+            if !SupportedImageFormats.isSupported(url: url) {
+                let icon = NSWorkspace.shared.icon(forFile: url.path)
+                icon.size = NSSize(width: thumbnailSize.width, height: thumbnailSize.height)
+                cache.setObject(icon, forKey: url as NSURL)
+                return icon
+            }
+            return nil as NSImage?
+        }
 
             if let settings = cameraRawSettings, !settings.isEmpty {
                 if let processed = applyCameraRaw(to: image, settings: settings, exifOrientation: exifOrientation) {
@@ -81,20 +90,29 @@ final class ThumbnailService {
         }
     }
 
-    nonisolated private func loadCGImageSourceThumbnail(for url: URL) -> NSImage? {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+    nonisolated private func loadCGImageSourceThumbnail(for url: URL) async -> NSImage? {
+        let maxPixelSize = max(thumbnailSize.width, thumbnailSize.height) * 2
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+                    continuation.resume(returning: nil)
+                    return
+                }
 
-        let options: [CFString: Any] = [
-            kCGImageSourceThumbnailMaxPixelSize: max(thumbnailSize.width, thumbnailSize.height) * 2,
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-        ]
+                let options: [CFString: Any] = [
+                    kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceCreateThumbnailWithTransform: true,
+                ]
 
-        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
-            return nil
+                guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+
+                continuation.resume(returning: NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height)))
+            }
         }
-
-        return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
     }
 
     nonisolated private func applyCameraRaw(to nsImage: NSImage, settings: CameraRawSettings, exifOrientation: Int = 1) -> NSImage? {
