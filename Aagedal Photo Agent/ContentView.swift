@@ -409,6 +409,7 @@ struct ContentView: View {
     private func toggleEditWorkspace() {
         if mainViewMode == .editing {
             mainViewMode = .browser
+            browserViewModel.shouldRestoreGridFocus = true
             return
         }
         openEditWorkspace()
@@ -511,6 +512,7 @@ struct ContentView: View {
             settingsViewModel: settingsViewModel,
             onExit: {
                 mainViewMode = .browser
+                browserViewModel.shouldRestoreGridFocus = true
             },
             onPendingStatusChanged: {
                 browserViewModel.refreshPendingStatus()
@@ -1111,7 +1113,9 @@ struct ContentView: View {
                 renderExportCurrent = index + 1
                 let cameraRaw = metadataByURL[url]?.cameraRaw
                 do {
-                    let outputURL = try EditedImageRenderer.saveAs(from: url, cameraRaw: cameraRaw, format: format)
+                    let outputURL = try await Task.detached(priority: .userInitiated) {
+                        try EditedImageRenderer.saveAs(from: url, cameraRaw: cameraRaw, format: format)
+                    }.value
                     savedURLs.append(outputURL)
                 } catch {
                     browserViewModel.errorMessage = "Save As failed for \(url.lastPathComponent): \(error.localizedDescription)"
@@ -1170,7 +1174,9 @@ struct ContentView: View {
                 let cameraRaw = metadataByURL[url]?.cameraRaw
                 let isHDR = cameraRaw?.hdrEditMode == 1
                 do {
-                    try EditedImageRenderer.render(from: url, cameraRaw: cameraRaw, isHDR: isHDR, outputFolder: outputFolder)
+                    try await Task.detached(priority: .userInitiated) {
+                        try EditedImageRenderer.render(from: url, cameraRaw: cameraRaw, isHDR: isHDR, outputFolder: outputFolder)
+                    }.value
                     successCount += 1
                 } catch {
                     failureCount += 1
@@ -1201,20 +1207,25 @@ struct ContentViewModifiers: ViewModifier {
     func body(content: Content) -> some View {
         let base = content
             .onChange(of: browserViewModel.selectedImageIDs) { oldValue, _ in
+                // Defer save of previous selection to a fire-and-forget task so the
+                // selection border renders immediately without waiting for disk I/O.
                 if !oldValue.isEmpty && metadataViewModel.hasChanges {
                     let hadC2PA = browserViewModel.images.contains { image in
                         metadataViewModel.selectedURLs.contains(image.url) && image.hasC2PA
                     }
                     let mode = hadC2PA ? settingsViewModel.metadataWriteModeC2PA : settingsViewModel.metadataWriteModeNonC2PA
-                    if hadC2PA, mode == .writeToFile {
-                        metadataViewModel.saveToSidecar()
-                        browserViewModel.refreshPendingStatus()
-                    } else {
-                        metadataViewModel.commitEdits(
-                            mode: mode,
-                            hasC2PA: hadC2PA
-                        ) {
-                            browserViewModel.refreshPendingStatus()
+                    let previousURLs = metadataViewModel.selectedURLs
+                    Task { @MainActor in
+                        if hadC2PA, mode == .writeToFile {
+                            metadataViewModel.saveToSidecar()
+                            browserViewModel.refreshPendingStatusBatch(for: previousURLs)
+                        } else {
+                            metadataViewModel.commitEdits(
+                                mode: mode,
+                                hasC2PA: hadC2PA
+                            ) {
+                                browserViewModel.refreshPendingStatusBatch(for: previousURLs)
+                            }
                         }
                     }
                 }
@@ -1223,10 +1234,8 @@ struct ContentViewModifiers: ViewModifier {
                 selectionLoadTask = Task {
                     try? await Task.sleep(nanoseconds: selectionDebounceNanoseconds)
                     guard !Task.isCancelled else { return }
-                    await MainActor.run {
-                        metadataViewModel.loadMetadata(for: selected, folderURL: browserViewModel.currentFolderURL)
-                        loadTechnicalMetadata()
-                    }
+                    metadataViewModel.loadMetadata(for: selected, folderURL: browserViewModel.currentFolderURL)
+                    loadTechnicalMetadata()
                 }
             }
             .onDrop(of: [.fileURL], isTargeted: nil) { providers in
@@ -1267,6 +1276,9 @@ struct ContentViewModifiers: ViewModifier {
                 let selected = browserViewModel.selectedImages
                 metadataViewModel.loadMetadata(for: selected, folderURL: browserViewModel.currentFolderURL)
                 browserViewModel.refreshPendingStatus()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .showAllFilesChanged)) { _ in
+                browserViewModel.showAllFiles = UserDefaults.standard.bool(forKey: UserDefaultsKeys.showAllFiles)
             }
             .onChange(of: browserViewModel.currentFolderURL) {
                 technicalMetadataCache.removeAll()

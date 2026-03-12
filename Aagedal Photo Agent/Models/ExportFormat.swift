@@ -1,7 +1,7 @@
 import Foundation
 
 /// Default output format for SDR images
-enum ExportFormatSDR: String, CaseIterable, Identifiable {
+nonisolated enum ExportFormatSDR: String, CaseIterable, Identifiable {
     case jpeg = "jpeg"
     case png = "png"
     case tiff = "tiff"
@@ -53,7 +53,7 @@ enum ExportFormatSDR: String, CaseIterable, Identifiable {
 }
 
 /// Default output format for HDR images
-enum ExportFormatHDR: String, CaseIterable, Identifiable {
+nonisolated enum ExportFormatHDR: String, CaseIterable, Identifiable {
     case heic10bit = "heic10bit"
     case avif10bit = "avif10bit"
     case jxl = "jxl"
@@ -101,7 +101,7 @@ enum ExportFormatHDR: String, CaseIterable, Identifiable {
 }
 
 /// TIFF compression method
-enum TIFFCompression: String, CaseIterable, Identifiable {
+nonisolated enum TIFFCompression: String, CaseIterable, Identifiable {
     case none = "none"
     case lzw = "lzw"
     case zip = "zip"

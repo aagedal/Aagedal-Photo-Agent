@@ -3,7 +3,7 @@ import CoreImage
 import ImageIO
 import UniformTypeIdentifiers
 
-enum EditedImageRenderer {
+nonisolated enum EditedImageRenderer {
 
     private static func loadAndProcess(from sourceURL: URL, cameraRaw: CameraRawSettings?) throws -> CIImage {
         guard let input = CIImage(contentsOf: sourceURL, options: [

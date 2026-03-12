@@ -42,7 +42,68 @@ struct BrowserView: View {
                     }
                 }
             } else {
-                ThumbnailGridView(viewModel: viewModel)
+                ZStack {
+                    CollectionViewGridRepresentable(viewModel: viewModel)
+
+                    // Thumbnail generation progress (bottom-left)
+                    if viewModel.thumbnailService.isPreGenerating {
+                        VStack {
+                            Spacer()
+                            HStack {
+                                ThumbnailGenerationProgressView(
+                                    completed: viewModel.thumbnailService.preGenerateCompleted,
+                                    total: viewModel.thumbnailService.preGenerateTotal,
+                                    onCancel: { viewModel.thumbnailService.cancelBackgroundGeneration() }
+                                )
+                                .padding(8)
+                                Spacer()
+                            }
+                        }
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                        .animation(.easeInOut(duration: 0.25), value: viewModel.thumbnailService.isPreGenerating)
+                    }
+
+                    // Sort feedback overlay (bottom-left)
+                    if let sortFeedback = viewModel.sortFeedback {
+                        VStack {
+                            Spacer()
+                            HStack {
+                                Text(sortFeedback)
+                                    .font(.caption.bold())
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 5)
+                                    .background(.black.opacity(0.7), in: Capsule())
+                                    .padding(8)
+                                Spacer()
+                            }
+                        }
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
+                        .animation(.easeInOut(duration: 0.2), value: viewModel.sortFeedback)
+                    }
+
+                    // Thumbnail size slider (bottom-right)
+                    VStack {
+                        Spacer()
+                        HStack {
+                            Spacer()
+                            HStack(spacing: 4) {
+                                Image(systemName: "square.grid.3x3")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                Slider(value: $viewModel.thumbnailScale, in: 0.5...2.0, step: 0.1)
+                                    .frame(width: 80)
+                                Image(systemName: "square.grid.2x2")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
+                            .padding(8)
+                        }
+                    }
+                }
             }
         }
         .toolbar {
@@ -61,6 +122,16 @@ struct BrowserView: View {
                     }
                 }
                 .pickerStyle(.menu)
+            }
+
+            ToolbarItem(placement: .automatic) {
+                Button {
+                    viewModel.sortReversed.toggle()
+                } label: {
+                    Image(systemName: viewModel.sortReversed ? "arrow.up" : "arrow.down")
+                }
+                .help(viewModel.sortReversed ? "Sort ascending" : "Sort descending")
+                .disabled(viewModel.sortOrder == .manual)
             }
 
             ToolbarItem(placement: .automatic) {

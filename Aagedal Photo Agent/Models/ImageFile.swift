@@ -27,6 +27,7 @@ struct ImageFile: Identifiable, Hashable, Sendable {
     let fileType: UTType?
     let fileSize: Int64
     let dateModified: Date
+    let dateAdded: Date
 
     var starRating: StarRating
     var colorLabel: ColorLabel
@@ -41,15 +42,18 @@ struct ImageFile: Identifiable, Hashable, Sendable {
     var metadata: IPTCMetadata?
     var personShown: [String]
 
+    var isImageFile: Bool { SupportedImageFormats.isSupported(url: url) }
+
     init(url: URL) {
         self.url = url
         self.filename = url.lastPathComponent
         self.filenameLowercased = url.lastPathComponent.lowercased()
         self.fileType = UTType(filenameExtension: url.pathExtension)
 
-        let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey, .addedToDirectoryDateKey])
         self.fileSize = Int64(values?.fileSize ?? 0)
         self.dateModified = values?.contentModificationDate ?? Date.distantPast
+        self.dateAdded = values?.addedToDirectoryDate ?? Date.distantPast
 
         self.starRating = .none
         self.colorLabel = .none
@@ -70,9 +74,10 @@ struct ImageFile: Identifiable, Hashable, Sendable {
         self.filenameLowercased = url.lastPathComponent.lowercased()
         self.fileType = UTType(filenameExtension: url.pathExtension)
 
-        let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey, .addedToDirectoryDateKey])
         self.fileSize = Int64(values?.fileSize ?? 0)
         self.dateModified = values?.contentModificationDate ?? Date.distantPast
+        self.dateAdded = values?.addedToDirectoryDate ?? Date.distantPast
 
         self.starRating = source.starRating
         self.colorLabel = source.colorLabel
@@ -124,7 +129,7 @@ struct ImageFile: Identifiable, Hashable, Sendable {
     // This is intentional and satisfies the Hashable contract (equal objects must have
     // equal hashes, but not vice versa). The coarse hash is fine because ImageFile is
     // never used as a Set element or Dictionary key — URL is used instead. The detailed
-    // == drives SwiftUI diffing (e.g. ThumbnailCell) so that cells redraw when ratings,
+    // == drives diffing (e.g. NSDiffableDataSource snapshot) so that cells redraw when ratings,
     // labels, or other visual state changes on the same file.
 
     static func == (lhs: ImageFile, rhs: ImageFile) -> Bool {

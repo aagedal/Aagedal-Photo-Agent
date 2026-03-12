@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import AppKit
 
 enum ColorLabel: String, Codable, CaseIterable, Sendable {
     case none = ""
@@ -23,6 +24,20 @@ enum ColorLabel: String, Codable, CaseIterable, Sendable {
         case .cyan: return .cyan
         case .brown: return .brown
         case .trash: return .gray
+        }
+    }
+
+    var nsColor: NSColor? {
+        switch self {
+        case .none: return nil
+        case .red: return .systemRed
+        case .yellow: return .systemYellow
+        case .green: return .systemGreen
+        case .blue: return .systemBlue
+        case .purple: return .systemPurple
+        case .cyan: return .systemTeal
+        case .brown: return .systemBrown
+        case .trash: return .systemGray
         }
     }
 

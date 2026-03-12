@@ -23,6 +23,7 @@ final class BrowserViewModel {
     var currentFolderName: String?
     var isLoading = false
     var isFullScreen = false
+    var shouldRestoreGridFocus = false
 
     struct FullScreenFaceNavigationItem {
         let imageURL: URL
@@ -42,8 +43,18 @@ final class BrowserViewModel {
         didSet {
             UserDefaults.standard.set(sortOrder.rawValue, forKey: UserDefaultsKeys.thumbnailSortOrder)
             rebuildSortedCache()
+            showSortFeedback()
         }
     }
+    var sortReversed: Bool = false {
+        didSet {
+            UserDefaults.standard.set(sortReversed, forKey: UserDefaultsKeys.thumbnailSortReversed)
+            rebuildSortedCache()
+            showSortFeedback()
+        }
+    }
+    var sortFeedback: String?
+    @ObservationIgnored private var sortFeedbackTask: Task<Void, Never>?
     var favoriteFolders: [FavoriteFolder] = []
     var openFolders: [URL] = []
     var subfoldersByOpenFolder: [URL: [URL]] = [:]
@@ -84,11 +95,27 @@ final class BrowserViewModel {
         }
     }
 
+    var showAllFiles: Bool = false {
+        didSet {
+            UserDefaults.standard.set(showAllFiles, forKey: UserDefaultsKeys.showAllFiles)
+            if let url = currentFolderURL { loadFolder(url: url) }
+        }
+    }
+
+    var renderEditsInPreviews: Bool {
+        didSet {
+            UserDefaults.standard.set(renderEditsInPreviews ? "editing" : "performance", forKey: UserDefaultsKeys.previewMode)
+            thumbnailService.clearCache()
+            thumbnailService.startBackgroundGeneration(for: visibleImages)
+        }
+    }
+
     var copiedCameraRawSettings: CameraRawSettings?
 
     let fileSystemService = FileSystemService()
     let thumbnailService = ThumbnailService()
     let exifToolService = ExifToolService()
+    @ObservationIgnored let fullScreenImageCache = FullScreenImageCache()
     private let sidecarService = MetadataSidecarService()
     private let xmpSidecarService = XMPSidecarService()
 
@@ -122,10 +149,14 @@ final class BrowserViewModel {
            let stored = SortOrder(rawValue: raw) {
             sortOrder = stored
         }
+        sortReversed = UserDefaults.standard.bool(forKey: UserDefaultsKeys.thumbnailSortReversed)
         let storedScale = UserDefaults.standard.double(forKey: UserDefaultsKeys.thumbnailScale)
         if storedScale >= 0.5 && storedScale <= 2.0 {
             thumbnailScale = storedScale
         }
+        let previewMode = UserDefaults.standard.string(forKey: UserDefaultsKeys.previewMode) ?? "performance"
+        self.renderEditsInPreviews = previewMode == "editing"
+        self.showAllFiles = UserDefaults.standard.bool(forKey: UserDefaultsKeys.showAllFiles)
     }
 
     var selectedImages: [ImageFile] { selectedImagesCache }
@@ -145,6 +176,8 @@ final class BrowserViewModel {
                 sorted = images.sorted { $0.filename.localizedStandardCompare($1.filename) == .orderedAscending }
             case .dateModified:
                 sorted = images.sorted { $0.dateModified > $1.dateModified }
+            case .dateAdded:
+                sorted = images.sorted { $0.dateAdded > $1.dateAdded }
             case .rating:
                 sorted = images.sorted { $0.starRating.rawValue > $1.starRating.rawValue }
             case .label:
@@ -169,14 +202,25 @@ final class BrowserViewModel {
                     sorted = result
                 }
             }
-            sortedImages = sorted
-            urlToSortedIndex = Dictionary(uniqueKeysWithValues: sorted.enumerated().map { ($1.url, $0) })
+            let final = (sortReversed && sortOrder != .manual) ? sorted.reversed() : sorted
+            sortedImages = Array(final)
+            urlToSortedIndex = Dictionary(uniqueKeysWithValues: sortedImages.enumerated().map { ($1.url, $0) })
         } else {
             // Same images, just updated properties — refresh sortedImages in existing order
             let imageByURL = Dictionary(uniqueKeysWithValues: images.map { ($0.url, $0) })
             sortedImages = sortedImages.compactMap { imageByURL[$0.url] }
         }
         rebuildVisibleCache()
+    }
+
+    private func showSortFeedback() {
+        sortFeedbackTask?.cancel()
+        sortFeedback = sortOrder.overlayDescription(reversed: sortReversed)
+        sortFeedbackTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            self?.sortFeedback = nil
+        }
     }
 
     private func scheduleFilterRebuild() {
@@ -278,6 +322,7 @@ final class BrowserViewModel {
         lastClickedImageURL = nil
         manualOrder.removeAll()
         thumbnailService.cancelBackgroundGeneration()
+        fullScreenImageCache.cancelPreviewGeneration()
 
         // Add to open folders if not already there, unless it's a subfolder of an existing open folder
         if !openFolders.contains(url) && !isSubfolderOfOpenFolder(url) {
@@ -285,28 +330,42 @@ final class BrowserViewModel {
         }
 
         loadFolderTask = Task {
-            let discoveredSubfolders = (try? fileSystemService.listSubfolders(at: url)) ?? []
-            guard !Task.isCancelled, self.currentFolderURL == url else { return }
-            self.subfoldersByOpenFolder[url] = discoveredSubfolders
-            if !discoveredSubfolders.isEmpty {
-                self.expandedFolders.insert(url)
-            }
             do {
-                var files = try fileSystemService.scanFolder(at: url)
-                guard !Task.isCancelled, self.currentFolderURL == url else { return }
-                let allSidecars = sidecarService.loadAllSidecars(in: url)
-                for i in files.indices {
-                    if let sidecar = allSidecars[files[i].url], sidecar.pendingChanges {
-                        files[i].hasPendingMetadataChanges = true
-                        files[i].pendingFieldNames = extractPendingFieldNames(from: sidecar)
-                        // Apply cameraRaw/crop from sidecar so thumbnails render with crop immediately
-                        applySidecarCropAndDevelopState(to: &files[i], sidecar: sidecar)
-                    }
-                }
+                // Phase 1: Scan folder and show grid immediately
+                let files = try fileSystemService.scanFolder(at: url, includeAllFiles: showAllFiles)
                 guard !Task.isCancelled, self.currentFolderURL == url else { return }
                 self.images = files
                 self.isLoading = false
                 self.thumbnailService.startBackgroundGeneration(for: self.visibleImages)
+
+                // Phase 2: Discover subfolders (non-blocking, after grid is visible)
+                let discoveredSubfolders = (try? fileSystemService.listSubfolders(at: url)) ?? []
+                guard !Task.isCancelled, self.currentFolderURL == url else { return }
+                self.subfoldersByOpenFolder[url] = discoveredSubfolders
+                if !discoveredSubfolders.isEmpty {
+                    self.expandedFolders.insert(url)
+                }
+
+                // Phase 3: Load sidecars and apply pending overrides
+                let allSidecars = sidecarService.loadAllSidecars(in: url)
+                var updated = files
+                for i in updated.indices {
+                    if let sidecar = allSidecars[updated[i].url], sidecar.pendingChanges {
+                        updated[i].hasPendingMetadataChanges = true
+                        updated[i].pendingFieldNames = extractPendingFieldNames(from: sidecar)
+                        applySidecarCropAndDevelopState(to: &updated[i], sidecar: sidecar)
+                    }
+                }
+                guard !Task.isCancelled, self.currentFolderURL == url else { return }
+                self.images = updated
+
+                // Phase 4: Background display preview generation
+                self.fullScreenImageCache.startBackgroundPreviewGeneration(
+                    for: self.visibleImages.map(\.url),
+                    screenMaxPx: 960
+                )
+
+                // Phase 5: Load metadata from ExifTool
                 await loadBasicMetadata(cachedSidecars: allSidecars)
             } catch {
                 guard !Task.isCancelled, self.currentFolderURL == url else { return }
@@ -326,7 +385,7 @@ final class BrowserViewModel {
 
             let scanned: [ImageFile]
             do {
-                scanned = try fileSystemService.scanFolder(at: folderURL)
+                scanned = try fileSystemService.scanFolder(at: folderURL, includeAllFiles: showAllFiles)
             } catch {
                 return
             }
@@ -427,7 +486,7 @@ final class BrowserViewModel {
 
         // Process in batches — mutate a local copy, assign once to avoid repeated didSet cascades
         let batchSize = 50
-        let urls = images.map(\.url)
+        let urls = images.filter(\.isImageFile).map(\.url)
         var updated = images
         let localIndex = Dictionary(uniqueKeysWithValues: updated.enumerated().map { ($1.url, $0) })
 
@@ -1360,7 +1419,7 @@ final class BrowserViewModel {
         images = updated
     }
 
-    private func refreshPendingStatusBatch(for urls: [URL]) {
+    func refreshPendingStatusBatch(for urls: [URL]) {
         guard let folderURL = currentFolderURL, !urls.isEmpty else { return }
         let urlSet = Set(urls)
         var updated = images
@@ -1865,10 +1924,23 @@ final class BrowserViewModel {
     enum SortOrder: String, CaseIterable {
         case name = "Name"
         case dateModified = "Date Modified"
+        case dateAdded = "Date Added"
         case rating = "Rating"
         case label = "Label"
         case fileType = "File Type"
         case manual = "Manual"
+
+        func overlayDescription(reversed: Bool) -> String {
+            switch self {
+            case .name: return reversed ? "Name Z → A" : "Name A → Z"
+            case .dateModified: return reversed ? "Date Modified Oldest First" : "Date Modified Newest First"
+            case .dateAdded: return reversed ? "Date Added Oldest First" : "Date Added Newest First"
+            case .rating: return reversed ? "Rating Lowest First" : "Rating Highest First"
+            case .label: return reversed ? "Label Reversed" : "Label"
+            case .fileType: return reversed ? "File Type Z → A" : "File Type A → Z"
+            case .manual: return "Manual Order"
+            }
+        }
     }
 
     enum PersonShownFilter: String, CaseIterable {
