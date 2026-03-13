@@ -790,116 +790,139 @@ final class BrowserViewModel {
         return true
     }
 
-    func selectNext(extending: Bool = false) {
-        if navigateFullScreenFaceSequence(step: 1) { return }
-        guard !visibleImages.isEmpty else { return }
+    // MARK: - Compute Selection (without mutating @Observable state)
+
+    /// Compute the next selection without mutating state. Returns nil if handled by full-screen face navigation.
+    func computeNextSelection(extending: Bool = false) -> (ids: Set<URL>, active: URL?)? {
+        if navigateFullScreenFaceSequence(step: 1) { return nil }
+        guard !visibleImages.isEmpty else { return nil }
         let anchor = lastClickedImageURL ?? selectedImageIDs.first
         guard let anchorURL = anchor,
               let currentIndex = urlToVisibleIndex[anchorURL] else {
-            guard let first = visibleImages.first else { return }
-            selectedImageIDs = [first.url]
-            lastClickedImageURL = first.url
-            return
+            guard let first = visibleImages.first else { return nil }
+            return (ids: [first.url], active: first.url)
         }
         let nextIndex = min(currentIndex + 1, visibleImages.count - 1)
         let nextURL = visibleImages[nextIndex].url
         if extending {
             var updated = selectedImageIDs
             updated.insert(nextURL)
-            selectedImageIDs = updated
+            return (ids: updated, active: nextURL)
         } else {
-            selectedImageIDs = [nextURL]
+            return (ids: [nextURL], active: nextURL)
         }
-        lastClickedImageURL = nextURL
     }
 
-    func selectPrevious(extending: Bool = false) {
-        if navigateFullScreenFaceSequence(step: -1) { return }
-        guard !visibleImages.isEmpty else { return }
+    /// Compute the previous selection without mutating state. Returns nil if handled by full-screen face navigation.
+    func computePreviousSelection(extending: Bool = false) -> (ids: Set<URL>, active: URL?)? {
+        if navigateFullScreenFaceSequence(step: -1) { return nil }
+        guard !visibleImages.isEmpty else { return nil }
         let anchor = lastClickedImageURL ?? selectedImageIDs.first
         guard let anchorURL = anchor,
               let currentIndex = urlToVisibleIndex[anchorURL] else {
-            guard let first = visibleImages.first else { return }
-            selectedImageIDs = [first.url]
-            lastClickedImageURL = first.url
-            return
+            guard let first = visibleImages.first else { return nil }
+            return (ids: [first.url], active: first.url)
         }
         let prevIndex = max(currentIndex - 1, 0)
         let prevURL = visibleImages[prevIndex].url
         if extending {
             var updated = selectedImageIDs
             updated.insert(prevURL)
-            selectedImageIDs = updated
+            return (ids: updated, active: prevURL)
         } else {
-            selectedImageIDs = [prevURL]
+            return (ids: [prevURL], active: prevURL)
         }
-        lastClickedImageURL = prevURL
     }
 
-    /// Navigate down one row in a grid layout
-    func selectDown(columns: Int, extending: Bool = false) {
-        guard !visibleImages.isEmpty, columns > 0 else { return }
+    /// Compute down selection without mutating state.
+    func computeDownSelection(columns: Int, extending: Bool = false) -> (ids: Set<URL>, active: URL?)? {
+        guard !visibleImages.isEmpty, columns > 0 else { return nil }
         let anchor = lastClickedImageURL ?? selectedImageIDs.first
         guard let anchorURL = anchor,
               let currentIndex = urlToVisibleIndex[anchorURL] else {
-            guard let first = visibleImages.first else { return }
-            selectedImageIDs = [first.url]
-            lastClickedImageURL = first.url
-            return
+            guard let first = visibleImages.first else { return nil }
+            return (ids: [first.url], active: first.url)
         }
         let targetIndex = min(currentIndex + columns, visibleImages.count - 1)
         let targetURL = visibleImages[targetIndex].url
         if extending {
-            // Select all images between current and target
             var updated = selectedImageIDs
             if targetIndex > currentIndex {
                 for i in (currentIndex + 1)...targetIndex {
                     updated.insert(visibleImages[i].url)
                 }
             }
-            selectedImageIDs = updated
+            return (ids: updated, active: targetURL)
         } else {
-            selectedImageIDs = [targetURL]
+            return (ids: [targetURL], active: targetURL)
         }
-        lastClickedImageURL = targetURL
     }
 
-    /// Navigate up one row in a grid layout
-    func selectUp(columns: Int, extending: Bool = false) {
-        guard !visibleImages.isEmpty, columns > 0 else { return }
+    /// Compute up selection without mutating state.
+    func computeUpSelection(columns: Int, extending: Bool = false) -> (ids: Set<URL>, active: URL?)? {
+        guard !visibleImages.isEmpty, columns > 0 else { return nil }
         let anchor = lastClickedImageURL ?? selectedImageIDs.first
         guard let anchorURL = anchor,
               let currentIndex = urlToVisibleIndex[anchorURL] else {
-            guard let first = visibleImages.first else { return }
-            selectedImageIDs = [first.url]
-            lastClickedImageURL = first.url
-            return
+            guard let first = visibleImages.first else { return nil }
+            return (ids: [first.url], active: first.url)
         }
         let targetIndex = max(currentIndex - columns, 0)
         let targetURL = visibleImages[targetIndex].url
         if extending {
-            // Select all images between target and current
             var updated = selectedImageIDs
             if targetIndex < currentIndex {
                 for i in targetIndex..<currentIndex {
                     updated.insert(visibleImages[i].url)
                 }
             }
-            selectedImageIDs = updated
+            return (ids: updated, active: targetURL)
         } else {
-            selectedImageIDs = [targetURL]
+            return (ids: [targetURL], active: targetURL)
         }
-        lastClickedImageURL = targetURL
+    }
+
+    /// Compute select-all without mutating state.
+    func computeSelectAll() -> (ids: Set<URL>, active: URL?)? {
+        guard !visibleImages.isEmpty else { return nil }
+        let active = lastClickedImageURL ?? visibleImages.first?.url
+        return (ids: Set(visibleImages.map(\.url)), active: active)
+    }
+
+    /// Apply a precomputed selection to @Observable state.
+    func applySelection(ids: Set<URL>, active: URL?) {
+        selectedImageIDs = ids
+        lastClickedImageURL = active
+    }
+
+    // MARK: - Selection Navigation (convenience, used by menu notification handlers)
+
+    func selectNext(extending: Bool = false) {
+        guard let sel = computeNextSelection(extending: extending) else { return }
+        applySelection(ids: sel.ids, active: sel.active)
+    }
+
+    func selectPrevious(extending: Bool = false) {
+        guard let sel = computePreviousSelection(extending: extending) else { return }
+        applySelection(ids: sel.ids, active: sel.active)
+    }
+
+    /// Navigate down one row in a grid layout
+    func selectDown(columns: Int, extending: Bool = false) {
+        guard let sel = computeDownSelection(columns: columns, extending: extending) else { return }
+        applySelection(ids: sel.ids, active: sel.active)
+    }
+
+    /// Navigate up one row in a grid layout
+    func selectUp(columns: Int, extending: Bool = false) {
+        guard let sel = computeUpSelection(columns: columns, extending: extending) else { return }
+        applySelection(ids: sel.ids, active: sel.active)
     }
 
     /// Select all images in the current folder
     func selectAll() {
-        guard !visibleImages.isEmpty else { return }
-        selectedImageIDs = Set(visibleImages.map(\.url))
-        // Keep the anchor at the first image or current anchor
-        if lastClickedImageURL == nil {
-            lastClickedImageURL = visibleImages.first?.url
-        }
+        guard let sel = computeSelectAll() else { return }
+        applySelection(ids: sel.ids, active: sel.active)
     }
 
     // MARK: - Rating & Labels
