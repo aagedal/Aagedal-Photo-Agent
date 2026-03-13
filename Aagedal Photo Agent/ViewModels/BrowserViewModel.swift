@@ -1653,8 +1653,8 @@ final class BrowserViewModel {
             try? FileManager.default.moveItem(at: xmpSource, to: xmpDest)
         }
 
-        // Move metadata sidecar
-        try? sidecarService.moveSidecar(for: url, from: folderURL, to: folderURL)
+        // Rename metadata sidecar to match new filename
+        try? sidecarService.renameSidecar(from: url, to: newURL, in: folderURL)
 
         // Update images array
         let newImage = ImageFile(url: newURL, copyingFrom: images[index])
@@ -1740,7 +1740,7 @@ final class BrowserViewModel {
                     let xmpDest = xmpSidecarService.sidecarURL(for: rename.newURL)
                     try? FileManager.default.moveItem(at: xmpSource, to: xmpDest)
                 }
-                try? sidecarService.moveSidecar(for: rename.oldURL, from: folderURL, to: folderURL)
+                try? sidecarService.renameSidecar(from: rename.oldURL, to: rename.newURL, in: folderURL)
 
                 let newImage = ImageFile(url: rename.newURL, copyingFrom: images[rename.index])
                 images[rename.index] = newImage

@@ -188,6 +188,31 @@ struct MetadataSidecarService: Sendable {
         }
     }
 
+    func renameSidecar(from oldImageURL: URL, to newImageURL: URL, in folderURL: URL) throws {
+        let fm = FileManager.default
+        let sourceURLs = sidecarCandidateURLs(for: oldImageURL, in: folderURL).filter {
+            fm.fileExists(atPath: $0.path)
+        }
+        guard !sourceURLs.isEmpty else { return }
+
+        // Load existing sidecar, update sourceFile to match the new filename, and save at new path
+        if var sidecar = loadSidecar(for: oldImageURL, in: folderURL) {
+            sidecar.sourceFile = newImageURL.lastPathComponent
+            try saveSidecar(sidecar, for: newImageURL, in: folderURL)
+        }
+
+        // Remove all old sidecar files (current + legacy)
+        for oldURL in sourceURLs {
+            let newURL = sidecarFileURL(for: newImageURL, in: folderURL)
+            guard oldURL != newURL else { continue }
+            do {
+                try fm.removeItem(at: oldURL)
+            } catch {
+                sidecarLogger.warning("Failed to remove old sidecar \(oldURL.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
     func moveSidecar(for imageURL: URL, from sourceFolderURL: URL, to destinationFolderURL: URL) throws {
         let fm = FileManager.default
         let sourceURLs = sidecarCandidateURLs(for: imageURL, in: sourceFolderURL).filter {
