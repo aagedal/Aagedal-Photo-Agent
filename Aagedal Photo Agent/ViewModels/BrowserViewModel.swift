@@ -497,27 +497,7 @@ final class BrowserViewModel {
 
             do {
                 let results = try await exifToolService.readBatchBasicMetadata(urls: batchURLs)
-                for dict in results {
-                    guard let sourcePath = dict[ExifToolReadKey.sourceFile] as? String else { continue }
-                    let sourceURL = URL(fileURLWithPath: sourcePath)
-
-                    if let index = localIndex[sourceURL] {
-                        if let rating = dict[ExifToolReadKey.rating] as? Int,
-                           let starRating = StarRating(rawValue: rating) {
-                            updated[index].starRating = starRating
-                        }
-                        updated[index].colorLabel = ColorLabel.fromMetadataLabel(dict[ExifToolReadKey.label] as? String)
-                        updated[index].personShown = parseStringOrArray(dict[ExifToolReadKey.personInImage])
-                        let hasC2PA = TechnicalMetadata.dictHasC2PA(dict)
-                        updated[index].hasC2PA = hasC2PA
-                        updated[index].hasDevelopEdits = hasDevelopEdits(in: dict)
-                        updated[index].hasCropEdits = hasCropEdits(in: dict)
-                        updated[index].exifOrientation = parseIntValue(dict[ExifToolReadKey.orientation]) ?? 1
-                        updated[index].cropRegion = cropRegion(in: dict, exifOrientation: updated[index].exifOrientation)
-                        updated[index].cameraRawSettings = cameraRawSettings(in: dict)
-                        applyPendingSidecarOverrides(to: &updated, for: sourceURL, index: index, cachedSidecar: cachedSidecars[sourceURL])
-                    }
-                }
+                applyBatchMetadataResults(results, to: &updated, localIndex: localIndex, cachedSidecars: cachedSidecars)
             } catch {
                 logger.warning("Batch metadata load failed (batch at offset \(batchStart)): \(error.localizedDescription)")
             }
@@ -557,27 +537,7 @@ final class BrowserViewModel {
 
             do {
                 let results = try await exifToolService.readBatchBasicMetadata(urls: batchURLs)
-                for dict in results {
-                    guard let sourcePath = dict[ExifToolReadKey.sourceFile] as? String else { continue }
-                    let sourceURL = URL(fileURLWithPath: sourcePath)
-
-                    if let index = localIndex[sourceURL] {
-                        if let rating = dict[ExifToolReadKey.rating] as? Int,
-                           let starRating = StarRating(rawValue: rating) {
-                            updated[index].starRating = starRating
-                        }
-                        updated[index].colorLabel = ColorLabel.fromMetadataLabel(dict[ExifToolReadKey.label] as? String)
-                        updated[index].personShown = parseStringOrArray(dict[ExifToolReadKey.personInImage])
-                        let hasC2PA = TechnicalMetadata.dictHasC2PA(dict)
-                        updated[index].hasC2PA = hasC2PA
-                        updated[index].hasDevelopEdits = hasDevelopEdits(in: dict)
-                        updated[index].hasCropEdits = hasCropEdits(in: dict)
-                        updated[index].exifOrientation = parseIntValue(dict[ExifToolReadKey.orientation]) ?? 1
-                        updated[index].cropRegion = cropRegion(in: dict, exifOrientation: updated[index].exifOrientation)
-                        updated[index].cameraRawSettings = cameraRawSettings(in: dict)
-                        applyPendingSidecarOverrides(to: &updated, for: sourceURL, index: index)
-                    }
-                }
+                applyBatchMetadataResults(results, to: &updated, localIndex: localIndex)
             } catch {
                 logger.warning("Incremental metadata load failed: \(error.localizedDescription)")
             }
@@ -593,6 +553,36 @@ final class BrowserViewModel {
         pendingMetadataURLs.removeAll()
         Task {
             await loadBasicMetadata(for: urls)
+        }
+    }
+
+    /// Apply parsed ExifTool batch results to the local ImageFile array.
+    /// Shared by full-folder reload and incremental (pending URL) reload paths.
+    private func applyBatchMetadataResults(
+        _ results: [[String: Any]],
+        to updated: inout [ImageFile],
+        localIndex: [URL: Int],
+        cachedSidecars: [URL: MetadataSidecar] = [:]
+    ) {
+        for dict in results {
+            guard let sourcePath = dict[ExifToolReadKey.sourceFile] as? String else { continue }
+            let sourceURL = URL(fileURLWithPath: sourcePath)
+
+            if let index = localIndex[sourceURL] {
+                if let rating = dict[ExifToolReadKey.rating] as? Int,
+                   let starRating = StarRating(rawValue: rating) {
+                    updated[index].starRating = starRating
+                }
+                updated[index].colorLabel = ColorLabel.fromMetadataLabel(dict[ExifToolReadKey.label] as? String)
+                updated[index].personShown = parseStringOrArray(dict[ExifToolReadKey.personInImage])
+                updated[index].hasC2PA = TechnicalMetadata.dictHasC2PA(dict)
+                updated[index].hasDevelopEdits = hasDevelopEdits(in: dict)
+                updated[index].hasCropEdits = hasCropEdits(in: dict)
+                updated[index].exifOrientation = parseIntValue(dict[ExifToolReadKey.orientation]) ?? 1
+                updated[index].cropRegion = cropRegion(in: dict, exifOrientation: updated[index].exifOrientation)
+                updated[index].cameraRawSettings = cameraRawSettings(in: dict)
+                applyPendingSidecarOverrides(to: &updated, for: sourceURL, index: index, cachedSidecar: cachedSidecars[sourceURL])
+            }
         }
     }
 
