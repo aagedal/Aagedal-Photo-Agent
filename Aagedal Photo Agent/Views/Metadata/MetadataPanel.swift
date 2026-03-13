@@ -1,6 +1,9 @@
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
+import os
+
+nonisolated(unsafe) private let metadataPanelLog = Logger(subsystem: "com.aagedal.photo-agent", category: "MetadataPanel")
 
 struct MetadataPanel: View {
     @Bindable var viewModel: MetadataViewModel
@@ -105,7 +108,11 @@ struct MetadataPanel: View {
         panel.message = "Create Quick List file for \(type.displayName)"
         guard panel.runModal() == .OK, let url = panel.url else { return nil }
         if !FileManager.default.fileExists(atPath: url.path) {
-            try? "".write(to: url, atomically: true, encoding: .utf8)
+            do {
+                try "".write(to: url, atomically: true, encoding: .utf8)
+            } catch {
+                metadataPanelLog.error("Failed to create quick list file at \(url.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            }
         }
         return url
     }

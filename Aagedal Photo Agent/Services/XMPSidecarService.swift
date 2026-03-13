@@ -1,4 +1,7 @@
 import Foundation
+import os
+
+nonisolated(unsafe) private let xmpLog = Logger(subsystem: "com.aagedal.photo-agent", category: "XMPSidecarService")
 
 struct XMPSidecarService: Sendable {
     private enum Namespace {
@@ -43,15 +46,27 @@ struct XMPSidecarService: Sendable {
         guard FileManager.default.fileExists(atPath: url.path) else { return }
 
         guard let metadata = loadSidecar(for: imageURL) else {
-            try? FileManager.default.removeItem(at: url)
+            do {
+                try FileManager.default.removeItem(at: url)
+            } catch {
+                xmpLog.warning("Failed to remove unreadable XMP sidecar for \(imageURL.lastPathComponent): \(error.localizedDescription, privacy: .public)")
+            }
             return
         }
 
         if let cameraRaw = metadata.cameraRaw, !cameraRaw.isEmpty {
             let editOnly = IPTCMetadata(cameraRaw: cameraRaw, exifOrientation: metadata.exifOrientation)
-            try? saveSidecar(metadata: editOnly, for: imageURL)
+            do {
+                try saveSidecar(metadata: editOnly, for: imageURL)
+            } catch {
+                xmpLog.error("Failed to save stripped XMP sidecar for \(imageURL.lastPathComponent): \(error.localizedDescription, privacy: .public)")
+            }
         } else {
-            try? FileManager.default.removeItem(at: url)
+            do {
+                try FileManager.default.removeItem(at: url)
+            } catch {
+                xmpLog.warning("Failed to remove empty XMP sidecar for \(imageURL.lastPathComponent): \(error.localizedDescription, privacy: .public)")
+            }
         }
     }
 
