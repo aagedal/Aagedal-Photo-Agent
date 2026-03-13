@@ -41,6 +41,7 @@ struct ImageFile: Identifiable, Hashable, Sendable {
     var pendingFieldNames: [String] = []
     var metadata: IPTCMetadata?
     var personShown: [String]
+    var keywords: [String]
 
     var isImageFile: Bool { SupportedImageFormats.isSupported(url: url) }
 
@@ -66,6 +67,7 @@ struct ImageFile: Identifiable, Hashable, Sendable {
         self.hasPendingMetadataChanges = false
         self.metadata = nil
         self.personShown = []
+        self.keywords = []
     }
 
     init(url: URL, copyingFrom source: ImageFile) {
@@ -91,6 +93,7 @@ struct ImageFile: Identifiable, Hashable, Sendable {
         self.pendingFieldNames = source.pendingFieldNames
         self.metadata = source.metadata
         self.personShown = source.personShown
+        self.keywords = source.keywords
     }
 
     /// Compute next EXIF orientation after 90° CW rotation.
@@ -145,6 +148,7 @@ struct ImageFile: Identifiable, Hashable, Sendable {
             && lhs.pendingFieldNames == rhs.pendingFieldNames
             && lhs.cropRegion == rhs.cropRegion
             && lhs.personShown == rhs.personShown
+            && lhs.keywords == rhs.keywords
     }
 
     func hash(into hasher: inout Hasher) {
