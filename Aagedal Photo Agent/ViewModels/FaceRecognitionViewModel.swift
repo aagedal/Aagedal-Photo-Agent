@@ -509,26 +509,25 @@ final class FaceRecognitionViewModel {
         let stats = KnownPeopleService.shared.getStatistics()
         guard stats.peopleCount > 0 else { return }
 
+        // Batch-match all unnamed groups at once (single DB load)
+        let unnamedGroups = data.groups.filter { $0.name == nil }
+        let facesToMatch = unnamedGroups.compactMap { group -> (id: UUID, featurePrintData: Data)? in
+            guard let face = faceLookup[group.representativeFaceID] else { return nil }
+            return (id: group.id, featurePrintData: face.featurePrintData)
+        }
+
+        let batchMatches = KnownPeopleService.shared.bestAutoMatches(facesToMatch)
+
         // Build a map: knownPersonID -> [groupIDs that matched this person]
         var matchesByPerson: [UUID: [(groupID: UUID, confidence: Float)]] = [:]
 
-        for group in data.groups where group.name == nil {
-            guard let face = faceLookup[group.representativeFaceID] else {
-                continue
-            }
+        for (groupID, bestMatch) in batchMatches {
+            knownPersonMatchByGroup[groupID] = (personID: bestMatch.person.id, confidence: bestMatch.confidence)
 
-            if let bestMatch = KnownPeopleService.shared.bestAutoMatch(
-                featurePrintData: face.featurePrintData
-            ) {
-                // Record the match for "Replace Thumbnail" feature
-                knownPersonMatchByGroup[group.id] = (personID: bestMatch.person.id, confidence: bestMatch.confidence)
-
-                // Track for potential merging
-                if matchesByPerson[bestMatch.person.id] == nil {
-                    matchesByPerson[bestMatch.person.id] = []
-                }
-                matchesByPerson[bestMatch.person.id]?.append((groupID: group.id, confidence: bestMatch.confidence))
+            if matchesByPerson[bestMatch.person.id] == nil {
+                matchesByPerson[bestMatch.person.id] = []
             }
+            matchesByPerson[bestMatch.person.id]?.append((groupID: groupID, confidence: bestMatch.confidence))
         }
 
         // For each known person with matches, merge multiple groups and name them
@@ -597,27 +596,25 @@ final class FaceRecognitionViewModel {
         let stats = KnownPeopleService.shared.getStatistics()
         guard stats.peopleCount > 0 else { return }
 
+        // Batch-match all unnamed groups at once (single DB load)
+        let unnamedGroups = data.groups.filter { $0.name == nil }
+        let facesToMatch = unnamedGroups.compactMap { group -> (id: UUID, featurePrintData: Data)? in
+            guard let face = faceLookup[group.representativeFaceID] else { return nil }
+            return (id: group.id, featurePrintData: face.featurePrintData)
+        }
+
+        let batchMatches = KnownPeopleService.shared.bestAutoMatches(facesToMatch)
+
         // Build a map: knownPersonID -> [groupIDs that matched this person]
         var matchesByPerson: [UUID: [(groupID: UUID, confidence: Float)]] = [:]
 
-        let unnamedGroups = data.groups.filter { $0.name == nil }
-        for group in unnamedGroups {
-            guard let face = faceLookup[group.representativeFaceID] else {
-                continue
-            }
+        for (groupID, bestMatch) in batchMatches {
+            knownPersonMatchByGroup[groupID] = (personID: bestMatch.person.id, confidence: bestMatch.confidence)
 
-            if let bestMatch = KnownPeopleService.shared.bestAutoMatch(
-                featurePrintData: face.featurePrintData
-            ) {
-                // Record the match
-                knownPersonMatchByGroup[group.id] = (personID: bestMatch.person.id, confidence: bestMatch.confidence)
-
-                // Track for potential merging
-                if matchesByPerson[bestMatch.person.id] == nil {
-                    matchesByPerson[bestMatch.person.id] = []
-                }
-                matchesByPerson[bestMatch.person.id]?.append((groupID: group.id, confidence: bestMatch.confidence))
+            if matchesByPerson[bestMatch.person.id] == nil {
+                matchesByPerson[bestMatch.person.id] = []
             }
+            matchesByPerson[bestMatch.person.id]?.append((groupID: groupID, confidence: bestMatch.confidence))
         }
 
         // For each known person with matches, merge multiple groups and name them
