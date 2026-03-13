@@ -982,95 +982,105 @@ final class MetadataViewModel {
     }
 
     private func appendCameraRawFields(from metadata: IPTCMetadata, into fields: inout [String: String]) {
-        guard let cameraRaw = metadata.cameraRaw else { return }
+        // When cameraRaw is nil (edits fully reset), check if the original image had CRS
+        // fields and clear them. Writing "" tells ExifTool to remove the field.
+        guard let cameraRaw = metadata.cameraRaw else {
+            if originalImageMetadata?.cameraRaw != nil {
+                clearAllCameraRawFields(into: &fields)
+            }
+            return
+        }
 
         // ACR requires Version and ProcessVersion to recognize settings.
         // ProcessVersion 15.4 corresponds to the 2012-era tags we write.
         fields[ExifToolWriteTag.crsVersion] = cameraRaw.version ?? "15.4"
         fields[ExifToolWriteTag.crsProcessVersion] = cameraRaw.processVersion ?? "15.4"
 
-        if let value = cameraRaw.whiteBalance, !value.isEmpty {
-            fields[ExifToolWriteTag.crsWhiteBalance] = value
-        }
-        if let value = cameraRaw.temperature {
-            fields[ExifToolWriteTag.crsTemperature] = String(value)
-        }
-        if let value = cameraRaw.tint {
-            fields[ExifToolWriteTag.crsTint] = formatSignedInt(value)
-        }
-        if let value = cameraRaw.incrementalTemperature {
-            fields[ExifToolWriteTag.crsIncrementalTemperature] = formatSignedInt(value)
-        }
-        if let value = cameraRaw.incrementalTint {
-            fields[ExifToolWriteTag.crsIncrementalTint] = formatSignedInt(value)
-        }
-        if let value = cameraRaw.exposure2012 {
-            fields[ExifToolWriteTag.crsExposure2012] = formatSignedDouble(value, precision: 2)
-        }
-        if let value = cameraRaw.contrast2012 {
-            fields[ExifToolWriteTag.crsContrast2012] = formatSignedInt(value)
-        }
-        if let value = cameraRaw.highlights2012 {
-            fields[ExifToolWriteTag.crsHighlights2012] = formatSignedInt(value)
-        }
-        if let value = cameraRaw.shadows2012 {
-            fields[ExifToolWriteTag.crsShadows2012] = formatSignedInt(value)
-        }
-        if let value = cameraRaw.whites2012 {
-            fields[ExifToolWriteTag.crsWhites2012] = formatSignedInt(value)
-        }
-        if let value = cameraRaw.blacks2012 {
-            fields[ExifToolWriteTag.crsBlacks2012] = formatSignedInt(value)
-        }
-        if let value = cameraRaw.saturation {
-            fields[ExifToolWriteTag.crsSaturation] = formatSignedInt(value)
-        }
-        if let value = cameraRaw.vibrance {
-            fields[ExifToolWriteTag.crsVibrance] = formatSignedInt(value)
-        }
+        // Write values when set, clear (empty string) when nil so old values
+        // don't persist in the image after a partial reset.
+        fields[ExifToolWriteTag.crsWhiteBalance] = cameraRaw.whiteBalance ?? ""
+        fields[ExifToolWriteTag.crsTemperature] = cameraRaw.temperature.map(String.init) ?? ""
+        fields[ExifToolWriteTag.crsTint] = cameraRaw.tint.map(formatSignedInt) ?? ""
+        fields[ExifToolWriteTag.crsIncrementalTemperature] = cameraRaw.incrementalTemperature.map(formatSignedInt) ?? ""
+        fields[ExifToolWriteTag.crsIncrementalTint] = cameraRaw.incrementalTint.map(formatSignedInt) ?? ""
+        fields[ExifToolWriteTag.crsExposure2012] = cameraRaw.exposure2012.map { formatSignedDouble($0, precision: 2) } ?? ""
+        fields[ExifToolWriteTag.crsContrast2012] = cameraRaw.contrast2012.map(formatSignedInt) ?? ""
+        fields[ExifToolWriteTag.crsHighlights2012] = cameraRaw.highlights2012.map(formatSignedInt) ?? ""
+        fields[ExifToolWriteTag.crsShadows2012] = cameraRaw.shadows2012.map(formatSignedInt) ?? ""
+        fields[ExifToolWriteTag.crsWhites2012] = cameraRaw.whites2012.map(formatSignedInt) ?? ""
+        fields[ExifToolWriteTag.crsBlacks2012] = cameraRaw.blacks2012.map(formatSignedInt) ?? ""
+        fields[ExifToolWriteTag.crsSaturation] = cameraRaw.saturation.map(formatSignedInt) ?? ""
+        fields[ExifToolWriteTag.crsVibrance] = cameraRaw.vibrance.map(formatSignedInt) ?? ""
 
         let hasSettings = cameraRaw.hasSettings ?? !cameraRaw.isEmpty
         fields[ExifToolWriteTag.crsHasSettings] = hasSettings ? "True" : "False"
 
         if let crop = cameraRaw.crop {
-            if let value = crop.top { fields[ExifToolWriteTag.crsCropTop] = String(format: "%.6f", value) }
-            if let value = crop.left { fields[ExifToolWriteTag.crsCropLeft] = String(format: "%.6f", value) }
-            if let value = crop.bottom { fields[ExifToolWriteTag.crsCropBottom] = String(format: "%.6f", value) }
-            if let value = crop.right { fields[ExifToolWriteTag.crsCropRight] = String(format: "%.6f", value) }
-            if let value = crop.angle { fields[ExifToolWriteTag.crsCropAngle] = String(format: "%.6f", value) }
+            fields[ExifToolWriteTag.crsCropTop] = crop.top.map { String(format: "%.6f", $0) } ?? ""
+            fields[ExifToolWriteTag.crsCropLeft] = crop.left.map { String(format: "%.6f", $0) } ?? ""
+            fields[ExifToolWriteTag.crsCropBottom] = crop.bottom.map { String(format: "%.6f", $0) } ?? ""
+            fields[ExifToolWriteTag.crsCropRight] = crop.right.map { String(format: "%.6f", $0) } ?? ""
+            fields[ExifToolWriteTag.crsCropAngle] = crop.angle.map { String(format: "%.6f", $0) } ?? ""
             let hasCrop = crop.hasCrop ?? !crop.isEmpty
             fields[ExifToolWriteTag.crsHasCrop] = hasCrop ? "True" : "False"
             fields[ExifToolWriteTag.crsCropConstrainToWarp] = "0"
             fields[ExifToolWriteTag.crsCropConstrainToUnitSquare] = "1"
+        } else {
+            fields[ExifToolWriteTag.crsCropTop] = ""
+            fields[ExifToolWriteTag.crsCropLeft] = ""
+            fields[ExifToolWriteTag.crsCropBottom] = ""
+            fields[ExifToolWriteTag.crsCropRight] = ""
+            fields[ExifToolWriteTag.crsCropAngle] = ""
+            fields[ExifToolWriteTag.crsHasCrop] = "False"
+            fields[ExifToolWriteTag.crsCropConstrainToWarp] = ""
+            fields[ExifToolWriteTag.crsCropConstrainToUnitSquare] = ""
         }
 
-        if let value = cameraRaw.hdrEditMode {
-            fields[ExifToolWriteTag.crsHDREditMode] = String(value)
-        }
-        if let value = cameraRaw.hdrMaxValue, !value.isEmpty {
-            fields[ExifToolWriteTag.crsHDRMaxValue] = value
-        }
-        if let value = cameraRaw.sdrBrightness {
-            fields[ExifToolWriteTag.crsSDRBrightness] = formatSignedInt(value)
-        }
-        if let value = cameraRaw.sdrContrast {
-            fields[ExifToolWriteTag.crsSDRContrast] = formatSignedInt(value)
-        }
-        if let value = cameraRaw.sdrClarity {
-            fields[ExifToolWriteTag.crsSDRClarity] = formatSignedInt(value)
-        }
-        if let value = cameraRaw.sdrHighlights {
-            fields[ExifToolWriteTag.crsSDRHighlights] = formatSignedInt(value)
-        }
-        if let value = cameraRaw.sdrShadows {
-            fields[ExifToolWriteTag.crsSDRShadows] = formatSignedInt(value)
-        }
-        if let value = cameraRaw.sdrWhites {
-            fields[ExifToolWriteTag.crsSDRWhites] = formatSignedInt(value)
-        }
-        if let value = cameraRaw.sdrBlend {
-            fields[ExifToolWriteTag.crsSDRBlend] = formatSignedInt(value)
-        }
+        fields[ExifToolWriteTag.crsHDREditMode] = cameraRaw.hdrEditMode.map(String.init) ?? ""
+        fields[ExifToolWriteTag.crsHDRMaxValue] = cameraRaw.hdrMaxValue ?? ""
+        fields[ExifToolWriteTag.crsSDRBrightness] = cameraRaw.sdrBrightness.map(formatSignedInt) ?? ""
+        fields[ExifToolWriteTag.crsSDRContrast] = cameraRaw.sdrContrast.map(formatSignedInt) ?? ""
+        fields[ExifToolWriteTag.crsSDRClarity] = cameraRaw.sdrClarity.map(formatSignedInt) ?? ""
+        fields[ExifToolWriteTag.crsSDRHighlights] = cameraRaw.sdrHighlights.map(formatSignedInt) ?? ""
+        fields[ExifToolWriteTag.crsSDRShadows] = cameraRaw.sdrShadows.map(formatSignedInt) ?? ""
+        fields[ExifToolWriteTag.crsSDRWhites] = cameraRaw.sdrWhites.map(formatSignedInt) ?? ""
+        fields[ExifToolWriteTag.crsSDRBlend] = cameraRaw.sdrBlend.map(formatSignedInt) ?? ""
+    }
+
+    private func clearAllCameraRawFields(into fields: inout [String: String]) {
+        fields[ExifToolWriteTag.crsVersion] = ""
+        fields[ExifToolWriteTag.crsProcessVersion] = ""
+        fields[ExifToolWriteTag.crsWhiteBalance] = ""
+        fields[ExifToolWriteTag.crsTemperature] = ""
+        fields[ExifToolWriteTag.crsTint] = ""
+        fields[ExifToolWriteTag.crsIncrementalTemperature] = ""
+        fields[ExifToolWriteTag.crsIncrementalTint] = ""
+        fields[ExifToolWriteTag.crsExposure2012] = ""
+        fields[ExifToolWriteTag.crsContrast2012] = ""
+        fields[ExifToolWriteTag.crsHighlights2012] = ""
+        fields[ExifToolWriteTag.crsShadows2012] = ""
+        fields[ExifToolWriteTag.crsWhites2012] = ""
+        fields[ExifToolWriteTag.crsBlacks2012] = ""
+        fields[ExifToolWriteTag.crsSaturation] = ""
+        fields[ExifToolWriteTag.crsVibrance] = ""
+        fields[ExifToolWriteTag.crsHasSettings] = "False"
+        fields[ExifToolWriteTag.crsCropTop] = ""
+        fields[ExifToolWriteTag.crsCropLeft] = ""
+        fields[ExifToolWriteTag.crsCropBottom] = ""
+        fields[ExifToolWriteTag.crsCropRight] = ""
+        fields[ExifToolWriteTag.crsCropAngle] = ""
+        fields[ExifToolWriteTag.crsHasCrop] = ""
+        fields[ExifToolWriteTag.crsCropConstrainToWarp] = ""
+        fields[ExifToolWriteTag.crsCropConstrainToUnitSquare] = ""
+        fields[ExifToolWriteTag.crsHDREditMode] = ""
+        fields[ExifToolWriteTag.crsHDRMaxValue] = ""
+        fields[ExifToolWriteTag.crsSDRBrightness] = ""
+        fields[ExifToolWriteTag.crsSDRContrast] = ""
+        fields[ExifToolWriteTag.crsSDRClarity] = ""
+        fields[ExifToolWriteTag.crsSDRHighlights] = ""
+        fields[ExifToolWriteTag.crsSDRShadows] = ""
+        fields[ExifToolWriteTag.crsSDRWhites] = ""
+        fields[ExifToolWriteTag.crsSDRBlend] = ""
     }
 
     private func formatSignedInt(_ value: Int) -> String {

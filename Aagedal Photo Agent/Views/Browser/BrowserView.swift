@@ -92,7 +92,7 @@ struct BrowserView: View {
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
                                 Slider(value: $viewModel.thumbnailScale, in: 0.5...2.0, step: 0.1)
-                                    .frame(width: 80)
+                                    .frame(width: 120)
                                 Image(systemName: "square.grid.2x2")
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)

@@ -14,8 +14,8 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
     private var lastImageStates: [URL: ImageFile] = [:]
 
     private let baseMinWidth: CGFloat = 190
-    private let itemSpacing: CGFloat = 8
-    private let gridPadding: CGFloat = 16
+    private let itemSpacing: CGFloat = 4
+    private let gridPadding: CGFloat = 8
 
     init(viewModel: BrowserViewModel) {
         self.viewModel = viewModel
@@ -255,10 +255,10 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
             thumbnailItem.thumbnailView.updateSelection(isSelected: isSelected, isActive: isActive)
         }
 
-        // Scroll to last clicked
+        // Scroll to last clicked if needed
         if let lastClicked, let index = viewModel.urlToVisibleIndex[lastClicked] {
             let indexPath = IndexPath(item: index, section: 0)
-            collectionView.scrollToItems(at: [indexPath], scrollPosition: .centeredVertically)
+            collectionView.scrollToItemIfNeeded(at: indexPath)
         }
     }
 
