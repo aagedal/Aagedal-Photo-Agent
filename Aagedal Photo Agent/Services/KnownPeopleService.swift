@@ -46,6 +46,7 @@ final class KnownPeopleService {
     private let featurePrintCache: NSCache<NSUUID, VNFeaturePrintObservation> = {
         let cache = NSCache<NSUUID, VNFeaturePrintObservation>()
         cache.countLimit = 1000
+        cache.totalCostLimit = 10 * 1024 * 1024 // 10 MB
         return cache
     }()
 
@@ -403,7 +404,7 @@ final class KnownPeopleService {
             return nil
         }
 
-        featurePrintCache.setObject(fp, forKey: key)
+        featurePrintCache.setObject(fp, forKey: key, cost: embedding.featurePrintData.count)
         return fp
     }
 

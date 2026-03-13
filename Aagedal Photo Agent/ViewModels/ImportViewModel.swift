@@ -295,9 +295,9 @@ final class ImportViewModel {
             let directory = desiredURL.deletingLastPathComponent()
             let basename = desiredURL.deletingPathExtension().lastPathComponent
             let ext = desiredURL.pathExtension
-            var index = 1
+            let maxAttempts = 10_000
 
-            while true {
+            for index in 1...maxAttempts {
                 let candidateName = ext.isEmpty
                     ? "\(basename)-\(index)"
                     : "\(basename)-\(index).\(ext)"
@@ -305,8 +305,11 @@ final class ImportViewModel {
                 if !fileManager.fileExists(atPath: candidate.path) {
                     return .resolved(candidate, wasRenamed: true)
                 }
-                index += 1
             }
+            throw NSError(
+                domain: "ImportViewModel", code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Could not resolve filename conflict for \(desiredURL.lastPathComponent) after \(maxAttempts) attempts"]
+            )
         }
     }
 
