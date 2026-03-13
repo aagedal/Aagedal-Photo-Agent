@@ -206,7 +206,11 @@ struct MetadataSidecarService: Sendable {
             try fm.moveItem(at: first, to: destinationURL)
         }
         for extra in sourceURLs.dropFirst() {
-            try? fm.removeItem(at: extra)
+            do {
+                try fm.removeItem(at: extra)
+            } catch {
+                sidecarLogger.warning("Failed to remove extra sidecar \(extra.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            }
         }
     }
 }

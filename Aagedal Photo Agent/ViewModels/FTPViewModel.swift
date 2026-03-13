@@ -17,6 +17,7 @@ final class FTPViewModel {
 
     private let ftpService = FTPService()
     private let connectionsKey = UserDefaultsKeys.ftpConnections
+    private var uploadTask: Task<Void, Never>?
 
     func loadConnections() {
         guard let data = UserDefaults.standard.data(forKey: connectionsKey),
@@ -51,6 +52,12 @@ final class FTPViewModel {
         isShowingServerForm = false
     }
 
+    func cancelUpload() {
+        uploadTask?.cancel()
+        uploadTask = nil
+        isUploading = false
+    }
+
     func deleteConnection(_ connection: FTPConnection) {
         KeychainService.delete(forKey: connection.keychainKey)
         connections.removeAll { $0.id == connection.id }
@@ -70,8 +77,10 @@ final class FTPViewModel {
         uploadProgress = [:]
         overallProgress = 0
 
-        Task {
+        uploadTask?.cancel()
+        uploadTask = Task {
             for url in urls {
+                guard !Task.isCancelled else { break }
                 do {
                     try await ftpService.uploadFile(
                         localURL: url,

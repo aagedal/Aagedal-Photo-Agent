@@ -165,6 +165,7 @@ struct FullScreenImageView: View {
 
     @State private var currentImage: LoadedImage?
     @State private var isLoading = false
+    @State private var loadError: String?
     @State private var fullLoadTask: Task<Void, Never>?
     @State private var fullResTask: Task<Void, Never>?
     @State private var isFullResLoaded = false
@@ -364,6 +365,17 @@ struct FullScreenImageView: View {
                         }
                     }
 
+                    if let loadError, currentImage == nil {
+                        VStack(spacing: 8) {
+                            Image(systemName: "exclamationmark.triangle")
+                                .font(.largeTitle)
+                                .foregroundStyle(.white.opacity(0.6))
+                            Text(loadError)
+                                .font(.caption)
+                                .foregroundStyle(.white.opacity(0.6))
+                        }
+                    }
+
                     if let file = currentImageFile {
                         // Top-right: crop / edit / C2PA badges
                         if file.hasC2PA || file.hasDevelopEdits || file.hasCropEdits
@@ -542,6 +554,9 @@ struct FullScreenImageView: View {
         .onChange(of: renderEdits) {
             imageCache.clearAll()
             imageCache.cancelAllPrefetch()
+            // Clear the displayed image immediately so the stale render
+            // doesn't linger while the new version loads.
+            currentImage = nil
         }
     }
 
@@ -672,8 +687,10 @@ struct FullScreenImageView: View {
             currentImage = nil
             sourcePixelSize = nil
             isLoading = false
+            loadError = nil
             return
         }
+        loadError = nil
 
         // Non-image files: show system icon and return
         guard SupportedImageFormats.isSupported(url: url) else {
@@ -834,8 +851,12 @@ struct FullScreenImageView: View {
             }
             if image == nil {
                 guard var loaded = FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: screenMaxPx) else {
+                    imageLogger.error("\(filename): Phase 2 failed — could not decode image")
                     await MainActor.run {
-                        if currentImageFile?.url == url { isLoading = false }
+                        if currentImageFile?.url == url {
+                            isLoading = false
+                            loadError = "Unable to load image"
+                        }
                     }
                     return
                 }
@@ -853,6 +874,7 @@ struct FullScreenImageView: View {
                     imageLogger.info("\(filename): Phase 2 done in \(String(format: "%.1f", fullElapsed * 1000))ms (\(image.width)x\(image.height))")
                     currentImage = makeLoadedImage(from: image)
                     isLoading = false
+                    loadError = nil
                     imageCache.store(image, for: url)
                     triggerPrefetch(for: url)
                 } else {

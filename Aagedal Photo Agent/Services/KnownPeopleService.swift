@@ -123,7 +123,11 @@ final class KnownPeopleService {
 
     private func deleteThumbnail(for personID: UUID) {
         let url = thumbnailURL(for: personID)
-        try? FileManager.default.removeItem(at: url)
+        do {
+            try FileManager.default.removeItem(at: url)
+        } catch {
+            knownPeopleLog.warning("Failed to delete thumbnail for \(personID): \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     // MARK: - CRUD Operations
@@ -268,11 +272,13 @@ final class KnownPeopleService {
 
     /// Add embeddings to a person, skipping any that are duplicates (same featurePrintData).
     func addEmbeddingsDeduped(_ embeddings: [PersonEmbedding], toPersonID personID: UUID) throws {
+        guard let index = peopleIndex[personID] else {
+            throw NSError(domain: "KnownPeopleService", code: 10,
+                          userInfo: [NSLocalizedDescriptionKey: "Person not found with ID: \(personID)"])
+        }
+
         try mutateDatabase { db in
-            guard let index = db.people.firstIndex(where: { $0.id == personID }) else {
-                throw NSError(domain: "KnownPeopleService", code: 10,
-                              userInfo: [NSLocalizedDescriptionKey: "Person not found with ID: \(personID)"])
-            }
+            guard db.people.indices.contains(index) else { return }
 
             let existingData = Set(db.people[index].embeddings.map { $0.featurePrintData })
             let newEmbeddings = embeddings.filter { !existingData.contains($0.featurePrintData) }
@@ -298,11 +304,14 @@ final class KnownPeopleService {
     func mergePeople(sourceID: UUID, intoTargetID: UUID) throws {
         guard sourceID != intoTargetID else { return }
 
+        guard let sourceIndex = peopleIndex[sourceID],
+              let targetIndex = peopleIndex[intoTargetID] else {
+            return
+        }
+
         try mutateDatabase { db in
-            guard let sourceIndex = db.people.firstIndex(where: { $0.id == sourceID }),
-                  let targetIndex = db.people.firstIndex(where: { $0.id == intoTargetID }) else {
-                return
-            }
+            guard db.people.indices.contains(sourceIndex),
+                  db.people.indices.contains(targetIndex) else { return }
 
             let existingData = Set(db.people[targetIndex].embeddings.map { $0.featurePrintData })
             let newEmbeddings = db.people[sourceIndex].embeddings.filter { embedding in
@@ -558,7 +567,11 @@ final class KnownPeopleService {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
 
         defer {
-            try? FileManager.default.removeItem(at: tempDir)
+            do {
+                try FileManager.default.removeItem(at: tempDir)
+            } catch {
+                knownPeopleLog.warning("Failed to clean up export temp dir: \(error.localizedDescription, privacy: .public)")
+            }
         }
 
         // Create temp directory structure
@@ -620,7 +633,11 @@ final class KnownPeopleService {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
 
         defer {
-            try? FileManager.default.removeItem(at: tempDir)
+            do {
+                try FileManager.default.removeItem(at: tempDir)
+            } catch {
+                knownPeopleLog.warning("Failed to clean up import temp dir: \(error.localizedDescription, privacy: .public)")
+            }
         }
 
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
