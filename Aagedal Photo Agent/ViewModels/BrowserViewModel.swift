@@ -287,7 +287,10 @@ final class BrowserViewModel {
             if image.filenameLowercased.contains(query) {
                 return true
             }
-            return image.personShown.contains { $0.lowercased().contains(query) }
+            if image.personShown.contains(where: { $0.lowercased().contains(query) }) {
+                return true
+            }
+            return image.keywords.contains { $0.lowercased().contains(query) }
         }
     }
 
@@ -416,6 +419,7 @@ final class BrowserViewModel {
                     updated.pendingFieldNames = existing.pendingFieldNames
                     updated.metadata = existing.metadata
                     updated.personShown = existing.personShown
+                    updated.keywords = existing.keywords
                     if isModified {
                         // File changed on disk — clear stale develop/crop state so
                         // thumbnails reflect the actual file content
@@ -568,6 +572,7 @@ final class BrowserViewModel {
                 }
                 updated[index].colorLabel = ColorLabel.fromMetadataLabel(dict[ExifToolReadKey.label] as? String)
                 updated[index].personShown = parseStringOrArray(dict[ExifToolReadKey.personInImage])
+                updated[index].keywords = mergedKeywords(from: dict)
                 updated[index].hasC2PA = TechnicalMetadata.dictHasC2PA(dict)
                 updated[index].hasDevelopEdits = hasDevelopEdits(in: dict)
                 updated[index].hasCropEdits = hasCropEdits(in: dict)
@@ -590,6 +595,22 @@ final class BrowserViewModel {
             return trimmed.isEmpty ? [] : [trimmed]
         }
         return []
+    }
+
+    /// Merge IPTC:Keywords and XMP:Subject into a single deduplicated keyword list.
+    private func mergedKeywords(from dict: [String: Any]) -> [String] {
+        let iptc = parseStringOrArray(dict[ExifToolReadKey.keywords])
+        let xmp = parseStringOrArray(dict[ExifToolReadKey.subject])
+        guard !xmp.isEmpty else { return iptc }
+        guard !iptc.isEmpty else { return xmp }
+        // Merge, preserving IPTC order, then append any XMP-only entries
+        var seen = Set(iptc.map { $0.lowercased() })
+        var result = iptc
+        for kw in xmp where !seen.contains(kw.lowercased()) {
+            seen.insert(kw.lowercased())
+            result.append(kw)
+        }
+        return result
     }
 
     private func hasDevelopEdits(in dict: [String: Any]) -> Bool {

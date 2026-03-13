@@ -388,6 +388,8 @@ final class ExifToolService {
             "-XMP:Rating",
             "-XMP:Label",
             "-XMP-iptcExt:PersonInImage",
+            "-IPTC:Keywords",
+            "-XMP:Subject",
             "-XMP-crs:Version",
             "-XMP-crs:ProcessVersion",
             "-XMP-crs:WhiteBalance",
