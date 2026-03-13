@@ -130,6 +130,10 @@ final class FaceRecognitionViewModel {
     // MARK: - Cache Management
 
     private func invalidateCaches() {
+        // Clear stale group-level state that references old group IDs
+        knownPersonMatchByGroup.removeAll()
+        mergeSuggestions.removeAll()
+
         // Rebuild sorted groups
         guard let groups = faceData?.groups else {
             sortedGroups = []
