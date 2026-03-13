@@ -177,6 +177,20 @@ final class ExifToolService {
             }
         }
 
+        // Drain stderr to prevent pipe buffer from filling up and deadlocking ExifTool.
+        // The pipe buffer is ~64KB on macOS; if ExifTool blocks on a full stderr write,
+        // it also blocks stdout, causing the app to hang waiting for the {ready} sentinel.
+        stderr.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            if !data.isEmpty {
+                Task { @MainActor in
+                    if let str = String(data: data, encoding: .utf8) {
+                        exifToolLog.debug("ExifTool stderr: \(str, privacy: .public)")
+                    }
+                }
+            }
+        }
+
         // Detect unexpected process termination to resume pending continuations
         proc.terminationHandler = { [weak self] _ in
             Task { @MainActor [weak self] in
@@ -207,6 +221,7 @@ final class ExifToolService {
         isExecuting = false
 
         stdoutPipe?.fileHandleForReading.readabilityHandler = nil
+        stderrPipe?.fileHandleForReading.readabilityHandler = nil
         process = nil
         isRunning = false
         runningPath = nil
@@ -235,6 +250,7 @@ final class ExifToolService {
         }
         try? stdinPipe?.fileHandleForWriting.close()
         stdoutPipe?.fileHandleForReading.readabilityHandler = nil
+        stderrPipe?.fileHandleForReading.readabilityHandler = nil
         process = nil
         isRunning = false
         runningPath = nil
