@@ -442,20 +442,21 @@ struct FaceSuggestionsPanel: View {
         isCheckingKnown = true
         lastKnownCount = 0
 
+        // Batch-match all unnamed groups at once
+        let unnamedGroups = faceData.groups.filter { $0.name == nil }
+        let facesToMatch = unnamedGroups.compactMap { group -> (id: UUID, featurePrintData: Data)? in
+            guard let face = viewModel.face(byID: group.representativeFaceID) else { return nil }
+            return (id: group.id, featurePrintData: face.featurePrintData)
+        }
+
+        let batchMatches = KnownPeopleService.shared.bestAutoMatches(facesToMatch)
+
         var matchCount = 0
         var lastMatchedGroupID: UUID?
-        let unnamedGroups = faceData.groups.filter { $0.name == nil }
 
         for group in unnamedGroups {
-            guard let face = faceData.faces.first(where: { $0.id == group.representativeFaceID }) else {
-                continue
-            }
-
-            if let bestMatch = KnownPeopleService.shared.bestAutoMatch(
-                featurePrintData: face.featurePrintData
-            ) {
+            if let bestMatch = batchMatches[group.id] {
                 viewModel.nameGroup(group.id, name: bestMatch.person.name)
-                // Track the match for "Replace Thumbnail" feature
                 viewModel.knownPersonMatchByGroup[group.id] = (personID: bestMatch.person.id, confidence: bestMatch.confidence)
                 lastMatchedGroupID = group.id
                 matchCount += 1

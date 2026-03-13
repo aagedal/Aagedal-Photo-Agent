@@ -349,22 +349,18 @@ struct FaceBarView: View {
         isCheckingKnownPeople = true
         knownPeopleMatchCount = 0
 
-        var matchCount = 0
-
-        // Get unnamed groups only
+        // Batch-match all unnamed groups at once
         let unnamedGroups = faceData.groups.filter { $0.name == nil }
+        let facesToMatch = unnamedGroups.compactMap { group -> (id: UUID, featurePrintData: Data)? in
+            guard let face = viewModel.face(byID: group.representativeFaceID) else { return nil }
+            return (id: group.id, featurePrintData: face.featurePrintData)
+        }
 
+        let batchMatches = KnownPeopleService.shared.bestAutoMatches(facesToMatch)
+
+        var matchCount = 0
         for group in unnamedGroups {
-            // Get the representative face's embedding
-            guard let face = faceData.faces.first(where: { $0.id == group.representativeFaceID }) else {
-                continue
-            }
-
-            // Match against known people
-            if let bestMatch = KnownPeopleService.shared.bestAutoMatch(
-                featurePrintData: face.featurePrintData
-            ) {
-                // Auto-name the group with the matched person's name
+            if let bestMatch = batchMatches[group.id] {
                 viewModel.nameGroup(group.id, name: bestMatch.person.name)
                 matchCount += 1
             }

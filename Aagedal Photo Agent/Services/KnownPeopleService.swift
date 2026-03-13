@@ -105,7 +105,6 @@ final class KnownPeopleService {
         db.lastModified = Date()
         try saveDatabase(db)
         database = db
-        clearFeaturePrintCache()
     }
 
     // MARK: - Thumbnails
@@ -426,6 +425,7 @@ final class KnownPeopleService {
         maxResults: Int
     ) -> [KnownPersonMatch] {
         var matches: [KnownPersonMatch] = []
+        var bestOverallDistance: Float = .infinity
 
         for person in database.people {
             var bestDistance: Float = .infinity
@@ -455,6 +455,15 @@ final class KnownPeopleService {
                     confidence: confidence,
                     matchedEmbeddingID: embeddingID
                 ))
+
+                if bestDistance < bestOverallDistance {
+                    bestOverallDistance = bestDistance
+                }
+
+                // Early termination: near-perfect match found and we have enough results
+                if bestOverallDistance < 0.05 && matches.count >= maxResults {
+                    break
+                }
             }
         }
 
@@ -520,6 +529,56 @@ final class KnownPeopleService {
         }
 
         return best
+    }
+
+    /// Batch version of `bestAutoMatch` — loads the database once and applies
+    /// the same confidence + gap filtering per face.
+    /// Returns a map of face ID → best match for faces that pass the policy.
+    func bestAutoMatches(
+        _ faces: [(id: UUID, featurePrintData: Data)],
+        policy: MatchPolicy? = nil
+    ) -> [UUID: KnownPersonMatch] {
+        let db = loadDatabase()
+        guard !db.people.isEmpty else { return [:] }
+
+        let policy = policy ?? currentAutoMatchPolicy()
+        var results: [UUID: KnownPersonMatch] = [:]
+
+        for face in faces {
+            let queryFP: VNFeaturePrintObservation
+            do {
+                guard let unarchived = try NSKeyedUnarchiver.unarchivedObject(
+                    ofClass: VNFeaturePrintObservation.self,
+                    from: face.featurePrintData
+                ) else {
+                    continue
+                }
+                queryFP = unarchived
+            } catch {
+                knownPeopleLog.error("Failed to unarchive feature print for face \(face.id): \(error.localizedDescription, privacy: .public)")
+                continue
+            }
+
+            let matches = matchFaceAgainstDatabase(
+                queryFP: queryFP,
+                database: db,
+                threshold: policy.threshold,
+                maxResults: 2
+            )
+
+            guard let best = matches.first, best.confidence >= policy.minConfidence else {
+                continue
+            }
+
+            if let second = matches.dropFirst().first,
+               best.confidence - second.confidence < policy.minConfidenceGap {
+                continue
+            }
+
+            results[face.id] = best
+        }
+
+        return results
     }
 
     /// Match multiple faces at once for efficiency.
