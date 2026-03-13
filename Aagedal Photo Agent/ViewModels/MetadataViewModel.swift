@@ -1505,6 +1505,8 @@ final class MetadataViewModel {
         Task { @MainActor in
             var processed = 0
             var skipped = 0
+            var geocoded = 0
+            var failed = 0
 
             for url in selectedURLs {
                 do {
@@ -1524,22 +1526,26 @@ final class MetadataViewModel {
 
                     if !fields.isEmpty {
                         try await exifToolService.writeFields(fields, to: [url])
+                        geocoded += 1
                     }
 
                     // Rate limit: ~0.5s delay between requests
                     try await Task.sleep(for: .milliseconds(500))
 
                 } catch {
-                    // Continue with next image
+                    failed += 1
+                    logger.warning("Reverse geocoding failed for \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
                 }
 
                 processed += 1
                 geocodingProgress = "\(processed)/\(selectedURLs.count)"
             }
 
-            if skipped > 0 {
-                geocodingError = "\(skipped) image(s) had no GPS data"
-            }
+            var notes: [String] = []
+            if geocoded > 0 { notes.append("\(geocoded) geocoded") }
+            if skipped > 0 { notes.append("\(skipped) skipped (no GPS)") }
+            if failed > 0 { notes.append("\(failed) failed") }
+            geocodingError = notes.isEmpty ? nil : notes.joined(separator: ", ")
 
             isReverseGeocoding = false
             geocodingProgress = ""
@@ -1793,7 +1799,11 @@ final class MetadataViewModel {
                 let fields = overwriteFields(from: edited)
                 try await exifToolService.writeFields(fields, to: [imageURL])
 
-                try? sidecarService.deleteSidecar(for: imageURL, in: folderURL)
+                do {
+                    try sidecarService.deleteSidecar(for: imageURL, in: folderURL)
+                } catch {
+                    logger.warning("Failed to delete sidecar for \(imageURL.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                }
                 self.metadata = edited
                 self.originalImageMetadata = edited
                 self.embeddedMetadata = edited
@@ -1847,10 +1857,15 @@ final class MetadataViewModel {
 
                 do {
                     try await exifToolService.writeFields(fields, to: [imageURL])
-                    try? sidecarService.deleteSidecar(for: imageURL, in: folderURL)
+                    do {
+                        try sidecarService.deleteSidecar(for: imageURL, in: folderURL)
+                    } catch {
+                        logger.warning("Failed to delete sidecar for \(imageURL.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                    }
                     writtenCount += 1
                 } catch {
                     failedCount += 1
+                    logger.warning("Failed to write metadata for \(imageURL.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
                 }
 
                 processed += 1

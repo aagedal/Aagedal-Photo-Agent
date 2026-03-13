@@ -382,15 +382,23 @@ struct FaceBarView: View {
     private var scanButton: some View {
         Group {
             if viewModel.isScanning {
-                // Scanning in progress — show spinner
-                VStack(spacing: 2) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text(viewModel.scanProgress)
-                        .font(.system(size: 9))
-                        .foregroundStyle(.secondary)
+                // Scanning in progress — click to cancel
+                Button {
+                    viewModel.cancelScan()
+                } label: {
+                    VStack(spacing: 2) {
+                        Image(systemName: "stop.circle.fill")
+                            .font(.system(size: 20))
+                            .foregroundStyle(.red)
+                        Text(viewModel.scanProgress)
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(width: 56, height: 56)
+                    .contentShape(Rectangle())
                 }
-                .frame(width: 56, height: 56)
+                .buttonStyle(.plain)
+                .help("Click to cancel face scan")
             } else if viewModel.scanComplete && viewModel.canRefine {
                 // Scan done + has both named & unnamed → Refine button
                 Button {
