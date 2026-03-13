@@ -720,23 +720,28 @@ struct FaceBarDropDelegate: DropDelegate {
             guard let string = object as? String else { return }
 
             Task { @MainActor in
-                // Parse the comma-separated UUID string
-                let ids = Set(string.split(separator: ",").compactMap { UUID(uuidString: String($0)) })
-                guard !ids.isEmpty else { return }
-
-                // Filter out faces that are already in the target group
-                let facesToMove: Set<UUID>
-                if let data = vm.faceData {
-                    facesToMove = ids.filter { faceID in
-                        data.faces.first(where: { $0.id == faceID })?.groupID != targetID
+                if string.hasPrefix("group:") {
+                    // Group merge: "group:UUID" format from expanded view header drag
+                    let groupIDString = String(string.dropFirst(6))
+                    if let sourceGroupID = UUID(uuidString: groupIDString),
+                       sourceGroupID != targetID {
+                        vm.mergeGroups(sourceID: sourceGroupID, into: targetID)
                     }
+                    state?.draggedGroupID = nil
                 } else {
-                    facesToMove = ids
-                }
+                    // Face move: comma-separated UUID strings
+                    let ids = Set(string.split(separator: ",").compactMap { UUID(uuidString: String($0)) })
+                    guard !ids.isEmpty else { return }
 
-                vm.moveFaces(facesToMove, toGroup: targetID)
-                state?.selectedFaceIDs.removeAll()
-                state?.draggedFaceIDs.removeAll()
+                    // Filter out faces already in the target group
+                    let facesToMove = ids.filter { faceID in
+                        vm.face(byID: faceID)?.groupID != targetID
+                    }
+
+                    vm.moveFaces(Set(facesToMove), toGroup: targetID)
+                    state?.selectedFaceIDs.removeAll()
+                    state?.draggedFaceIDs.removeAll()
+                }
             }
         }
 
