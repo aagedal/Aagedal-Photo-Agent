@@ -15,11 +15,9 @@ final class ThumbnailCollectionView: NSCollectionView {
     // MARK: - Immediate Selection Update
 
     /// Synchronously updates selection visuals on all visible cells and scrolls to the anchor.
-    /// Called directly after keyboard/mouse selection changes for zero-latency feedback.
-    func refreshVisibleSelections() {
+    /// Accepts explicit parameters so CALayer updates can happen before @Observable state changes.
+    func refreshVisibleSelections(selectedIDs: Set<URL>, activeURL: URL?) {
         guard let viewModel else { return }
-        let selectedIDs = viewModel.selectedImageIDs
-        let lastClicked = viewModel.lastClickedImageURL
 
         for item in visibleItems() {
             guard let thumbnailItem = item as? ThumbnailCollectionViewItem,
@@ -27,15 +25,40 @@ final class ThumbnailCollectionView: NSCollectionView {
                   indexPath.item < viewModel.visibleImages.count else { continue }
             let url = viewModel.visibleImages[indexPath.item].url
             let isSelected = selectedIDs.contains(url)
-            let isActive = isSelected && url == lastClicked
+            let isActive = isSelected && url == activeURL
             thumbnailItem.thumbnailView.updateSelection(isSelected: isSelected, isActive: isActive)
         }
 
-        // Scroll to last clicked
-        if let lastClicked, let index = viewModel.urlToVisibleIndex[lastClicked] {
+        // Scroll to active item if needed
+        if let activeURL, let index = viewModel.urlToVisibleIndex[activeURL] {
             let indexPath = IndexPath(item: index, section: 0)
-            scrollToItems(at: [indexPath], scrollPosition: .centeredVertically)
+            scrollToItemIfNeeded(at: indexPath)
         }
+    }
+
+    /// Convenience: refresh from current viewModel state (used by observeSelection and context menu).
+    func refreshVisibleSelections() {
+        guard let viewModel else { return }
+        refreshVisibleSelections(selectedIDs: viewModel.selectedImageIDs, activeURL: viewModel.lastClickedImageURL)
+    }
+
+    /// Scrolls to the item only if it is more than half outside the visible area.
+    /// When scrolling is needed, scrolls the minimum amount to make the item fully visible.
+    func scrollToItemIfNeeded(at indexPath: IndexPath) {
+        guard let layoutAttributes = collectionViewLayout?.layoutAttributesForItem(at: indexPath),
+              let scrollView = enclosingScrollView else { return }
+
+        let itemFrame = layoutAttributes.frame
+        let visibleRect = scrollView.documentVisibleRect
+        let intersection = itemFrame.intersection(visibleRect)
+
+        // If more than half the item is visible, don't scroll
+        if !intersection.isNull && intersection.height >= itemFrame.height / 2 {
+            return
+        }
+
+        // Scroll the minimum amount to make the item fully visible
+        scrollToVisible(itemFrame)
     }
 
     // MARK: - First Responder
@@ -141,34 +164,50 @@ final class ThumbnailCollectionView: NSCollectionView {
         let modifiers = event.modifierFlags
 
         if event.clickCount == 2 {
+            // Double-click: apply immediately (FullScreenImageView needs selection on same frame)
             viewModel.selectedImageIDs = [url]
             viewModel.lastClickedImageURL = url
             viewModel.isFullScreen = true
-        } else if modifiers.contains(.command) {
-            var updated = viewModel.selectedImageIDs
-            if updated.contains(url) {
-                updated.remove(url)
-            } else {
-                updated.insert(url)
-            }
-            viewModel.selectedImageIDs = updated
-            viewModel.lastClickedImageURL = url
-        } else if modifiers.contains(.shift) {
-            let anchor = viewModel.lastClickedImageURL ?? viewModel.selectedImageIDs.first
-            if let anchor,
-               let anchorIndex = viewModel.urlToVisibleIndex[anchor],
-               let currentIndex = viewModel.urlToVisibleIndex[url] {
-                let range = min(anchorIndex, currentIndex)...max(anchorIndex, currentIndex)
-                var updated = viewModel.selectedImageIDs
-                updated.reserveCapacity(updated.count + range.count)
-                updated.formUnion(viewModel.visibleImages[range].lazy.map(\.url))
-                viewModel.selectedImageIDs = updated
-            }
+            refreshVisibleSelections()
         } else {
-            viewModel.selectedImageIDs = [url]
-            viewModel.lastClickedImageURL = url
+            // Single click: compute new selection, update visuals immediately, defer state
+            let newIDs: Set<URL>
+            let newActive: URL?
+
+            if modifiers.contains(.command) {
+                var updated = viewModel.selectedImageIDs
+                if updated.contains(url) {
+                    updated.remove(url)
+                } else {
+                    updated.insert(url)
+                }
+                newIDs = updated
+                newActive = url
+            } else if modifiers.contains(.shift) {
+                let anchor = viewModel.lastClickedImageURL ?? viewModel.selectedImageIDs.first
+                if let anchor,
+                   let anchorIndex = viewModel.urlToVisibleIndex[anchor],
+                   let currentIndex = viewModel.urlToVisibleIndex[url] {
+                    let range = min(anchorIndex, currentIndex)...max(anchorIndex, currentIndex)
+                    var updated = viewModel.selectedImageIDs
+                    updated.reserveCapacity(updated.count + range.count)
+                    updated.formUnion(viewModel.visibleImages[range].lazy.map(\.url))
+                    newIDs = updated
+                    newActive = url
+                } else {
+                    newIDs = [url]
+                    newActive = url
+                }
+            } else {
+                newIDs = [url]
+                newActive = url
+            }
+
+            refreshVisibleSelections(selectedIDs: newIDs, activeURL: newActive)
+            DispatchQueue.main.async { [weak viewModel] in
+                viewModel?.applySelection(ids: newIDs, active: newActive)
+            }
         }
-        refreshVisibleSelections()
     }
 
     // MARK: - Keyboard Handling
@@ -184,17 +223,29 @@ final class ThumbnailCollectionView: NSCollectionView {
 
         switch Int(event.keyCode) {
         case 123: // Left arrow
-            viewModel.selectPrevious(extending: shift)
-            refreshVisibleSelections()
+            guard let sel = viewModel.computePreviousSelection(extending: shift) else { break }
+            refreshVisibleSelections(selectedIDs: sel.ids, activeURL: sel.active)
+            DispatchQueue.main.async { [weak viewModel] in
+                viewModel?.applySelection(ids: sel.ids, active: sel.active)
+            }
         case 124: // Right arrow
-            viewModel.selectNext(extending: shift)
-            refreshVisibleSelections()
+            guard let sel = viewModel.computeNextSelection(extending: shift) else { break }
+            refreshVisibleSelections(selectedIDs: sel.ids, activeURL: sel.active)
+            DispatchQueue.main.async { [weak viewModel] in
+                viewModel?.applySelection(ids: sel.ids, active: sel.active)
+            }
         case 125: // Down arrow
-            viewModel.selectDown(columns: columnCount, extending: shift)
-            refreshVisibleSelections()
+            guard let sel = viewModel.computeDownSelection(columns: columnCount, extending: shift) else { break }
+            refreshVisibleSelections(selectedIDs: sel.ids, activeURL: sel.active)
+            DispatchQueue.main.async { [weak viewModel] in
+                viewModel?.applySelection(ids: sel.ids, active: sel.active)
+            }
         case 126: // Up arrow
-            viewModel.selectUp(columns: columnCount, extending: shift)
-            refreshVisibleSelections()
+            guard let sel = viewModel.computeUpSelection(columns: columnCount, extending: shift) else { break }
+            refreshVisibleSelections(selectedIDs: sel.ids, activeURL: sel.active)
+            DispatchQueue.main.async { [weak viewModel] in
+                viewModel?.applySelection(ids: sel.ids, active: sel.active)
+            }
         case 49: // Space
             // Only handle when no text field is focused
             guard viewModel.firstSelectedImage != nil else {
@@ -209,8 +260,11 @@ final class ThumbnailCollectionView: NSCollectionView {
             viewModel.isFullScreen = true
         case 0: // A key
             if cmd {
-                viewModel.selectAll()
-                refreshVisibleSelections()
+                guard let sel = viewModel.computeSelectAll() else { break }
+                refreshVisibleSelections(selectedIDs: sel.ids, activeURL: sel.active)
+                DispatchQueue.main.async { [weak viewModel] in
+                    viewModel?.applySelection(ids: sel.ids, active: sel.active)
+                }
             } else {
                 super.keyDown(with: event)
             }
