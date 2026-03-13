@@ -27,22 +27,22 @@ nonisolated enum EditedImageRenderer {
 
     /// Renders the image to the configured format. Returns the output URL.
     @discardableResult
-    static func render(from sourceURL: URL, cameraRaw: CameraRawSettings?, isHDR: Bool, outputFolder: URL) throws -> URL {
+    static func render(from sourceURL: URL, cameraRaw: CameraRawSettings?, isHDR: Bool, outputFolder: URL) async throws -> URL {
         let output = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw)
 
         let destURL: URL
         if isHDR {
-            destURL = try renderHDRFormat(output, sourceURL: sourceURL, outputFolder: outputFolder)
+            destURL = try await renderHDRFormat(output, sourceURL: sourceURL, outputFolder: outputFolder)
         } else {
-            destURL = try renderSDRFormat(output, sourceURL: sourceURL, outputFolder: outputFolder)
+            destURL = try await renderSDRFormat(output, sourceURL: sourceURL, outputFolder: outputFolder)
         }
-        copyMetadata(from: sourceURL, to: destURL)
+        await copyMetadata(from: sourceURL, to: destURL)
         return destURL
     }
 
     // MARK: - SDR Encoding
 
-    private static func renderSDRFormat(_ ciImage: CIImage, sourceURL: URL, outputFolder: URL) throws -> URL {
+    private static func renderSDRFormat(_ ciImage: CIImage, sourceURL: URL, outputFolder: URL) async throws -> URL {
         let format = ExportFormatSDR(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportFormatSDR) ?? "") ?? .jpeg
         let quality = UserDefaults.standard.object(forKey: UserDefaultsKeys.exportQualitySDR) as? Double ?? 0.92
 
@@ -78,10 +78,10 @@ nonisolated enum EditedImageRenderer {
             try data.write(to: destURL, options: .atomic)
 
         case .avif:
-            try encodeViaFFmpeg(ciImage, to: destURL, quality: quality, isHDR: false, encoder: .avif)
+            try await encodeViaFFmpeg(ciImage, to: destURL, quality: quality, isHDR: false, encoder: .avif)
 
         case .jxl:
-            try encodeViaFFmpeg(ciImage, to: destURL, quality: quality, isHDR: false, encoder: .jxl)
+            try await encodeViaFFmpeg(ciImage, to: destURL, quality: quality, isHDR: false, encoder: .jxl)
         }
 
         return destURL
@@ -89,7 +89,7 @@ nonisolated enum EditedImageRenderer {
 
     // MARK: - HDR Encoding
 
-    private static func renderHDRFormat(_ ciImage: CIImage, sourceURL: URL, outputFolder: URL) throws -> URL {
+    private static func renderHDRFormat(_ ciImage: CIImage, sourceURL: URL, outputFolder: URL) async throws -> URL {
         let format = ExportFormatHDR(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportFormatHDR) ?? "") ?? .jxl
         let quality = UserDefaults.standard.object(forKey: UserDefaultsKeys.exportQualityHDR) as? Double ?? 0.92
 
@@ -105,10 +105,10 @@ nonisolated enum EditedImageRenderer {
             try data.write(to: destURL, options: .atomic)
 
         case .avif10bit:
-            try encodeViaFFmpeg(ciImage, to: destURL, quality: quality, isHDR: true, encoder: .avif)
+            try await encodeViaFFmpeg(ciImage, to: destURL, quality: quality, isHDR: true, encoder: .avif)
 
         case .jxl:
-            try encodeViaFFmpeg(ciImage, to: destURL, quality: quality, isHDR: true, encoder: .jxl)
+            try await encodeViaFFmpeg(ciImage, to: destURL, quality: quality, isHDR: true, encoder: .jxl)
 
         case .tiff16bit:
             // Half-float linear preserves HDR values >1.0 without needing OETF application
@@ -139,7 +139,7 @@ nonisolated enum EditedImageRenderer {
     /// Encode via FFmpeg: render to a temporary intermediate, then transcode to the target format.
     /// HDR uses a HEIC intermediate (heif10Representation correctly applies HLG OETF).
     /// SDR uses a TIFF intermediate.
-    private static func encodeViaFFmpeg(_ ciImage: CIImage, to destURL: URL, quality: Double, isHDR: Bool, encoder: FFmpegEncoder) throws {
+    private static func encodeViaFFmpeg(_ ciImage: CIImage, to destURL: URL, quality: Double, isHDR: Bool, encoder: FFmpegEncoder) async throws {
         let ctx = CameraRawApproximation.ciContext
         let tempDir = FileManager.default.temporaryDirectory
 
@@ -155,9 +155,9 @@ nonisolated enum EditedImageRenderer {
 
             switch encoder {
             case .avif:
-                try FFmpegService.encodeAVIF(input: tempPNG.path, output: destURL.path, quality: quality, isHDR: true)
+                try await FFmpegService.encodeAVIF(input: tempPNG.path, output: destURL.path, quality: quality, isHDR: true)
             case .jxl:
-                try FFmpegService.encodeJXL(input: tempPNG.path, output: destURL.path, quality: quality, isHDR: true)
+                try await FFmpegService.encodeJXL(input: tempPNG.path, output: destURL.path, quality: quality, isHDR: true)
             }
         } else {
             let tempTIFF = tempDir.appendingPathComponent(UUID().uuidString).appendingPathExtension("tiff")
@@ -171,9 +171,9 @@ nonisolated enum EditedImageRenderer {
 
             switch encoder {
             case .avif:
-                try FFmpegService.encodeAVIF(input: tempTIFF.path, output: destURL.path, quality: quality, isHDR: false)
+                try await FFmpegService.encodeAVIF(input: tempTIFF.path, output: destURL.path, quality: quality, isHDR: false)
             case .jxl:
-                try FFmpegService.encodeJXL(input: tempTIFF.path, output: destURL.path, quality: quality, isHDR: false)
+                try await FFmpegService.encodeJXL(input: tempTIFF.path, output: destURL.path, quality: quality, isHDR: false)
             }
         }
     }
@@ -226,7 +226,7 @@ nonisolated enum EditedImageRenderer {
 
     // MARK: - Legacy API
 
-    static func renderJPEG(from sourceURL: URL, cameraRaw: CameraRawSettings?, outputFolder: URL) throws {
+    static func renderJPEG(from sourceURL: URL, cameraRaw: CameraRawSettings?, outputFolder: URL) async throws {
         let output = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw)
         let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
         guard let data = CameraRawApproximation.ciContext.jpegRepresentation(of: output, colorSpace: colorSpace, options: [:]) else {
@@ -237,9 +237,9 @@ nonisolated enum EditedImageRenderer {
     }
 
     @discardableResult
-    static func renderHDR(from sourceURL: URL, cameraRaw: CameraRawSettings?, outputFolder: URL) throws -> URL {
+    static func renderHDR(from sourceURL: URL, cameraRaw: CameraRawSettings?, outputFolder: URL) async throws -> URL {
         let output = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw)
-        return try renderHDRFormat(output, sourceURL: sourceURL, outputFolder: outputFolder)
+        return try await renderHDRFormat(output, sourceURL: sourceURL, outputFolder: outputFolder)
     }
 
     enum SaveAsFormat {
@@ -257,7 +257,7 @@ nonisolated enum EditedImageRenderer {
     /// Render and save next to the original file in a specific format (JPEG or PNG).
     /// Returns the output URL. Handles name collisions by appending a number.
     @discardableResult
-    static func saveAs(from sourceURL: URL, cameraRaw: CameraRawSettings?, format: SaveAsFormat) throws -> URL {
+    static func saveAs(from sourceURL: URL, cameraRaw: CameraRawSettings?, format: SaveAsFormat) async throws -> URL {
         let output = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw)
         let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
         let ctx = CameraRawApproximation.ciContext
@@ -287,7 +287,7 @@ nonisolated enum EditedImageRenderer {
             try data.write(to: destURL, options: .atomic)
         }
 
-        copyMetadata(from: sourceURL, to: destURL)
+        await copyMetadata(from: sourceURL, to: destURL)
         return destURL
     }
 
@@ -307,26 +307,22 @@ nonisolated enum EditedImageRenderer {
 
     /// Copy IPTC/XMP/EXIF metadata from source to destination using ExifTool.
     /// Copies IPTC and XMP (excluding Camera Raw edit settings which are already baked in).
-    private static func copyMetadata(from source: URL, to destination: URL) {
+    private static func copyMetadata(from source: URL, to destination: URL) async {
         guard let exiftool = exifToolPath else { return }
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: exiftool)
-        process.arguments = [
-            "-m",
-            "-TagsFromFile", source.path,
-            "-IPTC:all",
-            "-XMP:all",
-            "--XMP-crs:all",
-            "-overwrite_original",
-            destination.path
-        ]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-
         do {
-            try process.run()
-            process.waitUntilExit()
+            _ = try await Process.run(
+                executableURL: URL(fileURLWithPath: exiftool),
+                arguments: [
+                    "-m",
+                    "-TagsFromFile", source.path,
+                    "-IPTC:all",
+                    "-XMP:all",
+                    "--XMP-crs:all",
+                    "-overwrite_original",
+                    destination.path
+                ]
+            )
         } catch {
             // Metadata copy is best-effort
         }

@@ -1379,7 +1379,7 @@ struct EditWorkspaceView: View {
                 let outputFolder = selectedImageURL.deletingLastPathComponent().appendingPathComponent("Edited", isDirectory: true)
                 try FileManager.default.createDirectory(at: outputFolder, withIntermediateDirectories: true)
                 let outputURL = try await Task.detached(priority: .userInitiated) {
-                    try EditedImageRenderer.render(from: selectedImageURL, cameraRaw: settings, isHDR: hdr, outputFolder: outputFolder)
+                    try await EditedImageRenderer.render(from: selectedImageURL, cameraRaw: settings, isHDR: hdr, outputFolder: outputFolder)
                 }.value
                 browserViewModel.thumbnailService.invalidateThumbnail(for: outputURL)
             } catch {

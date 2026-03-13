@@ -1107,7 +1107,7 @@ struct ContentView: View {
                 let cameraRaw = metadataByURL[url]?.cameraRaw
                 do {
                     let outputURL = try await Task.detached(priority: .userInitiated) {
-                        try EditedImageRenderer.saveAs(from: url, cameraRaw: cameraRaw, format: format)
+                        try await EditedImageRenderer.saveAs(from: url, cameraRaw: cameraRaw, format: format)
                     }.value
                     savedURLs.append(outputURL)
                 } catch {
@@ -1168,7 +1168,7 @@ struct ContentView: View {
                 let isHDR = cameraRaw?.hdrEditMode == 1
                 do {
                     try await Task.detached(priority: .userInitiated) {
-                        try EditedImageRenderer.render(from: url, cameraRaw: cameraRaw, isHDR: isHDR, outputFolder: outputFolder)
+                        try await EditedImageRenderer.render(from: url, cameraRaw: cameraRaw, isHDR: isHDR, outputFolder: outputFolder)
                     }.value
                     successCount += 1
                 } catch {
