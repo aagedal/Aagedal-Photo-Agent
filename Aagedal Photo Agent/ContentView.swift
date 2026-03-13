@@ -27,7 +27,6 @@ struct ContentView: View {
     @State private var isShowingFTPUpload = false
     @State private var isShowingSaveTemplateName = false
     @State private var isShowingImport = false
-    @State private var isShowingC2PADetail = false
     @State private var isShowingWriteAllC2PAWarning = false
     @State private var c2paMetadata: C2PAMetadata?
     @State private var pendingWriteAllC2PACount = 0
@@ -86,7 +85,9 @@ struct ContentView: View {
             .sheet(isPresented: $isShowingSaveTemplateName) { saveTemplateSheet }
             .sheet(isPresented: $isShowingFTPUpload) { ftpUploadSheet }
             .sheet(isPresented: $isShowingImport) { importSheet }
-            .sheet(isPresented: $isShowingC2PADetail) { c2paSheet }
+            .sheet(item: $c2paMetadata) { metadata in
+                C2PADetailSheet(metadata: metadata)
+            }
     }
 
     private var contentWithAlerts: some View {
@@ -613,13 +614,6 @@ struct ContentView: View {
         )
     }
 
-    @ViewBuilder
-    private var c2paSheet: some View {
-        if let c2paMetadata {
-            C2PADetailSheet(metadata: c2paMetadata)
-        }
-    }
-
     private func handleImportCompleted(_ notification: NotificationCenter.Publisher.Output) {
         if let folderURL = notification.object as? URL,
            importViewModel.configuration.openFolderAfterImport {
@@ -1078,7 +1072,6 @@ struct ContentView: View {
             do {
                 let result = try await service.readC2PAMetadata(url: image.url)
                 c2paMetadata = result
-                isShowingC2PADetail = true
             } catch {
                 c2paMetadata = nil
             }

@@ -12,7 +12,8 @@ struct C2PAManifest {
     let title: String?
 }
 
-struct C2PAMetadata {
+struct C2PAMetadata: Identifiable {
+    let id = UUID()
     let manifests: [C2PAManifest]
     var activeManifest: C2PAManifest? { manifests.last }
 
