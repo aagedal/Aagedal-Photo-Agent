@@ -26,30 +26,22 @@ nonisolated enum FFmpegService {
         Bundle.main.path(forResource: "ffmpeg", ofType: nil)
     }
 
-    /// Run ffmpeg synchronously with the given arguments. Throws on failure.
-    static func run(arguments: [String]) throws {
+    /// Run ffmpeg asynchronously with the given arguments. Throws on failure.
+    static func run(arguments: [String]) async throws {
         guard let path = ffmpegPath else {
             throw FFmpegError.ffmpegMissing
         }
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: path)
-        process.arguments = arguments
-
-        let stderrPipe = Pipe()
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = stderrPipe
-
         ffmpegLogger.info("Running: ffmpeg \(arguments.joined(separator: " "), privacy: .public)")
 
-        try process.run()
-        process.waitUntilExit()
-
-        if process.terminationStatus != 0 {
-            let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-            let message = String(data: stderrData, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? "Unknown error"
-            ffmpegLogger.error("ffmpeg failed (\(process.terminationStatus)): \(message, privacy: .public)")
+        do {
+            _ = try await Process.run(
+                executableURL: URL(fileURLWithPath: path),
+                arguments: arguments
+            )
+        } catch {
+            let message = error.localizedDescription
+            ffmpegLogger.error("ffmpeg failed: \(message, privacy: .public)")
             throw FFmpegError.processFailed(message)
         }
     }
@@ -62,7 +54,7 @@ nonisolated enum FFmpegService {
     ///   - output: Path to the output .avif file
     ///   - quality: 0.0 (worst) to 1.0 (best). Maps to CRF 63-0.
     ///   - isHDR: Whether to preserve HDR color metadata
-    static func encodeAVIF(input: String, output: String, quality: Double, isHDR: Bool) throws {
+    static func encodeAVIF(input: String, output: String, quality: Double, isHDR: Bool) async throws {
         // Map quality 0.0-1.0 to CRF 63-0 (lower CRF = better quality)
         let crf = Int((1.0 - quality) * 63.0)
 
@@ -74,7 +66,7 @@ nonisolated enum FFmpegService {
         args += ["-still-picture", "1"]
         args += [output]
 
-        try run(arguments: args)
+        try await run(arguments: args)
 
         guard FileManager.default.fileExists(atPath: output) else {
             throw FFmpegError.outputMissing
@@ -87,7 +79,7 @@ nonisolated enum FFmpegService {
     ///   - output: Path to the output .jxl file
     ///   - quality: 0.0 (worst) to 1.0 (best). Maps to distance 15-0.
     ///   - isHDR: Whether to preserve HDR color metadata
-    static func encodeJXL(input: String, output: String, quality: Double, isHDR: Bool) throws {
+    static func encodeJXL(input: String, output: String, quality: Double, isHDR: Bool) async throws {
         // Map quality 0.0-1.0 to distance 15-0 (lower distance = better quality)
         let distance = (1.0 - quality) * 15.0
 
@@ -101,7 +93,7 @@ nonisolated enum FFmpegService {
         args += ["-effort", "7"]
         args += [output]
 
-        try run(arguments: args)
+        try await run(arguments: args)
 
         guard FileManager.default.fileExists(atPath: output) else {
             throw FFmpegError.outputMissing
