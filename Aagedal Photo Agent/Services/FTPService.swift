@@ -33,7 +33,7 @@ struct FTPService: Sendable {
         guard let netrcData = netrcContent.data(using: .utf8) else {
             throw FTPError.encodingFailed
         }
-        try netrcData.write(to: netrcURL, options: .atomic)
+        FileManager.default.createFile(atPath: netrcURL.path, contents: netrcData, attributes: [.posixPermissions: 0o600])
         defer { try? FileManager.default.removeItem(at: netrcURL) }
 
         var arguments = [

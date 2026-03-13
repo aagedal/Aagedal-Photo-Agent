@@ -484,11 +484,10 @@ final class BrowserViewModel {
             return
         }
 
-        // Process in batches — mutate a local copy, assign once to avoid repeated didSet cascades
+        // Process in batches — apply each batch directly to self.images so concurrent
+        // user edits (rating/label changes) are not overwritten by a stale snapshot.
         let batchSize = 50
         let urls = images.filter(\.isImageFile).map(\.url)
-        var updated = images
-        let localIndex = Dictionary(uniqueKeysWithValues: updated.enumerated().map { ($1.url, $0) })
 
         for batchStart in stride(from: 0, to: urls.count, by: batchSize) {
             guard !Task.isCancelled, currentFolderURL == folderURL else { return }
@@ -497,13 +496,11 @@ final class BrowserViewModel {
 
             do {
                 let results = try await exifToolService.readBatchBasicMetadata(urls: batchURLs)
-                applyBatchMetadataResults(results, to: &updated, localIndex: localIndex, cachedSidecars: cachedSidecars)
+                applyBatchMetadataResults(results, to: &images, localIndex: urlToImageIndex, cachedSidecars: cachedSidecars)
             } catch {
                 logger.warning("Batch metadata load failed (batch at offset \(batchStart)): \(error.localizedDescription)")
             }
         }
-        guard !Task.isCancelled, currentFolderURL == folderURL else { return }
-        images = updated
     }
 
     private func loadBasicMetadata(for urls: [URL]) async {
@@ -527,8 +524,6 @@ final class BrowserViewModel {
         }
 
         let batchSize = 50
-        var updated = images
-        let localIndex = Dictionary(uniqueKeysWithValues: updated.enumerated().map { ($1.url, $0) })
 
         for batchStart in stride(from: 0, to: urls.count, by: batchSize) {
             guard !Task.isCancelled, currentFolderURL == folderURL else { return }
@@ -537,13 +532,11 @@ final class BrowserViewModel {
 
             do {
                 let results = try await exifToolService.readBatchBasicMetadata(urls: batchURLs)
-                applyBatchMetadataResults(results, to: &updated, localIndex: localIndex)
+                applyBatchMetadataResults(results, to: &images, localIndex: urlToImageIndex)
             } catch {
                 logger.warning("Incremental metadata load failed: \(error.localizedDescription)")
             }
         }
-        guard !Task.isCancelled, currentFolderURL == folderURL else { return }
-        images = updated
     }
 
     private func drainPendingMetadataIfNeeded() {

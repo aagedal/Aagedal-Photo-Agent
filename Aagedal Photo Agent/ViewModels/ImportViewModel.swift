@@ -25,6 +25,7 @@ final class ImportViewModel {
 
     private let exifToolService: ExifToolService
     private let interpolator = PresetVariableInterpolator()
+    private var scanTask: Task<Void, Never>?
 
     init(exifToolService: ExifToolService) {
         self.exifToolService = exifToolService
@@ -65,12 +66,15 @@ final class ImportViewModel {
     }
 
     private func scanSource(url: URL) {
+        scanTask?.cancel()
         importPhase = .scanning
         sourceFiles = []
 
-        Task.detached(priority: .userInitiated) {
+        scanTask = Task.detached(priority: .userInitiated) {
             let allURLs = Self.enumerateFiles(at: url)
+            guard !Task.isCancelled else { return }
             await MainActor.run {
+                guard !Task.isCancelled else { return }
                 self.sourceFiles = allURLs
                     .filter { SupportedImageFormats.isSupported(url: $0) }
                     .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
