@@ -19,6 +19,8 @@ struct Aagedal_Photo_AgentApp: App {
                 .keyboardShortcut("i", modifiers: [.command, .shift])
             }
 
+            CommandGroup(replacing: .printItem) { }
+
             CommandMenu("Rating & Label") {
                 Button("No Rating") {
                     NotificationCenter.default.post(name: .setRating, object: StarRating.none)
