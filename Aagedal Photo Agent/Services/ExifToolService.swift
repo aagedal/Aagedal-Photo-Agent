@@ -430,6 +430,21 @@ final class ExifToolService {
         return try parseJSON(output)
     }
 
+    /// Read all metadata for a single file as pretty-printed JSON string.
+    func readRawJSON(url: URL) async throws -> String {
+        let args = ["-json", "-G", "-struct", "-n", url.path]
+        let output = try await execute(args)
+        // Re-serialize with sorted keys for readability
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let data = trimmed.data(using: .utf8),
+              let json = try JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+              let first = json.first else {
+            return trimmed
+        }
+        let pretty = try JSONSerialization.data(withJSONObject: first, options: [.prettyPrinted, .sortedKeys])
+        return String(data: pretty, encoding: .utf8) ?? trimmed
+    }
+
     /// Read full metadata for a single file.
     func readFullMetadata(url: URL) async throws -> IPTCMetadata {
         exifToolLog.debug("readFullMetadata: \(url.lastPathComponent, privacy: .public)")
