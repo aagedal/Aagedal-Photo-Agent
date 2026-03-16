@@ -25,6 +25,7 @@ struct MetadataPanel: View {
     @State private var c2paOverwriteIntent: C2PAOverwriteIntent?
     @State private var pendingC2PASelection: [URL] = []
     @State private var commitDebounceTask: Task<Void, Never>?
+    @State private var showingRawMetadata = false
 
     enum ListFileTarget {
         case keywords
@@ -481,6 +482,25 @@ struct MetadataPanel: View {
                     }
                     .buttonStyle(.plain)
                     .help("Image has embedded crop metadata — click to load")
+                }
+                if !viewModel.isBatchEdit, viewModel.selectedCount == 1 {
+                    Button {
+                        showingRawMetadata = true
+                    } label: {
+                        Image(systemName: "chevron.left.forwardslash.chevron.right")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.plain)
+                    .help("View raw metadata (JSON)")
+                    .sheet(isPresented: $showingRawMetadata) {
+                        if let url = viewModel.selectedURLs.first {
+                            RawMetadataView(
+                                filename: url.lastPathComponent,
+                                exifToolService: browserViewModel.exifToolService,
+                                imageURL: url
+                            )
+                        }
+                    }
                 }
                 Spacer()
                 Button {
