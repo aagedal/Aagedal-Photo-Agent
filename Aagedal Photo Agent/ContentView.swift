@@ -1070,7 +1070,10 @@ struct ContentView: View {
         let service = browserViewModel.exifToolService
         Task {
             do {
-                let result = try await service.readC2PAMetadata(url: image.url)
+                var result = try await service.readC2PAMetadata(url: image.url)
+                // Best-effort thumbnail extraction — don't fail the sheet if this errors
+                let thumbnails = try? await service.readC2PAThumbnails(url: image.url)
+                result.thumbnails = thumbnails
                 c2paMetadata = result
             } catch {
                 c2paMetadata = nil
