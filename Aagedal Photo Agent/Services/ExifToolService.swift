@@ -615,6 +615,18 @@ final class ExifToolService {
            normalizedFields[ExifToolWriteTag.iptcCaptionAbstract] == nil {
             normalizedFields[ExifToolWriteTag.iptcCaptionAbstract] = desc
         }
+        if let city = normalizedFields[ExifToolWriteTag.city],
+           normalizedFields[ExifToolWriteTag.iptcCity] == nil {
+            normalizedFields[ExifToolWriteTag.iptcCity] = city
+        }
+        if let country = normalizedFields[ExifToolWriteTag.country],
+           normalizedFields[ExifToolWriteTag.iptcCountryPrimaryLocationName] == nil {
+            normalizedFields[ExifToolWriteTag.iptcCountryPrimaryLocationName] = country
+        }
+        if let credit = normalizedFields[ExifToolWriteTag.credit],
+           normalizedFields[ExifToolWriteTag.iptcCreditLine] == nil {
+            normalizedFields[ExifToolWriteTag.iptcCreditLine] = credit
+        }
 
         let creationDates = captureCreationDates(for: urls)
         defer { restoreCreationDates(creationDates) }
