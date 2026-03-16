@@ -1324,6 +1324,7 @@ final class MetadataViewModel {
             var updated = 0
             var unchanged = 0
             var failed = 0
+            var updatedURLs: Set<URL> = []
 
             for url in imageURLs {
                 let filename = url.deletingPathExtension().lastPathComponent
@@ -1367,6 +1368,7 @@ final class MetadataViewModel {
                         if !fields.isEmpty {
                             try await exifToolService.writeFields(fields, to: [url])
                             updated += 1
+                            updatedURLs.insert(url)
                         } else {
                             unchanged += 1
                         }
@@ -1379,6 +1381,11 @@ final class MetadataViewModel {
 
                 processed += 1
                 self.folderProcessProgress = "\(processed)/\(imageURLs.count)"
+            }
+
+            // Refresh the metadata panel if the currently displayed image was processed
+            if !updatedURLs.isEmpty {
+                await self.refreshMetadataAfterProcessing(updatedURLs: updatedURLs)
             }
 
             self.isProcessingFolder = false
@@ -1405,6 +1412,7 @@ final class MetadataViewModel {
             var updated = 0
             var unchanged = 0
             var failed = 0
+            var updatedURLs: Set<URL> = []
 
             for image in images {
                 do {
@@ -1447,6 +1455,7 @@ final class MetadataViewModel {
                         if !fields.isEmpty {
                             try await exifToolService.writeFields(fields, to: [image.url])
                             updated += 1
+                            updatedURLs.insert(image.url)
                         } else {
                             unchanged += 1
                         }
@@ -1461,6 +1470,11 @@ final class MetadataViewModel {
                 self.folderProcessProgress = "\(processed)/\(images.count)"
             }
 
+            // Refresh the metadata panel if the currently displayed image was processed
+            if !updatedURLs.isEmpty {
+                await self.refreshMetadataAfterProcessing(updatedURLs: updatedURLs)
+            }
+
             self.isProcessingFolder = false
             self.folderProcessProgress = ""
             if failed > 0 {
@@ -1469,6 +1483,36 @@ final class MetadataViewModel {
                 self.saveError = nil
             }
         }
+    }
+
+    /// Re-read metadata from file for the currently displayed image after variable processing,
+    /// so the UI reflects the resolved values instead of stale template strings.
+    private func refreshMetadataAfterProcessing(updatedURLs: Set<URL>) async {
+        guard selectedCount == 1,
+              let url = selectedURLs.first,
+              updatedURLs.contains(url) else { return }
+
+        do {
+            let (embedded, conflict) = try await exifToolService.readFullMetadataWithConflictCheck(url: url)
+            let xmpMeta = loadXMPMetadataIfAllowed(for: url)
+            let refSource = defaultReferenceSource(hasXmp: xmpMeta != nil)
+            let baseMeta = referenceMetadata(for: refSource, embedded: embedded, xmp: xmpMeta) ?? embedded
+
+            self.embeddedMetadata = embedded
+            self.descriptionConflict = conflict
+            self.xmpMetadata = xmpMeta
+            self.metadataReferenceSource = refSource
+            self.metadata = baseMeta
+            self.originalImageMetadata = baseMeta
+            self.editingMetadata = baseMeta
+            self.previousEditingMetadata = baseMeta
+            self.hasChanges = false
+
+            // Clear stale sidecar since metadata was written directly to the file
+            if let folder = currentFolderURL {
+                try? sidecarService.deleteSidecar(for: url, in: folder)
+            }
+        } catch { }
     }
 
     private func resolveIfChanged(_ value: String?, interpolator: PresetVariableInterpolator, filename: String, ref: IPTCMetadata, changed: inout Bool) -> String? {
