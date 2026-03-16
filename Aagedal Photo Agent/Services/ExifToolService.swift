@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import os.log
 
@@ -817,6 +818,33 @@ final class ExifToolService {
             return C2PAMetadata(from: [:])
         }
         return C2PAMetadata(from: dict)
+    }
+
+    /// Read C2PA embedded thumbnails (claim + ingredient) using binary extraction.
+    /// ExifTool `-json -b` outputs binary data as base64 strings.
+    func readC2PAThumbnails(url: URL) async throws -> C2PAThumbnails {
+        let args = ["-json", "-b",
+                    "-JUMBF:C2PAThumbnailClaimJpegData",
+                    "-JUMBF:C2PAThumbnailIngredientJpegData",
+                    url.path]
+        let output = try await execute(args)
+        let results = try parseJSON(output)
+        guard let dict = results.first else {
+            return C2PAThumbnails(claimThumbnail: nil, ingredientThumbnail: nil)
+        }
+
+        let claimImage = decodeBase64Image(dict["C2PAThumbnailClaimJpegData"])
+        let ingredientImage = decodeBase64Image(dict["C2PAThumbnailIngredientJpegData"])
+        return C2PAThumbnails(claimThumbnail: claimImage, ingredientThumbnail: ingredientImage)
+    }
+
+    private func decodeBase64Image(_ value: Any?) -> NSImage? {
+        guard let base64String = value as? String, !base64String.isEmpty else { return nil }
+        // ExifTool base64 output may contain newlines
+        let cleaned = base64String.replacingOccurrences(of: "\n", with: "")
+            .replacingOccurrences(of: "\r", with: "")
+        guard let data = Data(base64Encoded: cleaned) else { return nil }
+        return NSImage(data: data)
     }
 
     // MARK: - Parsing Helpers
