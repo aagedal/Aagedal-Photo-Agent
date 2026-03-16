@@ -1310,6 +1310,131 @@ final class MetadataViewModel {
         return resolved.isEmpty ? nil : resolved
     }
 
+    private enum VariableWriteResult {
+        case writtenToFile
+        case writtenToXMPSidecar
+        case savedToHistory
+    }
+
+    /// Write resolved variable metadata for a single image, respecting the user's write mode settings.
+    private func writeResolvedVariables(
+        resolved: IPTCMetadata,
+        original: IPTCMetadata,
+        embedded: IPTCMetadata,
+        existingSidecar: MetadataSidecar?,
+        image: ImageFile,
+        url: URL
+    ) async throws -> VariableWriteResult {
+        let mode = MetadataWriteMode.current(forC2PA: image.hasC2PA)
+        guard let folder = self.currentFolderURL else {
+            throw NSError(domain: "MetadataViewModel", code: 1, userInfo: [NSLocalizedDescriptionKey: "No folder URL"])
+        }
+
+        // Build changed-fields dictionary for file write paths
+        var fields: [String: String] = [:]
+        if resolved.title != original.title { fields[ExifToolWriteTag.headline] = resolved.title ?? "" }
+        if resolved.description != original.description { fields[ExifToolWriteTag.description] = resolved.description ?? "" }
+        if resolved.extendedDescription != original.extendedDescription {
+            fields[ExifToolWriteTag.extendedDescription] = resolved.extendedDescription ?? ""
+        }
+        if resolved.creator != original.creator { fields[ExifToolWriteTag.creator] = resolved.creator ?? "" }
+        if resolved.credit != original.credit { fields[ExifToolWriteTag.credit] = resolved.credit ?? "" }
+        if resolved.copyright != original.copyright { fields[ExifToolWriteTag.rights] = resolved.copyright ?? "" }
+        if resolved.jobId != original.jobId {
+            fields[ExifToolWriteTag.transmissionReference] = resolved.jobId ?? ""
+        }
+        if resolved.dateCreated != original.dateCreated { fields[ExifToolWriteTag.dateCreated] = resolved.dateCreated ?? "" }
+        if resolved.city != original.city { fields[ExifToolWriteTag.city] = resolved.city ?? "" }
+        if resolved.country != original.country { fields[ExifToolWriteTag.country] = resolved.country ?? "" }
+        if resolved.event != original.event { fields[ExifToolWriteTag.event] = resolved.event ?? "" }
+
+        // Build JSON sidecar with history entry
+        func buildSidecar(pendingChanges: Bool, historyNote: String) -> MetadataSidecar {
+            var sidecar = MetadataSidecar(
+                sourceFile: url.lastPathComponent,
+                pendingChanges: pendingChanges,
+                metadata: resolved,
+                imageMetadataSnapshot: embedded
+            )
+            sidecar.history = existingSidecar?.history ?? []
+            sidecar.history.append(MetadataHistoryEntry(
+                timestamp: Date(),
+                fieldName: "Variables processed",
+                oldValue: nil,
+                newValue: historyNote
+            ))
+            return sidecar
+        }
+
+        switch mode {
+        case .historyOnly:
+            let sidecar = buildSidecar(pendingChanges: true, historyNote: "Saved to sidecar (history only)")
+            try sidecarService.saveSidecar(sidecar, for: url, in: folder)
+            return .savedToHistory
+
+        case .writeToXMPSidecar:
+            if PMXMPPolicy.mode == .strictPhotoMechanic {
+                // In strict PM mode, RAW files get XMP sidecar normally
+                if SupportedImageFormats.isRaw(url: url) {
+                    try xmpSidecarService.saveSidecar(metadata: resolved, for: url)
+                    let sidecar = buildSidecar(pendingChanges: false, historyNote: "Written to XMP sidecar")
+                    try sidecarService.saveSidecar(sidecar, for: url, in: folder)
+                    return .writtenToXMPSidecar
+                }
+
+                // Non-RAW in PM strict mode: check nonRawBehavior setting.
+                // In batch context, we can't show dialogs, so .alwaysAsk falls back to history only.
+                switch PMXMPPolicy.nonRawBehavior {
+                case .historyOnly, .alwaysAsk:
+                    let sidecar = buildSidecar(pendingChanges: true, historyNote: "Saved to sidecar (PM strict non-RAW)")
+                    try sidecarService.saveSidecar(sidecar, for: url, in: folder)
+                    return .savedToHistory
+                case .embeddedWrite:
+                    if !fields.isEmpty {
+                        try await exifToolService.writeFields(fields, to: [url])
+                    }
+                    let sidecar = buildSidecar(pendingChanges: false, historyNote: "Written to image file (PM strict embedded)")
+                    try sidecarService.saveSidecar(sidecar, for: url, in: folder)
+                    return .writtenToFile
+                case .syncRawJpegPair:
+                    if !fields.isEmpty {
+                        try await exifToolService.writeFields(fields, to: [url])
+                    }
+                    // Write XMP sidecar for RAW sibling if found
+                    if let pair = SupportedImageFormats.preferredRawSibling(for: url) {
+                        var existing = xmpSidecarService.loadSidecar(for: pair.url) ?? IPTCMetadata()
+                        existing = existing.merged(preferring: resolved)
+                        try xmpSidecarService.saveSidecar(metadata: existing, for: pair.url)
+                    }
+                    let sidecar = buildSidecar(pendingChanges: false, historyNote: "Written to file + RAW sibling XMP (PM strict sync)")
+                    try sidecarService.saveSidecar(sidecar, for: url, in: folder)
+                    return .writtenToFile
+                }
+            }
+
+            // Normal XMP sidecar mode
+            try xmpSidecarService.saveSidecar(metadata: resolved, for: url)
+            let sidecar = buildSidecar(pendingChanges: false, historyNote: "Written to XMP sidecar")
+            try sidecarService.saveSidecar(sidecar, for: url, in: folder)
+            return .writtenToXMPSidecar
+
+        case .writeToFile:
+            if image.hasC2PA {
+                // C2PA-protected: save to sidecar only (same safety guard as commitEdits)
+                let sidecar = buildSidecar(pendingChanges: true, historyNote: "Saved to sidecar (C2PA protected)")
+                try sidecarService.saveSidecar(sidecar, for: url, in: folder)
+                return .savedToHistory
+            }
+
+            if !fields.isEmpty {
+                try await exifToolService.writeFields(fields, to: [url])
+            }
+            let sidecar = buildSidecar(pendingChanges: false, historyNote: "Written to image file")
+            try sidecarService.saveSidecar(sidecar, for: url, in: folder)
+            return .writtenToFile
+        }
+    }
+
     /// Process variables for specific images: reads each image's metadata,
     /// resolves any variable placeholders, and writes back.
     func processVariablesForImages(_ images: [ImageFile]) {
@@ -1321,10 +1446,11 @@ final class MetadataViewModel {
         Task {
             let interpolator = PresetVariableInterpolator()
             var processed = 0
-            var updated = 0
+            var writtenToFile = 0
+            var writtenToXMP = 0
+            var savedToHistory = 0
             var unchanged = 0
             var failed = 0
-            var c2paSkipped = 0
             var updatedURLs: Set<URL> = []
 
             for image in images {
@@ -1338,10 +1464,11 @@ final class MetadataViewModel {
                     let before = self.editingMetadata
                     self.processVariables(filename: filename)
                     if self.editingMetadata != before {
-                        // Persist resolved metadata to sidecar so it survives
-                        // navigation and isn't overwritten by refreshMetadataAfterProcessing
+                        // Save to JSON sidecar only — the normal commit flow (which already
+                        // respects write modes) will handle the actual file/XMP write when
+                        // the user navigates away or explicitly saves.
                         self.saveToSidecar()
-                        updated += 1
+                        savedToHistory += 1
                     } else {
                         unchanged += 1
                     }
@@ -1386,54 +1513,20 @@ final class MetadataViewModel {
                     resolved.event = resolveIfChanged(meta.event, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
 
                     if changed {
-                        if image.hasC2PA {
-                            // C2PA-protected: save resolved metadata to sidecar instead
-                            if let folder = self.currentFolderURL {
-                                var sidecar = MetadataSidecar(
-                                    sourceFile: url.lastPathComponent,
-                                    pendingChanges: true,
-                                    metadata: resolved,
-                                    imageMetadataSnapshot: embedded
-                                )
-                                sidecar.history = existingSidecar?.history ?? []
-                                sidecar.history.append(MetadataHistoryEntry(
-                                    timestamp: Date(),
-                                    fieldName: "Variables processed",
-                                    oldValue: nil,
-                                    newValue: "Saved to sidecar (C2PA protected)"
-                                ))
-                                try sidecarService.saveSidecar(sidecar, for: url, in: folder)
-                                c2paSkipped += 1
-                                updatedURLs.insert(url)
-                            } else {
-                                failed += 1
-                            }
-                        } else {
-                            var fields: [String: String] = [:]
-                            if resolved.title != meta.title { fields[ExifToolWriteTag.headline] = resolved.title ?? "" }
-                            if resolved.description != meta.description { fields[ExifToolWriteTag.description] = resolved.description ?? "" }
-                            if resolved.extendedDescription != meta.extendedDescription {
-                                fields[ExifToolWriteTag.extendedDescription] = resolved.extendedDescription ?? ""
-                            }
-                            if resolved.creator != meta.creator { fields[ExifToolWriteTag.creator] = resolved.creator ?? "" }
-                            if resolved.credit != meta.credit { fields[ExifToolWriteTag.credit] = resolved.credit ?? "" }
-                            if resolved.copyright != meta.copyright { fields[ExifToolWriteTag.rights] = resolved.copyright ?? "" }
-                            if resolved.jobId != meta.jobId {
-                                fields[ExifToolWriteTag.transmissionReference] = resolved.jobId ?? ""
-                            }
-                            if resolved.dateCreated != meta.dateCreated { fields[ExifToolWriteTag.dateCreated] = resolved.dateCreated ?? "" }
-                            if resolved.city != meta.city { fields[ExifToolWriteTag.city] = resolved.city ?? "" }
-                            if resolved.country != meta.country { fields[ExifToolWriteTag.country] = resolved.country ?? "" }
-                            if resolved.event != meta.event { fields[ExifToolWriteTag.event] = resolved.event ?? "" }
-
-                            if !fields.isEmpty {
-                                try await exifToolService.writeFields(fields, to: [url])
-                                updated += 1
-                                updatedURLs.insert(url)
-                            } else {
-                                unchanged += 1
-                            }
+                        let result = try await writeResolvedVariables(
+                            resolved: resolved,
+                            original: meta,
+                            embedded: embedded,
+                            existingSidecar: existingSidecar,
+                            image: image,
+                            url: url
+                        )
+                        switch result {
+                        case .writtenToFile: writtenToFile += 1
+                        case .writtenToXMPSidecar: writtenToXMP += 1
+                        case .savedToHistory: savedToHistory += 1
                         }
+                        updatedURLs.insert(url)
                     } else {
                         unchanged += 1
                     }
@@ -1453,11 +1546,12 @@ final class MetadataViewModel {
             self.isProcessingFolder = false
             self.folderProcessProgress = ""
             var statusParts: [String] = []
-            if updated > 0 { statusParts.append("updated \(updated)") }
-            if c2paSkipped > 0 { statusParts.append("\(c2paSkipped) C2PA saved to sidecar") }
-            if unchanged > 0 { statusParts.append("unchanged \(unchanged)") }
-            if failed > 0 { statusParts.append("failed \(failed)") }
-            if c2paSkipped > 0 || failed > 0 {
+            if writtenToFile > 0 { statusParts.append("written to file: \(writtenToFile)") }
+            if writtenToXMP > 0 { statusParts.append("written to XMP: \(writtenToXMP)") }
+            if savedToHistory > 0 { statusParts.append("saved to sidecar: \(savedToHistory)") }
+            if unchanged > 0 { statusParts.append("unchanged: \(unchanged)") }
+            if failed > 0 { statusParts.append("failed: \(failed)") }
+            if writtenToXMP > 0 || savedToHistory > 0 || failed > 0 {
                 self.saveError = "Variable processing completed: \(statusParts.joined(separator: ", "))."
             } else {
                 self.saveError = nil
@@ -1476,10 +1570,11 @@ final class MetadataViewModel {
         Task {
             let interpolator = PresetVariableInterpolator()
             var processed = 0
-            var updated = 0
+            var writtenToFile = 0
+            var writtenToXMP = 0
+            var savedToHistory = 0
             var unchanged = 0
             var failed = 0
-            var c2paSkipped = 0
             var updatedURLs: Set<URL> = []
 
             for image in images {
@@ -1493,10 +1588,11 @@ final class MetadataViewModel {
                     let before = self.editingMetadata
                     self.processVariables(filename: filename)
                     if self.editingMetadata != before {
-                        // Persist resolved metadata to sidecar so it survives
-                        // navigation and isn't overwritten by refreshMetadataAfterProcessing
+                        // Save to JSON sidecar only — the normal commit flow (which already
+                        // respects write modes) will handle the actual file/XMP write when
+                        // the user navigates away or explicitly saves.
                         self.saveToSidecar()
-                        updated += 1
+                        savedToHistory += 1
                     } else {
                         unchanged += 1
                     }
@@ -1541,54 +1637,20 @@ final class MetadataViewModel {
                     resolved.event = resolveIfChanged(meta.event, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
 
                     if changed {
-                        if image.hasC2PA {
-                            // C2PA-protected: save resolved metadata to sidecar instead
-                            if let folder = self.currentFolderURL {
-                                var sidecar = MetadataSidecar(
-                                    sourceFile: url.lastPathComponent,
-                                    pendingChanges: true,
-                                    metadata: resolved,
-                                    imageMetadataSnapshot: embedded
-                                )
-                                sidecar.history = existingSidecar?.history ?? []
-                                sidecar.history.append(MetadataHistoryEntry(
-                                    timestamp: Date(),
-                                    fieldName: "Variables processed",
-                                    oldValue: nil,
-                                    newValue: "Saved to sidecar (C2PA protected)"
-                                ))
-                                try sidecarService.saveSidecar(sidecar, for: url, in: folder)
-                                c2paSkipped += 1
-                                updatedURLs.insert(url)
-                            } else {
-                                failed += 1
-                            }
-                        } else {
-                            var fields: [String: String] = [:]
-                            if resolved.title != meta.title { fields[ExifToolWriteTag.headline] = resolved.title ?? "" }
-                            if resolved.description != meta.description { fields[ExifToolWriteTag.description] = resolved.description ?? "" }
-                            if resolved.extendedDescription != meta.extendedDescription {
-                                fields[ExifToolWriteTag.extendedDescription] = resolved.extendedDescription ?? ""
-                            }
-                            if resolved.creator != meta.creator { fields[ExifToolWriteTag.creator] = resolved.creator ?? "" }
-                            if resolved.credit != meta.credit { fields[ExifToolWriteTag.credit] = resolved.credit ?? "" }
-                            if resolved.copyright != meta.copyright { fields[ExifToolWriteTag.rights] = resolved.copyright ?? "" }
-                            if resolved.jobId != meta.jobId {
-                                fields[ExifToolWriteTag.transmissionReference] = resolved.jobId ?? ""
-                            }
-                            if resolved.dateCreated != meta.dateCreated { fields[ExifToolWriteTag.dateCreated] = resolved.dateCreated ?? "" }
-                            if resolved.city != meta.city { fields[ExifToolWriteTag.city] = resolved.city ?? "" }
-                            if resolved.country != meta.country { fields[ExifToolWriteTag.country] = resolved.country ?? "" }
-                            if resolved.event != meta.event { fields[ExifToolWriteTag.event] = resolved.event ?? "" }
-
-                            if !fields.isEmpty {
-                                try await exifToolService.writeFields(fields, to: [url])
-                                updated += 1
-                                updatedURLs.insert(url)
-                            } else {
-                                unchanged += 1
-                            }
+                        let result = try await writeResolvedVariables(
+                            resolved: resolved,
+                            original: meta,
+                            embedded: embedded,
+                            existingSidecar: existingSidecar,
+                            image: image,
+                            url: url
+                        )
+                        switch result {
+                        case .writtenToFile: writtenToFile += 1
+                        case .writtenToXMPSidecar: writtenToXMP += 1
+                        case .savedToHistory: savedToHistory += 1
                         }
+                        updatedURLs.insert(url)
                     } else {
                         unchanged += 1
                     }
@@ -1608,11 +1670,12 @@ final class MetadataViewModel {
             self.isProcessingFolder = false
             self.folderProcessProgress = ""
             var statusParts: [String] = []
-            if updated > 0 { statusParts.append("updated \(updated)") }
-            if c2paSkipped > 0 { statusParts.append("\(c2paSkipped) C2PA saved to sidecar") }
-            if unchanged > 0 { statusParts.append("unchanged \(unchanged)") }
-            if failed > 0 { statusParts.append("failed \(failed)") }
-            if c2paSkipped > 0 || failed > 0 {
+            if writtenToFile > 0 { statusParts.append("written to file: \(writtenToFile)") }
+            if writtenToXMP > 0 { statusParts.append("written to XMP: \(writtenToXMP)") }
+            if savedToHistory > 0 { statusParts.append("saved to sidecar: \(savedToHistory)") }
+            if unchanged > 0 { statusParts.append("unchanged: \(unchanged)") }
+            if failed > 0 { statusParts.append("failed: \(failed)") }
+            if writtenToXMP > 0 || savedToHistory > 0 || failed > 0 {
                 self.saveError = "Variable processing completed: \(statusParts.joined(separator: ", "))."
             } else {
                 self.saveError = nil
@@ -1640,7 +1703,7 @@ final class MetadataViewModel {
             self.metadata = baseMeta
             self.originalImageMetadata = baseMeta
 
-            // For C2PA images, resolved metadata was saved to sidecar — load it
+            // Load sidecar for images with pending changes (C2PA, historyOnly, etc.)
             if let folder = currentFolderURL,
                let sidecar = sidecarService.loadSidecar(for: url, in: folder),
                sidecar.pendingChanges {
@@ -1651,8 +1714,10 @@ final class MetadataViewModel {
                 self.editingMetadata = baseMeta
                 self.previousEditingMetadata = baseMeta
                 self.hasChanges = false
-                // Clear stale sidecar since metadata was written directly to the file
-                if let folder = currentFolderURL {
+                // Only delete sidecar if it has no history entries worth preserving
+                if let folder = currentFolderURL,
+                   let sidecar = sidecarService.loadSidecar(for: url, in: folder),
+                   sidecar.history.isEmpty {
                     try? sidecarService.deleteSidecar(for: url, in: folder)
                 }
             }
