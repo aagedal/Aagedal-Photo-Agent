@@ -30,6 +30,7 @@ final class MetadataViewModel {
     var hasChanges = false
     var saveError: String?
     var selectedHasC2PA = false
+    var descriptionConflict: DescriptionConflict?
 
     var originalImageMetadata: IPTCMetadata?
     var embeddedMetadata: IPTCMetadata?
@@ -137,6 +138,7 @@ final class MetadataViewModel {
         selectedHavePendingSidecars = false
         saveError = nil
         selectedHasC2PA = images.contains { $0.hasC2PA }
+        descriptionConflict = nil
         sidecarHistory = []
         originalImageMetadata = nil
         embeddedMetadata = nil
@@ -168,7 +170,7 @@ final class MetadataViewModel {
 
             metadataLoadTask = Task {
                 do {
-                    let embedded = try await exifToolService.readFullMetadata(url: imageURL)
+                    let (embedded, conflict) = try await exifToolService.readFullMetadataWithConflictCheck(url: imageURL)
                     guard !Task.isCancelled else { return }
                     let xmpMeta = self.loadXMPMetadataIfAllowed(for: imageURL)
                     let referenceSource = self.defaultReferenceSource(hasXmp: xmpMeta != nil)
@@ -181,6 +183,7 @@ final class MetadataViewModel {
                     guard self.selectedURLs.count == 1,
                           self.selectedURLs.first == imageURL else { return }
                     self.embeddedMetadata = embedded
+                    self.descriptionConflict = conflict
                     self.xmpMetadata = xmpMeta
                     self.metadataReferenceSource = referenceSource
                     self.metadata = baseMeta
@@ -437,6 +440,13 @@ final class MetadataViewModel {
 
     func markChanged() {
         hasChanges = true
+    }
+
+    func resolveDescriptionConflict(keepXMP: Bool) {
+        guard let conflict = descriptionConflict else { return }
+        editingMetadata.description = keepXMP ? conflict.xmpDescription : conflict.iptcCaptionAbstract
+        descriptionConflict = nil
+        markChanged()
     }
 
     func importEmbeddedCrop() {
