@@ -1338,8 +1338,10 @@ final class MetadataViewModel {
                     let before = self.editingMetadata
                     self.processVariables(filename: filename)
                     if self.editingMetadata != before {
+                        // Persist resolved metadata to sidecar so it survives
+                        // navigation and isn't overwritten by refreshMetadataAfterProcessing
+                        self.saveToSidecar()
                         updated += 1
-                        updatedURLs.insert(url)
                     } else {
                         unchanged += 1
                     }
@@ -1491,8 +1493,10 @@ final class MetadataViewModel {
                     let before = self.editingMetadata
                     self.processVariables(filename: filename)
                     if self.editingMetadata != before {
+                        // Persist resolved metadata to sidecar so it survives
+                        // navigation and isn't overwritten by refreshMetadataAfterProcessing
+                        self.saveToSidecar()
                         updated += 1
-                        updatedURLs.insert(url)
                     } else {
                         unchanged += 1
                     }
