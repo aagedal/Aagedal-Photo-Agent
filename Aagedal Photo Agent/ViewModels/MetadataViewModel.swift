@@ -1312,10 +1312,10 @@ final class MetadataViewModel {
 
     /// Process variables for specific images: reads each image's metadata,
     /// resolves any variable placeholders, and writes back.
-    func processVariablesForImages(_ imageURLs: [URL]) {
-        guard !imageURLs.isEmpty else { return }
+    func processVariablesForImages(_ images: [ImageFile]) {
+        guard !images.isEmpty else { return }
         isProcessingFolder = true
-        folderProcessProgress = "0/\(imageURLs.count)"
+        folderProcessProgress = "0/\(images.count)"
         saveError = nil
 
         Task {
@@ -1324,9 +1324,11 @@ final class MetadataViewModel {
             var updated = 0
             var unchanged = 0
             var failed = 0
+            var c2paSkipped = 0
             var updatedURLs: Set<URL> = []
 
-            for url in imageURLs {
+            for image in images {
+                let url = image.url
                 let filename = url.deletingPathExtension().lastPathComponent
                 do {
                     let meta = try await exifToolService.readFullMetadata(url: url)
@@ -1348,29 +1350,52 @@ final class MetadataViewModel {
                     resolved.event = resolveIfChanged(meta.event, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
 
                     if changed {
-                        var fields: [String: String] = [:]
-                        if resolved.title != meta.title { fields[ExifToolWriteTag.headline] = resolved.title ?? "" }
-                        if resolved.description != meta.description { fields[ExifToolWriteTag.description] = resolved.description ?? "" }
-                        if resolved.extendedDescription != meta.extendedDescription {
-                            fields[ExifToolWriteTag.extendedDescription] = resolved.extendedDescription ?? ""
-                        }
-                        if resolved.creator != meta.creator { fields[ExifToolWriteTag.creator] = resolved.creator ?? "" }
-                        if resolved.credit != meta.credit { fields[ExifToolWriteTag.credit] = resolved.credit ?? "" }
-                        if resolved.copyright != meta.copyright { fields[ExifToolWriteTag.rights] = resolved.copyright ?? "" }
-                        if resolved.jobId != meta.jobId {
-                            fields[ExifToolWriteTag.transmissionReference] = resolved.jobId ?? ""
-                        }
-                        if resolved.dateCreated != meta.dateCreated { fields[ExifToolWriteTag.dateCreated] = resolved.dateCreated ?? "" }
-                        if resolved.city != meta.city { fields[ExifToolWriteTag.city] = resolved.city ?? "" }
-                        if resolved.country != meta.country { fields[ExifToolWriteTag.country] = resolved.country ?? "" }
-                        if resolved.event != meta.event { fields[ExifToolWriteTag.event] = resolved.event ?? "" }
-
-                        if !fields.isEmpty {
-                            try await exifToolService.writeFields(fields, to: [url])
-                            updated += 1
-                            updatedURLs.insert(url)
+                        if image.hasC2PA {
+                            // C2PA-protected: save resolved metadata to sidecar instead
+                            if let folder = self.currentFolderURL {
+                                var sidecar = MetadataSidecar(
+                                    sourceFile: url.lastPathComponent,
+                                    pendingChanges: true,
+                                    metadata: resolved,
+                                    imageMetadataSnapshot: meta
+                                )
+                                sidecar.history.append(MetadataHistoryEntry(
+                                    timestamp: Date(),
+                                    fieldName: "Variables processed",
+                                    oldValue: nil,
+                                    newValue: "Saved to sidecar (C2PA protected)"
+                                ))
+                                try sidecarService.saveSidecar(sidecar, for: url, in: folder)
+                                c2paSkipped += 1
+                                updatedURLs.insert(url)
+                            } else {
+                                failed += 1
+                            }
                         } else {
-                            unchanged += 1
+                            var fields: [String: String] = [:]
+                            if resolved.title != meta.title { fields[ExifToolWriteTag.headline] = resolved.title ?? "" }
+                            if resolved.description != meta.description { fields[ExifToolWriteTag.description] = resolved.description ?? "" }
+                            if resolved.extendedDescription != meta.extendedDescription {
+                                fields[ExifToolWriteTag.extendedDescription] = resolved.extendedDescription ?? ""
+                            }
+                            if resolved.creator != meta.creator { fields[ExifToolWriteTag.creator] = resolved.creator ?? "" }
+                            if resolved.credit != meta.credit { fields[ExifToolWriteTag.credit] = resolved.credit ?? "" }
+                            if resolved.copyright != meta.copyright { fields[ExifToolWriteTag.rights] = resolved.copyright ?? "" }
+                            if resolved.jobId != meta.jobId {
+                                fields[ExifToolWriteTag.transmissionReference] = resolved.jobId ?? ""
+                            }
+                            if resolved.dateCreated != meta.dateCreated { fields[ExifToolWriteTag.dateCreated] = resolved.dateCreated ?? "" }
+                            if resolved.city != meta.city { fields[ExifToolWriteTag.city] = resolved.city ?? "" }
+                            if resolved.country != meta.country { fields[ExifToolWriteTag.country] = resolved.country ?? "" }
+                            if resolved.event != meta.event { fields[ExifToolWriteTag.event] = resolved.event ?? "" }
+
+                            if !fields.isEmpty {
+                                try await exifToolService.writeFields(fields, to: [url])
+                                updated += 1
+                                updatedURLs.insert(url)
+                            } else {
+                                unchanged += 1
+                            }
                         }
                     } else {
                         unchanged += 1
@@ -1380,7 +1405,7 @@ final class MetadataViewModel {
                 }
 
                 processed += 1
-                self.folderProcessProgress = "\(processed)/\(imageURLs.count)"
+                self.folderProcessProgress = "\(processed)/\(images.count)"
             }
 
             // Refresh the metadata panel if the currently displayed image was processed
@@ -1390,8 +1415,13 @@ final class MetadataViewModel {
 
             self.isProcessingFolder = false
             self.folderProcessProgress = ""
-            if failed > 0 {
-                self.saveError = "Variable processing completed: updated \(updated), unchanged \(unchanged), failed \(failed)."
+            var statusParts: [String] = []
+            if updated > 0 { statusParts.append("updated \(updated)") }
+            if c2paSkipped > 0 { statusParts.append("\(c2paSkipped) C2PA saved to sidecar") }
+            if unchanged > 0 { statusParts.append("unchanged \(unchanged)") }
+            if failed > 0 { statusParts.append("failed \(failed)") }
+            if c2paSkipped > 0 || failed > 0 {
+                self.saveError = "Variable processing completed: \(statusParts.joined(separator: ", "))."
             } else {
                 self.saveError = nil
             }
@@ -1412,6 +1442,7 @@ final class MetadataViewModel {
             var updated = 0
             var unchanged = 0
             var failed = 0
+            var c2paSkipped = 0
             var updatedURLs: Set<URL> = []
 
             for image in images {
@@ -1435,29 +1466,52 @@ final class MetadataViewModel {
                     resolved.event = resolveIfChanged(meta.event, interpolator: interpolator, filename: image.filename, ref: snapshot, changed: &changed)
 
                     if changed {
-                        var fields: [String: String] = [:]
-                        if resolved.title != meta.title { fields[ExifToolWriteTag.headline] = resolved.title ?? "" }
-                        if resolved.description != meta.description { fields[ExifToolWriteTag.description] = resolved.description ?? "" }
-                        if resolved.extendedDescription != meta.extendedDescription {
-                            fields[ExifToolWriteTag.extendedDescription] = resolved.extendedDescription ?? ""
-                        }
-                        if resolved.creator != meta.creator { fields[ExifToolWriteTag.creator] = resolved.creator ?? "" }
-                        if resolved.credit != meta.credit { fields[ExifToolWriteTag.credit] = resolved.credit ?? "" }
-                        if resolved.copyright != meta.copyright { fields[ExifToolWriteTag.rights] = resolved.copyright ?? "" }
-                        if resolved.jobId != meta.jobId {
-                            fields[ExifToolWriteTag.transmissionReference] = resolved.jobId ?? ""
-                        }
-                        if resolved.dateCreated != meta.dateCreated { fields[ExifToolWriteTag.dateCreated] = resolved.dateCreated ?? "" }
-                        if resolved.city != meta.city { fields[ExifToolWriteTag.city] = resolved.city ?? "" }
-                        if resolved.country != meta.country { fields[ExifToolWriteTag.country] = resolved.country ?? "" }
-                        if resolved.event != meta.event { fields[ExifToolWriteTag.event] = resolved.event ?? "" }
-
-                        if !fields.isEmpty {
-                            try await exifToolService.writeFields(fields, to: [image.url])
-                            updated += 1
-                            updatedURLs.insert(image.url)
+                        if image.hasC2PA {
+                            // C2PA-protected: save resolved metadata to sidecar instead
+                            if let folder = self.currentFolderURL {
+                                var sidecar = MetadataSidecar(
+                                    sourceFile: image.url.lastPathComponent,
+                                    pendingChanges: true,
+                                    metadata: resolved,
+                                    imageMetadataSnapshot: meta
+                                )
+                                sidecar.history.append(MetadataHistoryEntry(
+                                    timestamp: Date(),
+                                    fieldName: "Variables processed",
+                                    oldValue: nil,
+                                    newValue: "Saved to sidecar (C2PA protected)"
+                                ))
+                                try sidecarService.saveSidecar(sidecar, for: image.url, in: folder)
+                                c2paSkipped += 1
+                                updatedURLs.insert(image.url)
+                            } else {
+                                failed += 1
+                            }
                         } else {
-                            unchanged += 1
+                            var fields: [String: String] = [:]
+                            if resolved.title != meta.title { fields[ExifToolWriteTag.headline] = resolved.title ?? "" }
+                            if resolved.description != meta.description { fields[ExifToolWriteTag.description] = resolved.description ?? "" }
+                            if resolved.extendedDescription != meta.extendedDescription {
+                                fields[ExifToolWriteTag.extendedDescription] = resolved.extendedDescription ?? ""
+                            }
+                            if resolved.creator != meta.creator { fields[ExifToolWriteTag.creator] = resolved.creator ?? "" }
+                            if resolved.credit != meta.credit { fields[ExifToolWriteTag.credit] = resolved.credit ?? "" }
+                            if resolved.copyright != meta.copyright { fields[ExifToolWriteTag.rights] = resolved.copyright ?? "" }
+                            if resolved.jobId != meta.jobId {
+                                fields[ExifToolWriteTag.transmissionReference] = resolved.jobId ?? ""
+                            }
+                            if resolved.dateCreated != meta.dateCreated { fields[ExifToolWriteTag.dateCreated] = resolved.dateCreated ?? "" }
+                            if resolved.city != meta.city { fields[ExifToolWriteTag.city] = resolved.city ?? "" }
+                            if resolved.country != meta.country { fields[ExifToolWriteTag.country] = resolved.country ?? "" }
+                            if resolved.event != meta.event { fields[ExifToolWriteTag.event] = resolved.event ?? "" }
+
+                            if !fields.isEmpty {
+                                try await exifToolService.writeFields(fields, to: [image.url])
+                                updated += 1
+                                updatedURLs.insert(image.url)
+                            } else {
+                                unchanged += 1
+                            }
                         }
                     } else {
                         unchanged += 1
@@ -1477,8 +1531,13 @@ final class MetadataViewModel {
 
             self.isProcessingFolder = false
             self.folderProcessProgress = ""
-            if failed > 0 {
-                self.saveError = "Variable processing completed: updated \(updated), unchanged \(unchanged), failed \(failed)."
+            var statusParts: [String] = []
+            if updated > 0 { statusParts.append("updated \(updated)") }
+            if c2paSkipped > 0 { statusParts.append("\(c2paSkipped) C2PA saved to sidecar") }
+            if unchanged > 0 { statusParts.append("unchanged \(unchanged)") }
+            if failed > 0 { statusParts.append("failed \(failed)") }
+            if c2paSkipped > 0 || failed > 0 {
+                self.saveError = "Variable processing completed: \(statusParts.joined(separator: ", "))."
             } else {
                 self.saveError = nil
             }
@@ -1504,13 +1563,22 @@ final class MetadataViewModel {
             self.metadataReferenceSource = refSource
             self.metadata = baseMeta
             self.originalImageMetadata = baseMeta
-            self.editingMetadata = baseMeta
-            self.previousEditingMetadata = baseMeta
-            self.hasChanges = false
 
-            // Clear stale sidecar since metadata was written directly to the file
-            if let folder = currentFolderURL {
-                try? sidecarService.deleteSidecar(for: url, in: folder)
+            // For C2PA images, resolved metadata was saved to sidecar — load it
+            if let folder = currentFolderURL,
+               let sidecar = sidecarService.loadSidecar(for: url, in: folder),
+               sidecar.pendingChanges {
+                self.editingMetadata = sidecar.metadata
+                self.previousEditingMetadata = sidecar.metadata
+                self.hasChanges = true
+            } else {
+                self.editingMetadata = baseMeta
+                self.previousEditingMetadata = baseMeta
+                self.hasChanges = false
+                // Clear stale sidecar since metadata was written directly to the file
+                if let folder = currentFolderURL {
+                    try? sidecarService.deleteSidecar(for: url, in: folder)
+                }
             }
         } catch { }
     }

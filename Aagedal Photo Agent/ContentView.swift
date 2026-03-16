@@ -229,9 +229,9 @@ struct ContentView: View {
                 handleImportCompleted(notification)
             }
             .onReceive(NotificationCenter.default.publisher(for: .processVariablesSelected)) { _ in
-                let selectedURLs = browserViewModel.selectedImages.map(\.url)
-                if !selectedURLs.isEmpty {
-                    metadataViewModel.processVariablesForImages(selectedURLs)
+                let selected = browserViewModel.selectedImages
+                if !selected.isEmpty {
+                    metadataViewModel.processVariablesForImages(selected)
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .processVariablesAll)) { _ in
