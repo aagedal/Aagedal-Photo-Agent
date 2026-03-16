@@ -1330,8 +1330,42 @@ final class MetadataViewModel {
             for image in images {
                 let url = image.url
                 let filename = url.deletingPathExtension().lastPathComponent
+
+                // If this is the currently displayed image with pending edits,
+                // resolve variables directly in the editing buffer
+                let isCurrentlyDisplayed = self.selectedCount == 1 && self.selectedURLs.first == url
+                if isCurrentlyDisplayed && self.hasChanges {
+                    let before = self.editingMetadata
+                    self.processVariables(filename: filename)
+                    if self.editingMetadata != before {
+                        updated += 1
+                        updatedURLs.insert(url)
+                    } else {
+                        unchanged += 1
+                    }
+                    processed += 1
+                    self.folderProcessProgress = "\(processed)/\(images.count)"
+                    continue
+                }
+
                 do {
-                    let meta = try await exifToolService.readFullMetadata(url: url)
+                    // Read embedded metadata from disk
+                    let embedded = try await exifToolService.readFullMetadata(url: url)
+
+                    // For images with sidecar pending changes (C2PA or historyOnly mode),
+                    // resolve variables from the sidecar metadata instead of embedded
+                    let existingSidecar: MetadataSidecar?
+                    if let folder = self.currentFolderURL {
+                        existingSidecar = sidecarService.loadSidecar(for: url, in: folder)
+                    } else {
+                        existingSidecar = nil
+                    }
+                    let meta: IPTCMetadata
+                    if let sidecar = existingSidecar, sidecar.pendingChanges {
+                        meta = sidecar.metadata
+                    } else {
+                        meta = embedded
+                    }
                     let snapshot = meta
 
                     var changed = false
@@ -1357,8 +1391,9 @@ final class MetadataViewModel {
                                     sourceFile: url.lastPathComponent,
                                     pendingChanges: true,
                                     metadata: resolved,
-                                    imageMetadataSnapshot: meta
+                                    imageMetadataSnapshot: embedded
                                 )
+                                sidecar.history = existingSidecar?.history ?? []
                                 sidecar.history.append(MetadataHistoryEntry(
                                     timestamp: Date(),
                                     fieldName: "Variables processed",
@@ -1446,44 +1481,81 @@ final class MetadataViewModel {
             var updatedURLs: Set<URL> = []
 
             for image in images {
+                let url = image.url
+                let filename = image.filename
+
+                // If this is the currently displayed image with pending edits,
+                // resolve variables directly in the editing buffer
+                let isCurrentlyDisplayed = self.selectedCount == 1 && self.selectedURLs.first == url
+                if isCurrentlyDisplayed && self.hasChanges {
+                    let before = self.editingMetadata
+                    self.processVariables(filename: filename)
+                    if self.editingMetadata != before {
+                        updated += 1
+                        updatedURLs.insert(url)
+                    } else {
+                        unchanged += 1
+                    }
+                    processed += 1
+                    self.folderProcessProgress = "\(processed)/\(images.count)"
+                    continue
+                }
+
                 do {
-                    let meta = try await exifToolService.readFullMetadata(url: image.url)
+                    // Read embedded metadata from disk
+                    let embedded = try await exifToolService.readFullMetadata(url: url)
+
+                    // For images with sidecar pending changes (C2PA or historyOnly mode),
+                    // resolve variables from the sidecar metadata instead of embedded
+                    let existingSidecar: MetadataSidecar?
+                    if let folder = self.currentFolderURL {
+                        existingSidecar = sidecarService.loadSidecar(for: url, in: folder)
+                    } else {
+                        existingSidecar = nil
+                    }
+                    let meta: IPTCMetadata
+                    if let sidecar = existingSidecar, sidecar.pendingChanges {
+                        meta = sidecar.metadata
+                    } else {
+                        meta = embedded
+                    }
                     let snapshot = meta
 
                     var changed = false
                     var resolved = meta
 
-                    resolved.title = resolveIfChanged(meta.title, interpolator: interpolator, filename: image.filename, ref: snapshot, changed: &changed)
-                    resolved.description = resolveIfChanged(meta.description, interpolator: interpolator, filename: image.filename, ref: snapshot, changed: &changed)
-                    resolved.extendedDescription = resolveIfChanged(meta.extendedDescription, interpolator: interpolator, filename: image.filename, ref: snapshot, changed: &changed)
-                    resolved.creator = resolveIfChanged(meta.creator, interpolator: interpolator, filename: image.filename, ref: snapshot, changed: &changed)
-                    resolved.credit = resolveIfChanged(meta.credit, interpolator: interpolator, filename: image.filename, ref: snapshot, changed: &changed)
-                    resolved.copyright = resolveIfChanged(meta.copyright, interpolator: interpolator, filename: image.filename, ref: snapshot, changed: &changed)
-                    resolved.jobId = resolveIfChanged(meta.jobId, interpolator: interpolator, filename: image.filename, ref: snapshot, changed: &changed)
-                    resolved.dateCreated = resolveIfChanged(meta.dateCreated, interpolator: interpolator, filename: image.filename, ref: snapshot, changed: &changed)
-                    resolved.city = resolveIfChanged(meta.city, interpolator: interpolator, filename: image.filename, ref: snapshot, changed: &changed)
-                    resolved.country = resolveIfChanged(meta.country, interpolator: interpolator, filename: image.filename, ref: snapshot, changed: &changed)
-                    resolved.event = resolveIfChanged(meta.event, interpolator: interpolator, filename: image.filename, ref: snapshot, changed: &changed)
+                    resolved.title = resolveIfChanged(meta.title, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolved.description = resolveIfChanged(meta.description, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolved.extendedDescription = resolveIfChanged(meta.extendedDescription, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolved.creator = resolveIfChanged(meta.creator, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolved.credit = resolveIfChanged(meta.credit, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolved.copyright = resolveIfChanged(meta.copyright, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolved.jobId = resolveIfChanged(meta.jobId, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolved.dateCreated = resolveIfChanged(meta.dateCreated, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolved.city = resolveIfChanged(meta.city, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolved.country = resolveIfChanged(meta.country, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolved.event = resolveIfChanged(meta.event, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
 
                     if changed {
                         if image.hasC2PA {
                             // C2PA-protected: save resolved metadata to sidecar instead
                             if let folder = self.currentFolderURL {
                                 var sidecar = MetadataSidecar(
-                                    sourceFile: image.url.lastPathComponent,
+                                    sourceFile: url.lastPathComponent,
                                     pendingChanges: true,
                                     metadata: resolved,
-                                    imageMetadataSnapshot: meta
+                                    imageMetadataSnapshot: embedded
                                 )
+                                sidecar.history = existingSidecar?.history ?? []
                                 sidecar.history.append(MetadataHistoryEntry(
                                     timestamp: Date(),
                                     fieldName: "Variables processed",
                                     oldValue: nil,
                                     newValue: "Saved to sidecar (C2PA protected)"
                                 ))
-                                try sidecarService.saveSidecar(sidecar, for: image.url, in: folder)
+                                try sidecarService.saveSidecar(sidecar, for: url, in: folder)
                                 c2paSkipped += 1
-                                updatedURLs.insert(image.url)
+                                updatedURLs.insert(url)
                             } else {
                                 failed += 1
                             }
@@ -1506,9 +1578,9 @@ final class MetadataViewModel {
                             if resolved.event != meta.event { fields[ExifToolWriteTag.event] = resolved.event ?? "" }
 
                             if !fields.isEmpty {
-                                try await exifToolService.writeFields(fields, to: [image.url])
+                                try await exifToolService.writeFields(fields, to: [url])
                                 updated += 1
-                                updatedURLs.insert(image.url)
+                                updatedURLs.insert(url)
                             } else {
                                 unchanged += 1
                             }
