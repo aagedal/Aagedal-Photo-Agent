@@ -34,7 +34,12 @@ struct RawMetadataView: View {
                 }
             }
         }
-        .frame(minWidth: 500, idealWidth: 600, minHeight: 400, idealHeight: 600)
+        .frame(
+            minWidth: 700,
+            idealWidth: 800,
+            minHeight: 400,
+            idealHeight: (NSScreen.main?.visibleFrame.height ?? 800) * 0.9
+        )
         .task {
             await loadRawMetadata()
         }
