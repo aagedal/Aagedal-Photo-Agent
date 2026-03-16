@@ -453,6 +453,35 @@ final class ExifToolService {
         return metadataFromDict(dict)
     }
 
+    /// Read full metadata for a single file, also checking for XMP vs IPTC description conflicts.
+    func readFullMetadataWithConflictCheck(url: URL) async throws -> (IPTCMetadata, DescriptionConflict?) {
+        exifToolLog.debug("readFullMetadataWithConflictCheck: \(url.lastPathComponent, privacy: .public)")
+        let args = [
+            "-json", "-n",
+            "-IPTC:All", "-XMP:All",
+            "-EXIF:DateTimeOriginal",
+            "-EXIF:GPSLatitude", "-EXIF:GPSLongitude",
+            "-EXIF:Orientation",
+            "-struct",
+            url.path
+        ]
+        let output = try await execute(args)
+        let results = try parseJSON(output)
+
+        guard let dict = results.first else {
+            return (IPTCMetadata(), nil)
+        }
+
+        return (metadataFromDict(dict), descriptionConflict(from: dict))
+    }
+
+    private func descriptionConflict(from dict: [String: Any]) -> DescriptionConflict? {
+        guard let xmp = dict[ExifToolReadKey.description] as? String, !xmp.isEmpty,
+              let iptc = dict[ExifToolReadKey.captionAbstract] as? String, !iptc.isEmpty,
+              xmp != iptc else { return nil }
+        return DescriptionConflict(xmpDescription: xmp, iptcCaptionAbstract: iptc)
+    }
+
     /// Read full metadata for multiple files in a single ExifTool invocation.
     /// Returns results keyed by URL. Files that fail to parse are omitted from the result.
     func readBatchFullMetadata(urls: [URL]) async throws -> [URL: IPTCMetadata] {
@@ -581,6 +610,10 @@ final class ExifToolService {
             if normalizedFields[ExifToolWriteTag.iptcJobID] == nil {
                 normalizedFields[ExifToolWriteTag.iptcJobID] = jobId
             }
+        }
+        if let desc = normalizedFields[ExifToolWriteTag.description],
+           normalizedFields[ExifToolWriteTag.iptcCaptionAbstract] == nil {
+            normalizedFields[ExifToolWriteTag.iptcCaptionAbstract] = desc
         }
 
         let creationDates = captureCreationDates(for: urls)

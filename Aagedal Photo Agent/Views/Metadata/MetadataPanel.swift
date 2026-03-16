@@ -557,6 +557,11 @@ struct MetadataPanel: View {
                 .buttonStyle(.plain)
                 .help("Variable Reference")
             }
+            if let conflict = viewModel.descriptionConflict {
+                DescriptionConflictBanner(conflict: conflict) { keepXMP in
+                    viewModel.resolveDescriptionConflict(keepXMP: keepXMP)
+                }
+            }
             BufferedTextField(
                 currentValue: viewModel.editingMetadata.description ?? "",
                 placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "description") : "Enter description",
@@ -1762,5 +1767,78 @@ struct FlowLayout: Layout {
         }
 
         return (positions, CGSize(width: maxX, height: y + rowHeight))
+    }
+}
+
+// MARK: - Description Conflict Banner
+
+struct DescriptionConflictBanner: View {
+    let conflict: DescriptionConflict
+    let onResolve: (Bool) -> Void
+
+    @State private var isExpanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    isExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.yellow)
+                        .font(.caption)
+                    Text("XMP and IPTC descriptions differ")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 8) {
+                    conflictValueRow(label: "XMP", value: conflict.xmpDescription, keepXMP: true)
+                    conflictValueRow(label: "IPTC", value: conflict.iptcCaptionAbstract, keepXMP: false)
+                }
+            }
+        }
+        .padding(8)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.yellow.opacity(0.08))
+                .strokeBorder(Color.yellow.opacity(0.3), lineWidth: 0.5)
+        )
+    }
+
+    private func conflictValueRow(label: String, value: String, keepXMP: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(label)
+                    .font(.caption2)
+                    .fontWeight(.medium)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Use This") {
+                    onResolve(keepXMP)
+                }
+                .font(.caption2)
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+            }
+            Text(value)
+                .font(.caption)
+                .lineLimit(4)
+                .padding(6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(Color(nsColor: .controlBackgroundColor))
+                )
+        }
     }
 }

@@ -164,6 +164,11 @@ extension CameraRawCrop {
     }
 }
 
+struct DescriptionConflict: Sendable {
+    let xmpDescription: String
+    let iptcCaptionAbstract: String
+}
+
 struct IPTCMetadata: Codable, Sendable, Equatable {
     // Priority fields (always visible)
     var title: String?
