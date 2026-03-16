@@ -384,7 +384,7 @@ final class ExifToolService {
         guard !urls.isEmpty else { return [] }
 
         var args = [
-            "-json",
+            "-json", "-charset", "iptc=UTF8",
             "-XMP:Rating",
             "-XMP:Label",
             "-XMP-iptcExt:PersonInImage",
@@ -434,7 +434,7 @@ final class ExifToolService {
     func readFullMetadata(url: URL) async throws -> IPTCMetadata {
         exifToolLog.debug("readFullMetadata: \(url.lastPathComponent, privacy: .public)")
         let args = [
-            "-json", "-n",
+            "-json", "-n", "-charset", "iptc=UTF8",
             "-IPTC:All", "-XMP:All",
             "-EXIF:DateTimeOriginal",
             "-EXIF:GPSLatitude", "-EXIF:GPSLongitude",
@@ -457,7 +457,7 @@ final class ExifToolService {
     func readFullMetadataWithConflictCheck(url: URL) async throws -> (IPTCMetadata, DescriptionConflict?) {
         exifToolLog.debug("readFullMetadataWithConflictCheck: \(url.lastPathComponent, privacy: .public)")
         let args = [
-            "-json", "-n",
+            "-json", "-n", "-charset", "iptc=UTF8",
             "-IPTC:All", "-XMP:All",
             "-EXIF:DateTimeOriginal",
             "-EXIF:GPSLatitude", "-EXIF:GPSLongitude",
@@ -488,7 +488,7 @@ final class ExifToolService {
         guard !urls.isEmpty else { return [:] }
 
         var args = [
-            "-json", "-n",
+            "-json", "-n", "-charset", "iptc=UTF8",
             "-IPTC:All", "-XMP:All",
             "-EXIF:DateTimeOriginal",
             "-EXIF:GPSLatitude", "-EXIF:GPSLongitude",
@@ -600,6 +600,16 @@ final class ExifToolService {
         if let headline = normalizedFields[ExifToolWriteTag.headline], normalizedFields[ExifToolWriteTag.iptcHeadline] == nil {
             normalizedFields[ExifToolWriteTag.iptcHeadline] = headline
         }
+        // Mirror headline -> XMP:Title (dc:title) for Lightroom/DAM interop
+        if let headline = normalizedFields[ExifToolWriteTag.headline],
+           normalizedFields[ExifToolWriteTag.xmpTitle] == nil {
+            normalizedFields[ExifToolWriteTag.xmpTitle] = headline
+        }
+        // Mirror headline -> IPTC:ObjectName for Bridge/PhotoMechanic interop
+        if let headline = normalizedFields[ExifToolWriteTag.headline],
+           normalizedFields[ExifToolWriteTag.iptcObjectName] == nil {
+            normalizedFields[ExifToolWriteTag.iptcObjectName] = headline
+        }
         if let creator = normalizedFields[ExifToolWriteTag.creator], normalizedFields[ExifToolWriteTag.iptcByLine] == nil {
             normalizedFields[ExifToolWriteTag.iptcByLine] = creator
         }
@@ -627,11 +637,16 @@ final class ExifToolService {
            normalizedFields[ExifToolWriteTag.iptcCreditLine] == nil {
             normalizedFields[ExifToolWriteTag.iptcCreditLine] = credit
         }
+        // Mirror dateCreated -> IPTC:DateCreated
+        if let dateCreated = normalizedFields[ExifToolWriteTag.dateCreated],
+           normalizedFields[ExifToolWriteTag.iptcDateCreated] == nil {
+            normalizedFields[ExifToolWriteTag.iptcDateCreated] = dateCreated
+        }
 
         let creationDates = captureCreationDates(for: urls)
         defer { restoreCreationDates(creationDates) }
 
-        var args = ["-overwrite_original", "-sep", ", "]
+        var args = ["-overwrite_original", "-charset", "iptc=UTF8", "-sep", ", "]
         var tempFiles: [URL] = []
         defer {
             for file in tempFiles {
@@ -671,7 +686,7 @@ final class ExifToolService {
         let creationDates = captureCreationDates(for: urls)
         defer { restoreCreationDates(creationDates) }
 
-        var args = ["-overwrite_original"]
+        var args = ["-overwrite_original", "-charset", "iptc=UTF8"]
 
         for (tag, values) in remove {
             for value in values {
