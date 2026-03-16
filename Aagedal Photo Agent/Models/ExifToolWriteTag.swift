@@ -73,6 +73,8 @@ enum ExifToolWriteTag {
     static let iptcCity = "IPTC:City"
     static let iptcCountryPrimaryLocationName = "IPTC:Country-PrimaryLocationName"
     static let iptcCreditLine = "IPTC:CreditLine"
+    static let iptcObjectName = "IPTC:ObjectName"
+    static let iptcDateCreated = "IPTC:DateCreated"
 
     // MARK: - EXIF Orientation
     static let orientation = "EXIF:Orientation#"
