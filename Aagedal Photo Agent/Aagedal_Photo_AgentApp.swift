@@ -104,6 +104,13 @@ struct Aagedal_Photo_AgentApp: App {
                     NotificationCenter.default.post(name: .showTemplatePalette, object: nil)
                 }
                 .keyboardShortcut("t", modifiers: .command)
+
+                Divider()
+
+                Button("Show Raw Metadata") {
+                    NotificationCenter.default.post(name: .showRawMetadata, object: nil)
+                }
+                .keyboardShortcut("i", modifiers: .command)
             }
 
             CommandMenu("Image") {
@@ -224,4 +231,5 @@ extension Notification.Name {
     static let removeAllIPTC = Notification.Name("removeAllIPTC")
     static let scopeSourceImageDidChange = Notification.Name("scopeSourceImageDidChange")
     static let showAllFilesChanged = Notification.Name("showAllFilesChanged")
+    static let showRawMetadata = Notification.Name("showRawMetadata")
 }

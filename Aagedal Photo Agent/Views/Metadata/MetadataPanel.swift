@@ -345,6 +345,10 @@ struct MetadataPanel: View {
             focusedField = nil
             return .handled
         }
+        .onReceive(NotificationCenter.default.publisher(for: .showRawMetadata)) { _ in
+            guard !viewModel.isBatchEdit, viewModel.selectedCount == 1 else { return }
+            showingRawMetadata = true
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSTextView.didChangeSelectionNotification)) { notification in
             guard !isShowingVariableReference,
                   let key = focusedField,

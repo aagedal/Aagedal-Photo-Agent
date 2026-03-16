@@ -9,6 +9,7 @@ struct RawMetadataView: View {
     @State private var isLoading = true
     @State private var errorMessage: String?
     @State private var searchText = ""
+    @FocusState private var isSearchFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -42,6 +43,7 @@ struct RawMetadataView: View {
         )
         .task {
             await loadRawMetadata()
+            isSearchFocused = true
         }
     }
 
@@ -67,6 +69,7 @@ struct RawMetadataView: View {
                 .foregroundStyle(.secondary)
             TextField("Filter…", text: $searchText)
                 .textFieldStyle(.plain)
+                .focused($isSearchFocused)
             if !searchText.isEmpty {
                 Button {
                     searchText = ""
@@ -85,8 +88,20 @@ struct RawMetadataView: View {
         guard !searchText.isEmpty else { return jsonText }
         let query = searchText.lowercased()
         let lines = jsonText.components(separatedBy: "\n")
-        let filtered = lines.filter { $0.lowercased().contains(query) }
-        return filtered.isEmpty ? "No matches for \"\(searchText)\"" : filtered.joined(separator: "\n")
+        var result: [String] = []
+        var bracketDepth = 0
+        for line in lines {
+            if bracketDepth > 0 {
+                result.append(line)
+                bracketDepth += line.filter({ $0 == "[" }).count
+                bracketDepth -= line.filter({ $0 == "]" }).count
+            } else if line.lowercased().contains(query) {
+                result.append(line)
+                bracketDepth += line.filter({ $0 == "[" }).count
+                bracketDepth -= line.filter({ $0 == "]" }).count
+            }
+        }
+        return result.isEmpty ? "No matches for \"\(searchText)\"" : result.joined(separator: "\n")
     }
 
     private func loadRawMetadata() async {
