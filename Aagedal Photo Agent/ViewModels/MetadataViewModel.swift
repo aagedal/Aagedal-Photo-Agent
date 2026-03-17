@@ -29,6 +29,8 @@ final class MetadataViewModel {
     var selectedURLs: [URL] = []
     var hasChanges = false
     var saveError: String?
+    var variableProcessingStatus: String?
+    var variableProcessingHadFailures = false
     var selectedHasC2PA = false
     var descriptionConflict: DescriptionConflict?
 
@@ -137,6 +139,7 @@ final class MetadataViewModel {
         hasChanges = false
         selectedHavePendingSidecars = false
         saveError = nil
+        variableProcessingStatus = nil
         selectedHasC2PA = images.contains { $0.hasC2PA }
         descriptionConflict = nil
         sidecarHistory = []
@@ -1442,6 +1445,7 @@ final class MetadataViewModel {
         isProcessingFolder = true
         folderProcessProgress = "0/\(images.count)"
         saveError = nil
+        variableProcessingStatus = nil
 
         Task {
             let interpolator = PresetVariableInterpolator()
@@ -1449,6 +1453,7 @@ final class MetadataViewModel {
             var writtenToFile = 0
             var writtenToXMP = 0
             var savedToHistory = 0
+            var resolved = 0
             var unchanged = 0
             var failed = 0
             var updatedURLs: Set<URL> = []
@@ -1468,7 +1473,7 @@ final class MetadataViewModel {
                         // respects write modes) will handle the actual file/XMP write when
                         // the user navigates away or explicitly saves.
                         self.saveToSidecar()
-                        savedToHistory += 1
+                        resolved += 1
                     } else {
                         unchanged += 1
                     }
@@ -1504,23 +1509,23 @@ final class MetadataViewModel {
                     let snapshot = meta
 
                     var changed = false
-                    var resolved = meta
+                    var resolvedMeta = meta
 
-                    resolved.title = resolveIfChanged(meta.title, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolved.description = resolveIfChanged(meta.description, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolved.extendedDescription = resolveIfChanged(meta.extendedDescription, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolved.creator = resolveIfChanged(meta.creator, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolved.credit = resolveIfChanged(meta.credit, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolved.copyright = resolveIfChanged(meta.copyright, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolved.jobId = resolveIfChanged(meta.jobId, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolved.dateCreated = resolveIfChanged(meta.dateCreated, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolved.city = resolveIfChanged(meta.city, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolved.country = resolveIfChanged(meta.country, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolved.event = resolveIfChanged(meta.event, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolvedMeta.title = resolveIfChanged(meta.title, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolvedMeta.description = resolveIfChanged(meta.description, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolvedMeta.extendedDescription = resolveIfChanged(meta.extendedDescription, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolvedMeta.creator = resolveIfChanged(meta.creator, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolvedMeta.credit = resolveIfChanged(meta.credit, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolvedMeta.copyright = resolveIfChanged(meta.copyright, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolvedMeta.jobId = resolveIfChanged(meta.jobId, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolvedMeta.dateCreated = resolveIfChanged(meta.dateCreated, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolvedMeta.city = resolveIfChanged(meta.city, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolvedMeta.country = resolveIfChanged(meta.country, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolvedMeta.event = resolveIfChanged(meta.event, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
 
                     if changed {
                         let result = try await writeResolvedVariables(
-                            resolved: resolved,
+                            resolved: resolvedMeta,
                             original: meta,
                             embedded: embedded,
                             existingSidecar: existingSidecar,
@@ -1555,12 +1560,12 @@ final class MetadataViewModel {
             if writtenToFile > 0 { statusParts.append("written to file: \(writtenToFile)") }
             if writtenToXMP > 0 { statusParts.append("written to XMP: \(writtenToXMP)") }
             if savedToHistory > 0 { statusParts.append("saved to sidecar: \(savedToHistory)") }
+            if resolved > 0 { statusParts.append("resolved: \(resolved)") }
             if unchanged > 0 { statusParts.append("unchanged: \(unchanged)") }
             if failed > 0 { statusParts.append("failed: \(failed)") }
-            if writtenToXMP > 0 || savedToHistory > 0 || failed > 0 {
-                self.saveError = "Variable processing completed: \(statusParts.joined(separator: ", "))."
-            } else {
-                self.saveError = nil
+            if !statusParts.isEmpty {
+                self.variableProcessingHadFailures = failed > 0
+                self.variableProcessingStatus = "Variable processing completed: \(statusParts.joined(separator: ", "))."
             }
         }
     }
@@ -1572,6 +1577,7 @@ final class MetadataViewModel {
         isProcessingFolder = true
         folderProcessProgress = "0/\(images.count)"
         saveError = nil
+        variableProcessingStatus = nil
 
         Task {
             let interpolator = PresetVariableInterpolator()
@@ -1579,6 +1585,7 @@ final class MetadataViewModel {
             var writtenToFile = 0
             var writtenToXMP = 0
             var savedToHistory = 0
+            var resolved = 0
             var unchanged = 0
             var failed = 0
             var updatedURLs: Set<URL> = []
@@ -1598,7 +1605,7 @@ final class MetadataViewModel {
                         // respects write modes) will handle the actual file/XMP write when
                         // the user navigates away or explicitly saves.
                         self.saveToSidecar()
-                        savedToHistory += 1
+                        resolved += 1
                     } else {
                         unchanged += 1
                     }
@@ -1634,23 +1641,23 @@ final class MetadataViewModel {
                     let snapshot = meta
 
                     var changed = false
-                    var resolved = meta
+                    var resolvedMeta = meta
 
-                    resolved.title = resolveIfChanged(meta.title, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolved.description = resolveIfChanged(meta.description, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolved.extendedDescription = resolveIfChanged(meta.extendedDescription, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolved.creator = resolveIfChanged(meta.creator, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolved.credit = resolveIfChanged(meta.credit, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolved.copyright = resolveIfChanged(meta.copyright, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolved.jobId = resolveIfChanged(meta.jobId, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolved.dateCreated = resolveIfChanged(meta.dateCreated, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolved.city = resolveIfChanged(meta.city, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolved.country = resolveIfChanged(meta.country, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolved.event = resolveIfChanged(meta.event, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolvedMeta.title = resolveIfChanged(meta.title, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolvedMeta.description = resolveIfChanged(meta.description, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolvedMeta.extendedDescription = resolveIfChanged(meta.extendedDescription, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolvedMeta.creator = resolveIfChanged(meta.creator, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolvedMeta.credit = resolveIfChanged(meta.credit, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolvedMeta.copyright = resolveIfChanged(meta.copyright, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolvedMeta.jobId = resolveIfChanged(meta.jobId, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolvedMeta.dateCreated = resolveIfChanged(meta.dateCreated, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolvedMeta.city = resolveIfChanged(meta.city, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolvedMeta.country = resolveIfChanged(meta.country, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                    resolvedMeta.event = resolveIfChanged(meta.event, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
 
                     if changed {
                         let result = try await writeResolvedVariables(
-                            resolved: resolved,
+                            resolved: resolvedMeta,
                             original: meta,
                             embedded: embedded,
                             existingSidecar: existingSidecar,
@@ -1685,12 +1692,12 @@ final class MetadataViewModel {
             if writtenToFile > 0 { statusParts.append("written to file: \(writtenToFile)") }
             if writtenToXMP > 0 { statusParts.append("written to XMP: \(writtenToXMP)") }
             if savedToHistory > 0 { statusParts.append("saved to sidecar: \(savedToHistory)") }
+            if resolved > 0 { statusParts.append("resolved: \(resolved)") }
             if unchanged > 0 { statusParts.append("unchanged: \(unchanged)") }
             if failed > 0 { statusParts.append("failed: \(failed)") }
-            if writtenToXMP > 0 || savedToHistory > 0 || failed > 0 {
-                self.saveError = "Variable processing completed: \(statusParts.joined(separator: ", "))."
-            } else {
-                self.saveError = nil
+            if !statusParts.isEmpty {
+                self.variableProcessingHadFailures = failed > 0
+                self.variableProcessingStatus = "Variable processing completed: \(statusParts.joined(separator: ", "))."
             }
         }
     }

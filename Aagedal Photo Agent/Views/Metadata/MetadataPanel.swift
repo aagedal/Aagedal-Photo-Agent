@@ -1262,6 +1262,12 @@ struct MetadataPanel: View {
                     .foregroundStyle(.red)
             }
 
+            if let status = viewModel.variableProcessingStatus {
+                Text(status)
+                    .font(.caption)
+                    .foregroundStyle(viewModel.variableProcessingHadFailures ? .red : .secondary)
+            }
+
             HStack(spacing: 12) {
                 let hasC2PA = browserViewModel.selectedImages.contains { $0.hasC2PA }
                 let mode = hasC2PA ? settingsViewModel.metadataWriteModeC2PA : settingsViewModel.metadataWriteModeNonC2PA
