@@ -1481,6 +1481,12 @@ final class MetadataViewModel {
                     // Read embedded metadata from disk
                     let embedded = try await exifToolService.readFullMetadata(url: url)
 
+                    // Load XMP sidecar if policy allows, matching the normal
+                    // metadata loading path that merges embedded + XMP
+                    let xmpMeta = self.loadXMPMetadataIfAllowed(for: url)
+                    let refSource = defaultReferenceSource(hasXmp: xmpMeta != nil)
+                    let baseMeta = referenceMetadata(for: refSource, embedded: embedded, xmp: xmpMeta) ?? embedded
+
                     // For images with sidecar pending changes (C2PA or historyOnly mode),
                     // resolve variables from the sidecar metadata instead of embedded
                     let existingSidecar: MetadataSidecar?
@@ -1493,7 +1499,7 @@ final class MetadataViewModel {
                     if let sidecar = existingSidecar, sidecar.pendingChanges {
                         meta = sidecar.metadata
                     } else {
-                        meta = embedded
+                        meta = baseMeta
                     }
                     let snapshot = meta
 
@@ -1605,6 +1611,12 @@ final class MetadataViewModel {
                     // Read embedded metadata from disk
                     let embedded = try await exifToolService.readFullMetadata(url: url)
 
+                    // Load XMP sidecar if policy allows, matching the normal
+                    // metadata loading path that merges embedded + XMP
+                    let xmpMeta = self.loadXMPMetadataIfAllowed(for: url)
+                    let refSource = defaultReferenceSource(hasXmp: xmpMeta != nil)
+                    let baseMeta = referenceMetadata(for: refSource, embedded: embedded, xmp: xmpMeta) ?? embedded
+
                     // For images with sidecar pending changes (C2PA or historyOnly mode),
                     // resolve variables from the sidecar metadata instead of embedded
                     let existingSidecar: MetadataSidecar?
@@ -1617,7 +1629,7 @@ final class MetadataViewModel {
                     if let sidecar = existingSidecar, sidecar.pendingChanges {
                         meta = sidecar.metadata
                     } else {
-                        meta = embedded
+                        meta = baseMeta
                     }
                     let snapshot = meta
 
