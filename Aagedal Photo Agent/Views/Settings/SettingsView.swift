@@ -570,6 +570,11 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
+                Toggle("Ask when multiple metadata sources exist", isOn: $settingsViewModel.askOnMultipleMetadataSources)
+                Text("When both embedded and XMP sidecar metadata exist with different values, prompt to choose which source to use.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
                 Divider()
 
                 Picker("XMP Compatibility", selection: $settingsViewModel.pmXmpCompatibilityMode) {

@@ -33,6 +33,7 @@ final class MetadataViewModel {
     var variableProcessingHadFailures = false
     var selectedHasC2PA = false
     var descriptionConflict: DescriptionConflict?
+    var showMetadataSourceChoice = false
 
     var originalImageMetadata: IPTCMetadata?
     var embeddedMetadata: IPTCMetadata?
@@ -99,7 +100,12 @@ final class MetadataViewModel {
     }
 
     private var prefersXMPSidecar: Bool {
-        UserDefaults.standard.bool(forKey: UserDefaultsKeys.metadataPreferXMPSidecar)
+        let stored = UserDefaults.standard.object(forKey: UserDefaultsKeys.metadataPreferXMPSidecar) as? Bool
+        return stored ?? true
+    }
+
+    private var shouldAskOnMultipleSources: Bool {
+        UserDefaults.standard.bool(forKey: UserDefaultsKeys.metadataAskOnMultipleSources)
     }
 
     private func defaultReferenceSource(hasXmp: Bool) -> MetadataReferenceSource {
@@ -191,6 +197,14 @@ final class MetadataViewModel {
                     self.metadataReferenceSource = referenceSource
                     self.metadata = baseMeta
                     self.originalImageMetadata = baseMeta
+
+                    // Show source choice prompt when both sources exist with
+                    // different IPTC content and the "ask" setting is enabled.
+                    if self.shouldAskOnMultipleSources,
+                       let xmp = xmpMeta,
+                       embedded.hasIPTCDifferences(from: xmp) {
+                        self.showMetadataSourceChoice = true
+                    }
 
                     if let folder = self.currentFolderURL,
                        let sidecar = sidecarService.loadSidecar(for: imageURL, in: folder) {

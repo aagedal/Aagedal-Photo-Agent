@@ -249,6 +249,23 @@ struct IPTCMetadata: Codable, Sendable, Equatable {
 }
 
 extension IPTCMetadata {
+    /// Returns true if any user-facing IPTC fields differ between self and another metadata instance.
+    func hasIPTCDifferences(from other: IPTCMetadata) -> Bool {
+        title != other.title
+            || description != other.description
+            || extendedDescription != other.extendedDescription
+            || keywords != other.keywords
+            || personShown != other.personShown
+            || digitalSourceType != other.digitalSourceType
+            || creator != other.creator
+            || credit != other.credit
+            || copyright != other.copyright
+            || jobId != other.jobId
+            || city != other.city
+            || country != other.country
+            || event != other.event
+    }
+
     func merged(preferring override: IPTCMetadata) -> IPTCMetadata {
         var result = self
 

@@ -293,6 +293,10 @@ final class SettingsViewModel {
         didSet { UserDefaults.standard.set(preferXMPSidecar, forKey: UserDefaultsKeys.metadataPreferXMPSidecar) }
     }
 
+    var askOnMultipleMetadataSources: Bool {
+        didSet { UserDefaults.standard.set(askOnMultipleMetadataSources, forKey: UserDefaultsKeys.metadataAskOnMultipleSources) }
+    }
+
     var pmXmpCompatibilityMode: PMXMPCompatibilityMode {
         didSet { UserDefaults.standard.set(pmXmpCompatibilityMode.rawValue, forKey: UserDefaultsKeys.pmXmpCompatibilityMode) }
     }
@@ -588,7 +592,10 @@ final class SettingsViewModel {
         }
 
         let preferXmpStored = UserDefaults.standard.object(forKey: UserDefaultsKeys.metadataPreferXMPSidecar) as? Bool
-        self.preferXMPSidecar = preferXmpStored ?? false
+        self.preferXMPSidecar = preferXmpStored ?? true
+
+        let askOnMultipleSourcesStored = UserDefaults.standard.object(forKey: UserDefaultsKeys.metadataAskOnMultipleSources) as? Bool
+        self.askOnMultipleMetadataSources = askOnMultipleSourcesStored ?? false
 
         let pmModeRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.pmXmpCompatibilityMode)
             ?? PMXMPCompatibilityMode.off.rawValue
