@@ -822,24 +822,44 @@ final class ExifToolService {
 
     /// Read C2PA embedded thumbnails (claim + ingredient) using binary extraction.
     /// ExifTool `-json -b` outputs binary data as base64 strings.
+    /// Tag names are dynamically generated from JUMBF labels (e.g. `c2pa.claim.thumbnail.jpeg`
+    /// → `C2paClaimThumbnailJpegData`), so we search by pattern instead of exact names.
     func readC2PAThumbnails(url: URL) async throws -> C2PAThumbnails {
-        let args = ["-json", "-b",
-                    "-JUMBF:C2PAThumbnailClaimJpegData",
-                    "-JUMBF:C2PAThumbnailIngredientJpegData",
-                    url.path]
+        let args = ["-json", "-G3", "-b", "-JUMBF:All", url.path]
         let output = try await execute(args)
         let results = try parseJSON(output)
         guard let dict = results.first else {
             return C2PAThumbnails(claimThumbnail: nil, ingredientThumbnail: nil)
         }
 
-        let claimImage = decodeBase64Image(dict["C2PAThumbnailClaimJpegData"])
-        let ingredientImage = decodeBase64Image(dict["C2PAThumbnailIngredientJpegData"])
-        return C2PAThumbnails(claimThumbnail: claimImage, ingredientThumbnail: ingredientImage)
+        var claimThumbnail: NSImage?
+        var ingredientThumbnail: NSImage?
+
+        // ExifTool renames binary data tags using the JUMBF label + "Data" suffix.
+        // e.g. label "c2pa.claim.thumbnail.jpeg" → tag "C2paClaimThumbnailJpegData"
+        // We search for any field containing "thumbnail" and ending with "data".
+        for (key, value) in dict {
+            guard let colonRange = key.range(of: ":") else { continue }
+            let field = String(key[colonRange.upperBound...]).lowercased()
+            guard field.contains("thumbnail"), field.hasSuffix("data") else { continue }
+            guard let image = decodeBase64Image(value) else { continue }
+
+            if field.contains("claim") {
+                claimThumbnail = image
+            } else if field.contains("ingredient") {
+                ingredientThumbnail = image
+            }
+        }
+
+        return C2PAThumbnails(claimThumbnail: claimThumbnail, ingredientThumbnail: ingredientThumbnail)
     }
 
     private func decodeBase64Image(_ value: Any?) -> NSImage? {
-        guard let base64String = value as? String, !base64String.isEmpty else { return nil }
+        guard var base64String = value as? String, !base64String.isEmpty else { return nil }
+        // ExifTool prefixes binary base64 values with "base64:"
+        if base64String.hasPrefix("base64:") {
+            base64String = String(base64String.dropFirst(7))
+        }
         // ExifTool base64 output may contain newlines
         let cleaned = base64String.replacingOccurrences(of: "\n", with: "")
             .replacingOccurrences(of: "\r", with: "")

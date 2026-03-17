@@ -48,8 +48,7 @@ struct C2PAMetadata: Identifiable {
         static let format = "Format"
         static let documentID = "DocumentID"
         static let instanceID = "InstanceID"
-        static let assertions = "Assertions"
-        static let assertionURL = "AssertionURL"
+        static let assertionsUrl = "AssertionsUrl"
     }
 
     /// Parse `-json -G3 -JUMBF:All` output into per-manifest data.
@@ -140,17 +139,14 @@ struct C2PAMetadata: Identifiable {
                     case C2PAKey.title: title = value as? String
                     case C2PAKey.documentID: documentID = value as? String
                     case C2PAKey.instanceID: instanceID = value as? String
+                    case C2PAKey.format: ingredientFormat = ingredientFormat ?? (value as? String)
+                    case C2PAKey.assertionsUrl:
+                        if let urlArray = value as? [String] {
+                            assertions = urlArray.compactMap { Self.extractAssertionLabel($0) }
+                        } else if let single = value as? String {
+                            assertions = [Self.extractAssertionLabel(single)].compactMap { $0 }
+                        }
                     default: break
-                    }
-                }
-
-                // Claim assertions array
-                if manifestDict["\(nodePrefix):\(C2PAKey.jumdLabel)"] as? String == C2PAKey.c2paClaim,
-                   field == C2PAKey.assertions || field == C2PAKey.assertionURL {
-                    if let urlArray = value as? [String] {
-                        assertions = urlArray.compactMap { Self.extractAssertionLabel($0) }
-                    } else if let single = value as? String {
-                        assertions = [Self.extractAssertionLabel(single)].compactMap { $0 }
                     }
                 }
 
