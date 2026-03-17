@@ -107,6 +107,9 @@ final class BrowserViewModel {
             UserDefaults.standard.set(renderEditsInPreviews ? "editing" : "performance", forKey: UserDefaultsKeys.previewMode)
             thumbnailService.clearCache()
             thumbnailService.startBackgroundGeneration(for: visibleImages)
+            retinaPreCacheTask?.cancel()
+            fullScreenImageCache.clearAll()
+            preCacheSelectedRetinaImage()
         }
     }
 
@@ -126,6 +129,7 @@ final class BrowserViewModel {
     @ObservationIgnored private var isAutoRefreshing = false
     @ObservationIgnored private var isMetadataLoading = false
     @ObservationIgnored private var pendingMetadataURLs: Set<URL> = []
+    @ObservationIgnored private var retinaPreCacheTask: Task<Void, Never>?
 
     private let favoritesKey = UserDefaultsKeys.favoriteFolders
 
@@ -261,6 +265,46 @@ final class BrowserViewModel {
         selectedImagesCache = selectedImageIDs.compactMap { url in
             guard let index = urlToImageIndex[url] else { return nil }
             return images[index]
+        }
+        preCacheSelectedRetinaImage()
+    }
+
+    private func preCacheSelectedRetinaImage() {
+        retinaPreCacheTask?.cancel()
+        retinaPreCacheTask = nil
+
+        guard selectedImageIDs.count == 1,
+              let url = selectedImageIDs.first,
+              let index = urlToImageIndex[url] else { return }
+        guard fullScreenImageCache.cachedImage(for: url) == nil else { return }
+
+        let imageFile = images[index]
+        let screenScale = NSScreen.main?.backingScaleFactor ?? 2.0
+        let screenLogicalPx = max(NSScreen.main?.frame.width ?? 3840,
+                                   NSScreen.main?.frame.height ?? 2160)
+        let screenMaxPx = screenLogicalPx * screenScale
+        let cameraRaw = renderEditsInPreviews ? imageFile.cameraRawSettings : nil
+        let orientation = imageFile.exifOrientation
+
+        retinaPreCacheTask = Task.detached(priority: .utility) { [weak self] in
+            guard let self, !Task.isCancelled else { return }
+            var image: CGImage?
+            if cameraRaw != nil,
+               let ciImage = FullScreenImageCache.loadHDRPreview(from: url, maxPixelSize: screenMaxPx) {
+                let processed = CameraRawApproximation.applyWithCrop(to: ciImage, settings: cameraRaw!, exifOrientation: orientation)
+                image = CameraRawApproximation.ciContext.createCGImage(
+                    processed, from: processed.extent,
+                    format: .RGBAh, colorSpace: CameraRawApproximation.workingColorSpace)
+            }
+            if image == nil {
+                guard var loaded = FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: screenMaxPx) else { return }
+                if let cameraRaw {
+                    loaded = FullScreenImageCache.applyCameraRaw(to: loaded, settings: cameraRaw, exifOrientation: orientation)
+                }
+                image = loaded
+            }
+            guard let image, !Task.isCancelled else { return }
+            self.fullScreenImageCache.store(image, for: url)
         }
     }
 

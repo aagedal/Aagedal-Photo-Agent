@@ -343,6 +343,7 @@ struct MetadataPanel: View {
         .onKeyPress(.escape) {
             guard focusedField != nil else { return .ignored }
             focusedField = nil
+            browserViewModel.shouldRestoreGridFocus = true
             return .handled
         }
         .onReceive(NotificationCenter.default.publisher(for: .showRawMetadata)) { _ in
@@ -1529,6 +1530,8 @@ struct EditableTextField: View {
     var focusKey: String? = nil
     var focusedField: FocusState<String?>.Binding? = nil
 
+    @State private var localText: String = ""
+
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 4) {
@@ -1596,11 +1599,20 @@ struct EditableTextField: View {
                 }
             }
             if let focusedField, let focusKey {
-                TextField(placeholder, text: $text)
+                let isFocused = focusedField.wrappedValue == focusKey
+                TextField(placeholder, text: $localText)
                     .textFieldStyle(.roundedBorder)
                     .font(.body)
                     .focused(focusedField, equals: focusKey)
+                    .onAppear { localText = text }
+                    .onChange(of: text) { _, newValue in
+                        if newValue != localText { localText = newValue }
+                    }
+                    .onChange(of: isFocused) { _, focused in
+                        if !focused { flush() }
+                    }
                     .onSubmit {
+                        flush()
                         onCommit?()
                     }
             } else {
@@ -1612,6 +1624,10 @@ struct EditableTextField: View {
                     }
             }
         }
+    }
+
+    private func flush() {
+        if localText != text { text = localText }
     }
 }
 
