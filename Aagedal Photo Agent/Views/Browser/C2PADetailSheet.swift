@@ -39,7 +39,8 @@ struct C2PADetailSheet: View {
             }
         }
         .padding()
-        .frame(minWidth: 520, idealWidth: 600, minHeight: 400, idealHeight: 600)
+        .frame(minWidth: 620, idealWidth: 700, minHeight: 400)
+        .frame(idealHeight: NSScreen.main.map { $0.visibleFrame.height * 0.9 } ?? 700)
     }
 
     @ViewBuilder
