@@ -223,7 +223,9 @@ final class ThumbnailCollectionView: NSCollectionView {
             }
 
             refreshVisibleSelections(selectedIDs: newIDs, activeURL: newActive)
-            viewModel.applySelection(ids: newIDs, active: newActive)
+            DispatchQueue.main.async { [weak viewModel] in
+                viewModel?.applySelection(ids: newIDs, active: newActive)
+            }
         }
     }
 
