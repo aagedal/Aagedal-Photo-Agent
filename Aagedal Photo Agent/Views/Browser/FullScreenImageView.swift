@@ -558,6 +558,16 @@ struct FullScreenImageView: View {
             // doesn't linger while the new version loads.
             currentImage = nil
         }
+        .onChange(of: currentImageFile?.exifOrientation) { oldValue, newValue in
+            guard let oldValue, let newValue, oldValue != newValue,
+                  let current = currentImage,
+                  let url = currentImageFile?.url else { return }
+            let clockwise = ImageFile.orientationAfterClockwiseRotation(oldValue) == newValue
+            if let rotated = Self.rotateCGImage90(current.cgImage, clockwise: clockwise) {
+                currentImage = makeLoadedImage(from: rotated)
+            }
+            imageCache.invalidateImage(for: url)
+        }
     }
 
     // MARK: - Gestures
@@ -996,6 +1006,33 @@ struct FullScreenImageView: View {
     private func makeLoadedImage(from nsImage: NSImage) -> LoadedImage? {
         guard let cgImage = nsImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
         return makeLoadedImage(from: cgImage)
+    }
+
+    private static func rotateCGImage90(_ image: CGImage, clockwise: Bool) -> CGImage? {
+        let width = image.width
+        let height = image.height
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+
+        guard let context = CGContext(
+            data: nil,
+            width: height,
+            height: width,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+
+        if clockwise {
+            context.translateBy(x: 0, y: CGFloat(width))
+            context.rotate(by: -.pi / 2)
+        } else {
+            context.translateBy(x: CGFloat(height), y: 0)
+            context.rotate(by: .pi / 2)
+        }
+
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return context.makeImage()
     }
 
     // MARK: - Face Rectangles Overlay
