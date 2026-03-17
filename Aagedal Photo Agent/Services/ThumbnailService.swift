@@ -143,6 +143,47 @@ final class ThumbnailService {
         cache.removeObject(forKey: url as NSURL)
     }
 
+    /// Rotates the cached thumbnail in-place for instant visual feedback during rotation.
+    /// Falls back to invalidation if no cached thumbnail exists.
+    func rotateThumbnailInCache(for url: URL, clockwise: Bool) {
+        guard let existing = cache.object(forKey: url as NSURL),
+              let rotated = rotateImage90(existing, clockwise: clockwise) else {
+            cache.removeObject(forKey: url as NSURL)
+            return
+        }
+        cache.setObject(rotated, forKey: url as NSURL)
+    }
+
+    private func rotateImage90(_ image: NSImage, clockwise: Bool) -> NSImage? {
+        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        let width = cgImage.width
+        let height = cgImage.height
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+
+        guard let context = CGContext(
+            data: nil,
+            width: height,
+            height: width,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+
+        if clockwise {
+            context.translateBy(x: 0, y: CGFloat(width))
+            context.rotate(by: -.pi / 2)
+        } else {
+            context.translateBy(x: CGFloat(height), y: 0)
+            context.rotate(by: .pi / 2)
+        }
+
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+        guard let rotatedCG = context.makeImage() else { return nil }
+        return NSImage(cgImage: rotatedCG, size: NSSize(width: height, height: width))
+    }
+
     func clearCache() {
         cancelBackgroundGeneration()
         cache.removeAllObjects()

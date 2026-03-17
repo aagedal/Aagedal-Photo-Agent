@@ -1003,7 +1003,7 @@ final class BrowserViewModel {
             fieldDescription: "orientation"
         )
         for url in selectedImages.map(\.url) {
-            thumbnailService.invalidateThumbnail(for: url)
+            thumbnailService.rotateThumbnailInCache(for: url, clockwise: true)
         }
     }
 
@@ -1041,7 +1041,7 @@ final class BrowserViewModel {
             fieldDescription: "orientation"
         )
         for url in selectedImages.map(\.url) {
-            thumbnailService.invalidateThumbnail(for: url)
+            thumbnailService.rotateThumbnailInCache(for: url, clockwise: false)
         }
     }
 

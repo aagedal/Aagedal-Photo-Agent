@@ -45,6 +45,11 @@ final class FullScreenImageCache: @unchecked Sendable {
         displayPreviewCache.removeAllObjects()
     }
 
+    nonisolated func invalidateImage(for url: URL) {
+        cache.removeObject(forKey: url as NSURL)
+        displayPreviewCache.removeObject(forKey: url as NSURL)
+    }
+
     /// Clear all cached images (retina + display preview).
     /// Call when rendering mode changes (e.g. edit toggle) to avoid stale cache hits.
     nonisolated func clearAll() {
