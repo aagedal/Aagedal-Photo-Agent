@@ -365,6 +365,16 @@ struct MetadataPanel: View {
             }
             fieldSelections[key] = editor.selectedRange()
         }
+        .alert("Multiple Metadata Sources", isPresented: $viewModel.showMetadataSourceChoice) {
+            Button("Embedded") {
+                viewModel.applyReferenceSource(.embedded)
+            }
+            Button("XMP Sidecar") {
+                viewModel.applyReferenceSource(.xmp)
+            }
+        } message: {
+            Text("This image has both embedded and XMP sidecar metadata with different values. Which source would you like to use?")
+        }
         .alert("C2PA Protected Image", isPresented: $showingC2PAWarning) {
             Button("Cancel", role: .cancel) {
                 c2paOverwriteIntent = nil

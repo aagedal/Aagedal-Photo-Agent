@@ -20,6 +20,7 @@ nonisolated enum UserDefaultsKeys {
     static let metadataWriteModeNonC2PA = "metadataWriteModeNonC2PA"
     static let metadataWriteModeC2PA = "metadataWriteModeC2PA"
     static let metadataPreferXMPSidecar = "metadataPreferXMPSidecar"
+    static let metadataAskOnMultipleSources = "metadataAskOnMultipleSources"
     static let pmXmpCompatibilityMode = "pmXmpCompatibilityMode"
     static let pmNonRawXmpBehavior = "pmNonRawXmpBehavior"
     static let pmNonRawXmpRememberedChoice = "pmNonRawXmpRememberedChoice"
