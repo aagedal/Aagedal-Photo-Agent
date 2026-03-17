@@ -32,6 +32,8 @@ struct EditWorkspaceView: View {
     @State private var editUndoManager = UndoManager()
     @State private var metalPipeline: MetalEditPipeline?
     @State private var metalCoordinator = MetalPreviewView.Coordinator()
+    @State private var scopeThrottleTask: Task<Void, Never>?
+    @State private var lastScopeUpdateTime: ContinuousClock.Instant = .now
     @FocusState private var isWorkspaceFocused: Bool
 
     private static let minKelvin = 2000.0
@@ -198,6 +200,8 @@ struct EditWorkspaceView: View {
             previewTask = nil
             previewRenderTask?.cancel()
             previewRenderTask = nil
+            scopeThrottleTask?.cancel()
+            scopeThrottleTask = nil
             if let monitor = keyEventMonitor {
                 NSEvent.removeMonitor(monitor)
                 keyEventMonitor = nil
@@ -213,7 +217,14 @@ struct EditWorkspaceView: View {
             renderPreview()
         }
         .onChange(of: isDraggingEditSlider) { wasDragging, isDragging in
+            NotificationCenter.default.post(
+                name: .editSliderDragStateChanged,
+                object: nil,
+                userInfo: ["isDragging": isDragging]
+            )
             if wasDragging, !isDragging {
+                scopeThrottleTask?.cancel()
+                scopeThrottleTask = nil
                 renderPreview()
             }
         }
@@ -764,6 +775,7 @@ struct EditWorkspaceView: View {
            let pipeline = metalPipeline, pipeline.hasSourceTexture {
             pipeline.updateParams(settings)
             metalCoordinator.requestRedraw()
+            updateScopeDuringDrag()
             return
         }
 
@@ -772,7 +784,7 @@ struct EditWorkspaceView: View {
         previewCIImage = CameraRawApproximation.apply(to: sourceCIImage, settings: settings)
 
         // During drag: Metal handles display, skip expensive CGImage generation
-        if isDraggingEditSlider { return }
+        if isDraggingEditSlider { updateScopeDuringDrag(); return }
 
         // On release / initial load: also produce CGImage for scope display and export
         previewRenderTask?.cancel()
@@ -805,6 +817,53 @@ struct EditWorkspaceView: View {
                 previewCGImage = nil
                 NotificationCenter.default.post(name: .scopeSourceImageDidChange, object: nil, userInfo: nil)
             }
+        }
+    }
+
+    private func updateScopeDuringDrag() {
+        let now = ContinuousClock.now
+        let interval = Duration.milliseconds(100)
+        if now - lastScopeUpdateTime >= interval {
+            lastScopeUpdateTime = now
+            performScopeUpdate()
+        } else {
+            scopeThrottleTask?.cancel()
+            let remaining = interval - (now - lastScopeUpdateTime)
+            scopeThrottleTask = Task {
+                try? await Task.sleep(for: remaining)
+                guard !Task.isCancelled else { return }
+                lastScopeUpdateTime = .now
+                performScopeUpdate()
+            }
+        }
+    }
+
+    private func performScopeUpdate() {
+        guard let sourceCIImage else { return }
+        let settings = metadataViewModel.editingMetadata.cameraRaw
+
+        let maxDim: CGFloat = 360
+        let extent = sourceCIImage.extent
+        let scale = min(maxDim / extent.width, maxDim / extent.height, 1.0)
+        let small = sourceCIImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        let filtered = CameraRawApproximation.apply(to: small, settings: settings)
+
+        scopeThrottleTask?.cancel()
+        scopeThrottleTask = Task {
+            let cgImage = await Task.detached(priority: .utility) {
+                CameraRawApproximation.ciContext.createCGImage(
+                    filtered,
+                    from: filtered.extent,
+                    format: .RGBAh,
+                    colorSpace: CameraRawApproximation.workingColorSpace
+                )
+            }.value
+            guard !Task.isCancelled, let cgImage else { return }
+            NotificationCenter.default.post(
+                name: .scopeSourceImageDidChange,
+                object: nil,
+                userInfo: ["cgImage": cgImage]
+            )
         }
     }
 

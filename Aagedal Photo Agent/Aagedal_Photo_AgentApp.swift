@@ -230,6 +230,7 @@ extension Notification.Name {
     static let resetAllEdits = Notification.Name("resetAllEdits")
     static let removeAllIPTC = Notification.Name("removeAllIPTC")
     static let scopeSourceImageDidChange = Notification.Name("scopeSourceImageDidChange")
+    static let editSliderDragStateChanged = Notification.Name("editSliderDragStateChanged")
     static let showAllFilesChanged = Notification.Name("showAllFilesChanged")
     static let showRawMetadata = Notification.Name("showRawMetadata")
 }
