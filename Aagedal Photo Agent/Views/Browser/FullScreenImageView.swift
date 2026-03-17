@@ -191,6 +191,7 @@ struct FullScreenImageView: View {
     @State private var isZoomedTo100: Bool = false
     @State private var sourcePixelSize: CGSize?
     @State private var useNearestNeighbor: Bool = false
+    @State private var lastOrientationURL: URL?
 
     /// Minimum zoom allows zooming out to 1:1 pixel mapping for small images.
     private var minZoom: CGFloat {
@@ -549,6 +550,7 @@ struct FullScreenImageView: View {
             isFullResLoaded = false
             fullResTask?.cancel()
             fullResTask = nil
+            lastOrientationURL = currentImageFile?.url
             await loadImage()
         }
         .onChange(of: renderEdits) {
@@ -559,9 +561,16 @@ struct FullScreenImageView: View {
             currentImage = nil
         }
         .onChange(of: currentImageFile?.exifOrientation) { oldValue, newValue in
+            // Only apply in-place rotation when the same image was rotated,
+            // not when navigating to a different image with a different orientation.
+            let url = currentImageFile?.url
+            guard url == lastOrientationURL else {
+                lastOrientationURL = url
+                return
+            }
             guard let oldValue, let newValue, oldValue != newValue,
                   let current = currentImage,
-                  let url = currentImageFile?.url else { return }
+                  let url else { return }
             let clockwise = ImageFile.orientationAfterClockwiseRotation(oldValue) == newValue
             if let rotated = Self.rotateCGImage90(current.cgImage, clockwise: clockwise) {
                 currentImage = makeLoadedImage(from: rotated)
