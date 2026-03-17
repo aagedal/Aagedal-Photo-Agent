@@ -883,6 +883,11 @@ struct ContentView: View {
                         scopeViewModel.updateImage(nil)
                     }
                 }
+                .onReceive(NotificationCenter.default.publisher(for: .editSliderDragStateChanged)) { notification in
+                    if let isDragging = notification.userInfo?["isDragging"] as? Bool {
+                        scopeViewModel.isDragMode = isDragging
+                    }
+                }
             }
         }
         .frame(minWidth: 180)
