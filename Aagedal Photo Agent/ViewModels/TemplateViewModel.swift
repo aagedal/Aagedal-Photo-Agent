@@ -22,6 +22,14 @@ final class TemplateViewModel {
 
     func saveTemplate(_ template: MetadataTemplate) {
         do {
+            // If this template claims a shortcut slot, clear it from any other template
+            if let slot = template.shortcutSlot {
+                for existing in templates where existing.shortcutSlot == slot && existing.id != template.id {
+                    var cleared = existing
+                    cleared.shortcutSlot = nil
+                    try storage.save(cleared)
+                }
+            }
             try storage.save(template)
             loadTemplates()
         } catch {
@@ -77,6 +85,11 @@ final class TemplateViewModel {
 
         template.fields = fields
         saveTemplate(template)
+    }
+
+    /// Returns the template assigned to the given shortcut slot (1-9), if any.
+    func template(forSlot slot: Int) -> MetadataTemplate? {
+        templates.first { $0.shortcutSlot == slot }
     }
 
     /// Resolves a template's variables and returns field key-value pairs ready for application.

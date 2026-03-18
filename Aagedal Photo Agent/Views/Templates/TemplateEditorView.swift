@@ -31,6 +31,14 @@ struct TemplateEditorView: View {
             TextField("Template Name", text: $viewModel.editingTemplate.name)
                 .textFieldStyle(.roundedBorder)
 
+            Picker("Keyboard Shortcut", selection: $viewModel.editingTemplate.shortcutSlot) {
+                Text("None").tag(nil as Int?)
+                ForEach(1...9, id: \.self) { slot in
+                    Text("Ctrl+\(slot)").tag(slot as Int?)
+                }
+            }
+            .frame(width: 240)
+
             Divider()
 
             HStack {
