@@ -299,6 +299,9 @@ struct EditWorkspaceView: View {
                                 onCommit: {
                                     lockedCropImageRect = nil
                                     commitEditAdjustments()
+                                },
+                                onAspectRatioOverride: { newRatio in
+                                    cropAspectRatio = newRatio
                                 }
                             )
                         }
@@ -776,9 +779,13 @@ struct EditWorkspaceView: View {
             metalCoordinator.requestRedraw()
         }
 
-        // During drag: throttled scope update, skip expensive CGImage generation
+        // During drag or crop interaction: skip expensive CGImage generation
+        // (crop only affects view layout, not pixel processing)
         if isDraggingEditSlider {
             updateScopeDuringDrag()
+            return
+        }
+        if lockedCropImageRect != nil {
             return
         }
 
