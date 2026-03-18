@@ -10,12 +10,14 @@ struct CropOverlayView: View {
     let onChange: (NormalizedCropRegion) -> Void
     let onAngleChange: (Double) -> Void
     let onCommit: () -> Void
+    var onAspectRatioOverride: ((CropAspectRatio) -> Void)?
 
     @State private var interactionStartCrop: NormalizedCropRegion?
     @State private var interactionStartAngle: Double?
     @State private var interactionStartViewRect: CGRect?
     @State private var gestureImageRect: CGRect?
     @State private var isShowingRotateCursor = false
+    @State private var commandUsedDuringResize = false
 
     // MARK: - Rotation cursor
 
@@ -491,8 +493,14 @@ struct CropOverlayView: View {
                 }
 
                 // Determine if aspect ratio should be enforced
+                let commandHeld = NSEvent.modifierFlags.contains(.command)
+                if commandHeld { commandUsedDuringResize = true }
+
                 let lockedRatio: Double?
-                if let r = effectiveRatio {
+                if commandHeld {
+                    // Command overrides: free crop regardless of aspect ratio setting
+                    lockedRatio = nil
+                } else if let r = effectiveRatio {
                     lockedRatio = r
                 } else if shiftHeld {
                     // Shift in free mode: lock to current crop ratio
@@ -580,6 +588,10 @@ struct CropOverlayView: View {
                 onChange(result)
             }
             .onEnded { _ in
+                if commandUsedDuringResize {
+                    commandUsedDuringResize = false
+                    onAspectRatioOverride?(.free)
+                }
                 interactionStartCrop = nil
                 interactionStartViewRect = nil
                 gestureImageRect = nil

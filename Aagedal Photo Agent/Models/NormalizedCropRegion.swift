@@ -109,17 +109,21 @@ struct NormalizedCropRegion: Equatable {
         let dW = halfW * ar
         let dH = halfH
 
-        // Forward projection: AABB diagonal → actual crop half-dimensions
-        let hw = Swift.abs(dW * cosA + dH * sinA)
-        let hh = Swift.abs(-dW * sinA + dH * cosA)
+        // Forward projection: signed actual crop half-dimensions (preserves rotation identity)
+        let hw = dW * cosA + dH * sinA
+        let hh = -dW * sinA + dH * cosA
+
+        // Actual crop magnitudes for corner checking
+        let absHw = Swift.abs(hw)
+        let absHh = Swift.abs(hh)
 
         // Check all 4 rotated corners stay within [0,1]² normalized bounds
         let signs: [(Double, Double)] = [(-1, -1), (1, -1), (-1, 1), (1, 1)]
         var maxScale = 1.0
 
         for (sx, sy) in signs {
-            let ox = sx * hw * cosA - sy * hh * sinA
-            let oy = sx * hw * sinA + sy * hh * cosA
+            let ox = sx * absHw * cosA - sy * absHh * sinA
+            let oy = sx * absHw * sinA + sy * absHh * cosA
             // Convert back to normalized space
             let nx = ox / ar
             let ny = oy
@@ -235,11 +239,11 @@ struct NormalizedCropRegion: Equatable {
         let dW = halfW * ar
         let dH = halfH
 
-        // Forward: actual crop dims from old angle
+        // Forward: signed actual crop dims from old angle (preserves rotation identity)
         let cosOld: Double = Foundation.cos(oldRad)
         let sinOld: Double = Foundation.sin(oldRad)
-        let hw = Swift.abs(dW * cosOld + dH * sinOld)
-        let hh = Swift.abs(-dW * sinOld + dH * cosOld)
+        let hw = dW * cosOld + dH * sinOld
+        let hh = -dW * sinOld + dH * cosOld
 
         // Inverse: new AABB at new angle
         let cosNew: Double = Foundation.cos(newRad)
