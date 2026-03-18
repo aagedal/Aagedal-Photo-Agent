@@ -1471,6 +1471,9 @@ struct KeywordsEditorWithDiff: View {
                     }
             }
         }
+        .onChange(of: keywords) { _, _ in
+            inputText = ""
+        }
     }
 
     private func addKeywords() {

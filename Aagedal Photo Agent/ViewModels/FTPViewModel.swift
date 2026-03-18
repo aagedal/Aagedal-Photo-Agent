@@ -25,6 +25,13 @@ final class FTPViewModel {
             return
         }
         connections = decoded
+
+        // Sync selectedConnection with the reloaded array so the Picker tag matches.
+        // Without this, a stale selectedConnection (e.g. from before an edit in Settings)
+        // won't match any Picker tag, causing undefined Picker behavior.
+        if let selected = selectedConnection {
+            selectedConnection = connections.first { $0.id == selected.id }
+        }
     }
 
     func saveConnections() {
@@ -47,6 +54,10 @@ final class FTPViewModel {
             connections[index] = editingConnection
         } else {
             connections.append(editingConnection)
+        }
+        // Keep selectedConnection in sync if the user edited the currently selected one
+        if selectedConnection?.id == editingConnection.id {
+            selectedConnection = editingConnection
         }
         saveConnections()
         isShowingServerForm = false
