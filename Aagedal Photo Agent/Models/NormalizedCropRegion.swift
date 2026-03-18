@@ -92,16 +92,15 @@ struct NormalizedCropRegion: Equatable {
     /// Constrains the crop so all 4 corners of the rotated rectangle stay within the image.
     /// `aspectRatio` is imageWidth / imageHeight.
     func fittingRotated(angleDegrees: Double, aspectRatio: Double) -> NormalizedCropRegion {
-        let result = clamped()
         let radians = angleDegrees * Double.pi / 180.0
         if abs(radians) < 0.000001 {
-            return result
+            return clamped()
         }
 
-        let cx = result.centerX
-        let cy = result.centerY
-        let halfW = result.width * 0.5
-        let halfH = result.height * 0.5
+        let cx = centerX
+        let cy = centerY
+        let halfW = width * 0.5
+        let halfH = height * 0.5
         let cosA: Double = Foundation.cos(radians)
         let sinA: Double = Foundation.sin(radians)
         let ar = Swift.max(aspectRatio, 0.001)
@@ -133,7 +132,7 @@ struct NormalizedCropRegion: Equatable {
 
         maxScale = Swift.min(maxScale, 1.0)
         if maxScale < 0 { maxScale = 0 }
-        if maxScale >= 1.0 - 0.0001 { return result }
+        if maxScale >= 1.0 - 0.0001 { return self }
 
         // Scale actual crop dimensions uniformly
         let newHw = hw * maxScale
@@ -148,7 +147,7 @@ struct NormalizedCropRegion: Equatable {
             left: cx - newHalfW,
             bottom: cy + newHalfH,
             right: cx + newHalfW
-        ).clamped()
+        )
     }
 
     /// Adjusts center position so all rotated corners stay within [0,1]² bounds,
@@ -224,7 +223,7 @@ struct NormalizedCropRegion: Equatable {
     /// Recomputes the AABB when changing the crop angle, preserving the actual crop dimensions.
     /// `aspectRatio` is imageWidth / imageHeight.
     func withAngle(from oldAngle: Double, to newAngle: Double, aspectRatio: Double) -> NormalizedCropRegion {
-        let base = clamped()
+        let base = self
         let oldRad = oldAngle * Double.pi / 180.0
         let newRad = newAngle * Double.pi / 180.0
         let ar = Swift.max(aspectRatio, 0.001)
@@ -255,7 +254,7 @@ struct NormalizedCropRegion: Equatable {
             left: cx - newHalfW,
             bottom: cy + newHalfH,
             right: cx + newHalfW
-        ).clamped()
+        )
     }
 
     /// Resizes the crop to match a target aspect ratio while preserving the crop area.

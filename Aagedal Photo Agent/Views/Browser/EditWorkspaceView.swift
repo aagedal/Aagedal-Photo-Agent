@@ -141,7 +141,6 @@ struct EditWorkspaceView: View {
             bottom: displayCrop.bottom ?? 1,
             right: displayCrop.right ?? 1
         )
-        .clamped()
     }
 
     private var activeCropAngle: Double {
@@ -265,6 +264,17 @@ struct EditWorkspaceView: View {
                             .frame(width: imageRect.width, height: imageRect.height)
                             .rotationEffect(.degrees(-activeCropAngle))
                             .position(x: imageRect.midX, y: imageRect.midY)
+
+                        if !showCropControls {
+                            // Black out area outside crop when controls are hidden
+                            let cropRect = cropViewRect(crop: activeCrop, angleDegrees: activeCropAngle, imageRect: imageRect)
+                            Path { path in
+                                path.addRect(CGRect(origin: .zero, size: geometry.size))
+                                path.addRect(cropRect)
+                            }
+                            .fill(Color.black, style: FillStyle(eoFill: true))
+                            .allowsHitTesting(false)
+                        }
 
                         if showCropControls, canEditSingleImage {
                             CropOverlayView(
@@ -996,6 +1006,45 @@ struct EditWorkspaceView: View {
         )
     }
 
+    /// Computes the view-space crop rectangle for a given crop region, angle, and image rect.
+    /// Uses the same forward projection math as CropOverlayView.viewCropRect.
+    private func cropViewRect(crop: NormalizedCropRegion, angleDegrees: Double, imageRect: CGRect) -> CGRect {
+        let A = -angleDegrees * Double.pi / 180.0
+        let cosA = cos(A)
+        let sinA = sin(A)
+
+        // AABB center offset from image center in image-rect pixel units
+        let imgCX = (crop.centerX - 0.5) * imageRect.width
+        let imgCY = (crop.centerY - 0.5) * imageRect.height
+
+        // Rotate center offset to view space
+        let viewCX = imgCX * cosA - imgCY * sinA + imageRect.midX
+        let viewCY = imgCX * sinA + imgCY * cosA + imageRect.midY
+
+        // Forward project AABB dims to actual crop dims
+        let aabbW = crop.width * imageRect.width
+        let aabbH = crop.height * imageRect.height
+        let radians = angleDegrees * Double.pi / 180.0
+        let actualW: Double
+        let actualH: Double
+        if abs(radians) > 0.000001 {
+            let cosR = cos(radians)
+            let sinR = sin(radians)
+            actualW = abs(aabbW * cosR + aabbH * sinR)
+            actualH = abs(-aabbW * sinR + aabbH * cosR)
+        } else {
+            actualW = aabbW
+            actualH = aabbH
+        }
+
+        return CGRect(
+            x: viewCX - actualW / 2,
+            y: viewCY - actualH / 2,
+            width: max(2, actualW),
+            height: max(2, actualH)
+        )
+    }
+
     private var usesIncrementalWhiteBalance: Bool {
         // Non-RAW files always use incremental (relative) white balance
         if let url = selectedImageURL, !SupportedImageFormats.isRaw(url: url) {
@@ -1252,7 +1301,7 @@ struct EditWorkspaceView: View {
 
     private func updateCrop(_ crop: NormalizedCropRegion, commit: Bool) {
         let angle = metadataViewModel.editingMetadata.cameraRaw?.crop?.angle ?? 0
-        let normalized = crop.clamped().fittingRotated(angleDegrees: angle, aspectRatio: sourceAspectRatio)
+        let normalized = crop.fittingRotated(angleDegrees: angle, aspectRatio: sourceAspectRatio)
         let displayCrop = CameraRawCrop(
             top: normalized.top, left: normalized.left,
             bottom: normalized.bottom, right: normalized.right,
@@ -1282,7 +1331,6 @@ struct EditWorkspaceView: View {
                 bottom: displayCrop.bottom ?? 1,
                 right: displayCrop.right ?? 1
             )
-            .clamped()
             .withAngle(from: oldAngle, to: clampedAngle, aspectRatio: ar)
             .centerClampedForRotation(angleDegrees: clampedAngle, aspectRatio: ar)
             .fittingRotated(angleDegrees: clampedAngle, aspectRatio: ar)

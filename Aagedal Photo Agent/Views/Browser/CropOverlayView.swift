@@ -95,7 +95,7 @@ struct CropOverlayView: View {
     }
 
     private var normalizedCrop: NormalizedCropRegion {
-        crop.clamped()
+        crop
     }
 
     /// Returns the locked image rect during resize, or the live image rect otherwise.
@@ -575,7 +575,6 @@ struct CropOverlayView: View {
                     bottom: newCY + halfH,
                     right: newCX + halfW
                 )
-                .clamped()
                 .fittingRotated(angleDegrees: angle, aspectRatio: ar)
 
                 onChange(result)
