@@ -63,6 +63,14 @@ kernel void editAdjustments(
         rgb.r = half(toneLUT.sample(lutSampler, ur).r);
         rgb.g = half(toneLUT.sample(lutSampler, ug).r);
         rgb.b = half(toneLUT.sample(lutSampler, ub).r);
+
+        // Highlight desaturation: blend toward luminance as brightness increases.
+        // Prevents per-channel LUT from oversaturating highlights — ACR rolls off
+        // bright areas toward neutral white rather than boosting channel differences.
+        float3 rgbF = float3(rgb);
+        float lum = dot(rgbF, float3(0.2126, 0.7152, 0.0722));
+        float desat = smoothstep(0.55, 1.3, lum) * 0.7;
+        rgb = half3(mix(rgbF, float3(lum), desat));
     }
 
     // 3. Vibrance: selective saturation boost on less-saturated pixels
