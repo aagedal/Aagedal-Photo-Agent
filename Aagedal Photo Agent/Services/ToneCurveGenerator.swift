@@ -78,26 +78,43 @@ nonisolated struct ToneCurveGenerator: Sendable {
                 x = pxNew * pxNew
             }
 
-            // 5. Highlights: Gaussian-weighted adjustment centered at linear ~0.40
-            //    (sRGB ~0.66), matching ACR's highlight recovery peak position.
-            //    Negative highlights have stronger effect than positive (asymmetric, as in ACR).
+            // 5. Highlights: one-sided ramp that only affects upper tones.
+            //    ACR highlights leave shadows/blacks untouched — the adjustment ramps in
+            //    smoothly from a knee point and peaks in the bright range. Uses a smooth
+            //    ramp (cubic ease-in) starting at linear ~0.15 (sRGB ~0.42), peaking
+            //    around linear 0.60-0.80. No effect below the knee.
             if abs(highlights) > 0.001 {
-                let center: Float = 0.40
-                let width: Float = 0.20
-                let dist = (x - center) / width
-                let asymmetry: Float = highlights < 0 ? 1.5 : 1.0
-                x += highlights * 0.17 * asymmetry * expf(-0.5 * dist * dist)
+                let knee: Float = 0.15
+                if x > knee {
+                    let t = min((x - knee) / 0.85, 1.0) // 0 at knee, 1 at linear 1.0
+                    // Bell-shaped weight: ramps up from knee, peaks ~0.6, tapers at top
+                    let weight = t * t * (3.0 - 2.0 * t) * (1.0 - t * t * 0.3)
+                    x += highlights * 0.30 * weight
+                }
             }
 
-            // 6. Whites: tapered highlight-region adjustment.
-            //    Region starts at linear 0.3 (sRGB ~0.59), much earlier than previous 0.7.
-            //    Positive whites are stronger than negative (asymmetric, matching ACR behavior
-            //    where +100 blows out highlights while -100 compresses gently).
+            // 6. Whites: adjusts the upper tone range (sRGB ~75-100%).
+            //    Positive: lifts the entire 75-100% range (not just the peak).
+            //    Negative: compresses highlights toward ~75% without inverting —
+            //    the brightest values stay brightest, maintaining contrast.
+            //    Uses a smooth ramp from linear 0.45 (sRGB ~0.70).
             if abs(whites) > 0.001 {
-                let regionProgress = max(Float(0), (x - 0.3) / 0.7)
-                let taper = regionProgress * regionProgress
-                let amplitude: Float = whites > 0 ? 1.5 : 0.85
-                x += whites * amplitude * taper
+                let knee: Float = 0.45
+                if x > knee {
+                    let t = (x - knee) / (1.0 - knee) // 0 at knee, 1 at linear 1.0
+                    let tClamped = min(t, 2.0) // allow some HDR headroom
+                    if whites > 0 {
+                        // Positive: smooth ramp, stronger at top
+                        let weight = tClamped * (2.0 - tClamped) // parabolic, peaks at t=1
+                        x += whites * 1.2 * weight
+                    } else {
+                        // Negative: compress toward knee, preserving order.
+                        // At t=1 (brightest), pull down most. At t=0 (knee), no change.
+                        // Use sqrt taper so mid-highlights compress more evenly.
+                        let pull = sqrtf(tClamped) * 0.25
+                        x -= abs(whites) * pull * (1.0 - knee)
+                    }
+                }
             }
 
             lut[i] = x
