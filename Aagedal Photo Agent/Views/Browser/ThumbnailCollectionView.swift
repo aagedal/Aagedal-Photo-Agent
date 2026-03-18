@@ -304,7 +304,16 @@ final class ThumbnailCollectionView: NSCollectionView {
                 super.keyDown(with: event)
             }
         default:
-            super.keyDown(with: event)
+            // Ctrl+1…9: apply template shortcut
+            if event.modifierFlags.contains(.control),
+               let chars = event.charactersIgnoringModifiers,
+               let digit = chars.first,
+               let slot = Int(String(digit)),
+               (1...9).contains(slot) {
+                NotificationCenter.default.post(name: .applyTemplateShortcut, object: slot)
+            } else {
+                super.keyDown(with: event)
+            }
         }
     }
 
