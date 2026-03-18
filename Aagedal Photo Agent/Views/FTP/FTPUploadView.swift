@@ -3,9 +3,9 @@ import SwiftUI
 struct FTPUploadView: View {
     @Environment(\.dismiss) private var dismiss
     @Bindable var viewModel: FTPViewModel
-    let selectedFiles: [URL]
-    let allFiles: [URL]
+    let files: [URL]
     let exifToolService: ExifToolService
+    var onStartUpload: (() -> Void)?
 
     @State private var processVariablesBeforeUpload = false
     @State private var isProcessingVariables = false
@@ -27,7 +27,7 @@ struct FTPUploadView: View {
                 .buttonStyle(.plain)
             }
 
-            Text("\(selectedFiles.count) file(s) selected · \(allFiles.count) total in folder")
+            Text("Upload \(files.count) file(s)")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
@@ -58,36 +58,9 @@ struct FTPUploadView: View {
                 HStack(spacing: 8) {
                     ProgressView()
                         .controlSize(.small)
-                    Text("Processing variables… \(variablesProcessProgress)")
+                    Text("Processing variables... \(variablesProcessProgress)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                }
-            }
-
-            // Upload progress
-            if viewModel.isUploading {
-                VStack(alignment: .leading, spacing: 8) {
-                    ProgressView(value: viewModel.overallProgress) {
-                        Text("Uploading \(viewModel.completedCount)/\(viewModel.totalCount)")
-                    }
-
-                    ForEach(Array(viewModel.uploadProgress.values), id: \.fileName) { progress in
-                        HStack {
-                            Text(progress.fileName)
-                                .font(.caption)
-                                .lineLimit(1)
-                            Spacer()
-                            if progress.isComplete {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .foregroundStyle(.green)
-                                    .font(.caption)
-                            } else {
-                                Text("\(Int(progress.fractionCompleted * 100))%")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
                 }
             }
 
@@ -101,17 +74,17 @@ struct FTPUploadView: View {
 
             HStack {
                 Spacer()
-                Button("Upload Selected") {
-                    startUpload(files: selectedFiles)
+                Button("Upload") {
+                    startUpload(renderFirst: false)
                 }
                 .buttonStyle(.bordered)
-                .disabled(uploadDisabled || selectedFiles.isEmpty)
+                .disabled(uploadDisabled)
 
-                Button("Upload All") {
-                    startUpload(files: allFiles)
+                Button("Render JPEG & Upload") {
+                    startUpload(renderFirst: true)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(uploadDisabled || allFiles.isEmpty)
+                .disabled(uploadDisabled)
             }
         }
         .padding()
@@ -122,11 +95,13 @@ struct FTPUploadView: View {
     }
 
     private var uploadDisabled: Bool {
-        viewModel.selectedConnection == nil || viewModel.isUploading || isProcessingVariables
+        viewModel.selectedConnection == nil || viewModel.isUploading || viewModel.isRendering || isProcessingVariables || files.isEmpty
     }
 
-    private func startUpload(files: [URL]) {
+    private func startUpload(renderFirst: Bool) {
         guard let connection = viewModel.selectedConnection else { return }
+
+        viewModel.saveLastUsedConnectionID(connection.id)
 
         if processVariablesBeforeUpload {
             isProcessingVariables = true
@@ -136,11 +111,20 @@ struct FTPUploadView: View {
                 await processVariables(for: files)
                 isProcessingVariables = false
                 variablesProcessProgress = ""
-                viewModel.uploadFiles(files, to: connection)
+                beginUpload(files: files, connection: connection, renderFirst: renderFirst)
             }
+        } else {
+            beginUpload(files: files, connection: connection, renderFirst: renderFirst)
+        }
+    }
+
+    private func beginUpload(files: [URL], connection: FTPConnection, renderFirst: Bool) {
+        if renderFirst {
+            viewModel.renderAndUploadFiles(files, to: connection, exifToolService: exifToolService)
         } else {
             viewModel.uploadFiles(files, to: connection)
         }
+        onStartUpload?()
     }
 
     private func processVariables(for files: [URL]) async {

@@ -25,6 +25,7 @@ struct ContentView: View {
     @State private var isShowingTemplatePicker = false
     @State private var isShowingTemplatePalette = false
     @State private var isShowingFTPUpload = false
+    @State private var ftpUploadFileURLs: [URL] = []
     @State private var isShowingSaveTemplateName = false
     @State private var isShowingImport = false
     @State private var isShowingWriteAllC2PAWarning = false
@@ -240,13 +241,23 @@ struct ContentView: View {
             .onReceive(NotificationCenter.default.publisher(for: .showTemplatePalette)) { _ in
                 isShowingTemplatePalette = true
             }
+            .onReceive(NotificationCenter.default.publisher(for: .applyTemplateShortcut)) { notification in
+                if let slot = notification.object as? Int,
+                   let template = templateViewModel.template(forSlot: slot) {
+                    applyTemplate(template)
+                }
+            }
             .onReceive(NotificationCenter.default.publisher(for: .uploadSelected)) { _ in
-                if !browserViewModel.selectedImageIDs.isEmpty {
+                let urls = browserViewModel.selectedImages.map(\.url)
+                if !urls.isEmpty {
+                    ftpUploadFileURLs = urls
                     isShowingFTPUpload = true
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .uploadAll)) { _ in
-                if !browserViewModel.images.isEmpty {
+                let urls = browserViewModel.images.map(\.url)
+                if !urls.isEmpty {
+                    ftpUploadFileURLs = urls
                     isShowingFTPUpload = true
                 }
             }
@@ -599,9 +610,9 @@ struct ContentView: View {
     private var ftpUploadSheet: some View {
         FTPUploadView(
             viewModel: ftpViewModel,
-            selectedFiles: browserViewModel.selectedImages.map(\.url),
-            allFiles: browserViewModel.images.map(\.url),
-            exifToolService: browserViewModel.exifToolService
+            files: ftpUploadFileURLs,
+            exifToolService: browserViewModel.exifToolService,
+            onStartUpload: { isShowingFTPUpload = false }
         )
     }
 
@@ -837,6 +848,13 @@ struct ContentView: View {
                 }
             }
             .listStyle(.sidebar)
+
+            if ftpViewModel.isUploading || ftpViewModel.isRendering {
+                Divider()
+                FTPUploadProgressView(viewModel: ftpViewModel)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+            }
 
             if browserViewModel.selectedImageIDs.count == 1,
                let selectedImage = browserViewModel.selectedImages.first {

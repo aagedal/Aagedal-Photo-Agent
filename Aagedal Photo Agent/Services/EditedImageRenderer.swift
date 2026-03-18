@@ -234,6 +234,7 @@ nonisolated enum EditedImageRenderer {
         }
         let destinationURL = outputURL(for: sourceURL, in: outputFolder, extension: "jpg")
         try data.write(to: destinationURL, options: .atomic)
+        await copyMetadata(from: sourceURL, to: destinationURL)
     }
 
     @discardableResult

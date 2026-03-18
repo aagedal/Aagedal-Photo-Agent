@@ -5,12 +5,14 @@ struct MetadataTemplate: Codable, Identifiable, Sendable {
     var name: String
     var templateType: TemplateType
     var fields: [TemplateField]
+    var shortcutSlot: Int?
 
-    init(id: UUID = UUID(), name: String = "", templateType: TemplateType = .full, fields: [TemplateField] = []) {
+    init(id: UUID = UUID(), name: String = "", templateType: TemplateType = .full, fields: [TemplateField] = [], shortcutSlot: Int? = nil) {
         self.id = id
         self.name = name
         self.templateType = templateType
         self.fields = fields
+        self.shortcutSlot = shortcutSlot
     }
 
     enum TemplateType: String, Codable, CaseIterable, Sendable {

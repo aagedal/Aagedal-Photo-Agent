@@ -107,6 +107,15 @@ struct Aagedal_Photo_AgentApp: App {
 
                 Divider()
 
+                ForEach(1...9, id: \.self) { slot in
+                    Button("Apply Template \(slot)") {
+                        NotificationCenter.default.post(name: .applyTemplateShortcut, object: slot)
+                    }
+                    .keyboardShortcut(KeyEquivalent(Character(String(slot))), modifiers: .control)
+                }
+
+                Divider()
+
                 Button("Show Raw Metadata") {
                     NotificationCenter.default.post(name: .showRawMetadata, object: nil)
                 }
@@ -233,4 +242,5 @@ extension Notification.Name {
     static let editSliderDragStateChanged = Notification.Name("editSliderDragStateChanged")
     static let showAllFilesChanged = Notification.Name("showAllFilesChanged")
     static let showRawMetadata = Notification.Name("showRawMetadata")
+    static let applyTemplateShortcut = Notification.Name("applyTemplateShortcut")
 }

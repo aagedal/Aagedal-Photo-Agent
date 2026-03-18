@@ -45,6 +45,7 @@ nonisolated enum UserDefaultsKeys {
     // MARK: - Favorites & FTP
     static let favoriteFolders = "favoriteFolders"
     static let ftpConnections = "ftpConnections"
+    static let lastUsedFTPConnectionID = "lastUsedFTPConnectionID"
 
     // MARK: - Browser
     static let showAllFiles = "showAllFiles"
