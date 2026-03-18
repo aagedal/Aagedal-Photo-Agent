@@ -57,10 +57,14 @@ nonisolated struct ToneCurveGenerator: Sendable {
             // 3. Blacks: tapered shadow-region adjustment in sqrt-space.
             //    Working in sqrt-space gives perceptually uniform deltas across the
             //    shadow region (a constant sqrt-space delta produces uniform sRGB change).
+            //    Negative blacks have a wider reach than positive (ACR crushes blacks
+            //    across a broader range, extending to ~sRGB 0.50).
             if abs(blacks) > 0.001 {
                 let px = sqrtf(max(Float(0), x))
-                let shadowRegion = max(Float(0), 1.0 - px / 0.35)
-                let delta = blacks * 0.10 * shadowRegion
+                let boundary: Float = blacks < 0 ? 0.50 : 0.35
+                let amplitude: Float = blacks < 0 ? 0.14 : 0.10
+                let shadowRegion = max(Float(0), 1.0 - px / boundary)
+                let delta = blacks * amplitude * shadowRegion
                 let pxNew = max(Float(0), px + delta)
                 x = pxNew * pxNew
             }
