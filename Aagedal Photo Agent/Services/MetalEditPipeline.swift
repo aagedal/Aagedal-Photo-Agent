@@ -4,9 +4,9 @@ import QuartzCore
 import simd
 
 /// Uniform buffer layout matching the Metal `EditParams` struct.
-/// Only contains operations that are mathematically exact in extended-range linear space.
+/// Contains all edit operations: tonal (via LUT), vibrance, saturation, white balance.
 struct EditParams {
-    var exposure: Float = 0
+    var exposure: Float = 0    // Legacy field kept for layout stability (baked into LUT)
     var vibrance: Float = 0
     var saturation: Float = 1
     var pad0: Float = 0
@@ -19,16 +19,16 @@ struct EditParams {
     var scale: SIMD2<Float> = .zero
     var sourceSize: SIMD2<Float> = .zero
     var drawableSize: SIMD2<Float> = .zero
+
+    var lutDomainMin: Float = ToneCurveGenerator.domainMin
+    var lutDomainMax: Float = ToneCurveGenerator.domainMax
 }
 
-/// Manages the Metal compute pipeline for real-time edit preview during slider interaction.
+/// Manages the Metal compute pipeline for real-time edit preview.
 ///
-/// Only handles operations that are exact in extended-range linear space:
-/// exposure (exp2), vibrance, saturation, white balance (3x3 matrix).
-///
-/// Complex operations (brightness/contrast, highlights/shadows, tone curves) are
-/// baked into the source texture via CIFilter on image load. The CIFilter chain
-/// takes over fully on slider release for pixel-perfect fidelity.
+/// Handles ALL edit operations via a unified shader: tonal adjustments through a 1D LUT
+/// (Exposure, Contrast, Blacks, Shadows, Highlights, Whites), plus vibrance, saturation,
+/// and white balance. The LUT is regenerated on every slider change (~microseconds).
 final class MetalEditPipeline: @unchecked Sendable {
 
     private let device: MTLDevice
@@ -37,6 +37,8 @@ final class MetalEditPipeline: @unchecked Sendable {
 
     nonisolated(unsafe) private var sourceTexture: MTLTexture?
     nonisolated(unsafe) private var paramsBuffer: MTLBuffer?
+    nonisolated(unsafe) private var lutTexture: MTLTexture?
+    nonisolated(unsafe) private let identityLutTexture: MTLTexture
 
     nonisolated(unsafe) private static let colorSpace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
 
@@ -64,6 +66,20 @@ final class MetalEditPipeline: @unchecked Sendable {
             .workingColorSpace: Self.colorSpace,
         ])
         self.paramsBuffer = device.makeBuffer(length: MemoryLayout<EditParams>.stride, options: .storageModeShared)
+
+        // Create a 2-entry identity LUT: maps input → input (linear ramp from domainMin to domainMax).
+        // Always bound at texture index 2 to avoid Metal validation errors on unbound textures.
+        let identityDesc = MTLTextureDescriptor()
+        identityDesc.textureType = .type1D
+        identityDesc.pixelFormat = .r16Float
+        identityDesc.width = 2
+        identityDesc.usage = .shaderRead
+        identityDesc.storageMode = .shared
+        guard let identityTex = device.makeTexture(descriptor: identityDesc) else { return nil }
+        var identityData: [Float16] = [Float16(ToneCurveGenerator.domainMin), Float16(ToneCurveGenerator.domainMax)]
+        identityTex.replace(region: MTLRegionMake1D(0, 2), mipmapLevel: 0,
+                            withBytes: &identityData, bytesPerRow: 2 * MemoryLayout<Float16>.size)
+        self.identityLutTexture = identityTex
     }
 
     // MARK: - Source Texture Upload
@@ -119,10 +135,34 @@ final class MetalEditPipeline: @unchecked Sendable {
         sourceTexture = texture
     }
 
+    // MARK: - LUT Upload
+
+    /// Uploads a 4096-entry LUT as a 1D r16Float Metal texture (~8KB).
+    nonisolated private func uploadLUT(_ data: [Float]) {
+        let desc = MTLTextureDescriptor()
+        desc.textureType = .type1D
+        desc.pixelFormat = .r16Float
+        desc.width = data.count
+        desc.usage = .shaderRead
+        desc.storageMode = .shared
+
+        guard let texture = device.makeTexture(descriptor: desc) else { return }
+
+        var float16Data = data.map { Float16($0) }
+        texture.replace(
+            region: MTLRegionMake1D(0, data.count),
+            mipmapLevel: 0,
+            withBytes: &float16Data,
+            bytesPerRow: data.count * MemoryLayout<Float16>.size
+        )
+
+        lutTexture = texture
+    }
+
     // MARK: - Parameter Update
 
     /// Converts CameraRawSettings into the GPU EditParams buffer.
-    /// Only sets the 4 operations the shader handles; everything else is in the source texture.
+    /// Generates and uploads a tone LUT when any tonal adjustment is active.
     nonisolated func updateParams(_ settings: CameraRawSettings?) {
         guard let buffer = paramsBuffer else { return }
         var params = EditParams()
@@ -134,9 +174,12 @@ final class MetalEditPipeline: @unchecked Sendable {
             return
         }
 
-        // 1. Exposure
-        if let exposure = settings.exposure2012, abs(exposure) > 0.0001 {
-            params.exposure = Float(exposure)
+        // 1. Tone LUT — combines exposure, contrast, blacks, shadows, highlights, whites
+        if !ToneCurveGenerator.isIdentity(settings: settings) {
+            let lutData = ToneCurveGenerator.generateLUT(settings: settings)
+            uploadLUT(lutData)
+            params.lutDomainMin = ToneCurveGenerator.domainMin
+            params.lutDomainMax = ToneCurveGenerator.domainMax
             flags |= (1 << 0)
         }
 
@@ -189,6 +232,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         encoder.setComputePipelineState(pipelineState)
         encoder.setTexture(source, index: 0)
         encoder.setTexture(drawable.texture, index: 1)
+        encoder.setTexture(lutTexture ?? identityLutTexture, index: 2)
         encoder.setBuffer(buffer, offset: 0, index: 0)
 
         let threadgroupSize = MTLSize(width: 16, height: 16, depth: 1)
