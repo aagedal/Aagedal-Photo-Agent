@@ -1298,11 +1298,10 @@ struct EditWorkspaceView: View {
         }
         guard let targetRatio, targetRatio > 0 else { return }
 
-        // Convert output ratio to normalized image-space ratio
-        let normalizedRatio = targetRatio / sourceAspectRatio
-
         let current = activeCrop
-        let resized = current.resizedToAspectRatio(normalizedRatio)
+        let resized = current.resizedToActualAspectRatio(
+            targetRatio, angleDegrees: activeCropAngle, imageAspectRatio: sourceAspectRatio
+        )
         updateCrop(resized, commit: true)
     }
 

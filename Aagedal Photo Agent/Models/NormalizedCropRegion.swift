@@ -261,6 +261,68 @@ struct NormalizedCropRegion: Equatable {
         )
     }
 
+    /// Resizes the AABB encoding so the actual (rotated) crop has the target pixel aspect ratio,
+    /// while preserving the actual crop area.
+    /// `targetRatio` is the desired width/height of the visible crop rectangle.
+    /// `angleDegrees` is the crop rotation angle.
+    /// `imageAspectRatio` is imageWidth / imageHeight.
+    func resizedToActualAspectRatio(_ targetRatio: Double, angleDegrees: Double, imageAspectRatio: Double) -> NormalizedCropRegion {
+        guard targetRatio > 0, imageAspectRatio > 0 else { return self }
+
+        let radians = angleDegrees * Double.pi / 180.0
+        if abs(radians) < 0.000001 {
+            // At zero angle, actual ratio = halfW*ar/halfH, so aabbRatio = targetRatio/ar
+            return resizedToAspectRatio(targetRatio / imageAspectRatio)
+        }
+
+        let cosA = Foundation.cos(radians)
+        let sinA = Foundation.sin(radians)
+        let ar = Swift.max(imageAspectRatio, 0.001)
+
+        // Forward project current AABB to signed actual crop dims
+        let dW = width * 0.5 * ar
+        let dH = height * 0.5
+        let hw = dW * cosA + dH * sinA
+        let hh = -dW * sinA + dH * cosA
+
+        let currentArea = Swift.abs(hw) * Swift.abs(hh)
+        guard currentArea > 0.000001 else { return self }
+
+        // Compute AABB ratio (halfW/halfH) that gives target actual ratio |hw|/|hh| = targetRatio.
+        // From: hw = halfW*ar*cos + halfH*sin, hh = -halfW*ar*sin + halfH*cos
+        // Solving hw/hh = targetRatio for r = halfW/halfH:
+        //   r = (targetRatio*cos - sin) / (ar*(cos + targetRatio*sin))
+        let num = targetRatio * cosA - sinA
+        let den = ar * (cosA + targetRatio * sinA)
+        guard Swift.abs(den) > 0.000001 else { return self }
+
+        var aabbRatio = num / den
+        if aabbRatio <= 0 {
+            // Target ratio below minimum achievable (tan|angle|) at this angle — use minimum
+            aabbRatio = 0.001
+        }
+
+        // Compute new AABB dims that preserve actual crop area
+        // Actual area = halfH² * |r*ar*cos + sin| * |cos - r*ar*sin|
+        let factorA = aabbRatio * ar * cosA + sinA
+        let factorB = cosA - aabbRatio * ar * sinA
+        let areaFactor = Swift.abs(factorA * factorB)
+        guard areaFactor > 0.000001 else { return self }
+
+        let newHalfH = Foundation.sqrt(currentArea / areaFactor)
+        let newHalfW = aabbRatio * newHalfH
+
+        let cx = centerX
+        let cy = centerY
+
+        return NormalizedCropRegion(
+            top: cy - newHalfH,
+            left: cx - newHalfW,
+            bottom: cy + newHalfH,
+            right: cx + newHalfW
+        )
+    }
+
     /// Resizes the crop to match a target aspect ratio while preserving the crop area.
     /// Unlike `constrainedToAspectRatio` (which only shrinks), this can grow one dimension
     /// to maintain constant area — preventing progressive shrinking when switching ratios.
