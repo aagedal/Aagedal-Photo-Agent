@@ -15,91 +15,32 @@ enum CameraRawApproximation {
         guard let settings else { return input }
         var output = input
 
-        if let exposure = settings.exposure2012, abs(exposure) > 0.0001 {
-            output = applyFilter(named: "CIExposureAdjust", input: output, values: [
-                kCIInputEVKey: exposure,
+        // 1. White Balance (chromatic adaptation before tonal — matches ACR pipeline order)
+        if let target = temperatureTintTarget(for: settings) {
+            output = applyFilter(named: "CITemperatureAndTint", input: output, values: [
+                "inputNeutral": CIVector(x: target.temperature, y: target.tint),
+                "inputTargetNeutral": CIVector(x: 6500, y: 0),
             ]) ?? output
         }
 
-        let contrast = min(max(1.0 + Double(settings.contrast2012 ?? 0) / 1000.0, 0.25), 4.0)
-        var brightness = 0.0
-        if let blacks = settings.blacks2012 { brightness += Double(blacks) / 4000.0 }
-        if abs(brightness) > 0.0001 || settings.contrast2012 != nil {
-            output = applyFilter(named: "CIColorControls", input: output, values: [
-                kCIInputBrightnessKey: brightness,
-                kCIInputContrastKey: contrast,
+        // 2. Tonal operations via ToneCurveGenerator LUT, approximated as 5-point CIToneCurve.
+        //    All tonal ops (exposure, contrast, blacks, shadows, highlights, whites) are
+        //    combined into a single curve using the same math as the Metal compute shader's LUT.
+        //    Note: 5-point Catmull-Rom approximation — near-exact for moderate adjustments,
+        //    slight deviation at extremes. Future: CIKernel with full LUT for exact match.
+        if !ToneCurveGenerator.isIdentity(settings: settings) {
+            let lut = ToneCurveGenerator.generateLUT(settings: settings)
+            let points = ToneCurveGenerator.sampleForToneCurve(lut)
+            output = applyFilter(named: "CIToneCurve", input: output, values: [
+                "inputPoint0": CIVector(x: points[0].x, y: points[0].y),
+                "inputPoint1": CIVector(x: points[1].x, y: points[1].y),
+                "inputPoint2": CIVector(x: points[2].x, y: points[2].y),
+                "inputPoint3": CIVector(x: points[3].x, y: points[3].y),
+                "inputPoint4": CIVector(x: points[4].x, y: points[4].y),
             ]) ?? output
         }
 
-        if settings.highlights2012 != nil || settings.shadows2012 != nil
-            || settings.whites2012 != nil
-        {
-            let highlights = Double(settings.highlights2012 ?? 0)
-            let whites = Double(settings.whites2012 ?? 0)
-            let shadows = Double(settings.shadows2012 ?? 0)
-
-            // CIHighlightShadowAdjust for Highlights recovery only (not Whites).
-            // Guard: only apply when highlights or shadows are actually non-zero.
-            // This filter may clip HDR headroom even at identity settings.
-            let negHighlight = min(highlights, 0) / 100.0  // -1..0
-            let highlightAmount = max(1.0 + negHighlight * 0.8, 0.0)
-            // Shadows: map -100..100 to -0.5..0.5 (was /1000 = only 10% of range)
-            let shadowAmount = min(max(shadows / 200.0, -1.0), 1.0)
-
-            if negHighlight < -0.001 || abs(shadowAmount) > 0.001 {
-                output = applyFilter(named: "CIHighlightShadowAdjust", input: output, values: [
-                    "inputHighlightAmount": highlightAmount,
-                    "inputShadowAmount": shadowAmount,
-                ]) ?? output
-            }
-
-            // Positive highlights: lift the upper-mid tonal range (point3 at 0.75)
-            // p4y gets a small HDR-preserving boost so the slope at 1.0 stays close to 1.0,
-            // preventing HDR headroom compression during Catmull-Rom extrapolation.
-            let posHighlight = max(highlights, 0) / 100.0  // 0..1
-            if posHighlight > 0.001 {
-                let p3y = min(0.75 + posHighlight * 0.15, 0.95)
-                let p4y = 1.0 + posHighlight * 0.10
-                output = applyFilter(named: "CIToneCurve", input: output, values: [
-                    "inputPoint0": CIVector(x: 0.0, y: 0.0),
-                    "inputPoint1": CIVector(x: 0.25, y: 0.25),
-                    "inputPoint2": CIVector(x: 0.5, y: 0.5),
-                    "inputPoint3": CIVector(x: 0.75, y: CGFloat(p3y)),
-                    "inputPoint4": CIVector(x: 1.0, y: CGFloat(p4y)),
-                ]) ?? output
-            }
-
-            // Whites: ACR-style white clipping point adjustment.
-            // Positive whites boosts upper tones and can increase overall brightness;
-            // negative whites compresses highlights toward black.
-            let whitesNorm = whites / 100.0  // -1..1
-            if abs(whitesNorm) > 0.001 {
-                let p3adj = whitesNorm > 0 ? whitesNorm * 0.12 : whitesNorm * 0.08
-                let p4adj = whitesNorm > 0 ? whitesNorm * 0.5 : whitesNorm * 0.35
-                let p3y = min(max(0.75 + p3adj, 0.4), 1.0)
-                let p4y = min(max(1.0 + p4adj, 0.5), 1.5)
-                output = applyFilter(named: "CIToneCurve", input: output, values: [
-                    "inputPoint0": CIVector(x: 0.0, y: 0.0),
-                    "inputPoint1": CIVector(x: 0.25, y: 0.25),
-                    "inputPoint2": CIVector(x: 0.5, y: 0.5),
-                    "inputPoint3": CIVector(x: 0.75, y: CGFloat(p3y)),
-                    "inputPoint4": CIVector(x: 1.0, y: CGFloat(p4y)),
-                ]) ?? output
-            }
-
-            // Positive shadows: additional tone curve lift in shadow region
-            if shadows > 0 {
-                let shadowLift = (shadows / 100.0) * 0.15  // up to 0.15 lift at point1
-                output = applyFilter(named: "CIToneCurve", input: output, values: [
-                    "inputPoint0": CIVector(x: 0.0, y: 0.0),
-                    "inputPoint1": CIVector(x: 0.25, y: CGFloat(0.25 + shadowLift)),
-                    "inputPoint2": CIVector(x: 0.5, y: 0.5),
-                    "inputPoint3": CIVector(x: 0.75, y: 0.75),
-                    "inputPoint4": CIVector(x: 1.0, y: 1.0),
-                ]) ?? output
-            }
-        }
-
+        // 3. Vibrance
         if let vib = settings.vibrance, vib != 0 {
             let amount = min(max(Double(vib) / 100.0, -1.0), 1.0)
             output = applyFilter(named: "CIVibrance", input: output, values: [
@@ -107,17 +48,11 @@ enum CameraRawApproximation {
             ]) ?? output
         }
 
+        // 4. Saturation
         if let sat = settings.saturation, sat != 0 {
             let saturation = min(max(1.0 + Double(sat) / 100.0, 0.0), 2.0)
             output = applyFilter(named: "CIColorControls", input: output, values: [
                 kCIInputSaturationKey: saturation,
-            ]) ?? output
-        }
-
-        if let target = temperatureTintTarget(for: settings) {
-            output = applyFilter(named: "CITemperatureAndTint", input: output, values: [
-                "inputNeutral": CIVector(x: target.temperature, y: target.tint),
-                "inputTargetNeutral": CIVector(x: 6500, y: 0),
             ]) ?? output
         }
 

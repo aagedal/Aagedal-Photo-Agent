@@ -128,18 +128,6 @@ struct EditWorkspaceView: View {
             || cameraRaw.saturation != nil
     }
 
-    /// Whether the compute shader can handle all active edit operations.
-    /// Returns false when contrast, highlights, shadows, whites, or blacks are set,
-    /// since those require CIFilter for accurate extended-range rendering.
-    private var canUseComputeShader: Bool {
-        guard let cameraRaw = metadataViewModel.editingMetadata.cameraRaw else { return true }
-        return cameraRaw.contrast2012 == nil
-            && cameraRaw.highlights2012 == nil
-            && cameraRaw.shadows2012 == nil
-            && cameraRaw.whites2012 == nil
-            && cameraRaw.blacks2012 == nil
-    }
-
     private var selectedImageOrientation: Int {
         selectedImage?.exifOrientation ?? 1
     }
@@ -270,7 +258,7 @@ struct EditWorkspaceView: View {
                             ciImage: displayCIImage,
                             isHDR: isHDREnabled,
                             metalPipeline: metalPipeline,
-                            useComputeShader: isDraggingEditSlider && canUseComputeShader && metalPipeline?.hasSourceTexture == true,
+                            useComputeShader: isDraggingEditSlider && metalPipeline?.hasSourceTexture == true,
                             coordinator: metalCoordinator
                         )
                             .frame(width: imageRect.width, height: imageRect.height)
@@ -311,7 +299,7 @@ struct EditWorkspaceView: View {
                             ciImage: displayCIImage,
                             isHDR: isHDREnabled && !isShowingBefore,
                             metalPipeline: metalPipeline,
-                            useComputeShader: isDraggingEditSlider && canUseComputeShader && metalPipeline?.hasSourceTexture == true,
+                            useComputeShader: isDraggingEditSlider && metalPipeline?.hasSourceTexture == true,
                             coordinator: metalCoordinator
                         )
                             .frame(width: imageRect.width, height: imageRect.height)
@@ -768,10 +756,8 @@ struct EditWorkspaceView: View {
 
         let settings = metadataViewModel.editingMetadata.cameraRaw
 
-        // Metal compute fast path: only when the shader can handle ALL active operations
-        // (exposure, vibrance, saturation, WB). Falls through to CIFilter path when
-        // contrast/highlights/shadows/whites/blacks are set.
-        if isDraggingEditSlider, canUseComputeShader,
+        // Metal compute fast path: LUT handles all tonal operations, no fallback needed.
+        if isDraggingEditSlider,
            let pipeline = metalPipeline, pipeline.hasSourceTexture {
             pipeline.updateParams(settings)
             metalCoordinator.requestRedraw()
