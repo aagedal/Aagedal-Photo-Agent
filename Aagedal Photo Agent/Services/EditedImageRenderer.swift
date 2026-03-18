@@ -315,6 +315,7 @@ nonisolated enum EditedImageRenderer {
                 executableURL: URL(fileURLWithPath: exiftool),
                 arguments: [
                     "-m",
+                    "-charset", "iptc=UTF8",
                     "-TagsFromFile", source.path,
                     "-IPTC:all",
                     "-XMP:all",
