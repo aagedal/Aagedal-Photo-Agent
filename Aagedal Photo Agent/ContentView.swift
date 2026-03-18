@@ -135,7 +135,9 @@ struct ContentView: View {
             .alert("Remove All IPTC Metadata", isPresented: $browserViewModel.showRemoveIPTCConfirmation) {
                 Button("Cancel", role: .cancel) { }
                 Button("Remove", role: .destructive) {
-                    browserViewModel.removeIPTCFromImageFiles()
+                    browserViewModel.removeIPTCFromImageFiles { [self] in
+                        reloadMetadataForSelection()
+                    }
                 }
             } message: {
                 let count = browserViewModel.removeIPTCSelectedURLs.count
@@ -147,13 +149,19 @@ struct ContentView: View {
                 titleVisibility: .visible
             ) {
                 Button("Remove from Image Files Only", role: .destructive) {
-                    browserViewModel.removeIPTCFromImageFiles()
+                    browserViewModel.removeIPTCFromImageFiles { [self] in
+                        reloadMetadataForSelection()
+                    }
                 }
                 Button("Delete XMP Sidecars Only", role: .destructive) {
-                    browserViewModel.removeIPTCFromXMPSidecars()
+                    browserViewModel.removeIPTCFromXMPSidecars { [self] in
+                        reloadMetadataForSelection()
+                    }
                 }
                 Button("Remove from Both", role: .destructive) {
-                    browserViewModel.removeIPTCFromBoth()
+                    browserViewModel.removeIPTCFromBoth { [self] in
+                        reloadMetadataForSelection()
+                    }
                 }
                 Button("Cancel", role: .cancel) { }
             } message: {
@@ -997,6 +1005,11 @@ struct ContentView: View {
     }
 
     // MARK: - Helpers
+
+    private func reloadMetadataForSelection() {
+        let selected = browserViewModel.selectedImages
+        metadataViewModel.loadMetadata(for: selected, folderURL: browserViewModel.currentFolderURL)
+    }
 
     private func applyTemplate(_ template: MetadataTemplate, append: Bool = false) {
         // Apply raw template values — variables like {date} and {persons}

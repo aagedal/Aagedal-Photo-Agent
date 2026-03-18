@@ -1947,7 +1947,7 @@ final class BrowserViewModel {
         }
     }
 
-    func removeIPTCFromImageFiles() {
+    func removeIPTCFromImageFiles(onComplete: (() -> Void)? = nil) {
         guard let folderURL = currentFolderURL else { return }
         let urls = removeIPTCSelectedURLs
 
@@ -1970,20 +1970,28 @@ final class BrowserViewModel {
 
                 try? sidecarService.deleteSidecar(for: url, in: folderURL)
             }
+
+            onComplete?()
         }
     }
 
-    func removeIPTCFromXMPSidecars() {
+    func removeIPTCFromXMPSidecars(onComplete: (() -> Void)? = nil) {
         let urls = removeIPTCSelectedURLs
 
         for url in urls {
             xmpSidecarService.stripIPTCFromSidecar(for: url)
         }
+
+        onComplete?()
     }
 
-    func removeIPTCFromBoth() {
-        removeIPTCFromImageFiles()
-        removeIPTCFromXMPSidecars()
+    func removeIPTCFromBoth(onComplete: (() -> Void)? = nil) {
+        // Strip XMP sidecars synchronously first, then start async image file strip
+        let urls = removeIPTCSelectedURLs
+        for url in urls {
+            xmpSidecarService.stripIPTCFromSidecar(for: url)
+        }
+        removeIPTCFromImageFiles(onComplete: onComplete)
     }
 
     // MARK: - Manual Sort
