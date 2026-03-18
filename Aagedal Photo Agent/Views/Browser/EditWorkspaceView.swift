@@ -258,7 +258,8 @@ struct EditWorkspaceView: View {
                             ciImage: displayCIImage,
                             isHDR: isHDREnabled,
                             metalPipeline: metalPipeline,
-                            useComputeShader: isDraggingEditSlider && metalPipeline?.hasSourceTexture == true,
+                            useComputeShader: !isShowingBefore && metalPipeline?.hasSourceTexture == true,
+                            isDragging: isDraggingEditSlider,
                             coordinator: metalCoordinator
                         )
                             .frame(width: imageRect.width, height: imageRect.height)
@@ -299,7 +300,8 @@ struct EditWorkspaceView: View {
                             ciImage: displayCIImage,
                             isHDR: isHDREnabled && !isShowingBefore,
                             metalPipeline: metalPipeline,
-                            useComputeShader: isDraggingEditSlider && metalPipeline?.hasSourceTexture == true,
+                            useComputeShader: !isShowingBefore && metalPipeline?.hasSourceTexture == true,
+                            isDragging: isDraggingEditSlider,
                             coordinator: metalCoordinator
                         )
                             .frame(width: imageRect.width, height: imageRect.height)
@@ -756,23 +758,25 @@ struct EditWorkspaceView: View {
 
         let settings = metadataViewModel.editingMetadata.cameraRaw
 
-        // Metal compute fast path: LUT handles all tonal operations, no fallback needed.
-        if isDraggingEditSlider,
-           let pipeline = metalPipeline, pipeline.hasSourceTexture {
+        // Always update Metal compute params — Metal handles ALL display rendering.
+        // The LUT-based shader produces the authoritative output; CIFilter is only
+        // used for background CGImage generation (scope, export).
+        if let pipeline = metalPipeline, pipeline.hasSourceTexture {
             pipeline.updateParams(settings)
             metalCoordinator.requestRedraw()
+        }
+
+        // During drag: throttled scope update, skip expensive CGImage generation
+        if isDraggingEditSlider {
             updateScopeDuringDrag()
             return
         }
 
-        // Build lazy CIFilter chain — nearly free, no GPU work happens here.
-        // MetalPreviewView renders this directly to its drawable texture.
+        // Build CIFilter chain as fallback CIImage (used if Metal compute is unavailable,
+        // e.g. during "before" toggle, and as source for CGImage generation).
         previewCIImage = CameraRawApproximation.apply(to: sourceCIImage, settings: settings)
 
-        // During drag: Metal handles display, skip expensive CGImage generation
-        if isDraggingEditSlider { updateScopeDuringDrag(); return }
-
-        // On release / initial load: also produce CGImage for scope display and export
+        // On release / initial load: produce CGImage for scope display and export
         previewRenderTask?.cancel()
         let fullSource = sourceCIImage
         let fallback = sourceImage

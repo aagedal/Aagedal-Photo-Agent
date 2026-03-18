@@ -7,14 +7,16 @@ import SwiftUI
 /// Supports HDR via rgba16Float pixel format and extended dynamic range.
 ///
 /// Dual rendering mode:
-/// - **CIImage path** (default): Renders the CIFilter graph via CIContext.
-/// - **Metal compute path** (during slider drag): MetalEditPipeline dispatches
-///   a single compute kernel directly to the drawable, skipping CIFilter entirely.
+/// - **Metal compute path** (primary): MetalEditPipeline dispatches a single
+///   compute kernel with LUT-based tonal adjustments directly to the drawable.
+/// - **CIImage path** (fallback): Renders the CIFilter graph via CIContext
+///   when compute shader is unavailable (e.g. "before" toggle).
 struct MetalPreviewView: NSViewRepresentable {
     let ciImage: CIImage?
     let isHDR: Bool
     var metalPipeline: MetalEditPipeline?
     var useComputeShader: Bool = false
+    var isDragging: Bool = false
     /// Shared coordinator owned by the parent view for direct redraw requests.
     var coordinator: Coordinator?
 
@@ -49,8 +51,8 @@ struct MetalPreviewView: NSViewRepresentable {
             } else {
                 metalLayer.wantsExtendedDynamicRangeContent = isHDR
             }
-            // Drop to 1x resolution during compute shader drag for ~4x pixel reduction
-            let targetScale: CGFloat = useComputeShader
+            // Drop to 1x resolution during slider drag for ~4x pixel reduction
+            let targetScale: CGFloat = isDragging
                 ? 1.0
                 : (mtkView.window?.backingScaleFactor ?? 2.0)
             if metalLayer.contentsScale != targetScale {
