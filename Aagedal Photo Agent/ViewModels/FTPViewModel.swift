@@ -3,7 +3,12 @@ import Foundation
 @Observable
 final class FTPViewModel {
     var connections: [FTPConnection] = []
-    var selectedConnection: FTPConnection?
+    var selectedConnectionID: UUID?
+
+    var selectedConnection: FTPConnection? {
+        guard let id = selectedConnectionID else { return nil }
+        return connections.first { $0.id == id }
+    }
     var isUploading = false
     var isRendering = false
     var uploadProgress: [String: FTPUploadProgress] = [:]
@@ -18,6 +23,8 @@ final class FTPViewModel {
     var editingConnection = FTPConnection()
     var editingPassword = ""
 
+    var uploadHistory = FTPUploadHistory()
+
     private let ftpService = FTPService()
     private let connectionsKey = UserDefaultsKeys.ftpConnections
     private var uploadTask: Task<Void, Never>?
@@ -29,11 +36,9 @@ final class FTPViewModel {
         }
         connections = decoded
 
-        // Sync selectedConnection with the reloaded array so the Picker tag matches.
-        // Without this, a stale selectedConnection (e.g. from before an edit in Settings)
-        // won't match any Picker tag, causing undefined Picker behavior.
-        if let selected = selectedConnection {
-            selectedConnection = connections.first { $0.id == selected.id }
+        // Verify the selected connection still exists after reload
+        if let id = selectedConnectionID, !connections.contains(where: { $0.id == id }) {
+            selectedConnectionID = nil
         }
 
         restoreLastUsedConnection()
@@ -50,13 +55,13 @@ final class FTPViewModel {
     }
 
     func restoreLastUsedConnection() {
-        guard selectedConnection == nil,
+        guard selectedConnectionID == nil,
               let idString = UserDefaults.standard.string(forKey: UserDefaultsKeys.lastUsedFTPConnectionID),
               let id = UUID(uuidString: idString),
-              let match = connections.first(where: { $0.id == id }) else {
+              connections.contains(where: { $0.id == id }) else {
             return
         }
-        selectedConnection = match
+        selectedConnectionID = id
     }
 
     func startEditingConnection(_ connection: FTPConnection? = nil) {
@@ -74,9 +79,9 @@ final class FTPViewModel {
         } else {
             connections.append(editingConnection)
         }
-        // Keep selectedConnection in sync if the user edited the currently selected one
-        if selectedConnection?.id == editingConnection.id {
-            selectedConnection = editingConnection
+        // Keep selectedConnectionID in sync if the user edited the currently selected one
+        if selectedConnectionID == editingConnection.id {
+            selectedConnectionID = editingConnection.id
         }
         saveConnections()
         isShowingServerForm = false
@@ -95,11 +100,70 @@ final class FTPViewModel {
         saveConnections()
     }
 
+    // MARK: - Upload History
+
+    func loadHistory() {
+        guard let data = UserDefaults.standard.data(forKey: UserDefaultsKeys.ftpUploadHistory),
+              let decoded = try? JSONDecoder().decode(FTPUploadHistory.self, from: data) else {
+            return
+        }
+        uploadHistory = decoded
+    }
+
+    func saveHistory() {
+        if let data = try? JSONEncoder().encode(uploadHistory) {
+            UserDefaults.standard.set(data, forKey: UserDefaultsKeys.ftpUploadHistory)
+        }
+    }
+
+    func recordUploadStart(files: [URL], connection: FTPConnection, didRenderJPEG: Bool) -> UUID {
+        let fm = FileManager.default
+        var fileRecords: [FTPUploadFileRecord] = []
+        var totalBytes: Int64 = 0
+
+        for url in files {
+            let attrs = try? fm.attributesOfItem(atPath: url.path)
+            let size = (attrs?[.size] as? Int64) ?? 0
+            let modified = (attrs?[.modificationDate] as? Date) ?? Date()
+            totalBytes += size
+            fileRecords.append(FTPUploadFileRecord(
+                filePath: url.path,
+                fileName: url.lastPathComponent,
+                fileSize: size,
+                modifiedDate: modified
+            ))
+        }
+
+        let entry = FTPUploadHistoryEntry(
+            id: UUID(),
+            serverName: connection.name,
+            startedAt: Date(),
+            completedAt: nil,
+            fileCount: files.count,
+            totalBytes: totalBytes,
+            files: fileRecords,
+            didRenderJPEG: didRenderJPEG
+        )
+
+        uploadHistory.addEntry(entry)
+        saveHistory()
+        return entry.id
+    }
+
+    func recordUploadCompletion(id: UUID) {
+        uploadHistory.markCompleted(id: id)
+        saveHistory()
+    }
+
+    // MARK: - Upload
+
     func uploadFiles(_ urls: [URL], to connection: FTPConnection) {
         guard let password = KeychainService.load(forKey: connection.keychainKey) else {
             errorMessage = "No password found for \(connection.name). Edit the connection to set a password."
             return
         }
+
+        let historyID = recordUploadStart(files: urls, connection: connection, didRenderJPEG: false)
 
         isUploading = true
         isRendering = false
@@ -132,6 +196,7 @@ final class FTPViewModel {
                     self.errorMessage = "Failed to upload \(url.lastPathComponent): \(error.localizedDescription)"
                 }
             }
+            self.recordUploadCompletion(id: historyID)
             self.isUploading = false
         }
     }
@@ -141,6 +206,8 @@ final class FTPViewModel {
             errorMessage = "No password found for \(connection.name). Edit the connection to set a password."
             return
         }
+
+        let historyID = recordUploadStart(files: urls, connection: connection, didRenderJPEG: true)
 
         isRendering = true
         isUploading = false
@@ -225,6 +292,7 @@ final class FTPViewModel {
                 }
             }
 
+            self.recordUploadCompletion(id: historyID)
             self.isUploading = false
         }
     }
