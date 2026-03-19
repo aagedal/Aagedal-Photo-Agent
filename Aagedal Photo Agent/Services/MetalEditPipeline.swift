@@ -1,3 +1,4 @@
+import Accelerate
 import CoreImage
 import Metal
 import QuartzCore
@@ -46,6 +47,25 @@ final class MetalEditPipeline: @unchecked Sendable {
 
     nonisolated var hasSourceTexture: Bool { sourceTexture != nil }
 
+    /// Converts an array of `Float` values to IEEE 754 half-precision `UInt16` values
+    /// using Accelerate, avoiding `Float16` which is unavailable on macOS.
+    nonisolated private static func floatsToHalfs(_ floats: [Float]) -> [UInt16] {
+        var input = floats
+        var output = [UInt16](repeating: 0, count: floats.count)
+        input.withUnsafeMutableBufferPointer { srcPtr in
+            output.withUnsafeMutableBufferPointer { dstPtr in
+                var src = vImage_Buffer(data: srcPtr.baseAddress!, height: 1,
+                                        width: vImagePixelCount(floats.count),
+                                        rowBytes: floats.count * MemoryLayout<Float>.size)
+                var dst = vImage_Buffer(data: dstPtr.baseAddress!, height: 1,
+                                        width: vImagePixelCount(floats.count),
+                                        rowBytes: floats.count * MemoryLayout<UInt16>.size)
+                vImageConvert_PlanarFtoPlanar16F(&src, &dst, 0)
+            }
+        }
+        return output
+    }
+
     init?(device: MTLDevice, commandQueue: MTLCommandQueue) {
         self.device = device
         self.commandQueue = commandQueue
@@ -76,9 +96,9 @@ final class MetalEditPipeline: @unchecked Sendable {
         identityDesc.usage = .shaderRead
         identityDesc.storageMode = .shared
         guard let identityTex = device.makeTexture(descriptor: identityDesc) else { return nil }
-        var identityData: [Float16] = [Float16(ToneCurveGenerator.domainMin), Float16(ToneCurveGenerator.domainMax)]
+        var identityData = Self.floatsToHalfs([ToneCurveGenerator.domainMin, ToneCurveGenerator.domainMax])
         identityTex.replace(region: MTLRegionMake1D(0, 2), mipmapLevel: 0,
-                            withBytes: &identityData, bytesPerRow: 2 * MemoryLayout<Float16>.size)
+                            withBytes: &identityData, bytesPerRow: 2 * MemoryLayout<UInt16>.size)
         self.identityLutTexture = identityTex
     }
 
@@ -148,12 +168,12 @@ final class MetalEditPipeline: @unchecked Sendable {
 
         guard let texture = device.makeTexture(descriptor: desc) else { return }
 
-        var float16Data = data.map { Float16($0) }
+        var float16Data = Self.floatsToHalfs(data)
         texture.replace(
             region: MTLRegionMake1D(0, data.count),
             mipmapLevel: 0,
             withBytes: &float16Data,
-            bytesPerRow: data.count * MemoryLayout<Float16>.size
+            bytesPerRow: data.count * MemoryLayout<UInt16>.size
         )
 
         lutTexture = texture
