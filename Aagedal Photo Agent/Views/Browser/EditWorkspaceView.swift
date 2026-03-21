@@ -1,6 +1,11 @@
 import AppKit
 import CoreImage
+import os
 import SwiftUI
+
+nonisolated(unsafe) private let editLog = Logger(
+    subsystem: "com.aagedal.photo-agent", category: "EditWorkspace"
+)
 
 struct EditWorkspaceView: View {
     @Bindable var metadataViewModel: MetadataViewModel
@@ -761,6 +766,7 @@ struct EditWorkspaceView: View {
     }
 
     private func renderPreview() {
+        let renderStart = ContinuousClock.now
         guard let sourceCIImage else {
             previewCIImage = nil
             previewImage = sourceImage
@@ -771,24 +777,27 @@ struct EditWorkspaceView: View {
 
         let settings = metadataViewModel.editingMetadata.cameraRaw
 
-        // Always update Metal compute params — Metal handles ALL display rendering.
-        // The LUT-based shader produces the authoritative output; CIFilter is only
-        // used for background CGImage generation (scope, export).
+        // During drag: Metal update already handled by EditSlider.onDragValueChanged
+        // (direct callback that bypasses SwiftUI body re-evaluation delay).
+        // Only handle scope updates here.
+        if isDraggingEditSlider {
+            let elapsed = ContinuousClock.now - renderStart
+            editLog.debug("renderPreview: drag path (\(elapsed))")
+            updateScopeDuringDrag()
+            return
+        }
+
+        // Full render: update Metal compute params + request redraw.
         if let pipeline = metalPipeline, pipeline.hasSourceTexture {
             pipeline.updateParams(settings)
             metalCoordinator.requestRedraw()
         }
-
-        // During drag or crop interaction: skip expensive CGImage generation
-        // (crop only affects view layout, not pixel processing)
-        if isDraggingEditSlider {
-            updateScopeDuringDrag()
-            return
-        }
         if lockedCropImageRect != nil {
+            editLog.debug("renderPreview: crop interaction path (full-res Metal, skip CGImage)")
             return
         }
 
+        editLog.debug("renderPreview: full path (CGImage generation)")
         // Build CIFilter chain as fallback CIImage (used if Metal compute is unavailable,
         // e.g. during "before" toggle, and as source for CGImage generation).
         previewCIImage = CameraRawApproximation.apply(to: sourceCIImage, settings: settings)
@@ -1185,6 +1194,12 @@ struct EditWorkspaceView: View {
                         commitEditAdjustments()
                     }
                 },
+                onDragValueChanged: {
+                    if let pipeline = metalPipeline, pipeline.hasSourceTexture {
+                        pipeline.updateParams(metadataViewModel.editingMetadata.cameraRaw)
+                        metalCoordinator.requestRedraw()
+                    }
+                },
                 onReset: {
                     whiteBalanceTemperatureBinding.wrappedValue = 6500
                     commitEditAdjustments()
@@ -1394,6 +1409,13 @@ struct EditWorkspaceView: View {
                     isDraggingEditSlider = editing
                     if !editing {
                         commitEditAdjustments()
+                    }
+                },
+                onDragValueChanged: {
+                    // Direct Metal render — bypasses SwiftUI body re-evaluation delay
+                    if let pipeline = metalPipeline, pipeline.hasSourceTexture {
+                        pipeline.updateParams(metadataViewModel.editingMetadata.cameraRaw)
+                        metalCoordinator.requestRedraw()
                     }
                 },
                 onReset: onReset.map { resetFn in
