@@ -118,7 +118,9 @@ nonisolated struct ScopeRenderService: Sendable {
         fillBackground(ctx, width: outW, height: outH)
         drawWaveformGuides(ctx, width: outW, height: outH, dataXOffset: Self.labelMargin, scale: scale, hasHDR: hasHDR)
 
-        let normFactor = 1.0 / (Float(maxCount) * 0.25)
+        // Logarithmic intensity so sparse bins are still visible
+        let logMax = log2f(1 + Float(maxCount))
+        let gain: Float = 2.5
         guard let outputData = ctx.data?.bindMemory(to: UInt8.self, capacity: outW * outH * 4) else {
             return ctx.makeImage()
         }
@@ -131,23 +133,31 @@ nonisolated struct ScopeRenderService: Sendable {
                 let count = counts[idx]
                 guard count > 0 else { continue }
 
-                let intensity = min(Float(count) * normFactor, 1.0)
+                let intensity = min(log2f(1 + Float(count)) / logMax * gain, 1.0)
                 let invCount = 1.0 / Float(count)
-                var avgR = sumR[idx] * invCount
-                var avgG = sumG[idx] * invCount
-                var avgB = sumB[idx] * invCount
+                let avgR = sumR[idx] * invCount
+                let avgG = sumG[idx] * invCount
+                let avgB = sumB[idx] * invCount
 
+                // Measure how chromatic this bin is (0 = gray, 1 = saturated)
                 let gray = (avgR + avgG + avgB) / 3.0
-                let satBoost: Float = 1.8
-                avgR = gray + (avgR - gray) * satBoost
-                avgG = gray + (avgG - gray) * satBoost
-                avgB = gray + (avgB - gray) * satBoost
+                let maxDev = max(abs(avgR - gray), abs(avgG - gray), abs(avgB - gray))
+                let saturation = min(maxDev / max(gray, 0.01), 1.0)
 
-                let maxC = max(avgR, avgG, avgB, 0.3)
-                let invMax = 1.0 / maxC
-                avgR = max(avgR * invMax, 0.08)
-                avgG = max(avgG * invMax, 0.08)
-                avgB = max(avgB * invMax, 0.08)
+                // Boost saturation and normalize color to full brightness
+                let satBoost: Float = 2.5
+                var cR = max(gray + (avgR - gray) * satBoost, 0)
+                var cG = max(gray + (avgG - gray) * satBoost, 0)
+                var cB = max(gray + (avgB - gray) * satBoost, 0)
+                let maxC = max(cR, cG, cB, 0.01)
+                cR /= maxC; cG /= maxC; cB /= maxC
+
+                // Blend between white and the boosted color based on saturation.
+                // Low saturation → white trace; high saturation → colored trace.
+                let colorMix = min(saturation * 3.0, 1.0)
+                var finalR = cR * colorMix + (1.0 - colorMix)
+                var finalG = cG * colorMix + (1.0 - colorMix)
+                var finalB = cB * colorMix + (1.0 - colorMix)
 
                 // In nit mode, tint HDR region orange
                 if scale == .nits {
@@ -155,9 +165,9 @@ nonisolated struct ScopeRenderService: Sendable {
                     let sdrLevel = Int(Float(levels - 1) * sdrFraction)
                     if level > sdrLevel {
                         let hdrBlend: Float = 0.4
-                        avgR = avgR * (1 - hdrBlend) + 1.0 * hdrBlend
-                        avgG = avgG * (1 - hdrBlend) + 0.7 * hdrBlend
-                        avgB = avgB * (1 - hdrBlend) + 0.2 * hdrBlend
+                        finalR = finalR * (1 - hdrBlend) + 1.0 * hdrBlend
+                        finalG = finalG * (1 - hdrBlend) + 0.7 * hdrBlend
+                        finalB = finalB * (1 - hdrBlend) + 0.2 * hdrBlend
                     }
                 }
 
@@ -172,9 +182,9 @@ nonisolated struct ScopeRenderService: Sendable {
                 let existG = Float(outputData[offset + 1]) / 255.0
                 let existB = Float(outputData[offset + 2]) / 255.0
 
-                outputData[offset]     = UInt8(min((existR + avgR * intensity) * 255, 255))
-                outputData[offset + 1] = UInt8(min((existG + avgG * intensity) * 255, 255))
-                outputData[offset + 2] = UInt8(min((existB + avgB * intensity) * 255, 255))
+                outputData[offset]     = UInt8(min((existR + finalR * intensity) * 255, 255))
+                outputData[offset + 1] = UInt8(min((existG + finalG * intensity) * 255, 255))
+                outputData[offset + 2] = UInt8(min((existB + finalB * intensity) * 255, 255))
                 outputData[offset + 3] = 255
             }
         }
