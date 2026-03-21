@@ -1,8 +1,13 @@
 import Accelerate
 import CoreImage
 import Metal
+import os
 import QuartzCore
 import simd
+
+nonisolated(unsafe) private let metalPipelineLog = Logger(
+    subsystem: "com.aagedal.photo-agent", category: "MetalEditPipeline"
+)
 
 /// Uniform buffer layout matching the Metal `EditParams` struct.
 /// Contains all edit operations: tonal (via LUT), vibrance, saturation, white balance.
@@ -44,6 +49,10 @@ final class MetalEditPipeline: @unchecked Sendable {
     nonisolated(unsafe) private static let colorSpace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
 
     private let ciContext: CIContext
+
+    // Cached WB matrix — only recompute when temperature/tint actually change
+    nonisolated(unsafe) private var cachedWBKey: (Double, Double)?
+    nonisolated(unsafe) private var cachedWBMatrix: simd_float3x3?
 
     nonisolated var hasSourceTexture: Bool { sourceTexture != nil }
 
@@ -184,6 +193,7 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// Converts CameraRawSettings into the GPU EditParams buffer.
     /// Generates and uploads a tone LUT when any tonal adjustment is active.
     nonisolated func updateParams(_ settings: CameraRawSettings?) {
+        let start = ContinuousClock.now
         guard let buffer = paramsBuffer else { return }
         var params = EditParams()
         var flags: UInt32 = 0
@@ -215,7 +225,7 @@ final class MetalEditPipeline: @unchecked Sendable {
             flags |= (1 << 2)
         }
 
-        // 4. White balance — extract transform by rendering basis vectors through CITemperatureAndTint
+        // 4. White balance — cached, only recomputes when temperature/tint change
         if let wbMatrix = computeWhiteBalanceMatrix(settings: settings) {
             params.whiteBalanceMatrix = wbMatrix
             flags |= (1 << 3)
@@ -224,16 +234,29 @@ final class MetalEditPipeline: @unchecked Sendable {
         params.activeFlags = flags
         let ptr = buffer.contents().bindMemory(to: EditParams.self, capacity: 1)
         ptr.pointee = params
+
+        let elapsed = ContinuousClock.now - start
+        if elapsed > .milliseconds(1) {
+            metalPipelineLog.debug("updateParams: \(elapsed) (flags: \(flags))")
+        }
     }
 
     // MARK: - Render
 
     /// Single compute dispatch to drawable. Returns true on success.
+    nonisolated(unsafe) private var lastLoggedWidth: Int = 0
+
     nonisolated func render(to drawable: CAMetalDrawable, drawableSize: CGSize) -> Bool {
         guard let source = sourceTexture,
               let buffer = paramsBuffer,
               let commandBuffer = commandQueue.makeCommandBuffer(),
               let encoder = commandBuffer.makeComputeCommandEncoder() else { return false }
+
+        let w = Int(drawableSize.width)
+        if w != lastLoggedWidth {
+            metalPipelineLog.debug("Metal render: \(w)×\(Int(drawableSize.height)) (source: \(source.width)×\(source.height))")
+            lastLoggedWidth = w
+        }
 
         // Stretch-to-fill: parent SwiftUI .frame() already handles aspect ratio.
         let srcW = Float(source.width)
@@ -272,8 +295,13 @@ final class MetalEditPipeline: @unchecked Sendable {
     // MARK: - White Balance
 
     /// Extracts the effective color transform by rendering basis vectors through CITemperatureAndTint.
+    /// Caches the result — only recomputes when temperature/tint values actually change.
     nonisolated private func computeWhiteBalanceMatrix(settings: CameraRawSettings) -> simd_float3x3? {
-        if settings.whiteBalance == "As Shot" { return nil }
+        if settings.whiteBalance == "As Shot" {
+            cachedWBKey = nil
+            cachedWBMatrix = nil
+            return nil
+        }
 
         let temperature: Double?
         if let absolute = settings.temperature {
@@ -293,11 +321,23 @@ final class MetalEditPipeline: @unchecked Sendable {
             tint = nil
         }
 
-        guard temperature != nil || tint != nil else { return nil }
+        guard temperature != nil || tint != nil else {
+            cachedWBKey = nil
+            cachedWBMatrix = nil
+            return nil
+        }
         let finalTemp = min(max(temperature ?? 6500, 2000), 50000)
         let finalTint = min(max(tint ?? 0, -150), 150)
 
-        return extractWBMatrix(temperature: finalTemp, tint: finalTint)
+        // Return cached matrix if temperature/tint haven't changed
+        if let key = cachedWBKey, key.0 == finalTemp, key.1 == finalTint {
+            return cachedWBMatrix
+        }
+
+        let matrix = extractWBMatrix(temperature: finalTemp, tint: finalTint)
+        cachedWBKey = (finalTemp, finalTint)
+        cachedWBMatrix = matrix
+        return matrix
     }
 
     nonisolated private func extractWBMatrix(temperature: Double, tint: Double) -> simd_float3x3 {

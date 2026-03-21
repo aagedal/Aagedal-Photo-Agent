@@ -1,6 +1,11 @@
 import CoreImage
 import MetalKit
+import os
 import SwiftUI
+
+nonisolated(unsafe) private let metalPreviewLog = Logger(
+    subsystem: "com.aagedal.photo-agent", category: "MetalPreview"
+)
 
 /// Renders a CIImage directly to a Metal drawable, bypassing the GPU→CPU→GPU
 /// round-trip of CIContext.createCGImage + NSImage + SwiftUI Image.
@@ -51,12 +56,19 @@ struct MetalPreviewView: NSViewRepresentable {
             } else {
                 metalLayer.wantsExtendedDynamicRangeContent = isHDR
             }
-            // Drop to 1x resolution during slider drag for ~4x pixel reduction
-            let targetScale: CGFloat = isDragging
-                ? 1.0
-                : (mtkView.window?.backingScaleFactor ?? 2.0)
-            if metalLayer.contentsScale != targetScale {
-                metalLayer.contentsScale = targetScale
+            // Drop to 1x resolution during slider drag for ~4x pixel reduction.
+            // Must set drawableSize directly — MTKView ignores CAMetalLayer.contentsScale.
+            let backingScale = mtkView.window?.backingScaleFactor ?? 2.0
+            let targetScale: CGFloat = isDragging ? 1.0 : backingScale
+            metalLayer.contentsScale = targetScale
+            let bounds = mtkView.bounds.size
+            let targetSize = CGSize(
+                width: bounds.width * targetScale,
+                height: bounds.height * targetScale
+            )
+            if mtkView.drawableSize != targetSize {
+                metalPreviewLog.debug("drawableSize: \(Int(mtkView.drawableSize.width))×\(Int(mtkView.drawableSize.height)) → \(Int(targetSize.width))×\(Int(targetSize.height)) (isDragging: \(self.isDragging))")
+                mtkView.drawableSize = targetSize
             }
         }
         // Ensure the window's content view opts into EDR — CAMetalLayer EDR

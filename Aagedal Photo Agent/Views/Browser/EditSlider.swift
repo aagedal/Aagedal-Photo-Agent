@@ -10,6 +10,9 @@ struct EditSlider: View {
     let step: Double
     var gradient: LinearGradient?
     var onEditingChanged: ((Bool) -> Void)?
+    /// Called on every value change during drag — use for immediate rendering
+    /// that bypasses SwiftUI's view update cycle.
+    var onDragValueChanged: (() -> Void)?
     var onReset: (() -> Void)?
 
     @State private var isDragging = false
@@ -111,6 +114,7 @@ struct EditSlider: View {
                             let span = range.upperBound - range.lowerBound
                             value = snapped(range.lowerBound + Double(frac) * span)
                         }
+                        onDragValueChanged?()
                     }
                     .onEnded { drag in
                         if isResetting {
