@@ -35,10 +35,18 @@ enum WaveformScale: String, CaseIterable, Sendable {
 /// Thread-safe: all methods operate on local state and CoreGraphics contexts.
 nonisolated struct ScopeRenderService: Sendable {
 
-    /// Left margin reserved for scale labels (scaled for 720px render)
-    private static let labelMargin = 68
-    /// Top/bottom margin so labels at 0% and 100% aren't clipped
-    private static let verticalMargin = 16
+    /// Reference size the fixed layout constants were designed for.
+    private static let refSize: CGFloat = 720
+
+    /// Compute layout metrics scaled proportionally to the output width.
+    private static func metrics(for width: Int) -> (labelMargin: Int, verticalMargin: Int, fontSize: CGFloat) {
+        let scale = CGFloat(width) / refSize
+        return (
+            labelMargin: max(Int(68 * scale), 24),
+            verticalMargin: max(Int(16 * scale), 4),
+            fontSize: max(22 * scale, 10)
+        )
+    }
 
     // MARK: - Colorized Waveform
 
@@ -47,7 +55,8 @@ nonisolated struct ScopeRenderService: Sendable {
         let outH = Int(outputSize.height)
         guard outW > 0, outH > 0 else { return nil }
 
-        let dataW = outW - Self.labelMargin
+        let m = Self.metrics(for: outW)
+        let dataW = outW - m.labelMargin
         guard dataW > 0 else { return nil }
 
         let srcAspect = CGFloat(cgImage.height) / CGFloat(cgImage.width)
@@ -116,7 +125,7 @@ nonisolated struct ScopeRenderService: Sendable {
 
         guard let ctx = createContext(width: outW, height: outH) else { return nil }
         fillBackground(ctx, width: outW, height: outH)
-        drawWaveformGuides(ctx, width: outW, height: outH, dataXOffset: Self.labelMargin, scale: scale, hasHDR: hasHDR)
+        drawWaveformGuides(ctx, width: outW, height: outH, dataXOffset: m.labelMargin, verticalMargin: m.verticalMargin, fontSize: m.fontSize, scale: scale, hasHDR: hasHDR)
 
         // Logarithmic intensity so sparse bins are still visible
         let logMax = log2f(1 + Float(maxCount))
@@ -127,7 +136,7 @@ nonisolated struct ScopeRenderService: Sendable {
         let outStride = outW * 4
 
         for x in 0..<dataW {
-            let outX = Self.labelMargin + x
+            let outX = m.labelMargin + x
             for level in 0..<levels {
                 let idx = x * levels + level
                 let count = counts[idx]
@@ -172,7 +181,7 @@ nonisolated struct ScopeRenderService: Sendable {
                 }
 
                 // Map level to Y within the vertical margin inset
-                let vm = Self.verticalMargin
+                let vm = m.verticalMargin
                 let dataHeight = outH - vm * 2
                 let mappedY = vm + (level * dataHeight) / (levels - 1)
                 let yOut = outH - 1 - mappedY
@@ -199,9 +208,10 @@ nonisolated struct ScopeRenderService: Sendable {
         let outH = Int(outputSize.height)
         guard outW > 0, outH > 0 else { return nil }
 
+        let m = Self.metrics(for: outW)
         let channelCount = 4
         let gap = 2
-        let dataW = outW - Self.labelMargin
+        let dataW = outW - m.labelMargin
         let totalGaps = gap * (channelCount - 1)
         let channelW = (dataW - totalGaps) / channelCount
         guard channelW > 1 else { return nil }
@@ -276,7 +286,7 @@ nonisolated struct ScopeRenderService: Sendable {
 
         guard let ctx = createContext(width: outW, height: outH) else { return nil }
         fillBackground(ctx, width: outW, height: outH)
-        drawWaveformGuides(ctx, width: outW, height: outH, dataXOffset: Self.labelMargin, scale: scale, hasHDR: hasHDR)
+        drawWaveformGuides(ctx, width: outW, height: outH, dataXOffset: m.labelMargin, verticalMargin: m.verticalMargin, fontSize: m.fontSize, scale: scale, hasHDR: hasHDR)
 
         guard let outputData = ctx.data?.bindMemory(to: UInt8.self, capacity: outW * outH * 4) else {
             return ctx.makeImage()
@@ -293,11 +303,11 @@ nonisolated struct ScopeRenderService: Sendable {
         let normFactor = 1.0 / (Float(maxCount) * 0.25)
 
         for ch in 0..<channelCount {
-            let xOffset = Self.labelMargin + ch * (channelW + gap)
+            let xOffset = m.labelMargin + ch * (channelW + gap)
             let bins = allBins[ch]
             let (colR, colG, colB) = channelColors[ch]
 
-            let vm = Self.verticalMargin
+            let vm = m.verticalMargin
             let dataHeight = outH - vm * 2
 
             for x in 0..<channelW {
@@ -327,7 +337,7 @@ nonisolated struct ScopeRenderService: Sendable {
         ctx.setStrokeColor(red: 0.3, green: 0.3, blue: 0.3, alpha: 0.3)
         ctx.setLineWidth(1.0)
         for ch in 1..<channelCount {
-            let sepX = CGFloat(Self.labelMargin + ch * (channelW + gap) - gap / 2)
+            let sepX = CGFloat(m.labelMargin + ch * (channelW + gap) - gap / 2)
             ctx.move(to: CGPoint(x: sepX, y: 0))
             ctx.addLine(to: CGPoint(x: sepX, y: CGFloat(outH)))
         }
@@ -475,10 +485,10 @@ nonisolated struct ScopeRenderService: Sendable {
 
     // MARK: - Guide Lines & Labels
 
-    private func drawWaveformGuides(_ ctx: CGContext, width: Int, height: Int, dataXOffset: Int, scale: WaveformScale, hasHDR: Bool) {
-        let font = CTFontCreateWithName("Helvetica-Bold" as CFString, 22, nil)
+    private func drawWaveformGuides(_ ctx: CGContext, width: Int, height: Int, dataXOffset: Int, verticalMargin: Int, fontSize: CGFloat, scale: WaveformScale, hasHDR: Bool) {
+        let font = CTFontCreateWithName("Helvetica-Bold" as CFString, fontSize, nil)
         let labelColor = CGColor(srgbRed: 0.55, green: 0.55, blue: 0.55, alpha: 1.0)
-        let vm = CGFloat(Self.verticalMargin)
+        let vm = CGFloat(verticalMargin)
         let dataHeight = CGFloat(height) - vm * 2  // usable range between margins
 
         switch scale {
