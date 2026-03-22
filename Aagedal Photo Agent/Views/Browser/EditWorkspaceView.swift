@@ -390,7 +390,7 @@ struct EditWorkspaceView: View {
 
     private var controlsPane: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     Button {
                         onExit()
@@ -401,12 +401,6 @@ struct EditWorkspaceView: View {
                     }
                     .buttonStyle(.plain)
                     .help("Exit Edit View (Esc)")
-                    Spacer()
-                }
-
-                HStack {
-                    Text("Develop")
-                        .font(.headline)
                     Spacer()
                     if canEditSingleImage {
                         Button {
@@ -490,7 +484,7 @@ struct EditWorkspaceView: View {
                     Text("Exposure")
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(.secondary)
-                        .padding(.top, 4)
+                        .padding(.top, 2)
                     Divider()
 
                     sliderRow(
@@ -536,13 +530,13 @@ struct EditWorkspaceView: View {
                             }
                         }
                     )
-                    .padding(.top, 4)
+                    .padding(.top, 2)
 
                     // ── Crop ──
                     Text("Crop")
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(.secondary)
-                        .padding(.top, 4)
+                        .padding(.top, 2)
                     Divider()
 
                     if metadataViewModel.hasEmbeddedCropNotLoaded {
@@ -561,20 +555,31 @@ struct EditWorkspaceView: View {
 
                     if showCropControls {
                         HStack {
-                            Button("Reset Crop") {
-                                resetCrop()
+                            Picker(selection: $cropAspectRatio) {
+                                ForEach(CropAspectRatio.allCases) { ratio in
+                                    Text(ratio.label).tag(ratio)
+                                }
+                            } label: {
+                                Label("Aspect Ratio", systemImage: "crop")
+                                    .labelStyle(.iconOnly)
                             }
-                            .disabled(!isCropEnabled)
-                        }
+                            .pickerStyle(.menu)
+                            .onChange(of: cropAspectRatio) { _, newRatio in
+                                applyAspectRatioToCrop(newRatio)
+                            }
 
-                        Picker("Aspect Ratio", selection: $cropAspectRatio) {
-                            ForEach(CropAspectRatio.allCases) { ratio in
-                                Text(ratio.label).tag(ratio)
+                            Spacer()
+
+                            Button {
+                                resetCrop()
+                            } label: {
+                                Image(systemName: "arrow.counterclockwise")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.secondary)
                             }
-                        }
-                        .pickerStyle(.menu)
-                        .onChange(of: cropAspectRatio) { _, newRatio in
-                            applyAspectRatioToCrop(newRatio)
+                            .buttonStyle(.plain)
+                            .disabled(!isCropEnabled)
+                            .help("Reset Crop")
                         }
 
                         sliderRow(
@@ -727,7 +732,9 @@ struct EditWorkspaceView: View {
         isLoadingPreview = false
         metalPipeline?.clearSourceTexture()
         resetCropZoom()
-        showCropControls = isCropEnabled
+        if !isCropEnabled {
+            showCropControls = false
+        }
 
         guard let selectedImageURL else { return }
         let previewMaxPixelSize = previewWorkingMaxPixelSize
