@@ -5,7 +5,9 @@ import SwiftUI
 /// Renders a Catmull-Rom spline through control points.
 struct CurveEditorView: View {
     @Binding var toneCurve: ToneCurve?
-    var onDragValueChanged: (() -> Void)?
+    /// Called during drag with the modified ToneCurve for direct Metal update.
+    /// The binding is NOT updated during drag to avoid SwiftUI observation overhead.
+    var onDragCurveChanged: ((ToneCurve?) -> Void)?
     var onEditingChanged: ((Bool) -> Void)?
 
     @State private var selectedChannel: CurveChannel = .master
@@ -14,6 +16,9 @@ struct CurveEditorView: View {
     @State private var didDragAfterMouseDown = false
     @State private var lastClickTime: Date = .distantPast
     @State private var lastClickIndex: Int?
+    /// Local copy of tone curve used during drag to avoid writing to binding.
+    @State private var dragToneCurve: ToneCurve?
+    @State private var isDraggingCurve = false
 
     enum CurveChannel: String, CaseIterable {
         case master, red, green, blue
@@ -42,8 +47,13 @@ struct CurveEditorView: View {
         ToneCurvePoint(x: 1, y: 1),
     ]
 
+    /// Active tone curve: local copy during drag, binding otherwise.
+    private var activeToneCurve: ToneCurve? {
+        isDraggingCurve ? dragToneCurve : toneCurve
+    }
+
     private func pointsForChannel(_ channel: CurveChannel) -> [ToneCurvePoint] {
-        let curve = toneCurve
+        let curve = activeToneCurve
         switch channel {
         case .master: return curve?.master ?? defaultPoints
         case .red: return curve?.red ?? defaultPoints
@@ -53,6 +63,34 @@ struct CurveEditorView: View {
     }
 
     private func setPointsForChannel(_ channel: CurveChannel, _ points: [ToneCurvePoint]) {
+        if isDraggingCurve {
+            setPointsOnLocalCopy(channel, points)
+        } else {
+            setPointsOnBinding(channel, points)
+        }
+    }
+
+    private func setPointsOnLocalCopy(_ channel: CurveChannel, _ points: [ToneCurvePoint]) {
+        if dragToneCurve == nil {
+            dragToneCurve = ToneCurve()
+        }
+        let sorted = points.sorted { $0.x < $1.x }
+        switch channel {
+        case .master: dragToneCurve?.master = sorted
+        case .red: dragToneCurve?.red = sorted.count <= 2 ? nil : sorted
+        case .green: dragToneCurve?.green = sorted.count <= 2 ? nil : sorted
+        case .blue: dragToneCurve?.blue = sorted.count <= 2 ? nil : sorted
+        }
+        if let curve = dragToneCurve,
+           (curve.master ?? defaultPoints).count <= 2,
+           curve.red == nil, curve.green == nil, curve.blue == nil {
+            dragToneCurve = nil
+        }
+        // Notify for direct Metal update
+        onDragCurveChanged?(dragToneCurve)
+    }
+
+    private func setPointsOnBinding(_ channel: CurveChannel, _ points: [ToneCurvePoint]) {
         if toneCurve == nil {
             toneCurve = ToneCurve()
         }
@@ -63,7 +101,6 @@ struct CurveEditorView: View {
         case .green: toneCurve?.green = sorted.count <= 2 ? nil : sorted
         case .blue: toneCurve?.blue = sorted.count <= 2 ? nil : sorted
         }
-        // Clean up: if all channels are default, set toneCurve to nil
         if let curve = toneCurve,
            (curve.master ?? defaultPoints).count <= 2,
            curve.red == nil, curve.green == nil, curve.blue == nil {
@@ -91,7 +128,7 @@ struct CurveEditorView: View {
                     Button {
                         toneCurve = nil
                         selectedPointIndex = nil
-                        onDragValueChanged?()
+                        onDragCurveChanged?(nil)
                     } label: {
                         Image(systemName: "arrow.counterclockwise")
                             .font(.system(size: 9))
@@ -183,6 +220,11 @@ struct CurveEditorView: View {
                 .gesture(
                     DragGesture(minimumDistance: 0)
                         .onChanged { drag in
+                            if !isDraggingCurve {
+                                // Start drag: snapshot binding to local copy
+                                dragToneCurve = toneCurve
+                                isDraggingCurve = true
+                            }
                             handleDrag(drag, in: size)
                         }
                         .onEnded { _ in
@@ -192,7 +234,14 @@ struct CurveEditorView: View {
                                     selectedPointIndex = dragIndex
                                 }
                                 dragIndex = nil
+                                // Commit local copy to binding (one SwiftUI update)
+                                toneCurve = dragToneCurve
+                                isDraggingCurve = false
                                 onEditingChanged?(false)
+                            } else {
+                                // Click-to-add: commit immediately
+                                toneCurve = dragToneCurve
+                                isDraggingCurve = false
                             }
                             didDragAfterMouseDown = false
                         }
@@ -292,7 +341,6 @@ struct CurveEditorView: View {
                         lastClickIndex = nil
                         lastClickTime = .distantPast
                         setPointsForChannel(selectedChannel, newPoints)
-                        onDragValueChanged?()
                         return
                     }
                 }
@@ -321,7 +369,6 @@ struct CurveEditorView: View {
                         break
                     }
                 }
-                onDragValueChanged?()
                 return
             }
         }
@@ -354,7 +401,6 @@ struct CurveEditorView: View {
         }
 
         setPointsForChannel(selectedChannel, currentPoints)
-        onDragValueChanged?()
     }
 
     private func deleteSelectedPoint() {
@@ -365,6 +411,5 @@ struct CurveEditorView: View {
         points.remove(at: index)
         selectedPointIndex = nil
         setPointsForChannel(selectedChannel, points)
-        onDragValueChanged?()
     }
 }

@@ -451,8 +451,12 @@ struct EditWorkspaceView: View {
                             value: whiteBalanceTemperatureBinding,
                             range: -100...100,
                             step: 1,
-                            gradient: LinearGradient(colors: [.blue, .yellow], startPoint: .leading, endPoint: .trailing),
+                            gradientColors: [.blue, .yellow],
                             formatter: signedIntString,
+                            settingsMutator: { settings, value in
+                                settings.whiteBalance = "Custom"
+                                settings.incrementalTemperature = Int(value.rounded())
+                            },
                             onReset: {
                                 whiteBalanceTemperatureBinding.wrappedValue = 0
                             }
@@ -466,17 +470,21 @@ struct EditWorkspaceView: View {
                         value: whiteBalanceTintBinding,
                         range: -150...150,
                         step: 1,
-                        gradient: LinearGradient(colors: [.green, .pink], startPoint: .leading, endPoint: .trailing),
+                        gradientColors: [.green, .pink],
                         formatter: signedIntString,
+                        settingsMutator: { settings, value in
+                            settings.whiteBalance = "Custom"
+                            settings.tint = Int(value.rounded())
+                        },
                         onReset: {
                             whiteBalanceTintBinding.wrappedValue = 0
                         }
                     )
 
-                    sliderRow("Saturation", value: toneSliderBinding(\.saturation), range: -100...100, step: 1, gradient: LinearGradient(colors: [.gray, .red], startPoint: .leading, endPoint: .trailing), formatter: signedIntString, onReset: {
+                    sliderRow("Saturation", value: toneSliderBinding(\.saturation), range: -100...100, step: 1, gradientColors: [.gray, .red], formatter: signedIntString, settingsMutator: { $0.saturation = Int($1.rounded()) }, onReset: {
                         toneSliderBinding(\.saturation).wrappedValue = 0
                     })
-                    sliderRow("Vibrance", value: toneSliderBinding(\.vibrance), range: -100...100, step: 1, gradient: LinearGradient(colors: [.gray, .orange], startPoint: .leading, endPoint: .trailing), formatter: signedIntString, onReset: {
+                    sliderRow("Vibrance", value: toneSliderBinding(\.vibrance), range: -100...100, step: 1, gradientColors: [.gray, .orange], formatter: signedIntString, settingsMutator: { $0.vibrance = Int($1.rounded()) }, onReset: {
                         toneSliderBinding(\.vibrance).wrappedValue = 0
                     })
 
@@ -493,33 +501,36 @@ struct EditWorkspaceView: View {
                         range: -5...5,
                         step: 0.01,
                         formatter: { signedDoubleString($0, precision: 2) },
+                        settingsMutator: { $0.exposure2012 = ($1 * 100).rounded() / 100 },
                         onReset: {
                             exposureBinding.wrappedValue = 0
                         }
                     )
 
-                    sliderRow("Contrast", value: toneSliderBinding(\.contrast2012), range: -100...100, step: 1, formatter: signedIntString, onReset: {
+                    sliderRow("Contrast", value: toneSliderBinding(\.contrast2012), range: -100...100, step: 1, formatter: signedIntString, settingsMutator: { $0.contrast2012 = Int($1.rounded()) }, onReset: {
                         toneSliderBinding(\.contrast2012).wrappedValue = 0
                     })
-                    sliderRow("Highlights", value: toneSliderBinding(\.highlights2012), range: -100...100, step: 1, formatter: signedIntString, onReset: {
+                    sliderRow("Highlights", value: toneSliderBinding(\.highlights2012), range: -100...100, step: 1, formatter: signedIntString, settingsMutator: { $0.highlights2012 = Int($1.rounded()) }, onReset: {
                         toneSliderBinding(\.highlights2012).wrappedValue = 0
                     })
-                    sliderRow("Shadows", value: toneSliderBinding(\.shadows2012), range: -100...100, step: 1, formatter: signedIntString, onReset: {
+                    sliderRow("Shadows", value: toneSliderBinding(\.shadows2012), range: -100...100, step: 1, formatter: signedIntString, settingsMutator: { $0.shadows2012 = Int($1.rounded()) }, onReset: {
                         toneSliderBinding(\.shadows2012).wrappedValue = 0
                     })
-                    sliderRow("Whites", value: toneSliderBinding(\.whites2012), range: -100...100, step: 1, formatter: signedIntString, onReset: {
+                    sliderRow("Whites", value: toneSliderBinding(\.whites2012), range: -100...100, step: 1, formatter: signedIntString, settingsMutator: { $0.whites2012 = Int($1.rounded()) }, onReset: {
                         toneSliderBinding(\.whites2012).wrappedValue = 0
                     })
-                    sliderRow("Blacks", value: toneSliderBinding(\.blacks2012), range: -100...100, step: 1, formatter: signedIntString, onReset: {
+                    sliderRow("Blacks", value: toneSliderBinding(\.blacks2012), range: -100...100, step: 1, formatter: signedIntString, settingsMutator: { $0.blacks2012 = Int($1.rounded()) }, onReset: {
                         toneSliderBinding(\.blacks2012).wrappedValue = 0
                     })
 
                     // ── Tone Curve ──
                     CurveEditorView(
                         toneCurve: toneCurveBinding,
-                        onDragValueChanged: {
+                        onDragCurveChanged: { dragCurve in
                             if let pipeline = metalPipeline, pipeline.hasSourceTexture {
-                                pipeline.updateParams(metadataViewModel.editingMetadata.cameraRaw)
+                                var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
+                                settings.toneCurve = dragCurve
+                                pipeline.updateParams(settings)
                                 metalCoordinator.requestRedraw()
                             }
                         },
@@ -590,6 +601,30 @@ struct EditWorkspaceView: View {
                             range: -45...45,
                             step: 0.01,
                             formatter: { signedDoubleString($0, precision: 2) },
+                            settingsMutator: { [self] settings, value in
+                                let clampedAngle = min(max(value, -45), 45)
+                                let ar = sourceAspectRatio
+                                let orientation = selectedImageOrientation
+                                let sensorCrop = settings.crop ?? CameraRawCrop(top: 0, left: 0, bottom: 1, right: 1, angle: 0, hasCrop: true)
+                                let displayCrop = sensorCrop.transformedForDisplay(orientation: orientation)
+                                let oldAngle = displayCrop.angle ?? 0
+                                let region = NormalizedCropRegion(
+                                    top: displayCrop.top ?? 0,
+                                    left: displayCrop.left ?? 0,
+                                    bottom: displayCrop.bottom ?? 1,
+                                    right: displayCrop.right ?? 1
+                                )
+                                .withAngle(from: oldAngle, to: clampedAngle, aspectRatio: ar)
+                                .centerClampedForRotation(angleDegrees: clampedAngle, aspectRatio: ar)
+                                .fittingRotated(angleDegrees: clampedAngle, aspectRatio: ar)
+                                let updatedDisplay = CameraRawCrop(
+                                    top: region.top, left: region.left,
+                                    bottom: region.bottom, right: region.right,
+                                    angle: (clampedAngle * 1000000).rounded() / 1000000,
+                                    hasCrop: true
+                                )
+                                settings.crop = updatedDisplay.transformedForSensor(orientation: orientation)
+                            },
                             onReset: {
                                 cropAngleBinding.wrappedValue = 0
                             }
@@ -623,6 +658,7 @@ struct EditWorkspaceView: View {
                                 range: 0.25...3.0,
                                 step: 0.01
                             )
+                            .frame(height: 20)
                             .onTapGesture(count: 2) {
                                 resetCropZoom()
                             }
@@ -1234,16 +1270,20 @@ struct EditWorkspaceView: View {
                 value: whiteBalanceTemperatureLogBinding,
                 range: 0...1,
                 step: 0,
-                gradient: LinearGradient(colors: [.blue, .yellow], startPoint: .leading, endPoint: .trailing),
+                gradientColors: [.blue, .yellow],
                 onEditingChanged: { editing in
                     isDraggingEditSlider = editing
                     if !editing {
                         commitEditAdjustments()
                     }
                 },
-                onDragValueChanged: {
+                onDragValueChanged: { dragValue in
                     if let pipeline = metalPipeline, pipeline.hasSourceTexture {
-                        pipeline.updateParams(metadataViewModel.editingMetadata.cameraRaw)
+                        var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
+                        let kelvin = kelvinValue(forNormalizedLogScale: dragValue)
+                        settings.whiteBalance = "Custom"
+                        settings.temperature = Int(kelvin.rounded())
+                        pipeline.updateParams(settings)
                         metalCoordinator.requestRedraw()
                     }
                 },
@@ -1252,6 +1292,7 @@ struct EditWorkspaceView: View {
                     commitEditAdjustments()
                 }
             )
+            .frame(height: 20)
         }
     }
 
@@ -1416,13 +1457,17 @@ struct EditWorkspaceView: View {
         }
     }
 
+    /// - Parameter settingsMutator: Applies the raw drag value to a CameraRawSettings copy
+    ///   for direct Metal rendering without triggering SwiftUI observation.
+    ///   When nil, the slider falls back to updating the binding directly during drag.
     private func sliderRow(
         _ label: String,
         value: Binding<Double>,
         range: ClosedRange<Double>,
         step: Double,
-        gradient: LinearGradient? = nil,
+        gradientColors: [Color]? = nil,
         formatter: @escaping (Double) -> String,
+        settingsMutator: ((inout CameraRawSettings, Double) -> Void)? = nil,
         onReset: (() -> Void)? = nil
     ) -> some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -1451,18 +1496,23 @@ struct EditWorkspaceView: View {
                 value: value,
                 range: range,
                 step: step,
-                gradient: gradient,
+                gradientColors: gradientColors,
                 onEditingChanged: { editing in
                     isDraggingEditSlider = editing
                     if !editing {
                         commitEditAdjustments()
                     }
                 },
-                onDragValueChanged: {
-                    // Direct Metal render — bypasses SwiftUI body re-evaluation delay
-                    if let pipeline = metalPipeline, pipeline.hasSourceTexture {
-                        pipeline.updateParams(metadataViewModel.editingMetadata.cameraRaw)
-                        metalCoordinator.requestRedraw()
+                onDragValueChanged: settingsMutator.map { mutator in
+                    { dragValue in
+                        // Build temporary settings with the drag value applied,
+                        // bypassing SwiftUI observation on the ViewModel.
+                        if let pipeline = metalPipeline, pipeline.hasSourceTexture {
+                            var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
+                            mutator(&settings, dragValue)
+                            pipeline.updateParams(settings)
+                            metalCoordinator.requestRedraw()
+                        }
                     }
                 },
                 onReset: onReset.map { resetFn in
@@ -1472,6 +1522,7 @@ struct EditWorkspaceView: View {
                     }
                 }
             )
+            .frame(height: 20)
         }
     }
 

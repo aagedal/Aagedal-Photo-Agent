@@ -100,6 +100,11 @@ struct MetalPreviewView: NSViewRepresentable {
         var useComputeShader: Bool = false
         weak var mtkView: MTKView?
 
+        // Draw rate logging
+        var drawCount: Int = 0
+        var drawLogStart: ContinuousClock.Instant = .now
+        var lastDrawTimestamp: ContinuousClock.Instant = .now
+
         /// Direct redraw bypassing SwiftUI state propagation.
         func requestRedraw() {
             guard let mtkView else { return }
@@ -110,6 +115,9 @@ struct MetalPreviewView: NSViewRepresentable {
         /// Call when slider drag begins — decouples render rate from input event rate.
         func startContinuousRendering() {
             guard let mtkView else { return }
+            drawCount = 0
+            drawLogStart = .now
+            metalPreviewLog.info("⏱ Continuous rendering started (target: \(NSScreen.main?.maximumFramesPerSecond ?? 60) FPS)")
             mtkView.preferredFramesPerSecond = NSScreen.main?.maximumFramesPerSecond ?? 60
             mtkView.isPaused = false
             mtkView.enableSetNeedsDisplay = false
@@ -119,6 +127,9 @@ struct MetalPreviewView: NSViewRepresentable {
         /// Call when slider drag ends — avoids burning GPU cycles when idle.
         func stopContinuousRendering() {
             guard let mtkView else { return }
+            let totalMs = (ContinuousClock.now - drawLogStart).components.attoseconds / 1_000_000_000_000_000
+            let rate = drawCount > 0 && totalMs > 0 ? Double(drawCount) / (Double(totalMs) / 1000.0) : 0
+            metalPreviewLog.info("⏱ Continuous rendering stopped: \(self.drawCount) draws over \(totalMs)ms = \(rate, format: .fixed(precision: 1)) FPS")
             mtkView.isPaused = true
             mtkView.enableSetNeedsDisplay = true
             mtkView.setNeedsDisplay(mtkView.bounds)
@@ -138,6 +149,14 @@ struct MetalPreviewView: NSViewRepresentable {
             guard let drawable = view.currentDrawable else { return }
             let drawableSize = view.drawableSize
             guard drawableSize.width > 0, drawableSize.height > 0 else { return }
+
+            drawCount += 1
+            let now = ContinuousClock.now
+            let sinceLastMs = (now - lastDrawTimestamp).components.attoseconds / 1_000_000_000_000_000
+            lastDrawTimestamp = now
+            if drawCount % 10 == 0 {
+                metalPreviewLog.info("⏱ Draw #\(self.drawCount) — \(sinceLastMs)ms since last")
+            }
 
             // Fast path: Metal compute shader during slider drag
             if useComputeShader, let pipeline = metalPipeline, pipeline.hasSourceTexture {
