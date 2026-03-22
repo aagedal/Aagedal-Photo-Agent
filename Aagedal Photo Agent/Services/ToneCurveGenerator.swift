@@ -167,13 +167,16 @@ nonisolated struct ToneCurveGenerator: Sendable {
         var bLUT = [Float](repeating: 0, count: lutSize)
 
         for i in 0..<lutSize {
-            var val = baseLUT[i]
+            let val = baseLUT[i]
 
-            // Normalize to [0,1] for curve application
-            let normalized = max(0, min(1, (val - domainMin) / range))
+            // Convert linear light to perceptual (≈sRGB gamma) for curve application.
+            // This makes the curve x-axis match perceived brightness, so the full
+            // curve width maps to visible black→white rather than the raw LUT domain.
+            let linear = Double(max(0, min(1, val)))
+            let perceptual = pow(linear, 1.0 / 2.2)
 
-            // Apply master curve
-            var masterOut = hasMaster ? evaluateCatmullRom(masterPoints!, at: Double(normalized)) : Double(normalized)
+            // Apply master curve in perceptual space
+            var masterOut = hasMaster ? evaluateCatmullRom(masterPoints!, at: perceptual) : perceptual
             masterOut = max(0, min(1, masterOut))
 
             // Apply per-channel curves on top of master
@@ -181,54 +184,107 @@ nonisolated struct ToneCurveGenerator: Sendable {
             let gOut = hasG ? evaluateCatmullRom(gPoints!, at: masterOut) : masterOut
             let bOut = hasB ? evaluateCatmullRom(bPoints!, at: masterOut) : masterOut
 
-            // Map back to LUT domain
-            rLUT[i] = domainMin + Float(max(0, min(1, rOut))) * range
-            gLUT[i] = domainMin + Float(max(0, min(1, gOut))) * range
-            bLUT[i] = domainMin + Float(max(0, min(1, bOut))) * range
+            // Convert back to linear light
+            let rLinear = pow(max(0, min(1, rOut)), 2.2)
+            let gLinear = pow(max(0, min(1, gOut)), 2.2)
+            let bLinear = pow(max(0, min(1, bOut)), 2.2)
+
+            // Preserve values outside [0,1] (negatives and HDR) from the base LUT
+            if val < 0 || val > 1 {
+                rLUT[i] = val
+                gLUT[i] = val
+                bLUT[i] = val
+            } else {
+                rLUT[i] = Float(rLinear)
+                gLUT[i] = Float(gLinear)
+                bLUT[i] = Float(bLinear)
+            }
         }
 
         return (rLUT, gLUT, bLUT)
     }
 
-    /// Evaluates a Catmull-Rom spline through sorted control points at the given x.
+    /// Evaluates a monotonic cubic Hermite spline (Fritsch-Carlson) through sorted control points.
+    /// Guarantees smooth curves without overshoots — the standard for photo editor tone curves.
     /// Points must be sorted by x. Endpoints are clamped.
     static func evaluateCatmullRom(_ points: [ToneCurvePoint], at x: Double) -> Double {
-        guard points.count >= 2 else { return x }
+        let n = points.count
+        guard n >= 2 else { return x }
 
         // Clamp to endpoint values
-        if x <= points.first!.x { return points.first!.y }
-        if x >= points.last!.x { return points.last!.y }
+        if x <= points[0].x { return points[0].y }
+        if x >= points[n - 1].x { return points[n - 1].y }
 
-        // Find the segment containing x
-        var segIndex = 0
-        for i in 0..<(points.count - 1) {
-            if x >= points[i].x && x < points[i + 1].x {
-                segIndex = i
+        // 1. Compute secants between consecutive points
+        var delta = [Double](repeating: 0, count: n - 1)
+        var h = [Double](repeating: 0, count: n - 1)
+        for k in 0..<(n - 1) {
+            h[k] = points[k + 1].x - points[k].x
+            if h[k] > 0 {
+                delta[k] = (points[k + 1].y - points[k].y) / h[k]
+            }
+        }
+
+        // 2. Initialize tangents (centered differences, one-sided at endpoints)
+        var m = [Double](repeating: 0, count: n)
+        if n == 2 {
+            m[0] = delta[0]
+            m[1] = delta[0]
+        } else {
+            m[0] = delta[0]
+            for k in 1..<(n - 1) {
+                if delta[k - 1] * delta[k] <= 0 {
+                    // Sign change or zero — set tangent to zero for monotonicity
+                    m[k] = 0
+                } else {
+                    m[k] = (delta[k - 1] + delta[k]) * 0.5
+                }
+            }
+            m[n - 1] = delta[n - 2]
+        }
+
+        // 3. Fritsch-Carlson monotonicity constraint
+        for k in 0..<(n - 1) {
+            if abs(delta[k]) < 1e-12 {
+                // Flat segment — zero tangents at both ends
+                m[k] = 0
+                m[k + 1] = 0
+            } else {
+                let alpha = m[k] / delta[k]
+                let beta = m[k + 1] / delta[k]
+                // Restrict to circle of radius 3 for monotonicity
+                let mag = alpha * alpha + beta * beta
+                if mag > 9.0 {
+                    let scale = 3.0 / mag.squareRoot()
+                    m[k] = scale * alpha * delta[k]
+                    m[k + 1] = scale * beta * delta[k]
+                }
+            }
+        }
+
+        // 4. Find the segment containing x and evaluate cubic Hermite
+        var seg = 0
+        for k in 0..<(n - 1) {
+            if x < points[k + 1].x {
+                seg = k
                 break
             }
         }
 
-        // Four control points for Catmull-Rom: p0, p1, p2, p3
-        let p1 = points[segIndex]
-        let p2 = points[segIndex + 1]
-        // Mirror endpoints for boundary segments
-        let p0 = segIndex > 0 ? points[segIndex - 1] : ToneCurvePoint(x: 2 * p1.x - p2.x, y: 2 * p1.y - p2.y)
-        let p3 = segIndex + 2 < points.count ? points[segIndex + 2] : ToneCurvePoint(x: 2 * p2.x - p1.x, y: 2 * p2.y - p1.y)
-
-        let segLen = p2.x - p1.x
-        guard segLen > 0 else { return p1.y }
-        let t = (x - p1.x) / segLen
+        let segH = h[seg]
+        guard segH > 0 else { return points[seg].y }
+        let t = (x - points[seg].x) / segH
         let t2 = t * t
         let t3 = t2 * t
 
-        // Catmull-Rom basis (tension = 0.5)
-        let y = 0.5 * (
-            (2 * p1.y)
-            + (-p0.y + p2.y) * t
-            + (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2
-            + (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t3
-        )
-        return y
+        // Cubic Hermite basis functions
+        let h00 = 2 * t3 - 3 * t2 + 1
+        let h10 = t3 - 2 * t2 + t
+        let h01 = -2 * t3 + 3 * t2
+        let h11 = t3 - t2
+
+        return h00 * points[seg].y + h10 * segH * m[seg]
+             + h01 * points[seg + 1].y + h11 * segH * m[seg + 1]
     }
 
     /// Samples the LUT at 5 evenly-spaced points in [0, 1] for CIToneCurve approximation.
