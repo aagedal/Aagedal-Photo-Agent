@@ -62,6 +62,9 @@ enum ExifToolWriteTag {
     static let crsSDRWhites = "XMP-crs:SDRWhites"
     static let crsSDRBlend = "XMP-crs:SDRBlend"
 
+    // MARK: - Camera Raw local adjustments (structured)
+    static let crsMaskGroupBasedCorrections = "XMP-crs:MaskGroupBasedCorrections"
+
     // MARK: - IPTC Mirrors (for cross-tool interoperability)
     static let iptcKeywords = "IPTC:Keywords"
     static let iptcCopyrightNotice = "IPTC:CopyrightNotice"

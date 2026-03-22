@@ -842,6 +842,7 @@ struct EditWorkspaceView: View {
         isLoadingPreview = false
         metalPipeline?.clearSourceTexture()
         resetCropZoom()
+        selectedMaskIndex = nil
         if !isCropEnabled {
             showCropControls = false
         }
@@ -1678,7 +1679,7 @@ struct EditWorkspaceView: View {
             sliderRow(
                 "Exposure",
                 value: maskDoubleBinding(idx, \.exposure),
-                range: -5...5,
+                range: -4...4,
                 step: 0.01,
                 formatter: { signedDoubleString($0, precision: 2) },
                 settingsMutator: { settings, value in
@@ -1741,21 +1742,6 @@ struct EditWorkspaceView: View {
                     maskIntBinding(idx, \.saturation).wrappedValue = 0
                 }
             )
-            sliderRow(
-                "Vibrance",
-                value: maskIntBinding(idx, \.vibrance),
-                range: -100...100,
-                step: 1,
-                gradientColors: [.gray, .orange],
-                formatter: signedIntString,
-                settingsMutator: { settings, value in
-                    settings.localAdjustments?[idx].vibrance = Int(value.rounded()) == 0 ? nil : Int(value.rounded())
-                },
-                onReset: {
-                    maskIntBinding(idx, \.vibrance).wrappedValue = 0
-                }
-            )
-
             // ── Mask Shape ──
             Text("Mask Shape")
                 .font(.subheadline.weight(.medium))
@@ -1918,6 +1904,13 @@ struct EditWorkspaceView: View {
         guard !isSavingRenderedJPEG,
               let selectedImageURL else { return }
         let settings = metadataViewModel.editingMetadata.cameraRaw
+        let maskCount = settings?.localAdjustments?.count ?? 0
+        editLog.info("saveCurrentRenderedImage: \(maskCount) mask(s), exp=\(settings?.exposure2012 ?? 0)")
+        if maskCount > 0, let masks = settings?.localAdjustments {
+            for (i, m) in masks.enumerated() {
+                editLog.info("  save mask[\(i)]: exp=\(m.exposure ?? 0) enabled=\(m.enabled)")
+            }
+        }
         let hdr = isHDREnabled
         isSavingRenderedJPEG = true
 

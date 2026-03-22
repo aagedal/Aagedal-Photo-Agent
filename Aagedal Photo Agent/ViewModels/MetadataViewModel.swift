@@ -795,7 +795,8 @@ final class MetadataViewModel {
 
                 let fields = batchWriteFields(from: edited)
                 if !nonRawEmbeddedTargets.isEmpty, !fields.isEmpty {
-                    try await exifToolService.writeFields(fields, to: Array(nonRawEmbeddedTargets))
+                    let maskArgs = maskWriteArgs(from: edited)
+                    try await exifToolService.writeFields(fields, to: Array(nonRawEmbeddedTargets), extraArgs: maskArgs)
                 }
 
                 // Handle additive list fields for non-RAW embedded targets
@@ -1110,6 +1111,117 @@ final class MetadataViewModel {
         fields[ExifToolWriteTag.crsSDRBlend] = ""
     }
 
+    /// Generate ExifTool args for writing mask data as ACR-compatible MaskGroupBasedCorrections.
+    /// Uses ExifTool's `-struct` flag and `{key=value}` syntax for structured XMP.
+    /// Includes all fields ACR expects: SyncIDs, legacy fields, and zero-value defaults.
+    /// Number formatting matches ACR's style: integers for whole numbers, minimal decimals otherwise.
+    private func maskWriteArgs(from metadata: IPTCMetadata) -> [String] {
+        let masks = metadata.cameraRaw?.localAdjustments?.filter(\.enabled) ?? []
+
+        // Always clear existing masks first (empty value removes the tag)
+        var args = ["-struct", "-\(ExifToolWriteTag.crsMaskGroupBasedCorrections)="]
+
+        guard !masks.isEmpty else { return args }
+
+        for (index, mask) in masks.enumerated() {
+            let geo = mask.geometry
+            let top = geo.centerY - geo.radiusY
+            let left = geo.centerX - geo.radiusX
+            let bottom = geo.centerY + geo.radiusY
+            let right = geo.centerX + geo.radiusX
+
+            // ACR uses uppercase hex UUIDs without dashes for SyncIDs
+            let corrSyncID = mask.id.uuidString.replacingOccurrences(of: "-", with: "")
+            let maskSyncID = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+
+            // Build the CorrectionMasks sub-struct (ellipse geometry)
+            let maskStruct = [
+                "What=Mask/CircularGradient",
+                "Top=\(acrNum(top))",
+                "Left=\(acrNum(left))",
+                "Bottom=\(acrNum(bottom))",
+                "Right=\(acrNum(right))",
+                "Angle=\(acrNum(geo.rotation))",
+                "Feather=\(acrNum(geo.feather))",
+                "Midpoint=50",
+                "Roundness=0",
+                "Flipped=\(!mask.inverted ? "true" : "false")",
+                "MaskActive=true",
+                "MaskBlendMode=0",
+                "MaskInverted=false",
+                "MaskName=Radial Gradient \(index + 1)",
+                "MaskSyncID=\(maskSyncID)",
+                "MaskValue=1",
+                "Version=2",
+            ].joined(separator: ",")
+
+            // ACR stores all local adjustments as fractions of their full range (-1..+1).
+            // Exposure: -4..+4 EV → XMP -1..+1 (divide by 4).
+            // Others: -100..+100 → XMP -1..+1 (divide by 100).
+            let exp = (mask.exposure ?? 0) / 4.0
+            let con = Double(mask.contrast ?? 0) / 100.0
+            let hi = Double(mask.highlights ?? 0) / 100.0
+            let sh = Double(mask.shadows ?? 0) / 100.0
+            let wh = Double(mask.whites ?? 0) / 100.0
+            let bl = Double(mask.blacks ?? 0) / 100.0
+            let sat = Double(mask.saturation ?? 0) / 100.0
+            let temp = (mask.temperature ?? 0) / 100.0
+            let tint = (mask.tint ?? 0) / 100.0
+
+            // Build the correction-level struct — include ALL fields ACR expects
+            let corrParts = [
+                "CorrectionActive=true",
+                "CorrectionAmount=\(acrNum(mask.amount))",
+                "CorrectionName=\(mask.name)",
+                "CorrectionSyncID=\(corrSyncID)",
+                "What=Correction",
+                "CorrectionMasks={\(maskStruct)}",
+                // 2012-era adjustments (primary)
+                "LocalExposure2012=\(acrNum(exp))",
+                "LocalContrast2012=\(acrNum(con))",
+                "LocalHighlights2012=\(acrNum(hi))",
+                "LocalShadows2012=\(acrNum(sh))",
+                "LocalWhites2012=\(acrNum(wh))",
+                "LocalBlacks2012=\(acrNum(bl))",
+                "LocalSaturation=\(acrNum(sat))",
+                "LocalTemperature=\(acrNum(temp))",
+                "LocalTint=\(acrNum(tint))",
+                // Legacy fields (required by ACR, always 0)
+                "LocalExposure=0",
+                "LocalContrast=0",
+                "LocalBrightness=0",
+                "LocalClarity=0",
+                "LocalClarity2012=0",
+                "LocalSharpness=0",
+                "LocalLuminanceNoise=0",
+                "LocalMoire=0",
+                "LocalDefringe=0",
+                "LocalDehaze=0",
+                "LocalTexture=0",
+                "LocalHue=0",
+                "LocalToningHue=0",
+                "LocalToningSaturation=0",
+            ]
+
+            args.append("-\(ExifToolWriteTag.crsMaskGroupBasedCorrections)={\(corrParts.joined(separator: ","))}")
+        }
+
+        return args
+    }
+
+    /// Format a number in ACR's style: integers for whole numbers, minimal trailing decimals otherwise.
+    /// ACR writes `0`, `1`, `-1`, `100` for integers and `0.075`, `-0.8125` for fractional values.
+    private func acrNum(_ value: Double) -> String {
+        if value == value.rounded(.toNearestOrEven) && abs(value) < 1_000_000 {
+            return String(Int(value))
+        }
+        // Use enough precision to preserve the value, strip trailing zeros
+        var s = String(format: "%.6f", value)
+        while s.hasSuffix("0") { s.removeLast() }
+        if s.hasSuffix(".") { s.removeLast() }
+        return s
+    }
+
     private func formatSignedInt(_ value: Int) -> String {
         value > 0 ? "+\(value)" : "\(value)"
     }
@@ -1141,7 +1253,8 @@ final class MetadataViewModel {
         Task {
             do {
                 let fields = overwriteFields(from: edited)
-                try await exifToolService.writeFields(fields, to: [imageURL])
+                let maskArgs = maskWriteArgs(from: edited)
+                try await exifToolService.writeFields(fields, to: [imageURL], extraArgs: maskArgs)
 
                 let now = Date()
                 let history = buildHistory(
@@ -1194,7 +1307,8 @@ final class MetadataViewModel {
         Task {
             do {
                 let fields = overwriteFields(from: edited)
-                try await exifToolService.writeFields(fields, to: [imageURL])
+                let maskArgs = maskWriteArgs(from: edited)
+                try await exifToolService.writeFields(fields, to: [imageURL], extraArgs: maskArgs)
 
                 try? sidecarService.deleteSidecar(for: imageURL, in: folderURL)
 
@@ -2093,7 +2207,8 @@ final class MetadataViewModel {
             do {
                 let edited = editingMetadata
                 let fields = overwriteFields(from: edited)
-                try await exifToolService.writeFields(fields, to: [imageURL])
+                let maskArgs = maskWriteArgs(from: edited)
+                try await exifToolService.writeFields(fields, to: [imageURL], extraArgs: maskArgs)
 
                 do {
                     try sidecarService.deleteSidecar(for: imageURL, in: folderURL)
@@ -2150,9 +2265,10 @@ final class MetadataViewModel {
 
                 let edited = sidecar.metadata
                 let fields = overwriteFields(from: edited)
+                let maskArgs = maskWriteArgs(from: edited)
 
                 do {
-                    try await exifToolService.writeFields(fields, to: [imageURL])
+                    try await exifToolService.writeFields(fields, to: [imageURL], extraArgs: maskArgs)
                     do {
                         try sidecarService.deleteSidecar(for: imageURL, in: folderURL)
                     } catch {
