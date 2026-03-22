@@ -106,6 +106,24 @@ struct MetalPreviewView: NSViewRepresentable {
             mtkView.setNeedsDisplay(mtkView.bounds)
         }
 
+        /// Switch MTKView to continuous rendering at the display's native refresh rate.
+        /// Call when slider drag begins — decouples render rate from input event rate.
+        func startContinuousRendering() {
+            guard let mtkView else { return }
+            mtkView.preferredFramesPerSecond = NSScreen.main?.maximumFramesPerSecond ?? 60
+            mtkView.isPaused = false
+            mtkView.enableSetNeedsDisplay = false
+        }
+
+        /// Return MTKView to manual rendering mode.
+        /// Call when slider drag ends — avoids burning GPU cycles when idle.
+        func stopContinuousRendering() {
+            guard let mtkView else { return }
+            mtkView.isPaused = true
+            mtkView.enableSetNeedsDisplay = true
+            mtkView.setNeedsDisplay(mtkView.bounds)
+        }
+
         nonisolated func draw(in view: MTKView) {
             MainActor.assumeIsolated {
                 performDraw(in: view)

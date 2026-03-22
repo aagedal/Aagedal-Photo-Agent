@@ -5,27 +5,14 @@ struct ScopeDisplayView: View {
 
     var body: some View {
         VStack(spacing: 4) {
-            HStack(spacing: 4) {
-                Picker("", selection: Bindable(scopeViewModel).scopeMode) {
-                    Text("Wave").tag(ScopeViewModel.ScopeMode.waveform)
-                    Text("Parade").tag(ScopeViewModel.ScopeMode.parade)
-                    Text("Vector").tag(ScopeViewModel.ScopeMode.vectorscope)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .controlSize(.small)
-
-                if scopeViewModel.scopeMode != .vectorscope {
-                    Picker("", selection: Bindable(scopeViewModel).waveformScale) {
-                        Text("%").tag(WaveformScale.percentage)
-                        Text("nit").tag(WaveformScale.nits)
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .controlSize(.small)
-                    .frame(width: 56)
-                }
+            Picker("", selection: Bindable(scopeViewModel).scopeMode) {
+                Text("Wave").tag(ScopeViewModel.ScopeMode.waveform)
+                Text("Parade").tag(ScopeViewModel.ScopeMode.parade)
+                Text("Vector").tag(ScopeViewModel.ScopeMode.vectorscope)
             }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .controlSize(.small)
 
             ZStack {
                 Color(nsColor: NSColor(white: 0.1, alpha: 1))

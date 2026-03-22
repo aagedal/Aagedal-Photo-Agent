@@ -1,5 +1,24 @@
 import Foundation
 
+struct ToneCurvePoint: Codable, Sendable, Equatable {
+    var x: Double  // 0-1 input brightness
+    var y: Double  // 0-1 output brightness
+}
+
+struct ToneCurve: Codable, Sendable, Equatable {
+    var master: [ToneCurvePoint]?
+    var red: [ToneCurvePoint]?
+    var green: [ToneCurvePoint]?
+    var blue: [ToneCurvePoint]?
+
+    var isEmpty: Bool {
+        (master?.count ?? 0) <= 2
+            && red == nil
+            && green == nil
+            && blue == nil
+    }
+}
+
 struct CameraRawCrop: Codable, Sendable, Equatable {
     var top: Double?
     var left: Double?
@@ -45,6 +64,7 @@ struct CameraRawSettings: Codable, Sendable, Equatable {
     var sdrShadows: Int?
     var sdrWhites: Int?
     var sdrBlend: Int?
+    var toneCurve: ToneCurve?
 
     var isEmpty: Bool {
         version == nil
@@ -73,6 +93,7 @@ struct CameraRawSettings: Codable, Sendable, Equatable {
             && sdrShadows == nil
             && sdrWhites == nil
             && sdrBlend == nil
+            && (toneCurve?.isEmpty ?? true)
     }
 
     func merged(preferring override: CameraRawSettings) -> CameraRawSettings {
@@ -109,6 +130,7 @@ struct CameraRawSettings: Codable, Sendable, Equatable {
         if let value = override.sdrShadows { result.sdrShadows = value }
         if let value = override.sdrWhites { result.sdrWhites = value }
         if let value = override.sdrBlend { result.sdrBlend = value }
+        if let value = override.toneCurve { result.toneCurve = value }
         return result
     }
 }
