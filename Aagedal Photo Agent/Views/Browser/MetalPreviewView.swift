@@ -21,7 +21,6 @@ struct MetalPreviewView: NSViewRepresentable {
     let isHDR: Bool
     var metalPipeline: MetalEditPipeline?
     var useComputeShader: Bool = false
-    var isDragging: Bool = false
     /// Shared coordinator owned by the parent view for direct redraw requests.
     var coordinator: Coordinator?
 
@@ -56,18 +55,16 @@ struct MetalPreviewView: NSViewRepresentable {
             } else {
                 metalLayer.wantsExtendedDynamicRangeContent = isHDR
             }
-            // Drop to 1x resolution during slider drag for ~4x pixel reduction.
-            // Must set drawableSize directly — MTKView ignores CAMetalLayer.contentsScale.
+            // Always render at full Retina resolution — Apple Silicon GPUs handle
+            // the compute shader at full 2x with ease (<1ms for typical preview sizes).
             let backingScale = mtkView.window?.backingScaleFactor ?? 2.0
-            let targetScale: CGFloat = isDragging ? 1.0 : backingScale
-            metalLayer.contentsScale = targetScale
+            metalLayer.contentsScale = backingScale
             let bounds = mtkView.bounds.size
             let targetSize = CGSize(
-                width: bounds.width * targetScale,
-                height: bounds.height * targetScale
+                width: bounds.width * backingScale,
+                height: bounds.height * backingScale
             )
             if mtkView.drawableSize != targetSize {
-                metalPreviewLog.debug("drawableSize: \(Int(mtkView.drawableSize.width))×\(Int(mtkView.drawableSize.height)) → \(Int(targetSize.width))×\(Int(targetSize.height)) (isDragging: \(self.isDragging))")
                 mtkView.drawableSize = targetSize
             }
         }

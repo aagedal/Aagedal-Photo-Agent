@@ -43,8 +43,9 @@ final class MetalEditPipeline: @unchecked Sendable {
 
     nonisolated(unsafe) private var sourceTexture: MTLTexture?
     nonisolated(unsafe) private var paramsBuffer: MTLBuffer?
-    nonisolated(unsafe) private var lutTexture: MTLTexture?
+    nonisolated(unsafe) private let lutTexture: MTLTexture
     nonisolated(unsafe) private let identityLutTexture: MTLTexture
+    nonisolated(unsafe) private var float16Buffer = [UInt16](repeating: 0, count: ToneCurveGenerator.lutSize)
 
     nonisolated(unsafe) private static let colorSpace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
 
@@ -109,6 +110,17 @@ final class MetalEditPipeline: @unchecked Sendable {
         identityTex.replace(region: MTLRegionMake1D(0, 2), mipmapLevel: 0,
                             withBytes: &identityData, bytesPerRow: 2 * MemoryLayout<UInt16>.size)
         self.identityLutTexture = identityTex
+
+        // Pre-allocate the main LUT texture (4096 entries, r16Float, ~8KB).
+        // Reused on every slider drag via replace(region:) — no per-frame allocation.
+        let lutDesc = MTLTextureDescriptor()
+        lutDesc.textureType = .type1D
+        lutDesc.pixelFormat = .r16Float
+        lutDesc.width = ToneCurveGenerator.lutSize
+        lutDesc.usage = .shaderRead
+        lutDesc.storageMode = .shared
+        guard let preallocLUT = device.makeTexture(descriptor: lutDesc) else { return nil }
+        self.lutTexture = preallocLUT
     }
 
     // MARK: - Source Texture Upload
@@ -166,26 +178,28 @@ final class MetalEditPipeline: @unchecked Sendable {
 
     // MARK: - LUT Upload
 
-    /// Uploads a 4096-entry LUT as a 1D r16Float Metal texture (~8KB).
+    /// Updates the pre-allocated 4096-entry LUT texture in-place (~8KB, no allocation).
     nonisolated private func uploadLUT(_ data: [Float]) {
-        let desc = MTLTextureDescriptor()
-        desc.textureType = .type1D
-        desc.pixelFormat = .r16Float
-        desc.width = data.count
-        desc.usage = .shaderRead
-        desc.storageMode = .shared
-
-        guard let texture = device.makeTexture(descriptor: desc) else { return }
-
-        var float16Data = Self.floatsToHalfs(data)
-        texture.replace(
-            region: MTLRegionMake1D(0, data.count),
-            mipmapLevel: 0,
-            withBytes: &float16Data,
-            bytesPerRow: data.count * MemoryLayout<UInt16>.size
-        )
-
-        lutTexture = texture
+        var input = data
+        input.withUnsafeMutableBufferPointer { srcPtr in
+            float16Buffer.withUnsafeMutableBufferPointer { dstPtr in
+                var src = vImage_Buffer(data: srcPtr.baseAddress!, height: 1,
+                                        width: vImagePixelCount(data.count),
+                                        rowBytes: data.count * MemoryLayout<Float>.size)
+                var dst = vImage_Buffer(data: dstPtr.baseAddress!, height: 1,
+                                        width: vImagePixelCount(data.count),
+                                        rowBytes: data.count * MemoryLayout<UInt16>.size)
+                vImageConvert_PlanarFtoPlanar16F(&src, &dst, 0)
+            }
+        }
+        float16Buffer.withUnsafeBufferPointer { ptr in
+            lutTexture.replace(
+                region: MTLRegionMake1D(0, data.count),
+                mipmapLevel: 0,
+                withBytes: ptr.baseAddress!,
+                bytesPerRow: data.count * MemoryLayout<UInt16>.size
+            )
+        }
     }
 
     // MARK: - Parameter Update
@@ -275,7 +289,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         encoder.setComputePipelineState(pipelineState)
         encoder.setTexture(source, index: 0)
         encoder.setTexture(drawable.texture, index: 1)
-        encoder.setTexture(lutTexture ?? identityLutTexture, index: 2)
+        encoder.setTexture(lutTexture, index: 2)
         encoder.setBuffer(buffer, offset: 0, index: 0)
 
         let threadgroupSize = MTLSize(width: 16, height: 16, depth: 1)
