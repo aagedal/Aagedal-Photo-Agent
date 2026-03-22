@@ -29,8 +29,8 @@ enum CameraRawApproximation {
         //    Note: 5-point Catmull-Rom approximation — near-exact for moderate adjustments,
         //    slight deviation at extremes. Future: CIKernel with full LUT for exact match.
         if !ToneCurveGenerator.isIdentity(settings: settings) {
-            let lut = ToneCurveGenerator.generateLUT(settings: settings)
-            let points = ToneCurveGenerator.sampleForToneCurve(lut)
+            let (rLUT, _, _) = ToneCurveGenerator.generatePerChannelLUT(settings: settings)
+            let points = ToneCurveGenerator.sampleForToneCurve(rLUT)
             output = applyFilter(named: "CIToneCurve", input: output, values: [
                 "inputPoint0": CIVector(x: points[0].x, y: points[0].y),
                 "inputPoint1": CIVector(x: points[1].x, y: points[1].y),

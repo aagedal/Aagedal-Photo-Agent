@@ -60,9 +60,12 @@ kernel void editAdjustments(
         float ug = (float(rgb.g) - params.lutDomainMin) / range;
         float ub = (float(rgb.b) - params.lutDomainMin) / range;
 
-        rgb.r = half(toneLUT.sample(lutSampler, ur).r);
-        rgb.g = half(toneLUT.sample(lutSampler, ug).r);
-        rgb.b = half(toneLUT.sample(lutSampler, ub).r);
+        float4 rSample = toneLUT.sample(lutSampler, ur);
+        float4 gSample = toneLUT.sample(lutSampler, ug);
+        float4 bSample = toneLUT.sample(lutSampler, ub);
+        rgb.r = half(rSample.r);
+        rgb.g = half(gSample.g);
+        rgb.b = half(bSample.b);
 
         // Highlight desaturation: blend toward luminance as brightness increases.
         // Prevents per-channel LUT from oversaturating highlights — ACR rolls off

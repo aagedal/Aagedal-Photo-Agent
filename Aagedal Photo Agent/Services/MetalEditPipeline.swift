@@ -45,7 +45,7 @@ final class MetalEditPipeline: @unchecked Sendable {
     nonisolated(unsafe) private var paramsBuffer: MTLBuffer?
     nonisolated(unsafe) private let lutTexture: MTLTexture
     nonisolated(unsafe) private let identityLutTexture: MTLTexture
-    nonisolated(unsafe) private var float16Buffer = [UInt16](repeating: 0, count: ToneCurveGenerator.lutSize)
+    nonisolated(unsafe) private var float16Buffer = [UInt16](repeating: 0, count: ToneCurveGenerator.lutSize * 4)
 
     nonisolated(unsafe) private static let colorSpace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
 
@@ -99,23 +99,27 @@ final class MetalEditPipeline: @unchecked Sendable {
 
         // Create a 2-entry identity LUT: maps input → input (linear ramp from domainMin to domainMax).
         // Always bound at texture index 2 to avoid Metal validation errors on unbound textures.
+        // rgba16Float: R/G/B channels carry per-channel LUT, A unused.
         let identityDesc = MTLTextureDescriptor()
         identityDesc.textureType = .type1D
-        identityDesc.pixelFormat = .r16Float
+        identityDesc.pixelFormat = .rgba16Float
         identityDesc.width = 2
         identityDesc.usage = .shaderRead
         identityDesc.storageMode = .shared
         guard let identityTex = device.makeTexture(descriptor: identityDesc) else { return nil }
-        var identityData = Self.floatsToHalfs([ToneCurveGenerator.domainMin, ToneCurveGenerator.domainMax])
+        let dMin = ToneCurveGenerator.domainMin
+        let dMax = ToneCurveGenerator.domainMax
+        var identityData = Self.floatsToHalfs([dMin, dMin, dMin, 0, dMax, dMax, dMax, 0])
         identityTex.replace(region: MTLRegionMake1D(0, 2), mipmapLevel: 0,
-                            withBytes: &identityData, bytesPerRow: 2 * MemoryLayout<UInt16>.size)
+                            withBytes: &identityData, bytesPerRow: 2 * 4 * MemoryLayout<UInt16>.size)
         self.identityLutTexture = identityTex
 
-        // Pre-allocate the main LUT texture (4096 entries, r16Float, ~8KB).
+        // Pre-allocate the main LUT texture (4096 entries, rgba16Float, ~32KB).
+        // R/G/B channels carry per-channel LUT for curve editor support.
         // Reused on every slider drag via replace(region:) — no per-frame allocation.
         let lutDesc = MTLTextureDescriptor()
         lutDesc.textureType = .type1D
-        lutDesc.pixelFormat = .r16Float
+        lutDesc.pixelFormat = .rgba16Float
         lutDesc.width = ToneCurveGenerator.lutSize
         lutDesc.usage = .shaderRead
         lutDesc.storageMode = .shared
@@ -178,26 +182,36 @@ final class MetalEditPipeline: @unchecked Sendable {
 
     // MARK: - LUT Upload
 
-    /// Updates the pre-allocated 4096-entry LUT texture in-place (~8KB, no allocation).
-    nonisolated private func uploadLUT(_ data: [Float]) {
-        var input = data
-        input.withUnsafeMutableBufferPointer { srcPtr in
+    /// Updates the pre-allocated 4096-entry RGBA LUT texture in-place (~32KB, no allocation).
+    /// R/G/B channels carry independent per-channel tone curves.
+    nonisolated private func uploadLUT(r: [Float], g: [Float], b: [Float]) {
+        let count = r.count
+        // Interleave R, G, B, A(0) into a single float array, then convert to half
+        var interleaved = [Float](repeating: 0, count: count * 4)
+        for i in 0..<count {
+            interleaved[i * 4 + 0] = r[i]
+            interleaved[i * 4 + 1] = g[i]
+            interleaved[i * 4 + 2] = b[i]
+            // A channel unused, stays 0
+        }
+        let totalCount = interleaved.count
+        interleaved.withUnsafeMutableBufferPointer { srcPtr in
             float16Buffer.withUnsafeMutableBufferPointer { dstPtr in
                 var src = vImage_Buffer(data: srcPtr.baseAddress!, height: 1,
-                                        width: vImagePixelCount(data.count),
-                                        rowBytes: data.count * MemoryLayout<Float>.size)
+                                        width: vImagePixelCount(totalCount),
+                                        rowBytes: totalCount * MemoryLayout<Float>.size)
                 var dst = vImage_Buffer(data: dstPtr.baseAddress!, height: 1,
-                                        width: vImagePixelCount(data.count),
-                                        rowBytes: data.count * MemoryLayout<UInt16>.size)
+                                        width: vImagePixelCount(totalCount),
+                                        rowBytes: totalCount * MemoryLayout<UInt16>.size)
                 vImageConvert_PlanarFtoPlanar16F(&src, &dst, 0)
             }
         }
         float16Buffer.withUnsafeBufferPointer { ptr in
             lutTexture.replace(
-                region: MTLRegionMake1D(0, data.count),
+                region: MTLRegionMake1D(0, count),
                 mipmapLevel: 0,
                 withBytes: ptr.baseAddress!,
-                bytesPerRow: data.count * MemoryLayout<UInt16>.size
+                bytesPerRow: count * 4 * MemoryLayout<UInt16>.size
             )
         }
     }
@@ -218,10 +232,10 @@ final class MetalEditPipeline: @unchecked Sendable {
             return
         }
 
-        // 1. Tone LUT — combines exposure, contrast, blacks, shadows, highlights, whites
+        // 1. Tone LUT — combines exposure, contrast, blacks, shadows, highlights, whites + custom curve
         if !ToneCurveGenerator.isIdentity(settings: settings) {
-            let lutData = ToneCurveGenerator.generateLUT(settings: settings)
-            uploadLUT(lutData)
+            let (rLUT, gLUT, bLUT) = ToneCurveGenerator.generatePerChannelLUT(settings: settings)
+            uploadLUT(r: rLUT, g: gLUT, b: bLUT)
             params.lutDomainMin = ToneCurveGenerator.domainMin
             params.lutDomainMax = ToneCurveGenerator.domainMax
             flags |= (1 << 0)

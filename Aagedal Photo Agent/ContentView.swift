@@ -908,6 +908,10 @@ struct ContentView: View {
                     } else {
                         scopeViewModel.updateImage(nil)
                     }
+                    // Auto-select waveform scale based on HDR state
+                    if let isHDR = notification.userInfo?["isHDR"] as? Bool {
+                        scopeViewModel.waveformScale = isHDR ? .nits : .percentage
+                    }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: .editSliderDragStateChanged)) { notification in
                     if let isDragging = notification.userInfo?["isDragging"] as? Bool {
@@ -1060,6 +1064,8 @@ struct ContentView: View {
     private func loadScopeImage(for url: URL?) {
         scopeImageTask?.cancel()
         scopeImageTask = nil
+        // Browse mode is always SDR
+        scopeViewModel.waveformScale = .percentage
 
         guard let url else {
             scopeViewModel.updateImage(nil)

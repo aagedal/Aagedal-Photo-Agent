@@ -136,6 +136,99 @@ nonisolated struct ToneCurveGenerator: Sendable {
             && s.shadows2012 == nil
             && s.whites2012 == nil
             && s.blacks2012 == nil
+            && s.toneCurve == nil
+    }
+
+    /// Generates per-channel LUTs (R, G, B), each 4096 entries.
+    /// Applies slider-based tonal operations first, then composes custom curve on top.
+    static func generatePerChannelLUT(settings: CameraRawSettings?) -> (r: [Float], g: [Float], b: [Float]) {
+        let baseLUT = generateLUT(settings: settings)
+        let curve = settings?.toneCurve
+
+        // Apply master curve, then per-channel curves
+        let masterPoints = curve?.master
+        let rPoints = curve?.red
+        let gPoints = curve?.green
+        let bPoints = curve?.blue
+
+        let hasMaster = (masterPoints?.count ?? 0) > 2
+        let hasR = rPoints != nil
+        let hasG = gPoints != nil
+        let hasB = bPoints != nil
+
+        if !hasMaster && !hasR && !hasG && !hasB {
+            // No curves — all channels identical
+            return (baseLUT, baseLUT, baseLUT)
+        }
+
+        let range = domainMax - domainMin
+        var rLUT = [Float](repeating: 0, count: lutSize)
+        var gLUT = [Float](repeating: 0, count: lutSize)
+        var bLUT = [Float](repeating: 0, count: lutSize)
+
+        for i in 0..<lutSize {
+            var val = baseLUT[i]
+
+            // Normalize to [0,1] for curve application
+            let normalized = max(0, min(1, (val - domainMin) / range))
+
+            // Apply master curve
+            var masterOut = hasMaster ? evaluateCatmullRom(masterPoints!, at: Double(normalized)) : Double(normalized)
+            masterOut = max(0, min(1, masterOut))
+
+            // Apply per-channel curves on top of master
+            let rOut = hasR ? evaluateCatmullRom(rPoints!, at: masterOut) : masterOut
+            let gOut = hasG ? evaluateCatmullRom(gPoints!, at: masterOut) : masterOut
+            let bOut = hasB ? evaluateCatmullRom(bPoints!, at: masterOut) : masterOut
+
+            // Map back to LUT domain
+            rLUT[i] = domainMin + Float(max(0, min(1, rOut))) * range
+            gLUT[i] = domainMin + Float(max(0, min(1, gOut))) * range
+            bLUT[i] = domainMin + Float(max(0, min(1, bOut))) * range
+        }
+
+        return (rLUT, gLUT, bLUT)
+    }
+
+    /// Evaluates a Catmull-Rom spline through sorted control points at the given x.
+    /// Points must be sorted by x. Endpoints are clamped.
+    static func evaluateCatmullRom(_ points: [ToneCurvePoint], at x: Double) -> Double {
+        guard points.count >= 2 else { return x }
+
+        // Clamp to endpoint values
+        if x <= points.first!.x { return points.first!.y }
+        if x >= points.last!.x { return points.last!.y }
+
+        // Find the segment containing x
+        var segIndex = 0
+        for i in 0..<(points.count - 1) {
+            if x >= points[i].x && x < points[i + 1].x {
+                segIndex = i
+                break
+            }
+        }
+
+        // Four control points for Catmull-Rom: p0, p1, p2, p3
+        let p1 = points[segIndex]
+        let p2 = points[segIndex + 1]
+        // Mirror endpoints for boundary segments
+        let p0 = segIndex > 0 ? points[segIndex - 1] : ToneCurvePoint(x: 2 * p1.x - p2.x, y: 2 * p1.y - p2.y)
+        let p3 = segIndex + 2 < points.count ? points[segIndex + 2] : ToneCurvePoint(x: 2 * p2.x - p1.x, y: 2 * p2.y - p1.y)
+
+        let segLen = p2.x - p1.x
+        guard segLen > 0 else { return p1.y }
+        let t = (x - p1.x) / segLen
+        let t2 = t * t
+        let t3 = t2 * t
+
+        // Catmull-Rom basis (tension = 0.5)
+        let y = 0.5 * (
+            (2 * p1.y)
+            + (-p0.y + p2.y) * t
+            + (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2
+            + (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t3
+        )
+        return y
     }
 
     /// Samples the LUT at 5 evenly-spaced points in [0, 1] for CIToneCurve approximation.

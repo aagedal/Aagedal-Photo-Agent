@@ -32,6 +32,7 @@ struct EditWorkspaceView: View {
     @State private var scrollEventMonitor: Any?
     @State private var keyEventMonitor: Any?
     @State private var isShowingBefore = false
+    @State private var isMutingDevelop = false
     @State private var showCropControls = false
     @State private var lockedCropImageRect: CGRect?
     @State private var editUndoManager = UndoManager()
@@ -78,7 +79,7 @@ struct EditWorkspaceView: View {
     /// CIImage for MetalPreviewView — shows unedited source during "before" toggle,
     /// or the lazy CIFilter chain output during editing.
     private var displayCIImage: CIImage? {
-        isShowingBefore ? sourceCIImage : (previewCIImage ?? sourceCIImage)
+        (isShowingBefore || isMutingDevelop) ? sourceCIImage : (previewCIImage ?? sourceCIImage)
     }
 
     /// Image dimensions for layout calculations (stable across edits since filters
@@ -131,6 +132,7 @@ struct EditWorkspaceView: View {
             || cameraRaw.whites2012 != nil
             || cameraRaw.blacks2012 != nil
             || cameraRaw.saturation != nil
+            || cameraRaw.toneCurve != nil
     }
 
     private var selectedImageOrientation: Int {
@@ -188,6 +190,7 @@ struct EditWorkspaceView: View {
             }
         }
         .onDisappear {
+            metalCoordinator.stopContinuousRendering()
             previewTask?.cancel()
             previewTask = nil
             previewRenderTask?.cancel()
@@ -214,7 +217,11 @@ struct EditWorkspaceView: View {
                 object: nil,
                 userInfo: ["isDragging": isDragging]
             )
+            if isDragging, !wasDragging {
+                metalCoordinator.startContinuousRendering()
+            }
             if wasDragging, !isDragging {
+                metalCoordinator.stopContinuousRendering()
                 scopeThrottleTask?.cancel()
                 scopeThrottleTask = nil
                 renderPreview()
@@ -260,9 +267,9 @@ struct EditWorkspaceView: View {
 
                         MetalPreviewView(
                             ciImage: displayCIImage,
-                            isHDR: isHDREnabled,
+                            isHDR: isHDREnabled && !isMutingDevelop,
                             metalPipeline: metalPipeline,
-                            useComputeShader: !isShowingBefore && metalPipeline?.hasSourceTexture == true,
+                            useComputeShader: !isShowingBefore && !isMutingDevelop && metalPipeline?.hasSourceTexture == true,
 
                             coordinator: metalCoordinator
                         )
@@ -316,9 +323,9 @@ struct EditWorkspaceView: View {
 
                         MetalPreviewView(
                             ciImage: displayCIImage,
-                            isHDR: isHDREnabled && !isShowingBefore,
+                            isHDR: isHDREnabled && !isShowingBefore && !isMutingDevelop,
                             metalPipeline: metalPipeline,
-                            useComputeShader: !isShowingBefore && metalPipeline?.hasSourceTexture == true,
+                            useComputeShader: !isShowingBefore && !isMutingDevelop && metalPipeline?.hasSourceTexture == true,
 
                             coordinator: metalCoordinator
                         )
@@ -512,6 +519,24 @@ struct EditWorkspaceView: View {
                     sliderRow("Blacks", value: toneSliderBinding(\.blacks2012), range: -100...100, step: 1, formatter: signedIntString, onReset: {
                         toneSliderBinding(\.blacks2012).wrappedValue = 0
                     })
+
+                    // ── Tone Curve ──
+                    CurveEditorView(
+                        toneCurve: toneCurveBinding,
+                        onDragValueChanged: {
+                            if let pipeline = metalPipeline, pipeline.hasSourceTexture {
+                                pipeline.updateParams(metadataViewModel.editingMetadata.cameraRaw)
+                                metalCoordinator.requestRedraw()
+                            }
+                        },
+                        onEditingChanged: { editing in
+                            isDraggingEditSlider = editing
+                            if !editing {
+                                commitEditAdjustments()
+                            }
+                        }
+                    )
+                    .padding(.top, 4)
 
                     // ── Crop ──
                     Text("Crop")
@@ -771,7 +796,7 @@ struct EditWorkspaceView: View {
             previewCIImage = nil
             previewImage = sourceImage
             previewCGImage = nil
-            NotificationCenter.default.post(name: .scopeSourceImageDidChange, object: nil, userInfo: nil)
+            NotificationCenter.default.post(name: .scopeSourceImageDidChange, object: nil, userInfo: ["isHDR": isHDREnabled])
             return
         }
 
@@ -807,6 +832,7 @@ struct EditWorkspaceView: View {
         let fullSource = sourceCIImage
         let fallback = sourceImage
 
+        let hdr = isHDREnabled
         previewRenderTask = Task {
             let result = await Task.detached(priority: .userInitiated) { () -> (NSImage, CGImage)? in
                 let output = CameraRawApproximation.apply(to: fullSource, settings: settings)
@@ -827,11 +853,11 @@ struct EditWorkspaceView: View {
             if let result {
                 previewImage = result.0
                 previewCGImage = result.1
-                NotificationCenter.default.post(name: .scopeSourceImageDidChange, object: nil, userInfo: ["cgImage": result.1])
+                NotificationCenter.default.post(name: .scopeSourceImageDidChange, object: nil, userInfo: ["cgImage": result.1, "isHDR": hdr])
             } else {
                 previewImage = fallback
                 previewCGImage = nil
-                NotificationCenter.default.post(name: .scopeSourceImageDidChange, object: nil, userInfo: nil)
+                NotificationCenter.default.post(name: .scopeSourceImageDidChange, object: nil, userInfo: ["isHDR": hdr])
             }
         }
     }
@@ -857,6 +883,7 @@ struct EditWorkspaceView: View {
     private func performScopeUpdate() {
         guard let sourceCIImage else { return }
         let settings = metadataViewModel.editingMetadata.cameraRaw
+        let hdr = isHDREnabled
 
         let maxDim: CGFloat = 360
         let extent = sourceCIImage.extent
@@ -878,7 +905,7 @@ struct EditWorkspaceView: View {
             NotificationCenter.default.post(
                 name: .scopeSourceImageDidChange,
                 object: nil,
-                userInfo: ["cgImage": cgImage]
+                userInfo: ["cgImage": cgImage, "isHDR": hdr]
             )
         }
     }
@@ -1107,6 +1134,17 @@ struct EditWorkspaceView: View {
             set: { newValue in
                 updateCameraRaw { cameraRaw in
                     cameraRaw[keyPath: keyPath] = Int(newValue.rounded())
+                }
+            }
+        )
+    }
+
+    private var toneCurveBinding: Binding<ToneCurve?> {
+        Binding(
+            get: { metadataViewModel.editingMetadata.cameraRaw?.toneCurve },
+            set: { newValue in
+                updateCameraRaw { cameraRaw in
+                    cameraRaw.toneCurve = newValue
                 }
             }
         )
@@ -1476,6 +1514,7 @@ struct EditWorkspaceView: View {
             cameraRaw.blacks2012 = nil
             cameraRaw.saturation = nil
             cameraRaw.vibrance = nil
+            cameraRaw.toneCurve = nil
         }
         commitEditAdjustments()
     }
@@ -1652,6 +1691,17 @@ struct EditWorkspaceView: View {
             }
             guard !isTextFieldActive(), canEditSingleImage else { return event }
             isShowingBefore = true
+            return nil
+        }
+
+        // D key — hold to disable develop adjustments (keep crop visible)
+        if chars == "d" {
+            if isKeyUp {
+                isMutingDevelop = false
+                return nil
+            }
+            guard !isTextFieldActive(), canEditSingleImage else { return event }
+            isMutingDevelop = true
             return nil
         }
 

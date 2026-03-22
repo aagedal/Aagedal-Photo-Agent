@@ -13,7 +13,15 @@ final class ScopeViewModel {
     var scopeMode: ScopeMode = .waveform {
         didSet {
             guard scopeMode != oldValue else { return }
+            UserDefaults.standard.set(scopeMode.rawValue, forKey: UserDefaultsKeys.lastScopeMode)
             rerender()
+        }
+    }
+
+    init() {
+        if let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.lastScopeMode),
+           let mode = ScopeMode(rawValue: raw) {
+            self.scopeMode = mode
         }
     }
 
