@@ -37,16 +37,48 @@ final class ScopeViewModel {
 
     var isDragMode = false {
         didSet {
-            guard isDragMode != oldValue, !isDragMode else { return }
-            rerender()
+            guard isDragMode != oldValue else { return }
+            if !isDragMode, metalScopePipeline != nil {
+                // Drag ended — keep the Metal scope visible until the CPU scope
+                // image is ready, so there's no flash or blank frame.
+                holdingMetalScope = true
+            }
         }
     }
+
+    // MARK: - Metal Scope
+
+    /// Set by EditWorkspaceView when entering edit mode.
+    @ObservationIgnored var metalScopePipeline: MetalScopePipeline?
+    @ObservationIgnored var metalEditPipeline: MetalEditPipeline?
+    @ObservationIgnored var metalScopeCoordinator: MetalScopeView.Coordinator?
+
+    /// True while we keep the Metal scope visible after drag ends,
+    /// waiting for the CPU scope to finish rendering.
+    var holdingMetalScope = false
+
+    var isMetalScopeActive: Bool {
+        let dragging = isDragMode && metalScopePipeline != nil && metalEditPipeline?.hasSourceTexture == true
+        return dragging || holdingMetalScope
+    }
+
+    func clearMetal() {
+        holdingMetalScope = false
+        metalScopePipeline = nil
+        metalEditPipeline = nil
+        metalScopeCoordinator = nil
+    }
+
+    // MARK: - CPU Scope
 
     @ObservationIgnored private var computeTask: Task<Void, Never>?
     @ObservationIgnored private let service = ScopeRenderService()
     @ObservationIgnored private var lastCGImage: CGImage?
 
     func updateImage(_ cgImage: CGImage?) {
+        // During active drag, Metal handles scope rendering
+        if isDragMode, metalScopePipeline != nil { return }
+
         guard cgImage !== lastCGImage else { return }
         lastCGImage = cgImage
 
@@ -54,6 +86,7 @@ final class ScopeViewModel {
             computeTask?.cancel()
             scopeImage = nil
             isComputing = false
+            holdingMetalScope = false
             return
         }
 
@@ -97,6 +130,8 @@ final class ScopeViewModel {
                 scopeImage = nil
             }
             isComputing = false
+            // CPU scope is ready — release the Metal scope hold
+            holdingMetalScope = false
         }
     }
 }

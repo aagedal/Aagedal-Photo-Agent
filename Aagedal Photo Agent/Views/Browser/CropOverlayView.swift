@@ -213,7 +213,7 @@ struct CropOverlayView: View {
                 path.addRect(CGRect(origin: .zero, size: viewSize))
                 path.addRect(rect)
             }
-            .fill(Color.black.opacity(0.45), style: FillStyle(eoFill: true))
+            .fill(Color(red: 0.10, green: 0.10, blue: 0.10).opacity(0.70), style: FillStyle(eoFill: true))
 
             // Image boundary stroke — subtle line showing rotated image edges
             Path { path in

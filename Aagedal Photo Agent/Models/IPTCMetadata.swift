@@ -37,6 +37,42 @@ struct CameraRawCrop: Codable, Sendable, Equatable {
     }
 }
 
+struct EllipseMaskGeometry: Codable, Sendable, Equatable {
+    var centerX: Double = 0.5
+    var centerY: Double = 0.5
+    var radiusX: Double = 0.15
+    var radiusY: Double = 0.10
+    var rotation: Double = 0
+    var feather: Double = 50
+}
+
+struct MaskAdjustment: Codable, Sendable, Equatable, Identifiable {
+    var id: UUID = UUID()
+    var name: String = "Mask 1"
+    var enabled: Bool = true
+    var inverted: Bool = false
+    var amount: Double = 1.0
+    var geometry: EllipseMaskGeometry = EllipseMaskGeometry()
+
+    var exposure: Double?
+    var contrast: Int?
+    var highlights: Int?
+    var shadows: Int?
+    var whites: Int?
+    var blacks: Int?
+    var saturation: Int?
+    var vibrance: Int?
+    var temperature: Double?
+    var tint: Double?
+
+    var hasAdjustments: Bool {
+        exposure != nil || contrast != nil || highlights != nil
+            || shadows != nil || whites != nil || blacks != nil
+            || saturation != nil || vibrance != nil
+            || temperature != nil || tint != nil
+    }
+}
+
 struct CameraRawSettings: Codable, Sendable, Equatable {
     var version: String?
     var processVersion: String?
@@ -65,6 +101,7 @@ struct CameraRawSettings: Codable, Sendable, Equatable {
     var sdrWhites: Int?
     var sdrBlend: Int?
     var toneCurve: ToneCurve?
+    var localAdjustments: [MaskAdjustment]?
 
     var isEmpty: Bool {
         version == nil
@@ -94,6 +131,7 @@ struct CameraRawSettings: Codable, Sendable, Equatable {
             && sdrWhites == nil
             && sdrBlend == nil
             && (toneCurve?.isEmpty ?? true)
+            && (localAdjustments?.isEmpty ?? true)
     }
 
     func merged(preferring override: CameraRawSettings) -> CameraRawSettings {
@@ -131,6 +169,7 @@ struct CameraRawSettings: Codable, Sendable, Equatable {
         if let value = override.sdrWhites { result.sdrWhites = value }
         if let value = override.sdrBlend { result.sdrBlend = value }
         if let value = override.toneCurve { result.toneCurve = value }
+        if let value = override.localAdjustments { result.localAdjustments = value }
         return result
     }
 }
