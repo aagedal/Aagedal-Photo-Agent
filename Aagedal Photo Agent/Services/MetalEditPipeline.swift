@@ -76,7 +76,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         return output
     }
 
-    init?(device: MTLDevice, commandQueue: MTLCommandQueue) {
+    nonisolated init?(device: MTLDevice, commandQueue: MTLCommandQueue) {
         self.device = device
         self.commandQueue = commandQueue
 
@@ -400,5 +400,119 @@ final class MetalEditPipeline: @unchecked Sendable {
 
     nonisolated func clearSourceTexture() {
         sourceTexture = nil
+    }
+
+    // MARK: - Offscreen Rendering
+
+    /// Renders tonal adjustments via the Metal compute shader and returns the result as CIImage.
+    /// Creates an ephemeral pipeline instance — safe to call from any thread.
+    /// Uses the exact same shader as the live preview: LUT, vibrance, saturation,
+    /// white balance, and highlight desaturation. No CIFilter approximation.
+    nonisolated static func renderOffscreen(
+        source: CIImage,
+        settings: CameraRawSettings?
+    ) -> CIImage? {
+        guard let settings, !isIdentitySettings(settings) else { return nil }
+
+        let extent = source.extent
+        guard extent.width > 0, extent.height > 0 else { return nil }
+        let width = Int(extent.width)
+        let height = Int(extent.height)
+
+        // Create ephemeral pipeline (isolated from preview pipeline)
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let queue = device.makeCommandQueue(),
+              let pipeline = MetalEditPipeline(device: device, commandQueue: queue) else {
+            return nil
+        }
+
+        // 1. Upload source CIImage to Metal texture
+        let srcDesc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba16Float, width: width, height: height, mipmapped: false
+        )
+        srcDesc.usage = [.shaderRead, .shaderWrite]
+        srcDesc.storageMode = .private
+        guard let srcTexture = device.makeTexture(descriptor: srcDesc),
+              let uploadCmdBuf = queue.makeCommandBuffer() else { return nil }
+
+        let dest = CIRenderDestination(
+            width: width, height: height, pixelFormat: .rgba16Float,
+            commandBuffer: uploadCmdBuf, mtlTextureProvider: { srcTexture }
+        )
+        dest.isFlipped = true
+        dest.colorSpace = colorSpace
+
+        let translated = source.transformed(by: CGAffineTransform(
+            translationX: -extent.origin.x, y: -extent.origin.y
+        ))
+        do {
+            try pipeline.ciContext.startTask(
+                toRender: translated,
+                from: CGRect(x: 0, y: 0, width: width, height: height),
+                to: dest, at: .zero
+            )
+        } catch {
+            metalPipelineLog.error("renderOffscreen: CIImage upload failed: \(error)")
+            return nil
+        }
+        uploadCmdBuf.commit()
+        uploadCmdBuf.waitUntilCompleted()
+
+        // 2. Generate LUT and set parameters
+        pipeline.updateParams(settings)
+
+        // 3. Create output texture (managed — CIImage can create from it)
+        let outDesc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba16Float, width: width, height: height, mipmapped: false
+        )
+        outDesc.usage = [.shaderRead, .shaderWrite]
+        outDesc.storageMode = .shared
+        guard let outTexture = device.makeTexture(descriptor: outDesc) else { return nil }
+
+        // 4. Dispatch compute shader
+        guard let paramsBuffer = pipeline.paramsBuffer,
+              let computeCmdBuf = queue.makeCommandBuffer(),
+              let encoder = computeCmdBuf.makeComputeCommandEncoder() else { return nil }
+
+        let ptr = paramsBuffer.contents().bindMemory(to: EditParams.self, capacity: 1)
+        ptr.pointee.scale = SIMD2<Float>(1.0, 1.0)
+        ptr.pointee.sourceSize = SIMD2<Float>(Float(width), Float(height))
+        ptr.pointee.drawableSize = SIMD2<Float>(Float(width), Float(height))
+
+        encoder.setComputePipelineState(pipeline.pipelineState)
+        encoder.setTexture(srcTexture, index: 0)
+        encoder.setTexture(outTexture, index: 1)
+
+        // Use active LUT if tonal ops are active, otherwise identity
+        let flags = ptr.pointee.activeFlags
+        let useLUT = (flags & (1 << 0)) != 0
+        encoder.setTexture(useLUT ? pipeline.lutTexture : pipeline.identityLutTexture, index: 2)
+
+        encoder.setBuffer(paramsBuffer, offset: 0, index: 0)
+
+        let threadgroupSize = MTLSize(width: 16, height: 16, depth: 1)
+        let gridSize = MTLSize(width: width, height: height, depth: 1)
+        encoder.dispatchThreads(gridSize, threadsPerThreadgroup: threadgroupSize)
+        encoder.endEncoding()
+        computeCmdBuf.commit()
+        computeCmdBuf.waitUntilCompleted()
+
+        // 5. Create CIImage from output texture
+        // CIImage(mtlTexture:) produces a vertically flipped image — correct with orientation
+        guard let result = CIImage(mtlTexture: outTexture, options: [
+            .colorSpace: colorSpace
+        ]) else { return nil }
+        return result.oriented(.downMirrored)
+    }
+
+    /// Returns true if settings have no visual adjustments (all filters would be identity).
+    nonisolated private static func isIdentitySettings(_ settings: CameraRawSettings) -> Bool {
+        let noTonal = ToneCurveGenerator.isIdentity(settings: settings)
+        let noVibrance = settings.vibrance == nil || settings.vibrance == 0
+        let noSaturation = settings.saturation == nil || settings.saturation == 0
+        let noWB = settings.whiteBalance == "As Shot"
+            || (settings.temperature == nil && settings.incrementalTemperature == nil
+                && settings.tint == nil && settings.incrementalTint == nil)
+        return noTonal && noVibrance && noSaturation && noWB
     }
 }

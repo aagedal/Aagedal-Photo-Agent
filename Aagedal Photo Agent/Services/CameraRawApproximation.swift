@@ -13,6 +13,19 @@ enum CameraRawApproximation {
 
     nonisolated static func apply(to input: CIImage, settings: CameraRawSettings?) -> CIImage {
         guard let settings else { return input }
+
+        // Primary path: Metal compute shader renders all adjustments in one pass.
+        // Uses the exact same shader as the live preview — guarantees pixel-perfect match.
+        if let metalResult = MetalEditPipeline.renderOffscreen(source: input, settings: settings) {
+            return metalResult
+        }
+
+        // Fallback: CIFilter chain (if Metal is unavailable)
+        return applyCIFilters(to: input, settings: settings)
+    }
+
+    /// CIFilter-based fallback for systems without Metal support.
+    nonisolated private static func applyCIFilters(to input: CIImage, settings: CameraRawSettings) -> CIImage {
         var output = input
 
         // 1. White Balance (chromatic adaptation before tonal — matches ACR pipeline order)
@@ -24,10 +37,6 @@ enum CameraRawApproximation {
         }
 
         // 2. Tonal operations via ToneCurveGenerator LUT, approximated as 5-point CIToneCurve.
-        //    All tonal ops (exposure, contrast, blacks, shadows, highlights, whites) are
-        //    combined into a single curve using the same math as the Metal compute shader's LUT.
-        //    Note: 5-point Catmull-Rom approximation — near-exact for moderate adjustments,
-        //    slight deviation at extremes. Future: CIKernel with full LUT for exact match.
         if !ToneCurveGenerator.isIdentity(settings: settings) {
             let (rLUT, _, _) = ToneCurveGenerator.generatePerChannelLUT(settings: settings)
             let points = ToneCurveGenerator.sampleForToneCurve(rLUT)

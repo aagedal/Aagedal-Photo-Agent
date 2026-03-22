@@ -35,6 +35,8 @@ struct EditWorkspaceView: View {
     @State private var isMutingDevelop = false
     @State private var showCropControls = false
     @State private var lockedCropImageRect: CGRect?
+    @State private var dragCropAngle: Double?
+    @State private var dragCropRegion: NormalizedCropRegion?
     @State private var editUndoManager = UndoManager()
     @State private var metalPipeline: MetalEditPipeline?
     @State private var metalCoordinator = MetalPreviewView.Coordinator()
@@ -154,6 +156,16 @@ struct EditWorkspaceView: View {
         metadataViewModel.editingMetadata.cameraRaw?.crop?.angle ?? 0
     }
 
+    /// During rotation drag, prefer the local @State over the ViewModel
+    /// to avoid @Observable cascade while providing real-time visual feedback.
+    private var displayCropAngle: Double {
+        dragCropAngle ?? activeCropAngle
+    }
+
+    private var displayCrop: NormalizedCropRegion {
+        dragCropRegion ?? activeCrop
+    }
+
     private var sourceAspectRatio: Double {
         guard let size = sourceImage?.size, size.width > 0, size.height > 0 else { return 1.5 }
         return size.width / size.height
@@ -221,6 +233,12 @@ struct EditWorkspaceView: View {
                 metalCoordinator.startContinuousRendering()
             }
             if wasDragging, !isDragging {
+                // Commit crop drag to ViewModel before clearing overlay state
+                if let angle = dragCropAngle {
+                    updateCropAngle(angle, commit: false)
+                }
+                dragCropAngle = nil
+                dragCropRegion = nil
                 metalCoordinator.stopContinuousRendering()
                 scopeThrottleTask?.cancel()
                 scopeThrottleTask = nil
@@ -257,8 +275,8 @@ struct EditWorkspaceView: View {
                         let computedImageRect = cropFittedImageRect(
                             in: geometry.size,
                             imageSize: imageSize,
-                            crop: activeCrop,
-                            angleDegrees: activeCropAngle,
+                            crop: displayCrop,
+                            angleDegrees: displayCropAngle,
                             zoom: zoom
                         )
                         // Lock image rect during crop interaction to prevent
@@ -274,12 +292,12 @@ struct EditWorkspaceView: View {
                             coordinator: metalCoordinator
                         )
                             .frame(width: imageRect.width, height: imageRect.height)
-                            .rotationEffect(.degrees(-activeCropAngle))
+                            .rotationEffect(.degrees(-displayCropAngle))
                             .position(x: imageRect.midX, y: imageRect.midY)
 
                         if !showCropControls {
                             // Black out area outside crop when controls are hidden
-                            let cropRect = cropViewRect(crop: activeCrop, angleDegrees: activeCropAngle, imageRect: imageRect)
+                            let cropRect = cropViewRect(crop: displayCrop, angleDegrees: displayCropAngle, imageRect: imageRect)
                             Path { path in
                                 path.addRect(CGRect(origin: .zero, size: geometry.size))
                                 path.addRect(cropRect)
@@ -292,8 +310,8 @@ struct EditWorkspaceView: View {
                             CropOverlayView(
                                 imageRect: imageRect,
                                 viewSize: geometry.size,
-                                crop: activeCrop,
-                                angle: activeCropAngle,
+                                crop: displayCrop,
+                                angle: displayCropAngle,
                                 aspectRatio: cropAspectRatio,
                                 imageAspectRatio: sourceAspectRatio,
                                 onChange: { newCrop in
@@ -602,30 +620,29 @@ struct EditWorkspaceView: View {
                             step: 0.01,
                             formatter: { signedDoubleString($0, precision: 2) },
                             settingsMutator: { [self] settings, value in
+                                // Write to @State for immediate visual feedback
+                                // (bypasses @Observable cascade — Metal doesn't handle crop)
                                 let clampedAngle = min(max(value, -45), 45)
                                 let ar = sourceAspectRatio
                                 let orientation = selectedImageOrientation
                                 let sensorCrop = settings.crop ?? CameraRawCrop(top: 0, left: 0, bottom: 1, right: 1, angle: 0, hasCrop: true)
-                                let displayCrop = sensorCrop.transformedForDisplay(orientation: orientation)
-                                let oldAngle = displayCrop.angle ?? 0
+                                let dCrop = sensorCrop.transformedForDisplay(orientation: orientation)
+                                let oldAngle = dCrop.angle ?? 0
                                 let region = NormalizedCropRegion(
-                                    top: displayCrop.top ?? 0,
-                                    left: displayCrop.left ?? 0,
-                                    bottom: displayCrop.bottom ?? 1,
-                                    right: displayCrop.right ?? 1
+                                    top: dCrop.top ?? 0,
+                                    left: dCrop.left ?? 0,
+                                    bottom: dCrop.bottom ?? 1,
+                                    right: dCrop.right ?? 1
                                 )
                                 .withAngle(from: oldAngle, to: clampedAngle, aspectRatio: ar)
                                 .centerClampedForRotation(angleDegrees: clampedAngle, aspectRatio: ar)
                                 .fittingRotated(angleDegrees: clampedAngle, aspectRatio: ar)
-                                let updatedDisplay = CameraRawCrop(
-                                    top: region.top, left: region.left,
-                                    bottom: region.bottom, right: region.right,
-                                    angle: (clampedAngle * 1000000).rounded() / 1000000,
-                                    hasCrop: true
-                                )
-                                settings.crop = updatedDisplay.transformedForSensor(orientation: orientation)
+                                dragCropAngle = clampedAngle
+                                dragCropRegion = region
                             },
                             onReset: {
+                                dragCropAngle = nil
+                                dragCropRegion = nil
                                 cropAngleBinding.wrappedValue = 0
                             }
                         )
@@ -822,11 +839,18 @@ struct EditWorkspaceView: View {
                 sourceCIImage = thumbnail?.tiffRepresentation.flatMap { CIImage(data: $0) }
             }
 
-            // Upload source to Metal texture for compute shader fast path
+            // Upload source to Metal texture for compute shader fast path.
+            // After upload completes, re-run renderPreview() to set Metal params
+            // with the current edit settings (the initial renderPreview() below
+            // can't set Metal params because the texture isn't ready yet).
             if let ci = sourceCIImage, let pipeline = metalPipeline {
                 let ciCopy = ci
-                Task.detached(priority: .medium) {
-                    pipeline.uploadSourceImage(ciCopy)
+                Task {
+                    await Task.detached(priority: .medium) {
+                        pipeline.uploadSourceImage(ciCopy)
+                    }.value
+                    guard !Task.isCancelled else { return }
+                    renderPreview()
                 }
             }
 
