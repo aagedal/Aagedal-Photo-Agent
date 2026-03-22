@@ -12,6 +12,8 @@ struct CurveEditorView: View {
     @State private var dragIndex: Int?
     @State private var selectedPointIndex: Int?
     @State private var didDragAfterMouseDown = false
+    @State private var lastClickTime: Date = .distantPast
+    @State private var lastClickIndex: Int?
 
     enum CurveChannel: String, CaseIterable {
         case master, red, green, blue
@@ -72,6 +74,12 @@ struct CurveEditorView: View {
     private let pointRadius: CGFloat = 5
     private let hitRadius: CGFloat = 12
 
+    private var canDeleteSelectedPoint: Bool {
+        guard let index = selectedPointIndex else { return false }
+        let points = pointsForChannel(selectedChannel)
+        return index > 0 && index < points.count - 1
+    }
+
     var body: some View {
         VStack(spacing: 4) {
             HStack(spacing: 0) {
@@ -96,7 +104,7 @@ struct CurveEditorView: View {
 
             Divider()
 
-            // Channel selector
+            // Channel selector + delete button
             HStack(spacing: 2) {
                 ForEach(CurveChannel.allCases, id: \.self) { channel in
                     Button {
@@ -114,6 +122,18 @@ struct CurveEditorView: View {
                             )
                     }
                     .buttonStyle(.plain)
+                }
+
+                if canDeleteSelectedPoint {
+                    Button {
+                        deleteSelectedPoint()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Delete selected point")
                 }
             }
 
@@ -177,11 +197,8 @@ struct CurveEditorView: View {
                             didDragAfterMouseDown = false
                         }
                 )
-                .onKeyPress(.delete) { deleteSelectedPoint(); return .handled }
-                .onKeyPress(.deleteForward) { deleteSelectedPoint(); return .handled }
             }
             .aspectRatio(1, contentMode: .fit)
-            .focusable()
         }
     }
 
@@ -253,18 +270,41 @@ struct CurveEditorView: View {
         if dragIndex == nil {
             didDragAfterMouseDown = false
             // Find nearest point within hit radius
+            var hitIndex: Int?
             for (i, point) in points.enumerated() {
                 let screenPos = pointToScreen(point, in: size)
                 let dist = hypot(drag.startLocation.x - screenPos.x, drag.startLocation.y - screenPos.y)
                 if dist < hitRadius {
-                    dragIndex = i
-                    selectedPointIndex = i
-                    onEditingChanged?(true)
+                    hitIndex = i
                     break
                 }
             }
+
+            // Double-click detection: same point clicked twice within 0.3s
+            if let hit = hitIndex {
+                let now = Date()
+                if hit == lastClickIndex && now.timeIntervalSince(lastClickTime) < 0.3 {
+                    // Double-click on a point — delete it (if not an endpoint)
+                    if hit > 0 && hit < points.count - 1 {
+                        var newPoints = points
+                        newPoints.remove(at: hit)
+                        selectedPointIndex = nil
+                        lastClickIndex = nil
+                        lastClickTime = .distantPast
+                        setPointsForChannel(selectedChannel, newPoints)
+                        onDragValueChanged?()
+                        return
+                    }
+                }
+                lastClickTime = now
+                lastClickIndex = hit
+                dragIndex = hit
+                selectedPointIndex = hit
+                onEditingChanged?(true)
+            }
+
             // If no point hit, add a new point
-            if dragIndex == nil {
+            if hitIndex == nil {
                 selectedPointIndex = nil
                 let newPoint = screenToPoint(drag.startLocation, in: size)
                 var newPoints = points
