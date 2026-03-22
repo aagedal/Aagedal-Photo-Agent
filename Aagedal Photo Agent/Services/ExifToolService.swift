@@ -70,6 +70,9 @@ enum ExifToolReadKey {
     static let crsSDRShadows = "SDRShadows"
     static let crsSDRWhites = "SDRWhites"
     static let crsSDRBlend = "SDRBlend"
+
+    // Camera Raw local adjustments (structured, read with -struct flag)
+    static let maskGroupBasedCorrections = "MaskGroupBasedCorrections"
 }
 
 /// Manages a persistent ExifTool process in `-stay_open` mode for fast batch operations.
@@ -536,6 +539,7 @@ final class ExifToolService {
             hasCrop: parseBoolValue(dict[ExifToolReadKey.crsHasCrop])
         )
         let cropValue = crop.isEmpty ? nil : crop
+        let localAdjustments = parseMaskGroupBasedCorrections(dict[ExifToolReadKey.maskGroupBasedCorrections])
 
         let cameraRaw = CameraRawSettings(
             version: dict[ExifToolReadKey.crsVersion] as? String,
@@ -563,7 +567,8 @@ final class ExifToolService {
             sdrHighlights: parseIntValue(dict[ExifToolReadKey.crsSDRHighlights]),
             sdrShadows: parseIntValue(dict[ExifToolReadKey.crsSDRShadows]),
             sdrWhites: parseIntValue(dict[ExifToolReadKey.crsSDRWhites]),
-            sdrBlend: parseIntValue(dict[ExifToolReadKey.crsSDRBlend])
+            sdrBlend: parseIntValue(dict[ExifToolReadKey.crsSDRBlend]),
+            localAdjustments: localAdjustments
         )
 
         return IPTCMetadata(
@@ -598,7 +603,7 @@ final class ExifToolService {
     /// Write metadata fields to one or more files.
     /// Multi-line values are written via temp files using exiftool's `-TAG<=FILE` syntax,
     /// since the `-stay_open` argfile mode treats each line as a separate argument.
-    func writeFields(_ fields: [String: String], to urls: [URL]) async throws {
+    func writeFields(_ fields: [String: String], to urls: [URL], extraArgs: [String] = []) async throws {
         guard !urls.isEmpty, !fields.isEmpty else { return }
 
         var normalizedFields = fields
@@ -681,6 +686,7 @@ final class ExifToolService {
                 args.append("-\(key)=\(value)")
             }
         }
+        args += extraArgs
         args += urls.map(\.path)
 
         _ = try await execute(args)
@@ -934,6 +940,72 @@ final class ExifToolService {
             }
         }
         return nil
+    }
+
+    /// Parse ACR MaskGroupBasedCorrections structured array into [MaskAdjustment].
+    /// The structured JSON from ExifTool (-struct flag) provides an array of correction objects,
+    /// each containing CorrectionMasks (geometry) and Local* adjustment values.
+    private func parseMaskGroupBasedCorrections(_ value: Any?) -> [MaskAdjustment]? {
+        guard let corrections = value as? [[String: Any]], !corrections.isEmpty else { return nil }
+        var masks: [MaskAdjustment] = []
+        for (index, corr) in corrections.enumerated() {
+            let active = parseBoolValue(corr["CorrectionActive"]) ?? true
+            let amount = parseDoubleValue(corr["CorrectionAmount"]) ?? 1.0
+            let name = corr["CorrectionName"] as? String ?? "Mask \(index + 1)"
+
+            // Parse ellipse geometry from the first CorrectionMasks entry
+            var geometry = EllipseMaskGeometry()
+            var inverted = false
+            if let maskArray = corr["CorrectionMasks"] as? [[String: Any]],
+               let mask = maskArray.first,
+               (mask["What"] as? String) == "Mask/CircularGradient" {
+                let top = parseDoubleValue(mask["Top"]) ?? 0
+                let left = parseDoubleValue(mask["Left"]) ?? 0
+                let bottom = parseDoubleValue(mask["Bottom"]) ?? 1
+                let right = parseDoubleValue(mask["Right"]) ?? 1
+                geometry.centerX = (left + right) / 2
+                geometry.centerY = (top + bottom) / 2
+                geometry.radiusX = abs(right - left) / 2
+                geometry.radiusY = abs(bottom - top) / 2
+                geometry.rotation = parseDoubleValue(mask["Angle"]) ?? 0
+                geometry.feather = parseDoubleValue(mask["Feather"]) ?? 50
+                // ACR Flipped=true means effect applies INSIDE the ellipse;
+                // our inverted=true means effect applies OUTSIDE. Negate.
+                inverted = !(parseBoolValue(mask["Flipped"]) ?? true)
+            }
+
+            // ACR stores local adjustments as fractions: 0.1 = +10 for Int fields, direct EV for exposure.
+            // ACR stores all local adjustments as fractions of their full range (-1..+1).
+            // Exposure range is -4..+4 EV, so XMP value × 4 = EV stops.
+            let exposure = parseDoubleValue(corr["LocalExposure2012"]).map { $0 * 4.0 }
+            let contrast = parseDoubleValue(corr["LocalContrast2012"]).map { Int(round($0 * 100)) }
+            let highlights = parseDoubleValue(corr["LocalHighlights2012"]).map { Int(round($0 * 100)) }
+            let shadows = parseDoubleValue(corr["LocalShadows2012"]).map { Int(round($0 * 100)) }
+            let whites = parseDoubleValue(corr["LocalWhites2012"]).map { Int(round($0 * 100)) }
+            let blacks = parseDoubleValue(corr["LocalBlacks2012"]).map { Int(round($0 * 100)) }
+            let saturation = parseDoubleValue(corr["LocalSaturation"]).map { Int(round($0 * 100)) }
+            let temperature = parseDoubleValue(corr["LocalTemperature"]).map { $0 * 100 }
+            let tint = parseDoubleValue(corr["LocalTint"]).map { $0 * 100 }
+
+            let mask = MaskAdjustment(
+                name: name,
+                enabled: active,
+                inverted: inverted,
+                amount: amount,
+                geometry: geometry,
+                exposure: exposure.flatMap { abs($0) < 0.001 ? nil : $0 },
+                contrast: contrast.flatMap { $0 == 0 ? nil : $0 },
+                highlights: highlights.flatMap { $0 == 0 ? nil : $0 },
+                shadows: shadows.flatMap { $0 == 0 ? nil : $0 },
+                whites: whites.flatMap { $0 == 0 ? nil : $0 },
+                blacks: blacks.flatMap { $0 == 0 ? nil : $0 },
+                saturation: saturation.flatMap { $0 == 0 ? nil : $0 },
+                temperature: temperature.flatMap { abs($0) < 0.01 ? nil : $0 },
+                tint: tint.flatMap { abs($0) < 0.01 ? nil : $0 }
+            )
+            masks.append(mask)
+        }
+        return masks.isEmpty ? nil : masks
     }
 
 }

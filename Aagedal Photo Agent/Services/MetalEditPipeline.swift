@@ -124,6 +124,8 @@ final class MetalEditPipeline: @unchecked Sendable {
             length: MemoryLayout<MaskParams>.stride * Self.maxMasks,
             options: .storageModeShared
         )
+        metalPipelineLog.info("MaskParams stride=\(MemoryLayout<MaskParams>.stride) size=\(MemoryLayout<MaskParams>.size) alignment=\(MemoryLayout<MaskParams>.alignment)")
+        metalPipelineLog.info("EditParams stride=\(MemoryLayout<EditParams>.stride) size=\(MemoryLayout<EditParams>.size) alignment=\(MemoryLayout<EditParams>.alignment)")
 
         // Create a 2-entry identity LUT: maps input → input (linear ramp from domainMin to domainMax).
         // Always bound at texture index 2 to avoid Metal validation errors on unbound textures.
@@ -325,10 +327,6 @@ final class MetalEditPipeline: @unchecked Sendable {
                 if let sat = mask.saturation, sat != 0 {
                     mp.saturation = Float(min(max(1.0 + Double(sat) / 100.0, 0.0), 2.0))
                     maskFlags |= (1 << 6)
-                }
-                if let vib = mask.vibrance, vib != 0 {
-                    mp.vibrance = Float(min(max(Double(vib) / 100.0, -1.0), 1.0))
-                    maskFlags |= (1 << 7)
                 }
                 mp.activeFlags = maskFlags
                 maskPtr[i] = mp
