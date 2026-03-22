@@ -553,37 +553,39 @@ struct EditWorkspaceView: View {
                         .help("Load crop from embedded image metadata")
                     }
 
-                    if showCropControls {
-                        HStack {
-                            Picker(selection: $cropAspectRatio) {
-                                ForEach(CropAspectRatio.allCases) { ratio in
-                                    Text(ratio.label).tag(ratio)
-                                }
-                            } label: {
-                                Label("Aspect Ratio", systemImage: "crop")
-                                    .labelStyle(.iconOnly)
+                    HStack {
+                        Picker(selection: $cropAspectRatio) {
+                            ForEach(CropAspectRatio.allCases) { ratio in
+                                Text(ratio.label).tag(ratio)
                             }
-                            .pickerStyle(.menu)
-                            .onChange(of: cropAspectRatio) { _, newRatio in
-                                applyAspectRatioToCrop(newRatio)
-                            }
-
-                            Spacer()
-
-                            Button {
-                                resetCrop()
-                            } label: {
-                                Image(systemName: "arrow.counterclockwise")
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(.secondary)
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(!isCropEnabled)
-                            .help("Reset Crop")
+                        } label: {
+                            Label("Aspect Ratio", systemImage: "crop")
+                                .labelStyle(.iconOnly)
+                        }
+                        .pickerStyle(.menu)
+                        .disabled(!showCropControls)
+                        .onChange(of: cropAspectRatio) { _, newRatio in
+                            applyAspectRatioToCrop(newRatio)
                         }
 
+                        Spacer()
+
+                        Button {
+                            resetCrop()
+                        } label: {
+                            Image(systemName: "arrow.counterclockwise")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!isCropEnabled)
+                        .help("Reset Crop")
+                    }
+
+                    if showCropControls {
+
                         sliderRow(
-                            "Crop Rotation",
+                            "Rotation",
                             value: cropAngleBinding,
                             range: -45...45,
                             step: 0.01,
