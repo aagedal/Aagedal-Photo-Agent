@@ -263,7 +263,7 @@ struct EditWorkspaceView: View {
                             isHDR: isHDREnabled,
                             metalPipeline: metalPipeline,
                             useComputeShader: !isShowingBefore && metalPipeline?.hasSourceTexture == true,
-                            isDragging: isDraggingEditSlider,
+
                             coordinator: metalCoordinator
                         )
                             .frame(width: imageRect.width, height: imageRect.height)
@@ -319,7 +319,7 @@ struct EditWorkspaceView: View {
                             isHDR: isHDREnabled && !isShowingBefore,
                             metalPipeline: metalPipeline,
                             useComputeShader: !isShowingBefore && metalPipeline?.hasSourceTexture == true,
-                            isDragging: isDraggingEditSlider,
+
                             coordinator: metalCoordinator
                         )
                             .frame(width: imageRect.width, height: imageRect.height)
