@@ -124,19 +124,18 @@ struct CurveEditorView: View {
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.secondary)
                 Spacer()
-                if toneCurve != nil {
-                    Button {
-                        toneCurve = nil
-                        selectedPointIndex = nil
-                        onDragCurveChanged?(nil)
-                    } label: {
-                        Image(systemName: "arrow.counterclockwise")
-                            .font(.system(size: 9))
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Reset tone curve")
+                Button {
+                    toneCurve = nil
+                    selectedPointIndex = nil
+                    onDragCurveChanged?(nil)
+                } label: {
+                    Image(systemName: "arrow.counterclockwise")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
                 }
+                .buttonStyle(.plain)
+                .disabled(toneCurve == nil)
+                .help("Reset tone curve")
             }
 
             Divider()
