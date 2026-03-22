@@ -9,6 +9,27 @@ nonisolated(unsafe) private let metalPipelineLog = Logger(
     subsystem: "com.aagedal.photo-agent", category: "MetalEditPipeline"
 )
 
+/// GPU mask parameters matching the Metal `MaskParams` struct.
+struct MaskParams {
+    var center: SIMD2<Float> = .zero
+    var radii: SIMD2<Float> = SIMD2<Float>(0.15, 0.10)
+    var rotation: Float = 0
+    var feather: Float = 0.5
+    var inverted: Float = 0
+    var amount: Float = 1.0
+
+    var exposure: Float = 0
+    var contrast: Float = 0
+    var highlights: Float = 0
+    var shadows: Float = 0
+    var whites: Float = 0
+    var blacks: Float = 0
+    var saturation: Float = 1
+    var vibrance: Float = 0
+    var activeFlags: UInt32 = 0
+    var _pad: UInt32 = 0
+}
+
 /// Uniform buffer layout matching the Metal `EditParams` struct.
 /// Contains all edit operations: tonal (via LUT), vibrance, saturation, white balance.
 struct EditParams {
@@ -20,7 +41,7 @@ struct EditParams {
     var whiteBalanceMatrix: simd_float3x3 = matrix_identity_float3x3
 
     var activeFlags: UInt32 = 0
-    var _pad1: UInt32 = 0 // align to 8 bytes for SIMD2<Float>
+    var maskCount: UInt32 = 0
 
     var scale: SIMD2<Float> = .zero
     var sourceSize: SIMD2<Float> = .zero
@@ -41,11 +62,14 @@ final class MetalEditPipeline: @unchecked Sendable {
     private let commandQueue: MTLCommandQueue
     private let pipelineState: MTLComputePipelineState
 
-    nonisolated(unsafe) private var sourceTexture: MTLTexture?
-    nonisolated(unsafe) private var paramsBuffer: MTLBuffer?
-    nonisolated(unsafe) private let lutTexture: MTLTexture
+    nonisolated(unsafe) private(set) var sourceTexture: MTLTexture?
+    nonisolated(unsafe) private(set) var paramsBuffer: MTLBuffer?
+    nonisolated(unsafe) private(set) var lutTexture: MTLTexture
     nonisolated(unsafe) private let identityLutTexture: MTLTexture
+    nonisolated(unsafe) private let maskBuffer: MTLBuffer?
     nonisolated(unsafe) private var float16Buffer = [UInt16](repeating: 0, count: ToneCurveGenerator.lutSize * 4)
+
+    nonisolated(unsafe) private static let maxMasks = 8
 
     nonisolated(unsafe) private static let colorSpace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
 
@@ -96,6 +120,10 @@ final class MetalEditPipeline: @unchecked Sendable {
             .workingColorSpace: Self.colorSpace,
         ])
         self.paramsBuffer = device.makeBuffer(length: MemoryLayout<EditParams>.stride, options: .storageModeShared)
+        self.maskBuffer = device.makeBuffer(
+            length: MemoryLayout<MaskParams>.stride * Self.maxMasks,
+            options: .storageModeShared
+        )
 
         // Create a 2-entry identity LUT: maps input → input (linear ramp from domainMin to domainMax).
         // Always bound at texture index 2 to avoid Metal validation errors on unbound textures.
@@ -260,6 +288,53 @@ final class MetalEditPipeline: @unchecked Sendable {
         }
 
         params.activeFlags = flags
+
+        // 5. Local mask adjustments
+        let masks = settings.localAdjustments?.filter(\.enabled) ?? []
+        let maskCount = min(masks.count, Self.maxMasks)
+        params.maskCount = UInt32(maskCount)
+
+        if maskCount > 0 {
+            metalPipelineLog.debug("updateParams: \(maskCount) mask(s) active")
+            for (i, m) in masks.prefix(maskCount).enumerated() {
+                metalPipelineLog.debug("  mask[\(i)]: center=(\(m.geometry.centerX),\(m.geometry.centerY)) radii=(\(m.geometry.radiusX),\(m.geometry.radiusY)) feather=\(m.geometry.feather) exp=\(m.exposure ?? 0)")
+            }
+        }
+
+        if maskCount > 0, let maskBuf = maskBuffer {
+            let maskPtr = maskBuf.contents().bindMemory(to: MaskParams.self, capacity: Self.maxMasks)
+            for i in 0..<maskCount {
+                let mask = masks[i]
+                var mp = MaskParams()
+                mp.center = SIMD2<Float>(Float(mask.geometry.centerX), Float(mask.geometry.centerY))
+                mp.radii = SIMD2<Float>(Float(mask.geometry.radiusX), Float(mask.geometry.radiusY))
+                mp.rotation = Float(mask.geometry.rotation * .pi / 180.0)
+                mp.feather = Float(mask.geometry.feather / 100.0)
+                mp.inverted = mask.inverted ? 1.0 : 0.0
+                mp.amount = Float(mask.amount)
+
+                var maskFlags: UInt32 = 0
+                if let exp = mask.exposure, exp != 0 {
+                    mp.exposure = Float(exp)
+                    maskFlags |= (1 << 0)
+                }
+                if let con = mask.contrast, con != 0 {
+                    mp.contrast = Float(Double(con) / 100.0)
+                    maskFlags |= (1 << 1)
+                }
+                if let sat = mask.saturation, sat != 0 {
+                    mp.saturation = Float(min(max(1.0 + Double(sat) / 100.0, 0.0), 2.0))
+                    maskFlags |= (1 << 6)
+                }
+                if let vib = mask.vibrance, vib != 0 {
+                    mp.vibrance = Float(min(max(Double(vib) / 100.0, -1.0), 1.0))
+                    maskFlags |= (1 << 7)
+                }
+                mp.activeFlags = maskFlags
+                maskPtr[i] = mp
+            }
+        }
+
         let ptr = buffer.contents().bindMemory(to: EditParams.self, capacity: 1)
         ptr.pointee = params
 
@@ -305,6 +380,9 @@ final class MetalEditPipeline: @unchecked Sendable {
         encoder.setTexture(drawable.texture, index: 1)
         encoder.setTexture(lutTexture, index: 2)
         encoder.setBuffer(buffer, offset: 0, index: 0)
+        if let maskBuf = maskBuffer {
+            encoder.setBuffer(maskBuf, offset: 0, index: 1)
+        }
 
         let threadgroupSize = MTLSize(width: 16, height: 16, depth: 1)
         let gridSize = MTLSize(
@@ -413,6 +491,10 @@ final class MetalEditPipeline: @unchecked Sendable {
         settings: CameraRawSettings?
     ) -> CIImage? {
         guard let settings, !isIdentitySettings(settings) else { return nil }
+        let maskCount = settings.localAdjustments?.filter(\.enabled).count ?? 0
+        if maskCount > 0 {
+            metalPipelineLog.info("renderOffscreen: \(maskCount) mask(s) in settings")
+        }
 
         let extent = source.extent
         guard extent.width > 0, extent.height > 0 else { return nil }
@@ -489,6 +571,9 @@ final class MetalEditPipeline: @unchecked Sendable {
         encoder.setTexture(useLUT ? pipeline.lutTexture : pipeline.identityLutTexture, index: 2)
 
         encoder.setBuffer(paramsBuffer, offset: 0, index: 0)
+        if let maskBuf = pipeline.maskBuffer {
+            encoder.setBuffer(maskBuf, offset: 0, index: 1)
+        }
 
         let threadgroupSize = MTLSize(width: 16, height: 16, depth: 1)
         let gridSize = MTLSize(width: width, height: height, depth: 1)
@@ -513,6 +598,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         let noWB = settings.whiteBalance == "As Shot"
             || (settings.temperature == nil && settings.incrementalTemperature == nil
                 && settings.tint == nil && settings.incrementalTint == nil)
-        return noTonal && noVibrance && noSaturation && noWB
+        let noMasks = settings.localAdjustments?.isEmpty ?? true
+        return noTonal && noVibrance && noSaturation && noWB && noMasks
     }
 }

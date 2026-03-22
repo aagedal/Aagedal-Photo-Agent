@@ -11,6 +11,7 @@ struct EditWorkspaceView: View {
     @Bindable var metadataViewModel: MetadataViewModel
     @Bindable var browserViewModel: BrowserViewModel
     let settingsViewModel: SettingsViewModel
+    let scopeViewModel: ScopeViewModel
     let onExit: () -> Void
     var onPendingStatusChanged: (() -> Void)?
 
@@ -40,9 +41,12 @@ struct EditWorkspaceView: View {
     @State private var editUndoManager = UndoManager()
     @State private var metalPipeline: MetalEditPipeline?
     @State private var metalCoordinator = MetalPreviewView.Coordinator()
+    @State private var selectedMaskIndex: Int? = nil
     @State private var scopeThrottleTask: Task<Void, Never>?
     @State private var lastScopeUpdateTime: ContinuousClock.Instant = .now
     @FocusState private var isWorkspaceFocused: Bool
+
+    private static let previewBackground = Color(red: 0.15, green: 0.15, blue: 0.15)
 
     private static let minKelvin = 2000.0
     private static let maxKelvin = 50000.0
@@ -135,6 +139,7 @@ struct EditWorkspaceView: View {
             || cameraRaw.blacks2012 != nil
             || cameraRaw.saturation != nil
             || cameraRaw.toneCurve != nil
+            || !(cameraRaw.localAdjustments?.isEmpty ?? true)
     }
 
     private var selectedImageOrientation: Int {
@@ -196,6 +201,18 @@ struct EditWorkspaceView: View {
                 let queue = MetalPreviewView.Coordinator.commandQueue
                 metalPipeline = MetalEditPipeline(device: device, commandQueue: queue)
             }
+            // Create Metal scope pipeline and share edit pipeline references
+            if let pipeline = metalPipeline {
+                scopeViewModel.metalEditPipeline = pipeline
+                if scopeViewModel.metalScopePipeline == nil {
+                    let device = MetalPreviewView.Coordinator.device
+                    let queue = MetalPreviewView.Coordinator.commandQueue
+                    if let scopePipeline = MetalScopePipeline(device: device, commandQueue: queue) {
+                        scopeViewModel.metalScopePipeline = scopePipeline
+                        scopeViewModel.metalScopeCoordinator = MetalScopeView.Coordinator(scopePipeline: scopePipeline)
+                    }
+                }
+            }
             loadSelectedImagePreview()
             keyEventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { event in
                 return handleKeyEvent(event)
@@ -203,6 +220,8 @@ struct EditWorkspaceView: View {
         }
         .onDisappear {
             metalCoordinator.stopContinuousRendering()
+            scopeViewModel.metalScopeCoordinator?.stopContinuousRendering()
+            scopeViewModel.clearMetal()
             previewTask?.cancel()
             previewTask = nil
             previewRenderTask?.cancel()
@@ -266,7 +285,7 @@ struct EditWorkspaceView: View {
     private var previewPane: some View {
         GeometryReader { geometry in
             ZStack {
-                Color(nsColor: .windowBackgroundColor)
+                Self.previewBackground
 
                 if let imageSize = currentImageSize, displayCIImage != nil {
                     if (showCropControls || isCropEnabled), !isShowingBefore {
@@ -302,7 +321,7 @@ struct EditWorkspaceView: View {
                                 path.addRect(CGRect(origin: .zero, size: geometry.size))
                                 path.addRect(cropRect)
                             }
-                            .fill(Color.black, style: FillStyle(eoFill: true))
+                            .fill(Self.previewBackground, style: FillStyle(eoFill: true))
                             .allowsHitTesting(false)
                         }
 
@@ -349,6 +368,33 @@ struct EditWorkspaceView: View {
                         )
                             .frame(width: imageRect.width, height: imageRect.height)
                             .position(x: geometry.size.width * 0.5, y: geometry.size.height * 0.5)
+
+                        // Ellipse mask overlay
+                        if let maskIdx = selectedMaskIndex,
+                           let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
+                           maskIdx < masks.count,
+                           !isShowingBefore {
+                            EllipseMaskOverlayView(
+                                imageRect: imageRect,
+                                viewSize: geometry.size,
+                                geometry: masks[maskIdx].geometry,
+                                inverted: masks[maskIdx].inverted,
+                                onChange: { newGeometry in
+                                    updateCameraRaw { cameraRaw in
+                                        cameraRaw.localAdjustments?[maskIdx].geometry = newGeometry
+                                    }
+                                    if let pipeline = metalPipeline, pipeline.hasSourceTexture {
+                                        var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
+                                        settings.localAdjustments?[maskIdx].geometry = newGeometry
+                                        pipeline.updateParams(settings)
+                                        metalCoordinator.requestRedraw()
+                                    }
+                                },
+                                onCommit: {
+                                    commitEditAdjustments()
+                                }
+                            )
+                        }
                     }
                 } else if isLoadingPreview {
                     ProgressView("Loading preview...")
@@ -457,6 +503,13 @@ struct EditWorkspaceView: View {
                 }
 
                 if canEditSingleImage {
+                    // ── Mask Selector ──
+                    maskSelectorBar
+
+                    if selectedMaskIndex != nil {
+                        maskAdjustmentSliders
+                    } else {
+
                     // ── Color ──
                     Text("Color")
                         .font(.subheadline.weight(.medium))
@@ -560,6 +613,8 @@ struct EditWorkspaceView: View {
                         }
                     )
                     .padding(.top, 2)
+
+                    } // end global adjustments else block
 
                     // ── Crop ──
                     Text("Crop")
@@ -877,7 +932,10 @@ struct EditWorkspaceView: View {
         if isDraggingEditSlider {
             let elapsed = ContinuousClock.now - renderStart
             editLog.debug("renderPreview: drag path (\(elapsed))")
-            updateScopeDuringDrag()
+            // Metal scope renders automatically via continuous MTKView — skip CPU scope
+            if scopeViewModel.metalScopePipeline == nil {
+                updateScopeDuringDrag()
+            }
             return
         }
 
@@ -1195,6 +1253,7 @@ struct EditWorkspaceView: View {
             || cameraRaw.saturation != nil
             || cameraRaw.vibrance != nil
             || (cameraRaw.crop?.isEmpty == false)
+            || !(cameraRaw.localAdjustments?.isEmpty ?? true)
     }
 
     private func toneSliderBinding(_ keyPath: WritableKeyPath<CameraRawSettings, Int?>) -> Binding<Double> {
@@ -1550,6 +1609,242 @@ struct EditWorkspaceView: View {
         }
     }
 
+    // MARK: - Mask UI
+
+    private var maskSelectorBar: some View {
+        HStack(spacing: 6) {
+            Button {
+                addNewMask()
+            } label: {
+                Image(systemName: "plus.circle")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Add mask adjustment")
+
+            let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments ?? []
+            Picker("", selection: $selectedMaskIndex) {
+                Text("Global").tag(nil as Int?)
+                ForEach(Array(masks.enumerated()), id: \.offset) { idx, mask in
+                    Text(mask.name).tag(idx as Int?)
+                }
+            }
+            .pickerStyle(.menu)
+            .frame(maxWidth: .infinity)
+
+            if let idx = selectedMaskIndex {
+                let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments ?? []
+                if idx < masks.count {
+                    Button {
+                        let inverted = masks[idx].inverted
+                        updateCameraRaw { cameraRaw in
+                            cameraRaw.localAdjustments?[idx].inverted = !inverted
+                        }
+                        commitEditAdjustments()
+                    } label: {
+                        Image(systemName: masks[idx].inverted ? "circle.dashed.inset.filled" : "circle.dashed")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help(masks[idx].inverted ? "Invert: adjustments apply outside ellipse" : "Normal: adjustments apply inside ellipse")
+                }
+
+                Button {
+                    deleteSelectedMask()
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Delete mask")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var maskAdjustmentSliders: some View {
+        if let idx = selectedMaskIndex,
+           let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
+           idx < masks.count {
+
+            Text("Mask Adjustments")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.secondary)
+            Divider()
+
+            sliderRow(
+                "Exposure",
+                value: maskDoubleBinding(idx, \.exposure),
+                range: -5...5,
+                step: 0.01,
+                formatter: { signedDoubleString($0, precision: 2) },
+                settingsMutator: { settings, value in
+                    settings.localAdjustments?[idx].exposure = abs(value) < 0.001 ? nil : (value * 100).rounded() / 100
+                },
+                onReset: {
+                    maskDoubleBinding(idx, \.exposure).wrappedValue = 0
+                }
+            )
+            sliderRow(
+                "Contrast",
+                value: maskIntBinding(idx, \.contrast),
+                range: -100...100,
+                step: 1,
+                formatter: signedIntString,
+                settingsMutator: { settings, value in
+                    settings.localAdjustments?[idx].contrast = Int(value.rounded()) == 0 ? nil : Int(value.rounded())
+                },
+                onReset: {
+                    maskIntBinding(idx, \.contrast).wrappedValue = 0
+                }
+            )
+            sliderRow(
+                "Highlights",
+                value: maskIntBinding(idx, \.highlights),
+                range: -100...100,
+                step: 1,
+                formatter: signedIntString,
+                settingsMutator: { settings, value in
+                    settings.localAdjustments?[idx].highlights = Int(value.rounded()) == 0 ? nil : Int(value.rounded())
+                },
+                onReset: {
+                    maskIntBinding(idx, \.highlights).wrappedValue = 0
+                }
+            )
+            sliderRow(
+                "Shadows",
+                value: maskIntBinding(idx, \.shadows),
+                range: -100...100,
+                step: 1,
+                formatter: signedIntString,
+                settingsMutator: { settings, value in
+                    settings.localAdjustments?[idx].shadows = Int(value.rounded()) == 0 ? nil : Int(value.rounded())
+                },
+                onReset: {
+                    maskIntBinding(idx, \.shadows).wrappedValue = 0
+                }
+            )
+            sliderRow(
+                "Saturation",
+                value: maskIntBinding(idx, \.saturation),
+                range: -100...100,
+                step: 1,
+                gradientColors: [.gray, .red],
+                formatter: signedIntString,
+                settingsMutator: { settings, value in
+                    settings.localAdjustments?[idx].saturation = Int(value.rounded()) == 0 ? nil : Int(value.rounded())
+                },
+                onReset: {
+                    maskIntBinding(idx, \.saturation).wrappedValue = 0
+                }
+            )
+            sliderRow(
+                "Vibrance",
+                value: maskIntBinding(idx, \.vibrance),
+                range: -100...100,
+                step: 1,
+                gradientColors: [.gray, .orange],
+                formatter: signedIntString,
+                settingsMutator: { settings, value in
+                    settings.localAdjustments?[idx].vibrance = Int(value.rounded()) == 0 ? nil : Int(value.rounded())
+                },
+                onReset: {
+                    maskIntBinding(idx, \.vibrance).wrappedValue = 0
+                }
+            )
+
+            // ── Mask Shape ──
+            Text("Mask Shape")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.secondary)
+                .padding(.top, 2)
+            Divider()
+
+            sliderRow(
+                "Feather",
+                value: maskGeometryBinding(idx, \.feather),
+                range: 0...100,
+                step: 1,
+                formatter: { "\(Int($0.rounded()))" },
+                settingsMutator: { settings, value in
+                    settings.localAdjustments?[idx].geometry.feather = value.rounded()
+                },
+                onReset: {
+                    maskGeometryBinding(idx, \.feather).wrappedValue = 50
+                }
+            )
+        }
+    }
+
+    private func maskGeometryBinding(_ maskIndex: Int, _ keyPath: WritableKeyPath<EllipseMaskGeometry, Double>) -> Binding<Double> {
+        Binding(
+            get: { metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?[maskIndex].geometry[keyPath: keyPath] ?? 50 },
+            set: { newValue in
+                updateCameraRaw { cameraRaw in
+                    cameraRaw.localAdjustments?[maskIndex].geometry[keyPath: keyPath] = newValue
+                }
+            }
+        )
+    }
+
+    private func maskDoubleBinding(_ maskIndex: Int, _ keyPath: WritableKeyPath<MaskAdjustment, Double?>) -> Binding<Double> {
+        Binding(
+            get: { metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?[maskIndex][keyPath: keyPath] ?? 0 },
+            set: { newValue in
+                updateCameraRaw { cameraRaw in
+                    cameraRaw.localAdjustments?[maskIndex][keyPath: keyPath] = abs(newValue) < 0.001 ? nil : newValue
+                }
+            }
+        )
+    }
+
+    private func maskIntBinding(_ maskIndex: Int, _ keyPath: WritableKeyPath<MaskAdjustment, Int?>) -> Binding<Double> {
+        Binding(
+            get: { Double(metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?[maskIndex][keyPath: keyPath] ?? 0) },
+            set: { newValue in
+                updateCameraRaw { cameraRaw in
+                    let intVal = Int(newValue.rounded())
+                    cameraRaw.localAdjustments?[maskIndex][keyPath: keyPath] = intVal == 0 ? nil : intVal
+                }
+            }
+        )
+    }
+
+    private func addNewMask() {
+        let existingCount = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?.count ?? 0
+        let newMask = MaskAdjustment(name: "Mask \(existingCount + 1)")
+        updateCameraRaw { cameraRaw in
+            if cameraRaw.localAdjustments == nil {
+                cameraRaw.localAdjustments = []
+            }
+            cameraRaw.localAdjustments?.append(newMask)
+        }
+        selectedMaskIndex = existingCount
+        commitEditAdjustments()
+    }
+
+    private func deleteSelectedMask() {
+        guard let idx = selectedMaskIndex,
+              let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
+              idx < masks.count else { return }
+        updateCameraRaw { cameraRaw in
+            cameraRaw.localAdjustments?.remove(at: idx)
+            if cameraRaw.localAdjustments?.isEmpty == true {
+                cameraRaw.localAdjustments = nil
+            }
+        }
+        let remaining = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?.count ?? 0
+        if remaining == 0 {
+            selectedMaskIndex = nil
+        } else {
+            selectedMaskIndex = min(idx, remaining - 1)
+        }
+        commitEditAdjustments()
+    }
+
     private var isSelectedImageRaw: Bool {
         guard let url = selectedImageURL else { return false }
         return SupportedImageFormats.isRaw(url: url)
@@ -1557,6 +1852,7 @@ struct EditWorkspaceView: View {
 
     private func resetDevelopAdjustments() {
         resetCropZoom()
+        selectedMaskIndex = nil
         updateCameraRaw { cameraRaw in
             cameraRaw.whiteBalance = isSelectedImageRaw ? "As Shot" : nil
             cameraRaw.temperature = nil
@@ -1571,6 +1867,7 @@ struct EditWorkspaceView: View {
             cameraRaw.blacks2012 = nil
             cameraRaw.saturation = nil
             cameraRaw.vibrance = nil
+            cameraRaw.localAdjustments = nil
             cameraRaw.crop = CameraRawCrop(
                 top: 0,
                 left: 0,
@@ -1599,7 +1896,9 @@ struct EditWorkspaceView: View {
             cameraRaw.saturation = nil
             cameraRaw.vibrance = nil
             cameraRaw.toneCurve = nil
+            cameraRaw.localAdjustments = nil
         }
+        selectedMaskIndex = nil
         commitEditAdjustments()
     }
 

@@ -1,6 +1,28 @@
 #include <metal_stdlib>
 using namespace metal;
 
+struct MaskParams {
+    float2 center;          // normalized [0,1] in image UV space
+    float2 radii;           // normalized radii
+    float rotation;         // radians
+    float feather;          // 0-1 (normalized from 0-100 on CPU side)
+    float inverted;         // 0 or 1
+    float amount;           // 0-1 overall strength
+
+    float exposure;         // EV delta
+    float contrast;         // -1..1
+    float highlights;       // -1..1 (not yet implemented)
+    float shadows;          // -1..1 (not yet implemented)
+    float whites;           // -1..1 (not yet implemented)
+    float blacks;           // -1..1 (not yet implemented)
+    float saturation;       // 0..2 (1=identity)
+    float vibrance;         // -1..1
+    uint  activeFlags;      // bitmask: bit0=exposure, bit1=contrast,
+                            // bit2=highlights, bit3=shadows, bit4=whites,
+                            // bit5=blacks, bit6=saturation, bit7=vibrance
+    uint  _pad;
+};
+
 struct EditParams {
     float exposure;          // EV (legacy field, baked into LUT when LUT is active)
     float vibrance;          // -1..1
@@ -11,7 +33,7 @@ struct EditParams {
 
     uint activeFlags;        // bitmask: bit0=toneLUT, bit1=vibrance,
                              // bit2=saturation, bit3=whiteBalance
-    uint _pad1;              // align to 8 bytes for float2
+    uint maskCount;          // number of active masks (0-8)
 
     float2 scale;            // source→drawable scale (stretch-to-fill)
     float2 sourceSize;       // source texture dimensions
@@ -26,6 +48,7 @@ kernel void editAdjustments(
     texture2d<half, access::write> destination [[texture(1)]],
     texture1d<float, access::sample> toneLUT [[texture(2)]],
     constant EditParams &params [[buffer(0)]],
+    constant MaskParams *masks [[buffer(1)]],
     uint2 gid [[thread_position_in_grid]])
 {
     if (gid.x >= uint(params.drawableSize.x) || gid.y >= uint(params.drawableSize.y)) {
@@ -90,6 +113,51 @@ kernel void editAdjustments(
     if (params.activeFlags & (1u << 2)) {
         half lum = dot(rgb, half3(0.2126h, 0.7152h, 0.0722h));
         rgb = mix(half3(lum), rgb, (half)params.saturation);
+    }
+
+    // 5. Local mask adjustments — analytical ellipse masks
+    for (uint m = 0; m < params.maskCount && m < 8; m++) {
+        constant MaskParams &mask = masks[m];
+
+        // Compute ellipse mask weight analytically
+        float cosR = cos(mask.rotation);
+        float sinR = sin(mask.rotation);
+        float2 d = uv - mask.center;
+        float2 local = float2(d.x * cosR + d.y * sinR, -d.x * sinR + d.y * cosR);
+        float dist = length(local / mask.radii);
+        float inner = 1.0 - mask.feather;
+        float weight = 1.0 - smoothstep(inner, 1.0, dist);
+        if (mask.inverted > 0.5) weight = 1.0 - weight;
+        weight *= mask.amount;
+        if (weight < 0.001) continue;
+
+        half3 adjusted = rgb;
+
+        // Exposure: multiplicative EV shift
+        if (mask.activeFlags & (1u << 0)) {
+            adjusted *= half(exp2(mask.exposure));
+        }
+        // Contrast: pivot around mid-gray
+        if (mask.activeFlags & (1u << 1)) {
+            half3 mid = half3(0.5h);
+            adjusted = mid + (adjusted - mid) * half(1.0 + mask.contrast);
+        }
+        // Saturation
+        if (mask.activeFlags & (1u << 6)) {
+            half lum = dot(adjusted, half3(0.2126h, 0.7152h, 0.0722h));
+            adjusted = mix(half3(lum), adjusted, half(mask.saturation));
+        }
+        // Vibrance: selective saturation boost
+        if (mask.activeFlags & (1u << 7)) {
+            half lum = dot(adjusted, half3(0.2126h, 0.7152h, 0.0722h));
+            half maxC = max3(adjusted.r, adjusted.g, adjusted.b);
+            half minC = min3(adjusted.r, adjusted.g, adjusted.b);
+            half sat = (maxC > 0.001h) ? ((maxC - minC) / maxC) : 0.0h;
+            half boost = half(mask.vibrance) * (1.0h - sat);
+            adjusted = mix(half3(lum), adjusted, 1.0h + boost);
+        }
+
+        rgb = mix(rgb, adjusted, half(weight));
     }
 
     destination.write(half4(rgb, color.a), gid);

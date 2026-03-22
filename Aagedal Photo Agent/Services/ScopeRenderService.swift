@@ -44,7 +44,7 @@ nonisolated struct ScopeRenderService: Sendable {
         return (
             labelMargin: max(Int(68 * scale), 24),
             verticalMargin: max(Int(16 * scale), 4),
-            fontSize: max(22 * scale, 10)
+            fontSize: max(32 * scale, 14)
         )
     }
 
@@ -300,7 +300,8 @@ nonisolated struct ScopeRenderService: Sendable {
             (0.85, 0.85, 0.85)
         ]
         let allBins = [rBins, gBins, bBins, yBins]
-        let normFactor = 1.0 / (Float(maxCount) * 0.25)
+        let logMax = log2f(1 + Float(maxCount))
+        let gain: Float = 2.5
 
         for ch in 0..<channelCount {
             let xOffset = m.labelMargin + ch * (channelW + gap)
@@ -314,7 +315,7 @@ nonisolated struct ScopeRenderService: Sendable {
                 for level in 0..<levels {
                     let count = bins[x * levels + level]
                     guard count > 0 else { continue }
-                    let intensity = min(Float(count) * normFactor, 1.0)
+                    let intensity = min(log2f(1 + Float(count)) / logMax * gain, 1.0)
                     let outX = xOffset + x
                     let mappedY = vm + (level * dataHeight) / (levels - 1)
                     let yOut = outH - 1 - mappedY

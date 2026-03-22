@@ -1,5 +1,6 @@
 import CoreImage
 import CoreGraphics
+import os
 
 enum CameraRawApproximation {
     nonisolated(unsafe) static let workingColorSpace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
@@ -21,6 +22,10 @@ enum CameraRawApproximation {
         }
 
         // Fallback: CIFilter chain (if Metal is unavailable)
+        if !(settings.localAdjustments?.isEmpty ?? true) {
+            Logger(subsystem: "com.aagedal.photo-agent", category: "CameraRawApproximation")
+                .warning("CIFilter fallback: mask adjustments will not be applied")
+        }
         return applyCIFilters(to: input, settings: settings)
     }
 

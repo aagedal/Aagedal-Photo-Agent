@@ -530,6 +530,7 @@ struct ContentView: View {
             metadataViewModel: metadataViewModel,
             browserViewModel: browserViewModel,
             settingsViewModel: settingsViewModel,
+            scopeViewModel: scopeViewModel,
             onExit: {
                 mainViewMode = .browser
                 browserViewModel.shouldRestoreGridFocus = true
