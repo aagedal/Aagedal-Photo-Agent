@@ -6,6 +6,7 @@ struct EllipseMaskOverlayView: View {
     let geometry: EllipseMaskGeometry
     let inverted: Bool
     let useMetalOverlay: Bool
+    let onStart: () -> Void
     let onChange: (EllipseMaskGeometry) -> Void
     let onCommit: () -> Void
 
@@ -128,6 +129,7 @@ struct EllipseMaskOverlayView: View {
                 if dragStartGeometry == nil {
                     dragStartGeometry = geometry
                     dragType = type
+                    onStart()
                 }
                 guard let startGeo = dragStartGeometry else { return }
                 handleDrag(startGeometry: startGeo, translation: value.translation)

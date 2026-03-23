@@ -28,6 +28,7 @@ final class MetadataViewModel {
     var selectedCount = 0
     var selectedURLs: [URL] = []
     var hasChanges = false
+    var isInEditView = false
     var saveError: String?
     var variableProcessingStatus: String?
     var variableProcessingHadFailures = false

@@ -215,12 +215,15 @@ struct EditWorkspaceView: View {
                     }
                 }
             }
+            metadataViewModel.isInEditView = true
             loadSelectedImagePreview()
             keyEventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { event in
                 return handleKeyEvent(event)
             }
         }
         .onDisappear {
+            metadataViewModel.isInEditView = false
+            metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
             metalCoordinator.stopContinuousRendering()
             scopeViewModel.metalScopeCoordinator?.stopContinuousRendering()
             scopeViewModel.clearMetal()
@@ -269,18 +272,12 @@ struct EditWorkspaceView: View {
         .onChange(of: selectedImage?.exifOrientation) { _, _ in
             loadSelectedImagePreview()
         }
-        .onChange(of: selectedMaskIndex) { _, newIndex in
-            // Sync Metal overlay visibility when mask selection changes
-            if let pipeline = metalPipeline {
-                if let idx = newIndex,
-                   let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
-                   idx < masks.count {
-                    pipeline.updateOverlayParams(geometry: masks[idx].geometry, visible: true)
-                } else {
-                    pipeline.updateOverlayParams(geometry: nil, visible: false)
-                }
-                metalCoordinator.requestRedraw()
-            }
+        .onChange(of: selectedMaskIndex) { _, _ in
+            // Clear Metal overlay — the SwiftUI EllipseMaskOverlayView handles
+            // static display with interactive handles. Metal overlay is only used
+            // during active mask drags for real-time feedback.
+            metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
+            metalCoordinator.requestRedraw()
         }
         .onReceive(NotificationCenter.default.publisher(for: .addNewMask)) { _ in
             guard canEditSingleImage else { return }
@@ -420,12 +417,11 @@ struct EditWorkspaceView: View {
                                 geometry: dragMaskGeometry ?? masks[maskIdx].geometry,
                                 inverted: masks[maskIdx].inverted,
                                 useMetalOverlay: false,
+                                onStart: {
+                                    isDraggingMask = true
+                                    isDraggingEditSlider = true
+                                },
                                 onChange: { newGeometry in
-                                    // Enable continuous rendering on first drag event
-                                    if !isDraggingMask {
-                                        isDraggingMask = true
-                                        isDraggingEditSlider = true
-                                    }
                                     // Track drag geometry locally — bypass ViewModel
                                     dragMaskGeometry = newGeometry
                                     // Direct Metal update for real-time preview + scope
@@ -897,6 +893,7 @@ struct EditWorkspaceView: View {
         previewImage = nil
         isLoadingPreview = false
         metalPipeline?.clearSourceTexture()
+        metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
         resetCropZoom()
         selectedMaskIndex = nil
         if !isCropEnabled {
@@ -999,14 +996,8 @@ struct EditWorkspaceView: View {
         // Full render: update Metal compute params + request redraw.
         if let pipeline = metalPipeline, pipeline.hasSourceTexture {
             pipeline.updateParams(settings)
-            // Sync mask overlay params for static display
-            if let maskIdx = selectedMaskIndex,
-               let masks = settings?.localAdjustments,
-               maskIdx < masks.count {
-                pipeline.updateOverlayParams(geometry: masks[maskIdx].geometry, visible: true)
-            } else {
-                pipeline.updateOverlayParams(geometry: nil, visible: false)
-            }
+            // Metal overlay is only used during active drags — SwiftUI handles static display
+            pipeline.updateOverlayParams(geometry: nil, visible: false)
             metalCoordinator.requestRedraw()
         }
         if lockedCropImageRect != nil {
@@ -1719,6 +1710,20 @@ struct EditWorkspaceView: View {
                     }
                     .buttonStyle(.plain)
                     .help(masks[idx].inverted ? "Invert: adjustments apply outside ellipse" : "Normal: adjustments apply inside ellipse")
+
+                    Button {
+                        let enabled = masks[idx].enabled
+                        updateCameraRaw { cameraRaw in
+                            cameraRaw.localAdjustments?[idx].enabled = !enabled
+                        }
+                        commitEditAdjustments()
+                    } label: {
+                        Image(systemName: masks[idx].enabled ? "eye" : "eye.slash")
+                            .font(.system(size: 11))
+                            .foregroundStyle(masks[idx].enabled ? Color.secondary : Color.red)
+                    }
+                    .buttonStyle(.plain)
+                    .help(masks[idx].enabled ? "Mute mask effect" : "Enable mask effect")
                 }
 
                 Button {
@@ -1847,9 +1852,14 @@ struct EditWorkspaceView: View {
 
     private func maskDoubleBinding(_ maskIndex: Int, _ keyPath: WritableKeyPath<MaskAdjustment, Double?>) -> Binding<Double> {
         Binding(
-            get: { metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?[maskIndex][keyPath: keyPath] ?? 0 },
+            get: {
+                guard let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
+                      maskIndex < masks.count else { return 0 }
+                return masks[maskIndex][keyPath: keyPath] ?? 0
+            },
             set: { newValue in
                 updateCameraRaw { cameraRaw in
+                    guard let masks = cameraRaw.localAdjustments, maskIndex < masks.count else { return }
                     cameraRaw.localAdjustments?[maskIndex][keyPath: keyPath] = abs(newValue) < 0.001 ? nil : newValue
                 }
             }
@@ -1858,9 +1868,14 @@ struct EditWorkspaceView: View {
 
     private func maskIntBinding(_ maskIndex: Int, _ keyPath: WritableKeyPath<MaskAdjustment, Int?>) -> Binding<Double> {
         Binding(
-            get: { Double(metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?[maskIndex][keyPath: keyPath] ?? 0) },
+            get: {
+                guard let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
+                      maskIndex < masks.count else { return 0 }
+                return Double(masks[maskIndex][keyPath: keyPath] ?? 0)
+            },
             set: { newValue in
                 updateCameraRaw { cameraRaw in
+                    guard let masks = cameraRaw.localAdjustments, maskIndex < masks.count else { return }
                     let intVal = Int(newValue.rounded())
                     cameraRaw.localAdjustments?[maskIndex][keyPath: keyPath] = intVal == 0 ? nil : intVal
                 }
@@ -1870,7 +1885,12 @@ struct EditWorkspaceView: View {
 
     private func addNewMask() {
         let existingCount = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?.count ?? 0
-        let newMask = MaskAdjustment(name: "Mask \(existingCount + 1)")
+        var geo = EllipseMaskGeometry()
+        // Make the mask a circle by compensating for image aspect ratio
+        if let size = currentImageSize, size.height > 0 {
+            geo.radiusY = geo.radiusX * size.width / size.height
+        }
+        let newMask = MaskAdjustment(name: "Mask \(existingCount + 1)", geometry: geo)
         updateCameraRaw { cameraRaw in
             if cameraRaw.localAdjustments == nil {
                 cameraRaw.localAdjustments = []

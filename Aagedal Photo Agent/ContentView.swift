@@ -1382,8 +1382,14 @@ struct AutoRefreshModifier: ViewModifier {
                             await MainActor.run {
                                 browserViewModel.refreshCurrentFolderIfNeeded()
 
+                                // Skip metadata reload while in the edit view — the
+                                // in-memory editing state is the source of truth.
+                                // Thumbnails/fullscreen previews still refresh via the
+                                // browser refresh above.
+                                guard !metadataViewModel.isInEditView else { return }
+
                                 // If any currently selected file was modified externally,
-                                // reload full metadata so the edit view reflects the changes.
+                                // reload full metadata so the browser reflects the changes.
                                 let selectedURLs = Set(metadataViewModel.selectedURLs)
                                 if !selectedURLs.isEmpty,
                                    !browserViewModel.lastRefreshModifiedURLs.isDisjoint(with: selectedURLs) {
