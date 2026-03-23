@@ -294,7 +294,18 @@ struct ContentView: View {
     private var contentWithStateHandlers: some View {
         contentWithNotificationHandlers
             .onChange(of: browserViewModel.isFullScreen) { _, isFullScreen in
-                guard isFullScreen, browserViewModel.fullScreenFaceContext == nil else { return }
+                guard isFullScreen else { return }
+                // Sync current editing state (including masks) to the ImageFile so the
+                // fullscreen view has up-to-date local adjustments.
+                if let url = metadataViewModel.selectedURLs.first,
+                   metadataViewModel.selectedCount == 1,
+                   let index = browserViewModel.urlToImageIndex[url] {
+                    let editingCameraRaw = metadataViewModel.editingMetadata.cameraRaw
+                    if editingCameraRaw != browserViewModel.images[index].cameraRawSettings {
+                        browserViewModel.images[index].cameraRawSettings = editingCameraRaw
+                    }
+                }
+                guard browserViewModel.fullScreenFaceContext == nil else { return }
                 browserViewModel.fullScreenFaceContext = BrowserViewModel.FullScreenFaceContext(
                     faceRecognitionViewModel: faceRecognitionViewModel,
                     highlightedFaceID: nil,

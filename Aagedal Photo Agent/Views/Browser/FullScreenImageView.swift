@@ -179,6 +179,8 @@ struct FullScreenImageView: View {
 
     // Edit rendering state (E key toggle)
     @State private var renderEdits: Bool = false
+    @State private var renderGeneration: Int = 0
+    @State private var settingsReloadTask: Task<Void, Never>?
 
     // Face overlay state
     @State private var showFaceRectangles: Bool = false
@@ -566,7 +568,8 @@ struct FullScreenImageView: View {
             guard renderEdits, let url = currentImageFile?.url else { return }
             imageCache.invalidateImage(for: url)
             currentImage = nil
-            Task { await loadImage() }
+            settingsReloadTask?.cancel()
+            settingsReloadTask = Task { await loadImage() }
         }
         .onChange(of: currentImageFile?.exifOrientation) { oldValue, newValue in
             // Only apply in-place rotation when the same image was rotated,
@@ -703,6 +706,10 @@ struct FullScreenImageView: View {
         let filename = currentImageFile?.url.lastPathComponent ?? "nil"
         imageLogger.info("loadImage called for \(filename)")
 
+        // Bump generation so any in-flight Phase 2 detached tasks discard their results
+        renderGeneration += 1
+        let expectedGeneration = renderGeneration
+
         // Cancel any in-flight full-resolution decode from the previous image
         if fullLoadTask != nil {
             imageLogger.info("Cancelling previous full-resolution load")
@@ -731,6 +738,9 @@ struct FullScreenImageView: View {
         }
 
         let cameraRaw = renderEdits ? currentImageFile?.cameraRawSettings : nil
+        let maskCount = cameraRaw?.localAdjustments?.count ?? 0
+        let enabledMaskCount = cameraRaw?.localAdjustments?.filter(\.enabled).count ?? 0
+        imageLogger.info("\(filename): renderEdits=\(renderEdits), cameraRaw=\(cameraRaw != nil), masks=\(maskCount) (enabled=\(enabledMaskCount)), exp=\(cameraRaw?.exposure2012 ?? 0)")
         let imageOrientation = currentImageFile?.exifOrientation ?? 1
 
         // Read source pixel dimensions (cheap metadata-only, no pixel decode)
@@ -806,12 +816,12 @@ struct FullScreenImageView: View {
                 guard let image, !Task.isCancelled else { return }
                 let fullElapsed = CFAbsoluteTimeGetCurrent() - fullStart
                 await MainActor.run {
-                    if currentImageFile?.url == url {
-                        imageLogger.info("\(filename): Phase 2 done in \(String(format: "%.1f", fullElapsed * 1000))ms (\(image.width)x\(image.height))")
-                        currentImage = makeLoadedImage(from: image)
-                        imageCache.store(image, for: url)
-                        triggerPrefetch(for: url)
-                    }
+                    guard expectedGeneration == renderGeneration,
+                          currentImageFile?.url == url else { return }
+                    imageLogger.info("\(filename): Phase 2 done in \(String(format: "%.1f", fullElapsed * 1000))ms (\(image.width)x\(image.height))")
+                    currentImage = makeLoadedImage(from: image)
+                    imageCache.store(image, for: url)
+                    triggerPrefetch(for: url)
                 }
             }
             return
@@ -897,6 +907,10 @@ struct FullScreenImageView: View {
                 return
             }
             await MainActor.run {
+                guard expectedGeneration == renderGeneration else {
+                    imageLogger.info("\(filename): Phase 2 done but generation stale, discarding")
+                    return
+                }
                 if currentImageFile?.url == url {
                     imageLogger.info("\(filename): Phase 2 done in \(String(format: "%.1f", fullElapsed * 1000))ms (\(image.width)x\(image.height))")
                     currentImage = makeLoadedImage(from: image)
@@ -927,6 +941,7 @@ struct FullScreenImageView: View {
         let filename = url.lastPathComponent
         let cameraRaw = renderEdits ? currentImageFile?.cameraRawSettings : nil
         let orientation = currentImageFile?.exifOrientation ?? 1
+        let expectedGeneration = renderGeneration
         imageLogger.info("\(filename): Loading full resolution for zoom")
         isLoading = true
         fullResTask = Task.detached(priority: .medium) {
@@ -947,7 +962,8 @@ struct FullScreenImageView: View {
             let elapsed = CFAbsoluteTimeGetCurrent() - fullStart
             guard !Task.isCancelled else { return }
             await MainActor.run {
-                guard currentImageFile?.url == url else { return }
+                guard expectedGeneration == renderGeneration,
+                      currentImageFile?.url == url else { return }
                 imageLogger.info("\(filename): Full resolution loaded in \(String(format: "%.1f", elapsed * 1000))ms (\(image.width)x\(image.height))")
                 currentImage = makeLoadedImage(from: image)
                 isFullResLoaded = true

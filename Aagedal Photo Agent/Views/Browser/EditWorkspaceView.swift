@@ -1841,9 +1841,14 @@ struct EditWorkspaceView: View {
 
     private func maskGeometryBinding(_ maskIndex: Int, _ keyPath: WritableKeyPath<EllipseMaskGeometry, Double>) -> Binding<Double> {
         Binding(
-            get: { metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?[maskIndex].geometry[keyPath: keyPath] ?? 50 },
+            get: {
+                guard let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
+                      maskIndex < masks.count else { return 50 }
+                return masks[maskIndex].geometry[keyPath: keyPath]
+            },
             set: { newValue in
                 updateCameraRaw { cameraRaw in
+                    guard let masks = cameraRaw.localAdjustments, maskIndex < masks.count else { return }
                     cameraRaw.localAdjustments?[maskIndex].geometry[keyPath: keyPath] = newValue
                 }
             }
