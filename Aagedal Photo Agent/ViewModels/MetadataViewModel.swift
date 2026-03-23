@@ -223,12 +223,13 @@ final class MetadataViewModel {
                         self.sidecarHistory = sidecar.history
                         self.sidecarHistory.trimToHistoryLimit()
                         if sidecar.pendingChanges {
-                            // Preserve camera raw and orientation from XMP — sidecar only overrides IPTC fields
-                            let xmpCameraRaw = newEditingMetadata.cameraRaw
-                            let xmpOrientation = newEditingMetadata.exifOrientation
+                            // Best CRS source: XMP/embedded (baseMeta) > JSON sidecar (fallback)
+                            let bestCameraRaw = newEditingMetadata.cameraRaw
+                                ?? sidecar.metadata.cameraRaw
+                            let bestOrientation = newEditingMetadata.exifOrientation
                             newEditingMetadata = sidecar.metadata
-                            newEditingMetadata.cameraRaw = xmpCameraRaw
-                            newEditingMetadata.exifOrientation = xmpOrientation
+                            newEditingMetadata.cameraRaw = bestCameraRaw
+                            newEditingMetadata.exifOrientation = bestOrientation
                             self.hasChanges = true
                         }
                     }
@@ -1027,6 +1028,15 @@ final class MetadataViewModel {
         return fields
     }
 
+    private func syncCameraRawToXMPSidecar(for imageURL: URL, metadata: IPTCMetadata) {
+        guard metadata.cameraRaw != nil || originalImageMetadata?.cameraRaw != nil else { return }
+        try? xmpSidecarService.saveCameraRawOnly(
+            metadata.cameraRaw,
+            orientation: metadata.exifOrientation,
+            for: imageURL
+        )
+    }
+
     private func appendCameraRawFields(from metadata: IPTCMetadata, into fields: inout [String: String]) {
         // When cameraRaw is nil (edits fully reset), check if the original image had CRS
         // fields and clear them. Writing "" tells ExifTool to remove the field.
@@ -1273,6 +1283,7 @@ final class MetadataViewModel {
                 let fields = overwriteFields(from: edited)
                 let maskArgs = maskWriteArgs(from: edited)
                 try await exifToolService.writeFields(fields, to: [imageURL], extraArgs: maskArgs)
+                self.syncCameraRawToXMPSidecar(for: imageURL, metadata: edited)
 
                 let now = Date()
                 let history = buildHistory(
@@ -1327,6 +1338,7 @@ final class MetadataViewModel {
                 let fields = overwriteFields(from: edited)
                 let maskArgs = maskWriteArgs(from: edited)
                 try await exifToolService.writeFields(fields, to: [imageURL], extraArgs: maskArgs)
+                self.syncCameraRawToXMPSidecar(for: imageURL, metadata: edited)
 
                 try? sidecarService.deleteSidecar(for: imageURL, in: folderURL)
 
@@ -2020,6 +2032,7 @@ final class MetadataViewModel {
 
         do {
             try sidecarService.saveSidecar(sidecar, for: imageURL, in: folderURL)
+            syncCameraRawToXMPSidecar(for: imageURL, metadata: editingMetadata)
             sidecarHistory = newHistory
             previousEditingMetadata = editingMetadata
             hasChanges = pendingChanges

@@ -385,7 +385,17 @@ extension IPTCMetadata {
         if let value = override.longitude { result.longitude = value }
         if let value = override.rating { result.rating = value }
         if let value = override.label, !value.isEmpty { result.label = value }
-        // cameraRaw and exifOrientation are not merged — they are sourced from XMP only
+        // CameraRaw: prefer override (XMP) when it has data
+        if let overrideCRS = override.cameraRaw, !overrideCRS.isEmpty {
+            if let existingCRS = result.cameraRaw {
+                result.cameraRaw = existingCRS.merged(preferring: overrideCRS)
+            } else {
+                result.cameraRaw = overrideCRS
+            }
+        }
+        if let overrideOrientation = override.exifOrientation {
+            result.exifOrientation = overrideOrientation
+        }
 
         return result
     }

@@ -81,6 +81,27 @@ struct XMPSidecarService: Sendable {
         try data.write(to: url, options: .atomic)
     }
 
+    func saveCameraRawOnly(_ settings: CameraRawSettings?, orientation: Int?, for imageURL: URL) throws {
+        let url = sidecarURL(for: imageURL)
+        if let settings, !settings.isEmpty {
+            let document = try loadOrCreateDocument(at: url)
+            let description = ensureDescription(in: document)
+            ensureNamespaces(on: description)
+            updateCameraRawSettings(on: description, settings: settings)
+            if let orientation {
+                setSimple(on: description, prefix: "exif", localName: "Orientation", value: String(orientation))
+            }
+            let data = serializeXMP(document)
+            try data.write(to: url, options: .atomic)
+        } else if FileManager.default.fileExists(atPath: url.path) {
+            let document = try loadOrCreateDocument(at: url)
+            let description = ensureDescription(in: document)
+            removeCameraRawSettings(from: description)
+            let data = serializeXMP(document)
+            try data.write(to: url, options: .atomic)
+        }
+    }
+
     // MARK: - Document Helpers
 
     private func loadOrCreateDocument(at url: URL) throws -> XMLDocument {
