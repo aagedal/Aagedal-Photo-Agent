@@ -172,9 +172,15 @@ final class MetadataViewModel {
 
         if images.count == 1 {
             let imageURL = images[0].url
-            metadata = nil
-            editingMetadata = IPTCMetadata()
-            previousEditingMetadata = nil
+
+            // When reloading the same image (e.g. auto-refresh after external edit),
+            // skip the synchronous reset to avoid flashing the preview to unedited state.
+            let isReloadingSameImage = selectedURLs.count == 1 && selectedURLs.first == imageURL && metadata != nil
+            if !isReloadingSameImage {
+                metadata = nil
+                editingMetadata = IPTCMetadata()
+                previousEditingMetadata = nil
+            }
             isLoading = true
 
             metadataLoadTask = Task {
@@ -206,18 +212,20 @@ final class MetadataViewModel {
                         self.showMetadataSourceChoice = true
                     }
 
+                    var newEditingMetadata = baseMeta
                     if let folder = self.currentFolderURL,
                        let sidecar = sidecarService.loadSidecar(for: imageURL, in: folder) {
                         self.sidecarHistory = sidecar.history
                         self.sidecarHistory.trimToHistoryLimit()
                         if sidecar.pendingChanges {
-                            self.editingMetadata = sidecar.metadata
+                            newEditingMetadata = sidecar.metadata
                             self.hasChanges = true
-                        } else {
-                            self.editingMetadata = baseMeta
                         }
-                    } else {
-                        self.editingMetadata = baseMeta
+                    }
+                    // Only update editingMetadata if values actually changed,
+                    // to avoid triggering unnecessary Metal preview re-renders.
+                    if self.editingMetadata != newEditingMetadata {
+                        self.editingMetadata = newEditingMetadata
                     }
                     self.previousEditingMetadata = self.editingMetadata
                     if self.metadataReferenceSource == .xmp, self.xmpMetadata == nil {
