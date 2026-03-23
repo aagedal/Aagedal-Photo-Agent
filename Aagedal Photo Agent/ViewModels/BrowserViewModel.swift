@@ -1702,14 +1702,35 @@ final class BrowserViewModel {
         }
 
         // Move XMP sidecar
+        var sidecarWarnings: [String] = []
         let xmpSource = xmpSidecarService.sidecarURL(for: url)
         if FileManager.default.fileExists(atPath: xmpSource.path) {
             let xmpDest = xmpSidecarService.sidecarURL(for: newURL)
-            try? FileManager.default.moveItem(at: xmpSource, to: xmpDest)
+            do {
+                try FileManager.default.moveItem(at: xmpSource, to: xmpDest)
+            } catch {
+                logger.error("Failed to move XMP sidecar for \(url.lastPathComponent): \(error.localizedDescription)")
+                sidecarWarnings.append("XMP sidecar: \(error.localizedDescription)")
+            }
         }
 
         // Rename metadata sidecar to match new filename
-        try? sidecarService.renameSidecar(from: url, to: newURL, in: folderURL)
+        do {
+            try sidecarService.renameSidecar(from: url, to: newURL, in: folderURL)
+        } catch {
+            logger.error("Failed to move metadata sidecar for \(url.lastPathComponent): \(error.localizedDescription)")
+            sidecarWarnings.append("Metadata sidecar: \(error.localizedDescription)")
+        }
+
+        if !sidecarWarnings.isEmpty {
+            let detail = sidecarWarnings.joined(separator: "\n")
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "File renamed, but sidecar files could not be moved"
+            alert.informativeText = "The image was renamed successfully, but associated sidecar files failed to follow. Edits stored in these sidecars may not appear for the renamed file.\n\n\(detail)"
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+        }
 
         // Update images array
         let newImage = ImageFile(url: newURL, copyingFrom: images[index])
@@ -1786,6 +1807,7 @@ final class BrowserViewModel {
         }
 
         // Execute renames
+        var sidecarFailures: [String] = []
         for rename in renames {
             do {
                 try FileManager.default.moveItem(at: rename.oldURL, to: rename.newURL)
@@ -1793,9 +1815,21 @@ final class BrowserViewModel {
                 let xmpSource = xmpSidecarService.sidecarURL(for: rename.oldURL)
                 if FileManager.default.fileExists(atPath: xmpSource.path) {
                     let xmpDest = xmpSidecarService.sidecarURL(for: rename.newURL)
-                    try? FileManager.default.moveItem(at: xmpSource, to: xmpDest)
+                    do {
+                        try FileManager.default.moveItem(at: xmpSource, to: xmpDest)
+                    } catch {
+                        logger.error("Failed to move XMP sidecar for \(rename.oldURL.lastPathComponent): \(error.localizedDescription)")
+                        sidecarFailures.append(rename.oldURL.lastPathComponent)
+                    }
                 }
-                try? sidecarService.renameSidecar(from: rename.oldURL, to: rename.newURL, in: folderURL)
+                do {
+                    try sidecarService.renameSidecar(from: rename.oldURL, to: rename.newURL, in: folderURL)
+                } catch {
+                    logger.error("Failed to move metadata sidecar for \(rename.oldURL.lastPathComponent): \(error.localizedDescription)")
+                    if !sidecarFailures.contains(rename.oldURL.lastPathComponent) {
+                        sidecarFailures.append(rename.oldURL.lastPathComponent)
+                    }
+                }
 
                 let newImage = ImageFile(url: rename.newURL, copyingFrom: images[rename.index])
                 images[rename.index] = newImage
@@ -1810,6 +1844,17 @@ final class BrowserViewModel {
                 logger.error("Batch rename failed for \(rename.oldURL.lastPathComponent): \(error.localizedDescription)")
                 newSelectionURLs.insert(rename.oldURL)
             }
+        }
+
+        if !sidecarFailures.isEmpty {
+            let fileList = sidecarFailures.prefix(10).joined(separator: ", ")
+            let suffix = sidecarFailures.count > 10 ? " and \(sidecarFailures.count - 10) more" : ""
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "Some sidecar files could not be moved"
+            alert.informativeText = "Images were renamed successfully, but sidecar files for \(sidecarFailures.count) image(s) failed to follow. Edits stored in these sidecars may not appear for the renamed files.\n\n\(fileList)\(suffix)"
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
         }
 
         selectedImageIDs = newSelectionURLs
