@@ -1336,7 +1336,7 @@ struct ContentViewModifiers: ViewModifier {
                 }
             }
         return base
-            .modifier(AutoRefreshModifier(browserViewModel: browserViewModel))
+            .modifier(AutoRefreshModifier(browserViewModel: browserViewModel, metadataViewModel: metadataViewModel))
     }
 
     private func handleDrop(providers: [NSItemProvider]) -> Bool {
@@ -1369,6 +1369,7 @@ struct ContentViewModifiers: ViewModifier {
 
 struct AutoRefreshModifier: ViewModifier {
     let browserViewModel: BrowserViewModel
+    let metadataViewModel: MetadataViewModel
     @State private var autoRefreshTask: Task<Void, Never>?
 
     func body(content: Content) -> some View {
@@ -1377,9 +1378,20 @@ struct AutoRefreshModifier: ViewModifier {
                 if autoRefreshTask == nil {
                     autoRefreshTask = Task {
                         while !Task.isCancelled {
-                            try? await Task.sleep(nanoseconds: 10_000_000_000)
+                            try? await Task.sleep(nanoseconds: 3_000_000_000)
                             await MainActor.run {
                                 browserViewModel.refreshCurrentFolderIfNeeded()
+
+                                // If any currently selected file was modified externally,
+                                // reload full metadata so the edit view reflects the changes.
+                                let selectedURLs = Set(metadataViewModel.selectedURLs)
+                                if !selectedURLs.isEmpty,
+                                   !browserViewModel.lastRefreshModifiedURLs.isDisjoint(with: selectedURLs) {
+                                    metadataViewModel.loadMetadata(
+                                        for: browserViewModel.selectedImages,
+                                        folderURL: browserViewModel.currentFolderURL
+                                    )
+                                }
                             }
                         }
                     }

@@ -126,6 +126,7 @@ final class BrowserViewModel {
     @ObservationIgnored var onImagesDeleted: ((Set<URL>) -> Void)?
     @ObservationIgnored private var searchDebounceTask: Task<Void, Never>?
     @ObservationIgnored private var filterDebounceTask: Task<Void, Never>?
+    @ObservationIgnored private(set) var lastRefreshModifiedURLs: Set<URL> = []
     @ObservationIgnored private var isAutoRefreshing = false
     @ObservationIgnored private var isMetadataLoading = false
     @ObservationIgnored private var pendingMetadataURLs: Set<URL> = []
@@ -504,6 +505,8 @@ final class BrowserViewModel {
             for url in modifiedURLs {
                 thumbnailService.invalidateThumbnail(for: url)
             }
+
+            self.lastRefreshModifiedURLs = Set(modifiedURLs)
 
             let metadataRefreshURLs = newURLs + modifiedURLs
             if !metadataRefreshURLs.isEmpty {
