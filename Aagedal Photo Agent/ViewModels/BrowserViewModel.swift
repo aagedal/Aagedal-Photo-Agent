@@ -164,6 +164,14 @@ final class BrowserViewModel {
         self.showAllFiles = UserDefaults.standard.bool(forKey: UserDefaultsKeys.showAllFiles)
     }
 
+    deinit {
+        sortFeedbackTask?.cancel()
+        searchDebounceTask?.cancel()
+        filterDebounceTask?.cancel()
+        retinaPreCacheTask?.cancel()
+        loadFolderTask?.cancel()
+    }
+
     var selectedImages: [ImageFile] { selectedImagesCache }
 
     var firstSelectedImage: ImageFile? {
@@ -370,7 +378,7 @@ final class BrowserViewModel {
         lastClickedImageURL = nil
         manualOrder.removeAll()
         thumbnailService.cancelBackgroundGeneration()
-        fullScreenImageCache.cancelPreviewGeneration()
+        fullScreenImageCache.clearAll()
 
         // Add to open folders if not already there, unless it's a subfolder of an existing open folder
         if !openFolders.contains(url) && !isSubfolderOfOpenFolder(url) {

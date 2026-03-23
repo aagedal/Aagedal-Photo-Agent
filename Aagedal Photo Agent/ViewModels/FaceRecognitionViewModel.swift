@@ -127,6 +127,10 @@ final class FaceRecognitionViewModel {
         self.exifToolService = exifToolService
     }
 
+    deinit {
+        activeScanTask?.cancel()
+    }
+
     // MARK: - Cache Management
 
     private func invalidateCaches() {

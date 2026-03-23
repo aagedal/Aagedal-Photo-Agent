@@ -25,10 +25,14 @@ final class ImportViewModel {
 
     private let exifToolService: ExifToolService
     private let interpolator = PresetVariableInterpolator()
-    private var scanTask: Task<Void, Never>?
+    @ObservationIgnored private var scanTask: Task<Void, Never>?
 
     init(exifToolService: ExifToolService) {
         self.exifToolService = exifToolService
+    }
+
+    deinit {
+        scanTask?.cancel()
     }
 
     var isImporting: Bool {

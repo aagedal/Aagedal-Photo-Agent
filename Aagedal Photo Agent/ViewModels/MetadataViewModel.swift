@@ -82,6 +82,10 @@ final class MetadataViewModel {
         self.exifToolService = exifToolService
     }
 
+    deinit {
+        metadataLoadTask?.cancel()
+    }
+
     var isBatchEdit: Bool { selectedCount > 1 }
 
     private func multiSelectMode(for field: String) -> MultiSelectFieldMode {

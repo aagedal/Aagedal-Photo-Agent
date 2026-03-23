@@ -50,11 +50,13 @@ final class FullScreenImageCache: @unchecked Sendable {
         displayPreviewCache.removeObject(forKey: url as NSURL)
     }
 
-    /// Clear all cached images (retina + display preview).
-    /// Call when rendering mode changes (e.g. edit toggle) to avoid stale cache hits.
+    /// Clear all cached images and cancel in-flight tasks.
+    /// Call on folder switch or rendering mode change to avoid stale cache hits.
     nonisolated func clearAll() {
         cache.removeAllObjects()
         displayPreviewCache.removeAllObjects()
+        cancelAllPrefetch()
+        cancelPreviewGeneration()
     }
 
     nonisolated var isGeneratingPreviews: Bool {

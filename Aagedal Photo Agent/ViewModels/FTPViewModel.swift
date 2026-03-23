@@ -27,7 +27,11 @@ final class FTPViewModel {
 
     private let ftpService = FTPService()
     private let connectionsKey = UserDefaultsKeys.ftpConnections
-    private var uploadTask: Task<Void, Never>?
+    @ObservationIgnored private var uploadTask: Task<Void, Never>?
+
+    deinit {
+        uploadTask?.cancel()
+    }
 
     func loadConnections() {
         guard let data = UserDefaults.standard.data(forKey: connectionsKey),

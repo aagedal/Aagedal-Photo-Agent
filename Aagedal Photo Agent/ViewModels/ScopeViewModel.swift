@@ -25,6 +25,10 @@ final class ScopeViewModel {
         }
     }
 
+    deinit {
+        computeTask?.cancel()
+    }
+
     var waveformScale: WaveformScale = .percentage {
         didSet {
             guard waveformScale != oldValue else { return }
