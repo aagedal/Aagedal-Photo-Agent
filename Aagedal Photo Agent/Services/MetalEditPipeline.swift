@@ -30,6 +30,20 @@ struct MaskParams {
     var _pad: UInt32 = 0
 }
 
+/// GPU overlay parameters matching the Metal `MaskOverlayParams` struct.
+struct MaskOverlayParams {
+    var center: SIMD2<Float> = .zero
+    var radii: SIMD2<Float> = .zero
+    var rotation: Float = 0
+    var feather: Float = 0
+    var inverted: Float = 0
+    var visible: UInt32 = 0
+
+    var scale: SIMD2<Float> = .zero
+    var sourceSize: SIMD2<Float> = .zero
+    var drawableSize: SIMD2<Float> = .zero
+}
+
 /// Uniform buffer layout matching the Metal `EditParams` struct.
 /// Contains all edit operations: tonal (via LUT), vibrance, saturation, white balance.
 struct EditParams {
@@ -66,10 +80,14 @@ final class MetalEditPipeline: @unchecked Sendable {
     nonisolated(unsafe) private(set) var paramsBuffer: MTLBuffer?
     nonisolated(unsafe) private(set) var lutTexture: MTLTexture
     nonisolated(unsafe) private let identityLutTexture: MTLTexture
-    nonisolated(unsafe) private let maskBuffer: MTLBuffer?
+    nonisolated(unsafe) private(set) var maskBuffer: MTLBuffer?
     nonisolated(unsafe) private var float16Buffer = [UInt16](repeating: 0, count: ToneCurveGenerator.lutSize * 4)
 
     nonisolated(unsafe) private static let maxMasks = 8
+
+    // Overlay pipeline (mask overlay rendering)
+    private let overlayPipelineState: MTLComputePipelineState?
+    nonisolated(unsafe) private let overlayParamsBuffer: MTLBuffer?
 
     nonisolated(unsafe) private static let colorSpace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
 
@@ -114,6 +132,17 @@ final class MetalEditPipeline: @unchecked Sendable {
         } catch {
             return nil
         }
+
+        // Overlay pipeline (optional — graceful degradation if shader missing)
+        if let overlayFunc = library.makeFunction(name: "maskOverlay") {
+            self.overlayPipelineState = try? device.makeComputePipelineState(function: overlayFunc)
+        } else {
+            self.overlayPipelineState = nil
+        }
+        self.overlayParamsBuffer = device.makeBuffer(
+            length: MemoryLayout<MaskOverlayParams>.stride,
+            options: .storageModeShared
+        )
 
         self.ciContext = CIContext(mtlDevice: device, options: [
             .workingFormat: CIFormat.RGBAh,
@@ -342,6 +371,26 @@ final class MetalEditPipeline: @unchecked Sendable {
         }
     }
 
+    // MARK: - Overlay
+
+    /// Updates mask overlay parameters for Metal overlay rendering.
+    nonisolated func updateOverlayParams(geometry: EllipseMaskGeometry?, visible: Bool) {
+        guard let buffer = overlayParamsBuffer else { return }
+        var params = MaskOverlayParams()
+        if let geo = geometry, visible {
+            params.center = SIMD2<Float>(Float(geo.centerX), Float(geo.centerY))
+            params.radii = SIMD2<Float>(Float(geo.radiusX), Float(geo.radiusY))
+            params.rotation = Float(geo.rotation * .pi / 180.0)
+            params.feather = Float(geo.feather / 100.0)
+            params.visible = 1
+        }
+        let ptr = buffer.contents().bindMemory(to: MaskOverlayParams.self, capacity: 1)
+        ptr.pointee = params
+    }
+
+    /// Whether the Metal overlay pipeline is available.
+    nonisolated var hasOverlayPipeline: Bool { overlayPipelineState != nil }
+
     // MARK: - Render
 
     /// Single compute dispatch to drawable. Returns true on success.
@@ -389,8 +438,26 @@ final class MetalEditPipeline: @unchecked Sendable {
             depth: 1
         )
         encoder.dispatchThreads(gridSize, threadsPerThreadgroup: threadgroupSize)
-
         encoder.endEncoding()
+
+        // Overlay pass — composites mask overlay shapes onto the drawable
+        if let overlayState = overlayPipelineState, let overlayBuf = overlayParamsBuffer {
+            let overlayPtr = overlayBuf.contents().bindMemory(to: MaskOverlayParams.self, capacity: 1)
+            if overlayPtr.pointee.visible != 0 {
+                overlayPtr.pointee.scale = SIMD2<Float>(scaleX, scaleY)
+                overlayPtr.pointee.sourceSize = SIMD2<Float>(srcW, srcH)
+                overlayPtr.pointee.drawableSize = SIMD2<Float>(dstW, dstH)
+
+                if let overlayEncoder = commandBuffer.makeComputeCommandEncoder() {
+                    overlayEncoder.setComputePipelineState(overlayState)
+                    overlayEncoder.setTexture(drawable.texture, index: 0)
+                    overlayEncoder.setBuffer(overlayBuf, offset: 0, index: 0)
+                    overlayEncoder.dispatchThreads(gridSize, threadsPerThreadgroup: threadgroupSize)
+                    overlayEncoder.endEncoding()
+                }
+            }
+        }
+
         commandBuffer.present(drawable)
         commandBuffer.commit()
         return true

@@ -25,6 +25,32 @@ struct ScopeEditParams {
 };
 
 // ============================================================
+// MaskParams — must match Swift MaskParams and EditAdjustments.metal exactly
+// ============================================================
+
+struct MaskParams {
+    float2 center;          // normalized [0,1] in image UV space
+    float2 radii;           // normalized radii
+    float rotation;         // radians
+    float feather;          // 0-1 (normalized from 0-100 on CPU side)
+    float inverted;         // 0 or 1
+    float amount;           // 0-1 overall strength
+
+    float exposure;         // EV delta
+    float contrast;         // -1..1
+    float highlights;       // -1..1 (not yet implemented)
+    float shadows;          // -1..1 (not yet implemented)
+    float whites;           // -1..1 (not yet implemented)
+    float blacks;           // -1..1 (not yet implemented)
+    float saturation;       // 0..2 (1=identity)
+    float vibrance;         // -1..1
+    uint  activeFlags;      // bitmask: bit0=exposure, bit1=contrast,
+                            // bit2=highlights, bit3=shadows, bit4=whites,
+                            // bit5=blacks, bit6=saturation, bit7=vibrance
+    uint  _pad;
+};
+
+// ============================================================
 // ScopeParams — matches Swift ScopeParams struct
 // ============================================================
 
@@ -82,8 +108,10 @@ inline float linearToSRGB(float x) {
 
 inline float3 applyEdits(
     float3 rgb,
+    float2 uv,
     constant ScopeEditParams &params,
-    texture1d<float, access::sample> toneLUT)
+    texture1d<float, access::sample> toneLUT,
+    constant MaskParams *masks)
 {
     // 1. White Balance
     if (params.activeFlags & (1u << 3)) {
@@ -123,6 +151,49 @@ inline float3 applyEdits(
         rgb = mix(float3(lum), rgb, params.saturation);
     }
 
+    // 5. Local mask adjustments — mirrors EditAdjustments.metal
+    for (uint m = 0; m < params.maskCount && m < 8; m++) {
+        constant MaskParams &mask = masks[m];
+
+        float cosR = cos(mask.rotation);
+        float sinR = sin(mask.rotation);
+        float2 d = uv - mask.center;
+        float2 local = float2(d.x * cosR + d.y * sinR, -d.x * sinR + d.y * cosR);
+        float dist = length(local / mask.radii);
+        float inner = 1.0 - mask.feather;
+        float weight = 1.0 - smoothstep(inner, 1.0, dist);
+        if (mask.inverted > 0.5) weight = 1.0 - weight;
+        weight *= mask.amount;
+        if (weight < 0.001) continue;
+
+        float3 adjusted = rgb;
+
+        // Exposure: multiplicative EV shift
+        if (mask.activeFlags & (1u << 0)) {
+            adjusted *= exp2(mask.exposure);
+        }
+        // Contrast: pivot around mid-gray
+        if (mask.activeFlags & (1u << 1)) {
+            adjusted = float3(0.5) + (adjusted - float3(0.5)) * (1.0 + mask.contrast);
+        }
+        // Saturation
+        if (mask.activeFlags & (1u << 6)) {
+            float lum = dot(adjusted, float3(0.2126, 0.7152, 0.0722));
+            adjusted = mix(float3(lum), adjusted, mask.saturation);
+        }
+        // Vibrance: selective saturation boost
+        if (mask.activeFlags & (1u << 7)) {
+            float lum = dot(adjusted, float3(0.2126, 0.7152, 0.0722));
+            float maxC = max3(adjusted.r, adjusted.g, adjusted.b);
+            float minC = min3(adjusted.r, adjusted.g, adjusted.b);
+            float sat = (maxC > 0.001) ? ((maxC - minC) / maxC) : 0.0;
+            float boost = mask.vibrance * (1.0 - sat);
+            adjusted = mix(float3(lum), adjusted, 1.0 + boost);
+        }
+
+        rgb = mix(rgb, adjusted, weight);
+    }
+
     return rgb;
 }
 
@@ -136,6 +207,7 @@ kernel void waveformAccumulate(
     device atomic_uint *bins [[buffer(0)]],
     constant ScopeEditParams &editParams [[buffer(1)]],
     constant ScopeParams &scopeParams [[buffer(2)]],
+    constant MaskParams *masks [[buffer(3)]],
     uint2 gid [[thread_position_in_grid]])
 {
     if (gid.x >= scopeParams.sampleWidth || gid.y >= scopeParams.sampleHeight) return;
@@ -144,7 +216,7 @@ kernel void waveformAccumulate(
     constexpr sampler bilinear(filter::linear, address::clamp_to_edge);
     half4 color = source.sample(bilinear, uv);
     float3 rgb = float3(color.rgb);
-    rgb = applyEdits(rgb, editParams, toneLUT);
+    rgb = applyEdits(rgb, uv, editParams, toneLUT, masks);
 
     // Convert linear → sRGB before binning (matches CPU scope path)
     float r = linearToSRGB(saturate(rgb.r));
@@ -306,6 +378,7 @@ kernel void paradeAccumulate(
     device atomic_uint *bins [[buffer(0)]],
     constant ScopeEditParams &editParams [[buffer(1)]],
     constant ScopeParams &scopeParams [[buffer(2)]],
+    constant MaskParams *masks [[buffer(3)]],
     uint2 gid [[thread_position_in_grid]])
 {
     uint sW = scopeParams.channelWidth;
@@ -316,7 +389,7 @@ kernel void paradeAccumulate(
     constexpr sampler bilinear(filter::linear, address::clamp_to_edge);
     half4 color = source.sample(bilinear, uv);
     float3 rgb = float3(color.rgb);
-    rgb = applyEdits(rgb, editParams, toneLUT);
+    rgb = applyEdits(rgb, uv, editParams, toneLUT, masks);
 
     // Convert linear → sRGB before binning (matches CPU scope path)
     float r = linearToSRGB(saturate(rgb.r));
@@ -471,6 +544,7 @@ kernel void vectorscopeAccumulate(
     device atomic_uint *bins [[buffer(0)]],
     constant ScopeEditParams &editParams [[buffer(1)]],
     constant ScopeParams &scopeParams [[buffer(2)]],
+    constant MaskParams *masks [[buffer(3)]],
     uint2 gid [[thread_position_in_grid]])
 {
     if (gid.x >= scopeParams.sampleWidth || gid.y >= scopeParams.sampleHeight) return;
@@ -479,7 +553,7 @@ kernel void vectorscopeAccumulate(
     constexpr sampler bilinear(filter::linear, address::clamp_to_edge);
     half4 color = source.sample(bilinear, uv);
     float3 rgb = float3(color.rgb);
-    rgb = applyEdits(rgb, editParams, toneLUT);
+    rgb = applyEdits(rgb, uv, editParams, toneLUT, masks);
 
     // Convert linear → sRGB before CbCr computation (matches CPU scope path)
     float r = linearToSRGB(saturate(rgb.r));

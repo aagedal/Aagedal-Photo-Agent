@@ -42,6 +42,8 @@ struct EditWorkspaceView: View {
     @State private var metalPipeline: MetalEditPipeline?
     @State private var metalCoordinator = MetalPreviewView.Coordinator()
     @State private var selectedMaskIndex: Int? = nil
+    @State private var isDraggingMask = false
+    @State private var dragMaskGeometry: EllipseMaskGeometry?
     @State private var scopeThrottleTask: Task<Void, Never>?
     @State private var lastScopeUpdateTime: ContinuousClock.Instant = .now
     @FocusState private var isWorkspaceFocused: Bool
@@ -267,6 +269,19 @@ struct EditWorkspaceView: View {
         .onChange(of: selectedImage?.exifOrientation) { _, _ in
             loadSelectedImagePreview()
         }
+        .onChange(of: selectedMaskIndex) { _, newIndex in
+            // Sync Metal overlay visibility when mask selection changes
+            if let pipeline = metalPipeline {
+                if let idx = newIndex,
+                   let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
+                   idx < masks.count {
+                    pipeline.updateOverlayParams(geometry: masks[idx].geometry, visible: true)
+                } else {
+                    pipeline.updateOverlayParams(geometry: nil, visible: false)
+                }
+                metalCoordinator.requestRedraw()
+            }
+        }
         .overlay(alignment: .top) {
             if let feedback = copyPasteFeedback {
                 Text(feedback)
@@ -337,15 +352,26 @@ struct EditWorkspaceView: View {
                                     if lockedCropImageRect == nil {
                                         lockedCropImageRect = computedImageRect
                                     }
-                                    updateCrop(newCrop, commit: false)
+                                    // Local @State only — bypass ViewModel during drag
+                                    // to avoid expensive body re-evaluation cascade
+                                    dragCropRegion = newCrop
                                 },
                                 onAngleChange: { newAngle in
                                     if lockedCropImageRect == nil {
                                         lockedCropImageRect = computedImageRect
                                     }
-                                    updateCropAngle(newAngle, commit: false)
+                                    dragCropAngle = newAngle
                                 },
                                 onCommit: {
+                                    // Commit accumulated drag state to ViewModel
+                                    if let region = dragCropRegion {
+                                        updateCrop(region, commit: false)
+                                    }
+                                    if let angle = dragCropAngle {
+                                        updateCropAngle(angle, commit: false)
+                                    }
+                                    dragCropRegion = nil
+                                    dragCropAngle = nil
                                     lockedCropImageRect = nil
                                     commitEditAdjustments()
                                 },
@@ -377,20 +403,36 @@ struct EditWorkspaceView: View {
                             EllipseMaskOverlayView(
                                 imageRect: imageRect,
                                 viewSize: geometry.size,
-                                geometry: masks[maskIdx].geometry,
+                                geometry: dragMaskGeometry ?? masks[maskIdx].geometry,
                                 inverted: masks[maskIdx].inverted,
+                                useMetalOverlay: false,
                                 onChange: { newGeometry in
-                                    updateCameraRaw { cameraRaw in
-                                        cameraRaw.localAdjustments?[maskIdx].geometry = newGeometry
+                                    // Enable continuous rendering on first drag event
+                                    if !isDraggingMask {
+                                        isDraggingMask = true
+                                        isDraggingEditSlider = true
                                     }
+                                    // Track drag geometry locally — bypass ViewModel
+                                    dragMaskGeometry = newGeometry
+                                    // Direct Metal update for real-time preview + scope
                                     if let pipeline = metalPipeline, pipeline.hasSourceTexture {
                                         var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
                                         settings.localAdjustments?[maskIdx].geometry = newGeometry
                                         pipeline.updateParams(settings)
-                                        metalCoordinator.requestRedraw()
+                                        pipeline.updateOverlayParams(geometry: newGeometry, visible: true)
                                     }
                                 },
                                 onCommit: {
+                                    // Commit final geometry to ViewModel
+                                    if let finalGeo = dragMaskGeometry {
+                                        updateCameraRaw { cameraRaw in
+                                            cameraRaw.localAdjustments?[maskIdx].geometry = finalGeo
+                                        }
+                                        dragMaskGeometry = nil
+                                    }
+                                    metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
+                                    isDraggingMask = false
+                                    isDraggingEditSlider = false
                                     commitEditAdjustments()
                                 }
                             )
@@ -943,6 +985,14 @@ struct EditWorkspaceView: View {
         // Full render: update Metal compute params + request redraw.
         if let pipeline = metalPipeline, pipeline.hasSourceTexture {
             pipeline.updateParams(settings)
+            // Sync mask overlay params for static display
+            if let maskIdx = selectedMaskIndex,
+               let masks = settings?.localAdjustments,
+               maskIdx < masks.count {
+                pipeline.updateOverlayParams(geometry: masks[maskIdx].geometry, visible: true)
+            } else {
+                pipeline.updateOverlayParams(geometry: nil, visible: false)
+            }
             metalCoordinator.requestRedraw()
         }
         if lockedCropImageRect != nil {

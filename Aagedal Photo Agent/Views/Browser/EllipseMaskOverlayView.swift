@@ -5,6 +5,7 @@ struct EllipseMaskOverlayView: View {
     let viewSize: CGSize
     let geometry: EllipseMaskGeometry
     let inverted: Bool
+    let useMetalOverlay: Bool
     let onChange: (EllipseMaskGeometry) -> Void
     let onCommit: () -> Void
 
@@ -43,6 +44,9 @@ struct EllipseMaskOverlayView: View {
 
     var body: some View {
         Canvas { ctx, size in
+            // Skip Canvas drawing when Metal overlay is rendering the shapes
+            guard !useMetalOverlay else { return }
+
             // Outer ellipse
             let ellipsePath = Path(ellipseIn: CGRect(
                 x: -rx, y: -ry, width: rx * 2, height: ry * 2
@@ -88,10 +92,7 @@ struct EllipseMaskOverlayView: View {
         }
         .allowsHitTesting(false)
         .frame(width: viewSize.width, height: viewSize.height)
-        .overlay {
-            // Invisible gesture layer
-            gestureLayer
-        }
+        .overlay { gestureLayer }
     }
 
     private var gestureLayer: some View {
