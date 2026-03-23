@@ -282,6 +282,10 @@ struct EditWorkspaceView: View {
                 metalCoordinator.requestRedraw()
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .addNewMask)) { _ in
+            guard canEditSingleImage else { return }
+            addNewMask()
+        }
         .overlay(alignment: .top) {
             if let feedback = copyPasteFeedback {
                 Text(feedback)

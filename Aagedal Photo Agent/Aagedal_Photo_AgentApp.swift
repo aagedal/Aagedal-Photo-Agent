@@ -180,6 +180,11 @@ struct Aagedal_Photo_AgentApp: App {
 
                 Divider()
 
+                Button("Add New Mask") {
+                    NotificationCenter.default.post(name: .addNewMask, object: nil)
+                }
+                .keyboardShortcut("j", modifiers: .command)
+
                 Button("Reset All Edits") {
                     NotificationCenter.default.post(name: .resetAllEdits, object: nil)
                 }
@@ -243,4 +248,5 @@ extension Notification.Name {
     static let showAllFilesChanged = Notification.Name("showAllFilesChanged")
     static let showRawMetadata = Notification.Name("showRawMetadata")
     static let applyTemplateShortcut = Notification.Name("applyTemplateShortcut")
+    static let addNewMask = Notification.Name("addNewMask")
 }
