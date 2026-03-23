@@ -2031,51 +2031,59 @@ struct EditWorkspaceView: View {
 
     private func pasteToMultipleImages(_ source: CameraRawSettings, urls: Set<URL>, includeCrop: Bool) {
         guard let folderURL = metadataViewModel.currentFolderURL else { return }
-        let sidecarService = MetadataSidecarService()
 
+        var cameraRaw = source
+        if !includeCrop {
+            cameraRaw.crop = nil
+        }
+        cameraRaw.hasSettings = true
+
+        // Update in-memory ImageFile state for immediate visual feedback
         for url in urls {
-            // Load existing sidecar or create new one
-            let sidecar = sidecarService.loadSidecar(for: url, in: folderURL)
-            var metadata = sidecar?.metadata ?? IPTCMetadata()
-            var cameraRaw = metadata.cameraRaw ?? CameraRawSettings()
-
-            cameraRaw.whiteBalance = source.whiteBalance
-            cameraRaw.temperature = source.temperature
-            cameraRaw.tint = source.tint
-            cameraRaw.incrementalTemperature = source.incrementalTemperature
-            cameraRaw.incrementalTint = source.incrementalTint
-            cameraRaw.exposure2012 = source.exposure2012
-            cameraRaw.contrast2012 = source.contrast2012
-            cameraRaw.highlights2012 = source.highlights2012
-            cameraRaw.shadows2012 = source.shadows2012
-            cameraRaw.whites2012 = source.whites2012
-            cameraRaw.blacks2012 = source.blacks2012
-            cameraRaw.saturation = source.saturation
-            if includeCrop {
-                cameraRaw.crop = source.crop
-            }
-            cameraRaw.hasSettings = true
-            metadata.cameraRaw = cameraRaw
-
-            let updatedSidecar = MetadataSidecar(
-                sourceFile: url.lastPathComponent,
-                lastModified: Date(),
-                pendingChanges: true,
-                metadata: metadata,
-                imageMetadataSnapshot: sidecar?.imageMetadataSnapshot,
-                history: sidecar?.history ?? []
-            )
-            try? sidecarService.saveSidecar(updatedSidecar, for: url, in: folderURL)
-
-            // Update in-memory ImageFile state
             if let index = browserViewModel.urlToImageIndex[url] {
                 browserViewModel.images[index].cameraRawSettings = cameraRaw
                 browserViewModel.images[index].hasDevelopEdits = true
-                browserViewModel.images[index].hasPendingMetadataChanges = true
                 if includeCrop, cameraRaw.crop?.hasCrop == true {
                     browserViewModel.images[index].hasCropEdits = true
                 }
                 browserViewModel.thumbnailService.invalidateThumbnail(for: url)
+            }
+        }
+
+        // Write camera raw settings to XMP in the image files
+        let targetURLs = Array(urls)
+        Task {
+            var fields: [String: String] = [:]
+            fields[ExifToolWriteTag.crsVersion] = cameraRaw.version ?? "15.4"
+            fields[ExifToolWriteTag.crsProcessVersion] = cameraRaw.processVersion ?? "15.4"
+            fields[ExifToolWriteTag.crsWhiteBalance] = cameraRaw.whiteBalance ?? ""
+            fields[ExifToolWriteTag.crsTemperature] = cameraRaw.temperature.map(String.init) ?? ""
+            fields[ExifToolWriteTag.crsTint] = cameraRaw.tint.map(String.init) ?? ""
+            fields[ExifToolWriteTag.crsIncrementalTemperature] = cameraRaw.incrementalTemperature.map(String.init) ?? ""
+            fields[ExifToolWriteTag.crsIncrementalTint] = cameraRaw.incrementalTint.map(String.init) ?? ""
+            fields[ExifToolWriteTag.crsExposure2012] = cameraRaw.exposure2012.map { String(format: "%.2f", $0) } ?? ""
+            fields[ExifToolWriteTag.crsContrast2012] = cameraRaw.contrast2012.map(String.init) ?? ""
+            fields[ExifToolWriteTag.crsHighlights2012] = cameraRaw.highlights2012.map(String.init) ?? ""
+            fields[ExifToolWriteTag.crsShadows2012] = cameraRaw.shadows2012.map(String.init) ?? ""
+            fields[ExifToolWriteTag.crsWhites2012] = cameraRaw.whites2012.map(String.init) ?? ""
+            fields[ExifToolWriteTag.crsBlacks2012] = cameraRaw.blacks2012.map(String.init) ?? ""
+            fields[ExifToolWriteTag.crsSaturation] = cameraRaw.saturation.map(String.init) ?? ""
+            fields[ExifToolWriteTag.crsHasSettings] = "True"
+
+            if let crop = cameraRaw.crop, !crop.isEmpty {
+                fields[ExifToolWriteTag.crsCropTop] = crop.top.map { String(format: "%.6f", $0) } ?? ""
+                fields[ExifToolWriteTag.crsCropLeft] = crop.left.map { String(format: "%.6f", $0) } ?? ""
+                fields[ExifToolWriteTag.crsCropBottom] = crop.bottom.map { String(format: "%.6f", $0) } ?? ""
+                fields[ExifToolWriteTag.crsCropRight] = crop.right.map { String(format: "%.6f", $0) } ?? ""
+                fields[ExifToolWriteTag.crsCropAngle] = crop.angle.map { String(format: "%.6f", $0) } ?? ""
+                fields[ExifToolWriteTag.crsHasCrop] = "True"
+            }
+
+            do {
+                try await browserViewModel.exifToolService.writeFields(fields, to: targetURLs)
+            } catch {
+                Logger(subsystem: "com.aagedal.photo-agent", category: "EditWorkspaceView")
+                    .error("Failed to paste camera raw to multiple images: \(error.localizedDescription)")
             }
         }
 

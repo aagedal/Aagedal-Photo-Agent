@@ -1242,34 +1242,21 @@ final class BrowserViewModel {
             if sidecar.metadata.label != snapshot.label {
                 array[index].colorLabel = ColorLabel.fromMetadataLabel(sidecar.metadata.label)
             }
-            if sidecar.metadata.cameraRaw != snapshot.cameraRaw {
-                array[index].cameraRawSettings = sidecar.metadata.cameraRaw
-                applySidecarCropState(to: &array[index], cameraRaw: sidecar.metadata.cameraRaw)
-            }
+            // cameraRaw is sourced from XMP only, not from JSON sidecar
         } else {
             if let ratingValue = sidecar.metadata.rating {
                 array[index].starRating = StarRating(rawValue: ratingValue) ?? .none
             }
             array[index].colorLabel = ColorLabel.fromMetadataLabel(sidecar.metadata.label)
-            if let cameraRaw = sidecar.metadata.cameraRaw {
-                array[index].cameraRawSettings = cameraRaw
-                applySidecarCropState(to: &array[index], cameraRaw: cameraRaw)
-            }
         }
     }
 
-    /// Apply cameraRaw and crop state from a pending sidecar during initial folder load.
-    /// This ensures thumbnails render with crop/develop edits before ExifTool metadata is read.
+    /// Apply cameraRaw and crop state from XMP during initial folder load.
+    /// Camera raw is no longer stored in JSON sidecars — this is now a no-op
+    /// until ExifTool metadata is read (which populates cameraRaw from XMP).
     private func applySidecarCropAndDevelopState(to imageFile: inout ImageFile, sidecar: MetadataSidecar) {
-        let cameraRaw: CameraRawSettings?
-        if let snapshot = sidecar.imageMetadataSnapshot {
-            cameraRaw = sidecar.metadata.cameraRaw != snapshot.cameraRaw ? sidecar.metadata.cameraRaw : nil
-        } else {
-            cameraRaw = sidecar.metadata.cameraRaw
-        }
-        guard let cameraRaw else { return }
-        imageFile.cameraRawSettings = cameraRaw
-        applySidecarCropState(to: &imageFile, cameraRaw: cameraRaw)
+        // Camera raw data is sourced from XMP only, not from JSON sidecar.
+        // Crop/develop state will be applied when ExifTool metadata loads.
     }
 
     private func applySidecarCropState(to imageFile: inout ImageFile, cameraRaw: CameraRawSettings?) {
@@ -1901,26 +1888,64 @@ final class BrowserViewModel {
     }
 
     func resetAllEditsOnSelected() {
-        guard let folderURL = currentFolderURL else { return }
+        let urls = Array(selectedImageIDs)
+        guard !urls.isEmpty else { return }
 
-        for url in selectedImageIDs {
+        // Immediately update in-memory state for visual feedback
+        for url in urls {
             guard let index = urlToImageIndex[url] else { continue }
             images[index].cameraRawSettings = nil
             images[index].hasDevelopEdits = false
             images[index].hasCropEdits = false
             images[index].cropRegion = nil
-
-            // Clear cameraRaw from sidecar. The sidecar must stay with
-            // pendingChanges=true so MetadataViewModel uses sidecar.metadata
-            // (which has cameraRaw=nil) instead of baseMeta from ExifTool
-            // (which may still contain XMP camera raw tags from a previous save).
-            if var sidecar = sidecarService.loadSidecar(for: url, in: folderURL) {
-                sidecar.metadata.cameraRaw = nil
-                sidecar.pendingChanges = true
-                try? sidecarService.saveSidecar(sidecar, for: url, in: folderURL)
-            }
-
             thumbnailService.invalidateThumbnail(for: url)
+        }
+
+        // Write cleared CRS fields to XMP in the image files
+        Task {
+            var clearFields: [String: String] = [:]
+            clearFields[ExifToolWriteTag.crsVersion] = ""
+            clearFields[ExifToolWriteTag.crsProcessVersion] = ""
+            clearFields[ExifToolWriteTag.crsWhiteBalance] = ""
+            clearFields[ExifToolWriteTag.crsTemperature] = ""
+            clearFields[ExifToolWriteTag.crsTint] = ""
+            clearFields[ExifToolWriteTag.crsIncrementalTemperature] = ""
+            clearFields[ExifToolWriteTag.crsIncrementalTint] = ""
+            clearFields[ExifToolWriteTag.crsExposure2012] = ""
+            clearFields[ExifToolWriteTag.crsContrast2012] = ""
+            clearFields[ExifToolWriteTag.crsHighlights2012] = ""
+            clearFields[ExifToolWriteTag.crsShadows2012] = ""
+            clearFields[ExifToolWriteTag.crsWhites2012] = ""
+            clearFields[ExifToolWriteTag.crsBlacks2012] = ""
+            clearFields[ExifToolWriteTag.crsSaturation] = ""
+            clearFields[ExifToolWriteTag.crsVibrance] = ""
+            clearFields[ExifToolWriteTag.crsHasSettings] = "False"
+            clearFields[ExifToolWriteTag.crsCropTop] = ""
+            clearFields[ExifToolWriteTag.crsCropLeft] = ""
+            clearFields[ExifToolWriteTag.crsCropBottom] = ""
+            clearFields[ExifToolWriteTag.crsCropRight] = ""
+            clearFields[ExifToolWriteTag.crsCropAngle] = ""
+            clearFields[ExifToolWriteTag.crsHasCrop] = ""
+            clearFields[ExifToolWriteTag.crsCropConstrainToWarp] = ""
+            clearFields[ExifToolWriteTag.crsCropConstrainToUnitSquare] = ""
+            clearFields[ExifToolWriteTag.crsHDREditMode] = ""
+            clearFields[ExifToolWriteTag.crsHDRMaxValue] = ""
+            clearFields[ExifToolWriteTag.crsSDRBrightness] = ""
+            clearFields[ExifToolWriteTag.crsSDRContrast] = ""
+            clearFields[ExifToolWriteTag.crsSDRClarity] = ""
+            clearFields[ExifToolWriteTag.crsSDRHighlights] = ""
+            clearFields[ExifToolWriteTag.crsSDRShadows] = ""
+            clearFields[ExifToolWriteTag.crsSDRWhites] = ""
+            clearFields[ExifToolWriteTag.crsSDRBlend] = ""
+
+            // Clear masks via structured XMP arg
+            let maskClearArgs = ["-struct", "-\(ExifToolWriteTag.crsMaskGroupBasedCorrections)="]
+
+            do {
+                try await exifToolService.writeFields(clearFields, to: urls, extraArgs: maskClearArgs)
+            } catch {
+                logger.error("Failed to clear camera raw XMP fields: \(error.localizedDescription)")
+            }
         }
     }
 

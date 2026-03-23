@@ -218,7 +218,12 @@ final class MetadataViewModel {
                         self.sidecarHistory = sidecar.history
                         self.sidecarHistory.trimToHistoryLimit()
                         if sidecar.pendingChanges {
+                            // Preserve camera raw and orientation from XMP — sidecar only overrides IPTC fields
+                            let xmpCameraRaw = newEditingMetadata.cameraRaw
+                            let xmpOrientation = newEditingMetadata.exifOrientation
                             newEditingMetadata = sidecar.metadata
+                            newEditingMetadata.cameraRaw = xmpCameraRaw
+                            newEditingMetadata.exifOrientation = xmpOrientation
                             self.hasChanges = true
                         }
                     }

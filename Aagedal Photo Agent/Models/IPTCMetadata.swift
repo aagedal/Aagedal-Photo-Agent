@@ -255,11 +255,24 @@ struct IPTCMetadata: Codable, Sendable, Equatable {
     var latitude: Double?
     var longitude: Double?
 
-    // XMP managed alongside
+    // XMP managed alongside IPTC (persisted to JSON sidecar)
     var rating: Int?
     var label: String?
+
+    // Camera raw / orientation — in-memory only, sourced from XMP, NOT persisted to JSON sidecar
     var cameraRaw: CameraRawSettings?
     var exifOrientation: Int?
+
+    // Exclude cameraRaw and exifOrientation from JSON sidecar serialization.
+    // These are sourced exclusively from XMP (embedded in image or XMP sidecar file).
+    enum CodingKeys: String, CodingKey {
+        case title, description, extendedDescription, keywords, personShown
+        case digitalSourceType
+        case creator, credit, copyright, jobId, dateCreated, captureDate
+        case city, country, event
+        case latitude, longitude
+        case rating, label
+    }
 
     init(
         title: String? = nil,
@@ -306,6 +319,30 @@ struct IPTCMetadata: Codable, Sendable, Equatable {
         self.cameraRaw = cameraRaw
         self.exifOrientation = exifOrientation
     }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        title = try container.decodeIfPresent(String.self, forKey: .title)
+        description = try container.decodeIfPresent(String.self, forKey: .description)
+        extendedDescription = try container.decodeIfPresent(String.self, forKey: .extendedDescription)
+        keywords = try container.decodeIfPresent([String].self, forKey: .keywords) ?? []
+        personShown = try container.decodeIfPresent([String].self, forKey: .personShown) ?? []
+        digitalSourceType = try container.decodeIfPresent(DigitalSourceType.self, forKey: .digitalSourceType)
+        creator = try container.decodeIfPresent(String.self, forKey: .creator)
+        credit = try container.decodeIfPresent(String.self, forKey: .credit)
+        copyright = try container.decodeIfPresent(String.self, forKey: .copyright)
+        jobId = try container.decodeIfPresent(String.self, forKey: .jobId)
+        dateCreated = try container.decodeIfPresent(String.self, forKey: .dateCreated)
+        captureDate = try container.decodeIfPresent(String.self, forKey: .captureDate)
+        city = try container.decodeIfPresent(String.self, forKey: .city)
+        country = try container.decodeIfPresent(String.self, forKey: .country)
+        event = try container.decodeIfPresent(String.self, forKey: .event)
+        latitude = try container.decodeIfPresent(Double.self, forKey: .latitude)
+        longitude = try container.decodeIfPresent(Double.self, forKey: .longitude)
+        rating = try container.decodeIfPresent(Int.self, forKey: .rating)
+        label = try container.decodeIfPresent(String.self, forKey: .label)
+        // cameraRaw and exifOrientation are not decoded — sourced from XMP only
+    }
 }
 
 extension IPTCMetadata {
@@ -348,14 +385,7 @@ extension IPTCMetadata {
         if let value = override.longitude { result.longitude = value }
         if let value = override.rating { result.rating = value }
         if let value = override.label, !value.isEmpty { result.label = value }
-        if let value = override.cameraRaw {
-            if let existing = result.cameraRaw {
-                result.cameraRaw = existing.merged(preferring: value)
-            } else {
-                result.cameraRaw = value
-            }
-        }
-        if let value = override.exifOrientation { result.exifOrientation = value }
+        // cameraRaw and exifOrientation are not merged — they are sourced from XMP only
 
         return result
     }
