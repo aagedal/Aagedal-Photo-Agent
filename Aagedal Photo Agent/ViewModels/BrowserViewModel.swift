@@ -625,7 +625,23 @@ final class BrowserViewModel {
                 updated[index].hasCropEdits = hasCropEdits(in: dict)
                 updated[index].exifOrientation = parseIntValue(dict[ExifToolReadKey.orientation]) ?? 1
                 updated[index].cropRegion = cropRegion(in: dict, exifOrientation: updated[index].exifOrientation)
-                updated[index].cameraRawSettings = cameraRawSettings(in: dict)
+                // Preserve localAdjustments and toneCurve — these are set in-memory
+                // by the edit workspace but not parsed back from ExifTool XMP output.
+                let existingLocalAdjustments = updated[index].cameraRawSettings?.localAdjustments
+                let existingToneCurve = updated[index].cameraRawSettings?.toneCurve
+                var newSettings = cameraRawSettings(in: dict)
+                let hasPreservedData = (existingLocalAdjustments?.isEmpty == false)
+                    || (existingToneCurve?.isEmpty == false)
+                if hasPreservedData && newSettings == nil {
+                    newSettings = CameraRawSettings()
+                }
+                if let masks = existingLocalAdjustments, !masks.isEmpty {
+                    newSettings?.localAdjustments = masks
+                }
+                if let curve = existingToneCurve, !curve.isEmpty {
+                    newSettings?.toneCurve = curve
+                }
+                updated[index].cameraRawSettings = newSettings
                 applyPendingSidecarOverrides(to: &updated, for: sourceURL, index: index, cachedSidecar: cachedSidecars[sourceURL])
             }
         }

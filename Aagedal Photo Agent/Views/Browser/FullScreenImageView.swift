@@ -87,7 +87,7 @@ private class FullScreenWindow: NSWindow {
         }
 
         // Z key (keyCode 6) → toggle zoom towards cursor
-        if keyCode == 6 && !hasCmd && !hasOption {
+        if keyCode == 6 && !hasCmd && !hasOption && !event.isARepeat {
             let mouseLoc = NSEvent.mouseLocation
             // Convert screen coordinates to window coordinates (top-left origin)
             let windowLoc = CGPoint(
@@ -99,25 +99,25 @@ private class FullScreenWindow: NSWindow {
         }
 
         // H key (keyCode 4) → toggle UI visibility
-        if keyCode == 4 && !hasCmd && !hasOption {
+        if keyCode == 4 && !hasCmd && !hasOption && !event.isARepeat {
             onToggleUI?()
             return
         }
 
         // S key (keyCode 1) → toggle scaling filter
-        if keyCode == 1 && !hasCmd && !hasOption {
+        if keyCode == 1 && !hasCmd && !hasOption && !event.isARepeat {
             onToggleScaling?()
             return
         }
 
         // G key (keyCode 5) → toggle face rectangles
-        if keyCode == 5 && !hasCmd && !hasOption {
+        if keyCode == 5 && !hasCmd && !hasOption && !event.isARepeat {
             onToggleFaceRectangles?()
             return
         }
 
         // E key (keyCode 14) → toggle edit rendering
-        if keyCode == 14 && !hasCmd && !hasOption {
+        if keyCode == 14 && !hasCmd && !hasOption && !event.isARepeat {
             onToggleEditRendering?()
             return
         }
