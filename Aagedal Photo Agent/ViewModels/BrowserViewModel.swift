@@ -1910,9 +1910,13 @@ final class BrowserViewModel {
             images[index].hasCropEdits = false
             images[index].cropRegion = nil
 
-            // Update sidecar
+            // Clear cameraRaw from sidecar. The sidecar must stay with
+            // pendingChanges=true so MetadataViewModel uses sidecar.metadata
+            // (which has cameraRaw=nil) instead of baseMeta from ExifTool
+            // (which may still contain XMP camera raw tags from a previous save).
             if var sidecar = sidecarService.loadSidecar(for: url, in: folderURL) {
                 sidecar.metadata.cameraRaw = nil
+                sidecar.pendingChanges = true
                 try? sidecarService.saveSidecar(sidecar, for: url, in: folderURL)
             }
 

@@ -560,6 +560,14 @@ struct FullScreenImageView: View {
             // doesn't linger while the new version loads.
             currentImage = nil
         }
+        .onChange(of: currentImageFile?.cameraRawSettings) {
+            // Invalidate cached image when edits change (e.g. mask adjustments
+            // committed in edit workspace) so the full-screen preview re-renders
+            guard renderEdits, let url = currentImageFile?.url else { return }
+            imageCache.invalidateImage(for: url)
+            currentImage = nil
+            Task { await loadImage() }
+        }
         .onChange(of: currentImageFile?.exifOrientation) { oldValue, newValue in
             // Only apply in-place rotation when the same image was rotated,
             // not when navigating to a different image with a different orientation.

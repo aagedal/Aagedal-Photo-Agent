@@ -360,7 +360,17 @@ struct EditWorkspaceView: View {
                                     if lockedCropImageRect == nil {
                                         lockedCropImageRect = computedImageRect
                                     }
-                                    dragCropAngle = newAngle
+                                    let clampedAngle = min(max(newAngle, -45), 45)
+                                    let oldAngle = dragCropAngle ?? activeCropAngle
+                                    let currentRegion = dragCropRegion ?? activeCrop
+                                    let ar = sourceAspectRatio
+                                    // Recalculate crop to fit within rotated image bounds
+                                    let fitted = currentRegion
+                                        .withAngle(from: oldAngle, to: clampedAngle, aspectRatio: ar)
+                                        .centerClampedForRotation(angleDegrees: clampedAngle, aspectRatio: ar)
+                                        .fittingRotated(angleDegrees: clampedAngle, aspectRatio: ar)
+                                    dragCropAngle = clampedAngle
+                                    dragCropRegion = fitted
                                 },
                                 onCommit: {
                                     // Commit accumulated drag state to ViewModel
@@ -1483,6 +1493,11 @@ struct EditWorkspaceView: View {
 
     private func toggleCropControls() {
         showCropControls.toggle()
+        if showCropControls {
+            // Deselect mask when entering crop mode
+            selectedMaskIndex = nil
+            metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
+        }
         if showCropControls && !isCropEnabled {
             // Showing controls — enable crop if not already active
             resetCropZoom()
