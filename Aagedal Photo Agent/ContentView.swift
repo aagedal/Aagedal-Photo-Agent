@@ -1144,6 +1144,26 @@ struct ContentView: View {
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
+    /// Overlay in-memory and XMP sidecar CameraRaw settings onto ExifTool-read metadata.
+    /// ExifTool reads the image file directly but does not read the adjacent `.xmp` sidecar
+    /// where CameraRaw edits are stored for RAW files. This merges the correct settings back in.
+    private func overlayCameraRawSettings(onto metadataByURL: inout [URL: IPTCMetadata], urls: [URL]) {
+        let xmpService = XMPSidecarService()
+        for url in urls {
+            // Prefer in-memory CRS (kept in sync by edit workspace via syncCameraRawToImageFile)
+            if let index = browserViewModel.urlToImageIndex[url],
+               let inMemoryCRS = browserViewModel.images[index].cameraRawSettings {
+                metadataByURL[url]?.cameraRaw = inMemoryCRS
+            }
+            // For RAW files without in-memory CRS, read XMP sidecar (handles previous-session edits)
+            else if SupportedImageFormats.isRaw(url: url),
+                    let xmpMeta = xmpService.loadSidecar(for: url),
+                    let xmpCRS = xmpMeta.cameraRaw, !xmpCRS.isEmpty {
+                metadataByURL[url]?.cameraRaw = xmpCRS
+            }
+        }
+    }
+
     private func saveSelectedAs(format: EditedImageRenderer.SaveAsFormat) {
         guard !isRenderingEditedFolder else { return }
         let urls = browserViewModel.selectedImages.map(\.url)
@@ -1154,7 +1174,7 @@ struct ContentView: View {
         renderExportTotal = urls.count
 
         Task {
-            let metadataByURL: [URL: IPTCMetadata]
+            var metadataByURL: [URL: IPTCMetadata]
             do {
                 metadataByURL = try await browserViewModel.exifToolService.readBatchFullMetadata(urls: urls)
             } catch {
@@ -1162,6 +1182,7 @@ struct ContentView: View {
                 browserViewModel.errorMessage = "Failed to read metadata: \(error.localizedDescription)"
                 return
             }
+            overlayCameraRawSettings(onto: &metadataByURL, urls: urls)
 
             var savedURLs: [URL] = []
             for (index, url) in urls.enumerated() {
@@ -1212,7 +1233,7 @@ struct ContentView: View {
                 return
             }
 
-            let metadataByURL: [URL: IPTCMetadata]
+            var metadataByURL: [URL: IPTCMetadata]
             do {
                 metadataByURL = try await browserViewModel.exifToolService.readBatchFullMetadata(urls: urls)
             } catch {
@@ -1220,6 +1241,7 @@ struct ContentView: View {
                 browserViewModel.errorMessage = "Failed to read metadata for export: \(error.localizedDescription)"
                 return
             }
+            overlayCameraRawSettings(onto: &metadataByURL, urls: urls)
 
             var successCount = 0
             var failureCount = 0

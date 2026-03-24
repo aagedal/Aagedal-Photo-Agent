@@ -247,6 +247,17 @@ final class FTPViewModel {
                 // Continue without camera raw — renders will use defaults
             }
 
+            // ExifTool reads the RAW file directly but not the adjacent .xmp sidecar
+            // where CameraRaw edits are stored. Overlay XMP sidecar settings for RAW files.
+            let xmpService = XMPSidecarService()
+            for url in urls {
+                if SupportedImageFormats.isRaw(url: url),
+                   let xmpMeta = xmpService.loadSidecar(for: url),
+                   let xmpCRS = xmpMeta.cameraRaw, !xmpCRS.isEmpty {
+                    metadataMap[url]?.cameraRaw = xmpCRS
+                }
+            }
+
             // Render phase (0–50% of overall progress)
             var renderedURLs: [URL] = []
             for url in urls {
