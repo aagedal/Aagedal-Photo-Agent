@@ -193,7 +193,17 @@ final class MetadataViewModel {
                     let (embedded, conflict) = try await exifToolService.readFullMetadataWithConflictCheck(url: imageURL)
                     guard !Task.isCancelled else { return }
                     let xmpMeta = self.loadXMPMetadataIfAllowed(for: imageURL)
-                    let referenceSource = self.defaultReferenceSource(hasXmp: xmpMeta != nil)
+                    // Preserve the user's manual reference source selection when
+                    // reloading the same image (e.g. auto-refresh, post-save).
+                    // Only fall back to the default on first load or if the
+                    // previously selected source is no longer available.
+                    let referenceSource: MetadataReferenceSource
+                    if isReloadingSameImage,
+                       !(self.metadataReferenceSource == .xmp && xmpMeta == nil) {
+                        referenceSource = self.metadataReferenceSource
+                    } else {
+                        referenceSource = self.defaultReferenceSource(hasXmp: xmpMeta != nil)
+                    }
                     let baseMeta = self.referenceMetadata(
                         for: referenceSource,
                         embedded: embedded,
@@ -1870,7 +1880,13 @@ final class MetadataViewModel {
         do {
             let (embedded, conflict) = try await exifToolService.readFullMetadataWithConflictCheck(url: url)
             let xmpMeta = loadXMPMetadataIfAllowed(for: url)
-            let refSource = defaultReferenceSource(hasXmp: xmpMeta != nil)
+            // Preserve the user's current reference source selection after processing
+            let refSource: MetadataReferenceSource
+            if metadataReferenceSource == .xmp, xmpMeta == nil {
+                refSource = .embedded
+            } else {
+                refSource = metadataReferenceSource
+            }
             let baseMeta = referenceMetadata(for: refSource, embedded: embedded, xmp: xmpMeta) ?? embedded
 
             self.embeddedMetadata = embedded

@@ -1391,13 +1391,14 @@ struct AutoRefreshModifier: ViewModifier {
                         while !Task.isCancelled {
                             try? await Task.sleep(nanoseconds: 3_000_000_000)
                             await MainActor.run {
-                                browserViewModel.refreshCurrentFolderIfNeeded()
-
-                                // Skip metadata reload while in the edit view — the
-                                // in-memory editing state is the source of truth.
-                                // Thumbnails/fullscreen previews still refresh via the
-                                // browser refresh above.
+                                // Skip the entire folder refresh while in the edit
+                                // view — reassigning `images`/`visibleImages` causes
+                                // @Observable to re-render the edit workspace (filmstrip,
+                                // metadata panel) even when content hasn't changed,
+                                // disturbing the user's in-progress edits.
                                 guard !metadataViewModel.isInEditView else { return }
+
+                                browserViewModel.refreshCurrentFolderIfNeeded()
 
                                 // If any currently selected file was modified externally,
                                 // reload full metadata so the browser reflects the changes.
