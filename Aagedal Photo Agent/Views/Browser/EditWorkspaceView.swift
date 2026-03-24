@@ -222,6 +222,7 @@ struct EditWorkspaceView: View {
                 }
             }
             metadataViewModel.isInEditView = true
+            editLog.info("[\(selectedImageURL?.lastPathComponent ?? "nil")] loadSelectedImagePreview triggered by: onAppear")
             loadSelectedImagePreview()
             keyEventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { event in
                 return handleKeyEvent(event)
@@ -247,7 +248,8 @@ struct EditWorkspaceView: View {
         .onChange(of: browserViewModel.selectedImageIDs) { _, _ in
             ensureAtLeastOneSelected()
         }
-        .onChange(of: selectedImageURL) { _, _ in
+        .onChange(of: selectedImageURL) { oldURL, newURL in
+            editLog.info("[\(newURL?.lastPathComponent ?? "nil")] loadSelectedImagePreview triggered by: onChange(selectedImageURL) old=\(oldURL?.lastPathComponent ?? "nil")")
             loadSelectedImagePreview()
         }
         .onChange(of: metadataViewModel.editingMetadata.cameraRaw) { _, _ in
@@ -275,7 +277,8 @@ struct EditWorkspaceView: View {
                 renderPreview()
             }
         }
-        .onChange(of: selectedImage?.exifOrientation) { _, _ in
+        .onChange(of: selectedImage?.exifOrientation) { oldVal, newVal in
+            editLog.info("[\(selectedImageURL?.lastPathComponent ?? "nil")] loadSelectedImagePreview triggered by: onChange(exifOrientation) \(oldVal ?? 0) → \(newVal ?? 0)")
             loadSelectedImagePreview()
         }
         .onChange(of: selectedMaskIndex) { _, _ in
@@ -951,6 +954,8 @@ struct EditWorkspaceView: View {
     }
 
     private func loadSelectedImagePreview() {
+        let filename = selectedImageURL?.lastPathComponent ?? "nil"
+        editLog.info("[\(filename)] loadSelectedImagePreview: resetting state, cancelling previous tasks")
         previewTask?.cancel()
         previewTask = nil
         previewRenderTask?.cancel()
@@ -970,13 +975,20 @@ struct EditWorkspaceView: View {
             showCropControls = false
         }
 
-        guard let selectedImageURL else { return }
+        guard let selectedImageURL else {
+            editLog.info("[nil] loadSelectedImagePreview: no selectedImageURL, returning")
+            return
+        }
         let previewMaxPixelSize = previewWorkingMaxPixelSize
         isLoadingPreview = true
         let isRaw = SupportedImageFormats.isRaw(url: selectedImageURL)
+        editLog.info("[\(filename)] loadSelectedImagePreview: starting previewTask (isRaw=\(isRaw), maxPx=\(Int(previewMaxPixelSize)))")
 
         previewTask = Task {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else {
+                editLog.info("[\(filename)] previewTask: cancelled before start")
+                return
+            }
 
             if isRaw {
                 // RAW two-phase load: show embedded JPEG preview instantly (~50ms,
@@ -984,6 +996,7 @@ struct EditWorkspaceView: View {
                 // background for Metal compute editing.
 
                 // Phase 1: Extract embedded preview from RAW container
+                let phase1Start = ContinuousClock.now
                 let quickPreview = await Task.detached(priority: .userInitiated) { () -> (image: NSImage, ciImage: CIImage)? in
                     guard let cgImage = FullScreenImageCache.loadDownsampled(
                         from: selectedImageURL,
@@ -995,15 +1008,24 @@ struct EditWorkspaceView: View {
                     )
                     return (image: nsImage, ciImage: CIImage(cgImage: cgImage))
                 }.value
+                let phase1Elapsed = ContinuousClock.now - phase1Start
 
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled else {
+                    editLog.info("[\(filename)] Phase 1: cancelled after \(phase1Elapsed)")
+                    return
+                }
 
                 if let quickPreview {
+                    editLog.info("[\(filename)] Phase 1: embedded preview in \(phase1Elapsed) (\(quickPreview.image.size.width)x\(quickPreview.image.size.height))")
                     sourceImage = quickPreview.image
                     sourceCIImage = quickPreview.ciImage
                 } else {
+                    editLog.info("[\(filename)] Phase 1: no embedded preview, falling back to thumbnail")
                     let thumbnail = await browserViewModel.thumbnailService.loadThumbnail(for: selectedImageURL)
-                    guard !Task.isCancelled else { return }
+                    guard !Task.isCancelled else {
+                        editLog.info("[\(filename)] Phase 1: cancelled during thumbnail fallback")
+                        return
+                    }
                     sourceImage = thumbnail
                     sourceCIImage = thumbnail?.tiffRepresentation.flatMap { CIImage(data: $0) }
                 }
@@ -1016,25 +1038,40 @@ struct EditWorkspaceView: View {
                 // Check pre-cache first — if adjacent image was already decoded, skip the decode.
                 if let pipeline = metalPipeline {
                     let cacheHit = pipeline.applyCachedTexture(for: selectedImageURL)
+                    editLog.info("[\(filename)] Phase 2: starting (cacheHit=\(cacheHit))")
 
+                    let phase2Start = ContinuousClock.now
                     let fullCIImage: CIImage? = await Task.detached(priority: .medium) {
                         FullScreenImageCache.loadHDRPreview(
                             from: selectedImageURL, maxPixelSize: previewMaxPixelSize
                         )
                     }.value
+                    let decodeElapsed = ContinuousClock.now - phase2Start
 
-                    guard !Task.isCancelled else { return }
+                    guard !Task.isCancelled else {
+                        editLog.info("[\(filename)] Phase 2: cancelled after decode (\(decodeElapsed))")
+                        return
+                    }
+                    editLog.info("[\(filename)] Phase 2: decoded in \(decodeElapsed) (result=\(fullCIImage != nil))")
 
                     if !cacheHit, let fullCIImage {
+                        let uploadStart = ContinuousClock.now
                         await Task.detached(priority: .medium) {
                             pipeline.uploadSourceImage(fullCIImage)
                         }.value
-                        guard !Task.isCancelled else { return }
+                        let uploadElapsed = ContinuousClock.now - uploadStart
+                        guard !Task.isCancelled else {
+                            editLog.info("[\(filename)] Phase 2: cancelled after upload (\(uploadElapsed))")
+                            return
+                        }
+                        editLog.info("[\(filename)] Phase 2: texture uploaded in \(uploadElapsed)")
                     }
                     isDecodingFullResolution = false
                     if let fullCIImage {
                         sourceCIImage = fullCIImage
                     }
+                    let totalPhase2 = ContinuousClock.now - phase2Start
+                    editLog.info("[\(filename)] Phase 2: complete in \(totalPhase2), hasTexture=\(pipeline.hasSourceTexture)")
                     renderPreview()
 
                     // Pre-cache adjacent RAW images for instant navigation
@@ -1120,14 +1157,24 @@ struct EditWorkspaceView: View {
         }
 
         guard !adjacentRAWURLs.isEmpty else { return }
+        editLog.info("[\(currentURL.lastPathComponent)] precacheAdjacent: \(adjacentRAWURLs.map(\.lastPathComponent))")
 
         Task.detached(priority: .background) {
             for url in adjacentRAWURLs {
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled else {
+                    editLog.info("[\(url.lastPathComponent)] precache: cancelled")
+                    return
+                }
+                let start = ContinuousClock.now
                 guard let ciImage = FullScreenImageCache.loadHDRPreview(
                     from: url, maxPixelSize: maxPixelSize
-                ) else { continue }
+                ) else {
+                    editLog.info("[\(url.lastPathComponent)] precache: HDR decode failed")
+                    continue
+                }
                 pipeline.precacheTexture(for: url, ciImage: ciImage)
+                let elapsed = ContinuousClock.now - start
+                editLog.info("[\(url.lastPathComponent)] precache: done in \(elapsed)")
             }
         }
     }
@@ -2316,6 +2363,7 @@ struct EditWorkspaceView: View {
         // Reload the currently displayed image's metadata if it was in the paste set
         if let currentURL = selectedImageURL, urls.contains(currentURL) {
             metadataViewModel.loadMetadata(for: browserViewModel.selectedImages, folderURL: folderURL)
+            editLog.info("[\(selectedImageURL?.lastPathComponent ?? "nil")] loadSelectedImagePreview triggered by: pasteCameraRaw")
             loadSelectedImagePreview()
         }
 
