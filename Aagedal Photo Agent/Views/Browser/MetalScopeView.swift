@@ -67,6 +67,10 @@ struct MetalScopeView: NSViewRepresentable {
         var editPipeline: MetalEditPipeline?
         var mode: ScopeViewModel.ScopeMode = .waveform
         var waveformScale: WaveformScale = .percentage
+        var cropLeft: Float = 0
+        var cropTop: Float = 0
+        var cropRight: Float = 1
+        var cropBottom: Float = 1
         weak var mtkView: MTKView?
 
         var drawCount: Int = 0
@@ -112,6 +116,8 @@ struct MetalScopeView: NSViewRepresentable {
                 maskBuffer: editPipeline.maskBuffer,
                 mode: mode,
                 scale: waveformScale,
+                cropLeft: cropLeft, cropTop: cropTop,
+                cropRight: cropRight, cropBottom: cropBottom,
                 drawable: drawable,
                 drawableSize: drawableSize
             )

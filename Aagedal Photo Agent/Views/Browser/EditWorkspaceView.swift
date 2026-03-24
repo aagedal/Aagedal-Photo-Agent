@@ -980,6 +980,15 @@ struct EditWorkspaceView: View {
 
         let settings = metadataViewModel.editingMetadata.cameraRaw
 
+        // Keep Metal scope coordinator's crop region up to date
+        if let coordinator = scopeViewModel.metalScopeCoordinator {
+            let crop = activeCrop
+            coordinator.cropLeft = Float(crop.left)
+            coordinator.cropTop = Float(crop.top)
+            coordinator.cropRight = Float(crop.right)
+            coordinator.cropBottom = Float(crop.bottom)
+        }
+
         // During drag: Metal update already handled by EditSlider.onDragValueChanged
         // (direct callback that bypasses SwiftUI body re-evaluation delay).
         // Only handle scope updates here.
@@ -1014,10 +1023,11 @@ struct EditWorkspaceView: View {
         previewRenderTask?.cancel()
         let fullSource = sourceCIImage
         let fallback = sourceImage
+        let orientation = selectedImageOrientation
 
         let hdr = isHDREnabled
         previewRenderTask = Task {
-            let result = await Task.detached(priority: .userInitiated) { () -> (NSImage, CGImage)? in
+            let result = await Task.detached(priority: .userInitiated) { () -> (NSImage, CGImage, CGImage?)? in
                 let output = CameraRawApproximation.apply(to: fullSource, settings: settings)
                 let ctx = CameraRawApproximation.ciContext
                 guard let cgImage = ctx.createCGImage(
@@ -1029,14 +1039,31 @@ struct EditWorkspaceView: View {
                     return nil
                 }
                 let nsImage = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
-                return (nsImage, cgImage)
+
+                // Generate cropped CGImage for scope display
+                let cropped = CameraRawApproximation.applyCrop(
+                    to: output, originalExtent: fullSource.extent,
+                    settings: settings, exifOrientation: orientation
+                )
+                let scopeCGImage: CGImage?
+                if cropped !== output {
+                    scopeCGImage = ctx.createCGImage(
+                        cropped, from: cropped.extent,
+                        format: .RGBAh,
+                        colorSpace: CameraRawApproximation.workingColorSpace
+                    )
+                } else {
+                    scopeCGImage = nil
+                }
+
+                return (nsImage, cgImage, scopeCGImage)
             }.value
 
             guard !Task.isCancelled else { return }
             if let result {
                 previewImage = result.0
                 previewCGImage = result.1
-                NotificationCenter.default.post(name: .scopeSourceImageDidChange, object: nil, userInfo: ["cgImage": result.1, "isHDR": hdr])
+                NotificationCenter.default.post(name: .scopeSourceImageDidChange, object: nil, userInfo: ["cgImage": result.2 ?? result.1, "isHDR": hdr])
             } else {
                 previewImage = fallback
                 previewCGImage = nil
@@ -1067,19 +1094,24 @@ struct EditWorkspaceView: View {
         guard let sourceCIImage else { return }
         let settings = metadataViewModel.editingMetadata.cameraRaw
         let hdr = isHDREnabled
+        let orientation = selectedImageOrientation
 
         let maxDim: CGFloat = 360
         let extent = sourceCIImage.extent
         let scale = min(maxDim / extent.width, maxDim / extent.height, 1.0)
         let small = sourceCIImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
         let filtered = CameraRawApproximation.apply(to: small, settings: settings)
+        let scopeSource = CameraRawApproximation.applyCrop(
+            to: filtered, originalExtent: small.extent,
+            settings: settings, exifOrientation: orientation
+        )
 
         scopeThrottleTask?.cancel()
         scopeThrottleTask = Task {
             let cgImage = await Task.detached(priority: .utility) {
                 CameraRawApproximation.ciContext.createCGImage(
-                    filtered,
-                    from: filtered.extent,
+                    scopeSource,
+                    from: scopeSource.extent,
                     format: .RGBAh,
                     colorSpace: CameraRawApproximation.workingColorSpace
                 )

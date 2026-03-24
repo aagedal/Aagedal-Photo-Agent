@@ -67,6 +67,10 @@ struct ScopeParams {
     uint channelCount;
     uint channelWidth;
     uint channelGap;
+    float cropLeft;       // Normalized crop region [0..1]
+    float cropTop;
+    float cropRight;
+    float cropBottom;
 };
 
 // ============================================================
@@ -212,7 +216,12 @@ kernel void waveformAccumulate(
 {
     if (gid.x >= scopeParams.sampleWidth || gid.y >= scopeParams.sampleHeight) return;
 
+    // Remap UV from sample grid to crop region within source texture
     float2 uv = (float2(gid) + 0.5) / float2(scopeParams.sampleWidth, scopeParams.sampleHeight);
+    uv = float2(scopeParams.cropLeft, scopeParams.cropTop)
+       + uv * float2(scopeParams.cropRight - scopeParams.cropLeft,
+                      scopeParams.cropBottom - scopeParams.cropTop);
+
     constexpr sampler bilinear(filter::linear, address::clamp_to_edge);
     half4 color = source.sample(bilinear, uv);
     float3 rgb = float3(color.rgb);
@@ -385,7 +394,12 @@ kernel void paradeAccumulate(
     uint sH = scopeParams.sampleHeight;
     if (gid.x >= sW || gid.y >= sH) return;
 
+    // Remap UV from sample grid to crop region within source texture
     float2 uv = (float2(gid) + 0.5) / float2(sW, sH);
+    uv = float2(scopeParams.cropLeft, scopeParams.cropTop)
+       + uv * float2(scopeParams.cropRight - scopeParams.cropLeft,
+                      scopeParams.cropBottom - scopeParams.cropTop);
+
     constexpr sampler bilinear(filter::linear, address::clamp_to_edge);
     half4 color = source.sample(bilinear, uv);
     float3 rgb = float3(color.rgb);
@@ -549,7 +563,12 @@ kernel void vectorscopeAccumulate(
 {
     if (gid.x >= scopeParams.sampleWidth || gid.y >= scopeParams.sampleHeight) return;
 
+    // Remap UV from sample grid to crop region within source texture
     float2 uv = (float2(gid) + 0.5) / float2(scopeParams.sampleWidth, scopeParams.sampleHeight);
+    uv = float2(scopeParams.cropLeft, scopeParams.cropTop)
+       + uv * float2(scopeParams.cropRight - scopeParams.cropLeft,
+                      scopeParams.cropBottom - scopeParams.cropTop);
+
     constexpr sampler bilinear(filter::linear, address::clamp_to_edge);
     half4 color = source.sample(bilinear, uv);
     float3 rgb = float3(color.rgb);

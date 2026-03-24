@@ -20,6 +20,10 @@ struct ScopeParams {
     var channelCount: UInt32 = 0
     var channelWidth: UInt32 = 0
     var channelGap: UInt32 = 0
+    var cropLeft: Float = 0
+    var cropTop: Float = 0
+    var cropRight: Float = 1
+    var cropBottom: Float = 1
 }
 
 /// Manages Metal compute pipelines for real-time scope rendering (waveform, parade, vectorscope).
@@ -148,6 +152,8 @@ final class MetalScopePipeline: @unchecked Sendable {
         maskBuffer: MTLBuffer?,
         mode: ScopeViewModel.ScopeMode,
         scale: WaveformScale,
+        cropLeft: Float = 0, cropTop: Float = 0,
+        cropRight: Float = 1, cropBottom: Float = 1,
         drawable: CAMetalDrawable,
         drawableSize: CGSize
     ) -> Bool {
@@ -170,6 +176,10 @@ final class MetalScopePipeline: @unchecked Sendable {
         params.verticalMargin = verticalMargin
         params.levels = outH
         params.scaleMode = scale == .nits ? 1 : 0
+        params.cropLeft = cropLeft
+        params.cropTop = cropTop
+        params.cropRight = cropRight
+        params.cropBottom = cropBottom
 
         switch mode {
         case .waveform:
