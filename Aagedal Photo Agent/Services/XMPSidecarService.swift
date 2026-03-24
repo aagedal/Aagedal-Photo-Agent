@@ -349,6 +349,14 @@ struct XMPSidecarService: Sendable {
         setSimple(on: description, prefix: "crs", localName: "SDRShadows", value: settings.sdrShadows.map(formatSignedInt))
         setSimple(on: description, prefix: "crs", localName: "SDRWhites", value: settings.sdrWhites.map(formatSignedInt))
         setSimple(on: description, prefix: "crs", localName: "SDRBlend", value: settings.sdrBlend.map(formatSignedInt))
+
+        // Tone curve: stored as rdf:Seq of "x, y" strings in 0-255 scale (Adobe ACR format)
+        updateToneCurveChannel(on: description, localName: "ToneCurvePV2012", points: settings.toneCurve?.master)
+        updateToneCurveChannel(on: description, localName: "ToneCurvePV2012Red", points: settings.toneCurve?.red)
+        updateToneCurveChannel(on: description, localName: "ToneCurvePV2012Green", points: settings.toneCurve?.green)
+        updateToneCurveChannel(on: description, localName: "ToneCurvePV2012Blue", points: settings.toneCurve?.blue)
+        let hasCustomCurve = settings.toneCurve != nil && !(settings.toneCurve?.isEmpty ?? true)
+        setSimple(on: description, prefix: "crs", localName: "ToneCurveName2012", value: hasCustomCurve ? "Custom" : nil)
     }
 
     private func removeCameraRawSettings(from description: XMLElement) {
@@ -384,10 +392,37 @@ struct XMPSidecarService: Sendable {
             "SDRShadows",
             "SDRWhites",
             "SDRBlend",
+            "ToneCurvePV2012",
+            "ToneCurvePV2012Red",
+            "ToneCurvePV2012Green",
+            "ToneCurvePV2012Blue",
+            "ToneCurveName2012",
         ]
         for field in fields {
             removeProperty(from: description, prefix: "crs", localName: field)
         }
+    }
+
+    private func updateToneCurveChannel(on description: XMLElement, localName: String, points: [ToneCurvePoint]?) {
+        if let points, points.count > 2 {
+            let strings = points.map { "\(Int(round($0.x * 255))), \(Int(round($0.y * 255)))" }
+            setSeq(on: description, prefix: "crs", localName: localName, values: strings)
+        } else {
+            removeProperty(from: description, prefix: "crs", localName: localName)
+        }
+    }
+
+    private func parseToneCurveChannel(from description: XMLElement, localName: String) -> [ToneCurvePoint]? {
+        let strings = parseSeq(from: description, prefix: "crs", localName: localName)
+        guard !strings.isEmpty else { return nil }
+        let points = strings.compactMap { str -> ToneCurvePoint? in
+            let parts = str.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            guard parts.count == 2,
+                  let x = Double(parts[0]),
+                  let y = Double(parts[1]) else { return nil }
+            return ToneCurvePoint(x: x / 255.0, y: y / 255.0)
+        }
+        return points.isEmpty ? nil : points
     }
 
     private func formatSignedInt(_ value: Int) -> String {
@@ -599,6 +634,16 @@ struct XMPSidecarService: Sendable {
         let sdrWhites = parseSimple(from: description, prefix: "crs", localName: "SDRWhites").flatMap(parseSignedInt)
         let sdrBlend = parseSimple(from: description, prefix: "crs", localName: "SDRBlend").flatMap(parseSignedInt)
 
+        // Tone curve: parse rdf:Seq of "x, y" strings (0-255 scale) back to ToneCurvePoints (0-1 scale)
+        let tcMaster = parseToneCurveChannel(from: description, localName: "ToneCurvePV2012")
+        let tcRed = parseToneCurveChannel(from: description, localName: "ToneCurvePV2012Red")
+        let tcGreen = parseToneCurveChannel(from: description, localName: "ToneCurvePV2012Green")
+        let tcBlue = parseToneCurveChannel(from: description, localName: "ToneCurvePV2012Blue")
+        let toneCurve: ToneCurve? = {
+            let tc = ToneCurve(master: tcMaster, red: tcRed, green: tcGreen, blue: tcBlue)
+            return tc.isEmpty ? nil : tc
+        }()
+
         let settings = CameraRawSettings(
             version: version,
             processVersion: processVersion,
@@ -623,7 +668,8 @@ struct XMPSidecarService: Sendable {
             sdrHighlights: sdrHighlights,
             sdrShadows: sdrShadows,
             sdrWhites: sdrWhites,
-            sdrBlend: sdrBlend
+            sdrBlend: sdrBlend,
+            toneCurve: toneCurve
         )
         return settings.isEmpty ? nil : settings
     }

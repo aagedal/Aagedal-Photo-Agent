@@ -825,7 +825,8 @@ final class MetadataViewModel {
                 let fields = batchWriteFields(from: edited)
                 if !nonRawEmbeddedTargets.isEmpty, !fields.isEmpty {
                     let maskArgs = maskWriteArgs(from: edited)
-                    try await exifToolService.writeFields(fields, to: Array(nonRawEmbeddedTargets), extraArgs: maskArgs)
+                    let tcArgs = toneCurveWriteArgs(from: edited)
+                    try await exifToolService.writeFields(fields, to: Array(nonRawEmbeddedTargets), extraArgs: maskArgs + tcArgs)
                 }
 
                 // Handle additive list fields for non-RAW embedded targets
@@ -1147,6 +1148,7 @@ final class MetadataViewModel {
         fields[ExifToolWriteTag.crsSDRShadows] = ""
         fields[ExifToolWriteTag.crsSDRWhites] = ""
         fields[ExifToolWriteTag.crsSDRBlend] = ""
+        fields[ExifToolWriteTag.crsToneCurveName2012] = ""
     }
 
     /// Generate ExifTool args for writing mask data as ACR-compatible MaskGroupBasedCorrections.
@@ -1260,6 +1262,40 @@ final class MetadataViewModel {
         return s
     }
 
+    /// Generate ExifTool args for writing tone curve data as ACR-compatible ToneCurvePV2012 lists.
+    /// Overrides `-sep` to semicolon so commas inside "x, y" point strings aren't split.
+    private func toneCurveWriteArgs(from metadata: IPTCMetadata) -> [String] {
+        let tc = metadata.cameraRaw?.toneCurve
+
+        // Always clear existing tone curve tags first
+        var args = [
+            "-\(ExifToolWriteTag.crsToneCurvePV2012)=",
+            "-\(ExifToolWriteTag.crsToneCurvePV2012Red)=",
+            "-\(ExifToolWriteTag.crsToneCurvePV2012Green)=",
+            "-\(ExifToolWriteTag.crsToneCurvePV2012Blue)=",
+            "-\(ExifToolWriteTag.crsToneCurveName2012)=",
+        ]
+
+        guard let tc, !(tc.isEmpty) else { return args }
+
+        // Override separator so commas in "x, y" point strings aren't treated as list delimiters
+        args.append(contentsOf: ["-sep", ";"])
+
+        func formatChannel(_ tag: String, _ points: [ToneCurvePoint]?) {
+            guard let points, points.count > 2 else { return }
+            let joined = points.map { "\(Int(round($0.x * 255))), \(Int(round($0.y * 255)))" }.joined(separator: ";")
+            args.append("-\(tag)=\(joined)")
+        }
+
+        formatChannel(ExifToolWriteTag.crsToneCurvePV2012, tc.master)
+        formatChannel(ExifToolWriteTag.crsToneCurvePV2012Red, tc.red)
+        formatChannel(ExifToolWriteTag.crsToneCurvePV2012Green, tc.green)
+        formatChannel(ExifToolWriteTag.crsToneCurvePV2012Blue, tc.blue)
+        args.append("-\(ExifToolWriteTag.crsToneCurveName2012)=Custom")
+
+        return args
+    }
+
     private func formatSignedInt(_ value: Int) -> String {
         value > 0 ? "+\(value)" : "\(value)"
     }
@@ -1292,7 +1328,8 @@ final class MetadataViewModel {
             do {
                 let fields = overwriteFields(from: edited)
                 let maskArgs = maskWriteArgs(from: edited)
-                try await exifToolService.writeFields(fields, to: [imageURL], extraArgs: maskArgs)
+                let tcArgs = toneCurveWriteArgs(from: edited)
+                try await exifToolService.writeFields(fields, to: [imageURL], extraArgs: maskArgs + tcArgs)
                 self.syncCameraRawToXMPSidecar(for: imageURL, metadata: edited)
 
                 let now = Date()
@@ -1347,7 +1384,8 @@ final class MetadataViewModel {
             do {
                 let fields = overwriteFields(from: edited)
                 let maskArgs = maskWriteArgs(from: edited)
-                try await exifToolService.writeFields(fields, to: [imageURL], extraArgs: maskArgs)
+                let tcArgs = toneCurveWriteArgs(from: edited)
+                try await exifToolService.writeFields(fields, to: [imageURL], extraArgs: maskArgs + tcArgs)
                 self.syncCameraRawToXMPSidecar(for: imageURL, metadata: edited)
 
                 try? sidecarService.deleteSidecar(for: imageURL, in: folderURL)
@@ -2255,7 +2293,8 @@ final class MetadataViewModel {
                 let edited = editingMetadata
                 let fields = overwriteFields(from: edited)
                 let maskArgs = maskWriteArgs(from: edited)
-                try await exifToolService.writeFields(fields, to: [imageURL], extraArgs: maskArgs)
+                let tcArgs = toneCurveWriteArgs(from: edited)
+                try await exifToolService.writeFields(fields, to: [imageURL], extraArgs: maskArgs + tcArgs)
 
                 do {
                     try sidecarService.deleteSidecar(for: imageURL, in: folderURL)
@@ -2313,9 +2352,10 @@ final class MetadataViewModel {
                 let edited = sidecar.metadata
                 let fields = overwriteFields(from: edited)
                 let maskArgs = maskWriteArgs(from: edited)
+                let tcArgs = toneCurveWriteArgs(from: edited)
 
                 do {
-                    try await exifToolService.writeFields(fields, to: [imageURL], extraArgs: maskArgs)
+                    try await exifToolService.writeFields(fields, to: [imageURL], extraArgs: maskArgs + tcArgs)
                     do {
                         try sidecarService.deleteSidecar(for: imageURL, in: folderURL)
                     } catch {

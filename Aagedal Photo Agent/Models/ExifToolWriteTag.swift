@@ -62,6 +62,13 @@ enum ExifToolWriteTag {
     static let crsSDRWhites = "XMP-crs:SDRWhites"
     static let crsSDRBlend = "XMP-crs:SDRBlend"
 
+    // MARK: - Camera Raw tone curves (ordered lists)
+    static let crsToneCurvePV2012 = "XMP-crs:ToneCurvePV2012"
+    static let crsToneCurvePV2012Red = "XMP-crs:ToneCurvePV2012Red"
+    static let crsToneCurvePV2012Green = "XMP-crs:ToneCurvePV2012Green"
+    static let crsToneCurvePV2012Blue = "XMP-crs:ToneCurvePV2012Blue"
+    static let crsToneCurveName2012 = "XMP-crs:ToneCurveName2012"
+
     // MARK: - Camera Raw local adjustments (structured)
     static let crsMaskGroupBasedCorrections = "XMP-crs:MaskGroupBasedCorrections"
 
