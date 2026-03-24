@@ -334,78 +334,98 @@ struct EditWorkspaceView: View {
                         // image rescaling while the overlay stays stable
                         let imageRect = lockedCropImageRect ?? computedImageRect
 
-                        MetalPreviewView(
-                            ciImage: displayCIImage,
-                            isHDR: isHDREnabled && !isMutingDevelop,
-                            metalPipeline: metalPipeline,
-                            useComputeShader: !isShowingBefore && !isMutingDevelop && metalPipeline?.hasSourceTexture == true,
+                        if showCropControls {
+                            // Crop editing mode: zoom via cropZoomScale only
+                            MetalPreviewView(
+                                ciImage: displayCIImage,
+                                isHDR: isHDREnabled && !isMutingDevelop,
+                                metalPipeline: metalPipeline,
+                                useComputeShader: !isShowingBefore && !isMutingDevelop && metalPipeline?.hasSourceTexture == true,
 
-                            coordinator: metalCoordinator
-                        )
-                            .frame(width: imageRect.width, height: imageRect.height)
-                            .rotationEffect(.degrees(-displayCropAngle))
-                            .position(x: imageRect.midX, y: imageRect.midY)
-
-                        if !showCropControls {
-                            // Black out area outside crop when controls are hidden
-                            let cropRect = cropViewRect(crop: displayCrop, angleDegrees: displayCropAngle, imageRect: imageRect)
-                            Path { path in
-                                path.addRect(CGRect(origin: .zero, size: geometry.size))
-                                path.addRect(cropRect)
-                            }
-                            .fill(Self.previewBackground, style: FillStyle(eoFill: true))
-                            .allowsHitTesting(false)
-                        }
-
-                        if showCropControls, canEditSingleImage {
-                            CropOverlayView(
-                                imageRect: imageRect,
-                                viewSize: geometry.size,
-                                crop: displayCrop,
-                                angle: displayCropAngle,
-                                aspectRatio: cropAspectRatio,
-                                imageAspectRatio: sourceAspectRatio,
-                                onChange: { newCrop in
-                                    if lockedCropImageRect == nil {
-                                        lockedCropImageRect = computedImageRect
-                                    }
-                                    // Local @State only — bypass ViewModel during drag
-                                    // to avoid expensive body re-evaluation cascade
-                                    dragCropRegion = newCrop
-                                },
-                                onAngleChange: { newAngle in
-                                    if lockedCropImageRect == nil {
-                                        lockedCropImageRect = computedImageRect
-                                    }
-                                    let clampedAngle = min(max(newAngle, -45), 45)
-                                    let oldAngle = dragCropAngle ?? activeCropAngle
-                                    let currentRegion = dragCropRegion ?? activeCrop
-                                    let ar = sourceAspectRatio
-                                    // Recalculate crop to fit within rotated image bounds
-                                    let fitted = currentRegion
-                                        .withAngle(from: oldAngle, to: clampedAngle, aspectRatio: ar)
-                                        .centerClampedForRotation(angleDegrees: clampedAngle, aspectRatio: ar)
-                                        .fittingRotated(angleDegrees: clampedAngle, aspectRatio: ar)
-                                    dragCropAngle = clampedAngle
-                                    dragCropRegion = fitted
-                                },
-                                onCommit: {
-                                    // Commit accumulated drag state to ViewModel
-                                    if let region = dragCropRegion {
-                                        updateCrop(region, commit: false)
-                                    }
-                                    if let angle = dragCropAngle {
-                                        updateCropAngle(angle, commit: false)
-                                    }
-                                    dragCropRegion = nil
-                                    dragCropAngle = nil
-                                    lockedCropImageRect = nil
-                                    commitEditAdjustments()
-                                },
-                                onAspectRatioOverride: { newRatio in
-                                    cropAspectRatio = newRatio
-                                }
+                                coordinator: metalCoordinator
                             )
+                                .frame(width: imageRect.width, height: imageRect.height)
+                                .rotationEffect(.degrees(-displayCropAngle))
+                                .position(x: imageRect.midX, y: imageRect.midY)
+
+                            if canEditSingleImage {
+                                CropOverlayView(
+                                    imageRect: imageRect,
+                                    viewSize: geometry.size,
+                                    crop: displayCrop,
+                                    angle: displayCropAngle,
+                                    aspectRatio: cropAspectRatio,
+                                    imageAspectRatio: sourceAspectRatio,
+                                    onChange: { newCrop in
+                                        if lockedCropImageRect == nil {
+                                            lockedCropImageRect = computedImageRect
+                                        }
+                                        // Local @State only — bypass ViewModel during drag
+                                        // to avoid expensive body re-evaluation cascade
+                                        dragCropRegion = newCrop
+                                    },
+                                    onAngleChange: { newAngle in
+                                        if lockedCropImageRect == nil {
+                                            lockedCropImageRect = computedImageRect
+                                        }
+                                        let clampedAngle = min(max(newAngle, -45), 45)
+                                        let oldAngle = dragCropAngle ?? activeCropAngle
+                                        let currentRegion = dragCropRegion ?? activeCrop
+                                        let ar = sourceAspectRatio
+                                        // Recalculate crop to fit within rotated image bounds
+                                        let fitted = currentRegion
+                                            .withAngle(from: oldAngle, to: clampedAngle, aspectRatio: ar)
+                                            .centerClampedForRotation(angleDegrees: clampedAngle, aspectRatio: ar)
+                                            .fittingRotated(angleDegrees: clampedAngle, aspectRatio: ar)
+                                        dragCropAngle = clampedAngle
+                                        dragCropRegion = fitted
+                                    },
+                                    onCommit: {
+                                        // Commit accumulated drag state to ViewModel
+                                        if let region = dragCropRegion {
+                                            updateCrop(region, commit: false)
+                                        }
+                                        if let angle = dragCropAngle {
+                                            updateCropAngle(angle, commit: false)
+                                        }
+                                        dragCropRegion = nil
+                                        dragCropAngle = nil
+                                        lockedCropImageRect = nil
+                                        commitEditAdjustments()
+                                    },
+                                    onAspectRatioOverride: { newRatio in
+                                        cropAspectRatio = newRatio
+                                    }
+                                )
+                            }
+                        } else {
+                            // Crop applied, normal editing: support zoom/pan
+                            ZStack {
+                                MetalPreviewView(
+                                    ciImage: displayCIImage,
+                                    isHDR: isHDREnabled && !isMutingDevelop,
+                                    metalPipeline: metalPipeline,
+                                    useComputeShader: !isShowingBefore && !isMutingDevelop && metalPipeline?.hasSourceTexture == true,
+
+                                    coordinator: metalCoordinator
+                                )
+                                    .frame(width: imageRect.width, height: imageRect.height)
+                                    .rotationEffect(.degrees(-displayCropAngle))
+                                    .position(x: imageRect.midX, y: imageRect.midY)
+
+                                // Black out area outside crop
+                                let cropRect = cropViewRect(crop: displayCrop, angleDegrees: displayCropAngle, imageRect: imageRect)
+                                Path { path in
+                                    path.addRect(CGRect(origin: .zero, size: geometry.size))
+                                    path.addRect(cropRect)
+                                }
+                                .fill(Self.previewBackground, style: FillStyle(eoFill: true))
+                                .allowsHitTesting(false)
+                            }
+                            .frame(width: geometry.size.width, height: geometry.size.height)
+                            .scaleEffect(editZoomScale)
+                            .offset(editOffset)
+                            .gesture(editPanGesture(in: geometry.size, imageSize: geometry.size))
                         }
                     } else {
                         // Normal fit: image fits within view, with zoom/pan support
