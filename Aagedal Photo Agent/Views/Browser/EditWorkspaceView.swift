@@ -208,6 +208,13 @@ struct EditWorkspaceView: View {
                 let device = MetalPreviewView.Coordinator.device
                 let queue = MetalPreviewView.Coordinator.commandQueue
                 metalPipeline = MetalEditPipeline(device: device, commandQueue: queue)
+                // Pre-warm CIContext's CITemperatureAndTint Metal kernels in the background
+                // so the first white balance slider drag doesn't stall for ~5s.
+                if let pipeline = metalPipeline {
+                    Task.detached(priority: .low) {
+                        pipeline.warmupCIContext()
+                    }
+                }
             }
             // Create Metal scope pipeline and share edit pipeline references
             if let pipeline = metalPipeline {

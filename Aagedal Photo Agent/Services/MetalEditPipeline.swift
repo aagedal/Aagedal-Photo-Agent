@@ -105,6 +105,9 @@ final class MetalEditPipeline: @unchecked Sendable {
     nonisolated(unsafe) private static let colorSpace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
 
     private let ciContext: CIContext
+    /// Separate lightweight CIContext for white balance 1×1 pixel renders.
+    /// Avoids contention with the main ciContext which handles large texture uploads/precaches.
+    private let wbCIContext: CIContext
 
     // Cached WB matrix — only recompute when temperature/tint actually change
     nonisolated(unsafe) private var cachedWBKey: (Double, Double)?
@@ -159,6 +162,11 @@ final class MetalEditPipeline: @unchecked Sendable {
 
         self.ciContext = CIContext(mtlDevice: device, options: [
             .workingFormat: CIFormat.RGBAh,
+            .workingColorSpace: Self.colorSpace,
+        ])
+        // Separate CIContext for WB extraction — never blocked by large texture renders
+        self.wbCIContext = CIContext(mtlDevice: device, options: [
+            .workingFormat: CIFormat.RGBAf,
             .workingColorSpace: Self.colorSpace,
         ])
         self.paramsBuffer = device.makeBuffer(length: MemoryLayout<EditParams>.stride, options: .storageModeShared)
@@ -543,7 +551,7 @@ final class MetalEditPipeline: @unchecked Sendable {
             }
 
             var pixel = [Float](repeating: 0, count: 4)
-            ciContext.render(output, toBitmap: &pixel, rowBytes: 16, bounds: CGRect(x: 0, y: 0, width: 1, height: 1), format: .RGBAf, colorSpace: colorSpace)
+            wbCIContext.render(output, toBitmap: &pixel, rowBytes: 16, bounds: CGRect(x: 0, y: 0, width: 1, height: 1), format: .RGBAf, colorSpace: colorSpace)
             return SIMD3<Float>(pixel[0], pixel[1], pixel[2])
         }
 
@@ -552,6 +560,26 @@ final class MetalEditPipeline: @unchecked Sendable {
         let colB = renderBasis(0, 0, 1)
 
         return simd_float3x3(colR, colG, colB)
+    }
+
+    /// Pre-warms the CIContext by rendering a dummy CITemperatureAndTint filter.
+    /// Core Image JIT-compiles its internal Metal kernels on first use, which takes ~5s.
+    /// Call once from a background task after pipeline creation so the user doesn't hit
+    /// this cost on their first white balance slider drag.
+    nonisolated func warmupCIContext() {
+        let colorSpace = Self.colorSpace
+        let ciImage = CIImage(color: CIColor(red: 0.5, green: 0.5, blue: 0.5, colorSpace: colorSpace)!)
+            .cropped(to: CGRect(x: 0, y: 0, width: 1, height: 1))
+        guard let filter = CIFilter(name: "CITemperatureAndTint") else { return }
+        filter.setValue(ciImage, forKey: kCIInputImageKey)
+        filter.setValue(CIVector(x: 5000, y: 10), forKey: "inputNeutral")
+        filter.setValue(CIVector(x: 6500, y: 0), forKey: "inputTargetNeutral")
+        guard let output = filter.outputImage else { return }
+        var pixel = [Float](repeating: 0, count: 4)
+        wbCIContext.render(output, toBitmap: &pixel, rowBytes: 16,
+                           bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+                           format: .RGBAf, colorSpace: colorSpace)
+        metalPipelineLog.info("CIContext warmup complete (CITemperatureAndTint)")
     }
 
     nonisolated func clearSourceTexture() {
