@@ -469,8 +469,31 @@ struct EditWorkspaceView: View {
                         description: Text("Choose an image from the filmstrip to start editing.")
                     )
                 }
+                // Zoom percentage indicator
+                if editZoomScale > 1.01 {
+                    VStack {
+                        Spacer()
+                        HStack {
+                            Spacer()
+                            Text("\(Int(editZoomScale * 100))%")
+                                .font(.caption.monospacedDigit().bold())
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(.black.opacity(0.6), in: Capsule())
+                                .padding(8)
+                        }
+                    }
+                }
             }
             .clipped()
+            .background(
+                GeometryReader { proxy in
+                    Color.clear
+                        .onAppear { previewPaneFrame = proxy.frame(in: .global) }
+                        .onChange(of: proxy.size) { _, _ in previewPaneFrame = proxy.frame(in: .global) }
+                }
+            )
             .onContinuousHover { phase in
                 switch phase {
                 case .active:
@@ -482,27 +505,43 @@ struct EditWorkspaceView: View {
             .simultaneousGesture(
                 MagnifyGesture()
                     .onChanged { value in
-                        guard showCropControls else { return }
-                        // Dampen magnification: lerp between 1.0 (no change) and raw value
                         let dampened = 1.0 + (value.magnification - 1.0) * 0.4
-                        cropZoomScale = (lastCropZoomScale * dampened).clamped(to: 0.25...3.0)
+                        if showCropControls {
+                            cropZoomScale = (lastCropZoomScale * dampened).clamped(to: 0.25...3.0)
+                        } else {
+                            editZoomScale = (lastEditZoomScale * dampened).clamped(to: 1.0...10.0)
+                        }
                     }
                     .onEnded { _ in
-                        guard showCropControls else { return }
-                        lastCropZoomScale = cropZoomScale
+                        if showCropControls {
+                            lastCropZoomScale = cropZoomScale
+                        } else {
+                            lastEditZoomScale = editZoomScale
+                            if editZoomScale <= 1.0 {
+                                withAnimation(.easeOut(duration: 0.2)) {
+                                    editOffset = .zero
+                                    lastEditOffset = .zero
+                                }
+                            }
+                        }
                     }
             )
             .onAppear {
                 scrollEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
-                    guard isCursorOverPreview, showCropControls else { return event }
+                    guard isCursorOverPreview else { return event }
                     // Only handle direct scroll input, ignore momentum to avoid drift
                     guard event.phase != [] || event.momentumPhase == [] else { return event }
                     let delta = event.scrollingDeltaY
                     guard abs(delta) > 0.01 else { return event }
-                    let zoomFactor = 1.0 + (delta * 0.005)
-                    let newScale = (cropZoomScale * zoomFactor).clamped(to: 0.25...3.0)
-                    cropZoomScale = newScale
-                    lastCropZoomScale = newScale
+
+                    if showCropControls {
+                        let zoomFactor = 1.0 + (delta * 0.005)
+                        let newScale = (cropZoomScale * zoomFactor).clamped(to: 0.25...3.0)
+                        cropZoomScale = newScale
+                        lastCropZoomScale = newScale
+                    } else {
+                        handleEditScrollZoom(delta: delta, event: event)
+                    }
                     return nil
                 }
             }
@@ -906,6 +945,7 @@ struct EditWorkspaceView: View {
         metalPipeline?.clearSourceTexture()
         metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
         resetCropZoom()
+        resetEditZoom()
         selectedMaskIndex = nil
         if !isCropEnabled {
             showCropControls = false
@@ -1635,9 +1675,10 @@ struct EditWorkspaceView: View {
     private func toggleCropControls() {
         showCropControls.toggle()
         if showCropControls {
-            // Deselect mask when entering crop mode
+            // Deselect mask and reset edit zoom when entering crop mode
             selectedMaskIndex = nil
             metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
+            resetEditZoom()
         }
         if showCropControls && !isCropEnabled {
             // Showing controls — enable crop if not already active
@@ -2292,6 +2333,124 @@ struct EditWorkspaceView: View {
         lastCropZoomScale = 1.0
     }
 
+    // MARK: - Edit Zoom / Pan
+
+    private let maxEditZoom: CGFloat = 10.0
+
+    private func resetEditZoom() {
+        editZoomScale = 1.0
+        lastEditZoomScale = 1.0
+        editOffset = .zero
+        lastEditOffset = .zero
+    }
+
+    private func handleEditScrollZoom(delta: CGFloat, event: NSEvent) {
+        let zoomFactor = 1.0 + (delta * 0.01)
+        let oldScale = editZoomScale
+        let newScale = (oldScale * zoomFactor).clamped(to: 1.0...maxEditZoom)
+        guard newScale != oldScale else { return }
+
+        // Cursor-anchored zoom: keep content under cursor fixed
+        let cursorFromCenter = editCursorFromCenter(event: event)
+        let ratio = newScale / oldScale
+        let newOffset = CGSize(
+            width: editOffset.width * ratio + cursorFromCenter.width * (1 - ratio),
+            height: editOffset.height * ratio + cursorFromCenter.height * (1 - ratio)
+        )
+
+        withAnimation(.easeOut(duration: 0.1)) {
+            editZoomScale = newScale
+            lastEditZoomScale = newScale
+            if newScale <= 1.0 {
+                editOffset = .zero
+                lastEditOffset = .zero
+            } else {
+                editOffset = newOffset
+                lastEditOffset = newOffset
+            }
+        }
+    }
+
+    /// Compute cursor position relative to preview pane center (in SwiftUI coordinates).
+    private func editCursorFromCenter(event: NSEvent) -> CGSize {
+        guard let contentHeight = NSApp.keyWindow?.contentView?.bounds.height else {
+            return .zero
+        }
+        let windowLoc = event.locationInWindow
+        // Convert from NSView coords (Y-up) to SwiftUI coords (Y-down)
+        let swiftUIX = windowLoc.x
+        let swiftUIY = contentHeight - windowLoc.y
+        return CGSize(
+            width: swiftUIX - previewPaneFrame.midX,
+            height: swiftUIY - previewPaneFrame.midY
+        )
+    }
+
+    private func editPanGesture(in containerSize: CGSize, imageSize: CGSize) -> some Gesture {
+        DragGesture()
+            .onChanged { value in
+                guard editZoomScale > 1.0 else { return }
+                editOffset = CGSize(
+                    width: lastEditOffset.width + value.translation.width,
+                    height: lastEditOffset.height + value.translation.height
+                )
+            }
+            .onEnded { _ in
+                guard editZoomScale > 1.0 else {
+                    editOffset = .zero
+                    lastEditOffset = .zero
+                    return
+                }
+                lastEditOffset = editOffset
+                constrainEditOffset(in: containerSize, imageSize: imageSize)
+            }
+    }
+
+    private func constrainEditOffset(in containerSize: CGSize, imageSize: CGSize) {
+        let imageRect = fittedImageRect(in: containerSize, imageSize: imageSize)
+        let scaledWidth = imageRect.width * editZoomScale
+        let scaledHeight = imageRect.height * editZoomScale
+        let maxOffsetX = max(0, (scaledWidth - containerSize.width) / 2)
+        let maxOffsetY = max(0, (scaledHeight - containerSize.height) / 2)
+        withAnimation(.easeOut(duration: 0.2)) {
+            editOffset = CGSize(
+                width: editOffset.width.clamped(to: -maxOffsetX...maxOffsetX),
+                height: editOffset.height.clamped(to: -maxOffsetY...maxOffsetY)
+            )
+            lastEditOffset = editOffset
+        }
+    }
+
+    private func toggleEditZoom() {
+        guard let imageSize = currentImageSize else { return }
+        let containerSize = previewPaneFrame.size
+        guard containerSize.width > 0, containerSize.height > 0 else { return }
+
+        let zoom100 = calculateEditZoomTo100(in: containerSize, imageSize: imageSize)
+        let isAt100 = abs(editZoomScale - zoom100) < 0.01
+
+        withAnimation(.easeInOut(duration: 0.2)) {
+            if isAt100 || editZoomScale > 1.0 {
+                // Return to fit
+                editZoomScale = 1.0
+                editOffset = .zero
+            } else {
+                // Zoom to 100% (clamped to max)
+                editZoomScale = min(zoom100, maxEditZoom)
+            }
+            lastEditZoomScale = editZoomScale
+            lastEditOffset = editOffset
+        }
+    }
+
+    private func calculateEditZoomTo100(in containerSize: CGSize, imageSize: CGSize) -> CGFloat {
+        let imageRect = fittedImageRect(in: containerSize, imageSize: imageSize)
+        guard imageRect.width > 0 else { return 1.0 }
+        let backingScale = NSScreen.main?.backingScaleFactor ?? 2.0
+        // At zoom100, 1 source pixel = 1 physical screen pixel
+        return imageSize.width / (imageRect.width * backingScale)
+    }
+
     // MARK: - Key Event Handling
 
     private func handleKeyEvent(_ event: NSEvent) -> NSEvent? {
@@ -2382,6 +2541,13 @@ struct EditWorkspaceView: View {
             } else {
                 editUndoManager.undo()
             }
+            return nil
+        }
+
+        // Z key — toggle zoom fit / 100%
+        if chars == "z" && modifiers.isDisjoint(with: [.command, .option, .control]) {
+            guard !showCropControls else { return event }
+            toggleEditZoom()
             return nil
         }
 
