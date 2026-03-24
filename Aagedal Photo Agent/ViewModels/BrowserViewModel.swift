@@ -650,6 +650,21 @@ final class BrowserViewModel {
                     newSettings?.toneCurve = curve
                 }
                 updated[index].cameraRawSettings = newSettings
+
+                // ExifTool reads CRS from the image file itself but NOT from the
+                // adjacent .xmp sidecar where edited CameraRaw settings are stored.
+                // Overlay XMP sidecar CRS so thumbnails and previews show edited WB.
+                if SupportedImageFormats.isRaw(url: sourceURL),
+                   let xmpMeta = xmpSidecarService.loadSidecar(for: sourceURL),
+                   let xmpCRS = xmpMeta.cameraRaw, !xmpCRS.isEmpty {
+                    if let existing = updated[index].cameraRawSettings {
+                        updated[index].cameraRawSettings = existing.merged(preferring: xmpCRS)
+                    } else {
+                        updated[index].cameraRawSettings = xmpCRS
+                    }
+                    applySidecarCropState(to: &updated[index], cameraRaw: updated[index].cameraRawSettings)
+                }
+
                 applyPendingSidecarOverrides(to: &updated, for: sourceURL, index: index, cachedSidecar: cachedSidecars[sourceURL])
             }
         }
