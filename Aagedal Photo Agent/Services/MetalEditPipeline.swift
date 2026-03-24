@@ -67,6 +67,12 @@ struct EditParams {
 
 /// Manages the Metal compute pipeline for real-time edit preview.
 ///
+/// NSCache-compatible wrapper for MTLTexture (value types can't be cached directly).
+final class MTLTextureWrapper: @unchecked Sendable {
+    nonisolated(unsafe) let texture: MTLTexture
+    nonisolated init(_ texture: MTLTexture) { self.texture = texture }
+}
+
 /// Handles ALL edit operations via a unified shader: tonal adjustments through a 1D LUT
 /// (Exposure, Contrast, Blacks, Shadows, Highlights, Whites), plus vibrance, saturation,
 /// and white balance. The LUT is regenerated on every slider change (~microseconds).
@@ -77,6 +83,13 @@ final class MetalEditPipeline: @unchecked Sendable {
     private let pipelineState: MTLComputePipelineState
 
     nonisolated(unsafe) private(set) var sourceTexture: MTLTexture?
+    /// Pre-cached Metal textures for adjacent images (prev/next), keyed by URL.
+    /// Limited to 2 entries (~160MB at 3200px rgba16Float) to bound GPU memory.
+    nonisolated(unsafe) private let textureCache: NSCache<NSURL, MTLTextureWrapper> = {
+        let cache = NSCache<NSURL, MTLTextureWrapper>()
+        cache.countLimit = 2
+        return cache
+    }()
     nonisolated(unsafe) private(set) var paramsBuffer: MTLBuffer?
     nonisolated(unsafe) private(set) var lutTexture: MTLTexture
     nonisolated(unsafe) private let identityLutTexture: MTLTexture
@@ -543,6 +556,58 @@ final class MetalEditPipeline: @unchecked Sendable {
 
     nonisolated func clearSourceTexture() {
         sourceTexture = nil
+    }
+
+    // MARK: - Texture Pre-Caching
+
+    /// Pre-render a CIImage to a Metal texture and cache it by URL.
+    /// Call from a background task for adjacent images (prev/next).
+    nonisolated func precacheTexture(for url: URL, ciImage: CIImage) {
+        let extent = ciImage.extent
+        guard extent.width > 0, extent.height > 0 else { return }
+
+        let width = Int(extent.width)
+        let height = Int(extent.height)
+
+        let desc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba16Float, width: width, height: height, mipmapped: false
+        )
+        desc.usage = [.shaderRead, .shaderWrite]
+        desc.storageMode = .private
+
+        guard let texture = device.makeTexture(descriptor: desc),
+              let commandBuffer = commandQueue.makeCommandBuffer() else { return }
+
+        let destination = CIRenderDestination(
+            width: width, height: height, pixelFormat: .rgba16Float,
+            commandBuffer: commandBuffer, mtlTextureProvider: { texture }
+        )
+        destination.isFlipped = true
+        destination.colorSpace = Self.colorSpace
+
+        let translated = ciImage.transformed(by: CGAffineTransform(
+            translationX: -extent.origin.x, y: -extent.origin.y
+        ))
+
+        do {
+            try ciContext.startTask(
+                toRender: translated,
+                from: CGRect(x: 0, y: 0, width: width, height: height),
+                to: destination, at: .zero
+            )
+        } catch { return }
+
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        textureCache.setObject(MTLTextureWrapper(texture), forKey: url as NSURL)
+    }
+
+    /// Promote a pre-cached texture to sourceTexture. Returns true if cache hit.
+    nonisolated func applyCachedTexture(for url: URL) -> Bool {
+        guard let wrapper = textureCache.object(forKey: url as NSURL) else { return false }
+        sourceTexture = wrapper.texture
+        textureCache.removeObject(forKey: url as NSURL)
+        return true
     }
 
     // MARK: - Offscreen Rendering

@@ -46,6 +46,11 @@ struct EditWorkspaceView: View {
     @State private var dragMaskGeometry: EllipseMaskGeometry?
     @State private var scopeThrottleTask: Task<Void, Never>?
     @State private var lastScopeUpdateTime: ContinuousClock.Instant = .now
+    @State private var editZoomScale: CGFloat = 1.0
+    @State private var lastEditZoomScale: CGFloat = 1.0
+    @State private var editOffset: CGSize = .zero
+    @State private var lastEditOffset: CGSize = .zero
+    @State private var previewPaneFrame: CGRect = .zero
     @FocusState private var isWorkspaceFocused: Bool
 
     private static let previewBackground = Color(red: 0.15, green: 0.15, blue: 0.15)
@@ -392,61 +397,67 @@ struct EditWorkspaceView: View {
                             )
                         }
                     } else {
-                        // Normal fit: image fits within view (also used for "before" preview)
+                        // Normal fit: image fits within view, with zoom/pan support
                         let imageRect = fittedImageRect(in: geometry.size, imageSize: imageSize)
 
-                        MetalPreviewView(
-                            ciImage: displayCIImage,
-                            isHDR: isHDREnabled && !isShowingBefore && !isMutingDevelop,
-                            metalPipeline: metalPipeline,
-                            useComputeShader: !isShowingBefore && !isMutingDevelop && metalPipeline?.hasSourceTexture == true,
+                        ZStack {
+                            MetalPreviewView(
+                                ciImage: displayCIImage,
+                                isHDR: isHDREnabled && !isShowingBefore && !isMutingDevelop,
+                                metalPipeline: metalPipeline,
+                                useComputeShader: !isShowingBefore && !isMutingDevelop && metalPipeline?.hasSourceTexture == true,
 
-                            coordinator: metalCoordinator
-                        )
-                            .frame(width: imageRect.width, height: imageRect.height)
-                            .position(x: geometry.size.width * 0.5, y: geometry.size.height * 0.5)
-
-                        // Ellipse mask overlay
-                        if let maskIdx = selectedMaskIndex,
-                           let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
-                           maskIdx < masks.count,
-                           !isShowingBefore {
-                            EllipseMaskOverlayView(
-                                imageRect: imageRect,
-                                viewSize: geometry.size,
-                                geometry: dragMaskGeometry ?? masks[maskIdx].geometry,
-                                inverted: masks[maskIdx].inverted,
-                                useMetalOverlay: false,
-                                onStart: {
-                                    isDraggingMask = true
-                                    isDraggingEditSlider = true
-                                },
-                                onChange: { newGeometry in
-                                    // Track drag geometry locally — bypass ViewModel
-                                    dragMaskGeometry = newGeometry
-                                    // Direct Metal update for real-time preview + scope
-                                    if let pipeline = metalPipeline, pipeline.hasSourceTexture {
-                                        var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
-                                        settings.localAdjustments?[maskIdx].geometry = newGeometry
-                                        pipeline.updateParams(settings)
-                                        pipeline.updateOverlayParams(geometry: newGeometry, visible: true)
-                                    }
-                                },
-                                onCommit: {
-                                    // Commit final geometry to ViewModel
-                                    if let finalGeo = dragMaskGeometry {
-                                        updateCameraRaw { cameraRaw in
-                                            cameraRaw.localAdjustments?[maskIdx].geometry = finalGeo
-                                        }
-                                        dragMaskGeometry = nil
-                                    }
-                                    metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
-                                    isDraggingMask = false
-                                    isDraggingEditSlider = false
-                                    commitEditAdjustments()
-                                }
+                                coordinator: metalCoordinator
                             )
+                                .frame(width: imageRect.width, height: imageRect.height)
+                                .position(x: geometry.size.width * 0.5, y: geometry.size.height * 0.5)
+
+                            // Ellipse mask overlay
+                            if let maskIdx = selectedMaskIndex,
+                               let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
+                               maskIdx < masks.count,
+                               !isShowingBefore {
+                                EllipseMaskOverlayView(
+                                    imageRect: imageRect,
+                                    viewSize: geometry.size,
+                                    geometry: dragMaskGeometry ?? masks[maskIdx].geometry,
+                                    inverted: masks[maskIdx].inverted,
+                                    useMetalOverlay: false,
+                                    onStart: {
+                                        isDraggingMask = true
+                                        isDraggingEditSlider = true
+                                    },
+                                    onChange: { newGeometry in
+                                        // Track drag geometry locally — bypass ViewModel
+                                        dragMaskGeometry = newGeometry
+                                        // Direct Metal update for real-time preview + scope
+                                        if let pipeline = metalPipeline, pipeline.hasSourceTexture {
+                                            var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
+                                            settings.localAdjustments?[maskIdx].geometry = newGeometry
+                                            pipeline.updateParams(settings)
+                                            pipeline.updateOverlayParams(geometry: newGeometry, visible: true)
+                                        }
+                                    },
+                                    onCommit: {
+                                        // Commit final geometry to ViewModel
+                                        if let finalGeo = dragMaskGeometry {
+                                            updateCameraRaw { cameraRaw in
+                                                cameraRaw.localAdjustments?[maskIdx].geometry = finalGeo
+                                            }
+                                            dragMaskGeometry = nil
+                                        }
+                                        metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
+                                        isDraggingMask = false
+                                        isDraggingEditSlider = false
+                                        commitEditAdjustments()
+                                    }
+                                )
+                            }
                         }
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .scaleEffect(editZoomScale)
+                        .offset(editOffset)
+                        .gesture(editPanGesture(in: geometry.size, imageSize: imageSize))
                     }
                 } else if isLoadingPreview {
                     ProgressView("Loading preview...")
@@ -903,68 +914,171 @@ struct EditWorkspaceView: View {
         guard let selectedImageURL else { return }
         let previewMaxPixelSize = previewWorkingMaxPixelSize
         isLoadingPreview = true
+        let isRaw = SupportedImageFormats.isRaw(url: selectedImageURL)
 
         previewTask = Task {
             guard !Task.isCancelled else { return }
 
-            // Try HDR-preserving path first (keeps float values >1.0 for RAW, HEIC-HLG, AVIF, JXL).
-            // Falls back to SDR CGImageSource path for formats CIImage can't decode.
-            let previewSource = await Task.detached(priority: .medium) { () -> (image: NSImage?, ciImage: CIImage?) in
-                // HDR path: CIImage(contentsOf:) preserves extended-range float data
-                if let ciImage = FullScreenImageCache.loadHDRPreview(from: selectedImageURL, maxPixelSize: previewMaxPixelSize) {
-                    let ctx = CameraRawApproximation.ciContext
-                    if let cgImage = ctx.createCGImage(ciImage, from: ciImage.extent, format: .RGBAh, colorSpace: CameraRawApproximation.workingColorSpace) {
-                        let nsImage = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
-                        return (image: nsImage, ciImage: ciImage)
-                    }
-                }
-                // SDR fallback: CGImageSource thumbnail (fast, but clamps to SDR)
-                if let cgImage = FullScreenImageCache.loadDownsampled(
-                    from: selectedImageURL,
-                    maxPixelSize: previewMaxPixelSize
-                ) {
-                    let image = NSImage(
+            if isRaw {
+                // RAW two-phase load: show embedded JPEG preview instantly (~50ms,
+                // same approach as QuickLook), then decode full sensor data in the
+                // background for Metal compute editing.
+
+                // Phase 1: Extract embedded preview from RAW container
+                let quickPreview = await Task.detached(priority: .userInitiated) { () -> (image: NSImage, ciImage: CIImage)? in
+                    guard let cgImage = FullScreenImageCache.loadDownsampled(
+                        from: selectedImageURL,
+                        maxPixelSize: previewMaxPixelSize
+                    ) else { return nil }
+                    let nsImage = NSImage(
                         cgImage: cgImage,
                         size: NSSize(width: cgImage.width, height: cgImage.height)
                     )
-                    return (image: image, ciImage: CIImage(cgImage: cgImage))
-                }
-                if let image = NSImage(contentsOf: selectedImageURL) {
-                    let ciImage = image.tiffRepresentation.flatMap { CIImage(data: $0) }
-                    return (image: image, ciImage: ciImage)
-                }
-                return (image: nil, ciImage: nil)
-            }.value
+                    return (image: nsImage, ciImage: CIImage(cgImage: cgImage))
+                }.value
 
-            guard !Task.isCancelled else { return }
-
-            if let image = previewSource.image {
-                sourceImage = image
-                sourceCIImage = previewSource.ciImage
-            } else {
-                let thumbnail = await browserViewModel.thumbnailService.loadThumbnail(for: selectedImageURL)
                 guard !Task.isCancelled else { return }
-                sourceImage = thumbnail
-                sourceCIImage = thumbnail?.tiffRepresentation.flatMap { CIImage(data: $0) }
-            }
 
-            // Upload source to Metal texture for compute shader fast path.
-            // After upload completes, re-run renderPreview() to set Metal params
-            // with the current edit settings (the initial renderPreview() below
-            // can't set Metal params because the texture isn't ready yet).
-            if let ci = sourceCIImage, let pipeline = metalPipeline {
-                let ciCopy = ci
-                Task {
-                    await Task.detached(priority: .medium) {
-                        pipeline.uploadSourceImage(ciCopy)
-                    }.value
+                if let quickPreview {
+                    sourceImage = quickPreview.image
+                    sourceCIImage = quickPreview.ciImage
+                } else {
+                    let thumbnail = await browserViewModel.thumbnailService.loadThumbnail(for: selectedImageURL)
                     guard !Task.isCancelled else { return }
-                    renderPreview()
+                    sourceImage = thumbnail
+                    sourceCIImage = thumbnail?.tiffRepresentation.flatMap { CIImage(data: $0) }
                 }
-            }
 
-            renderPreview()
-            isLoadingPreview = false
+                renderPreview()
+                isLoadingPreview = false
+
+                // Phase 2: Full RAW decode → Metal texture upload (single decode).
+                // Check pre-cache first — if adjacent image was already decoded, skip the decode.
+                if let pipeline = metalPipeline {
+                    let cacheHit = pipeline.applyCachedTexture(for: selectedImageURL)
+
+                    Task {
+                        let fullCIImage: CIImage?
+                        if cacheHit {
+                            // Texture already uploaded from pre-cache — just load the CIImage
+                            fullCIImage = await Task.detached(priority: .medium) {
+                                FullScreenImageCache.loadHDRPreview(
+                                    from: selectedImageURL, maxPixelSize: previewMaxPixelSize
+                                )
+                            }.value
+                        } else {
+                            fullCIImage = await Task.detached(priority: .medium) { () -> CIImage? in
+                                guard let ciImage = FullScreenImageCache.loadHDRPreview(
+                                    from: selectedImageURL,
+                                    maxPixelSize: previewMaxPixelSize
+                                ) else { return nil }
+                                pipeline.uploadSourceImage(ciImage)
+                                return ciImage
+                            }.value
+                        }
+
+                        guard !Task.isCancelled else { return }
+                        if let fullCIImage {
+                            sourceCIImage = fullCIImage
+                        }
+                        renderPreview()
+
+                        // Pre-cache adjacent RAW images for instant navigation
+                        precacheAdjacentRAWTextures(
+                            currentURL: selectedImageURL,
+                            maxPixelSize: previewMaxPixelSize,
+                            pipeline: pipeline
+                        )
+                    }
+                }
+            } else {
+                // Non-RAW: HDR-preserving path (keeps float values >1.0 for HEIC-HLG, AVIF, JXL).
+                // Falls back to SDR CGImageSource path for formats CIImage can't decode.
+                let previewSource = await Task.detached(priority: .medium) { () -> (image: NSImage?, ciImage: CIImage?) in
+                    if let ciImage = FullScreenImageCache.loadHDRPreview(from: selectedImageURL, maxPixelSize: previewMaxPixelSize) {
+                        let ctx = CameraRawApproximation.ciContext
+                        if let cgImage = ctx.createCGImage(ciImage, from: ciImage.extent, format: .RGBAh, colorSpace: CameraRawApproximation.workingColorSpace) {
+                            let nsImage = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+                            return (image: nsImage, ciImage: ciImage)
+                        }
+                    }
+                    if let cgImage = FullScreenImageCache.loadDownsampled(
+                        from: selectedImageURL,
+                        maxPixelSize: previewMaxPixelSize
+                    ) {
+                        let image = NSImage(
+                            cgImage: cgImage,
+                            size: NSSize(width: cgImage.width, height: cgImage.height)
+                        )
+                        return (image: image, ciImage: CIImage(cgImage: cgImage))
+                    }
+                    if let image = NSImage(contentsOf: selectedImageURL) {
+                        let ciImage = image.tiffRepresentation.flatMap { CIImage(data: $0) }
+                        return (image: image, ciImage: ciImage)
+                    }
+                    return (image: nil, ciImage: nil)
+                }.value
+
+                guard !Task.isCancelled else { return }
+
+                if let image = previewSource.image {
+                    sourceImage = image
+                    sourceCIImage = previewSource.ciImage
+                } else {
+                    let thumbnail = await browserViewModel.thumbnailService.loadThumbnail(for: selectedImageURL)
+                    guard !Task.isCancelled else { return }
+                    sourceImage = thumbnail
+                    sourceCIImage = thumbnail?.tiffRepresentation.flatMap { CIImage(data: $0) }
+                }
+
+                // Upload source to Metal texture for compute shader fast path.
+                if let ci = sourceCIImage, let pipeline = metalPipeline {
+                    let ciCopy = ci
+                    Task {
+                        await Task.detached(priority: .medium) {
+                            pipeline.uploadSourceImage(ciCopy)
+                        }.value
+                        guard !Task.isCancelled else { return }
+                        renderPreview()
+                    }
+                }
+
+                renderPreview()
+                isLoadingPreview = false
+            }
+        }
+    }
+
+    /// Pre-cache Metal textures for the previous and next RAW images in the background.
+    /// Runs at low priority so it doesn't compete with the current image's decode.
+    private func precacheAdjacentRAWTextures(
+        currentURL: URL,
+        maxPixelSize: CGFloat,
+        pipeline: MetalEditPipeline
+    ) {
+        let images = browserViewModel.visibleImages
+        guard let currentIndex = browserViewModel.urlToVisibleIndex[currentURL] else { return }
+
+        var adjacentRAWURLs: [URL] = []
+        if currentIndex > 0 {
+            let prevURL = images[currentIndex - 1].url
+            if SupportedImageFormats.isRaw(url: prevURL) { adjacentRAWURLs.append(prevURL) }
+        }
+        if currentIndex < images.count - 1 {
+            let nextURL = images[currentIndex + 1].url
+            if SupportedImageFormats.isRaw(url: nextURL) { adjacentRAWURLs.append(nextURL) }
+        }
+
+        guard !adjacentRAWURLs.isEmpty else { return }
+
+        Task.detached(priority: .background) {
+            for url in adjacentRAWURLs {
+                guard !Task.isCancelled else { return }
+                guard let ciImage = FullScreenImageCache.loadHDRPreview(
+                    from: url, maxPixelSize: maxPixelSize
+                ) else { continue }
+                pipeline.precacheTexture(for: url, ciImage: ciImage)
+            }
         }
     }
 
