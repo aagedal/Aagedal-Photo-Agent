@@ -24,6 +24,7 @@ struct EditWorkspaceView: View {
     @State private var previewTask: Task<Void, Never>?
     @State private var previewRenderTask: Task<Void, Never>?
     @State private var isLoadingPreview = false
+    @State private var isDecodingFullResolution = false
     @State private var isSavingRenderedJPEG = false
     @State private var copyPasteFeedback: String?
     @State private var cropZoomScale: CGFloat = 1.0
@@ -469,6 +470,20 @@ struct EditWorkspaceView: View {
                         description: Text("Choose an image from the filmstrip to start editing.")
                     )
                 }
+
+                // Full-resolution decode indicator for RAW files
+                if isDecodingFullResolution {
+                    VStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Decoding RAW...")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(12)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                }
+
                 // Zoom percentage indicator
                 if editZoomScale > 1.01 {
                     VStack {
@@ -871,6 +886,9 @@ struct EditWorkspaceView: View {
                 }
             }
             .padding(14)
+            .disabled(isDecodingFullResolution)
+            .opacity(isDecodingFullResolution ? 0.6 : 1.0)
+            .animation(.easeInOut(duration: 0.15), value: isDecodingFullResolution)
         }
     }
 
@@ -942,6 +960,7 @@ struct EditWorkspaceView: View {
         previewCIImage = nil
         previewImage = nil
         isLoadingPreview = false
+        isDecodingFullResolution = false
         metalPipeline?.clearSourceTexture()
         metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
         resetCropZoom()
@@ -991,6 +1010,7 @@ struct EditWorkspaceView: View {
 
                 renderPreview()
                 isLoadingPreview = false
+                isDecodingFullResolution = true
 
                 // Phase 2: Full RAW decode → Metal texture upload (single decode).
                 // Check pre-cache first — if adjacent image was already decoded, skip the decode.
@@ -1011,6 +1031,7 @@ struct EditWorkspaceView: View {
                         }.value
                         guard !Task.isCancelled else { return }
                     }
+                    isDecodingFullResolution = false
                     if let fullCIImage {
                         sourceCIImage = fullCIImage
                     }
