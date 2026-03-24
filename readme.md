@@ -14,6 +14,7 @@ Open-source macOS photo metadata and face-tagging tool, built as a fast workflow
 - FTP/SFTP upload support with credentials stored in macOS Keychain.
 - External editor handoff and import workflow for incoming files.
 
+
 ## Installation
 
 Install from Homebrew:
