@@ -997,39 +997,31 @@ struct EditWorkspaceView: View {
                 if let pipeline = metalPipeline {
                     let cacheHit = pipeline.applyCachedTexture(for: selectedImageURL)
 
-                    Task {
-                        let fullCIImage: CIImage?
-                        if cacheHit {
-                            // Texture already uploaded from pre-cache — just load the CIImage
-                            fullCIImage = await Task.detached(priority: .medium) {
-                                FullScreenImageCache.loadHDRPreview(
-                                    from: selectedImageURL, maxPixelSize: previewMaxPixelSize
-                                )
-                            }.value
-                        } else {
-                            fullCIImage = await Task.detached(priority: .medium) { () -> CIImage? in
-                                guard let ciImage = FullScreenImageCache.loadHDRPreview(
-                                    from: selectedImageURL,
-                                    maxPixelSize: previewMaxPixelSize
-                                ) else { return nil }
-                                pipeline.uploadSourceImage(ciImage)
-                                return ciImage
-                            }.value
-                        }
-
-                        guard !Task.isCancelled else { return }
-                        if let fullCIImage {
-                            sourceCIImage = fullCIImage
-                        }
-                        renderPreview()
-
-                        // Pre-cache adjacent RAW images for instant navigation
-                        precacheAdjacentRAWTextures(
-                            currentURL: selectedImageURL,
-                            maxPixelSize: previewMaxPixelSize,
-                            pipeline: pipeline
+                    let fullCIImage: CIImage? = await Task.detached(priority: .medium) {
+                        FullScreenImageCache.loadHDRPreview(
+                            from: selectedImageURL, maxPixelSize: previewMaxPixelSize
                         )
+                    }.value
+
+                    guard !Task.isCancelled else { return }
+
+                    if !cacheHit, let fullCIImage {
+                        await Task.detached(priority: .medium) {
+                            pipeline.uploadSourceImage(fullCIImage)
+                        }.value
+                        guard !Task.isCancelled else { return }
                     }
+                    if let fullCIImage {
+                        sourceCIImage = fullCIImage
+                    }
+                    renderPreview()
+
+                    // Pre-cache adjacent RAW images for instant navigation
+                    precacheAdjacentRAWTextures(
+                        currentURL: selectedImageURL,
+                        maxPixelSize: previewMaxPixelSize,
+                        pipeline: pipeline
+                    )
                 }
             } else {
                 // Non-RAW: HDR-preserving path (keeps float values >1.0 for HEIC-HLG, AVIF, JXL).
@@ -1073,14 +1065,11 @@ struct EditWorkspaceView: View {
 
                 // Upload source to Metal texture for compute shader fast path.
                 if let ci = sourceCIImage, let pipeline = metalPipeline {
-                    let ciCopy = ci
-                    Task {
-                        await Task.detached(priority: .medium) {
-                            pipeline.uploadSourceImage(ciCopy)
-                        }.value
-                        guard !Task.isCancelled else { return }
-                        renderPreview()
-                    }
+                    await Task.detached(priority: .medium) {
+                        pipeline.uploadSourceImage(ci)
+                    }.value
+                    guard !Task.isCancelled else { return }
+                    renderPreview()
                 }
 
                 renderPreview()
