@@ -930,6 +930,11 @@ struct ContentView: View {
                         scopeViewModel.isDragMode = isDragging
                     }
                 }
+                .onReceive(NotificationCenter.default.publisher(for: .setScopeMode)) { notification in
+                    if let mode = notification.object as? ScopeViewModel.ScopeMode {
+                        scopeViewModel.scopeMode = mode
+                    }
+                }
             }
         }
         .frame(minWidth: 180)

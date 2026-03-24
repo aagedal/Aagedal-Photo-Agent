@@ -194,6 +194,23 @@ struct Aagedal_Photo_AgentApp: App {
                 }
             }
 
+            CommandMenu("Scopes") {
+                Button("Waveform") {
+                    NotificationCenter.default.post(name: .setScopeMode, object: ScopeViewModel.ScopeMode.waveform)
+                }
+                .keyboardShortcut("1", modifiers: .shift)
+
+                Button("Parade") {
+                    NotificationCenter.default.post(name: .setScopeMode, object: ScopeViewModel.ScopeMode.parade)
+                }
+                .keyboardShortcut("2", modifiers: .shift)
+
+                Button("Vectorscope") {
+                    NotificationCenter.default.post(name: .setScopeMode, object: ScopeViewModel.ScopeMode.vectorscope)
+                }
+                .keyboardShortcut("3", modifiers: .shift)
+            }
+
             CommandMenu("Upload") {
                 Button("Upload Selected") {
                     NotificationCenter.default.post(name: .uploadSelected, object: nil)
@@ -249,4 +266,5 @@ extension Notification.Name {
     static let showRawMetadata = Notification.Name("showRawMetadata")
     static let applyTemplateShortcut = Notification.Name("applyTemplateShortcut")
     static let addNewMask = Notification.Name("addNewMask")
+    static let setScopeMode = Notification.Name("setScopeMode")
 }
