@@ -634,6 +634,7 @@ final class BrowserViewModel {
                 updated[index].hasCropEdits = hasCropEdits(in: dict)
                 updated[index].exifOrientation = parseIntValue(dict[ExifToolReadKey.orientation]) ?? 1
                 updated[index].isNativeHDR = SupportedImageFormats.isHDR(url: sourceURL)
+                    || (UserDefaults.standard.bool(forKey: UserDefaultsKeys.rawRenderAsHDR) && SupportedImageFormats.isRaw(url: sourceURL))
                 updated[index].cropRegion = cropRegion(in: dict, exifOrientation: updated[index].exifOrientation)
                 // Preserve in-memory localAdjustments — these are set by the edit
                 // workspace and written to the image via ExifTool, not parsed from

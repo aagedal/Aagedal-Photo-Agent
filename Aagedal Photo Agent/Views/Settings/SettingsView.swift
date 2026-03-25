@@ -170,6 +170,11 @@ struct SettingsView: View {
                     : "Thumbnails and full screen show develop edits (crop, tone). Slower but accurate preview.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                Toggle("Render RAW images as HDR", isOn: $settingsViewModel.rawRenderAsHDR)
+                Text("Display RAW files using Extended Dynamic Range. Requires re-opening the folder to take effect.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

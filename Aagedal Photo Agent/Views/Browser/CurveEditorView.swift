@@ -82,7 +82,7 @@ struct CurveEditorView: View {
         case .blue: dragToneCurve?.blue = sorted.count <= 2 ? nil : sorted
         }
         if let curve = dragToneCurve,
-           (curve.master ?? defaultPoints).count <= 2,
+           isIdentity(curve.master ?? defaultPoints),
            curve.red == nil, curve.green == nil, curve.blue == nil {
             dragToneCurve = nil
         }
@@ -102,10 +102,16 @@ struct CurveEditorView: View {
         case .blue: toneCurve?.blue = sorted.count <= 2 ? nil : sorted
         }
         if let curve = toneCurve,
-           (curve.master ?? defaultPoints).count <= 2,
+           isIdentity(curve.master ?? defaultPoints),
            curve.red == nil, curve.green == nil, curve.blue == nil {
             toneCurve = nil
         }
+    }
+
+    /// Returns true if the given points represent the identity curve (no tonal change).
+    private func isIdentity(_ points: [ToneCurvePoint]) -> Bool {
+        guard points.count <= 2 else { return false }
+        return points.allSatisfy { abs($0.x - $0.y) < 0.001 }
     }
 
     private let pointRadius: CGFloat = 5

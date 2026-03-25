@@ -242,6 +242,10 @@ enum PreviewMode: String, CaseIterable {
 
 @Observable
 final class SettingsViewModel {
+    var rawRenderAsHDR: Bool {
+        didSet { UserDefaults.standard.set(rawRenderAsHDR, forKey: UserDefaultsKeys.rawRenderAsHDR) }
+    }
+
     var showAllFiles: Bool {
         didSet {
             UserDefaults.standard.set(showAllFiles, forKey: UserDefaultsKeys.showAllFiles)
@@ -716,6 +720,7 @@ final class SettingsViewModel {
     }
 
     init() {
+        self.rawRenderAsHDR = UserDefaults.standard.bool(forKey: UserDefaultsKeys.rawRenderAsHDR)
         self.showAllFiles = UserDefaults.standard.bool(forKey: UserDefaultsKeys.showAllFiles)
 
         let storedPreviewMode = UserDefaults.standard.string(forKey: UserDefaultsKeys.previewMode) ?? PreviewMode.performance.rawValue
