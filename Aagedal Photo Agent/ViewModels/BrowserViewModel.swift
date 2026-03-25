@@ -633,36 +633,35 @@ final class BrowserViewModel {
                 updated[index].hasCropEdits = hasCropEdits(in: dict)
                 updated[index].exifOrientation = parseIntValue(dict[ExifToolReadKey.orientation]) ?? 1
                 updated[index].cropRegion = cropRegion(in: dict, exifOrientation: updated[index].exifOrientation)
-                // Preserve localAdjustments and toneCurve — these are set in-memory
-                // by the edit workspace but not parsed back from ExifTool XMP output.
+                // Preserve in-memory localAdjustments — these are set by the edit
+                // workspace and written to the image via ExifTool, not parsed from
+                // batch ExifTool XMP output.
                 let existingLocalAdjustments = updated[index].cameraRawSettings?.localAdjustments
-                let existingToneCurve = updated[index].cameraRawSettings?.toneCurve
                 var newSettings = cameraRawSettings(in: dict)
-                let hasPreservedData = (existingLocalAdjustments?.isEmpty == false)
-                    || (existingToneCurve?.isEmpty == false)
-                if hasPreservedData && newSettings == nil {
+                if (existingLocalAdjustments?.isEmpty == false) && newSettings == nil {
                     newSettings = CameraRawSettings()
                 }
                 if let masks = existingLocalAdjustments, !masks.isEmpty {
                     newSettings?.localAdjustments = masks
                 }
-                if let curve = existingToneCurve, !curve.isEmpty {
-                    newSettings?.toneCurve = curve
-                }
                 updated[index].cameraRawSettings = newSettings
 
                 // ExifTool reads CRS from the image file itself but NOT from the
                 // adjacent .xmp sidecar where edited CameraRaw settings are stored.
-                // Overlay XMP sidecar CRS so thumbnails and previews show edited WB.
+                // For RAW files, the XMP sidecar is the authoritative CRS source —
+                // replace rather than merge to avoid stale embedded values leaking
+                // through nil sidecar fields (e.g. Adobe omitting Temperature).
                 if SupportedImageFormats.isRaw(url: sourceURL),
                    let xmpMeta = xmpSidecarService.loadSidecar(for: sourceURL),
                    let xmpCRS = xmpMeta.cameraRaw, !xmpCRS.isEmpty {
-                    if let existing = updated[index].cameraRawSettings {
-                        updated[index].cameraRawSettings = existing.merged(preferring: xmpCRS)
-                    } else {
-                        updated[index].cameraRawSettings = xmpCRS
+                    var finalCRS = xmpCRS
+                    // Preserve in-memory localAdjustments (written to image, not sidecar)
+                    if (xmpCRS.localAdjustments?.isEmpty ?? true),
+                       let masks = updated[index].cameraRawSettings?.localAdjustments, !masks.isEmpty {
+                        finalCRS.localAdjustments = masks
                     }
-                    applySidecarCropState(to: &updated[index], cameraRaw: updated[index].cameraRawSettings)
+                    updated[index].cameraRawSettings = finalCRS
+                    applySidecarCropState(to: &updated[index], cameraRaw: finalCRS)
                 }
 
                 applyPendingSidecarOverrides(to: &updated, for: sourceURL, index: index, cachedSidecar: cachedSidecars[sourceURL])
@@ -802,6 +801,18 @@ final class BrowserViewModel {
         return nil
     }
 
+    private func parseToneCurveFromExifTool(_ value: Any?) -> [ToneCurvePoint]? {
+        guard let array = value as? [String], array.count > 2 else { return nil }
+        let points = array.compactMap { str -> ToneCurvePoint? in
+            let parts = str.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            guard parts.count == 2,
+                  let x = Double(parts[0]),
+                  let y = Double(parts[1]) else { return nil }
+            return ToneCurvePoint(x: x / 255.0, y: y / 255.0)
+        }
+        return points.count > 2 ? points : nil
+    }
+
     private func cameraRawSettings(in dict: [String: Any]) -> CameraRawSettings? {
         let crop = CameraRawCrop(
             top: parseDoubleValue(dict[ExifToolReadKey.crsCropTop]),
@@ -812,6 +823,15 @@ final class BrowserViewModel {
             hasCrop: parseBoolValue(dict[ExifToolReadKey.crsHasCrop])
         )
         let cropValue = crop.isEmpty ? nil : crop
+
+        let tcMaster = parseToneCurveFromExifTool(dict[ExifToolReadKey.crsToneCurvePV2012])
+        let tcRed = parseToneCurveFromExifTool(dict[ExifToolReadKey.crsToneCurvePV2012Red])
+        let tcGreen = parseToneCurveFromExifTool(dict[ExifToolReadKey.crsToneCurvePV2012Green])
+        let tcBlue = parseToneCurveFromExifTool(dict[ExifToolReadKey.crsToneCurvePV2012Blue])
+        let toneCurve: ToneCurve? = {
+            let tc = ToneCurve(master: tcMaster, red: tcRed, green: tcGreen, blue: tcBlue)
+            return tc.isEmpty ? nil : tc
+        }()
 
         let settings = CameraRawSettings(
             version: dict[ExifToolReadKey.crsVersion] as? String,
@@ -839,7 +859,8 @@ final class BrowserViewModel {
             sdrHighlights: parseIntValue(dict[ExifToolReadKey.crsSDRHighlights]),
             sdrShadows: parseIntValue(dict[ExifToolReadKey.crsSDRShadows]),
             sdrWhites: parseIntValue(dict[ExifToolReadKey.crsSDRWhites]),
-            sdrBlend: parseIntValue(dict[ExifToolReadKey.crsSDRBlend])
+            sdrBlend: parseIntValue(dict[ExifToolReadKey.crsSDRBlend]),
+            toneCurve: toneCurve
         )
         return settings.isEmpty ? nil : settings
     }

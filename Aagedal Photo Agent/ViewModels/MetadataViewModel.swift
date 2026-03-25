@@ -42,6 +42,9 @@ final class MetadataViewModel {
     var sidecarHistory: [MetadataHistoryEntry] = []
     var currentFolderURL: URL?
     var metadataReferenceSource: MetadataReferenceSource = .embedded
+    /// Incremented after every metadata load completes. Observed by EditWorkspaceView
+    /// to force re-render even when editingMetadata.cameraRaw hasn't changed.
+    var metadataLoadGeneration: Int = 0
 
     var hasXmpMetadata: Bool { xmpMetadata != nil }
     var hasEmbeddedCropNotLoaded: Bool {
@@ -50,7 +53,12 @@ final class MetadataViewModel {
         return editingMetadata.cameraRaw?.crop?.hasCrop != true
     }
     var referenceMetadata: IPTCMetadata? {
-        referenceMetadata(for: metadataReferenceSource, embedded: embeddedMetadata, xmp: xmpMetadata)
+        referenceMetadata(
+            for: metadataReferenceSource,
+            embedded: embeddedMetadata,
+            xmp: xmpMetadata,
+            imageURL: selectedURLs.count == 1 ? selectedURLs.first : nil
+        )
     }
     var canWriteMetadataToImage: Bool {
         if isSaving { return false }
@@ -121,14 +129,29 @@ final class MetadataViewModel {
     private func referenceMetadata(
         for source: MetadataReferenceSource,
         embedded: IPTCMetadata?,
-        xmp: IPTCMetadata?
+        xmp: IPTCMetadata?,
+        imageURL: URL? = nil
     ) -> IPTCMetadata? {
         switch source {
         case .embedded:
             return embedded
         case .xmp:
             if let embedded, let xmp {
-                return embedded.merged(preferring: xmp)
+                var merged = embedded.merged(preferring: xmp)
+                // RAW: XMP sidecar is authoritative for CRS — replace, don't merge,
+                // to avoid stale embedded values leaking through nil sidecar fields
+                // (e.g. Adobe omitting Temperature even with WhiteBalance="Custom").
+                if let url = imageURL, SupportedImageFormats.isRaw(url: url),
+                   let xmpCRS = xmp.cameraRaw {
+                    var finalCRS = xmpCRS
+                    // Preserve localAdjustments from embedded (written to image via ExifTool, not to XMP sidecar)
+                    if (xmpCRS.localAdjustments?.isEmpty ?? true),
+                       let masks = embedded.cameraRaw?.localAdjustments, !masks.isEmpty {
+                        finalCRS.localAdjustments = masks
+                    }
+                    merged.cameraRaw = finalCRS
+                }
+                return merged
             }
             return xmp ?? embedded
         }
@@ -207,7 +230,8 @@ final class MetadataViewModel {
                     let baseMeta = self.referenceMetadata(
                         for: referenceSource,
                         embedded: embedded,
-                        xmp: xmpMeta
+                        xmp: xmpMeta,
+                        imageURL: imageURL
                     ) ?? embedded
                     guard !Task.isCancelled else { return }
                     guard self.selectedURLs.count == 1,
@@ -243,12 +267,12 @@ final class MetadataViewModel {
                             self.hasChanges = true
                         }
                     }
-                    // Only update editingMetadata if values actually changed,
-                    // to avoid triggering unnecessary Metal preview re-renders.
-                    if self.editingMetadata != newEditingMetadata {
+                    // Always update on first load; optimize on reloads only.
+                    if !isReloadingSameImage || self.editingMetadata != newEditingMetadata {
                         self.editingMetadata = newEditingMetadata
                     }
                     self.previousEditingMetadata = self.editingMetadata
+                    self.metadataLoadGeneration += 1
                     if self.metadataReferenceSource == .xmp, self.xmpMetadata == nil {
                         self.metadataReferenceSource = .embedded
                     }
@@ -289,7 +313,8 @@ final class MetadataViewModel {
         guard let reference = referenceMetadata(
             for: source,
             embedded: embeddedMetadata,
-            xmp: xmpMetadata
+            xmp: xmpMetadata,
+            imageURL: selectedURLs.count == 1 ? selectedURLs.first : nil
         ) else { return }
 
         originalImageMetadata = reference
@@ -990,7 +1015,8 @@ final class MetadataViewModel {
                         let reference = self.referenceMetadata(
                             for: .xmp,
                             embedded: self.embeddedMetadata,
-                            xmp: edited
+                            xmp: edited,
+                            imageURL: imageURL
                         ) ?? edited
                         self.metadata = reference
                         self.originalImageMetadata = reference
@@ -1736,7 +1762,7 @@ final class MetadataViewModel {
                 // metadata loading path that merges embedded + XMP
                 let xmpMeta = self.loadXMPMetadataIfAllowed(for: url)
                 let refSource = defaultReferenceSource(hasXmp: xmpMeta != nil)
-                let baseMeta = referenceMetadata(for: refSource, embedded: embedded, xmp: xmpMeta) ?? embedded
+                let baseMeta = referenceMetadata(for: refSource, embedded: embedded, xmp: xmpMeta, imageURL: url) ?? embedded
 
                 // For images with sidecar pending changes (C2PA or historyOnly mode),
                 // resolve variables from the sidecar metadata instead of embedded
@@ -1832,7 +1858,7 @@ final class MetadataViewModel {
             } else {
                 refSource = metadataReferenceSource
             }
-            let baseMeta = referenceMetadata(for: refSource, embedded: embedded, xmp: xmpMeta) ?? embedded
+            let baseMeta = referenceMetadata(for: refSource, embedded: embedded, xmp: xmpMeta, imageURL: url) ?? embedded
 
             self.embeddedMetadata = embedded
             self.descriptionConflict = conflict

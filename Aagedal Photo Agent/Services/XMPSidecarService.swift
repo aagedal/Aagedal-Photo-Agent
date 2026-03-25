@@ -322,6 +322,8 @@ struct XMPSidecarService: Sendable {
         setSimple(on: description, prefix: "crs", localName: "Shadows2012", value: settings.shadows2012.map(formatSignedInt))
         setSimple(on: description, prefix: "crs", localName: "Whites2012", value: settings.whites2012.map(formatSignedInt))
         setSimple(on: description, prefix: "crs", localName: "Blacks2012", value: settings.blacks2012.map(formatSignedInt))
+        setSimple(on: description, prefix: "crs", localName: "Saturation", value: settings.saturation.map(formatSignedInt))
+        setSimple(on: description, prefix: "crs", localName: "Vibrance", value: settings.vibrance.map(formatSignedInt))
 
         let hasSettings = settings.hasSettings ?? !settings.isEmpty
         setSimple(on: description, prefix: "crs", localName: "HasSettings", value: formatBool(hasSettings))
@@ -374,6 +376,8 @@ struct XMPSidecarService: Sendable {
             "Shadows2012",
             "Whites2012",
             "Blacks2012",
+            "Saturation",
+            "Vibrance",
             "HasSettings",
             "CropTop",
             "CropLeft",
@@ -612,6 +616,8 @@ struct XMPSidecarService: Sendable {
         let shadows2012 = parseSimple(from: description, prefix: "crs", localName: "Shadows2012").flatMap(parseSignedInt)
         let whites2012 = parseSimple(from: description, prefix: "crs", localName: "Whites2012").flatMap(parseSignedInt)
         let blacks2012 = parseSimple(from: description, prefix: "crs", localName: "Blacks2012").flatMap(parseSignedInt)
+        let saturation = parseSimple(from: description, prefix: "crs", localName: "Saturation").flatMap(parseSignedInt)
+        let vibrance = parseSimple(from: description, prefix: "crs", localName: "Vibrance").flatMap(parseSignedInt)
         let hasSettings = parseSimple(from: description, prefix: "crs", localName: "HasSettings").flatMap(parseBool)
 
         let crop = CameraRawCrop(
@@ -658,6 +664,8 @@ struct XMPSidecarService: Sendable {
             shadows2012: shadows2012,
             whites2012: whites2012,
             blacks2012: blacks2012,
+            saturation: saturation,
+            vibrance: vibrance,
             hasSettings: hasSettings,
             crop: cropValue,
             hdrEditMode: hdrEditMode,

@@ -262,6 +262,9 @@ struct EditWorkspaceView: View {
         .onChange(of: metadataViewModel.editingMetadata.cameraRaw) { _, _ in
             renderPreview()
         }
+        .onChange(of: metadataViewModel.metadataLoadGeneration) { _, _ in
+            renderPreview()
+        }
         .onChange(of: isDraggingEditSlider) { wasDragging, isDragging in
             NotificationCenter.default.post(
                 name: .editSliderDragStateChanged,

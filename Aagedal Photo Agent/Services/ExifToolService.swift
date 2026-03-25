@@ -71,6 +71,12 @@ enum ExifToolReadKey {
     static let crsSDRWhites = "SDRWhites"
     static let crsSDRBlend = "SDRBlend"
 
+    // Camera Raw tone curves (returned as arrays of "x, y" strings by ExifTool -struct)
+    static let crsToneCurvePV2012 = "ToneCurvePV2012"
+    static let crsToneCurvePV2012Red = "ToneCurvePV2012Red"
+    static let crsToneCurvePV2012Green = "ToneCurvePV2012Green"
+    static let crsToneCurvePV2012Blue = "ToneCurvePV2012Blue"
+
     // Camera Raw local adjustments (structured, read with -struct flag)
     static let maskGroupBasedCorrections = "MaskGroupBasedCorrections"
 }
@@ -541,6 +547,15 @@ final class ExifToolService {
         let cropValue = crop.isEmpty ? nil : crop
         let localAdjustments = parseMaskGroupBasedCorrections(dict[ExifToolReadKey.maskGroupBasedCorrections])
 
+        let tcMaster = parseToneCurveFromExifTool(dict[ExifToolReadKey.crsToneCurvePV2012])
+        let tcRed = parseToneCurveFromExifTool(dict[ExifToolReadKey.crsToneCurvePV2012Red])
+        let tcGreen = parseToneCurveFromExifTool(dict[ExifToolReadKey.crsToneCurvePV2012Green])
+        let tcBlue = parseToneCurveFromExifTool(dict[ExifToolReadKey.crsToneCurvePV2012Blue])
+        let toneCurve: ToneCurve? = {
+            let tc = ToneCurve(master: tcMaster, red: tcRed, green: tcGreen, blue: tcBlue)
+            return tc.isEmpty ? nil : tc
+        }()
+
         let cameraRaw = CameraRawSettings(
             version: dict[ExifToolReadKey.crsVersion] as? String,
             processVersion: dict[ExifToolReadKey.crsProcessVersion] as? String,
@@ -568,6 +583,7 @@ final class ExifToolService {
             sdrShadows: parseIntValue(dict[ExifToolReadKey.crsSDRShadows]),
             sdrWhites: parseIntValue(dict[ExifToolReadKey.crsSDRWhites]),
             sdrBlend: parseIntValue(dict[ExifToolReadKey.crsSDRBlend]),
+            toneCurve: toneCurve,
             localAdjustments: localAdjustments
         )
 
@@ -940,6 +956,20 @@ final class ExifToolService {
             }
         }
         return nil
+    }
+
+    /// Parse tone curve from ExifTool's -struct JSON output.
+    /// ExifTool returns tone curves as arrays of "x, y" strings in 0-255 scale.
+    private func parseToneCurveFromExifTool(_ value: Any?) -> [ToneCurvePoint]? {
+        guard let array = value as? [String], array.count > 2 else { return nil }
+        let points = array.compactMap { str -> ToneCurvePoint? in
+            let parts = str.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            guard parts.count == 2,
+                  let x = Double(parts[0]),
+                  let y = Double(parts[1]) else { return nil }
+            return ToneCurvePoint(x: x / 255.0, y: y / 255.0)
+        }
+        return points.count > 2 ? points : nil
     }
 
     /// Parse ACR MaskGroupBasedCorrections structured array into [MaskAdjustment].
