@@ -1652,128 +1652,7 @@ final class MetadataViewModel {
         folderProcessProgress = "0/\(images.count)"
         saveError = nil
         variableProcessingStatus = nil
-
-        Task {
-            let interpolator = PresetVariableInterpolator()
-            var processed = 0
-            var writtenToFile = 0
-            var writtenToXMP = 0
-            var savedToHistory = 0
-            var resolved = 0
-            var unchanged = 0
-            var failed = 0
-            var updatedURLs: Set<URL> = []
-
-            for image in images {
-                let url = image.url
-                let filename = url.deletingPathExtension().lastPathComponent
-
-                // If this is the currently displayed image with pending edits,
-                // resolve variables directly in the editing buffer
-                let isCurrentlyDisplayed = self.selectedCount == 1 && self.selectedURLs.first == url
-                if isCurrentlyDisplayed && self.hasChanges {
-                    let before = self.editingMetadata
-                    self.processVariables(filename: filename)
-                    if self.editingMetadata != before {
-                        // Save to JSON sidecar only — the normal commit flow (which already
-                        // respects write modes) will handle the actual file/XMP write when
-                        // the user navigates away or explicitly saves.
-                        self.saveToSidecar()
-                        resolved += 1
-                    } else {
-                        unchanged += 1
-                    }
-                    processed += 1
-                    self.folderProcessProgress = "\(processed)/\(images.count)"
-                    continue
-                }
-
-                do {
-                    // Read embedded metadata from disk
-                    let embedded = try await exifToolService.readFullMetadata(url: url)
-
-                    // Load XMP sidecar if policy allows, matching the normal
-                    // metadata loading path that merges embedded + XMP
-                    let xmpMeta = self.loadXMPMetadataIfAllowed(for: url)
-                    let refSource = defaultReferenceSource(hasXmp: xmpMeta != nil)
-                    let baseMeta = referenceMetadata(for: refSource, embedded: embedded, xmp: xmpMeta) ?? embedded
-
-                    // For images with sidecar pending changes (C2PA or historyOnly mode),
-                    // resolve variables from the sidecar metadata instead of embedded
-                    let existingSidecar: MetadataSidecar?
-                    if let folder = self.currentFolderURL {
-                        existingSidecar = sidecarService.loadSidecar(for: url, in: folder)
-                    } else {
-                        existingSidecar = nil
-                    }
-                    let meta: IPTCMetadata
-                    if let sidecar = existingSidecar, sidecar.pendingChanges {
-                        meta = sidecar.metadata
-                    } else {
-                        meta = baseMeta
-                    }
-                    let snapshot = meta
-
-                    var changed = false
-                    var resolvedMeta = meta
-
-                    resolvedMeta.title = resolveIfChanged(meta.title, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolvedMeta.description = resolveIfChanged(meta.description, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolvedMeta.extendedDescription = resolveIfChanged(meta.extendedDescription, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolvedMeta.creator = resolveIfChanged(meta.creator, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolvedMeta.credit = resolveIfChanged(meta.credit, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolvedMeta.copyright = resolveIfChanged(meta.copyright, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolvedMeta.jobId = resolveIfChanged(meta.jobId, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolvedMeta.dateCreated = resolveIfChanged(meta.dateCreated, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolvedMeta.city = resolveIfChanged(meta.city, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolvedMeta.country = resolveIfChanged(meta.country, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolvedMeta.event = resolveIfChanged(meta.event, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-
-                    if changed {
-                        let result = try await writeResolvedVariables(
-                            resolved: resolvedMeta,
-                            original: meta,
-                            embedded: embedded,
-                            existingSidecar: existingSidecar,
-                            image: image,
-                            url: url
-                        )
-                        switch result {
-                        case .writtenToFile: writtenToFile += 1
-                        case .writtenToXMPSidecar: writtenToXMP += 1
-                        case .savedToHistory: savedToHistory += 1
-                        }
-                        updatedURLs.insert(url)
-                    } else {
-                        unchanged += 1
-                    }
-                } catch {
-                    failed += 1
-                }
-
-                processed += 1
-                self.folderProcessProgress = "\(processed)/\(images.count)"
-            }
-
-            // Refresh the metadata panel if the currently displayed image was processed
-            if !updatedURLs.isEmpty {
-                await self.refreshMetadataAfterProcessing(updatedURLs: updatedURLs)
-            }
-
-            self.isProcessingFolder = false
-            self.folderProcessProgress = ""
-            var statusParts: [String] = []
-            if writtenToFile > 0 { statusParts.append("written to file: \(writtenToFile)") }
-            if writtenToXMP > 0 { statusParts.append("written to XMP: \(writtenToXMP)") }
-            if savedToHistory > 0 { statusParts.append("saved to sidecar: \(savedToHistory)") }
-            if resolved > 0 { statusParts.append("resolved: \(resolved)") }
-            if unchanged > 0 { statusParts.append("unchanged: \(unchanged)") }
-            if failed > 0 { statusParts.append("failed: \(failed)") }
-            if !statusParts.isEmpty {
-                self.variableProcessingHadFailures = failed > 0
-                self.variableProcessingStatus = "Variable processing completed: \(statusParts.joined(separator: ", "))."
-            }
-        }
+        Task { await processVariablesBatch(images) }
     }
 
     /// Process variables for all images in a folder: reads each image's metadata,
@@ -1784,127 +1663,155 @@ final class MetadataViewModel {
         folderProcessProgress = "0/\(images.count)"
         saveError = nil
         variableProcessingStatus = nil
+        Task { await processVariablesBatch(images) }
+    }
 
-        Task {
-            let interpolator = PresetVariableInterpolator()
-            var processed = 0
-            var writtenToFile = 0
-            var writtenToXMP = 0
-            var savedToHistory = 0
-            var resolved = 0
-            var unchanged = 0
-            var failed = 0
-            var updatedURLs: Set<URL> = []
+    /// Shared implementation for batch variable processing.
+    /// Reads metadata in batches via readBatchFullMetadata (single ExifTool invocation per batch)
+    /// instead of one readFullMetadata call per image.
+    private func processVariablesBatch(_ images: [ImageFile]) async {
+        let interpolator = PresetVariableInterpolator()
+        var processed = 0
+        var writtenToFile = 0
+        var writtenToXMP = 0
+        var savedToHistory = 0
+        var resolved = 0
+        var unchanged = 0
+        var failed = 0
+        var updatedURLs: Set<URL> = []
 
-            for image in images {
-                let url = image.url
-                let filename = image.filename
+        // Identify which images need a disk metadata read (skip the currently-displayed image
+        // with pending edits — that one is resolved in-memory)
+        let currentlyDisplayedURL: URL? = (selectedCount == 1 && hasChanges) ? selectedURLs.first : nil
+        let urlsToRead = images
+            .filter { $0.url != currentlyDisplayedURL }
+            .map(\.url)
 
-                // If this is the currently displayed image with pending edits,
-                // resolve variables directly in the editing buffer
-                let isCurrentlyDisplayed = self.selectedCount == 1 && self.selectedURLs.first == url
-                if isCurrentlyDisplayed && self.hasChanges {
-                    let before = self.editingMetadata
-                    self.processVariables(filename: filename)
-                    if self.editingMetadata != before {
-                        // Save to JSON sidecar only — the normal commit flow (which already
-                        // respects write modes) will handle the actual file/XMP write when
-                        // the user navigates away or explicitly saves.
-                        self.saveToSidecar()
-                        resolved += 1
-                    } else {
-                        unchanged += 1
-                    }
-                    processed += 1
-                    self.folderProcessProgress = "\(processed)/\(images.count)"
-                    continue
+        // Batch-read embedded metadata in chunks of 50 to avoid ExifTool output buffer limits
+        var batchMetadata: [URL: IPTCMetadata] = [:]
+        batchMetadata.reserveCapacity(urlsToRead.count)
+        let chunkSize = 50
+        for chunkStart in stride(from: 0, to: urlsToRead.count, by: chunkSize) {
+            let chunkEnd = min(chunkStart + chunkSize, urlsToRead.count)
+            let chunk = Array(urlsToRead[chunkStart..<chunkEnd])
+            do {
+                let batch = try await exifToolService.readBatchFullMetadata(urls: chunk)
+                batchMetadata.merge(batch) { _, new in new }
+            } catch {
+                // Count all images in this chunk as failed
+                failed += chunk.count
+            }
+            self.folderProcessProgress = "Reading metadata: \(min(chunkEnd, urlsToRead.count))/\(urlsToRead.count)"
+        }
+
+        for image in images {
+            let url = image.url
+            let filename = image.filename
+
+            // If this is the currently displayed image with pending edits,
+            // resolve variables directly in the editing buffer
+            if url == currentlyDisplayedURL {
+                let before = self.editingMetadata
+                self.processVariables(filename: filename)
+                if self.editingMetadata != before {
+                    self.saveToSidecar()
+                    resolved += 1
+                } else {
+                    unchanged += 1
                 }
-
-                do {
-                    // Read embedded metadata from disk
-                    let embedded = try await exifToolService.readFullMetadata(url: url)
-
-                    // Load XMP sidecar if policy allows, matching the normal
-                    // metadata loading path that merges embedded + XMP
-                    let xmpMeta = self.loadXMPMetadataIfAllowed(for: url)
-                    let refSource = defaultReferenceSource(hasXmp: xmpMeta != nil)
-                    let baseMeta = referenceMetadata(for: refSource, embedded: embedded, xmp: xmpMeta) ?? embedded
-
-                    // For images with sidecar pending changes (C2PA or historyOnly mode),
-                    // resolve variables from the sidecar metadata instead of embedded
-                    let existingSidecar: MetadataSidecar?
-                    if let folder = self.currentFolderURL {
-                        existingSidecar = sidecarService.loadSidecar(for: url, in: folder)
-                    } else {
-                        existingSidecar = nil
-                    }
-                    let meta: IPTCMetadata
-                    if let sidecar = existingSidecar, sidecar.pendingChanges {
-                        meta = sidecar.metadata
-                    } else {
-                        meta = baseMeta
-                    }
-                    let snapshot = meta
-
-                    var changed = false
-                    var resolvedMeta = meta
-
-                    resolvedMeta.title = resolveIfChanged(meta.title, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolvedMeta.description = resolveIfChanged(meta.description, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolvedMeta.extendedDescription = resolveIfChanged(meta.extendedDescription, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolvedMeta.creator = resolveIfChanged(meta.creator, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolvedMeta.credit = resolveIfChanged(meta.credit, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolvedMeta.copyright = resolveIfChanged(meta.copyright, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolvedMeta.jobId = resolveIfChanged(meta.jobId, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolvedMeta.dateCreated = resolveIfChanged(meta.dateCreated, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolvedMeta.city = resolveIfChanged(meta.city, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolvedMeta.country = resolveIfChanged(meta.country, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                    resolvedMeta.event = resolveIfChanged(meta.event, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-
-                    if changed {
-                        let result = try await writeResolvedVariables(
-                            resolved: resolvedMeta,
-                            original: meta,
-                            embedded: embedded,
-                            existingSidecar: existingSidecar,
-                            image: image,
-                            url: url
-                        )
-                        switch result {
-                        case .writtenToFile: writtenToFile += 1
-                        case .writtenToXMPSidecar: writtenToXMP += 1
-                        case .savedToHistory: savedToHistory += 1
-                        }
-                        updatedURLs.insert(url)
-                    } else {
-                        unchanged += 1
-                    }
-                } catch {
-                    failed += 1
-                }
-
                 processed += 1
                 self.folderProcessProgress = "\(processed)/\(images.count)"
+                continue
             }
 
-            // Refresh the metadata panel if the currently displayed image was processed
-            if !updatedURLs.isEmpty {
-                await self.refreshMetadataAfterProcessing(updatedURLs: updatedURLs)
+            guard let embedded = batchMetadata[url] else {
+                // Already counted as failed during batch read
+                processed += 1
+                self.folderProcessProgress = "\(processed)/\(images.count)"
+                continue
             }
 
-            self.isProcessingFolder = false
-            self.folderProcessProgress = ""
-            var statusParts: [String] = []
-            if writtenToFile > 0 { statusParts.append("written to file: \(writtenToFile)") }
-            if writtenToXMP > 0 { statusParts.append("written to XMP: \(writtenToXMP)") }
-            if savedToHistory > 0 { statusParts.append("saved to sidecar: \(savedToHistory)") }
-            if resolved > 0 { statusParts.append("resolved: \(resolved)") }
-            if unchanged > 0 { statusParts.append("unchanged: \(unchanged)") }
-            if failed > 0 { statusParts.append("failed: \(failed)") }
-            if !statusParts.isEmpty {
-                self.variableProcessingHadFailures = failed > 0
-                self.variableProcessingStatus = "Variable processing completed: \(statusParts.joined(separator: ", "))."
+            do {
+                // Load XMP sidecar if policy allows, matching the normal
+                // metadata loading path that merges embedded + XMP
+                let xmpMeta = self.loadXMPMetadataIfAllowed(for: url)
+                let refSource = defaultReferenceSource(hasXmp: xmpMeta != nil)
+                let baseMeta = referenceMetadata(for: refSource, embedded: embedded, xmp: xmpMeta) ?? embedded
+
+                // For images with sidecar pending changes (C2PA or historyOnly mode),
+                // resolve variables from the sidecar metadata instead of embedded
+                let existingSidecar: MetadataSidecar?
+                if let folder = self.currentFolderURL {
+                    existingSidecar = sidecarService.loadSidecar(for: url, in: folder)
+                } else {
+                    existingSidecar = nil
+                }
+                let meta: IPTCMetadata
+                if let sidecar = existingSidecar, sidecar.pendingChanges {
+                    meta = sidecar.metadata
+                } else {
+                    meta = baseMeta
+                }
+                let snapshot = meta
+
+                var changed = false
+                var resolvedMeta = meta
+
+                resolvedMeta.title = resolveIfChanged(meta.title, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                resolvedMeta.description = resolveIfChanged(meta.description, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                resolvedMeta.extendedDescription = resolveIfChanged(meta.extendedDescription, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                resolvedMeta.creator = resolveIfChanged(meta.creator, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                resolvedMeta.credit = resolveIfChanged(meta.credit, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                resolvedMeta.copyright = resolveIfChanged(meta.copyright, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                resolvedMeta.jobId = resolveIfChanged(meta.jobId, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                resolvedMeta.dateCreated = resolveIfChanged(meta.dateCreated, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                resolvedMeta.city = resolveIfChanged(meta.city, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                resolvedMeta.country = resolveIfChanged(meta.country, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                resolvedMeta.event = resolveIfChanged(meta.event, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+
+                if changed {
+                    let result = try await writeResolvedVariables(
+                        resolved: resolvedMeta,
+                        original: meta,
+                        embedded: embedded,
+                        existingSidecar: existingSidecar,
+                        image: image,
+                        url: url
+                    )
+                    switch result {
+                    case .writtenToFile: writtenToFile += 1
+                    case .writtenToXMPSidecar: writtenToXMP += 1
+                    case .savedToHistory: savedToHistory += 1
+                    }
+                    updatedURLs.insert(url)
+                } else {
+                    unchanged += 1
+                }
+            } catch {
+                failed += 1
             }
+
+            processed += 1
+            self.folderProcessProgress = "\(processed)/\(images.count)"
+        }
+
+        // Refresh the metadata panel if the currently displayed image was processed
+        if !updatedURLs.isEmpty {
+            await self.refreshMetadataAfterProcessing(updatedURLs: updatedURLs)
+        }
+
+        self.isProcessingFolder = false
+        self.folderProcessProgress = ""
+        var statusParts: [String] = []
+        if writtenToFile > 0 { statusParts.append("written to file: \(writtenToFile)") }
+        if writtenToXMP > 0 { statusParts.append("written to XMP: \(writtenToXMP)") }
+        if savedToHistory > 0 { statusParts.append("saved to sidecar: \(savedToHistory)") }
+        if resolved > 0 { statusParts.append("resolved: \(resolved)") }
+        if unchanged > 0 { statusParts.append("unchanged: \(unchanged)") }
+        if failed > 0 { statusParts.append("failed: \(failed)") }
+        if !statusParts.isEmpty {
+            self.variableProcessingHadFailures = failed > 0
+            self.variableProcessingStatus = "Variable processing completed: \(statusParts.joined(separator: ", "))."
         }
     }
 
