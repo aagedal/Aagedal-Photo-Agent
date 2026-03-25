@@ -298,13 +298,6 @@ final class SettingsViewModel {
         didSet { UserDefaults.standard.set(askOnMultipleMetadataSources, forKey: UserDefaultsKeys.metadataAskOnMultipleSources) }
     }
 
-    var pmXmpCompatibilityMode: PMXMPCompatibilityMode {
-        didSet { UserDefaults.standard.set(pmXmpCompatibilityMode.rawValue, forKey: UserDefaultsKeys.pmXmpCompatibilityMode) }
-    }
-
-    var pmNonRawXmpBehavior: PMNonRAWXMPSidecarBehavior {
-        didSet { UserDefaults.standard.set(pmNonRawXmpBehavior.rawValue, forKey: UserDefaultsKeys.pmNonRawXmpBehavior) }
-    }
 
     var multiSelectKeywordsMode: MultiSelectFieldMode {
         didSet { UserDefaults.standard.set(multiSelectKeywordsMode.rawValue, forKey: UserDefaultsKeys.multiSelectKeywordsMode) }
@@ -312,10 +305,6 @@ final class SettingsViewModel {
 
     var multiSelectPersonShownMode: MultiSelectFieldMode {
         didSet { UserDefaults.standard.set(multiSelectPersonShownMode.rawValue, forKey: UserDefaultsKeys.multiSelectPersonShownMode) }
-    }
-
-    var pmRememberedNonRawChoice: PMNonRAWXMPSidecarChoice? {
-        PMXMPPolicy.rememberedChoice
     }
 
     var quickListVersion: Int = 0
@@ -329,11 +318,6 @@ final class SettingsViewModel {
     var cityListPath: String = ""
     var countryListPath: String = ""
     var eventListPath: String = ""
-
-    func clearRememberedNonRawXmpChoice() {
-        PMXMPPolicy.setRememberedChoice(nil)
-        pmNonRawXmpBehavior = pmNonRawXmpBehavior
-    }
 
     func setKeywordsListURL(_ url: URL) {
         saveBookmark(for: url, key: UserDefaultsKeys.keywordsListBookmark)
@@ -557,10 +541,6 @@ final class SettingsViewModel {
         return FileManager.default.fileExists(atPath: path) && C2PASigningService.isAvailable
     }
 
-    var c2patoolAvailable: Bool {
-        C2PASigningService.isAvailable
-    }
-
     func importC2PACertificate(from sourceURL: URL, password: String? = nil) throws {
         let ext = sourceURL.pathExtension.lowercased()
 
@@ -773,14 +753,6 @@ final class SettingsViewModel {
 
         let askOnMultipleSourcesStored = UserDefaults.standard.object(forKey: UserDefaultsKeys.metadataAskOnMultipleSources) as? Bool
         self.askOnMultipleMetadataSources = askOnMultipleSourcesStored ?? false
-
-        let pmModeRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.pmXmpCompatibilityMode)
-            ?? PMXMPCompatibilityMode.off.rawValue
-        self.pmXmpCompatibilityMode = PMXMPCompatibilityMode(rawValue: pmModeRaw) ?? .off
-
-        let pmBehaviorRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.pmNonRawXmpBehavior)
-            ?? PMNonRAWXMPSidecarBehavior.alwaysAsk.rawValue
-        self.pmNonRawXmpBehavior = PMNonRAWXMPSidecarBehavior(rawValue: pmBehaviorRaw) ?? .alwaysAsk
 
         let keywordsModeRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.multiSelectKeywordsMode) ?? MultiSelectFieldMode.add.rawValue
         self.multiSelectKeywordsMode = MultiSelectFieldMode(rawValue: keywordsModeRaw) ?? .add

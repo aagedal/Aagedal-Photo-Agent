@@ -568,8 +568,6 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.orange)
 
-                Divider()
-
                 Toggle("Prefer XMP sidecar when available", isOn: $settingsViewModel.preferXMPSidecar)
                 Text("When an XMP sidecar exists, use it as the primary metadata source for viewing and comparisons.")
                     .font(.caption)
@@ -580,44 +578,6 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                Divider()
-
-                Picker("XMP Compatibility", selection: $settingsViewModel.pmXmpCompatibilityMode) {
-                    ForEach(PMXMPCompatibilityMode.allCases, id: \.self) { mode in
-                        Text(mode.displayName).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-
-                Text(settingsViewModel.pmXmpCompatibilityMode.description)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                if settingsViewModel.pmXmpCompatibilityMode == .strictPhotoMechanic {
-                    Picker("Non-RAW in XMP Mode", selection: $settingsViewModel.pmNonRawXmpBehavior) {
-                        ForEach(PMNonRAWXMPSidecarBehavior.allCases, id: \.self) { behavior in
-                            Text(behavior.displayName).tag(behavior)
-                        }
-                    }
-                    .pickerStyle(.menu)
-
-                    Text(settingsViewModel.pmNonRawXmpBehavior.description)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    if let remembered = settingsViewModel.pmRememberedNonRawChoice {
-                        HStack {
-                            Text("Remembered Ask Choice: \(remembered.displayName)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Button("Clear") {
-                                settingsViewModel.clearRememberedNonRawXmpChoice()
-                            }
-                            .font(.caption)
-                        }
-                    }
-                }
             }
         }
         .formStyle(.grouped)
@@ -713,24 +673,6 @@ struct SettingsView: View {
     @ViewBuilder
     private var signingTab: some View {
         Form {
-            Section("c2patool") {
-                LabeledContent("Status") {
-                    if settingsViewModel.c2patoolAvailable {
-                        Text("Available")
-                            .foregroundStyle(.green)
-                    } else {
-                        Text("Not found")
-                            .foregroundStyle(.orange)
-                    }
-                }
-
-                if !settingsViewModel.c2patoolAvailable {
-                    Text("Install via: brew install c2patool")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
             Section("Signing Certificate") {
                 if settingsViewModel.c2paHasCertificate {
                     LabeledContent("Subject") {
@@ -777,6 +719,7 @@ struct SettingsView: View {
 
             Section("Claim Defaults") {
                 TextField("Default Author", text: $settingsViewModel.c2paDefaultAuthor)
+                    .textFieldStyle(.roundedBorder)
                 Text("Author name embedded in C2PA claims. Falls back to the Creator IPTC field if empty.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
