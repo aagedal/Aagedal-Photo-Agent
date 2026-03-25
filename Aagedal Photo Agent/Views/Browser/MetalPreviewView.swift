@@ -37,10 +37,16 @@ struct MetalPreviewView: NSViewRepresentable {
         mtkView.framebufferOnly = false
         mtkView.colorPixelFormat = .rgba16Float
         mtkView.clearColor = MTLClearColorMake(0, 0, 0, 0)
-        mtkView.layer?.isOpaque = false
         if let metalLayer = mtkView.layer as? CAMetalLayer {
             metalLayer.colorspace = Coordinator.colorSpace
+            // Configure EDR eagerly so the first draw can show HDR content.
+            metalLayer.wantsExtendedDynamicRangeContent = isHDR
+            if #available(macOS 26.0, *) {
+                metalLayer.preferredDynamicRange = isHDR ? .high : .standard
+            }
         }
+        // Opaque when HDR — non-opaque layer compositing can clip EDR values to SDR.
+        mtkView.layer?.isOpaque = isHDR
         context.coordinator.mtkView = mtkView
         return mtkView
     }
@@ -50,10 +56,12 @@ struct MetalPreviewView: NSViewRepresentable {
         context.coordinator.metalPipeline = metalPipeline
         context.coordinator.useComputeShader = useComputeShader
         if let metalLayer = mtkView.layer as? CAMetalLayer {
+            // Always set wantsExtendedDynamicRangeContent — this is the fundamental
+            // CAMetalLayer EDR enabler. preferredDynamicRange (macOS 26+) controls
+            // layer compositing but doesn't replace this property.
+            metalLayer.wantsExtendedDynamicRangeContent = isHDR
             if #available(macOS 26.0, *) {
                 metalLayer.preferredDynamicRange = isHDR ? .high : .standard
-            } else {
-                metalLayer.wantsExtendedDynamicRangeContent = isHDR
             }
             // Always render at full Retina resolution — Apple Silicon GPUs handle
             // the compute shader at full 2x with ease (<1ms for typical preview sizes).
@@ -68,22 +76,34 @@ struct MetalPreviewView: NSViewRepresentable {
                 mtkView.drawableSize = targetSize
             }
         }
-        // Ensure the window's content view opts into EDR — CAMetalLayer EDR
-        // requires ancestor opt-in on macOS (matching FullScreenImageView setup).
-        if let windowContentView = mtkView.window?.contentView {
-            windowContentView.wantsLayer = true
-            if #available(macOS 26.0, *) {
-                let target: CALayer.DynamicRange = isHDR ? .high : .standard
-                if windowContentView.layer?.preferredDynamicRange != target {
-                    windowContentView.layer?.preferredDynamicRange = target
-                }
-            } else {
-                if windowContentView.layer?.wantsExtendedDynamicRangeContent != isHDR {
-                    windowContentView.layer?.wantsExtendedDynamicRangeContent = isHDR
-                }
-            }
-        }
+        // Opaque when HDR to prevent alpha compositing from clipping EDR values.
+        mtkView.layer?.isOpaque = isHDR
+        // Walk the entire view hierarchy from the MTKView up to the window content view
+        // and enable EDR on every ancestor layer. SwiftUI inserts intermediate
+        // NSView/CALayer objects that can block EDR propagation if not opted in.
+        Self.enableEDRAncestors(for: mtkView, isHDR: isHDR)
         mtkView.setNeedsDisplay(mtkView.bounds)
+    }
+
+    /// Walk from the given view up to the window content view, enabling EDR on every
+    /// ancestor layer. Without this, SwiftUI's intermediate hosting layers clip
+    /// extended-range pixel values to [0, 1] during compositing.
+    private static func enableEDRAncestors(for view: NSView, isHDR: Bool) {
+        var current: NSView? = view.superview
+        while let ancestor = current {
+            ancestor.wantsLayer = true
+            if let layer = ancestor.layer {
+                if #available(macOS 26.0, *) {
+                    let target: CALayer.DynamicRange = isHDR ? .high : .standard
+                    if layer.preferredDynamicRange != target {
+                        layer.preferredDynamicRange = target
+                    }
+                }
+                // wantsExtendedDynamicRangeContent is only on CAMetalLayer,
+                // but preferredDynamicRange is on all CALayers (macOS 26+).
+            }
+            current = ancestor.superview
+        }
     }
 
     class Coordinator: NSObject, MTKViewDelegate {
