@@ -206,7 +206,8 @@ struct FullScreenImageView: View {
     }
 
     private var isHDR: Bool {
-        renderEdits && currentImageFile?.cameraRawSettings?.hdrEditMode == 1
+        currentImageFile?.isNativeHDR == true
+            || (renderEdits && currentImageFile?.cameraRawSettings?.hdrEditMode == 1)
     }
 
     /// Calculate the scale factor for 100% zoom (1:1 pixel mapping).
@@ -382,7 +383,7 @@ struct FullScreenImageView: View {
                     if let file = currentImageFile {
                         // Top-right: crop / edit / C2PA badges
                         if file.hasC2PA || file.hasDevelopEdits || file.hasCropEdits
-                            || file.hasPendingMetadataChanges || file.cameraRawSettings?.hdrEditMode == 1 {
+                            || file.hasPendingMetadataChanges || file.isNativeHDR || file.cameraRawSettings?.hdrEditMode == 1 {
                             VStack {
                                 HStack {
                                     Spacer()
@@ -411,7 +412,7 @@ struct FullScreenImageView: View {
                                                 .padding(.vertical, 6)
                                                 .background(.green.opacity(0.8), in: Capsule())
                                         }
-                                        if file.cameraRawSettings?.hdrEditMode == 1 {
+                                        if file.isNativeHDR || file.cameraRawSettings?.hdrEditMode == 1 {
                                             Label("HDR", systemImage: "sun.max.fill")
                                                 .font(.caption)
                                                 .foregroundStyle(.white)
@@ -738,9 +739,11 @@ struct FullScreenImageView: View {
         }
 
         let cameraRaw = renderEdits ? currentImageFile?.cameraRawSettings : nil
+        let isNativeHDR = currentImageFile?.isNativeHDR == true
+        let needsHDRLoad = cameraRaw != nil || isNativeHDR
         let maskCount = cameraRaw?.localAdjustments?.count ?? 0
         let enabledMaskCount = cameraRaw?.localAdjustments?.filter(\.enabled).count ?? 0
-        imageLogger.info("\(filename): renderEdits=\(renderEdits), cameraRaw=\(cameraRaw != nil), masks=\(maskCount) (enabled=\(enabledMaskCount)), exp=\(cameraRaw?.exposure2012 ?? 0)")
+        imageLogger.info("\(filename): renderEdits=\(renderEdits), cameraRaw=\(cameraRaw != nil), nativeHDR=\(isNativeHDR), masks=\(maskCount) (enabled=\(enabledMaskCount)), exp=\(cameraRaw?.exposure2012 ?? 0)")
         let imageOrientation = currentImageFile?.exifOrientation ?? 1
 
         // Read source pixel dimensions (cheap metadata-only, no pixel decode)
@@ -800,7 +803,7 @@ struct FullScreenImageView: View {
             let fullStart = CFAbsoluteTimeGetCurrent()
             fullLoadTask = Task.detached(priority: .medium) {
                 var image: CGImage?
-                if cameraRaw != nil {
+                if needsHDRLoad {
                     // HDR-preserving path: same decoder as EditWorkspaceView
                     if let ciImage = FullScreenImageCache.loadHDRPreview(from: url, maxPixelSize: screenMaxPx) {
                         image = Self.applyCameraRaw(to: ciImage, settings: cameraRaw, exifOrientation: imageOrientation)
@@ -851,7 +854,7 @@ struct FullScreenImageView: View {
                 guard let raw = FullScreenImageCache.extractEmbeddedPreview(from: url) else { return nil as CGImage? }
                 return Self.applyCameraRaw(to: raw, settings: cameraRaw, exifOrientation: imageOrientation)
             }.value
-        } else if cameraRaw != nil {
+        } else if needsHDRLoad {
             // HDR-preserving path: same decoder as EditWorkspaceView for consistent rendering
             preview = await Task.detached(priority: .medium) {
                 if let ciImage = FullScreenImageCache.loadHDRPreview(from: url, maxPixelSize: 960) {
@@ -880,7 +883,7 @@ struct FullScreenImageView: View {
         imageLogger.info("\(filename): Phase 2 starting (retina resolution)")
         fullLoadTask = Task.detached(priority: .medium) {
             var image: CGImage?
-            if cameraRaw != nil {
+            if needsHDRLoad {
                 // HDR-preserving path: same decoder as EditWorkspaceView
                 if let ciImage = FullScreenImageCache.loadHDRPreview(from: url, maxPixelSize: screenMaxPx) {
                     image = Self.applyCameraRaw(to: ciImage, settings: cameraRaw, exifOrientation: imageOrientation)
@@ -940,6 +943,7 @@ struct FullScreenImageView: View {
 
         let filename = url.lastPathComponent
         let cameraRaw = renderEdits ? currentImageFile?.cameraRawSettings : nil
+        let needsHDRFullRes = cameraRaw != nil || currentImageFile?.isNativeHDR == true
         let orientation = currentImageFile?.exifOrientation ?? 1
         let expectedGeneration = renderGeneration
         imageLogger.info("\(filename): Loading full resolution for zoom")
@@ -947,7 +951,7 @@ struct FullScreenImageView: View {
         fullResTask = Task.detached(priority: .medium) {
             let fullStart = CFAbsoluteTimeGetCurrent()
             var image: CGImage?
-            if cameraRaw != nil {
+            if needsHDRFullRes {
                 // HDR-preserving path: same decoder as EditWorkspaceView
                 if let ciImage = FullScreenImageCache.loadHDRFullResolution(from: url) {
                     image = Self.applyCameraRaw(to: ciImage, settings: cameraRaw, exifOrientation: orientation)

@@ -30,5 +30,26 @@ struct HDRImageView: NSViewRepresentable {
         } else {
             layer.wantsExtendedDynamicRangeContent = isHDR
         }
+        // Walk ancestor layers to ensure SwiftUI intermediate hosting layers
+        // don't clip extended-range pixel values to [0, 1] during compositing.
+        Self.enableEDRAncestors(for: view, isHDR: isHDR)
+    }
+
+    /// Walk from the given view up to the window content view, enabling EDR on every
+    /// ancestor layer so SwiftUI intermediates don't clip HDR values.
+    private static func enableEDRAncestors(for view: NSView, isHDR: Bool) {
+        var current: NSView? = view.superview
+        while let ancestor = current {
+            ancestor.wantsLayer = true
+            if let layer = ancestor.layer {
+                if #available(macOS 26.0, *) {
+                    let target: CALayer.DynamicRange = isHDR ? .high : .standard
+                    if layer.preferredDynamicRange != target {
+                        layer.preferredDynamicRange = target
+                    }
+                }
+            }
+            current = ancestor.superview
+        }
     }
 }

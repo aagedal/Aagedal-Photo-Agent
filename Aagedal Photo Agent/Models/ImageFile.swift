@@ -40,6 +40,7 @@ struct ImageFile: Identifiable, Hashable, Sendable {
     var hasPendingMetadataChanges: Bool
     var pendingFieldNames: [String] = []
     var metadata: IPTCMetadata?
+    var isNativeHDR: Bool
     var personShown: [String]
     var keywords: [String]
 
@@ -65,6 +66,7 @@ struct ImageFile: Identifiable, Hashable, Sendable {
         self.cameraRawSettings = nil
         self.exifOrientation = 1
         self.hasPendingMetadataChanges = false
+        self.isNativeHDR = false
         self.metadata = nil
         self.personShown = []
         self.keywords = []
@@ -91,6 +93,7 @@ struct ImageFile: Identifiable, Hashable, Sendable {
         self.exifOrientation = source.exifOrientation
         self.hasPendingMetadataChanges = source.hasPendingMetadataChanges
         self.pendingFieldNames = source.pendingFieldNames
+        self.isNativeHDR = source.isNativeHDR
         self.metadata = source.metadata
         self.personShown = source.personShown
         self.keywords = source.keywords
@@ -144,6 +147,7 @@ struct ImageFile: Identifiable, Hashable, Sendable {
             && lhs.hasCropEdits == rhs.hasCropEdits
             && lhs.cameraRawSettings == rhs.cameraRawSettings
             && lhs.exifOrientation == rhs.exifOrientation
+            && lhs.isNativeHDR == rhs.isNativeHDR
             && lhs.hasPendingMetadataChanges == rhs.hasPendingMetadataChanges
             && lhs.pendingFieldNames == rhs.pendingFieldNames
             && lhs.cropRegion == rhs.cropRegion

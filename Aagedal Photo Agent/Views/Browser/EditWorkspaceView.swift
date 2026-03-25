@@ -1046,6 +1046,24 @@ struct EditWorkspaceView: View {
             editLog.info("[nil] loadSelectedImagePreview: no selectedImageURL, returning")
             return
         }
+
+        // Auto-enable HDR mode for natively HDR images (PQ/HLG) when no mode was explicitly set
+        if let image = selectedImage, image.isNativeHDR,
+           metadataViewModel.editingMetadata.cameraRaw?.hdrEditMode == nil {
+            editLog.info("[\(selectedImageURL.lastPathComponent)] Auto-enabling HDR mode for native HDR image")
+            if metadataViewModel.editingMetadata.cameraRaw == nil {
+                metadataViewModel.editingMetadata.cameraRaw = CameraRawSettings()
+            }
+            metadataViewModel.editingMetadata.cameraRaw?.hdrEditMode = 1
+            // Propagate to ImageFile
+            if let index = browserViewModel.urlToImageIndex[selectedImageURL] {
+                if browserViewModel.images[index].cameraRawSettings == nil {
+                    browserViewModel.images[index].cameraRawSettings = CameraRawSettings()
+                }
+                browserViewModel.images[index].cameraRawSettings?.hdrEditMode = 1
+            }
+        }
+
         let previewMaxPixelSize = previewWorkingMaxPixelSize
         isLoadingPreview = true
         let isRaw = SupportedImageFormats.isRaw(url: selectedImageURL)

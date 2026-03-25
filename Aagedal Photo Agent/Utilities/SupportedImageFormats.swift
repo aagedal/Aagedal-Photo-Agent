@@ -1,4 +1,6 @@
 import UniformTypeIdentifiers
+import ImageIO
+import CoreGraphics
 
 enum SupportedImageFormats {
     static let all: Set<UTType> = [
@@ -57,6 +59,31 @@ enum SupportedImageFormats {
 
     static func isJPEG(url: URL) -> Bool {
         jpegExtensions.contains(url.pathExtension.lowercased())
+    }
+
+    /// Detect whether an image file has an HDR transfer curve (PQ or HLG).
+    /// Uses CGImageSource metadata-only read (no pixel decode) — very fast.
+    static func isHDR(url: URL) -> Bool {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return false }
+        let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any]
+        guard let profileName = props?[kCGImagePropertyProfileName as String] as? String else { return false }
+        // CICP/NCLX profile strings contain transfer function codes:
+        // transfer 16 = PQ (Perceptual Quantizer), transfer 18 = HLG (Hybrid Log-Gamma)
+        // Profile names like "QuickTime 'nclc' Video (9,16,9)" or "ITUR_2100_PQ"
+        let lowered = profileName.lowercased()
+        if lowered.contains("pq") || lowered.contains("hlg") { return true }
+        // Parse CICP tuple for transfer code
+        if profileName.contains("nclc") || profileName.contains("nclx") {
+            if let range = profileName.range(of: #"\((\d+),(\d+),(\d+)\)"#, options: .regularExpression) {
+                let match = String(profileName[range]).dropFirst().dropLast()
+                let codes = match.split(separator: ",").compactMap { Int($0) }
+                if codes.count >= 2 {
+                    let transfer = codes[1]
+                    return transfer == 16 || transfer == 18  // PQ or HLG
+                }
+            }
+        }
+        return false
     }
 
     static func preferredRawSibling(for nonRawURL: URL) -> (url: URL, hadMultipleMatches: Bool)? {
