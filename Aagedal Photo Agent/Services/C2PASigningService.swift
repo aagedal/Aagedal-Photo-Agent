@@ -14,7 +14,7 @@ enum C2PASigningError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .c2patoolMissing:
-            return "c2patool not found. Install via: brew install c2patool"
+            return "c2patool not found in app bundle"
         case .certificateNotConfigured:
             return "No signing certificate configured. Import one in Settings → Signing."
         case .privateKeyNotConfigured:
@@ -34,21 +34,7 @@ nonisolated enum C2PASigningService {
     // MARK: - Discovery
 
     static var c2patoolPath: String? {
-        // 1. Bundled binary
-        if let bundled = Bundle.main.path(forResource: "c2patool", ofType: nil) {
-            return bundled
-        }
-        // 2. Homebrew (Apple Silicon)
-        let homebrewPath = "/opt/homebrew/bin/c2patool"
-        if FileManager.default.isExecutableFile(atPath: homebrewPath) {
-            return homebrewPath
-        }
-        // 3. Homebrew (Intel)
-        let intelPath = "/usr/local/bin/c2patool"
-        if FileManager.default.isExecutableFile(atPath: intelPath) {
-            return intelPath
-        }
-        return nil
+        Bundle.main.path(forResource: "c2patool", ofType: nil)
     }
 
     static var isAvailable: Bool {

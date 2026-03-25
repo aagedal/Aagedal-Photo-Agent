@@ -1034,7 +1034,7 @@ struct ContentView: View {
 
     private func signSelectedImagesWithC2PA() {
         guard C2PASigningService.isAvailable else {
-            c2paSigningMessage = "c2patool not found. Install via: brew install c2patool"
+            c2paSigningMessage = "c2patool not found in app bundle"
             return
         }
 

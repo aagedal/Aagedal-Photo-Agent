@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		8E0557702F49A00000BCFB49 /* ExifTool in Resources */ = {isa = PBXBuildFile; fileRef = 8E0557712F49A00000BCFB49 /* ExifTool */; };
 		8E0558062F68B00000BCFB49 /* ffmpeg in Resources */ = {isa = PBXBuildFile; fileRef = 8E0558072F68B00000BCFB49 /* ffmpeg */; };
+		8E0558082F93C00000BCFB49 /* c2patool in Resources */ = {isa = PBXBuildFile; fileRef = 8E0558092F93C00000BCFB49 /* c2patool */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -17,6 +18,7 @@
 		8E05576D2F2A149800BCFB49 /* TODO.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = TODO.md; sourceTree = "<group>"; };
 		8E0557712F49A00000BCFB49 /* ExifTool */ = {isa = PBXFileReference; lastKnownFileType = folder; path = ExifTool; sourceTree = "<group>"; };
 		8E0558072F68B00000BCFB49 /* ffmpeg */ = {isa = PBXFileReference; lastKnownFileType = "compiled.mach-o.executable"; path = ffmpeg; sourceTree = "<group>"; };
+		8E0558092F93C00000BCFB49 /* c2patool */ = {isa = PBXFileReference; lastKnownFileType = "compiled.mach-o.executable"; path = c2patool; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -46,6 +48,7 @@
 				8E0556B52F28C3F600BCFB49 /* Aagedal Photo Agent */,
 				8E0557712F49A00000BCFB49 /* ExifTool */,
 				8E0558072F68B00000BCFB49 /* ffmpeg */,
+				8E0558092F93C00000BCFB49 /* c2patool */,
 				8E0556B42F28C3F600BCFB49 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -124,6 +127,7 @@
 			files = (
 				8E0557702F49A00000BCFB49 /* ExifTool in Resources */,
 				8E0558062F68B00000BCFB49 /* ffmpeg in Resources */,
+				8E0558082F93C00000BCFB49 /* c2patool in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
