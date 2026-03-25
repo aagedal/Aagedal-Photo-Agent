@@ -289,7 +289,7 @@ struct EditWorkspaceView: View {
             loadSelectedImagePreview()
         }
         .onChange(of: selectedMaskIndex) { _, _ in
-            // Clear Metal overlay — the SwiftUI EllipseMaskOverlayView handles
+            // Clear Metal overlay — the AppKit MaskOverlayNSView handles
             // static display with interactive handles. Metal overlay is only used
             // during active mask drags for real-time feedback.
             metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
@@ -421,6 +421,44 @@ struct EditWorkspaceView: View {
                                 }
                                 .fill(Self.previewBackground, style: FillStyle(eoFill: true))
                                 .allowsHitTesting(false)
+
+                                // Ellipse mask overlay (crop-applied path)
+                                if let maskIdx = selectedMaskIndex,
+                                   let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
+                                   maskIdx < masks.count,
+                                   !isShowingBefore {
+                                    MaskOverlayRepresentable(
+                                        imageRect: imageRect,
+                                        viewSize: geometry.size,
+                                        geometry: dragMaskGeometry ?? masks[maskIdx].geometry,
+                                        inverted: masks[maskIdx].inverted,
+                                        onStart: {
+                                            isDraggingMask = true
+                                            isDraggingEditSlider = true
+                                        },
+                                        onChange: { newGeometry in
+                                            dragMaskGeometry = newGeometry
+                                            if let pipeline = metalPipeline, pipeline.hasSourceTexture {
+                                                var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
+                                                settings.localAdjustments?[maskIdx].geometry = newGeometry
+                                                pipeline.updateParams(settings)
+                                                pipeline.updateOverlayParams(geometry: newGeometry, visible: true)
+                                            }
+                                        },
+                                        onCommit: {
+                                            if let finalGeo = dragMaskGeometry {
+                                                updateCameraRaw { cameraRaw in
+                                                    cameraRaw.localAdjustments?[maskIdx].geometry = finalGeo
+                                                }
+                                                dragMaskGeometry = nil
+                                            }
+                                            metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
+                                            isDraggingMask = false
+                                            isDraggingEditSlider = false
+                                            commitEditAdjustments()
+                                        }
+                                    )
+                                }
                             }
                             .frame(width: geometry.size.width, height: geometry.size.height)
                             .scaleEffect(editZoomScale)
@@ -448,12 +486,11 @@ struct EditWorkspaceView: View {
                                let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
                                maskIdx < masks.count,
                                !isShowingBefore {
-                                EllipseMaskOverlayView(
+                                MaskOverlayRepresentable(
                                     imageRect: imageRect,
                                     viewSize: geometry.size,
                                     geometry: dragMaskGeometry ?? masks[maskIdx].geometry,
                                     inverted: masks[maskIdx].inverted,
-                                    useMetalOverlay: false,
                                     onStart: {
                                         isDraggingMask = true
                                         isDraggingEditSlider = true
