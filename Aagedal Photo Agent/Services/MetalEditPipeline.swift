@@ -84,7 +84,8 @@ final class MetalEditPipeline: @unchecked Sendable {
 
     nonisolated(unsafe) private(set) var sourceTexture: MTLTexture?
     /// Pre-cached Metal textures for adjacent images (prev/next), keyed by URL.
-    /// Limited to 2 entries (~160MB at 3200px rgba16Float) to bound GPU memory.
+    /// Limited to 2 entries to bound GPU memory. At full sensor resolution (e.g. 45MP),
+    /// each texture is ~363MB rgba16Float, so this cache can use ~726MB.
     nonisolated(unsafe) private let textureCache: NSCache<NSURL, MTLTextureWrapper> = {
         let cache = NSCache<NSURL, MTLTextureWrapper>()
         cache.countLimit = 2

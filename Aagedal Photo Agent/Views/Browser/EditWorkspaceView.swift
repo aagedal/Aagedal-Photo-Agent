@@ -1018,16 +1018,15 @@ struct EditWorkspaceView: View {
             }
 
             if isRaw {
-                // RAW two-phase load: show embedded JPEG preview instantly (~50ms,
-                // same approach as QuickLook), then decode full sensor data in the
-                // background for Metal compute editing.
+                // RAW three-phase load: embedded JPEG preview (instant), then
+                // CIRAWFilter draft decode at full sensor resolution (fast), then
+                // full-quality refinement in background.
 
-                // Phase 1: Extract embedded preview from RAW container
+                // Phase 1: Extract embedded JPEG preview from RAW container (no RAW decode)
                 let phase1Start = ContinuousClock.now
                 let quickPreview = await Task.detached(priority: .userInitiated) { () -> (image: NSImage, ciImage: CIImage)? in
-                    guard let cgImage = FullScreenImageCache.loadDownsampled(
-                        from: selectedImageURL,
-                        maxPixelSize: previewMaxPixelSize
+                    guard let cgImage = FullScreenImageCache.extractEmbeddedPreview(
+                        from: selectedImageURL
                     ) else { return nil }
                     let nsImage = NSImage(
                         cgImage: cgImage,
@@ -1061,16 +1060,17 @@ struct EditWorkspaceView: View {
                 isLoadingPreview = false
                 isDecodingFullResolution = true
 
-                // Phase 2: Full RAW decode → Metal texture upload (single decode).
-                // Check pre-cache first — if adjacent image was already decoded, skip the decode.
+                // Phase 2: CIRAWFilter decode at full sensor resolution → Metal texture.
+                // After upload, materialize sourceCIImage at screen resolution to release
+                // the heavyweight CIRAWFilter pipeline (~260MB per instance).
                 if let pipeline = metalPipeline {
                     let cacheHit = pipeline.applyCachedTexture(for: selectedImageURL)
                     editLog.info("[\(filename)] Phase 2: starting (cacheHit=\(cacheHit))")
 
                     let phase2Start = ContinuousClock.now
-                    let fullCIImage: CIImage? = await Task.detached(priority: .medium) {
-                        FullScreenImageCache.loadHDRPreview(
-                            from: selectedImageURL, maxPixelSize: previewMaxPixelSize
+                    let rawCIImage: CIImage? = await Task.detached(priority: .userInitiated) {
+                        FullScreenImageCache.loadRAWImage(
+                            from: selectedImageURL, draftMode: true
                         )
                     }.value
                     let decodeElapsed = ContinuousClock.now - phase2Start
@@ -1079,12 +1079,12 @@ struct EditWorkspaceView: View {
                         editLog.info("[\(filename)] Phase 2: cancelled after decode (\(decodeElapsed))")
                         return
                     }
-                    editLog.info("[\(filename)] Phase 2: decoded in \(decodeElapsed) (result=\(fullCIImage != nil))")
+                    editLog.info("[\(filename)] Phase 2: decoded in \(decodeElapsed) (result=\(rawCIImage != nil))")
 
-                    if !cacheHit, let fullCIImage {
+                    if !cacheHit, let rawCIImage {
                         let uploadStart = ContinuousClock.now
                         await Task.detached(priority: .medium) {
-                            pipeline.uploadSourceImage(fullCIImage)
+                            pipeline.uploadSourceImage(rawCIImage)
                         }.value
                         let uploadElapsed = ContinuousClock.now - uploadStart
                         guard !Task.isCancelled else {
@@ -1094,17 +1094,35 @@ struct EditWorkspaceView: View {
                         editLog.info("[\(filename)] Phase 2: texture uploaded in \(uploadElapsed)")
                     }
                     isDecodingFullResolution = false
-                    if let fullCIImage {
-                        sourceCIImage = fullCIImage
+
+                    // Materialize sourceCIImage at screen resolution to release the heavy
+                    // CIRAWFilter decode graph. The Metal texture holds full-res data for
+                    // interactive editing; sourceCIImage is only used for scope/preview CGImage.
+                    if let rawCIImage {
+                        let materialized: CIImage? = await Task.detached(priority: .medium) {
+                            let extent = rawCIImage.extent
+                            let maxDim = max(extent.width, extent.height)
+                            let targetPx = previewMaxPixelSize
+                            let scale = maxDim > targetPx * 1.5 ? targetPx / maxDim : 1.0
+                            let downsampled = scale < 1.0
+                                ? rawCIImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+                                : rawCIImage
+                            guard let cgImage = CameraRawApproximation.ciContext.createCGImage(
+                                downsampled, from: downsampled.extent,
+                                format: .RGBAh,
+                                colorSpace: CameraRawApproximation.workingColorSpace
+                            ) else { return nil }
+                            return CIImage(cgImage: cgImage)
+                        }.value
+                        sourceCIImage = materialized ?? rawCIImage
                     }
                     let totalPhase2 = ContinuousClock.now - phase2Start
                     editLog.info("[\(filename)] Phase 2: complete in \(totalPhase2), hasTexture=\(pipeline.hasSourceTexture)")
                     renderPreview()
 
-                    // Pre-cache adjacent RAW images for instant navigation
+                    // Pre-cache adjacent RAW images at screen resolution for instant navigation.
                     precacheAdjacentRAWTextures(
                         currentURL: selectedImageURL,
-                        maxPixelSize: previewMaxPixelSize,
                         pipeline: pipeline
                     )
                 }
@@ -1164,10 +1182,10 @@ struct EditWorkspaceView: View {
     }
 
     /// Pre-cache Metal textures for the previous and next RAW images in the background.
+    /// Uses screen-resolution decode to limit memory (~50MB per texture vs ~260MB at full res).
     /// Runs at low priority so it doesn't compete with the current image's decode.
     private func precacheAdjacentRAWTextures(
         currentURL: URL,
-        maxPixelSize: CGFloat,
         pipeline: MetalEditPipeline
     ) {
         let images = browserViewModel.visibleImages
@@ -1184,7 +1202,8 @@ struct EditWorkspaceView: View {
         }
 
         guard !adjacentRAWURLs.isEmpty else { return }
-        editLog.info("[\(currentURL.lastPathComponent)] precacheAdjacent: \(adjacentRAWURLs.map(\.lastPathComponent))")
+        let screenMaxPx = previewWorkingMaxPixelSize
+        editLog.info("[\(currentURL.lastPathComponent)] precacheAdjacent: \(adjacentRAWURLs.map(\.lastPathComponent)) at \(Int(screenMaxPx))px")
 
         Task.detached(priority: .background) {
             for url in adjacentRAWURLs {
@@ -1194,9 +1213,9 @@ struct EditWorkspaceView: View {
                 }
                 let start = ContinuousClock.now
                 guard let ciImage = FullScreenImageCache.loadHDRPreview(
-                    from: url, maxPixelSize: maxPixelSize
+                    from: url, maxPixelSize: screenMaxPx
                 ) else {
-                    editLog.info("[\(url.lastPathComponent)] precache: HDR decode failed")
+                    editLog.info("[\(url.lastPathComponent)] precache: decode failed")
                     continue
                 }
                 pipeline.precacheTexture(for: url, ciImage: ciImage)
