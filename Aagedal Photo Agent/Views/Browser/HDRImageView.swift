@@ -25,6 +25,8 @@ struct HDRImageView: NSViewRepresentable {
         let filter: CALayerContentsFilter = useNearestNeighbor ? .nearest : .linear
         layer.magnificationFilter = filter
         layer.minificationFilter = filter
+        // Opaque when HDR — non-opaque layer compositing can clip EDR values to SDR.
+        layer.isOpaque = isHDR
         if #available(macOS 26.0, *) {
             layer.preferredDynamicRange = isHDR ? .high : .standard
         } else {
@@ -48,6 +50,7 @@ struct HDRImageView: NSViewRepresentable {
                         layer.preferredDynamicRange = target
                     }
                 }
+                layer.wantsExtendedDynamicRangeContent = isHDR
             }
             current = ancestor.superview
         }

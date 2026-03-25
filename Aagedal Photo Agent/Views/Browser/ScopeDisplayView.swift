@@ -27,11 +27,6 @@ struct ScopeDisplayView: View {
                         waveformScale: scopeViewModel.waveformScale,
                         coordinator: scopeViewModel.metalScopeCoordinator
                     )
-                    // Overlay text labels (Metal renders guide lines but not text)
-                    if scopeViewModel.scopeMode != .vectorscope {
-                        ScopeLabelsOverlay(scale: scopeViewModel.waveformScale)
-                            .allowsHitTesting(false)
-                    }
                 } else if let image = scopeViewModel.scopeImage {
                     Image(nsImage: image)
                         .resizable()
@@ -40,6 +35,12 @@ struct ScopeDisplayView: View {
                 } else if scopeViewModel.isComputing {
                     ProgressView()
                         .controlSize(.small)
+                }
+
+                // Unified label overlay for both Metal and CPU scope paths
+                if scopeViewModel.scopeMode != .vectorscope {
+                    ScopeLabelsOverlay(scale: scopeViewModel.waveformScale)
+                        .allowsHitTesting(false)
                 }
             }
             .aspectRatio(1, contentMode: .fit)
@@ -62,7 +63,7 @@ private struct ScopeLabelsOverlay: View {
             let labelMargin = max(68 * scaleF, 24)
             let vm = max(16 * scaleF, 4)
             let dataHeight = size.height - vm * 2
-            let fontSize = max(22 * scaleF, 8)
+            let fontSize = max(20 * scaleF, 8)
 
             ForEach(guideLabels, id: \.label) { guide in
                 let yFromBottom = vm + guide.fraction * dataHeight
@@ -87,14 +88,15 @@ private struct ScopeLabelsOverlay: View {
                 (1.0, "100", labelGray),
             ]
         case .nits:
-            let sdrColor = Color(red: 0.9, green: 0.65, blue: 0.2)
+            let hdrColor = Color(red: 0.9, green: 0.65, blue: 0.2)
             return [
                 (CGFloat(WaveformScale.nitsFraction(0)), "0", labelGray),
                 (CGFloat(WaveformScale.nitsFraction(100)), "100", labelGray),
+                (CGFloat(WaveformScale.nitsFraction(500)), "500", labelGray),
                 (CGFloat(WaveformScale.nitsFraction(1000)), "1k", labelGray),
-                (CGFloat(WaveformScale.nitsFraction(4000)), "4k", labelGray),
-                (CGFloat(WaveformScale.nitsFraction(10000)), "10k", labelGray),
-                (CGFloat(WaveformScale.nitsFraction(203)), "SDR", sdrColor),
+                (CGFloat(WaveformScale.nitsFraction(2000)), "2k", labelGray),
+                (CGFloat(WaveformScale.nitsFraction(165)), "SDR", .white),
+                (CGFloat(WaveformScale.nitsFraction(260)), "HDR", hdrColor),
             ]
         }
     }

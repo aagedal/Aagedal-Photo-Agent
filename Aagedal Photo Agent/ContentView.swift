@@ -1055,7 +1055,7 @@ struct ContentView: View {
 
         // Load scope for browse mode (edit mode posts its own notification)
         if mainViewMode != .editing {
-            loadScopeImage(for: image.url)
+            loadScopeImage(for: image.url, isNativeHDR: image.isNativeHDR)
         }
 
         if let cached = technicalMetadataCache[image.url] {
@@ -1078,11 +1078,10 @@ struct ContentView: View {
         }
     }
 
-    private func loadScopeImage(for url: URL?) {
+    private func loadScopeImage(for url: URL?, isNativeHDR: Bool = false) {
         scopeImageTask?.cancel()
         scopeImageTask = nil
-        // Browse mode is always SDR
-        scopeViewModel.waveformScale = .percentage
+        scopeViewModel.waveformScale = isNativeHDR ? .nits : .percentage
 
         guard let url else {
             scopeViewModel.updateImage(nil)
@@ -1090,8 +1089,18 @@ struct ContentView: View {
         }
 
         scopeImageTask = Task {
-            let cgImage = await Task.detached(priority: .utility) {
-                FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: 720)
+            let cgImage: CGImage? = await Task.detached(priority: .utility) {
+                if isNativeHDR {
+                    // HDR-preserving path: keeps float values >1.0 for correct nits waveform
+                    if let ciImage = FullScreenImageCache.loadHDRPreview(from: url, maxPixelSize: 720) {
+                        return CameraRawApproximation.ciContext.createCGImage(
+                            ciImage, from: ciImage.extent,
+                            format: .RGBAh,
+                            colorSpace: CameraRawApproximation.workingColorSpace
+                        )
+                    }
+                }
+                return FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: 720)
             }.value
             guard !Task.isCancelled else { return }
             scopeViewModel.updateImage(cgImage)

@@ -1,6 +1,5 @@
 import AppKit
 import CoreGraphics
-import CoreText
 
 enum WaveformScale: String, CaseIterable, Sendable {
     case percentage
@@ -9,14 +8,13 @@ enum WaveformScale: String, CaseIterable, Sendable {
     /// SDR reference white in nits (BT.2408)
     static nonisolated let sdrWhiteNits: Float = 203
     /// Max nits shown on the waveform (logarithmic scale)
-    static nonisolated let maxNits: Float = 10_000
+    static nonisolated let maxNits: Float = 2_000
     /// Linear light value corresponding to maxNits
-    static nonisolated let maxLinear: Float = 10_000.0 / 203.0  // ~49.26
+    static nonisolated let maxLinear: Float = 2_000.0 / 203.0  // ~9.85
 
     /// Logarithmic curve constant: log10(1 + nits * k) / log10(1 + maxNits * k)
-    /// With k=0.1, 1000 nits lands at ~66.8% of the axis height.
     private static nonisolated let logK: Float = 0.1
-    private static nonisolated let logDenom: Float = log10(1 + 10_000 * 0.1)  // log10(1001) ≈ 3.0004
+    private static nonisolated let logDenom: Float = log10(1 + 2_000 * 0.1)  // log10(201) ≈ 2.3032
 
     /// Map nits (0..10000) to normalized fraction (0..1) using logarithmic curve.
     nonisolated static func nitsFraction(_ nits: Float) -> Float {
@@ -39,12 +37,11 @@ nonisolated struct ScopeRenderService: Sendable {
     private static let refSize: CGFloat = 720
 
     /// Compute layout metrics scaled proportionally to the output width.
-    private static func metrics(for width: Int) -> (labelMargin: Int, verticalMargin: Int, fontSize: CGFloat) {
+    private static func metrics(for width: Int) -> (labelMargin: Int, verticalMargin: Int) {
         let scale = CGFloat(width) / refSize
         return (
             labelMargin: max(Int(68 * scale), 24),
-            verticalMargin: max(Int(16 * scale), 4),
-            fontSize: max(32 * scale, 14)
+            verticalMargin: max(Int(16 * scale), 4)
         )
     }
 
@@ -125,7 +122,7 @@ nonisolated struct ScopeRenderService: Sendable {
 
         guard let ctx = createContext(width: outW, height: outH) else { return nil }
         fillBackground(ctx, width: outW, height: outH)
-        drawWaveformGuides(ctx, width: outW, height: outH, dataXOffset: m.labelMargin, verticalMargin: m.verticalMargin, fontSize: m.fontSize, scale: scale, hasHDR: hasHDR)
+        drawWaveformGuides(ctx, width: outW, height: outH, dataXOffset: m.labelMargin, verticalMargin: m.verticalMargin, scale: scale, hasHDR: hasHDR)
 
         // Logarithmic intensity so sparse bins are still visible
         let logMax = log2f(1 + Float(maxCount))
@@ -286,7 +283,7 @@ nonisolated struct ScopeRenderService: Sendable {
 
         guard let ctx = createContext(width: outW, height: outH) else { return nil }
         fillBackground(ctx, width: outW, height: outH)
-        drawWaveformGuides(ctx, width: outW, height: outH, dataXOffset: m.labelMargin, verticalMargin: m.verticalMargin, fontSize: m.fontSize, scale: scale, hasHDR: hasHDR)
+        drawWaveformGuides(ctx, width: outW, height: outH, dataXOffset: m.labelMargin, verticalMargin: m.verticalMargin, scale: scale, hasHDR: hasHDR)
 
         guard let outputData = ctx.data?.bindMemory(to: UInt8.self, capacity: outW * outH * 4) else {
             return ctx.makeImage()
@@ -486,65 +483,44 @@ nonisolated struct ScopeRenderService: Sendable {
 
     // MARK: - Guide Lines & Labels
 
-    private func drawWaveformGuides(_ ctx: CGContext, width: Int, height: Int, dataXOffset: Int, verticalMargin: Int, fontSize: CGFloat, scale: WaveformScale, hasHDR: Bool) {
-        let font = CTFontCreateWithName("Helvetica-Bold" as CFString, fontSize, nil)
-        let labelColor = CGColor(srgbRed: 0.55, green: 0.55, blue: 0.55, alpha: 1.0)
+    /// Draw guide lines only (labels are rendered by the shared SwiftUI ScopeLabelsOverlay).
+    private func drawWaveformGuides(_ ctx: CGContext, width: Int, height: Int, dataXOffset: Int, verticalMargin: Int, scale: WaveformScale, hasHDR: Bool) {
         let vm = CGFloat(verticalMargin)
-        let dataHeight = CGFloat(height) - vm * 2  // usable range between margins
+        let dataHeight = CGFloat(height) - vm * 2
 
         switch scale {
         case .percentage:
-            let guides: [(fraction: CGFloat, label: String)] = [
-                (0.0, "0"),
-                (0.25, "25"),
-                (0.5, "50"),
-                (0.75, "75"),
-                (1.0, "100"),
-            ]
-            for guide in guides {
-                let yPos = vm + guide.fraction * dataHeight
+            let fractions: [CGFloat] = [0.0, 0.25, 0.5, 0.75, 1.0]
+            for fraction in fractions {
+                let yPos = vm + fraction * dataHeight
                 ctx.setStrokeColor(red: 0.35, green: 0.35, blue: 0.35, alpha: 0.6)
                 ctx.setLineWidth(1.5)
                 ctx.move(to: CGPoint(x: CGFloat(dataXOffset), y: yPos))
                 ctx.addLine(to: CGPoint(x: CGFloat(width), y: yPos))
                 ctx.strokePath()
-
-                drawLabel(guide.label, in: ctx, at: CGPoint(x: 2, y: yPos - 8), font: font, color: labelColor)
             }
 
         case .nits:
             let sdrFraction = CGFloat(WaveformScale.nitsFraction(WaveformScale.sdrWhiteNits))
 
-            // Regular nit guides (logarithmic positions)
-            let nitGuides: [(nits: Float, label: String)] = [
-                (0, "0"),
-                (100, "100"),
-                (1000, "1k"),
-                (4000, "4k"),
-                (10000, "10k"),
-            ]
-            for guide in nitGuides {
-                let fraction = CGFloat(WaveformScale.nitsFraction(guide.nits))
+            let nitValues: [Float] = [0, 100, 500, 1000, 2000]
+            for nits in nitValues {
+                let fraction = CGFloat(WaveformScale.nitsFraction(nits))
                 let yPos = vm + fraction * dataHeight
                 ctx.setStrokeColor(red: 0.35, green: 0.35, blue: 0.35, alpha: 0.5)
                 ctx.setLineWidth(1.0)
                 ctx.move(to: CGPoint(x: CGFloat(dataXOffset), y: yPos))
                 ctx.addLine(to: CGPoint(x: CGFloat(width), y: yPos))
                 ctx.strokePath()
-
-                drawLabel(guide.label, in: ctx, at: CGPoint(x: 2, y: yPos - 8), font: font, color: labelColor)
             }
 
-            // SDR white line (203 nits) — prominent orange
+            // SDR white line (203 nits) — orange
             let sdrY = vm + sdrFraction * dataHeight
             ctx.setStrokeColor(red: 0.9, green: 0.65, blue: 0.2, alpha: 0.7)
             ctx.setLineWidth(2.0)
             ctx.move(to: CGPoint(x: CGFloat(dataXOffset), y: sdrY))
             ctx.addLine(to: CGPoint(x: CGFloat(width), y: sdrY))
             ctx.strokePath()
-
-            let sdrColor = CGColor(srgbRed: 0.9, green: 0.65, blue: 0.2, alpha: 0.9)
-            drawLabel("SDR", in: ctx, at: CGPoint(x: 2, y: sdrY - 8), font: font, color: sdrColor)
 
             // HDR region tint overlay (subtle warm tint above SDR)
             if hasHDR {
@@ -556,19 +532,6 @@ nonisolated struct ScopeRenderService: Sendable {
                 }
             }
         }
-    }
-
-    private func drawLabel(_ text: String, in ctx: CGContext, at point: CGPoint, font: CTFont, color: CGColor) {
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .foregroundColor: color,
-        ]
-        let attrStr = NSAttributedString(string: text, attributes: attrs)
-        let line = CTLineCreateWithAttributedString(attrStr)
-        ctx.saveGState()
-        ctx.textPosition = point
-        CTLineDraw(line, ctx)
-        ctx.restoreGState()
     }
 
     // MARK: - Vectorscope Helpers

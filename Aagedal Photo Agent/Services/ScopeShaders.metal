@@ -78,9 +78,9 @@ struct ScopeParams {
 // ============================================================
 
 constant float sdrWhiteNits = 203.0;
-constant float maxNits = 10000.0;
+constant float maxNits = 2000.0;
 constant float logK = 0.1;
-constant float logDenom = 3.0004; // log10(1 + 10000 * 0.1)
+constant float logDenom = 2.3032; // log10(1 + 2000 * 0.1)
 
 inline float nitsFraction(float n) {
     if (n <= 0) return 0;
@@ -314,7 +314,7 @@ kernel void waveformRender(
         }
     } else {
         // Nits guides (logarithmic)
-        float nitValues[5] = {0, 100, 1000, 4000, 10000};
+        float nitValues[5] = {0, 100, 500, 1000, 2000};
         for (int i = 0; i < 5; i++) {
             float fraction = nitsFraction(nitValues[i]);
             int guideFromBottom = int(vm) + int(fraction * float(dataHeight));
@@ -512,7 +512,7 @@ kernel void paradeRender(
             }
         }
     } else {
-        float nitValues[5] = {0, 100, 1000, 4000, 10000};
+        float nitValues[5] = {0, 100, 500, 1000, 2000};
         for (int i = 0; i < 5; i++) {
             float fraction = nitsFraction(nitValues[i]);
             int guideFromBottom = int(vm) + int(fraction * float(dataHeight));

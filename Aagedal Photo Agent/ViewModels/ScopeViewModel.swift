@@ -111,7 +111,7 @@ final class ScopeViewModel {
         let mode = scopeMode
         let scale = waveformScale
         let svc = service
-        let size: CGFloat = isDragMode ? 360 : 720
+        let size: CGFloat = 720
 
         computeTask = Task {
             let result = await Task.detached(priority: .utility) { () -> CGImage? in
