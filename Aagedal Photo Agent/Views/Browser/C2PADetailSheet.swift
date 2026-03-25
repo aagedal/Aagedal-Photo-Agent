@@ -11,6 +11,10 @@ struct C2PADetailSheet: View {
                     .font(.headline)
                     .foregroundStyle(.blue)
                 Spacer()
+                Button("Re-sign") {
+                    NotificationCenter.default.post(name: .signSelectedC2PA, object: nil)
+                    dismiss()
+                }
                 Button("Done") { dismiss() }
                     .keyboardShortcut(.cancelAction)
             }

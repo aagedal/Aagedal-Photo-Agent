@@ -47,6 +47,8 @@ struct ContentView: View {
     @State private var renderedOutputFolderURL: URL?
     @State private var scopeViewModel = ScopeViewModel()
     @State private var scopeImageTask: Task<Void, Never>?
+    @State private var isSigningC2PA = false
+    @State private var c2paSigningMessage: String?
 
     init() {
         let browser = BrowserViewModel()
@@ -274,6 +276,9 @@ struct ContentView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: .openInInternalEditor)) { _ in
                 openEditWorkspace()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .signSelectedC2PA)) { _ in
+                signSelectedImagesWithC2PA()
             }
             .onReceive(NotificationCenter.default.publisher(for: .writeAllPendingMetadata)) { _ in
                 let c2paPending = browserViewModel.images.filter { image in
@@ -1023,6 +1028,75 @@ struct ContentView: View {
         }
         .padding()
         .frame(minWidth: 300)
+    }
+
+    // MARK: - C2PA Signing
+
+    private func signSelectedImagesWithC2PA() {
+        guard C2PASigningService.isAvailable else {
+            c2paSigningMessage = "c2patool not found. Install via: brew install c2patool"
+            return
+        }
+
+        let certPath = settingsViewModel.c2paCertificatePath
+        guard settingsViewModel.c2paHasCertificate else {
+            c2paSigningMessage = "No signing certificate configured. Import one in Settings → Signing."
+            return
+        }
+
+        let selected = browserViewModel.selectedImages
+        guard !selected.isEmpty else {
+            c2paSigningMessage = "No images selected"
+            return
+        }
+
+        guard let privateKeyPEM = KeychainService.load(forKey: "c2pa_private_key") else {
+            c2paSigningMessage = "No private key found in Keychain for C2PA signing."
+            return
+        }
+
+        let author = settingsViewModel.c2paDefaultAuthor.isEmpty ? nil : settingsViewModel.c2paDefaultAuthor
+        isSigningC2PA = true
+        c2paSigningMessage = "Signing \(selected.count) image\(selected.count == 1 ? "" : "s")..."
+
+        Task {
+            var signed = 0
+            var errors = 0
+
+            for image in selected {
+                do {
+                    if image.hasC2PA {
+                        try await C2PASigningService.signPreservingHistory(
+                            imageURL: image.url,
+                            certificatePath: certPath,
+                            privateKeyPEM: privateKeyPEM,
+                            author: author
+                        )
+                    } else {
+                        try await C2PASigningService.sign(
+                            imageURL: image.url,
+                            certificatePath: certPath,
+                            privateKeyPEM: privateKeyPEM,
+                            author: author
+                        )
+                    }
+                    // Update the image's C2PA flag
+                    if let index = browserViewModel.urlToImageIndex[image.url] {
+                        browserViewModel.images[index].hasC2PA = true
+                    }
+                    signed += 1
+                } catch {
+                    errors += 1
+                }
+            }
+
+            isSigningC2PA = false
+            if errors == 0 {
+                c2paSigningMessage = "Signed \(signed) image\(signed == 1 ? "" : "s") successfully"
+            } else {
+                c2paSigningMessage = "Signed \(signed), failed \(errors) of \(selected.count) images"
+            }
+        }
     }
 
     // MARK: - Helpers

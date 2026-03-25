@@ -120,6 +120,12 @@ struct Aagedal_Photo_AgentApp: App {
                     NotificationCenter.default.post(name: .showRawMetadata, object: nil)
                 }
                 .keyboardShortcut("i", modifiers: .command)
+
+                Divider()
+
+                Button("Sign Selected with C2PA") {
+                    NotificationCenter.default.post(name: .signSelectedC2PA, object: nil)
+                }
             }
 
             CommandMenu("Image") {
@@ -267,4 +273,5 @@ extension Notification.Name {
     static let applyTemplateShortcut = Notification.Name("applyTemplateShortcut")
     static let addNewMask = Notification.Name("addNewMask")
     static let setScopeMode = Notification.Name("setScopeMode")
+    static let signSelectedC2PA = Notification.Name("signSelectedC2PA")
 }

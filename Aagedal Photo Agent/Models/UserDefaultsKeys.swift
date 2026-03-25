@@ -67,6 +67,12 @@ nonisolated enum UserDefaultsKeys {
     static let exportQualityHDR = "exportQualityHDR"
     static let exportTIFFCompression = "exportTIFFCompression"
 
+    // MARK: - C2PA Signing
+    static let c2paCertificatePath = "c2paCertificatePath"
+    static let c2paCertificateSubject = "c2paCertificateSubject"
+    static let c2paCertificateExpiry = "c2paCertificateExpiry"
+    static let c2paDefaultAuthor = "c2paDefaultAuthor"
+
     // MARK: - Quick List Bookmarks
     static let keywordsListBookmark = "keywordsListBookmark"
     static let personShownListBookmark = "personShownListBookmark"

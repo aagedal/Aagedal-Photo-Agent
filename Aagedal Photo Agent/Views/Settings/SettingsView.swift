@@ -48,12 +48,17 @@ struct SettingsView: View {
                     Label("Templates", systemImage: "doc.on.clipboard")
                 }
 
+            signingTab
+                .tabItem {
+                    Label("Signing", systemImage: "signature")
+                }
+
             updatesTab
                 .tabItem {
                     Label("Updates", systemImage: "arrow.triangle.2.circlepath")
                 }
         }
-        .frame(width: 500, height: 540)
+        .frame(width: 500, height: 580)
         .onAppear {
             ftpViewModel.loadConnections()
             templateViewModel.loadTemplates()
@@ -694,6 +699,146 @@ struct SettingsView: View {
             }
         } catch {
             knownPeopleMessage = "Clear failed: \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - Signing Tab
+
+    @State private var isImportingCertificate = false
+    @State private var p12Password = ""
+    @State private var showP12PasswordPrompt = false
+    @State private var pendingP12URL: URL?
+    @State private var signingMessage: String?
+
+    @ViewBuilder
+    private var signingTab: some View {
+        Form {
+            Section("c2patool") {
+                LabeledContent("Status") {
+                    if settingsViewModel.c2patoolAvailable {
+                        Text("Available")
+                            .foregroundStyle(.green)
+                    } else {
+                        Text("Not found")
+                            .foregroundStyle(.orange)
+                    }
+                }
+
+                if !settingsViewModel.c2patoolAvailable {
+                    Text("Install via: brew install c2patool")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Section("Signing Certificate") {
+                if settingsViewModel.c2paHasCertificate {
+                    LabeledContent("Subject") {
+                        Text(settingsViewModel.c2paCertificateSubject)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if !settingsViewModel.c2paCertificateExpiry.isEmpty {
+                        LabeledContent("Expires") {
+                            Text(settingsViewModel.c2paCertificateExpiry)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    LabeledContent("File") {
+                        Text(settingsViewModel.c2paCertificatePath)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+
+                    HStack {
+                        Button("Replace...") {
+                            isImportingCertificate = true
+                        }
+                        Spacer()
+                        Button("Remove", role: .destructive) {
+                            settingsViewModel.removeC2PACertificate()
+                            signingMessage = "Certificate removed"
+                        }
+                    }
+                } else {
+                    Text("No signing certificate configured")
+                        .foregroundStyle(.secondary)
+                    Button("Import Certificate...") {
+                        isImportingCertificate = true
+                    }
+                }
+
+                Text("Import a .pem or .p12 certificate for C2PA signing. Private keys are stored in the macOS Keychain.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Claim Defaults") {
+                TextField("Default Author", text: $settingsViewModel.c2paDefaultAuthor)
+                Text("Author name embedded in C2PA claims. Falls back to the Creator IPTC field if empty.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let signingMessage {
+                Section {
+                    Text(signingMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
+        .fileImporter(
+            isPresented: $isImportingCertificate,
+            allowedContentTypes: [.x509Certificate, .pkcs12, .data],
+            allowsMultipleSelection: false
+        ) { result in
+            handleCertificateImport(result)
+        }
+        .alert("PKCS#12 Password", isPresented: $showP12PasswordPrompt) {
+            SecureField("Password", text: $p12Password)
+            Button("Import") {
+                guard let url = pendingP12URL else { return }
+                do {
+                    try settingsViewModel.importC2PACertificate(from: url, password: p12Password)
+                    signingMessage = "Certificate imported successfully"
+                } catch {
+                    signingMessage = "Import failed: \(error.localizedDescription)"
+                }
+                p12Password = ""
+                pendingP12URL = nil
+            }
+            Button("Cancel", role: .cancel) {
+                p12Password = ""
+                pendingP12URL = nil
+            }
+        } message: {
+            Text("Enter the password for the PKCS#12 file.")
+        }
+    }
+
+    private func handleCertificateImport(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            let ext = url.pathExtension.lowercased()
+            if ext == "p12" || ext == "pfx" {
+                pendingP12URL = url
+                showP12PasswordPrompt = true
+            } else {
+                do {
+                    try settingsViewModel.importC2PACertificate(from: url)
+                    signingMessage = "Certificate imported successfully"
+                } catch {
+                    signingMessage = "Import failed: \(error.localizedDescription)"
+                }
+            }
+        case .failure(let error):
+            signingMessage = "File selection failed: \(error.localizedDescription)"
         }
     }
 

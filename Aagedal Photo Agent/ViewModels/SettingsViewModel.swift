@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Security
 
 struct DetectedEditor: Identifiable, Hashable {
     let name: String
@@ -528,6 +529,182 @@ final class SettingsViewModel {
         }
     }
 
+    // MARK: - C2PA Signing
+
+    var c2paCertificatePath: String {
+        didSet { UserDefaults.standard.set(c2paCertificatePath.isEmpty ? nil : c2paCertificatePath, forKey: UserDefaultsKeys.c2paCertificatePath) }
+    }
+
+    var c2paCertificateSubject: String {
+        didSet { UserDefaults.standard.set(c2paCertificateSubject.isEmpty ? nil : c2paCertificateSubject, forKey: UserDefaultsKeys.c2paCertificateSubject) }
+    }
+
+    var c2paCertificateExpiry: String {
+        didSet { UserDefaults.standard.set(c2paCertificateExpiry.isEmpty ? nil : c2paCertificateExpiry, forKey: UserDefaultsKeys.c2paCertificateExpiry) }
+    }
+
+    var c2paDefaultAuthor: String {
+        didSet { UserDefaults.standard.set(c2paDefaultAuthor.isEmpty ? nil : c2paDefaultAuthor, forKey: UserDefaultsKeys.c2paDefaultAuthor) }
+    }
+
+    var c2paHasCertificate: Bool {
+        !c2paCertificatePath.isEmpty && FileManager.default.fileExists(atPath: c2paCertificatePath)
+    }
+
+    static var hasC2PASigningCertificate: Bool {
+        guard let path = UserDefaults.standard.string(forKey: UserDefaultsKeys.c2paCertificatePath),
+              !path.isEmpty else { return false }
+        return FileManager.default.fileExists(atPath: path) && C2PASigningService.isAvailable
+    }
+
+    var c2patoolAvailable: Bool {
+        C2PASigningService.isAvailable
+    }
+
+    func importC2PACertificate(from sourceURL: URL, password: String? = nil) throws {
+        let ext = sourceURL.pathExtension.lowercased()
+
+        if ext == "p12" || ext == "pfx" {
+            try importPKCS12(from: sourceURL, password: password ?? "")
+        } else {
+            try importPEMCertificate(from: sourceURL)
+        }
+    }
+
+    private func importPKCS12(from url: URL, password: String) throws {
+        let data = try Data(contentsOf: url)
+        var items: CFArray?
+        let options: [String: Any] = [kSecImportExportPassphrase as String: password]
+        let status = SecPKCS12Import(data as CFData, options as CFDictionary, &items)
+
+        guard status == errSecSuccess, let itemsArray = items as? [[String: Any]], let first = itemsArray.first else {
+            throw C2PASigningError.processFailed("Failed to import PKCS#12 file (status: \(status))")
+        }
+
+        // Extract certificate
+        if let identity = first[kSecImportItemIdentity as String] {
+            var certRef: SecCertificate?
+            SecIdentityCopyCertificate(identity as! SecIdentity, &certRef)
+            if let cert = certRef {
+                let certData = SecCertificateCopyData(cert) as Data
+                let certPEM = "-----BEGIN CERTIFICATE-----\n" +
+                    certData.base64EncodedString(options: [.lineLength76Characters, .endLineWithLineFeed]) +
+                    "\n-----END CERTIFICATE-----\n"
+
+                let certURL = AppPaths.certificatesDirectory.appendingPathComponent("signing_cert.pem")
+                try certPEM.write(to: certURL, atomically: true, encoding: .utf8)
+                c2paCertificatePath = certURL.path(percentEncoded: false)
+
+                // Parse certificate info
+                let subject = SecCertificateCopySubjectSummary(cert) as String? ?? "Unknown"
+                c2paCertificateSubject = subject
+
+                // Try to read expiry from certificate properties
+                if let values = SecCertificateCopyValues(cert, nil, nil) as? [String: Any],
+                   let validityEntry = values["2.5.4.24"] as? [String: Any],
+                   let notAfter = validityEntry[kSecPropertyKeyValue as String] as? Date {
+                    let formatter = DateFormatter()
+                    formatter.dateStyle = .medium
+                    c2paCertificateExpiry = formatter.string(from: notAfter)
+                } else {
+                    c2paCertificateExpiry = ""
+                }
+            }
+
+            // Extract and store private key in Keychain
+            var keyRef: SecKey?
+            SecIdentityCopyPrivateKey(identity as! SecIdentity, &keyRef)
+            if let key = keyRef, let keyData = SecKeyCopyExternalRepresentation(key, nil) as Data? {
+                let keyPEM = "-----BEGIN PRIVATE KEY-----\n" +
+                    keyData.base64EncodedString(options: [.lineLength76Characters, .endLineWithLineFeed]) +
+                    "\n-----END PRIVATE KEY-----\n"
+                try KeychainService.save(password: keyPEM, forKey: "c2pa_private_key")
+            }
+        }
+    }
+
+    private func importPEMCertificate(from url: URL) throws {
+        let content = try String(contentsOf: url, encoding: .utf8)
+
+        // Check if the file contains a private key
+        let hasKey = content.contains("-----BEGIN PRIVATE KEY-----") ||
+                     content.contains("-----BEGIN RSA PRIVATE KEY-----") ||
+                     content.contains("-----BEGIN EC PRIVATE KEY-----")
+        let hasCert = content.contains("-----BEGIN CERTIFICATE-----")
+
+        if hasCert {
+            // Extract and save the certificate portion
+            let certURL = AppPaths.certificatesDirectory.appendingPathComponent("signing_cert.pem")
+
+            if hasKey {
+                // Split: save cert to file, key to Keychain
+                let certPEM = extractPEMBlock(from: content, header: "CERTIFICATE")
+                let keyPEM = extractPEMBlock(from: content, header: "PRIVATE KEY")
+                    ?? extractPEMBlock(from: content, header: "RSA PRIVATE KEY")
+                    ?? extractPEMBlock(from: content, header: "EC PRIVATE KEY")
+
+                if let certPEM {
+                    try certPEM.write(to: certURL, atomically: true, encoding: .utf8)
+                }
+                if let keyPEM {
+                    try KeychainService.save(password: keyPEM, forKey: "c2pa_private_key")
+                }
+            } else {
+                // Certificate only — copy to app support
+                try content.write(to: certURL, atomically: true, encoding: .utf8)
+            }
+
+            c2paCertificatePath = certURL.path(percentEncoded: false)
+            parseCertificateInfo(from: certURL)
+        } else if hasKey {
+            // Key only — store in Keychain, prompt for cert separately
+            try KeychainService.save(password: content, forKey: "c2pa_private_key")
+        }
+    }
+
+    private func extractPEMBlock(from content: String, header: String) -> String? {
+        let beginMarker = "-----BEGIN \(header)-----"
+        let endMarker = "-----END \(header)-----"
+        guard let beginRange = content.range(of: beginMarker),
+              let endRange = content.range(of: endMarker) else {
+            return nil
+        }
+        return String(content[beginRange.lowerBound...endRange.upperBound])
+    }
+
+    private func parseCertificateInfo(from certURL: URL) {
+        guard let pemString = try? String(contentsOf: certURL, encoding: .utf8) else { return }
+
+        // Extract DER data from PEM
+        let lines = pemString.components(separatedBy: .newlines)
+            .filter { !$0.hasPrefix("-----") && !$0.isEmpty }
+        guard let derData = Data(base64Encoded: lines.joined()) else { return }
+
+        guard let cert = SecCertificateCreateWithData(nil, derData as CFData) else { return }
+        c2paCertificateSubject = SecCertificateCopySubjectSummary(cert) as String? ?? "Unknown"
+
+        // Try to read expiry
+        if let values = SecCertificateCopyValues(cert, nil, nil) as? [String: Any],
+           let validityEntry = values["2.5.4.24"] as? [String: Any],
+           let notAfter = validityEntry[kSecPropertyKeyValue as String] as? Date {
+            let formatter = DateFormatter()
+            formatter.dateStyle = .medium
+            c2paCertificateExpiry = formatter.string(from: notAfter)
+        } else {
+            c2paCertificateExpiry = ""
+        }
+    }
+
+    func removeC2PACertificate() {
+        if !c2paCertificatePath.isEmpty {
+            try? FileManager.default.removeItem(atPath: c2paCertificatePath)
+        }
+        KeychainService.delete(forKey: "c2pa_private_key")
+        c2paCertificatePath = ""
+        c2paCertificateSubject = ""
+        c2paCertificateExpiry = ""
+    }
+
     var detectedEditors: [DetectedEditor] = []
 
     var bundledExifToolPath: String? {
@@ -647,6 +824,12 @@ final class SettingsViewModel {
         self.knownPeopleMode = KnownPeopleMode(rawValue: storedKnownPeopleMode) ?? .off
         let storedKnownPeopleMinConfidence = UserDefaults.standard.object(forKey: UserDefaultsKeys.knownPeopleMinConfidence) as? Double
         self.knownPeopleMinConfidence = storedKnownPeopleMinConfidence ?? 0.60
+
+        // C2PA Signing settings
+        self.c2paCertificatePath = UserDefaults.standard.string(forKey: UserDefaultsKeys.c2paCertificatePath) ?? ""
+        self.c2paCertificateSubject = UserDefaults.standard.string(forKey: UserDefaultsKeys.c2paCertificateSubject) ?? ""
+        self.c2paCertificateExpiry = UserDefaults.standard.string(forKey: UserDefaultsKeys.c2paCertificateExpiry) ?? ""
+        self.c2paDefaultAuthor = UserDefaults.standard.string(forKey: UserDefaultsKeys.c2paDefaultAuthor) ?? ""
 
         // Format & Compression settings
         let storedFormatSDR = UserDefaults.standard.string(forKey: UserDefaultsKeys.exportFormatSDR) ?? ExportFormatSDR.jpeg.rawValue

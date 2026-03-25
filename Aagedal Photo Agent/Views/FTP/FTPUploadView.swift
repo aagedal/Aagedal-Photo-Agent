@@ -10,8 +10,11 @@ struct FTPUploadView: View {
     @State private var activeFiles: [URL] = []
     @State private var selectedServerID: UUID?
     @State private var processVariablesBeforeUpload = false
+    @State private var signWithC2PABeforeUpload = false
     @State private var isProcessingVariables = false
+    @State private var isSigningC2PA = false
     @State private var variablesProcessProgress = ""
+    @State private var c2paSignProgress = ""
     @State private var expandedHistoryID: UUID?
 
     var body: some View {
@@ -75,6 +78,22 @@ struct FTPUploadView: View {
                             Text("Processing variables... \(variablesProcessProgress)")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    // C2PA signing option (hidden if no certificate)
+                    if SettingsViewModel.hasC2PASigningCertificate {
+                        Toggle("Sign with C2PA before upload", isOn: $signWithC2PABeforeUpload)
+                            .font(.subheadline)
+
+                        if isSigningC2PA {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("Signing... \(c2paSignProgress)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     }
 
@@ -227,7 +246,7 @@ struct FTPUploadView: View {
     // MARK: - Upload Logic
 
     private var uploadDisabled: Bool {
-        selectedServerID == nil || viewModel.isUploading || viewModel.isRendering || isProcessingVariables || activeFiles.isEmpty
+        selectedServerID == nil || viewModel.isUploading || viewModel.isRendering || isProcessingVariables || isSigningC2PA || activeFiles.isEmpty
     }
 
     private func startUpload(renderFirst: Bool) {
@@ -236,19 +255,51 @@ struct FTPUploadView: View {
 
         viewModel.saveLastUsedConnectionID(connection.id)
 
-        if processVariablesBeforeUpload {
-            isProcessingVariables = true
-            variablesProcessProgress = "0/\(activeFiles.count)"
-
-            Task {
+        Task {
+            if processVariablesBeforeUpload {
+                isProcessingVariables = true
+                variablesProcessProgress = "0/\(activeFiles.count)"
                 await processVariables(for: activeFiles)
                 isProcessingVariables = false
                 variablesProcessProgress = ""
-                beginUpload(files: activeFiles, connection: connection, renderFirst: renderFirst)
             }
-        } else {
+
+            if signWithC2PABeforeUpload {
+                await signFilesWithC2PA(activeFiles)
+            }
+
             beginUpload(files: activeFiles, connection: connection, renderFirst: renderFirst)
         }
+    }
+
+    private func signFilesWithC2PA(_ files: [URL]) async {
+        let certPath = UserDefaults.standard.string(forKey: UserDefaultsKeys.c2paCertificatePath) ?? ""
+        let author = UserDefaults.standard.string(forKey: UserDefaultsKeys.c2paDefaultAuthor)
+        guard !certPath.isEmpty,
+              let privateKeyPEM = KeychainService.load(forKey: "c2pa_private_key"),
+              C2PASigningService.isAvailable else { return }
+
+        isSigningC2PA = true
+        c2paSignProgress = "0/\(files.count)"
+        var signed = 0
+
+        for url in files {
+            do {
+                try await C2PASigningService.sign(
+                    imageURL: url,
+                    certificatePath: certPath,
+                    privateKeyPEM: privateKeyPEM,
+                    author: author?.isEmpty == true ? nil : author
+                )
+            } catch {
+                // Continue with next file
+            }
+            signed += 1
+            c2paSignProgress = "\(signed)/\(files.count)"
+        }
+
+        isSigningC2PA = false
+        c2paSignProgress = ""
     }
 
     private func beginUpload(files: [URL], connection: FTPConnection, renderFirst: Bool) {

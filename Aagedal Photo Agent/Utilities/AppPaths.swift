@@ -22,4 +22,10 @@ enum AppPaths {
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
     }
+
+    static var certificatesDirectory: URL {
+        let url = applicationSupport.appendingPathComponent("Certificates", isDirectory: true)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
 }
