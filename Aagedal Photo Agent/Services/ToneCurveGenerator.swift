@@ -24,6 +24,7 @@ nonisolated struct ToneCurveGenerator: Sendable {
         let shadows = Float(settings?.shadows2012 ?? 0) / 100.0
         let highlights = Float(settings?.highlights2012 ?? 0) / 100.0
         let whites = Float(settings?.whites2012 ?? 0) / 100.0
+        let isHDR = (settings?.hdrEditMode ?? 0) == 1
 
         var lut = [Float](repeating: 0, count: lutSize)
 
@@ -31,17 +32,25 @@ nonisolated struct ToneCurveGenerator: Sendable {
             let t = Float(i) / Float(lutSize - 1)
             var x = domainMin + t * range
 
-            // 1. Exposure: x * exp2(ev), then ACR-style progressive highlight compression.
-            //    Strength scales with EV: gentle at +1, aggressive at +3.
-            //    The rational function y/(1+y*s) asymptotes to threshold + 1/strength,
-            //    preserving HDR headroom proportional to the exposure boost.
+            // 1. Exposure: x * exp2(ev), then progressive highlight compression.
+            //    SDR: ACR-calibrated compression asymptoting near 1.0–1.2.
+            //    HDR: gentle shoulder starting at 2.0 (406 nits), preserving headroom to ~4.0 (812 nits).
             x *= exp2f(ev)
             if ev > 0.001 {
-                let threshold: Float = 0.7
-                let strength: Float = 1.0 + ev * 0.45
-                let overshoot = max(Float(0), x - threshold)
-                if overshoot > 0 {
-                    x = threshold + overshoot / (1.0 + overshoot * strength)
+                if isHDR {
+                    let threshold: Float = 2.0
+                    let strength: Float = 0.15 + ev * 0.08
+                    let overshoot = max(Float(0), x - threshold)
+                    if overshoot > 0 {
+                        x = threshold + overshoot / (1.0 + overshoot * strength)
+                    }
+                } else {
+                    let threshold: Float = 0.7
+                    let strength: Float = 1.0 + ev * 0.45
+                    let overshoot = max(Float(0), x - threshold)
+                    if overshoot > 0 {
+                        x = threshold + overshoot / (1.0 + overshoot * strength)
+                    }
                 }
             }
 
@@ -161,13 +170,47 @@ nonisolated struct ToneCurveGenerator: Sendable {
             return (baseLUT, baseLUT, baseLUT)
         }
 
+        let isHDR = (settings?.hdrEditMode ?? 0) == 1
         let range = domainMax - domainMin
         var rLUT = [Float](repeating: 0, count: lutSize)
         var gLUT = [Float](repeating: 0, count: lutSize)
         var bLUT = [Float](repeating: 0, count: lutSize)
 
+        // Pre-compute curve scaling factor for HDR values > 1.0.
+        // Evaluates how the curve affects SDR peak white, then applies that
+        // ratio proportionally to HDR values (e.g. curve darkening white
+        // also proportionally darkens HDR highlights).
+        var hdrScaleR: Float = 1.0
+        var hdrScaleG: Float = 1.0
+        var hdrScaleB: Float = 1.0
+        if isHDR {
+            let masterAtOne = hasMaster ? evaluateCatmullRom(masterPoints!, at: 1.0) : 1.0
+            let rAtOne = hasR ? evaluateCatmullRom(rPoints!, at: masterAtOne) : masterAtOne
+            let gAtOne = hasG ? evaluateCatmullRom(gPoints!, at: masterAtOne) : masterAtOne
+            let bAtOne = hasB ? evaluateCatmullRom(bPoints!, at: masterAtOne) : masterAtOne
+            hdrScaleR = Float(pow(max(0, min(1, rAtOne)), 2.2))
+            hdrScaleG = Float(pow(max(0, min(1, gAtOne)), 2.2))
+            hdrScaleB = Float(pow(max(0, min(1, bAtOne)), 2.2))
+        }
+
         for i in 0..<lutSize {
             let val = baseLUT[i]
+
+            // HDR values above SDR white: pass through with proportional curve scaling
+            if isHDR && val > 1.0 {
+                rLUT[i] = val * hdrScaleR
+                gLUT[i] = val * hdrScaleG
+                bLUT[i] = val * hdrScaleB
+                continue
+            }
+
+            // Preserve negatives from color matrix overshoot
+            if val < 0 {
+                rLUT[i] = val
+                gLUT[i] = val
+                bLUT[i] = val
+                continue
+            }
 
             // Convert linear light to perceptual (≈sRGB gamma) for curve application.
             // This makes the curve x-axis match perceived brightness, so the full
@@ -185,20 +228,9 @@ nonisolated struct ToneCurveGenerator: Sendable {
             let bOut = hasB ? evaluateCatmullRom(bPoints!, at: masterOut) : masterOut
 
             // Convert back to linear light
-            let rLinear = pow(max(0, min(1, rOut)), 2.2)
-            let gLinear = pow(max(0, min(1, gOut)), 2.2)
-            let bLinear = pow(max(0, min(1, bOut)), 2.2)
-
-            // Preserve values outside [0,1] (negatives and HDR) from the base LUT
-            if val < 0 || val > 1 {
-                rLUT[i] = val
-                gLUT[i] = val
-                bLUT[i] = val
-            } else {
-                rLUT[i] = Float(rLinear)
-                gLUT[i] = Float(gLinear)
-                bLUT[i] = Float(bLinear)
-            }
+            rLUT[i] = Float(pow(max(0, min(1, rOut)), 2.2))
+            gLUT[i] = Float(pow(max(0, min(1, gOut)), 2.2))
+            bLUT[i] = Float(pow(max(0, min(1, bOut)), 2.2))
         }
 
         return (rLUT, gLUT, bLUT)

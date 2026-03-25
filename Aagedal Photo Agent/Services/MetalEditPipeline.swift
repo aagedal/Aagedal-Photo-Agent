@@ -54,7 +54,7 @@ struct EditParams {
 
     var whiteBalanceMatrix: simd_float3x3 = matrix_identity_float3x3
 
-    var activeFlags: UInt32 = 0
+    var activeFlags: UInt32 = 0  // bit0=toneLUT, bit1=vibrance, bit2=saturation, bit3=whiteBalance, bit4=hdrMode
     var maskCount: UInt32 = 0
 
     var scale: SIMD2<Float> = .zero
@@ -338,6 +338,11 @@ final class MetalEditPipeline: @unchecked Sendable {
         if let wbMatrix = computeWhiteBalanceMatrix(settings: settings) {
             params.whiteBalanceMatrix = wbMatrix
             flags |= (1 << 3)
+        }
+
+        // 5. HDR mode flag — propagated to Metal shaders for HDR-aware processing
+        if settings.hdrEditMode == 1 {
+            flags |= (1 << 4)
         }
 
         params.activeFlags = flags

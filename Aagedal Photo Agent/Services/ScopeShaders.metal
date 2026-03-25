@@ -13,7 +13,7 @@ struct ScopeEditParams {
 
     float3x3 whiteBalanceMatrix;
 
-    uint activeFlags;
+    uint activeFlags;    // bit0=toneLUT, bit1=vibrance, bit2=saturation, bit3=whiteBalance, bit4=hdrMode
     uint maskCount;
 
     float2 scale;
@@ -133,9 +133,13 @@ inline float3 applyEdits(
         float4 gS = toneLUT.sample(lutSampler, ug);
         float4 bS = toneLUT.sample(lutSampler, ub);
         rgb = float3(rS.r, gS.g, bS.b);
-        // Highlight desaturation
+        // Highlight desaturation — HDR-aware thresholds (mirrors EditAdjustments.metal)
         float lum = dot(rgb, float3(0.2126, 0.7152, 0.0722));
-        float desat = smoothstep(0.55, 1.3, lum) * 0.7;
+        bool isHDR = (params.activeFlags & (1u << 4)) != 0;
+        float desatLow  = isHDR ? 1.5  : 0.55;
+        float desatHigh = isHDR ? 4.0  : 1.3;
+        float desatMax  = isHDR ? 0.5  : 0.7;
+        float desat = smoothstep(desatLow, desatHigh, lum) * desatMax;
         rgb = mix(rgb, float3(lum), desat);
     }
 
@@ -227,21 +231,26 @@ kernel void waveformAccumulate(
     float3 rgb = float3(color.rgb);
     rgb = applyEdits(rgb, uv, editParams, toneLUT, masks);
 
-    // Convert linear → sRGB before binning (matches CPU scope path)
-    float r = linearToSRGB(saturate(rgb.r));
-    float g = linearToSRGB(saturate(rgb.g));
-    float b = linearToSRGB(saturate(rgb.b));
-    float luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-
     int levels = int(scopeParams.levels);
     int level;
     if (scopeParams.scaleMode == 1) {
-        // Nits mode uses linear light values for logarithmic mapping
-        float lumaLinear = dot(saturate(rgb), float3(0.2126, 0.7152, 0.0722));
+        // Nits mode: use raw linear values — NO saturate() clamping.
+        // linearToFraction() maps to [0, 1] via logarithmic nits scale with 10000-nit cap.
+        float lumaLinear = dot(max(rgb, float3(0)), float3(0.2126, 0.7152, 0.0722));
         level = clamp(int(linearToFraction(lumaLinear) * float(levels - 1)), 0, levels - 1);
     } else {
+        // Percentage mode: clamp to SDR range as before
+        float rGamma = linearToSRGB(saturate(rgb.r));
+        float gGamma = linearToSRGB(saturate(rgb.g));
+        float bGamma = linearToSRGB(saturate(rgb.b));
+        float luma = 0.2126 * rGamma + 0.7152 * gGamma + 0.0722 * bGamma;
         level = clamp(int(luma * float(levels - 1)), 0, levels - 1);
     }
+
+    // Color bin accumulation: always clamped to SDR for display coloring
+    float r = linearToSRGB(saturate(rgb.r));
+    float g = linearToSRGB(saturate(rgb.g));
+    float b = linearToSRGB(saturate(rgb.b));
 
     int x = int(gid.x);
     uint binCount = scopeParams.dataWidth * scopeParams.levels;
@@ -417,8 +426,9 @@ kernel void paradeAccumulate(
 
     int rLevel, gLevel, bLevel, yLevel;
     if (scopeParams.scaleMode == 1) {
-        // Nits mode: use linear light for logarithmic mapping
-        float3 linear = saturate(rgb);
+        // Nits mode: use raw linear — NO saturate() clamping.
+        // linearToFraction() maps to [0, 1] via logarithmic nits scale with 10000-nit cap.
+        float3 linear = max(rgb, float3(0));
         float levelsF = float(levels - 1);
         rLevel = clamp(int(linearToFraction(linear.r) * levelsF), 0, levels - 1);
         gLevel = clamp(int(linearToFraction(linear.g) * levelsF), 0, levels - 1);

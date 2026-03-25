@@ -32,7 +32,7 @@ struct EditParams {
     float3x3 whiteBalanceMatrix; // Bradford chromatic adaptation (identity if no WB)
 
     uint activeFlags;        // bitmask: bit0=toneLUT, bit1=vibrance,
-                             // bit2=saturation, bit3=whiteBalance
+                             // bit2=saturation, bit3=whiteBalance, bit4=hdrMode
     uint maskCount;          // number of active masks (0-8)
 
     float2 scale;            // source→drawable scale (stretch-to-fill)
@@ -93,9 +93,14 @@ kernel void editAdjustments(
         // Highlight desaturation: blend toward luminance as brightness increases.
         // Prevents per-channel LUT from oversaturating highlights — ACR rolls off
         // bright areas toward neutral white rather than boosting channel differences.
+        // HDR mode: shift thresholds up so the SDR range retains full color.
         float3 rgbF = float3(rgb);
         float lum = dot(rgbF, float3(0.2126, 0.7152, 0.0722));
-        float desat = smoothstep(0.55, 1.3, lum) * 0.7;
+        bool isHDR = (params.activeFlags & (1u << 4)) != 0;
+        float desatLow  = isHDR ? 1.5  : 0.55;
+        float desatHigh = isHDR ? 4.0  : 1.3;
+        float desatMax  = isHDR ? 0.5  : 0.7;
+        float desat = smoothstep(desatLow, desatHigh, lum) * desatMax;
         rgb = half3(mix(rgbF, float3(lum), desat));
     }
 
