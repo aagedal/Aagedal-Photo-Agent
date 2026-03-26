@@ -1655,6 +1655,7 @@ struct EditWorkspaceView: View {
             || cameraRaw.blacks2012 != nil
             || cameraRaw.saturation != nil
             || cameraRaw.vibrance != nil
+            || cameraRaw.toneCurve != nil
             || (cameraRaw.crop?.isEmpty == false)
             || !(cameraRaw.localAdjustments?.isEmpty ?? true)
     }
