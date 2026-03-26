@@ -126,6 +126,14 @@ struct BrowserView: View {
             
             ToolbarItemGroup(placement: .automatic) {
                 
+                Button {
+                    viewModel.sortReversed.toggle()
+                } label: {
+                    Image(systemName: viewModel.sortReversed ? "arrow.up" : "arrow.down")
+                }
+                .help(viewModel.sortReversed ? "Sort ascending" : "Sort descending")
+                .disabled(viewModel.sortOrder == .manual)
+                
                 Picker("Sort", selection: Binding(
                     get: { viewModel.sortOrder },
                     set: { newValue in
@@ -140,14 +148,6 @@ struct BrowserView: View {
                     }
                 }
                 .pickerStyle(.menu)
-                
-                Button {
-                    viewModel.sortReversed.toggle()
-                } label: {
-                    Image(systemName: viewModel.sortReversed ? "arrow.up" : "arrow.down")
-                }
-                .help(viewModel.sortReversed ? "Sort ascending" : "Sort descending")
-                .disabled(viewModel.sortOrder == .manual)
                 
             }
 

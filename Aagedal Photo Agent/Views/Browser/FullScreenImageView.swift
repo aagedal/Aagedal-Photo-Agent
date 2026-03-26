@@ -194,6 +194,7 @@ struct FullScreenImageView: View {
     @State private var sourcePixelSize: CGSize?
     @State private var useNearestNeighbor: Bool = false
     @State private var lastOrientationURL: URL?
+    @State private var lastLoadedOrientation: Int = 1
 
     /// Minimum zoom allows zooming out to 1:1 pixel mapping for small images.
     private var minZoom: CGFloat {
@@ -583,6 +584,9 @@ struct FullScreenImageView: View {
             guard let oldValue, let newValue, oldValue != newValue,
                   let current = currentImage,
                   let url else { return }
+            // If the image was already decoded with this orientation (e.g. metadata
+            // batch read catching up), the pixels are already correct — skip.
+            guard newValue != lastLoadedOrientation else { return }
             let clockwise = ImageFile.orientationAfterClockwiseRotation(oldValue) == newValue
             if let rotated = Self.rotateCGImage90(current.cgImage, clockwise: clockwise) {
                 currentImage = makeLoadedImage(from: rotated)
@@ -779,8 +783,10 @@ struct FullScreenImageView: View {
                 }
             }
             sourcePixelSize = rawSize
+            lastLoadedOrientation = orientation
         } else {
             sourcePixelSize = nil
+            lastLoadedOrientation = imageOrientation
         }
 
         // Phase 0: Instant — check retina cache, then display preview cache, then thumbnail

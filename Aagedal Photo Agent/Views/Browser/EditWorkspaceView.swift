@@ -26,6 +26,7 @@ struct EditWorkspaceView: View {
     @State private var isLoadingPreview = false
     @State private var isDecodingFullResolution = false
     @State private var isSavingRenderedJPEG = false
+    @State private var saveError: String?
     @State private var copyPasteFeedback: String?
     @State private var cropZoomScale: CGFloat = 1.0
     @State private var lastCropZoomScale: CGFloat = 1.0
@@ -55,6 +56,7 @@ struct EditWorkspaceView: View {
     @State private var editOffset: CGSize = .zero
     @State private var lastEditOffset: CGSize = .zero
     @State private var previewPaneFrame: CGRect = .zero
+    @State private var isHoveringHDR = false
     @FocusState private var isWorkspaceFocused: Bool
 
     private static let previewBackground = Color(red: 0.15, green: 0.15, blue: 0.15)
@@ -322,6 +324,16 @@ struct EditWorkspaceView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: copyPasteFeedback)
+        .alert("Export Failed", isPresented: Binding(
+            get: { saveError != nil },
+            set: { if !$0 { saveError = nil } }
+        )) {
+            Button("OK", role: .cancel) { saveError = nil }
+        } message: {
+            if let error = saveError {
+                Text(error)
+            }
+        }
     }
 
     private var previewPane: some View {
@@ -762,6 +774,10 @@ struct EditWorkspaceView: View {
                         Text("HDR")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(isHDREnabled ? Color.orange : Color.secondary.opacity(0.5))
+                            .underline(isHoveringHDR)
+                            .onHover { hovering in
+                                isHoveringHDR = hovering
+                            }
                             .onTapGesture {
                                 guard canEditSingleImage else { return }
                                 hdrToggleBinding.wrappedValue.toggle()
@@ -2368,7 +2384,7 @@ struct EditWorkspaceView: View {
                 }.value
                 browserViewModel.thumbnailService.invalidateThumbnail(for: outputURL)
             } catch {
-                browserViewModel.errorMessage = "Failed to save image: \(error.localizedDescription)"
+                saveError = "Failed to save image: \(error.localizedDescription)"
             }
             isSavingRenderedJPEG = false
         }

@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import ImageIO
 import os
 
 @Observable
@@ -388,8 +389,10 @@ final class BrowserViewModel {
         loadFolderTask = Task {
             do {
                 // Phase 1: Scan folder and show grid immediately
-                let files = try fileSystemService.scanFolder(at: url, includeAllFiles: showAllFiles)
+                var files = try fileSystemService.scanFolder(at: url, includeAllFiles: showAllFiles)
                 guard !Task.isCancelled, self.currentFolderURL == url else { return }
+                // Phase 1.5: Eagerly read EXIF orientation (metadata-only, no pixel decode)
+                self.readOrientationsEagerly(for: &files)
                 self.images = files
                 self.isLoading = false
                 self.thumbnailService.startBackgroundGeneration(for: self.visibleImages)
@@ -485,7 +488,14 @@ final class BrowserViewModel {
                     }
                     merged.append(updated)
                 } else {
-                    merged.append(item)
+                    var newItem = item
+                    if newItem.isImageFile,
+                       let source = CGImageSourceCreateWithURL(newItem.url as CFURL, nil),
+                       let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+                       let orientation = props[kCGImagePropertyOrientation] as? Int {
+                        newItem.exifOrientation = orientation
+                    }
+                    merged.append(newItem)
                     newURLs.append(item.url)
                 }
             }
@@ -522,6 +532,18 @@ final class BrowserViewModel {
                 pendingMetadataURLs.formUnion(metadataRefreshURLs)
                 drainPendingMetadataIfNeeded()
             }
+        }
+    }
+
+    /// Read EXIF orientation via CGImageSource (metadata-only, ~0.1ms/file).
+    /// Called eagerly after folder scan so exifOrientation is correct before
+    /// the full ExifTool batch read.
+    private func readOrientationsEagerly(for images: inout [ImageFile]) {
+        for i in images.indices where images[i].isImageFile {
+            guard let source = CGImageSourceCreateWithURL(images[i].url as CFURL, nil),
+                  let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+                  let orientation = props[kCGImagePropertyOrientation] as? Int else { continue }
+            images[i].exifOrientation = orientation
         }
     }
 
