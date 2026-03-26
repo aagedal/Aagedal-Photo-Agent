@@ -35,6 +35,8 @@ struct EditWorkspaceView: View {
     @State private var keyEventMonitor: Any?
     @State private var isShowingBefore = false
     @State private var isMutingDevelop = false
+    @State private var isMutingSelectedMask = false
+    @State private var mutedMaskIndex: Int?
     @State private var showCropControls = false
     @State private var lockedCropImageRect: CGRect?
     @State private var dragCropAngle: Double?
@@ -751,10 +753,21 @@ struct EditWorkspaceView: View {
                     })
 
                     // ── Exposure ──
-                    Text("Exposure")
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.secondary)
-                        .padding(.top, 2)
+                    HStack {
+                        Text("Exposure")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text("HDR")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(isHDREnabled ? Color.orange : Color.secondary.opacity(0.5))
+                            .onTapGesture {
+                                guard canEditSingleImage else { return }
+                                hdrToggleBinding.wrappedValue.toggle()
+                            }
+                            .help("Toggle HDR mode (\u{2318}H)")
+                    }
+                    .padding(.top, 2)
                     Divider()
 
                     sliderRow(
@@ -930,17 +943,6 @@ struct EditWorkspaceView: View {
                             }
                         }
                     }
-
-                    Divider()
-
-                    Toggle(isOn: hdrToggleBinding) {
-                        Text("HDR")
-                            .font(.caption)
-                    }
-                    .toggleStyle(.switch)
-                    .controlSize(.mini)
-                    .disabled(!canEditSingleImage)
-                    .help("Toggle HDR mode (⌘H)")
 
                     Divider()
 
@@ -2639,8 +2641,28 @@ struct EditWorkspaceView: View {
             return nil
         }
 
+        // Cmd+D — hold to mute only the selected mask/layer
+        if chars == "d" && modifiers.contains(.command) {
+            if isKeyUp {
+                if let idx = mutedMaskIndex {
+                    metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?[idx].enabled = true
+                    mutedMaskIndex = nil
+                    isMutingSelectedMask = false
+                }
+                return nil
+            }
+            guard !isTextFieldActive(), canEditSingleImage,
+                  let idx = selectedMaskIndex,
+                  let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
+                  idx < masks.count, masks[idx].enabled else { return event }
+            isMutingSelectedMask = true
+            mutedMaskIndex = idx
+            metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?[idx].enabled = false
+            return nil
+        }
+
         // D key — hold to disable develop adjustments (keep crop visible)
-        if chars == "d" {
+        if chars == "d" && modifiers.isDisjoint(with: [.command, .option, .control]) {
             if isKeyUp {
                 isMutingDevelop = false
                 return nil
