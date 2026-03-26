@@ -1,7 +1,7 @@
 import Foundation
 import os
 
-nonisolated(unsafe) private let logger = Logger(subsystem: "com.aagedal.photo-agent", category: "C2PASigning")
+nonisolated private let logger = Logger(subsystem: "com.aagedal.photo-agent", category: "C2PASigning")
 
 enum C2PASigningError: Error, LocalizedError {
     case c2patoolMissing

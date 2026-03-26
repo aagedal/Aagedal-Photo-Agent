@@ -171,7 +171,6 @@ nonisolated struct ToneCurveGenerator: Sendable {
         }
 
         let isHDR = (settings?.hdrEditMode ?? 0) == 1
-        let range = domainMax - domainMin
         var rLUT = [Float](repeating: 0, count: lutSize)
         var gLUT = [Float](repeating: 0, count: lutSize)
         var bLUT = [Float](repeating: 0, count: lutSize)

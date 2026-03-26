@@ -325,9 +325,15 @@ struct GPSSectionView: View {
         let search = MKLocalSearch(request: request)
         search.start { response, error in
             guard let item = response?.mapItems.first else { return }
-            let coord = item.placemark.coordinate
-            latitude = coord.latitude
-            longitude = coord.longitude
+            if #available(macOS 26, *) {
+                let coord = item.location.coordinate
+                latitude = coord.latitude
+                longitude = coord.longitude
+            } else {
+                let coord = item.placemark.coordinate
+                latitude = coord.latitude
+                longitude = coord.longitude
+            }
             onChanged()
             isSearching = false
             searchText = ""

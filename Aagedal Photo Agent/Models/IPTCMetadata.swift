@@ -1,11 +1,11 @@
 import Foundation
 
-struct ToneCurvePoint: Codable, Sendable, Equatable {
+nonisolated struct ToneCurvePoint: Codable, Sendable, Equatable {
     var x: Double  // 0-1 input brightness
     var y: Double  // 0-1 output brightness
 }
 
-struct ToneCurve: Codable, Sendable, Equatable {
+nonisolated struct ToneCurve: Codable, Sendable, Equatable {
     var master: [ToneCurvePoint]?
     var red: [ToneCurvePoint]?
     var green: [ToneCurvePoint]?

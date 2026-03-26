@@ -118,7 +118,7 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
         observationTasks.append(Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                let (images, renderEdits) = await withCheckedContinuation { continuation in
+                let (images, _) = await withCheckedContinuation { continuation in
                     withObservationTracking {
                         _ = self.viewModel.visibleImages
                         _ = self.viewModel.renderEditsInPreviews
