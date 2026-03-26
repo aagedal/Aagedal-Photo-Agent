@@ -340,10 +340,10 @@ final class BrowserViewModel {
         if image.filenameLowercased.contains(query) {
             return true
         }
-        if image.personShown.contains(where: { $0.lowercased().contains(query) }) {
+        if image.personShownLowercased.contains(where: { $0.contains(query) }) {
             return true
         }
-        return image.keywords.contains { $0.lowercased().contains(query) }
+        return image.keywordsLowercased.contains { $0.contains(query) }
     }
 
     private func applyFilters(to images: [ImageFile]) -> [ImageFile] {
@@ -2025,7 +2025,7 @@ final class BrowserViewModel {
 
         let sorted = sortedImages.filter { selectedImageIDs.contains($0.url) }
         var newSelectionURLs: Set<URL> = []
-        var insertions: [(afterIndex: Int, image: ImageFile)] = []
+        var insertions: [(afterIndex: Int, sourceURL: URL, image: ImageFile)] = []
 
         for source in sorted {
             guard let sourceIndex = urlToImageIndex[source.url] else { continue }
@@ -2051,7 +2051,7 @@ final class BrowserViewModel {
                 }
 
                 let newImage = ImageFile(url: destURL, copyingFrom: source)
-                insertions.append((afterIndex: sourceIndex, image: newImage))
+                insertions.append((afterIndex: sourceIndex, sourceURL: source.url, image: newImage))
                 newSelectionURLs.insert(destURL)
             } catch {
                 logger.error("Duplicate failed for \(source.filename): \(error.localizedDescription)")
@@ -2064,14 +2064,22 @@ final class BrowserViewModel {
             images.insert(insertion.image, at: insertAt)
         }
 
-        // Update manual order
-        for insertion in insertions {
-            if let manualIndex = manualOrder.firstIndex(of: sorted.first(where: { urlToImageIndex[$0.url] == insertion.afterIndex })?.url ?? insertion.image.url) {
-                manualOrder.insert(insertion.image.url, at: manualIndex + 1)
-            } else {
-                manualOrder.append(insertion.image.url)
+        // Update manual order — single-pass O(N+M) rebuild instead of O(N*M) repeated scans
+        let dupeAfterSource = Dictionary(uniqueKeysWithValues: insertions.map { ($0.sourceURL, $0.image.url) })
+        var newManualOrder: [URL] = []
+        newManualOrder.reserveCapacity(manualOrder.count + insertions.count)
+        for url in manualOrder {
+            newManualOrder.append(url)
+            if let dupeURL = dupeAfterSource[url] {
+                newManualOrder.append(dupeURL)
             }
         }
+        // Append any duplicates whose source wasn't in the manual order
+        let addedURLs = Set(newManualOrder)
+        for insertion in insertions where !addedURLs.contains(insertion.image.url) {
+            newManualOrder.append(insertion.image.url)
+        }
+        manualOrder = newManualOrder
 
         selectedImageIDs = newSelectionURLs
         lastClickedImageURL = newSelectionURLs.first

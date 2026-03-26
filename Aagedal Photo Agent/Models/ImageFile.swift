@@ -41,8 +41,14 @@ struct ImageFile: Identifiable, Hashable, Sendable {
     var pendingFieldNames: [String] = []
     var metadata: IPTCMetadata?
     var isNativeHDR: Bool
-    var personShown: [String]
-    var keywords: [String]
+    var personShown: [String] {
+        didSet { personShownLowercased = personShown.map { $0.lowercased() } }
+    }
+    var personShownLowercased: [String]
+    var keywords: [String] {
+        didSet { keywordsLowercased = keywords.map { $0.lowercased() } }
+    }
+    var keywordsLowercased: [String]
 
     var isImageFile: Bool { SupportedImageFormats.isSupported(url: url) }
 
@@ -69,7 +75,9 @@ struct ImageFile: Identifiable, Hashable, Sendable {
         self.isNativeHDR = false
         self.metadata = nil
         self.personShown = []
+        self.personShownLowercased = []
         self.keywords = []
+        self.keywordsLowercased = []
     }
 
     init(url: URL, copyingFrom source: ImageFile) {
@@ -96,7 +104,9 @@ struct ImageFile: Identifiable, Hashable, Sendable {
         self.isNativeHDR = source.isNativeHDR
         self.metadata = source.metadata
         self.personShown = source.personShown
+        self.personShownLowercased = source.personShownLowercased
         self.keywords = source.keywords
+        self.keywordsLowercased = source.keywordsLowercased
     }
 
     /// Compute next EXIF orientation after 90° CW rotation.
