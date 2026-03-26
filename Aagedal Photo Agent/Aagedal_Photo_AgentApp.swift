@@ -191,6 +191,11 @@ struct Aagedal_Photo_AgentApp: App {
                 }
                 .keyboardShortcut("j", modifiers: .command)
 
+                Button("Toggle HDR") {
+                    NotificationCenter.default.post(name: .toggleHDR, object: nil)
+                }
+                .keyboardShortcut("h", modifiers: .command)
+
                 Button("Reset All Edits") {
                     NotificationCenter.default.post(name: .resetAllEdits, object: nil)
                 }
@@ -274,4 +279,5 @@ extension Notification.Name {
     static let addNewMask = Notification.Name("addNewMask")
     static let setScopeMode = Notification.Name("setScopeMode")
     static let signSelectedC2PA = Notification.Name("signSelectedC2PA")
+    static let toggleHDR = Notification.Name("toggleHDR")
 }

@@ -302,6 +302,10 @@ struct EditWorkspaceView: View {
             guard canEditSingleImage else { return }
             addNewMask()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .toggleHDR)) { _ in
+            guard canEditSingleImage else { return }
+            hdrToggleBinding.wrappedValue.toggle()
+        }
         .overlay(alignment: .top) {
             if let feedback = copyPasteFeedback {
                 Text(feedback)
@@ -929,19 +933,14 @@ struct EditWorkspaceView: View {
 
                     Divider()
 
-                    VStack(spacing: 1) {
-                        Toggle(isOn: hdrToggleBinding) {
-                            Text("HDR")
-                                .font(.caption)
-                        }
-                        .toggleStyle(.switch)
-                        .controlSize(.mini)
-                        .disabled(!canEditSingleImage)
-                        Text("Experimental")
-                            .font(.system(size: 8))
-                            .foregroundStyle(.secondary)
+                    Toggle(isOn: hdrToggleBinding) {
+                        Text("HDR")
+                            .font(.caption)
                     }
-                    .help("HDR export brightness may vary across viewers")
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
+                    .disabled(!canEditSingleImage)
+                    .help("Toggle HDR mode (⌘H)")
 
                     Divider()
 
