@@ -394,7 +394,7 @@ final class BrowserViewModel {
                 var files = try fileSystemService.scanFolder(at: url, includeAllFiles: showAllFiles)
                 guard !Task.isCancelled, self.currentFolderURL == url else { return }
                 // Phase 1.5: Eagerly read EXIF orientation (metadata-only, no pixel decode)
-                self.readOrientationsEagerly(for: &files)
+                await self.readOrientationsEagerly(for: &files)
                 self.images = files
                 self.isLoading = false
                 self.thumbnailService.startBackgroundGeneration(for: self.visibleImages)
@@ -540,12 +540,30 @@ final class BrowserViewModel {
     /// Read EXIF orientation via CGImageSource (metadata-only, ~0.1ms/file).
     /// Called eagerly after folder scan so exifOrientation is correct before
     /// the full ExifTool batch read.
-    private func readOrientationsEagerly(for images: inout [ImageFile]) {
-        for i in images.indices where images[i].isImageFile {
-            guard let source = CGImageSourceCreateWithURL(images[i].url as CFURL, nil),
-                  let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-                  let orientation = props[kCGImagePropertyOrientation] as? Int else { continue }
-            images[i].exifOrientation = orientation
+    private func readOrientationsEagerly(for images: inout [ImageFile]) async {
+        let indexed = images.enumerated()
+            .filter { $0.element.isImageFile }
+            .map { (index: $0.offset, url: $0.element.url) }
+        guard !indexed.isEmpty else { return }
+
+        let orientations = await withTaskGroup(of: (Int, Int)?.self) { group in
+            for item in indexed {
+                group.addTask {
+                    guard let source = CGImageSourceCreateWithURL(item.url as CFURL, nil),
+                          let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+                          let orientation = props[kCGImagePropertyOrientation] as? Int,
+                          orientation != 1 else { return nil }
+                    return (item.index, orientation)
+                }
+            }
+            var result: [(Int, Int)] = []
+            for await pair in group {
+                if let pair { result.append(pair) }
+            }
+            return result
+        }
+        for (index, orientation) in orientations {
+            images[index].exifOrientation = orientation
         }
     }
 
