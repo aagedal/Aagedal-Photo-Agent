@@ -7,6 +7,7 @@ import os
 final class BrowserViewModel {
     var images: [ImageFile] = [] {
         didSet {
+            guard !suppressImagesCascade else { return }
             urlToImageIndex = Dictionary(uniqueKeysWithValues: images.enumerated().map { ($1.url, $0) })
             let sameSet = images.count == oldValue.count
             rebuildSortedCache(forceSort: !sameSet)
@@ -132,6 +133,7 @@ final class BrowserViewModel {
     @ObservationIgnored private var isMetadataLoading = false
     @ObservationIgnored private var pendingMetadataURLs: Set<URL> = []
     @ObservationIgnored private var retinaPreCacheTask: Task<Void, Never>?
+    @ObservationIgnored private var suppressImagesCascade = false
 
     private let favoritesKey = UserDefaultsKeys.favoriteFolders
 
@@ -318,34 +320,34 @@ final class BrowserViewModel {
         }
     }
 
-    private func applyFilters(to images: [ImageFile]) -> [ImageFile] {
-        let trimmedQuery = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let query = trimmedQuery.lowercased()
-
-        return images.filter { image in
-            if image.starRating.rawValue < minimumStarRating.rawValue {
-                return false
-            }
-            if !selectedColorLabels.isEmpty && !selectedColorLabels.contains(image.colorLabel) {
-                return false
-            }
-            switch personShownFilter {
-            case .any:
-                break
-            case .missing:
-                if !image.personShown.isEmpty { return false }
-            case .present:
-                if image.personShown.isEmpty { return false }
-            }
-            guard !query.isEmpty else { return true }
-            if image.filenameLowercased.contains(query) {
-                return true
-            }
-            if image.personShown.contains(where: { $0.lowercased().contains(query) }) {
-                return true
-            }
-            return image.keywords.contains { $0.lowercased().contains(query) }
+    private func imagePassesFilter(_ image: ImageFile) -> Bool {
+        if image.starRating.rawValue < minimumStarRating.rawValue {
+            return false
         }
+        if !selectedColorLabels.isEmpty && !selectedColorLabels.contains(image.colorLabel) {
+            return false
+        }
+        switch personShownFilter {
+        case .any:
+            break
+        case .missing:
+            if !image.personShown.isEmpty { return false }
+        case .present:
+            if image.personShown.isEmpty { return false }
+        }
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else { return true }
+        if image.filenameLowercased.contains(query) {
+            return true
+        }
+        if image.personShown.contains(where: { $0.lowercased().contains(query) }) {
+            return true
+        }
+        return image.keywords.contains { $0.lowercased().contains(query) }
+    }
+
+    private func applyFilters(to images: [ImageFile]) -> [ImageFile] {
+        images.filter { imagePassesFilter($0) }
     }
 
     func clearFilters() {
@@ -1066,6 +1068,8 @@ final class BrowserViewModel {
     func setRating(_ rating: StarRating) {
         applyMetadataField(
             updateImage: { $0.starRating = rating },
+            affectsSortKey: sortOrder == .rating,
+            affectsFilterKey: minimumStarRating != .none,
             applySidecar: { url, writeXmp, pending in
                 await self.applyFieldToSidecar(
                     url: url, writeXmpSidecar: writeXmp, pendingChanges: pending,
@@ -1085,6 +1089,8 @@ final class BrowserViewModel {
     func setLabel(_ label: ColorLabel) {
         applyMetadataField(
             updateImage: { $0.colorLabel = label },
+            affectsSortKey: sortOrder == .label,
+            affectsFilterKey: !selectedColorLabels.isEmpty,
             applySidecar: { url, writeXmp, pending in
                 await self.applyFieldToSidecar(
                     url: url, writeXmpSidecar: writeXmp, pendingChanges: pending,
@@ -1111,6 +1117,8 @@ final class BrowserViewModel {
             updateImage: { image in
                 image.exifOrientation = newOrientations[image.url] ?? image.exifOrientation
             },
+            affectsSortKey: false,
+            affectsFilterKey: false,
             applySidecar: { url, writeXmp, pending in
                 await self.applyFieldToSidecar(
                     url: url, writeXmpSidecar: writeXmp, pendingChanges: pending,
@@ -1149,6 +1157,8 @@ final class BrowserViewModel {
             updateImage: { image in
                 image.exifOrientation = newOrientations[image.url] ?? image.exifOrientation
             },
+            affectsSortKey: false,
+            affectsFilterKey: false,
             applySidecar: { url, writeXmp, pending in
                 await self.applyFieldToSidecar(
                     url: url, writeXmpSidecar: writeXmp, pendingChanges: pending,
@@ -1179,6 +1189,8 @@ final class BrowserViewModel {
 
     private func applyMetadataField(
         updateImage: (inout ImageFile) -> Void,
+        affectsSortKey: Bool,
+        affectsFilterKey: Bool,
         applySidecar: @escaping (URL, Bool, Bool) async -> Void,
         writeToExifTool: @escaping ([URL]) async throws -> Void,
         fieldDescription: String
@@ -1187,14 +1199,56 @@ final class BrowserViewModel {
         let urls = selectedImages.map(\.url)
         let lookup = Dictionary(uniqueKeysWithValues: images.map { ($0.url, $0) })
 
-        var updated = images
-        let localIndex = Dictionary(uniqueKeysWithValues: updated.enumerated().map { ($1.url, $0) })
-        for id in selectedImageIDs {
-            if let index = localIndex[id] {
-                updateImage(&updated[index])
+        // Phase 1: In-place mutation — skip the didSet cascade since URLs don't change
+        suppressImagesCascade = true
+        defer { suppressImagesCascade = false }
+        for url in selectedImageIDs {
+            guard let index = urlToImageIndex[url] else { continue }
+            updateImage(&images[index])
+        }
+
+        // Phase 2: Propagate changes to sorted/visible caches
+        if affectsSortKey {
+            rebuildSortedCache()
+        } else {
+            for url in selectedImageIDs {
+                guard let imageIdx = urlToImageIndex[url],
+                      let sortedIdx = urlToSortedIndex[url] else { continue }
+                sortedImages[sortedIdx] = images[imageIdx]
+            }
+
+            if affectsFilterKey || isFilteringActive {
+                var needsFullRebuild = false
+                for url in selectedImageIDs {
+                    guard let imageIdx = urlToImageIndex[url] else { continue }
+                    let updatedImage = images[imageIdx]
+                    let passes = imagePassesFilter(updatedImage)
+                    if let visibleIdx = urlToVisibleIndex[url] {
+                        if passes {
+                            visibleImages[visibleIdx] = updatedImage
+                        } else {
+                            needsFullRebuild = true
+                            break
+                        }
+                    } else if passes {
+                        needsFullRebuild = true
+                        break
+                    }
+                }
+                if needsFullRebuild {
+                    rebuildVisibleCache()
+                } else {
+                    rebuildSelectedCache()
+                }
+            } else {
+                for url in selectedImageIDs {
+                    guard let imageIdx = urlToImageIndex[url],
+                          let visibleIdx = urlToVisibleIndex[url] else { continue }
+                    visibleImages[visibleIdx] = images[imageIdx]
+                }
+                rebuildSelectedCache()
             }
         }
-        images = updated
 
         Task {
             var writeToFileWithSidecar: [URL] = []
