@@ -45,42 +45,43 @@ struct BrowserView: View {
                 ZStack {
                     CollectionViewGridRepresentable(viewModel: viewModel)
 
-                    // Thumbnail generation progress (bottom-left)
-                    if viewModel.thumbnailService.isPreGenerating {
-                        VStack {
-                            Spacer()
-                            HStack {
-                                ThumbnailGenerationProgressView(
-                                    completed: viewModel.thumbnailService.preGenerateCompleted,
-                                    total: viewModel.thumbnailService.preGenerateTotal,
-                                    onCancel: { viewModel.thumbnailService.cancelBackgroundGeneration() }
-                                )
-                                .padding(8)
-                                Spacer()
-                            }
+                    // Bottom-left overlays
+                    VStack(alignment: .leading, spacing: 6) {
+                        // Sort feedback (temporary)
+                        if let sortFeedback = viewModel.sortFeedback {
+                            Text(sortFeedback)
+                                .font(.body.bold())
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 7)
+                                .background(.black.opacity(0.75), in: Capsule())
+                                .transition(.opacity.combined(with: .move(edge: .bottom)))
                         }
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                        .animation(.easeInOut(duration: 0.25), value: viewModel.thumbnailService.isPreGenerating)
-                    }
 
-                    // Sort feedback overlay (bottom-left)
-                    if let sortFeedback = viewModel.sortFeedback {
-                        VStack {
-                            Spacer()
-                            HStack {
-                                Text(sortFeedback)
-                                    .font(.caption.bold())
-                                    .foregroundStyle(.white)
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 5)
-                                    .background(.black.opacity(0.7), in: Capsule())
-                                    .padding(8)
-                                Spacer()
-                            }
+                        // Thumbnail generation progress (conditional)
+                        if viewModel.thumbnailService.isPreGenerating {
+                            ThumbnailGenerationProgressView(
+                                completed: viewModel.thumbnailService.preGenerateCompleted,
+                                total: viewModel.thumbnailService.preGenerateTotal,
+                                onCancel: { viewModel.thumbnailService.cancelBackgroundGeneration() }
+                            )
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
                         }
-                        .transition(.opacity.combined(with: .move(edge: .bottom)))
-                        .animation(.easeInOut(duration: 0.2), value: viewModel.sortFeedback)
+
+                        // Permanent image count overlay
+                        ImageCountOverlayView(
+                            totalImageCount: viewModel.images.count,
+                            visibleImageCount: viewModel.visibleImages.count,
+                            isFiltering: viewModel.isFilteringActive,
+                            selectedCount: viewModel.selectedImageIDs.count,
+                            faceCount: faceCount,
+                            faceGroupCount: faceGroupCount
+                        )
                     }
+                    .padding(8)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                    .animation(.easeInOut(duration: 0.2), value: viewModel.sortFeedback)
+                    .animation(.easeInOut(duration: 0.25), value: viewModel.thumbnailService.isPreGenerating)
 
                     // Thumbnail size slider (bottom-right)
                     VStack {
@@ -107,7 +108,24 @@ struct BrowserView: View {
             }
         }
         .toolbar {
-            ToolbarItem(placement: .automatic) {
+            
+            ToolbarItemGroup(placement: .automatic) {
+                ColorLabelFilterBar(selectedLabels: $viewModel.selectedColorLabels)
+                    .disabled(viewModel.images.isEmpty)
+                    .padding(8)
+            }
+        
+
+            ToolbarItemGroup(placement: .automatic) {
+                StarRatingFilterBar(minimumRating: $viewModel.minimumStarRating)
+                    .disabled(viewModel.images.isEmpty)
+                    .padding(8)
+                
+                filterMenu
+            }
+            
+            ToolbarItemGroup(placement: .automatic) {
+                
                 Picker("Sort", selection: Binding(
                     get: { viewModel.sortOrder },
                     set: { newValue in
@@ -122,9 +140,7 @@ struct BrowserView: View {
                     }
                 }
                 .pickerStyle(.menu)
-            }
-
-            ToolbarItem(placement: .automatic) {
+                
                 Button {
                     viewModel.sortReversed.toggle()
                 } label: {
@@ -132,37 +148,10 @@ struct BrowserView: View {
                 }
                 .help(viewModel.sortReversed ? "Sort ascending" : "Sort descending")
                 .disabled(viewModel.sortOrder == .manual)
+                
             }
 
-            ToolbarItem(placement: .automatic) {
-                filterMenu
-            }
-
-            ToolbarItem(placement: .automatic) {
-                HStack(spacing: 12) {
-                    if viewModel.isFilteringActive {
-                        Text("\(viewModel.visibleImages.count) of \(viewModel.images.count) images")
-                    } else {
-                        Text("\(viewModel.images.count) images")
-                    }
-                    if viewModel.selectedImageIDs.count > 0 {
-                        Text("\(viewModel.selectedImageIDs.count) selected")
-                    }
-                    if faceCount > 0 {
-                        if faceGroupCount > 0 {
-                            Text("\(faceCount) faces in \(faceGroupCount) groups")
-                        } else {
-                            Text("\(faceCount) faces")
-                        }
-                    }
-                }
-                .foregroundStyle(.secondary)
-                .font(.caption)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 5)
-            }
-
-            ToolbarItem(placement: .automatic) {
+            ToolbarItemGroup(placement: .automatic) {
                 searchField
             }
         }
@@ -170,35 +159,6 @@ struct BrowserView: View {
 
     private var filterMenu: some View {
         Menu {
-            Picker("Minimum Stars", selection: $viewModel.minimumStarRating) {
-                ForEach(StarRating.allCases, id: \.self) { rating in
-                    Text(ratingFilterLabel(rating)).tag(rating)
-                }
-            }
-
-            Menu("Label Colors") {
-                Button("Any Label") {
-                    viewModel.selectedColorLabels.removeAll()
-                }
-
-                Divider()
-
-                ForEach(ColorLabel.allCases, id: \.self) { label in
-                    Toggle(isOn: Binding(
-                        get: { viewModel.selectedColorLabels.contains(label) },
-                        set: { isOn in
-                            if isOn {
-                                viewModel.selectedColorLabels.insert(label)
-                            } else {
-                                viewModel.selectedColorLabels.remove(label)
-                            }
-                        }
-                    )) {
-                        Text(label.displayName)
-                    }
-                }
-            }
-
             Picker("Person Shown", selection: $viewModel.personShownFilter) {
                 ForEach(BrowserViewModel.PersonShownFilter.allCases, id: \.self) { filter in
                     Text(filter.displayName).tag(filter)
@@ -243,8 +203,4 @@ struct BrowserView: View {
         .disabled(viewModel.images.isEmpty)
     }
 
-    private func ratingFilterLabel(_ rating: StarRating) -> String {
-        if rating == .none { return "Any Rating" }
-        return "\(rating.displayString) & up"
-    }
 }

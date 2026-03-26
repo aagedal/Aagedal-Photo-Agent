@@ -559,7 +559,7 @@ struct ContentView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        ToolbarItem(placement: .automatic) {
+        ToolbarItem(placement: .secondaryAction) {
             if metadataViewModel.isProcessingFolder {
                 HStack(spacing: 4) {
                     ProgressView()
