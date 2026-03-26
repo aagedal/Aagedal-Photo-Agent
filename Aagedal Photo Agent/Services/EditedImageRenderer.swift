@@ -11,8 +11,8 @@ nonisolated enum EditedImageRenderer {
         let rawExtensions: Set<String> = ["raw", "cr2", "cr3", "nef", "nrw", "arw", "raf", "dng", "rw2", "orf", "pef", "srw"]
         if rawExtensions.contains(sourceURL.pathExtension.lowercased()) {
             // Full-quality CIRAWFilter decode for export (no draft mode)
-            if let rawImage = FullScreenImageCache.loadRAWImage(from: sourceURL, draftMode: false) {
-                input = rawImage
+            if let rawResult = FullScreenImageCache.loadRAWImage(from: sourceURL, draftMode: false) {
+                input = rawResult.image
             } else {
                 // Fallback to generic CIImage for unsupported RAW formats
                 guard let ciImage = CIImage(contentsOf: sourceURL, options: [

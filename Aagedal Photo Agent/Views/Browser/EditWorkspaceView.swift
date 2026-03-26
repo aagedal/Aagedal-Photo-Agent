@@ -57,6 +57,7 @@ struct EditWorkspaceView: View {
     @State private var lastEditOffset: CGSize = .zero
     @State private var previewPaneFrame: CGRect = .zero
     @State private var isHoveringHDR = false
+    @State private var asShotWhiteBalance: (temperature: Float, tint: Float)?
     @FocusState private var isWorkspaceFocused: Bool
 
     private static let previewBackground = Color(red: 0.15, green: 0.15, blue: 0.15)
@@ -754,7 +755,7 @@ struct EditWorkspaceView: View {
                             settings.tint = Int(value.rounded())
                         },
                         onReset: {
-                            whiteBalanceTintBinding.wrappedValue = 0
+                            whiteBalanceTintBinding.wrappedValue = asShotTintValue
                         }
                     )
 
@@ -1047,6 +1048,7 @@ struct EditWorkspaceView: View {
         previewRenderTask = nil
         sourceImage = nil
         sourceCIImage = nil
+        asShotWhiteBalance = nil
         previewCIImage = nil
         previewImage = nil
         isLoadingPreview = false
@@ -1144,12 +1146,17 @@ struct EditWorkspaceView: View {
                     editLog.info("[\(filename)] Phase 2: starting (cacheHit=\(cacheHit))")
 
                     let phase2Start = ContinuousClock.now
-                    let rawCIImage: CIImage? = await Task.detached(priority: .userInitiated) {
+                    let rawResult: FullScreenImageCache.RAWDecodeResult? = await Task.detached(priority: .userInitiated) {
                         FullScreenImageCache.loadRAWImage(
                             from: selectedImageURL, draftMode: true
                         )
                     }.value
+                    let rawCIImage = rawResult?.image
                     let decodeElapsed = ContinuousClock.now - phase2Start
+
+                    if let rawResult {
+                        asShotWhiteBalance = (temperature: rawResult.neutralTemperature, tint: rawResult.neutralTint)
+                    }
 
                     guard !Task.isCancelled else {
                         editLog.info("[\(filename)] Phase 2: cancelled after decode (\(decodeElapsed))")
@@ -1644,6 +1651,20 @@ struct EditWorkspaceView: View {
         return false
     }
 
+    private var asShotTemperatureKelvin: Double {
+        if let asShot = asShotWhiteBalance {
+            return Double(asShot.temperature)
+        }
+        return 6500
+    }
+
+    private var asShotTintValue: Double {
+        if let asShot = asShotWhiteBalance {
+            return Double(asShot.tint)
+        }
+        return 0
+    }
+
     private func updateCameraRaw(_ update: (inout CameraRawSettings) -> Void) {
         let oldSettings = metadataViewModel.editingMetadata.cameraRaw
         var cameraRaw = oldSettings ?? CameraRawSettings()
@@ -1717,7 +1738,7 @@ struct EditWorkspaceView: View {
                 if usesIncrementalWhiteBalance {
                     return Double(metadataViewModel.editingMetadata.cameraRaw?.incrementalTemperature ?? 0)
                 }
-                let value = Double(metadataViewModel.editingMetadata.cameraRaw?.temperature ?? 6500)
+                let value = Double(metadataViewModel.editingMetadata.cameraRaw?.temperature ?? Int(asShotTemperatureKelvin.rounded()))
                 return min(max(value, Self.minKelvin), Self.maxKelvin)
             },
             set: { newValue in
@@ -1754,9 +1775,9 @@ struct EditWorkspaceView: View {
                 Text("Temperature (K)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                if abs(whiteBalanceTemperatureBinding.wrappedValue - 6500) > 1 {
+                if abs(whiteBalanceTemperatureBinding.wrappedValue - asShotTemperatureKelvin) > 1 {
                     Button {
-                        whiteBalanceTemperatureBinding.wrappedValue = 6500
+                        whiteBalanceTemperatureBinding.wrappedValue = asShotTemperatureKelvin
                         commitEditAdjustments()
                     } label: {
                         Image(systemName: "arrow.counterclockwise")
@@ -1764,7 +1785,7 @@ struct EditWorkspaceView: View {
                             .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
-                    .help("Reset to 6500K")
+                    .help("Reset to \(Int(asShotTemperatureKelvin))K")
                 }
                 Spacer()
                 Text("\(Int(whiteBalanceTemperatureBinding.wrappedValue.rounded()))")
@@ -1793,7 +1814,7 @@ struct EditWorkspaceView: View {
                     }
                 },
                 onReset: {
-                    whiteBalanceTemperatureBinding.wrappedValue = 6500
+                    whiteBalanceTemperatureBinding.wrappedValue = asShotTemperatureKelvin
                     commitEditAdjustments()
                 }
             )
@@ -1821,7 +1842,7 @@ struct EditWorkspaceView: View {
                 if usesIncrementalWhiteBalance {
                     return Double(metadataViewModel.editingMetadata.cameraRaw?.incrementalTint ?? 0)
                 }
-                return Double(metadataViewModel.editingMetadata.cameraRaw?.tint ?? 0)
+                return Double(metadataViewModel.editingMetadata.cameraRaw?.tint ?? Int(asShotTintValue.rounded()))
             },
             set: { newValue in
                 updateCameraRaw { cameraRaw in

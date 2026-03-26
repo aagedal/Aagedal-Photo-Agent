@@ -286,6 +286,12 @@ final class FullScreenImageCache: @unchecked Sendable {
         return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
     }
 
+    struct RAWDecodeResult: @unchecked Sendable {
+        let image: CIImage
+        let neutralTemperature: Float
+        let neutralTint: Float
+    }
+
     /// Load a RAW image using CIRAWFilter for optimized decoding.
     /// draftMode: true = bilinear demosaicing (2-5x faster), false = full quality AHD.
     /// Always decodes at full sensor resolution. Returns nil for unsupported formats
@@ -293,7 +299,7 @@ final class FullScreenImageCache: @unchecked Sendable {
     nonisolated static func loadRAWImage(
         from url: URL,
         draftMode: Bool = false
-    ) -> CIImage? {
+    ) -> RAWDecodeResult? {
         guard let rawFilter = CIRAWFilter(imageURL: url) else {
             cacheLogger.info("CIRAWFilter unsupported for \(url.lastPathComponent), falling back")
             return nil
@@ -301,13 +307,15 @@ final class FullScreenImageCache: @unchecked Sendable {
         rawFilter.isDraftModeEnabled = draftMode
         rawFilter.boostAmount = 0        // disable auto-boost (Metal shader handles exposure)
         rawFilter.boostShadowAmount = 0  // disable shadow recovery boost
+        let neutralTemp = rawFilter.neutralTemperature
+        let neutralTint = rawFilter.neutralTint
         guard let output = rawFilter.outputImage else {
             cacheLogger.warning("CIRAWFilter outputImage nil for \(url.lastPathComponent)")
             return nil
         }
         let extent = output.extent
-        cacheLogger.info("RAW decoded \(url.lastPathComponent) draft=\(draftMode) \(Int(extent.width))x\(Int(extent.height))")
-        return output
+        cacheLogger.info("RAW decoded \(url.lastPathComponent) draft=\(draftMode) \(Int(extent.width))x\(Int(extent.height)) asShot=\(Int(neutralTemp))K tint=\(Int(neutralTint))")
+        return RAWDecodeResult(image: output, neutralTemperature: neutralTemp, neutralTint: neutralTint)
     }
 
     /// Load an HDR-preserving full-resolution image via CoreImage.
