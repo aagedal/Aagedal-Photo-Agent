@@ -500,101 +500,13 @@ final class FaceRecognitionViewModel {
         activeScanTask = nil
     }
 
-    // MARK: - Integrated Known People Matching
-
-    /// Enhanced Known People matching that runs during/after scanning.
-    /// This version integrates with clustering by:
-    /// 1. Matching each unnamed group's representative face against Known People
-    /// 2. If multiple groups match the same known person, merging them together
-    /// 3. Recording matches for the "Replace Thumbnail" feature
-    private func matchKnownPeopleIntegrated() async {
-        guard var data = faceData else { return }
-
-        let stats = KnownPeopleService.shared.getStatistics()
-        guard stats.peopleCount > 0 else { return }
-
-        // Batch-match all unnamed groups at once (single DB load)
-        let unnamedGroups = data.groups.filter { $0.name == nil }
-        let facesToMatch = unnamedGroups.compactMap { group -> (id: UUID, featurePrintData: Data)? in
-            guard let face = faceLookup[group.representativeFaceID] else { return nil }
-            return (id: group.id, featurePrintData: face.featurePrintData)
-        }
-
-        let batchMatches = KnownPeopleService.shared.bestAutoMatches(facesToMatch)
-
-        // Build a map: knownPersonID -> [groupIDs that matched this person]
-        var matchesByPerson: [UUID: [(groupID: UUID, confidence: Float)]] = [:]
-
-        for (groupID, bestMatch) in batchMatches {
-            knownPersonMatchByGroup[groupID] = (personID: bestMatch.person.id, confidence: bestMatch.confidence)
-
-            if matchesByPerson[bestMatch.person.id] == nil {
-                matchesByPerson[bestMatch.person.id] = []
-            }
-            matchesByPerson[bestMatch.person.id]?.append((groupID: groupID, confidence: bestMatch.confidence))
-        }
-
-        // For each known person with matches, merge multiple groups and name them
-        // Index dicts are stable because removals are deferred to after the loop
-        let faceIdx = faceIndexMap(from: data)
-        let groupIdx = groupIndexMap(from: data)
-        var groupIDsToRemove: Set<UUID> = []
-
-        for (personID, groupMatches) in matchesByPerson {
-            guard let knownPerson = KnownPeopleService.shared.person(byID: personID) else { continue }
-
-            // Sort by confidence (highest first) - the best match becomes the target
-            let sorted = groupMatches.sorted { $0.confidence > $1.confidence }
-            guard let bestMatch = sorted.first else { continue }
-            let targetGroupID = bestMatch.groupID
-            guard let targetIndex = groupIdx[targetGroupID] else { continue }
-
-            // Name the target group
-            data.groups[targetIndex].name = knownPerson.name
-
-            // Merge other matching groups into the target
-            for match in sorted.dropFirst() {
-                guard let sourceIndex = groupIdx[match.groupID],
-                      sourceIndex != targetIndex else { continue }
-
-                // Move faces from source to target
-                let sourceFaceIDs = data.groups[sourceIndex].faceIDs
-                data.groups[targetIndex].faceIDs.append(contentsOf: sourceFaceIDs)
-
-                // Update face groupIDs
-                for faceID in sourceFaceIDs {
-                    if let fi = faceIdx[faceID] {
-                        data.faces[fi].groupID = targetGroupID
-                    }
-                }
-
-                // Update the match tracking to point to merged group
-                knownPersonMatchByGroup[match.groupID] = nil
-                knownPersonMatchByGroup[targetGroupID] = (personID: personID, confidence: bestMatch.confidence)
-
-                groupIDsToRemove.insert(match.groupID)
-            }
-        }
-
-        // Remove all merged source groups in one pass
-        data.groups.removeAll { groupIDsToRemove.contains($0.id) }
-
-        // Save updated data
-        faceData = data
-        do {
-            try storageService.saveFaceData(data)
-        } catch {
-            errorMessage = "Failed to save face data: \(error.localizedDescription)"
-        }
-    }
-
     // MARK: - Known People Matching
 
     /// Match unnamed face groups against the Known People database.
     /// Automatically names groups that match known people.
     /// If multiple groups match the same known person, they are merged together.
     /// Also records matches in knownPersonMatchByGroup for the "Replace Thumbnail" feature.
-    func matchKnownPeople() {
+    private func applyKnownPeopleMatches() {
         guard var data = faceData else { return }
 
         let stats = KnownPeopleService.shared.getStatistics()
@@ -673,6 +585,15 @@ final class FaceRecognitionViewModel {
         } catch {
             errorMessage = "Failed to save face data: \(error.localizedDescription)"
         }
+    }
+
+    /// Runs Known People matching after scan completes (async wrapper for use in scan task).
+    private func matchKnownPeopleIntegrated() async {
+        applyKnownPeopleMatches()
+    }
+
+    func matchKnownPeople() {
+        applyKnownPeopleMatches()
     }
 
     /// Match a specific group against Known People and track the match.
