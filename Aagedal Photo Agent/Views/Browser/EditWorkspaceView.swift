@@ -2654,7 +2654,7 @@ struct EditWorkspaceView: View {
             guard !isTextFieldActive(), canEditSingleImage,
                   let idx = selectedMaskIndex,
                   let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
-                  idx < masks.count, masks[idx].enabled else { return event }
+                  idx < masks.count, masks[idx].enabled else { return nil }
             isMutingSelectedMask = true
             mutedMaskIndex = idx
             metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?[idx].enabled = false
