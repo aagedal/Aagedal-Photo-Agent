@@ -36,6 +36,7 @@ struct EditWorkspaceView: View {
     @State private var isShowingBefore = false
     @State private var isMutingDevelop = false
     @State private var isMutingSelectedMask = false
+    @State private var isMutingGlobal = false
     @State private var mutedMaskIndex: Int?
     @State private var showCropControls = false
     @State private var lockedCropImageRect: CGRect?
@@ -2641,23 +2642,38 @@ struct EditWorkspaceView: View {
             return nil
         }
 
-        // Cmd+D — hold to mute only the selected mask/layer
+        // Cmd+D — hold to mute only the current layer (global or selected mask)
         if chars == "d" && modifiers.contains(.command) {
             if isKeyUp {
-                if let idx = mutedMaskIndex {
-                    metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?[idx].enabled = true
-                    mutedMaskIndex = nil
+                if isMutingSelectedMask {
+                    if let idx = mutedMaskIndex {
+                        metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?[idx].enabled = true
+                        mutedMaskIndex = nil
+                    }
                     isMutingSelectedMask = false
+                } else if isMutingGlobal {
+                    isMutingGlobal = false
+                    renderPreview()
                 }
                 return nil
             }
-            guard !isTextFieldActive(), canEditSingleImage,
-                  let idx = selectedMaskIndex,
-                  let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
-                  idx < masks.count, masks[idx].enabled else { return nil }
-            isMutingSelectedMask = true
-            mutedMaskIndex = idx
-            metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?[idx].enabled = false
+            guard !isTextFieldActive(), canEditSingleImage else { return nil }
+            if let idx = selectedMaskIndex {
+                // Mute selected mask
+                guard let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
+                      idx < masks.count, masks[idx].enabled else { return nil }
+                isMutingSelectedMask = true
+                mutedMaskIndex = idx
+                metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?[idx].enabled = false
+            } else {
+                // Mute global adjustments — send masks-only settings to pipeline
+                isMutingGlobal = true
+                var masksOnly = CameraRawSettings()
+                masksOnly.localAdjustments = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments
+                masksOnly.hdrEditMode = metadataViewModel.editingMetadata.cameraRaw?.hdrEditMode
+                metalPipeline?.updateParams(masksOnly)
+                metalCoordinator.requestRedraw()
+            }
             return nil
         }
 
