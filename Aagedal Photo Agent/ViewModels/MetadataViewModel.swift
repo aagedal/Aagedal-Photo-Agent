@@ -355,111 +355,22 @@ final class MetadataViewModel {
         var common = IPTCMetadata()
         var differing = Set<String>()
 
-        // Headline
-        let titles = allMetadata.compactMap(\.title)
-        if titles.count == allMetadata.count, let first = titles.first, titles.allSatisfy({ $0 == first }) {
-            common.title = first
-        } else if !titles.isEmpty {
-            differing.insert("title")
-        }
+        // Optional fields
+        compareOptionalField(allMetadata, keyPath: \.title, fieldName: "title", common: &common, differing: &differing)
+        compareOptionalField(allMetadata, keyPath: \.description, fieldName: "description", common: &common, differing: &differing)
+        compareOptionalField(allMetadata, keyPath: \.extendedDescription, fieldName: "extendedDescription", common: &common, differing: &differing)
+        compareOptionalField(allMetadata, keyPath: \.copyright, fieldName: "copyright", common: &common, differing: &differing)
+        compareOptionalField(allMetadata, keyPath: \.jobId, fieldName: "jobId", common: &common, differing: &differing)
+        compareOptionalField(allMetadata, keyPath: \.creator, fieldName: "creator", common: &common, differing: &differing)
+        compareOptionalField(allMetadata, keyPath: \.credit, fieldName: "credit", common: &common, differing: &differing)
+        compareOptionalField(allMetadata, keyPath: \.city, fieldName: "city", common: &common, differing: &differing)
+        compareOptionalField(allMetadata, keyPath: \.country, fieldName: "country", common: &common, differing: &differing)
+        compareOptionalField(allMetadata, keyPath: \.event, fieldName: "event", common: &common, differing: &differing)
+        compareOptionalField(allMetadata, keyPath: \.digitalSourceType, fieldName: "digitalSourceType", common: &common, differing: &differing)
 
-        // Description
-        let descriptions = allMetadata.compactMap(\.description)
-        if descriptions.count == allMetadata.count, let first = descriptions.first, descriptions.allSatisfy({ $0 == first }) {
-            common.description = first
-        } else if !descriptions.isEmpty {
-            differing.insert("description")
-        }
-
-        // Extended Description
-        let extendedDescriptions = allMetadata.compactMap(\.extendedDescription)
-        if extendedDescriptions.count == allMetadata.count,
-           let first = extendedDescriptions.first,
-           extendedDescriptions.allSatisfy({ $0 == first }) {
-            common.extendedDescription = first
-        } else if !extendedDescriptions.isEmpty {
-            differing.insert("extendedDescription")
-        }
-
-        // Keywords
-        let keywordSets = allMetadata.map { Set($0.keywords) }
-        if let first = keywordSets.first, keywordSets.allSatisfy({ $0 == first }) {
-            common.keywords = allMetadata.first?.keywords ?? []
-        } else {
-            differing.insert("keywords")
-        }
-
-        // Person Shown
-        let personSets = allMetadata.map { Set($0.personShown) }
-        if let first = personSets.first, personSets.allSatisfy({ $0 == first }) {
-            common.personShown = allMetadata.first?.personShown ?? []
-        } else {
-            differing.insert("personShown")
-        }
-
-        // Copyright
-        let copyrights = allMetadata.compactMap(\.copyright)
-        if copyrights.count == allMetadata.count, let first = copyrights.first, copyrights.allSatisfy({ $0 == first }) {
-            common.copyright = first
-        } else if !copyrights.isEmpty {
-            differing.insert("copyright")
-        }
-
-        // Job ID
-        let jobIds = allMetadata.compactMap(\.jobId)
-        if jobIds.count == allMetadata.count, let first = jobIds.first, jobIds.allSatisfy({ $0 == first }) {
-            common.jobId = first
-        } else if !jobIds.isEmpty {
-            differing.insert("jobId")
-        }
-
-        // Creator
-        let creators = allMetadata.compactMap(\.creator)
-        if creators.count == allMetadata.count, let first = creators.first, creators.allSatisfy({ $0 == first }) {
-            common.creator = first
-        } else if !creators.isEmpty {
-            differing.insert("creator")
-        }
-
-        // Credit
-        let credits = allMetadata.compactMap(\.credit)
-        if credits.count == allMetadata.count, let first = credits.first, credits.allSatisfy({ $0 == first }) {
-            common.credit = first
-        } else if !credits.isEmpty {
-            differing.insert("credit")
-        }
-
-        // City
-        let cities = allMetadata.compactMap(\.city)
-        if cities.count == allMetadata.count, let first = cities.first, cities.allSatisfy({ $0 == first }) {
-            common.city = first
-        } else if !cities.isEmpty {
-            differing.insert("city")
-        }
-
-        // Country
-        let countries = allMetadata.compactMap(\.country)
-        if countries.count == allMetadata.count, let first = countries.first, countries.allSatisfy({ $0 == first }) {
-            common.country = first
-        } else if !countries.isEmpty {
-            differing.insert("country")
-        }
-
-        // Event
-        let events = allMetadata.compactMap(\.event)
-        if events.count == allMetadata.count, let first = events.first, events.allSatisfy({ $0 == first }) {
-            common.event = first
-        } else if !events.isEmpty {
-            differing.insert("event")
-        }
-
-        // Digital Source Type
-        let sourceTypes = allMetadata.compactMap(\.digitalSourceType)
-        if sourceTypes.count == allMetadata.count, let first = sourceTypes.first, sourceTypes.allSatisfy({ $0 == first }) {
-            common.digitalSourceType = first
-        } else if !sourceTypes.isEmpty {
-            differing.insert("digitalSourceType")
-        }
+        // Array fields
+        compareArrayField(allMetadata, keyPath: \.keywords, fieldName: "keywords", common: &common, differing: &differing)
+        compareArrayField(allMetadata, keyPath: \.personShown, fieldName: "personShown", common: &common, differing: &differing)
 
         // GPS - check if all have the same coordinates
         let latitudes = allMetadata.compactMap(\.latitude)
@@ -481,6 +392,38 @@ final class MetadataViewModel {
         // Pre-populate editing metadata with common values
         self.editingMetadata = common
         self.previousEditingMetadata = common
+    }
+
+    private func compareOptionalField<T: Equatable>(
+        _ allMetadata: [IPTCMetadata],
+        keyPath: WritableKeyPath<IPTCMetadata, T?>,
+        fieldName: String,
+        common: inout IPTCMetadata,
+        differing: inout Set<String>
+    ) {
+        let values = allMetadata.compactMap { $0[keyPath: keyPath] }
+        if values.count == allMetadata.count,
+           let first = values.first,
+           values.allSatisfy({ $0 == first }) {
+            common[keyPath: keyPath] = first
+        } else if !values.isEmpty {
+            differing.insert(fieldName)
+        }
+    }
+
+    private func compareArrayField(
+        _ allMetadata: [IPTCMetadata],
+        keyPath: WritableKeyPath<IPTCMetadata, [String]>,
+        fieldName: String,
+        common: inout IPTCMetadata,
+        differing: inout Set<String>
+    ) {
+        let sets = allMetadata.map { Set($0[keyPath: keyPath]) }
+        if let first = sets.first, sets.allSatisfy({ $0 == first }) {
+            common[keyPath: keyPath] = allMetadata.first?[keyPath: keyPath] ?? []
+        } else {
+            differing.insert(fieldName)
+        }
     }
 
     /// Check for pending sidecars once after batch loading, instead of on every UI access.

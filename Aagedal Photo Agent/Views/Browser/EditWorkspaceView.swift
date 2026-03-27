@@ -1770,56 +1770,37 @@ struct EditWorkspaceView: View {
 
     @ViewBuilder
     private var kelvinTemperatureSliderRow: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack {
-                Text("Temperature (K)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if abs(whiteBalanceTemperatureBinding.wrappedValue - asShotTemperatureKelvin) > 1 {
-                    Button {
-                        whiteBalanceTemperatureBinding.wrappedValue = asShotTemperatureKelvin
-                        commitEditAdjustments()
-                    } label: {
-                        Image(systemName: "arrow.counterclockwise")
-                            .font(.system(size: 9))
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Reset to \(Int(asShotTemperatureKelvin))K")
-                }
-                Spacer()
-                Text("\(Int(whiteBalanceTemperatureBinding.wrappedValue.rounded()))")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-            EditSlider(
-                value: whiteBalanceTemperatureLogBinding,
-                range: 0...1,
-                step: 0,
-                gradientColors: [.blue, .yellow],
-                onEditingChanged: { editing in
-                    isDraggingEditSlider = editing
-                    if !editing {
-                        commitEditAdjustments()
-                    }
-                },
-                onDragValueChanged: { dragValue in
-                    if let pipeline = metalPipeline, pipeline.hasSourceTexture {
-                        var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
-                        let kelvin = kelvinValue(forNormalizedLogScale: dragValue)
-                        settings.whiteBalance = "Custom"
-                        settings.temperature = Int(kelvin.rounded())
-                        pipeline.updateParams(settings)
-                        metalCoordinator.requestRedraw()
-                    }
-                },
-                onReset: {
-                    whiteBalanceTemperatureBinding.wrappedValue = asShotTemperatureKelvin
+        EditSliderRow(
+            label: "Temperature (K)",
+            value: whiteBalanceTemperatureLogBinding,
+            range: 0...1,
+            step: 0,
+            gradientColors: [.blue, .yellow],
+            formatter: { "\(Int($0.rounded()))" },
+            displayValueTransform: { [self] in kelvinValue(forNormalizedLogScale: $0) },
+            onEditingChanged: { editing in
+                isDraggingEditSlider = editing
+                if !editing {
                     commitEditAdjustments()
                 }
-            )
-            .frame(height: 20)
-        }
+            },
+            onDragValueChanged: { dragValue in
+                if let pipeline = metalPipeline, pipeline.hasSourceTexture {
+                    var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
+                    let kelvin = kelvinValue(forNormalizedLogScale: dragValue)
+                    settings.whiteBalance = "Custom"
+                    settings.temperature = Int(kelvin.rounded())
+                    pipeline.updateParams(settings)
+                    metalCoordinator.requestRedraw()
+                }
+            },
+            onReset: {
+                whiteBalanceTemperatureBinding.wrappedValue = asShotTemperatureKelvin
+                commitEditAdjustments()
+            },
+            showReset: abs(whiteBalanceTemperatureBinding.wrappedValue - asShotTemperatureKelvin) > 1,
+            resetHelp: "Reset to \(Int(asShotTemperatureKelvin))K"
+        )
     }
 
     private func normalizedLogScaleValue(forKelvin kelvin: Double) -> Double {
@@ -2002,60 +1983,36 @@ struct EditWorkspaceView: View {
         settingsMutator: ((inout CameraRawSettings, Double) -> Void)? = nil,
         onReset: (() -> Void)? = nil
     ) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack {
-                Text(label)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if let onReset, abs(value.wrappedValue) > 0.001 {
-                    Button {
-                        onReset()
-                        commitEditAdjustments()
-                    } label: {
-                        Image(systemName: "arrow.counterclockwise")
-                            .font(.system(size: 9))
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Reset to default")
+        EditSliderRow(
+            label: label,
+            value: value,
+            range: range,
+            step: step,
+            gradientColors: gradientColors,
+            formatter: formatter,
+            onEditingChanged: { editing in
+                isDraggingEditSlider = editing
+                if !editing {
+                    commitEditAdjustments()
                 }
-                Spacer()
-                Text(formatter(value.wrappedValue))
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
+            },
+            onDragValueChanged: settingsMutator.map { mutator in
+                { dragValue in
+                    if let pipeline = metalPipeline, pipeline.hasSourceTexture {
+                        var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
+                        mutator(&settings, dragValue)
+                        pipeline.updateParams(settings)
+                        metalCoordinator.requestRedraw()
+                    }
+                }
+            },
+            onReset: onReset.map { resetFn in
+                {
+                    resetFn()
+                    commitEditAdjustments()
+                }
             }
-            EditSlider(
-                value: value,
-                range: range,
-                step: step,
-                gradientColors: gradientColors,
-                onEditingChanged: { editing in
-                    isDraggingEditSlider = editing
-                    if !editing {
-                        commitEditAdjustments()
-                    }
-                },
-                onDragValueChanged: settingsMutator.map { mutator in
-                    { dragValue in
-                        // Build temporary settings with the drag value applied,
-                        // bypassing SwiftUI observation on the ViewModel.
-                        if let pipeline = metalPipeline, pipeline.hasSourceTexture {
-                            var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
-                            mutator(&settings, dragValue)
-                            pipeline.updateParams(settings)
-                            metalCoordinator.requestRedraw()
-                        }
-                    }
-                },
-                onReset: onReset.map { resetFn in
-                    {
-                        resetFn()
-                        commitEditAdjustments()
-                    }
-                }
-            )
-            .frame(height: 20)
-        }
+        )
     }
 
     // MARK: - Mask UI
