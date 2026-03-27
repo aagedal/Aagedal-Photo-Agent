@@ -236,6 +236,9 @@ final class KnownPeopleService {
         // Delete embedding thumbnails before removing from database
         if let person = person(byID: id) {
             deleteAllEmbeddingThumbnails(for: person)
+            for embedding in person.embeddings {
+                featurePrintCache.removeObject(forKey: embedding.id as NSUUID)
+            }
         }
 
         try mutateDatabase { db in
@@ -394,6 +397,12 @@ final class KnownPeopleService {
             return
         }
 
+        let db = loadDatabase()
+        let sourceEmbeddings = db.people.indices.contains(sourceIndex)
+            ? db.people[sourceIndex].embeddings : []
+
+        var keptEmbeddingIDs: Set<UUID> = []
+
         try mutateDatabase { db in
             guard db.people.indices.contains(sourceIndex),
                   db.people.indices.contains(targetIndex) else { return }
@@ -403,11 +412,18 @@ final class KnownPeopleService {
                 !existingData.contains(embedding.featurePrintData)
             }
 
+            keptEmbeddingIDs = Set(newEmbeddings.map(\.id))
+
             db.people[targetIndex].embeddings.append(contentsOf: newEmbeddings)
             db.people[targetIndex].updatedAt = Date()
             db.people.removeAll { $0.id == sourceID }
         }
         deleteThumbnail(for: sourceID)
+
+        for embedding in sourceEmbeddings where !keptEmbeddingIDs.contains(embedding.id) {
+            featurePrintCache.removeObject(forKey: embedding.id as NSUUID)
+            deleteEmbeddingThumbnail(for: embedding.id)
+        }
     }
 
     /// Replace the thumbnail for a known person
@@ -439,6 +455,7 @@ final class KnownPeopleService {
             db.people[index].updatedAt = Date()
         }
 
+        featurePrintCache.removeObject(forKey: embeddingID as NSUUID)
         deleteEmbeddingThumbnail(for: embeddingID)
 
         // If deleted embedding was the representative, update person thumbnail to new representative's
