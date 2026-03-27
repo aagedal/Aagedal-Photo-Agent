@@ -790,44 +790,11 @@ final class FaceGroupCardView: NSView {
     @objc private func menuAddToKnownPeople() {
         guard let group = currentGroup, let name = group.name, !name.isEmpty, let viewModel else { return }
 
-        let faces = viewModel.faces(in: group)
-        let embeddings = faces.map { face in
-            PersonEmbedding(
-                featurePrintData: face.featurePrintData,
-                sourceDescription: face.imageURL.lastPathComponent,
-                recognitionMode: face.embeddingMode
-            )
-        }
-
-        var thumbnailData: Data?
-        if let thumbImage = viewModel.thumbnailImage(for: group.representativeFaceID),
-           let tiffData = thumbImage.tiffRepresentation,
-           let bitmap = NSBitmapImageRep(data: tiffData) {
-            thumbnailData = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.85])
-        }
-
-        let representativeFace = faces.first { $0.id == group.representativeFaceID } ?? faces.first
-        let duplicateCheck: KnownPeopleService.DuplicateCheckResult
-        if let repFace = representativeFace {
-            let allowFaceMatch = viewModel.shouldAllowFaceMatchForKnownPeopleAdd(groupID: group.id, name: name)
-            duplicateCheck = KnownPeopleService.shared.checkForDuplicate(
-                name: name,
-                representativeFaceData: repFace.featurePrintData,
-                allowFaceMatch: allowFaceMatch
-            )
-        } else {
-            duplicateCheck = .noDuplicate
-        }
-
         do {
-            _ = try KnownPeopleService.shared.addOrMergePerson(
-                name: name,
-                embeddings: embeddings,
-                thumbnailData: thumbnailData,
-                duplicateCheck: duplicateCheck
-            )
+            _ = try viewModel.addGroupToKnownPeople(groupID: group.id, name: name)
         } catch {
-            // Silently handle — matches existing SwiftUI behavior
+            Logger(subsystem: "com.aagedal.photo-agent", category: "FaceGroupCard")
+                .error("Failed to add to Known People: \(error.localizedDescription)")
         }
     }
 

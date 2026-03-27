@@ -7,6 +7,23 @@ enum FaceGroupSortMode: String, CaseIterable {
     case bySize = "Largest First"
 }
 
+struct AddToKnownPeopleResult {
+    let addedToExisting: Bool
+    let embeddingCount: Int
+    let name: String
+}
+
+enum AddToKnownPeopleError: LocalizedError {
+    case groupNotFound
+    case noFaces
+    var errorDescription: String? {
+        switch self {
+        case .groupNotFound: "Face group not found"
+        case .noFaces: "Face group has no faces"
+        }
+    }
+}
+
 @Observable
 final class FaceRecognitionViewModel {
     var faceData: FolderFaceData? {
@@ -643,6 +660,60 @@ final class FaceRecognitionViewModel {
 
     func shouldAllowFaceMatchForKnownPeopleAdd(groupID: UUID, name: String) -> Bool {
         return nameMatchesKnownPerson(groupID: groupID, name: name)
+    }
+
+    /// Add a face group to the Known People database.
+    /// Collects embeddings, extracts a thumbnail, checks for duplicates, and calls addOrMergePerson.
+    func addGroupToKnownPeople(groupID: UUID, name: String) throws -> AddToKnownPeopleResult {
+        guard let group = group(byID: groupID) else {
+            throw AddToKnownPeopleError.groupNotFound
+        }
+
+        let faces = faces(in: group)
+        guard !faces.isEmpty else {
+            throw AddToKnownPeopleError.noFaces
+        }
+
+        let embeddings = faces.map { face in
+            PersonEmbedding(
+                featurePrintData: face.featurePrintData,
+                sourceDescription: face.imageURL.lastPathComponent,
+                recognitionMode: face.embeddingMode
+            )
+        }
+
+        var thumbnailData: Data?
+        if let thumbImage = thumbnailImage(for: group.representativeFaceID),
+           let tiffData = thumbImage.tiffRepresentation,
+           let bitmap = NSBitmapImageRep(data: tiffData) {
+            thumbnailData = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.85])
+        }
+
+        let representativeFace = faces.first { $0.id == group.representativeFaceID } ?? faces.first
+        let duplicateCheck: KnownPeopleService.DuplicateCheckResult
+        if let repFace = representativeFace {
+            let allowFaceMatch = shouldAllowFaceMatchForKnownPeopleAdd(groupID: groupID, name: name)
+            duplicateCheck = KnownPeopleService.shared.checkForDuplicate(
+                name: name,
+                representativeFaceData: repFace.featurePrintData,
+                allowFaceMatch: allowFaceMatch
+            )
+        } else {
+            duplicateCheck = .noDuplicate
+        }
+
+        let (_, addedToExisting) = try KnownPeopleService.shared.addOrMergePerson(
+            name: name,
+            embeddings: embeddings,
+            thumbnailData: thumbnailData,
+            duplicateCheck: duplicateCheck
+        )
+
+        return AddToKnownPeopleResult(
+            addedToExisting: addedToExisting,
+            embeddingCount: embeddings.count,
+            name: name
+        )
     }
 
     /// Select a group for thumbnail replacement. Only shows in suggestions panel if the group

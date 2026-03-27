@@ -368,51 +368,13 @@ struct FaceGroupDetailView: View {
         viewModel.nameGroup(group.id, name: trimmed)
 
         do {
-            // Collect embeddings from all faces in the group
-            let faces = viewModel.faces(in: group)
-            let embeddings = faces.map { face in
-                PersonEmbedding(
-                    featurePrintData: face.featurePrintData,
-                    sourceDescription: face.imageURL.lastPathComponent,
-                    recognitionMode: face.embeddingMode
-                )
-            }
-
-            // Get thumbnail data for the representative face
-            var thumbnailData: Data?
-            if let thumbImage = viewModel.thumbnailImage(for: group.representativeFaceID),
-               let tiffData = thumbImage.tiffRepresentation,
-               let bitmap = NSBitmapImageRep(data: tiffData) {
-                thumbnailData = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.85])
-            }
-
-            // Check for existing person with same name or similar face
-            let representativeFace = faces.first { $0.id == group.representativeFaceID } ?? faces.first
-            let duplicateCheck: KnownPeopleService.DuplicateCheckResult
-            if let repFace = representativeFace {
-                let allowFaceMatch = viewModel.shouldAllowFaceMatchForKnownPeopleAdd(groupID: group.id, name: trimmed)
-                duplicateCheck = KnownPeopleService.shared.checkForDuplicate(
-                    name: trimmed,
-                    representativeFaceData: repFace.featurePrintData,
-                    allowFaceMatch: allowFaceMatch
-                )
-            } else {
-                duplicateCheck = .noDuplicate
-            }
-
-            // Use smart add that handles duplicates
-            let (_, addedToExisting) = try KnownPeopleService.shared.addOrMergePerson(
-                name: trimmed,
-                embeddings: embeddings,
-                thumbnailData: thumbnailData,
-                duplicateCheck: duplicateCheck
-            )
+            let result = try viewModel.addGroupToKnownPeople(groupID: group.id, name: trimmed)
 
             isAddingToKnownPeople = false
-            if addedToExisting {
-                knownPeopleMessage = "Added \(embeddings.count) sample(s) to \(trimmed)"
+            if result.addedToExisting {
+                knownPeopleMessage = "Added \(result.embeddingCount) sample(s) to \(result.name)"
             } else {
-                knownPeopleMessage = "Added \(trimmed) with \(embeddings.count) sample(s)"
+                knownPeopleMessage = "Added \(result.name) with \(result.embeddingCount) sample(s)"
             }
 
             // Clear message after delay
