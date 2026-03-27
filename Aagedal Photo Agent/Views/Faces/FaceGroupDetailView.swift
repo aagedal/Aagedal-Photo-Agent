@@ -170,9 +170,14 @@ struct FaceGroupDetailView: View {
 
             // Primary actions
             HStack {
-                Button("Cancel") {
+                Button {
                     dismiss()
+                } label: {
+                    Image(systemName: "xmark")
                 }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("Close")
 
                 Spacer()
 
@@ -203,6 +208,20 @@ struct FaceGroupDetailView: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
+                }
+
+                // Set as Key Art — when exactly one face selected and not already representative
+                if selectedFaceIDs.count == 1,
+                   let faceID = selectedFaceIDs.first,
+                   faceID != group.representativeFaceID {
+                    Button {
+                        viewModel.setRepresentativeFace(faceID, forGroup: group.id)
+                    } label: {
+                        Label("Set as Key Art", systemImage: "star.fill")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help("Use selected face as group thumbnail")
                 }
 
                 // Add to Known People button (only when mode is enabled)

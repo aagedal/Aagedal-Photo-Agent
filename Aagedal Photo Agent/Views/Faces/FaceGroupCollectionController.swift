@@ -8,7 +8,6 @@ final class FaceGroupCollectionController: NSViewController, NSCollectionViewDel
 
     enum FaceGroupItem: Hashable {
         case group(UUID)
-        case newGroupTarget
     }
 
     enum NavigationDirection {
@@ -84,7 +83,6 @@ final class FaceGroupCollectionController: NSViewController, NSCollectionViewDel
         collectionView.collectionViewLayout = layout
 
         collectionView.register(FaceGroupCardItem.self, forItemWithIdentifier: FaceGroupCardItem.identifier)
-        collectionView.register(FaceGroupNewGroupItem.self, forItemWithIdentifier: FaceGroupNewGroupItem.identifier)
 
         // Register as drop target
         collectionView.registerForDraggedTypes([.string])
@@ -128,38 +126,30 @@ final class FaceGroupCollectionController: NSViewController, NSCollectionViewDel
         ) { [weak self] collectionView, indexPath, item -> NSCollectionViewItem? in
             guard let self else { return nil }
 
-            switch item {
-            case .group(let groupID):
-                let cell = collectionView.makeItem(
-                    withIdentifier: FaceGroupCardItem.identifier,
-                    for: indexPath
-                ) as? FaceGroupCardItem
-                guard let cell else { return nil }
+            guard case .group(let groupID) = item else { return nil }
 
-                if let group = self.viewModel.group(byID: groupID) {
-                    // Merge external callbacks with internal expand handler
-                    var cardCallbacks = self.callbacks
-                    cardCallbacks.onToggleExpand = { [weak self] gid in
-                        self?.toggleExpand(groupID: gid)
-                    }
-                    cell.configure(
-                        group: group,
-                        viewModel: self.viewModel,
-                        selectionState: self.selectionState,
-                        settingsViewModel: self.settingsViewModel,
-                        isExpanded: self.expandedGroupIDs.contains(groupID),
-                        callbacks: cardCallbacks
-                    )
+            let cell = collectionView.makeItem(
+                withIdentifier: FaceGroupCardItem.identifier,
+                for: indexPath
+            ) as? FaceGroupCardItem
+            guard let cell else { return nil }
+
+            if let group = self.viewModel.group(byID: groupID) {
+                // Merge external callbacks with internal expand handler
+                var cardCallbacks = self.callbacks
+                cardCallbacks.onToggleExpand = { [weak self] gid in
+                    self?.toggleExpand(groupID: gid)
                 }
-                return cell
-
-            case .newGroupTarget:
-                let cell = collectionView.makeItem(
-                    withIdentifier: FaceGroupNewGroupItem.identifier,
-                    for: indexPath
-                ) as? FaceGroupNewGroupItem
-                return cell
+                cell.configure(
+                    group: group,
+                    viewModel: self.viewModel,
+                    selectionState: self.selectionState,
+                    settingsViewModel: self.settingsViewModel,
+                    isExpanded: self.expandedGroupIDs.contains(groupID),
+                    callbacks: cardCallbacks
+                )
             }
+            return cell
         }
     }
 
@@ -247,7 +237,6 @@ final class FaceGroupCollectionController: NSViewController, NSCollectionViewDel
         var snapshot = NSDiffableDataSourceSnapshot<Section, FaceGroupItem>()
         snapshot.appendSections([.main])
         snapshot.appendItems(newGroupIDs.map { .group($0) }, toSection: .main)
-        snapshot.appendItems([.newGroupTarget], toSection: .main)
 
         if !changedIDs.isEmpty {
             snapshot.reloadItems(changedIDs)
@@ -264,27 +253,20 @@ final class FaceGroupCollectionController: NSViewController, NSCollectionViewDel
     // MARK: - NSCollectionViewDelegateFlowLayout
 
     func collectionView(_ collectionView: NSCollectionView, layout collectionViewLayout: NSCollectionViewLayout, sizeForItemAt indexPath: IndexPath) -> NSSize {
-        guard let item = dataSource.itemIdentifier(for: indexPath) else {
+        guard case .group(let groupID) = dataSource.itemIdentifier(for: indexPath) else {
             return NSSize(width: minCardWidth, height: 120)
         }
 
         let width = cardWidth(for: collectionView.bounds.width)
-
-        switch item {
-        case .group(let groupID):
-            let faceCount = viewModel.group(byID: groupID)?.faceIDs.count ?? 0
-            let isExpanded = expandedGroupIDs.contains(groupID)
-            let height = FaceGroupCardView.computeHeight(
-                faceCount: faceCount,
-                cardWidth: width,
-                isExpanded: isExpanded,
-                maxVisibleFaces: maxVisibleFaces
-            )
-            return NSSize(width: width, height: height)
-
-        case .newGroupTarget:
-            return NSSize(width: width, height: 120)
-        }
+        let faceCount = viewModel.group(byID: groupID)?.faceIDs.count ?? 0
+        let isExpanded = expandedGroupIDs.contains(groupID)
+        let height = FaceGroupCardView.computeHeight(
+            faceCount: faceCount,
+            cardWidth: width,
+            isExpanded: isExpanded,
+            maxVisibleFaces: maxVisibleFaces
+        )
+        return NSSize(width: width, height: height)
     }
 
     // MARK: - Layout Invalidation on Resize

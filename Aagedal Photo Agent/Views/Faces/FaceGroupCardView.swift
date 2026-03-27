@@ -321,11 +321,10 @@ final class FaceGroupCardView: NSView {
     }
 
     private func setupKeyArtButton() {
-        keyArtButton.title = " Set as Key Art"
+        keyArtButton.title = "Set as Key Art"
         keyArtButton.image = NSImage(systemSymbolName: "star.fill", accessibilityDescription: "Set as key art")
         keyArtButton.imagePosition = .imageLeading
-        keyArtButton.bezelStyle = .accessoryBarAction
-        keyArtButton.isBordered = true
+        keyArtButton.bezelStyle = .rounded
         keyArtButton.font = .systemFont(ofSize: 11)
         keyArtButton.contentTintColor = .controlAccentColor
         keyArtButton.target = self
@@ -546,10 +545,11 @@ final class FaceGroupCardView: NSView {
         let rows = visibleCount > 0 ? ceil(Double(visibleCount) / Double(columns)) : 0
         let gridHeight = CGFloat(rows) * (faceSize + faceSpacing) - (rows > 0 ? faceSpacing : 0)
 
-        let needsExpand = faceCount > maxVisibleFaces
-        let expandHeight: CGFloat = needsExpand ? expandButtonHeight : 0
+        // Reserve button row when expand needed or multiple faces (key art possible)
+        let needsButtonRow = faceCount > maxVisibleFaces || faceCount > 1
+        let buttonHeight: CGFloat = needsButtonRow ? expandButtonHeight : 0
 
-        return headerHeight + gridHeight + expandHeight + bottomPadding
+        return headerHeight + gridHeight + buttonHeight + bottomPadding
     }
 
     // MARK: - Prepare for Reuse

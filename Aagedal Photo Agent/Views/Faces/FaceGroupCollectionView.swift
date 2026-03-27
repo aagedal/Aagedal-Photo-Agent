@@ -145,9 +145,6 @@ final class FaceGroupCollectionView: NSCollectionView {
             if let cardItem = item as? FaceGroupCardItem {
                 cardItem.cardView.setHighlighted(false)
             }
-            if let newItem = item as? FaceGroupNewGroupItem {
-                newItem.setHighlighted(false)
-            }
         }
     }
 
@@ -165,9 +162,6 @@ final class FaceGroupCollectionView: NSCollectionView {
             if let cardItem = item as? FaceGroupCardItem {
                 cardItem.cardView.setHighlighted(false)
             }
-            if let newItem = item as? FaceGroupNewGroupItem {
-                newItem.setHighlighted(false)
-            }
         }
 
         // Find item under cursor
@@ -183,9 +177,6 @@ final class FaceGroupCollectionView: NSCollectionView {
             }
             cardItem.cardView.setHighlighted(true)
             return .move
-        } else if let newItem = item as? FaceGroupNewGroupItem {
-            newItem.setHighlighted(true)
-            return .move
         }
 
         return .move
@@ -195,9 +186,6 @@ final class FaceGroupCollectionView: NSCollectionView {
         for item in visibleItems() {
             if let cardItem = item as? FaceGroupCardItem {
                 cardItem.cardView.setHighlighted(false)
-            }
-            if let newItem = item as? FaceGroupNewGroupItem {
-                newItem.setHighlighted(false)
             }
         }
     }
@@ -235,9 +223,6 @@ final class FaceGroupCollectionView: NSCollectionView {
                     controller.viewModel.face(byID: faceID)?.groupID != targetGroupID
                 }
                 controller.viewModel.moveFaces(Set(facesToMove), toGroup: targetGroupID)
-            } else if targetItem is FaceGroupNewGroupItem {
-                // Create new group
-                controller.viewModel.createNewGroup(withFaces: ids)
             } else {
                 return false
             }
