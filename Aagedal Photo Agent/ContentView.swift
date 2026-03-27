@@ -1499,7 +1499,7 @@ struct AutoRefreshModifier: ViewModifier {
                 if autoRefreshTask == nil {
                     autoRefreshTask = Task {
                         while !Task.isCancelled {
-                            try? await Task.sleep(nanoseconds: 3_000_000_000)
+                            try? await Task.sleep(nanoseconds: 5_000_000_000)
                             await MainActor.run {
                                 // Skip the entire folder refresh while in the edit
                                 // view — reassigning `images`/`visibleImages` causes
@@ -1507,6 +1507,10 @@ struct AutoRefreshModifier: ViewModifier {
                                 // metadata panel) even when content hasn't changed,
                                 // disturbing the user's in-progress edits.
                                 guard !metadataViewModel.isInEditView else { return }
+
+                                // Skip while the user is typing in the search field —
+                                // the rebuild cascade steals TextField focus.
+                                guard browserViewModel.searchText.isEmpty else { return }
 
                                 browserViewModel.refreshCurrentFolderIfNeeded()
 

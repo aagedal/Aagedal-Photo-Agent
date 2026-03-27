@@ -182,6 +182,10 @@ final class FaceGroupCardView: NSView {
     private let faceSize: CGFloat = 90
     private let faceSpacing: CGFloat = 6
 
+    // MARK: - Key art button
+
+    private let keyArtButton = NSButton()
+
     // MARK: - Expand button
 
     private let expandButton = NSButton()
@@ -204,6 +208,7 @@ final class FaceGroupCardView: NSView {
         setupLayers()
         setupHeader()
         setupFaceContainer()
+        setupKeyArtButton()
         setupExpandButton()
     }
 
@@ -315,6 +320,21 @@ final class FaceGroupCardView: NSView {
         addSubview(faceContainer)
     }
 
+    private func setupKeyArtButton() {
+        keyArtButton.title = " Set as Key Art"
+        keyArtButton.image = NSImage(systemSymbolName: "star.fill", accessibilityDescription: "Set as key art")
+        keyArtButton.imagePosition = .imageLeading
+        keyArtButton.bezelStyle = .accessoryBarAction
+        keyArtButton.isBordered = true
+        keyArtButton.font = .systemFont(ofSize: 11)
+        keyArtButton.contentTintColor = .controlAccentColor
+        keyArtButton.target = self
+        keyArtButton.action = #selector(setAsKeyArt)
+        keyArtButton.isHidden = true
+        keyArtButton.toolTip = "Use selected face as the group thumbnail"
+        addSubview(keyArtButton)
+    }
+
     private func setupExpandButton() {
         expandButton.title = ""
         expandButton.bezelStyle = .accessoryBarAction
@@ -345,11 +365,21 @@ final class FaceGroupCardView: NSView {
         // Position faces within the (flipped) container
         layoutFaceSubviews(containerWidth: containerWidth)
 
-        // Position expand button below face container
-        if !expandButton.isHidden {
+        // Position key art button and expand button below face container
+        let buttonY = headerHeight + gridHeight + 4
+        if !keyArtButton.isHidden && !expandButton.isHidden {
+            // Both visible: key art left, expand right
+            let halfWidth = (cardWidth - padding * 2 - 8) / 2
+            keyArtButton.frame = CGRect(x: padding, y: buttonY, width: halfWidth, height: 24)
+            expandButton.frame = CGRect(x: padding + halfWidth + 8, y: buttonY, width: halfWidth, height: 24)
+        } else if !keyArtButton.isHidden {
+            let btnWidth: CGFloat = 160
+            let btnX = (cardWidth - btnWidth) / 2
+            keyArtButton.frame = CGRect(x: btnX, y: buttonY, width: btnWidth, height: 24)
+        } else if !expandButton.isHidden {
             let btnWidth: CGFloat = 200
             let btnX = (cardWidth - btnWidth) / 2
-            expandButton.frame = CGRect(x: btnX, y: headerHeight + gridHeight + 4, width: btnWidth, height: 24)
+            expandButton.frame = CGRect(x: btnX, y: buttonY, width: btnWidth, height: 24)
         }
 
         // Update highlight border
@@ -469,6 +499,18 @@ final class FaceGroupCardView: NSView {
                 isDragged: draggedIDs.contains(fid)
             )
         }
+
+        // Show "Set as Key Art" when exactly one face in this group is selected
+        // and it's not already the representative
+        let visibleFaceIDs = Set(faceSubviews.compactMap { $0.isHidden ? nil : $0.faceID })
+        let selectedInGroup = selectedIDs.intersection(visibleFaceIDs)
+        let shouldShow = selectedInGroup.count == 1
+            && selectedIDs.count == 1
+            && selectedInGroup.first != currentGroup?.representativeFaceID
+        if keyArtButton.isHidden != !shouldShow {
+            keyArtButton.isHidden = !shouldShow
+            needsLayout = true
+        }
     }
 
     // MARK: - Highlight (drop target)
@@ -526,6 +568,7 @@ final class FaceGroupCardView: NSView {
             sub.isHidden = true
         }
 
+        keyArtButton.isHidden = true
         expandButton.isHidden = true
         endEditing()
 
@@ -668,6 +711,16 @@ final class FaceGroupCardView: NSView {
 
     @objc private func chooseListFile() {
         callbacks.onChooseListFile?()
+    }
+
+    // MARK: - Key Art
+
+    @objc private func setAsKeyArt() {
+        guard let groupID,
+              let selectionState,
+              selectionState.selectedFaceIDs.count == 1,
+              let faceID = selectionState.selectedFaceIDs.first else { return }
+        viewModel?.setRepresentativeFace(faceID, forGroup: groupID)
     }
 
     // MARK: - Expand

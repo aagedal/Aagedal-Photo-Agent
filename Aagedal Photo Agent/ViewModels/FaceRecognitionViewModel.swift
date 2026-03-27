@@ -749,6 +749,21 @@ final class FaceRecognitionViewModel {
         }
     }
 
+    func setRepresentativeFace(_ faceID: UUID, forGroup groupID: UUID) {
+        guard var data = faceData else { return }
+        let groupIdx = groupIndexMap(from: data)
+        guard let index = groupIdx[groupID],
+              data.groups[index].faceIDs.contains(faceID) else { return }
+
+        data.groups[index].representativeFaceID = faceID
+        faceData = data
+        do {
+            try storageService.saveFaceData(data)
+        } catch {
+            errorMessage = "Failed to save face data: \(error.localizedDescription)"
+        }
+    }
+
     func applyNameToMetadata(groupID: UUID) {
         guard let data = faceData,
               let group = groupLookup[groupID],

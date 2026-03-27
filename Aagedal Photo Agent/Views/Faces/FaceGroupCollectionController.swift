@@ -189,6 +189,9 @@ final class FaceGroupCollectionController: NSViewController, NSCollectionViewDel
         // 2. Selection loop — lightweight DispatchQueue.main.async
         observeSelection()
 
+        // 3. Scroll-to-group requests from face bar
+        observeScrollToGroup()
+
         // Trigger initial data load
         applyDataUpdate()
     }
@@ -203,6 +206,22 @@ final class FaceGroupCollectionController: NSViewController, NSCollectionViewDel
                 guard let self else { return }
                 self.collectionView.refreshVisibleSelections()
                 self.observeSelection()
+            }
+        }
+    }
+
+    private func observeScrollToGroup() {
+        withObservationTracking {
+            _ = self.selectionState.scrollToGroupID
+        } onChange: { [weak self] in
+            // Delay slightly to let any popover dismissal finish before scrolling
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                guard let self else { return }
+                if let groupID = self.selectionState.scrollToGroupID {
+                    self.selectionState.scrollToGroupID = nil
+                    self.scrollToGroup(groupID)
+                }
+                self.observeScrollToGroup()
             }
         }
     }
@@ -372,5 +391,30 @@ final class FaceGroupCollectionController: NSViewController, NSCollectionViewDel
               let index = lastSnapshotGroupIDs.firstIndex(of: groupID) else { return }
         let indexPath = IndexPath(item: index, section: 0)
         collectionView.scrollToItems(at: [indexPath], scrollPosition: .centeredVertically)
+    }
+
+    /// Scroll to a group card and select its first face so space-bar works immediately.
+    func scrollToGroup(_ groupID: UUID) {
+        // Use sortedGroups as the source of truth since lastSnapshotGroupIDs
+        // may lag behind after the popover dismisses.
+        let groupIDs = viewModel.sortedGroups.map(\.id)
+        guard let index = groupIDs.firstIndex(of: groupID) else { return }
+        let indexPath = IndexPath(item: index, section: 0)
+
+        // Ensure layout is current before scrolling
+        collectionView.collectionViewLayout?.invalidateLayout()
+        collectionView.layoutSubtreeIfNeeded()
+
+        collectionView.scrollToItems(at: [indexPath], scrollPosition: .centeredVertically)
+
+        // Select the first face in this group so keyboard shortcuts work
+        if let group = viewModel.group(byID: groupID),
+           let firstFace = viewModel.faces(in: group).first {
+            selectionState.selectFace(firstFace.id)
+            collectionView.refreshVisibleSelections()
+        }
+
+        // Ensure the collection view is first responder for keyboard events
+        view.window?.makeFirstResponder(collectionView)
     }
 }

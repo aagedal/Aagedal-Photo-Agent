@@ -15,7 +15,9 @@ struct FaceGroupDetailView: View {
     @State private var isAddingToKnownPeople = false
     @State private var knownPeopleMessage: String?
     @AppStorage("knownPeopleMode") private var knownPeopleMode: String = "off"
+    var isExpanded: Bool = false
     var onSelectImages: ((Set<URL>) -> Void)?
+    var onScrollToGroup: ((UUID) -> Void)?
     var onPhotosDeleted: ((Set<URL>) -> Void)?
     @Environment(\.dismiss) private var dismiss
 
@@ -183,15 +185,25 @@ struct FaceGroupDetailView: View {
 
             // Secondary actions
             HStack {
-                Button {
-                    let urls = viewModel.imageURLs(for: group)
-                    onSelectImages?(urls)
-                    dismiss()
-                } label: {
-                    Label("Select Images", systemImage: "photo.on.rectangle")
+                if isExpanded {
+                    Button {
+                        onScrollToGroup?(group.id)
+                    } label: {
+                        Label("Scroll to Group", systemImage: "arrow.down.to.line")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                } else {
+                    Button {
+                        let urls = viewModel.imageURLs(for: group)
+                        onSelectImages?(urls)
+                        dismiss()
+                    } label: {
+                        Label("Select Images", systemImage: "photo.on.rectangle")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
 
                 // Add to Known People button (only when mode is enabled)
                 if knownPeopleMode != "off" {

@@ -39,6 +39,9 @@ final class FaceSelectionState {
         selectionAnchorID = faceID
     }
 
+    /// Set by the face bar when in expanded mode to scroll to a group.
+    var scrollToGroupID: UUID?
+
     func selectFace(_ faceID: UUID) {
         selectedFaceIDs.removeAll()
         selectedFaceIDs.insert(faceID)

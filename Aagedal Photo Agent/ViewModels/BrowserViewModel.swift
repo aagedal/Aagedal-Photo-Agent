@@ -320,7 +320,7 @@ final class BrowserViewModel {
         }
     }
 
-    private func imagePassesFilter(_ image: ImageFile) -> Bool {
+    private func imagePassesFilter(_ image: ImageFile, query: String) -> Bool {
         if image.starRating.rawValue < minimumStarRating.rawValue {
             return false
         }
@@ -335,7 +335,6 @@ final class BrowserViewModel {
         case .present:
             if image.personShown.isEmpty { return false }
         }
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !query.isEmpty else { return true }
         if image.filenameLowercased.contains(query) {
             return true
@@ -347,7 +346,8 @@ final class BrowserViewModel {
     }
 
     private func applyFilters(to images: [ImageFile]) -> [ImageFile] {
-        images.filter { imagePassesFilter($0) }
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return images.filter { imagePassesFilter($0, query: query) }
     }
 
     func clearFilters() {
@@ -1236,11 +1236,12 @@ final class BrowserViewModel {
             }
 
             if affectsFilterKey || isFilteringActive {
+                let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                 var needsFullRebuild = false
                 for url in selectedImageIDs {
                     guard let imageIdx = urlToImageIndex[url] else { continue }
                     let updatedImage = images[imageIdx]
-                    let passes = imagePassesFilter(updatedImage)
+                    let passes = imagePassesFilter(updatedImage, query: query)
                     if let visibleIdx = urlToVisibleIndex[url] {
                         if passes {
                             visibleImages[visibleIdx] = updatedImage

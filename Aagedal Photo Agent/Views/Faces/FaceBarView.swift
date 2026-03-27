@@ -324,7 +324,18 @@ struct FaceBarView: View {
             get: { selectedGroup?.id == group.id },
             set: { newValue in if !newValue { selectedGroup = nil } }
         )) {
-            FaceGroupDetailView(group: group, viewModel: viewModel, settingsViewModel: settingsViewModel, onSelectImages: onSelectImages, onPhotosDeleted: onPhotosDeleted)
+            FaceGroupDetailView(
+                group: group,
+                viewModel: viewModel,
+                settingsViewModel: settingsViewModel,
+                isExpanded: isExpanded,
+                onSelectImages: onSelectImages,
+                onScrollToGroup: isExpanded ? { groupID in
+                    selectionState?.scrollToGroupID = groupID
+                    selectedGroup = nil
+                } : nil,
+                onPhotosDeleted: onPhotosDeleted
+            )
         }
         .onDrop(of: [.text], delegate: FaceBarDropDelegate(
             targetGroupID: group.id,
