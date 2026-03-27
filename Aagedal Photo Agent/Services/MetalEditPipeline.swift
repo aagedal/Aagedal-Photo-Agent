@@ -380,9 +380,29 @@ final class MetalEditPipeline: @unchecked Sendable {
                     mp.contrast = Float(Double(con) / 100.0)
                     maskFlags |= (1 << 1)
                 }
+                if let hi = mask.highlights, hi != 0 {
+                    mp.highlights = Float(Double(hi) / 100.0)
+                    maskFlags |= (1 << 2)
+                }
+                if let sh = mask.shadows, sh != 0 {
+                    mp.shadows = Float(Double(sh) / 100.0)
+                    maskFlags |= (1 << 3)
+                }
+                if let wh = mask.whites, wh != 0 {
+                    mp.whites = Float(Double(wh) / 100.0)
+                    maskFlags |= (1 << 4)
+                }
+                if let bl = mask.blacks, bl != 0 {
+                    mp.blacks = Float(Double(bl) / 100.0)
+                    maskFlags |= (1 << 5)
+                }
                 if let sat = mask.saturation, sat != 0 {
                     mp.saturation = Float(min(max(1.0 + Double(sat) / 100.0, 0.0), 2.0))
                     maskFlags |= (1 << 6)
+                }
+                if let vib = mask.vibrance, vib != 0 {
+                    mp.vibrance = Float(Double(vib) / 100.0)
+                    maskFlags |= (1 << 7)
                 }
                 mp.activeFlags = maskFlags
                 maskPtr[i] = mp

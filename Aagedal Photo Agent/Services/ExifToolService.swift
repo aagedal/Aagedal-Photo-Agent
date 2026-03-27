@@ -1014,6 +1014,7 @@ final class ExifToolService {
             let whites = parseDoubleValue(corr["LocalWhites2012"]).map { Int(round($0 * 100)) }
             let blacks = parseDoubleValue(corr["LocalBlacks2012"]).map { Int(round($0 * 100)) }
             let saturation = parseDoubleValue(corr["LocalSaturation"]).map { Int(round($0 * 100)) }
+            let vibrance = parseDoubleValue(corr["LocalVibrance"]).map { Int(round($0 * 100)) }
             let temperature = parseDoubleValue(corr["LocalTemperature"]).map { $0 * 100 }
             let tint = parseDoubleValue(corr["LocalTint"]).map { $0 * 100 }
 
@@ -1030,6 +1031,7 @@ final class ExifToolService {
                 whites: whites.flatMap { $0 == 0 ? nil : $0 },
                 blacks: blacks.flatMap { $0 == 0 ? nil : $0 },
                 saturation: saturation.flatMap { $0 == 0 ? nil : $0 },
+                vibrance: vibrance.flatMap { $0 == 0 ? nil : $0 },
                 temperature: temperature.flatMap { abs($0) < 0.01 ? nil : $0 },
                 tint: tint.flatMap { abs($0) < 0.01 ? nil : $0 }
             )

@@ -61,13 +61,14 @@ struct MaskAdjustment: Codable, Sendable, Equatable, Identifiable {
     var whites: Int?
     var blacks: Int?
     var saturation: Int?
+    var vibrance: Int?
     var temperature: Double?
     var tint: Double?
 
     var hasAdjustments: Bool {
         exposure != nil || contrast != nil || highlights != nil
             || shadows != nil || whites != nil || blacks != nil
-            || saturation != nil
+            || saturation != nil || vibrance != nil
             || temperature != nil || tint != nil
     }
 }

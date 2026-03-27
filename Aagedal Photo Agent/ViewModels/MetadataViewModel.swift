@@ -1174,6 +1174,7 @@ final class MetadataViewModel {
             let wh = Double(mask.whites ?? 0) / 100.0
             let bl = Double(mask.blacks ?? 0) / 100.0
             let sat = Double(mask.saturation ?? 0) / 100.0
+            let vib = Double(mask.vibrance ?? 0) / 100.0
             let temp = (mask.temperature ?? 0) / 100.0
             let tint = (mask.tint ?? 0) / 100.0
 
@@ -1193,6 +1194,7 @@ final class MetadataViewModel {
                 "LocalWhites2012=\(acrNum(wh))",
                 "LocalBlacks2012=\(acrNum(bl))",
                 "LocalSaturation=\(acrNum(sat))",
+                "LocalVibrance=\(acrNum(vib))",
                 "LocalTemperature=\(acrNum(temp))",
                 "LocalTint=\(acrNum(tint))",
                 // Legacy fields (required by ACR, always 0)

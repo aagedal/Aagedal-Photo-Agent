@@ -269,6 +269,10 @@ struct EditWorkspaceView: View {
             renderPreview()
         }
         .onChange(of: metadataViewModel.metadataLoadGeneration) { _, _ in
+            // Re-apply HDR auto-enable after metadata load completes.
+            // Now safe to include the "Render RAW as HDR" preference because
+            // any XMP hdrEditMode value has been loaded and takes priority.
+            autoEnableHDRIfNeeded(includeRawPreference: true)
             renderPreview()
         }
         .onChange(of: isDraggingEditSlider) { wasDragging, isDragging in
@@ -1039,6 +1043,47 @@ struct EditWorkspaceView: View {
         browserViewModel.lastClickedImageURL = fallback
     }
 
+    /// Auto-enable HDR mode when no explicit `hdrEditMode` has been set in metadata.
+    ///
+    /// Priority order:
+    /// 1. **XMP / embedded metadata** — if `hdrEditMode` was read from the file, it is
+    ///    authoritative and this method is a no-op (`hdrEditMode != nil`).
+    /// 2. **Native HDR** (PQ/HLG transfer function) — always auto-enables, even before
+    ///    the async metadata load finishes, because the file's transfer function is
+    ///    inherent to the image data.
+    /// 3. **"Render RAW as HDR" preference** — only applied when `includeRawPreference`
+    ///    is `true`, which should be after the metadata load has completed so that any
+    ///    XMP `hdrEditMode` value takes precedence.
+    ///
+    /// - Parameter includeRawPreference: Pass `true` only after the metadata load has
+    ///   finished (i.e. in the `metadataLoadGeneration` handler), so that XMP values
+    ///   are already present and won't be overridden by the preference.
+    private func autoEnableHDRIfNeeded(includeRawPreference: Bool = false) {
+        guard let image = selectedImage, image.isNativeHDR,
+              metadataViewModel.editingMetadata.cameraRaw?.hdrEditMode == nil else { return }
+
+        // For RAW files, isNativeHDR may reflect the user's "Render RAW as HDR"
+        // preference rather than the file's actual transfer function. Skip the
+        // preference-based case when metadata hasn't loaded yet, so that XMP
+        // values get a chance to take priority.
+        if !includeRawPreference && SupportedImageFormats.isRaw(url: image.url) {
+            return
+        }
+        let url = image.url
+        editLog.info("[\(url.lastPathComponent)] Auto-enabling HDR mode for native HDR image")
+        if metadataViewModel.editingMetadata.cameraRaw == nil {
+            metadataViewModel.editingMetadata.cameraRaw = CameraRawSettings()
+        }
+        metadataViewModel.editingMetadata.cameraRaw?.hdrEditMode = 1
+        // Propagate to ImageFile
+        if let index = browserViewModel.urlToImageIndex[url] {
+            if browserViewModel.images[index].cameraRawSettings == nil {
+                browserViewModel.images[index].cameraRawSettings = CameraRawSettings()
+            }
+            browserViewModel.images[index].cameraRawSettings?.hdrEditMode = 1
+        }
+    }
+
     private func loadSelectedImagePreview() {
         let filename = selectedImageURL?.lastPathComponent ?? "nil"
         editLog.info("[\(filename)] loadSelectedImagePreview: resetting state, cancelling previous tasks")
@@ -1067,22 +1112,7 @@ struct EditWorkspaceView: View {
             return
         }
 
-        // Auto-enable HDR mode for natively HDR images (PQ/HLG) when no mode was explicitly set
-        if let image = selectedImage, image.isNativeHDR,
-           metadataViewModel.editingMetadata.cameraRaw?.hdrEditMode == nil {
-            editLog.info("[\(selectedImageURL.lastPathComponent)] Auto-enabling HDR mode for native HDR image")
-            if metadataViewModel.editingMetadata.cameraRaw == nil {
-                metadataViewModel.editingMetadata.cameraRaw = CameraRawSettings()
-            }
-            metadataViewModel.editingMetadata.cameraRaw?.hdrEditMode = 1
-            // Propagate to ImageFile
-            if let index = browserViewModel.urlToImageIndex[selectedImageURL] {
-                if browserViewModel.images[index].cameraRawSettings == nil {
-                    browserViewModel.images[index].cameraRawSettings = CameraRawSettings()
-                }
-                browserViewModel.images[index].cameraRawSettings?.hdrEditMode = 1
-            }
-        }
+        autoEnableHDRIfNeeded()
 
         let previewMaxPixelSize = previewWorkingMaxPixelSize
         isLoadingPreview = true
@@ -2148,6 +2178,32 @@ struct EditWorkspaceView: View {
                 }
             )
             sliderRow(
+                "Whites",
+                value: maskIntBinding(idx, \.whites),
+                range: -100...100,
+                step: 1,
+                formatter: signedIntString,
+                settingsMutator: { settings, value in
+                    settings.localAdjustments?[idx].whites = Int(value.rounded()) == 0 ? nil : Int(value.rounded())
+                },
+                onReset: {
+                    maskIntBinding(idx, \.whites).wrappedValue = 0
+                }
+            )
+            sliderRow(
+                "Blacks",
+                value: maskIntBinding(idx, \.blacks),
+                range: -100...100,
+                step: 1,
+                formatter: signedIntString,
+                settingsMutator: { settings, value in
+                    settings.localAdjustments?[idx].blacks = Int(value.rounded()) == 0 ? nil : Int(value.rounded())
+                },
+                onReset: {
+                    maskIntBinding(idx, \.blacks).wrappedValue = 0
+                }
+            )
+            sliderRow(
                 "Saturation",
                 value: maskIntBinding(idx, \.saturation),
                 range: -100...100,
@@ -2159,6 +2215,20 @@ struct EditWorkspaceView: View {
                 },
                 onReset: {
                     maskIntBinding(idx, \.saturation).wrappedValue = 0
+                }
+            )
+            sliderRow(
+                "Vibrance",
+                value: maskIntBinding(idx, \.vibrance),
+                range: -100...100,
+                step: 1,
+                gradientColors: [.gray, .orange],
+                formatter: signedIntString,
+                settingsMutator: { settings, value in
+                    settings.localAdjustments?[idx].vibrance = Int(value.rounded()) == 0 ? nil : Int(value.rounded())
+                },
+                onReset: {
+                    maskIntBinding(idx, \.vibrance).wrappedValue = 0
                 }
             )
             // ── Mask Shape ──

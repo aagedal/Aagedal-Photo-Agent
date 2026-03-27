@@ -142,10 +142,72 @@ kernel void editAdjustments(
         if (mask.activeFlags & (1u << 0)) {
             adjusted *= half(exp2(mask.exposure));
         }
-        // Contrast: pivot around mid-gray
+        // Contrast: ACR parametric sigmoid — gain peaks at midtones, falls at extremes
         if (mask.activeFlags & (1u << 1)) {
-            half3 mid = half3(0.5h);
-            adjusted = mid + (adjusted - mid) * half(1.0 + mask.contrast);
+            for (int c = 0; c < 3; c++) {
+                float x = float(adjusted[c]);
+                float centered = x - 0.5;
+                float falloff = min(4.0 * centered * centered, 1.0);
+                float gain = 1.0 + mask.contrast * 0.7 * (1.0 - falloff);
+                adjusted[c] = half(0.5 + centered * max(gain, 0.1));
+            }
+        }
+        // Blacks: tapered shadow-region adjustment in sqrt-space
+        if (mask.activeFlags & (1u << 5)) {
+            for (int c = 0; c < 3; c++) {
+                float x = float(adjusted[c]);
+                float px = sqrt(max(0.0, x));
+                float boundary = mask.blacks < 0 ? 0.50 : 0.35;
+                float amplitude = mask.blacks < 0 ? 0.14 : 0.10;
+                float shadowRegion = max(0.0, 1.0 - px / boundary);
+                float delta = mask.blacks * amplitude * shadowRegion;
+                float pxNew = max(0.0, px + delta);
+                adjusted[c] = half(pxNew * pxNew);
+            }
+        }
+        // Shadows: Gaussian-weighted lift in sqrt-space
+        if (mask.activeFlags & (1u << 3)) {
+            for (int c = 0; c < 3; c++) {
+                float x = float(adjusted[c]);
+                float px = sqrt(max(0.0, x));
+                float ctr = 0.15;
+                float w = 0.15;
+                float d = (px - ctr) / w;
+                float delta = mask.shadows * 0.08 * exp(-0.5 * d * d);
+                float pxNew = max(0.0, px + delta);
+                adjusted[c] = half(pxNew * pxNew);
+            }
+        }
+        // Highlights: one-sided ramp for upper tones
+        if (mask.activeFlags & (1u << 2)) {
+            float knee = 0.15;
+            for (int c = 0; c < 3; c++) {
+                float x = float(adjusted[c]);
+                if (x > knee) {
+                    float t = min((x - knee) / 0.85, 1.0);
+                    float wt = t * t * (3.0 - 2.0 * t) * (1.0 - t * t * 0.3);
+                    adjusted[c] = half(x + mask.highlights * 0.30 * wt);
+                }
+            }
+        }
+        // Whites: upper tone range adjustment
+        if (mask.activeFlags & (1u << 4)) {
+            float knee = 0.45;
+            for (int c = 0; c < 3; c++) {
+                float x = float(adjusted[c]);
+                if (x > knee) {
+                    float t = (x - knee) / (1.0 - knee);
+                    float tClamped = min(t, 2.0);
+                    if (mask.whites > 0) {
+                        float wt = tClamped * (2.0 - tClamped);
+                        x += mask.whites * 1.2 * wt;
+                    } else {
+                        float pull = sqrt(tClamped) * 0.25;
+                        x -= abs(mask.whites) * pull * (1.0 - knee);
+                    }
+                    adjusted[c] = half(x);
+                }
+            }
         }
         // Saturation
         if (mask.activeFlags & (1u << 6)) {
