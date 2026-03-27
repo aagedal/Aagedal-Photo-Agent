@@ -1,6 +1,12 @@
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
+import os.log
+
+nonisolated(unsafe) private let knownPeopleViewLog = Logger(
+    subsystem: Bundle.main.bundleIdentifier ?? "AagedalPhotoAgent",
+    category: "ExpandedKnownPeopleView"
+)
 
 private enum KnownPeopleSortMode: String, CaseIterable, Identifiable {
     case name
@@ -517,79 +523,100 @@ struct PersonListRow: View {
 struct PersonContactCard: View {
     let person: KnownPerson
     @State private var thumbnail: NSImage?
+    @State private var showSamples = false
 
     var body: some View {
-        VStack(spacing: 24) {
-            // Large thumbnail
-            Group {
-                if let image = thumbnail {
-                    Image(nsImage: image)
-                        .resizable()
-                        .scaledToFill()
-                } else {
-                    Image(systemName: "person.crop.circle.fill")
-                        .resizable()
-                        .scaledToFit()
-                        .foregroundStyle(.secondary)
-                        .padding(30)
+        ScrollView {
+            VStack(spacing: 24) {
+                // Large thumbnail
+                Group {
+                    if let image = thumbnail {
+                        Image(nsImage: image)
+                            .resizable()
+                            .scaledToFill()
+                    } else {
+                        Image(systemName: "person.crop.circle.fill")
+                            .resizable()
+                            .scaledToFit()
+                            .foregroundStyle(.secondary)
+                            .padding(30)
+                    }
                 }
-            }
-            .frame(width: 200, height: 200)
-            .clipShape(RoundedRectangle(cornerRadius: 16))
-            .background(
-                RoundedRectangle(cornerRadius: 16)
-                    .fill(.quaternary)
-            )
-            .shadow(color: .black.opacity(0.1), radius: 8, y: 4)
+                .frame(width: 200, height: 200)
+                .clipShape(RoundedRectangle(cornerRadius: 16))
+                .background(
+                    RoundedRectangle(cornerRadius: 16)
+                        .fill(.quaternary)
+                )
+                .shadow(color: .black.opacity(0.1), radius: 8, y: 4)
 
-            // Name and role
-            VStack(spacing: 4) {
-                Text(person.name)
-                    .font(.title)
-                    .fontWeight(.semibold)
+                // Name and role
+                VStack(spacing: 4) {
+                    Text(person.name)
+                        .font(.title)
+                        .fontWeight(.semibold)
 
-                if let role = person.role, !role.isEmpty {
-                    Text(role)
-                        .font(.title3)
-                        .foregroundStyle(.secondary)
+                    if let role = person.role, !role.isEmpty {
+                        Text(role)
+                            .font(.title3)
+                            .foregroundStyle(.secondary)
+                    }
                 }
-            }
 
-            // Notes
-            if let notes = person.notes, !notes.isEmpty {
-                Text(notes)
-                    .font(.body)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
+                // Notes
+                if let notes = person.notes, !notes.isEmpty {
+                    Text(notes)
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 400)
+                }
+
+                // Stats
+                HStack(spacing: 24) {
+                    VStack {
+                        Text("\(person.embeddings.count)")
+                            .font(.title2.monospacedDigit())
+                            .fontWeight(.medium)
+                        Text("Embeddings")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Divider()
+                        .frame(height: 40)
+
+                    VStack {
+                        Text(sourceFilesCount)
+                            .font(.title2.monospacedDigit())
+                            .fontWeight(.medium)
+                        Text("Source Files")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.top, 8)
+
+                // Face Samples (collapsible)
+                if !person.embeddings.isEmpty {
+                    DisclosureGroup("Face Samples (\(person.embeddings.count))", isExpanded: $showSamples) {
+                        EmbeddingGridView(
+                            person: person,
+                            onDeleteEmbedding: { embeddingID in
+                                deleteEmbedding(embeddingID)
+                            },
+                            onSetRepresentative: { embeddingID in
+                                setRepresentative(embeddingID)
+                            }
+                        )
+                        .padding(.top, 8)
+                    }
                     .frame(maxWidth: 400)
-            }
-
-            // Stats
-            HStack(spacing: 24) {
-                VStack {
-                    Text("\(person.embeddings.count)")
-                        .font(.title2.monospacedDigit())
-                        .fontWeight(.medium)
-                    Text("Embeddings")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Divider()
-                    .frame(height: 40)
-
-                VStack {
-                    Text(sourceFilesCount)
-                        .font(.title2.monospacedDigit())
-                        .fontWeight(.medium)
-                    Text("Source Files")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
             }
-            .padding(.top, 8)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 24)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
             loadThumbnail()
         }
@@ -605,5 +632,30 @@ struct PersonContactCard: View {
 
     private func loadThumbnail() {
         thumbnail = KnownPeopleService.shared.loadThumbnail(for: person.id)
+    }
+
+    private func deleteEmbedding(_ embeddingID: UUID) {
+        do {
+            try KnownPeopleService.shared.removeEmbedding(embeddingID, fromPersonID: person.id)
+        } catch {
+            knownPeopleViewLog.error("Failed to delete embedding: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func setRepresentative(_ embeddingID: UUID) {
+        do {
+            var updated = person
+            updated.representativeThumbnailID = embeddingID
+            // Update person thumbnail from embedding thumbnail
+            if let embThumb = KnownPeopleService.shared.loadEmbeddingThumbnail(for: embeddingID),
+               let tiffData = embThumb.tiffRepresentation,
+               let bitmap = NSBitmapImageRep(data: tiffData),
+               let jpegData = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.85]) {
+                try KnownPeopleService.shared.replaceThumbnail(for: person.id, newThumbnailData: jpegData)
+            }
+            try KnownPeopleService.shared.updatePerson(updated)
+        } catch {
+            knownPeopleViewLog.error("Failed to set representative: \(error.localizedDescription, privacy: .public)")
+        }
     }
 }

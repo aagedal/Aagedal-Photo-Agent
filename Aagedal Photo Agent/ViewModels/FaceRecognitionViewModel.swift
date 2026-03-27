@@ -682,6 +682,15 @@ final class FaceRecognitionViewModel {
             )
         }
 
+        // Build per-embedding thumbnail map (embedding ID → small JPEG)
+        var embeddingThumbnails: [UUID: Data] = [:]
+        for (index, face) in faces.enumerated() {
+            if let thumbImage = thumbnailImage(for: face.id),
+               let smallData = generateSmallThumbnailData(from: thumbImage) {
+                embeddingThumbnails[embeddings[index].id] = smallData
+            }
+        }
+
         var thumbnailData: Data?
         if let thumbImage = thumbnailImage(for: group.representativeFaceID),
            let tiffData = thumbImage.tiffRepresentation,
@@ -706,6 +715,7 @@ final class FaceRecognitionViewModel {
             name: name,
             embeddings: embeddings,
             thumbnailData: thumbnailData,
+            embeddingThumbnails: embeddingThumbnails,
             duplicateCheck: duplicateCheck
         )
 
@@ -714,6 +724,32 @@ final class FaceRecognitionViewModel {
             embeddingCount: embeddings.count,
             name: name
         )
+    }
+
+    /// Generate a small thumbnail (80×80) for embedding storage in the Known People database.
+    private func generateSmallThumbnailData(from image: NSImage, size: Int = 80) -> Data? {
+        let targetSize = NSSize(width: size, height: size)
+        let smallImage = NSImage(size: targetSize)
+        smallImage.lockFocus()
+
+        let sourceSize = image.size
+        let scale = max(targetSize.width / sourceSize.width, targetSize.height / sourceSize.height)
+        let scaledWidth = sourceSize.width * scale
+        let scaledHeight = sourceSize.height * scale
+        let drawRect = NSRect(
+            x: (targetSize.width - scaledWidth) / 2,
+            y: (targetSize.height - scaledHeight) / 2,
+            width: scaledWidth,
+            height: scaledHeight
+        )
+
+        NSGraphicsContext.current?.imageInterpolation = .high
+        image.draw(in: drawRect, from: .zero, operation: .copy, fraction: 1.0)
+        smallImage.unlockFocus()
+
+        guard let tiffData = smallImage.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiffData) else { return nil }
+        return bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.7])
     }
 
     /// Select a group for thumbnail replacement. Only shows in suggestions panel if the group

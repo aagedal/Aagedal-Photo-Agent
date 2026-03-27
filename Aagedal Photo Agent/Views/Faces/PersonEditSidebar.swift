@@ -1,5 +1,11 @@
 import SwiftUI
 import AppKit
+import os.log
+
+nonisolated(unsafe) private let knownPeopleSidebarLog = Logger(
+    subsystem: Bundle.main.bundleIdentifier ?? "AagedalPhotoAgent",
+    category: "PersonEditSidebar"
+)
 
 // MARK: - Person Edit Sidebar
 
@@ -62,28 +68,24 @@ struct PersonEditSidebar: View {
                     sectionHeader("Information")
 
                     VStack(alignment: .leading, spacing: 8) {
-                        infoRow("Embeddings", value: "\(person.embeddings.count)")
                         infoRow("Created", value: person.createdAt.formatted(date: .abbreviated, time: .shortened))
                         infoRow("Updated", value: person.updatedAt.formatted(date: .abbreviated, time: .shortened))
                     }
 
-                    // Source files
+                    // Face samples
                     if !person.embeddings.isEmpty {
                         Divider()
                             .padding(.vertical, 8)
 
-                        sectionHeader("Source Files")
-
-                        VStack(alignment: .leading, spacing: 4) {
-                            let sources = person.embeddings.compactMap { $0.sourceDescription }
-                            let uniqueSources = Array(Set(sources)).sorted()
-                            ForEach(uniqueSources, id: \.self) { source in
-                                Text(source)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
+                        EmbeddingGridView(
+                            person: person,
+                            onDeleteEmbedding: { embeddingID in
+                                deleteEmbedding(embeddingID)
+                            },
+                            onSetRepresentative: { embeddingID in
+                                setRepresentative(embeddingID)
                             }
-                        }
+                        )
                     }
                 }
                 .padding()
@@ -170,5 +172,33 @@ struct PersonEditSidebar: View {
         person.notes = editedNotes.isEmpty ? nil : editedNotes
         onSave()
         hasChanges = false
+    }
+
+    private func deleteEmbedding(_ embeddingID: UUID) {
+        do {
+            try KnownPeopleService.shared.removeEmbedding(embeddingID, fromPersonID: person.id)
+            if let updated = KnownPeopleService.shared.person(byID: person.id) {
+                person = updated
+            }
+        } catch {
+            knownPeopleSidebarLog.error("Failed to delete embedding: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func setRepresentative(_ embeddingID: UUID) {
+        do {
+            person.representativeThumbnailID = embeddingID
+            // Update person thumbnail from embedding thumbnail
+            if let embThumb = KnownPeopleService.shared.loadEmbeddingThumbnail(for: embeddingID),
+               let tiffData = embThumb.tiffRepresentation,
+               let bitmap = NSBitmapImageRep(data: tiffData),
+               let jpegData = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.85]) {
+                try KnownPeopleService.shared.replaceThumbnail(for: person.id, newThumbnailData: jpegData)
+            }
+            try KnownPeopleService.shared.updatePerson(person)
+            loadThumbnail()
+        } catch {
+            knownPeopleSidebarLog.error("Failed to set representative: \(error.localizedDescription, privacy: .public)")
+        }
     }
 }

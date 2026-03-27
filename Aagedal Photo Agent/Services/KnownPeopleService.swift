@@ -37,6 +37,18 @@ final class KnownPeopleService {
         thumbnailsDirectory.appendingPathComponent("\(personID.uuidString).jpg")
     }
 
+    // MARK: - Embedding Thumbnail Storage
+
+    private var embeddingThumbnailsDirectory: URL {
+        let url = knownPeopleDirectory.appendingPathComponent("embedding_thumbnails", isDirectory: true)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    private func embeddingThumbnailURL(for embeddingID: UUID) -> URL {
+        embeddingThumbnailsDirectory.appendingPathComponent("\(embeddingID.uuidString).jpg")
+    }
+
     // MARK: - In-Memory Cache
 
     private var database: KnownPeopleDatabase? {
@@ -47,6 +59,13 @@ final class KnownPeopleService {
         let cache = NSCache<NSUUID, VNFeaturePrintObservation>()
         cache.countLimit = 1000
         cache.totalCostLimit = 10 * 1024 * 1024 // 10 MB
+        return cache
+    }()
+
+    private let embeddingThumbnailCache: NSCache<NSUUID, NSImage> = {
+        let cache = NSCache<NSUUID, NSImage>()
+        cache.countLimit = 500
+        cache.totalCostLimit = 5 * 1024 * 1024 // 5 MB
         return cache
     }()
 
@@ -129,13 +148,53 @@ final class KnownPeopleService {
         }
     }
 
+    // MARK: - Embedding Thumbnails
+
+    func saveEmbeddingThumbnail(_ imageData: Data, for embeddingID: UUID) throws {
+        let url = embeddingThumbnailURL(for: embeddingID)
+        try imageData.write(to: url)
+    }
+
+    func saveEmbeddingThumbnails(_ thumbnails: [UUID: Data]) throws {
+        for (embeddingID, data) in thumbnails {
+            try saveEmbeddingThumbnail(data, for: embeddingID)
+        }
+    }
+
+    func loadEmbeddingThumbnail(for embeddingID: UUID) -> NSImage? {
+        let key = embeddingID as NSUUID
+        if let cached = embeddingThumbnailCache.object(forKey: key) {
+            return cached
+        }
+
+        let url = embeddingThumbnailURL(for: embeddingID)
+        guard let data = try? Data(contentsOf: url),
+              let image = NSImage(data: data) else { return nil }
+
+        embeddingThumbnailCache.setObject(image, forKey: key, cost: data.count)
+        return image
+    }
+
+    func deleteEmbeddingThumbnail(for embeddingID: UUID) {
+        embeddingThumbnailCache.removeObject(forKey: embeddingID as NSUUID)
+        let url = embeddingThumbnailURL(for: embeddingID)
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    private func deleteAllEmbeddingThumbnails(for person: KnownPerson) {
+        for embedding in person.embeddings {
+            deleteEmbeddingThumbnail(for: embedding.id)
+        }
+    }
+
     // MARK: - CRUD Operations
 
     func addPerson(
         name: String,
         role: String? = nil,
         embeddings: [PersonEmbedding],
-        thumbnailData: Data? = nil
+        thumbnailData: Data? = nil,
+        embeddingThumbnails: [UUID: Data] = [:]
     ) throws -> KnownPerson {
         let person = KnownPerson(
             name: name,
@@ -146,6 +205,10 @@ final class KnownPeopleService {
 
         if let thumbData = thumbnailData {
             try saveThumbnail(thumbData, for: person.id)
+        }
+
+        if !embeddingThumbnails.isEmpty {
+            try saveEmbeddingThumbnails(embeddingThumbnails)
         }
 
         try mutateDatabase { db in
@@ -169,16 +232,25 @@ final class KnownPeopleService {
     }
 
     func removePerson(id: UUID) throws {
+        // Delete embedding thumbnails before removing from database
+        if let person = person(byID: id) {
+            deleteAllEmbeddingThumbnails(for: person)
+        }
+
         try mutateDatabase { db in
             db.people.removeAll { $0.id == id }
         }
         deleteThumbnail(for: id)
     }
 
-    func addEmbedding(_ embedding: PersonEmbedding, toPersonID personID: UUID) throws {
+    func addEmbedding(_ embedding: PersonEmbedding, toPersonID personID: UUID, thumbnailData: Data? = nil) throws {
         guard let index = peopleIndex[personID] else {
             throw NSError(domain: "KnownPeopleService", code: 10,
                           userInfo: [NSLocalizedDescriptionKey: "Person not found with ID: \(personID)"])
+        }
+
+        if let thumbData = thumbnailData {
+            try saveEmbeddingThumbnail(thumbData, for: embedding.id)
         }
 
         try mutateDatabase { db in
@@ -249,17 +321,18 @@ final class KnownPeopleService {
         role: String? = nil,
         embeddings: [PersonEmbedding],
         thumbnailData: Data?,
+        embeddingThumbnails: [UUID: Data] = [:],
         duplicateCheck: DuplicateCheckResult
     ) throws -> (person: KnownPerson, addedToExisting: Bool) {
         switch duplicateCheck {
         case .noDuplicate:
             // Create new person
-            let person = try addPerson(name: name, role: role, embeddings: embeddings, thumbnailData: thumbnailData)
+            let person = try addPerson(name: name, role: role, embeddings: embeddings, thumbnailData: thumbnailData, embeddingThumbnails: embeddingThumbnails)
             return (person, false)
 
         case .nameMatch(let existingPerson), .faceMatch(let existingPerson, _), .bothMatch(let existingPerson, _):
             // Add embeddings to existing person, avoiding duplicates
-            try addEmbeddingsDeduped(embeddings, toPersonID: existingPerson.id)
+            try addEmbeddingsDeduped(embeddings, toPersonID: existingPerson.id, embeddingThumbnails: embeddingThumbnails)
 
             // Return updated person
             if let updatedPerson = person(byID: existingPerson.id) {
@@ -270,11 +343,13 @@ final class KnownPeopleService {
     }
 
     /// Add embeddings to a person, skipping any that are duplicates (same featurePrintData).
-    func addEmbeddingsDeduped(_ embeddings: [PersonEmbedding], toPersonID personID: UUID) throws {
+    func addEmbeddingsDeduped(_ embeddings: [PersonEmbedding], toPersonID personID: UUID, embeddingThumbnails: [UUID: Data] = [:]) throws {
         guard let index = peopleIndex[personID] else {
             throw NSError(domain: "KnownPeopleService", code: 10,
                           userInfo: [NSLocalizedDescriptionKey: "Person not found with ID: \(personID)"])
         }
+
+        var addedEmbeddingIDs: Set<UUID> = []
 
         try mutateDatabase { db in
             guard db.people.indices.contains(index) else { return }
@@ -284,8 +359,17 @@ final class KnownPeopleService {
 
             guard !newEmbeddings.isEmpty else { return }
 
+            addedEmbeddingIDs = Set(newEmbeddings.map(\.id))
             db.people[index].embeddings.append(contentsOf: newEmbeddings)
             db.people[index].updatedAt = Date()
+        }
+
+        // Save thumbnails only for embeddings that were actually added
+        if !embeddingThumbnails.isEmpty {
+            let thumbnailsToSave = embeddingThumbnails.filter { addedEmbeddingIDs.contains($0.key) }
+            if !thumbnailsToSave.isEmpty {
+                try saveEmbeddingThumbnails(thumbnailsToSave)
+            }
         }
     }
 
@@ -338,14 +422,29 @@ final class KnownPeopleService {
     func removeEmbedding(_ embeddingID: UUID, fromPersonID personID: UUID) throws {
         guard let index = peopleIndex[personID] else { return }
 
+        var wasRepresentative = false
+
         try mutateDatabase { db in
+            wasRepresentative = db.people[index].representativeThumbnailID == embeddingID
             db.people[index].embeddings.removeAll { $0.id == embeddingID }
 
-            if db.people[index].representativeThumbnailID == embeddingID {
+            if wasRepresentative {
                 db.people[index].representativeThumbnailID = db.people[index].embeddings.first?.id
             }
 
             db.people[index].updatedAt = Date()
+        }
+
+        deleteEmbeddingThumbnail(for: embeddingID)
+
+        // If deleted embedding was the representative, update person thumbnail to new representative's
+        if wasRepresentative, let updatedPerson = person(byID: personID),
+           let newRepID = updatedPerson.representativeThumbnailID,
+           let newRepThumb = loadEmbeddingThumbnail(for: newRepID),
+           let tiffData = newRepThumb.tiffRepresentation,
+           let bitmap = NSBitmapImageRep(data: tiffData),
+           let jpegData = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.85]) {
+            try? saveThumbnail(jpegData, for: personID)
         }
     }
 
@@ -359,6 +458,7 @@ final class KnownPeopleService {
     func clearDatabase() throws {
         let emptyDB = KnownPeopleDatabase()
         featurePrintCache.removeAllObjects()
+        embeddingThumbnailCache.removeAllObjects()
 
         // Remove all files
         if FileManager.default.fileExists(atPath: knownPeopleDirectory.path) {
@@ -367,6 +467,7 @@ final class KnownPeopleService {
 
         // Recreate empty directory structure
         try FileManager.default.createDirectory(at: thumbnailsDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: embeddingThumbnailsDirectory, withIntermediateDirectories: true)
         try saveDatabase(emptyDB)
         database = emptyDB
     }
@@ -635,7 +736,9 @@ final class KnownPeopleService {
 
         // Create temp directory structure
         let tempThumbnailsDir = tempDir.appendingPathComponent("thumbnails")
+        let tempEmbeddingThumbnailsDir = tempDir.appendingPathComponent("embedding_thumbnails")
         try FileManager.default.createDirectory(at: tempThumbnailsDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: tempEmbeddingThumbnailsDir, withIntermediateDirectories: true)
 
         // Write manifest
         let embeddingCount = db.people.reduce(0) { $0 + $1.embeddings.count }
@@ -659,6 +762,15 @@ final class KnownPeopleService {
             if FileManager.default.fileExists(atPath: sourceURL.path) {
                 let destURL = tempThumbnailsDir.appendingPathComponent("\(person.id.uuidString).jpg")
                 try FileManager.default.copyItem(at: sourceURL, to: destURL)
+            }
+
+            // Copy embedding thumbnails
+            for embedding in person.embeddings {
+                let embSource = embeddingThumbnailURL(for: embedding.id)
+                if FileManager.default.fileExists(atPath: embSource.path) {
+                    let embDest = tempEmbeddingThumbnailsDir.appendingPathComponent("\(embedding.id.uuidString).jpg")
+                    try FileManager.default.copyItem(at: embSource, to: embDest)
+                }
             }
         }
 
@@ -752,11 +864,21 @@ final class KnownPeopleService {
 
         // Copy thumbnails only for newly imported people
         let importedThumbnailsDir = extractedDir.appendingPathComponent("thumbnails")
+        let importedEmbeddingThumbnailsDir = extractedDir.appendingPathComponent("embedding_thumbnails")
         for person in newPeople {
             let sourceThumb = importedThumbnailsDir.appendingPathComponent("\(person.id.uuidString).jpg")
             if FileManager.default.fileExists(atPath: sourceThumb.path) {
                 let destThumb = thumbnailURL(for: person.id)
                 try? FileManager.default.copyItem(at: sourceThumb, to: destThumb)
+            }
+
+            // Copy embedding thumbnails
+            for embedding in person.embeddings {
+                let embSource = importedEmbeddingThumbnailsDir.appendingPathComponent("\(embedding.id.uuidString).jpg")
+                if FileManager.default.fileExists(atPath: embSource.path) {
+                    let embDest = embeddingThumbnailURL(for: embedding.id)
+                    try? FileManager.default.copyItem(at: embSource, to: embDest)
+                }
             }
         }
 
