@@ -1830,7 +1830,9 @@ final class MetadataViewModel {
                     try? sidecarService.deleteSidecar(for: url, in: folder)
                 }
             }
-        } catch { }
+        } catch {
+            logger.warning("Failed to refresh metadata after processing: \(error.localizedDescription)")
+        }
     }
 
     private func resolveIfChanged(_ value: String?, interpolator: PresetVariableInterpolator, filename: String, ref: IPTCMetadata, changed: inout Bool) -> String? {

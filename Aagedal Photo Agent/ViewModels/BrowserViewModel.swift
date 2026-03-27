@@ -395,6 +395,7 @@ final class BrowserViewModel {
                 guard !Task.isCancelled, self.currentFolderURL == url else { return }
                 // Phase 1.5: Eagerly read EXIF orientation (metadata-only, no pixel decode)
                 await self.readOrientationsEagerly(for: &files)
+                guard !Task.isCancelled, self.currentFolderURL == url else { return }
                 self.images = files
                 self.isLoading = false
                 self.thumbnailService.startBackgroundGeneration(for: self.visibleImages)
