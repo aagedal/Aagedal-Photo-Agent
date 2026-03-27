@@ -446,7 +446,7 @@ struct FaceSuggestionsPanel: View {
         lastKnownCount = 0
 
         // Batch-match all unnamed groups at once
-        let unnamedGroups = faceData.groups.filter { $0.name == nil }
+        let unnamedGroups = viewModel.unnamedGroups
         let facesToMatch = unnamedGroups.compactMap { group -> (id: UUID, featurePrintData: Data)? in
             guard let face = viewModel.face(byID: group.representativeFaceID) else { return nil }
             return (id: group.id, featurePrintData: face.featurePrintData)

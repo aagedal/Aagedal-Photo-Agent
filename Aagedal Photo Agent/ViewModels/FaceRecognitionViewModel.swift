@@ -63,6 +63,8 @@ final class FaceRecognitionViewModel {
 
     // Cached sorted groups (invalidated when faceData changes)
     private(set) var sortedGroups: [FaceGroup] = []
+    private(set) var namedGroups: [FaceGroup] = []
+    private(set) var unnamedGroups: [FaceGroup] = []
 
     // Fast face lookup by ID (invalidated when faceData changes)
     // Not observed - always rebuilt alongside sortedGroups
@@ -158,43 +160,42 @@ final class FaceRecognitionViewModel {
         // Rebuild sorted groups
         guard let groups = faceData?.groups else {
             sortedGroups = []
+            namedGroups = []
+            unnamedGroups = []
+            canRefine = false
             faceLookup = [:]
             groupLookup = [:]
             facesByImageURL = [:]
             return
         }
 
+        // Split into named/unnamed — both sort modes need this partition
+        var named: [FaceGroup] = []
+        var unnamed: [FaceGroup] = []
+        for group in groups {
+            if group.name != nil {
+                named.append(group)
+            } else {
+                unnamed.append(group)
+            }
+        }
+        named.sort {
+            ($0.name ?? "").localizedCaseInsensitiveCompare($1.name ?? "") == .orderedAscending
+        }
+
         switch sortMode {
         case .bySize:
-            // Named groups first (alphabetical), then unnamed (by size descending)
-            sortedGroups = groups.sorted { a, b in
-                switch (a.name, b.name) {
-                case let (nameA?, nameB?):
-                    return nameA.localizedCaseInsensitiveCompare(nameB) == .orderedAscending
-                case (_?, nil):
-                    return true
-                case (nil, _?):
-                    return false
-                case (nil, nil):
-                    return a.faceIDs.count > b.faceIDs.count
-                }
-            }
+            // Unnamed sorted by size descending
+            unnamed.sort { $0.faceIDs.count > $1.faceIDs.count }
         case .manual:
-            // Named groups first (alphabetical), then unnamed in array order (insertion order)
-            var named: [FaceGroup] = []
-            var unnamed: [FaceGroup] = []
-            for group in groups {
-                if group.name != nil {
-                    named.append(group)
-                } else {
-                    unnamed.append(group)
-                }
-            }
-            named.sort {
-                ($0.name ?? "").localizedCaseInsensitiveCompare($1.name ?? "") == .orderedAscending
-            }
-            sortedGroups = named + unnamed
+            // Unnamed kept in array order (insertion order)
+            break
         }
+
+        namedGroups = named
+        unnamedGroups = unnamed
+        canRefine = !named.isEmpty && !unnamed.isEmpty
+        sortedGroups = named + unnamed
 
         // Rebuild group lookup
         groupLookup = [:]
@@ -823,13 +824,8 @@ final class FaceRecognitionViewModel {
         return newSuggestions.count
     }
 
-    /// Check if refinement is available (at least one named group and one unnamed group)
-    var canRefine: Bool {
-        guard let data = faceData else { return false }
-        let hasNamed = data.groups.contains { $0.name != nil }
-        let hasUnnamed = data.groups.contains { $0.name == nil }
-        return hasNamed && hasUnnamed
-    }
+    /// Whether refinement is available (at least one named group and one unnamed group)
+    private(set) var canRefine: Bool = false
 
     func dismissMergeSuggestion(_ suggestion: MergeSuggestion) {
         mergeSuggestions.removeAll { $0.id == suggestion.id }
