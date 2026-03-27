@@ -225,6 +225,7 @@ final class KnownPeopleService {
         }
 
         try mutateDatabase { db in
+            guard db.people.indices.contains(index) else { return }
             var updated = person
             updated.updatedAt = Date()
             db.people[index] = updated
@@ -254,6 +255,7 @@ final class KnownPeopleService {
         }
 
         try mutateDatabase { db in
+            guard db.people.indices.contains(index) else { return }
             db.people[index].embeddings.append(embedding)
             db.people[index].updatedAt = Date()
         }
@@ -414,6 +416,7 @@ final class KnownPeopleService {
 
         guard let index = peopleIndex[personID] else { return }
         try mutateDatabase { db in
+            guard db.people.indices.contains(index) else { return }
             db.people[index].updatedAt = Date()
         }
     }
@@ -425,6 +428,7 @@ final class KnownPeopleService {
         var wasRepresentative = false
 
         try mutateDatabase { db in
+            guard db.people.indices.contains(index) else { return }
             wasRepresentative = db.people[index].representativeThumbnailID == embeddingID
             db.people[index].embeddings.removeAll { $0.id == embeddingID }
 
@@ -451,7 +455,8 @@ final class KnownPeopleService {
     /// Get a person by ID
     func person(byID personID: UUID) -> KnownPerson? {
         let db = loadDatabase()
-        guard let index = peopleIndex[personID] else { return nil }
+        guard let index = peopleIndex[personID],
+              db.people.indices.contains(index) else { return nil }
         return db.people[index]
     }
 

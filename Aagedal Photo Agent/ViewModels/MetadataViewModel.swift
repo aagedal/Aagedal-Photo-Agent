@@ -280,6 +280,7 @@ final class MetadataViewModel {
                     self.metadata = nil
                     self.editingMetadata = IPTCMetadata()
                     self.previousEditingMetadata = nil
+                    self.saveError = "Failed to load metadata: \(error.localizedDescription)"
                 }
                 guard !Task.isCancelled else { return }
                 self.isLoading = false

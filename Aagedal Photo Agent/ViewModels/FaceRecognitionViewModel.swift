@@ -335,13 +335,16 @@ final class FaceRecognitionViewModel {
                 return
             }
 
+            let scanLogger = Logger(subsystem: "com.aagedal.photo-agent", category: "FaceRecognitionViewModel")
+
             let (allFaces, allGroups, scannedFiles) = await withTaskGroup(
-                of: (URL, [(face: DetectedFace, thumbnail: Data)]).self
+                of: (URL, [(face: DetectedFace, thumbnail: Data)], Bool).self
             ) { taskGroup -> ([DetectedFace], [FaceGroup], [String: FileSignature]) in
                 var allFaces = initialFaces
                 var allGroups = initialGroups
                 var scannedFiles = initialScannedFiles
                 var processed = 0
+                var detectionErrors = 0
                 var batchesSinceLastSave = 0
                 let saveInterval = 10 // Save progress every 10 batches
 
@@ -349,7 +352,8 @@ final class FaceRecognitionViewModel {
                 let useModeAwareClustering = config.recognitionMode != .visionFeaturePrint
 
                 // Helper to process a completed batch and cluster incrementally
-                func processBatch(scannedURL: URL, results: [(face: DetectedFace, thumbnail: Data)]) async {
+                func processBatch(scannedURL: URL, results: [(face: DetectedFace, thumbnail: Data)], failed: Bool) async {
+                    if failed { detectionErrors += 1 }
                     var newFaces: [DetectedFace] = []
 
                     for result in results {
@@ -435,8 +439,9 @@ final class FaceRecognitionViewModel {
 
                     let current = processed
                     let total = toScan.count
+                    let errors = detectionErrors
                     await MainActor.run {
-                        scanProgress = "\(current)/\(total)"
+                        scanProgress = errors > 0 ? "\(current)/\(total) (\(errors) failed)" : "\(current)/\(total)"
                     }
                 }
 
@@ -450,22 +455,27 @@ final class FaceRecognitionViewModel {
                     }
 
                     if pending >= 4 {
-                        if let (scannedURL, results) = await taskGroup.next() {
-                            await processBatch(scannedURL: scannedURL, results: results)
+                        if let (scannedURL, results, failed) = await taskGroup.next() {
+                            await processBatch(scannedURL: scannedURL, results: results, failed: failed)
                         }
                         pending -= 1
                     }
 
                     taskGroup.addTask(priority: .utility) {
-                        let results = (try? await detectionService.detectFaces(in: url, config: config)) ?? []
-                        return (url, results)
+                        do {
+                            let results = try await detectionService.detectFaces(in: url, config: config)
+                            return (url, results, false)
+                        } catch {
+                            scanLogger.warning("Face detection failed for \(url.lastPathComponent): \(error.localizedDescription)")
+                            return (url, [], true)
+                        }
                     }
                     pending += 1
                 }
 
                 // Collect remaining
-                for await (scannedURL, results) in taskGroup {
-                    await processBatch(scannedURL: scannedURL, results: results)
+                for await (scannedURL, results, failed) in taskGroup {
+                    await processBatch(scannedURL: scannedURL, results: results, failed: failed)
                 }
 
                 return (allFaces, allGroups, scannedFiles)
@@ -516,6 +526,9 @@ final class FaceRecognitionViewModel {
     func cancelScan() {
         activeScanTask?.cancel()
         activeScanTask = nil
+        isScanning = false
+        scanProgress = ""
+        scanningGroups = []
     }
 
     // MARK: - Known People Matching
