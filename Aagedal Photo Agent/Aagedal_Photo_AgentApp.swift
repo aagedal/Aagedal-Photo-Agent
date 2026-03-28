@@ -2,6 +2,14 @@ import SwiftUI
 
 @main
 struct Aagedal_Photo_AgentApp: App {
+    init() {
+        // Pre-generate the CIE chromaticity background on a background thread
+        // so it's ready before the user opens the Gamut scope
+        Task.detached(priority: .utility) {
+            ScopeRenderService.precomputeChromaticityBackground()
+        }
+    }
+
     var body: some Scene {
         Window("Aagedal Photo Agent", id: "main") {
             ContentView()

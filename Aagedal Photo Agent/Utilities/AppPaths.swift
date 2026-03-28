@@ -3,7 +3,7 @@ import os
 
 nonisolated private let logger = Logger(subsystem: "com.aagedal.photo-agent", category: "AppPaths")
 
-enum AppPaths {
+nonisolated enum AppPaths {
     static var applicationSupport: URL {
         guard let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
             logger.error("Application Support directory not found, falling back to home directory")
@@ -25,6 +25,12 @@ enum AppPaths {
 
     static var certificatesDirectory: URL {
         let url = applicationSupport.appendingPathComponent("Certificates", isDirectory: true)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    static var cacheDirectory: URL {
+        let url = applicationSupport.appendingPathComponent("Cache", isDirectory: true)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
     }

@@ -783,16 +783,35 @@ nonisolated struct ScopeRenderService: Sendable {
         return inside
     }
 
-    /// Cached CIE background image (spectral locus fill). The background is static —
-    /// it never depends on the photo, gamut selection, or clip mode — so we compute it
-    /// once and reuse it on every subsequent render.
+    /// In-memory cache of the CIE background image. Persisted to disk across sessions.
     nonisolated(unsafe) private static var _bgCache: (w: Int, h: Int, img: CGImage)?
 
-    /// Returns a cached CIE chromaticity background image, computing it on first call.
+    /// Disk cache path for the CIE background PNG.
+    private static func bgCachePath(width: Int, height: Int) -> URL {
+        AppPaths.cacheDirectory.appendingPathComponent("cie_background_\(width)x\(height).png")
+    }
+
+    /// Pre-generates the CIE chromaticity background at the standard scope size (720×720).
+    /// Call on app launch from a background thread so it's ready before the user opens the Gamut scope.
+    static func precomputeChromaticityBackground() {
+        let size = 720
+        _ = ScopeRenderService().chromaticityBackground(width: size, height: size, xyMin: -0.05, xyRange: 0.90)
+    }
+
+    /// Returns the CIE background, checking: memory cache → disk cache → compute.
     private func chromaticityBackground(width: Int, height: Int, xyMin: Float, xyRange: Float) -> CGImage? {
+        // 1. Memory cache
         if let c = Self._bgCache, c.w == width, c.h == height { return c.img }
 
-        // XYZ -> sRGB matrix (row-major)
+        // 2. Disk cache
+        let diskPath = Self.bgCachePath(width: width, height: height)
+        if let provider = CGDataProvider(url: diskPath as CFURL),
+           let img = CGImage(pngDataProviderSource: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent) {
+            Self._bgCache = (width, height, img)
+            return img
+        }
+
+        // 3. Compute
         let xyzToSRGB: ((Float, Float, Float), (Float, Float, Float), (Float, Float, Float)) = (
             ( 3.2404548, -1.5371389, -0.4985315),
             (-0.9692664,  1.8760109,  0.0415561),
@@ -812,7 +831,6 @@ nonisolated struct ScopeRenderService: Sendable {
 
         for py in 0..<height {
             for px in 0..<width {
-                // Raw data row 0 = top of image = high CIE y
                 let cx = xyMin + (Float(px) + 0.5) / Float(width) * xyRange
                 let cy = xyMin + (Float(height - 1 - py) + 0.5) / Float(height) * xyRange
 
@@ -841,6 +859,13 @@ nonisolated struct ScopeRenderService: Sendable {
 
         guard let img = ctx.makeImage() else { return nil }
         Self._bgCache = (width, height, img)
+
+        // Write to disk for next session
+        if let dest = CGImageDestinationCreateWithURL(diskPath as CFURL, "public.png" as CFString, 1, nil) {
+            CGImageDestinationAddImage(dest, img, nil)
+            CGImageDestinationFinalize(dest)
+        }
+
         return img
     }
 
