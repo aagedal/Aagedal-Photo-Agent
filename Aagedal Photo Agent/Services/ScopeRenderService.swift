@@ -785,9 +785,15 @@ nonisolated struct ScopeRenderService: Sendable {
         return inside
     }
 
-    /// Draw dim colorful CIE background inside the spectral locus.
-    /// Writes directly to raw pixel data (row 0 = top of image).
-    private func drawChromaticityBackground(_ outputData: UnsafeMutablePointer<UInt8>, width: Int, height: Int, stride outStride: Int, xyMin: Float, xyRange: Float) {
+    /// Cached CIE background image (spectral locus fill). The background is static —
+    /// it never depends on the photo, gamut selection, or clip mode — so we compute it
+    /// once and reuse it on every subsequent render.
+    nonisolated(unsafe) private static var _bgCache: (w: Int, h: Int, img: CGImage)?
+
+    /// Returns a cached CIE chromaticity background image, computing it on first call.
+    private func chromaticityBackground(width: Int, height: Int, xyMin: Float, xyRange: Float) -> CGImage? {
+        if let c = Self._bgCache, c.w == width, c.h == height { return c.img }
+
         // XYZ -> sRGB matrix (row-major)
         let xyzToSRGB: ((Float, Float, Float), (Float, Float, Float), (Float, Float, Float)) = (
             ( 3.2404548, -1.5371389, -0.4985315),
@@ -799,6 +805,11 @@ nonisolated struct ScopeRenderService: Sendable {
             row.0 * a + row.1 * b + row.2 * c
         }
 
+        guard let ctx = createContext(width: width, height: height),
+              let data = ctx.data?.bindMemory(to: UInt8.self, capacity: width * height * 4)
+        else { return nil }
+
+        let outStride = width * 4
         let dimFactor: Float = 0.12
 
         for py in 0..<height {
@@ -809,7 +820,6 @@ nonisolated struct ScopeRenderService: Sendable {
 
                 guard Self.isInsideSpectralLocus(x: cx, y: cy), cy > 0.001 else { continue }
 
-                // Convert xy to XYZ (Y=0.5 for moderate luminance)
                 let cY: Float = 0.5
                 let cX = (cx / cy) * cY
                 let cZ = ((1.0 - cx - cy) / cy) * cY
@@ -818,17 +828,48 @@ nonisolated struct ScopeRenderService: Sendable {
                 var g = dot3(xyzToSRGB.1, cX, cY, cZ)
                 var b = dot3(xyzToSRGB.2, cX, cY, cZ)
 
-                // Clamp and apply dim factor
                 r = max(r, 0); g = max(g, 0); b = max(b, 0)
                 let maxC = max(r, g, b, 0.001)
                 r /= maxC; g /= maxC; b /= maxC
                 r *= dimFactor; g *= dimFactor; b *= dimFactor
 
                 let offset = py * outStride + px * 4
-                outputData[offset]     = UInt8(r * 255)
-                outputData[offset + 1] = UInt8(g * 255)
-                outputData[offset + 2] = UInt8(b * 255)
-                outputData[offset + 3] = 255
+                data[offset]     = UInt8(r * 255)
+                data[offset + 1] = UInt8(g * 255)
+                data[offset + 2] = UInt8(b * 255)
+                data[offset + 3] = 255
+            }
+        }
+
+        guard let img = ctx.makeImage() else { return nil }
+        Self._bgCache = (width, height, img)
+        return img
+    }
+
+    /// Composites the cached CIE background into raw pixel data.
+    private func drawChromaticityBackground(_ outputData: UnsafeMutablePointer<UInt8>, width: Int, height: Int, stride outStride: Int, xyMin: Float, xyRange: Float) {
+        guard let bgImage = chromaticityBackground(width: width, height: height, xyMin: xyMin, xyRange: xyRange),
+              let bgProvider = bgImage.dataProvider,
+              let bgData = bgProvider.data as Data?
+        else { return }
+
+        let srcStride = width * 4
+        bgData.withUnsafeBytes { ptr in
+            guard let src = ptr.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
+            for py in 0..<height {
+                let rowOffset = py * srcStride
+                let dstOffset = py * outStride
+                for px in 0..<width {
+                    let s = rowOffset + px * 4
+                    let d = dstOffset + px * 4
+                    // Only copy non-black pixels (background is black outside the locus)
+                    if src[s] > 0 || src[s + 1] > 0 || src[s + 2] > 0 {
+                        outputData[d]     = src[s]
+                        outputData[d + 1] = src[s + 1]
+                        outputData[d + 2] = src[s + 2]
+                        outputData[d + 3] = 255
+                    }
+                }
             }
         }
     }
