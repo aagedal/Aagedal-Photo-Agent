@@ -220,6 +220,11 @@ struct Aagedal_Photo_AgentApp: App {
                     NotificationCenter.default.post(name: .setScopeMode, object: ScopeViewModel.ScopeMode.vectorscope)
                 }
                 .keyboardShortcut("3", modifiers: .shift)
+
+                Button("Gamut") {
+                    NotificationCenter.default.post(name: .setScopeMode, object: ScopeViewModel.ScopeMode.chromaticity)
+                }
+                .keyboardShortcut("4", modifiers: .shift)
             }
 
             CommandMenu("Upload") {
