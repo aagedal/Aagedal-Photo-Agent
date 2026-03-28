@@ -342,7 +342,19 @@ final class BrowserViewModel {
         if image.personShownLowercased.contains(where: { $0.contains(query) }) {
             return true
         }
-        return image.keywordsLowercased.contains { $0.contains(query) }
+        if image.keywordsLowercased.contains(where: { $0.contains(query) }) {
+            return true
+        }
+        // Search IPTC metadata fields (title, description, creator, city, country, event)
+        if let meta = image.metadata {
+            if let title = meta.title, title.localizedCaseInsensitiveContains(query) { return true }
+            if let desc = meta.description, desc.localizedCaseInsensitiveContains(query) { return true }
+            if let creator = meta.creator, creator.localizedCaseInsensitiveContains(query) { return true }
+            if let city = meta.city, city.localizedCaseInsensitiveContains(query) { return true }
+            if let country = meta.country, country.localizedCaseInsensitiveContains(query) { return true }
+            if let event = meta.event, event.localizedCaseInsensitiveContains(query) { return true }
+        }
+        return false
     }
 
     private func applyFilters(to images: [ImageFile]) -> [ImageFile] {
