@@ -13,11 +13,12 @@ final class FTPViewModel {
     var isRendering = false
     var uploadProgress: [String: FTPUploadProgress] = [:]
     var overallProgress: Double = 0
-    var errorMessage: String?
+    var errorMessages: [String] = []
     var completedCount = 0
     var totalCount = 0
     var renderCompletedCount = 0
     var renderTotalCount = 0
+    var uploadCompleted = false
 
     var isShowingServerForm = false
     var editingConnection = FTPConnection()
@@ -96,6 +97,7 @@ final class FTPViewModel {
         uploadTask = nil
         isUploading = false
         isRendering = false
+        uploadCompleted = false
     }
 
     func deleteConnection(_ connection: FTPConnection) {
@@ -163,7 +165,7 @@ final class FTPViewModel {
 
     func uploadFiles(_ urls: [URL], to connection: FTPConnection) {
         guard let password = KeychainService.load(forKey: connection.keychainKey) else {
-            errorMessage = "No password found for \(connection.name). Edit the connection to set a password."
+            errorMessages = ["No password found for \(connection.name). Edit the connection to set a password."]
             return
         }
 
@@ -171,7 +173,8 @@ final class FTPViewModel {
 
         isUploading = true
         isRendering = false
-        errorMessage = nil
+        uploadCompleted = false
+        errorMessages = []
         completedCount = 0
         totalCount = urls.count
         uploadProgress = [:]
@@ -193,21 +196,21 @@ final class FTPViewModel {
                             if !wasComplete && progress.isComplete {
                                 self.completedCount += 1
                             }
-                            self.overallProgress = Double(self.completedCount) / Double(self.totalCount)
+                            self.updateSmoothedProgress()
                         }
                     }
                 } catch {
-                    self.errorMessage = "Failed to upload \(url.lastPathComponent): \(error.localizedDescription)"
+                    self.errorMessages.append("Failed to upload \(url.lastPathComponent): \(error.localizedDescription)")
                 }
             }
             self.recordUploadCompletion(id: historyID)
-            self.isUploading = false
+            self.showCompletionBriefly()
         }
     }
 
     func renderAndUploadFiles(_ urls: [URL], to connection: FTPConnection, exifToolService: ExifToolService) {
         guard let password = KeychainService.load(forKey: connection.keychainKey) else {
-            errorMessage = "No password found for \(connection.name). Edit the connection to set a password."
+            errorMessages = ["No password found for \(connection.name). Edit the connection to set a password."]
             return
         }
 
@@ -215,7 +218,8 @@ final class FTPViewModel {
 
         isRendering = true
         isUploading = false
-        errorMessage = nil
+        uploadCompleted = false
+        errorMessages = []
         renderCompletedCount = 0
         renderTotalCount = urls.count
         completedCount = 0
@@ -230,7 +234,7 @@ final class FTPViewModel {
             do {
                 try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
             } catch {
-                self.errorMessage = "Failed to create temp directory: \(error.localizedDescription)"
+                self.errorMessages = ["Failed to create temp directory: \(error.localizedDescription)"]
                 self.isRendering = false
                 return
             }
@@ -268,7 +272,7 @@ final class FTPViewModel {
                     let outputURL = EditedImageRenderer.outputURL(for: url, in: tempDir, extension: "jpg")
                     renderedURLs.append(outputURL)
                 } catch {
-                    self.errorMessage = "Failed to render \(url.lastPathComponent): \(error.localizedDescription)"
+                    self.errorMessages.append("Failed to render \(url.lastPathComponent): \(error.localizedDescription)")
                 }
                 self.renderCompletedCount += 1
                 self.overallProgress = Double(self.renderCompletedCount) / Double(self.renderTotalCount) * 0.5
@@ -299,16 +303,39 @@ final class FTPViewModel {
                             if !wasComplete && progress.isComplete {
                                 self.completedCount += 1
                             }
-                            self.overallProgress = 0.5 + Double(self.completedCount) / Double(max(self.totalCount, 1)) * 0.5
+                            self.updateSmoothedProgress(uploadWeightOffset: 0.5, uploadWeightRange: 0.5)
                         }
                     }
                 } catch {
-                    self.errorMessage = "Failed to upload \(url.lastPathComponent): \(error.localizedDescription)"
+                    self.errorMessages.append("Failed to upload \(url.lastPathComponent): \(error.localizedDescription)")
                 }
             }
 
             self.recordUploadCompletion(id: historyID)
-            self.isUploading = false
+            self.showCompletionBriefly()
+        }
+    }
+
+    // MARK: - Progress Helpers
+
+    /// Computes smooth overall progress by interpolating per-file fractions.
+    private func updateSmoothedProgress(uploadWeightOffset: Double = 0, uploadWeightRange: Double = 1.0) {
+        let count = Double(max(totalCount, 1))
+        let perFileContribution = uploadProgress.values.reduce(0.0) { $0 + $1.fractionCompleted }
+        overallProgress = uploadWeightOffset + (perFileContribution / count) * uploadWeightRange
+    }
+
+    /// Shows a brief completion state before hiding the overlay.
+    private func showCompletionBriefly() {
+        isUploading = false
+        isRendering = false
+        uploadCompleted = true
+        overallProgress = 1.0
+
+        Task {
+            try? await Task.sleep(for: .seconds(3))
+            guard !isUploading, !isRendering else { return }
+            uploadCompleted = false
         }
     }
 }

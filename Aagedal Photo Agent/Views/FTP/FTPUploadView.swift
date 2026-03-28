@@ -16,6 +16,8 @@ struct FTPUploadView: View {
     @State private var variablesProcessProgress = ""
     @State private var c2paSignProgress = ""
     @State private var expandedHistoryID: UUID?
+    @State private var preprocessErrors: [String] = []
+    @State private var isFileListExpanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -37,12 +39,27 @@ struct FTPUploadView: View {
             // Current Upload section
             GroupBox {
                 VStack(alignment: .leading, spacing: 12) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "doc.on.doc")
-                            .foregroundStyle(.secondary)
-                        Text("\(activeFiles.count) file\(activeFiles.count == 1 ? "" : "s") selected")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                    DisclosureGroup(isExpanded: $isFileListExpanded) {
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 2) {
+                                ForEach(activeFiles, id: \.self) { url in
+                                    Text(url.lastPathComponent)
+                                        .font(.caption)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .frame(maxHeight: 120)
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "doc.on.doc")
+                                .foregroundStyle(.secondary)
+                            Text("\(activeFiles.count) file\(activeFiles.count == 1 ? "" : "s") selected")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
                     }
 
                     // Server selection
@@ -97,10 +114,26 @@ struct FTPUploadView: View {
                         }
                     }
 
-                    if let error = viewModel.errorMessage {
-                        Text(error)
-                            .font(.caption)
-                            .foregroundStyle(.red)
+                    if !preprocessErrors.isEmpty {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(preprocessErrors, id: \.self) { error in
+                                Text(error)
+                                    .font(.caption)
+                                    .foregroundStyle(.orange)
+                                    .lineLimit(2)
+                            }
+                        }
+                    }
+
+                    if !viewModel.errorMessages.isEmpty {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(viewModel.errorMessages, id: \.self) { error in
+                                Text(error)
+                                    .font(.caption)
+                                    .foregroundStyle(.red)
+                                    .lineLimit(2)
+                            }
+                        }
                     }
 
                     HStack {
@@ -256,6 +289,8 @@ struct FTPUploadView: View {
         viewModel.saveLastUsedConnectionID(connection.id)
 
         Task {
+            preprocessErrors = []
+
             if processVariablesBeforeUpload {
                 isProcessingVariables = true
                 variablesProcessProgress = "0/\(activeFiles.count)"
@@ -292,7 +327,7 @@ struct FTPUploadView: View {
                     author: author?.isEmpty == true ? nil : author
                 )
             } catch {
-                // Continue with next file
+                preprocessErrors.append("C2PA signing failed for \(url.lastPathComponent): \(error.localizedDescription)")
             }
             signed += 1
             c2paSignProgress = "\(signed)/\(files.count)"
@@ -359,7 +394,7 @@ struct FTPUploadView: View {
                     }
                 }
             } catch {
-                // Continue with next file
+                preprocessErrors.append("Variable processing failed for \(url.lastPathComponent): \(error.localizedDescription)")
             }
 
             processed += 1
