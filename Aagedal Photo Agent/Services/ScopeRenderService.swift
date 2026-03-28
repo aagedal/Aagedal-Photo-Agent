@@ -619,19 +619,21 @@ nonisolated struct ScopeRenderService: Sendable {
         guard let ctx = createContext(width: outW, height: outH) else { return nil }
         fillBackground(ctx, width: outW, height: outH)
 
-        // Draw dim colorful CIE background
-        drawChromaticityBackground(ctx, width: outW, height: outH, xyMin: xyMin, xyRange: xyRange)
-
-        // Draw guides: spectral locus, gamut triangles, D65 marker
+        // Step 1: All CGContext API drawing first (guides use CG coordinate system: origin at bottom-left)
         drawChromaticityGuides(ctx, width: outW, height: outH, xyMin: xyMin, xyRange: xyRange, targetGamut: targetGamut)
 
-        // Render bin data (logarithmic intensity, same as vectorscope)
-        let logMax = log2f(1 + Float(maxCount))
-        let gain: Float = 3.0
+        // Step 2: All raw pixel data operations (row 0 = CG y=height-1 = top of image)
         guard let outputData = ctx.data?.bindMemory(to: UInt8.self, capacity: outW * outH * 4) else {
             return ctx.makeImage()
         }
         let outStride = outW * 4
+
+        // Draw dim colorful CIE background into raw pixel data
+        drawChromaticityBackground(outputData, width: outW, height: outH, stride: outStride, xyMin: xyMin, xyRange: xyRange)
+
+        // Render bin data (logarithmic intensity, same as vectorscope)
+        let logMax = log2f(1 + Float(maxCount))
+        let gain: Float = 3.0
 
         for py in 0..<outH {
             for px in 0..<outW {
@@ -783,8 +785,9 @@ nonisolated struct ScopeRenderService: Sendable {
         return inside
     }
 
-    /// Draw dim colorful CIE background inside the spectral locus
-    private func drawChromaticityBackground(_ ctx: CGContext, width: Int, height: Int, xyMin: Float, xyRange: Float) {
+    /// Draw dim colorful CIE background inside the spectral locus.
+    /// Writes directly to raw pixel data (row 0 = top of image).
+    private func drawChromaticityBackground(_ outputData: UnsafeMutablePointer<UInt8>, width: Int, height: Int, stride outStride: Int, xyMin: Float, xyRange: Float) {
         // XYZ -> sRGB matrix (row-major)
         let xyzToSRGB: ((Float, Float, Float), (Float, Float, Float), (Float, Float, Float)) = (
             ( 3.2404548, -1.5371389, -0.4985315),
@@ -796,12 +799,11 @@ nonisolated struct ScopeRenderService: Sendable {
             row.0 * a + row.1 * b + row.2 * c
         }
 
-        guard let outputData = ctx.data?.bindMemory(to: UInt8.self, capacity: width * height * 4) else { return }
-        let outStride = width * 4
         let dimFactor: Float = 0.12
 
         for py in 0..<height {
             for px in 0..<width {
+                // Raw data row 0 = top of image = high CIE y
                 let cx = xyMin + (Float(px) + 0.5) / Float(width) * xyRange
                 let cy = xyMin + (Float(height - 1 - py) + 0.5) / Float(height) * xyRange
 
@@ -833,10 +835,10 @@ nonisolated struct ScopeRenderService: Sendable {
 
     /// Draw spectral locus outline, gamut triangles, and D65 white point
     private func drawChromaticityGuides(_ ctx: CGContext, width: Int, height: Int, xyMin: Float, xyRange: Float, targetGamut: TargetColorGamut) {
-        // Helper to convert CIE xy to pixel coordinates
+        // Helper to convert CIE xy to CGContext coordinates (origin at bottom-left, y increases upward)
         func toPixel(x: Float, y: Float) -> CGPoint {
             let px = CGFloat((x - xyMin) / xyRange * Float(width - 1))
-            let py = CGFloat(Float(height - 1) - (y - xyMin) / xyRange * Float(height - 1))
+            let py = CGFloat((y - xyMin) / xyRange * Float(height - 1))
             return CGPoint(x: px, y: py)
         }
 
