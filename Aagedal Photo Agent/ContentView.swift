@@ -950,6 +950,9 @@ struct ContentView: View {
                         scopeViewModel.targetGamut = newValue
                     }
                 }
+                .onReceive(NotificationCenter.default.publisher(for: .toggleGamutClipping)) { _ in
+                    scopeViewModel.showClippedGamut.toggle()
+                }
             }
         }
         .frame(minWidth: 180)

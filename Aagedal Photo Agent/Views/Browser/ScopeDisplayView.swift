@@ -46,30 +46,6 @@ struct ScopeDisplayView: View {
                         .allowsHitTesting(false)
                 }
 
-                // Clip toggle for chromaticity mode
-                if scopeViewModel.scopeMode == .chromaticity {
-                    VStack {
-                        HStack {
-                            Spacer()
-                            Button {
-                                scopeViewModel.showClippedGamut.toggle()
-                            } label: {
-                                Text("C")
-                                    .font(.system(size: 11, weight: .bold, design: .monospaced))
-                                    .foregroundColor(scopeViewModel.showClippedGamut ? .white : .gray)
-                                    .padding(4)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 3)
-                                            .fill(scopeViewModel.showClippedGamut ? Color.accentColor.opacity(0.7) : Color.black.opacity(0.4))
-                                    )
-                            }
-                            .buttonStyle(.plain)
-                            .padding(6)
-                            .help(scopeViewModel.showClippedGamut ? "Showing clipped gamut" : "Showing full gamut")
-                        }
-                        Spacer()
-                    }
-                }
             }
             .aspectRatio(1, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: 4))

@@ -233,6 +233,13 @@ struct Aagedal_Photo_AgentApp: App {
                     NotificationCenter.default.post(name: .setScopeMode, object: ScopeViewModel.ScopeMode.chromaticity)
                 }
                 .keyboardShortcut("4", modifiers: .shift)
+
+                Divider()
+
+                Button("Toggle Gamut Clipping") {
+                    NotificationCenter.default.post(name: .toggleGamutClipping, object: nil)
+                }
+                .keyboardShortcut("c", modifiers: [])
             }
 
             CommandMenu("Upload") {
@@ -291,6 +298,7 @@ extension Notification.Name {
     static let applyTemplateShortcut = Notification.Name("applyTemplateShortcut")
     static let addNewMask = Notification.Name("addNewMask")
     static let setScopeMode = Notification.Name("setScopeMode")
+    static let toggleGamutClipping = Notification.Name("toggleGamutClipping")
     static let signSelectedC2PA = Notification.Name("signSelectedC2PA")
     static let toggleHDR = Notification.Name("toggleHDR")
 }

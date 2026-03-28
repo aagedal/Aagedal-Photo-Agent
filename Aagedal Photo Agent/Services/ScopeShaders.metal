@@ -957,7 +957,7 @@ kernel void chromaticityAccumulate(
     int outW = int(scopeParams.outputWidth);
     int outH = int(scopeParams.outputHeight);
     int outX = int((cx - xyMin) / xyRange * float(outW - 1));
-    int outY = int((cy - xyMin) / xyRange * float(outH - 1));
+    int outY = outH - 1 - int((cy - xyMin) / xyRange * float(outH - 1));
 
     if (outX < 0 || outX >= outW || outY < 0 || outY >= outH) return;
 
