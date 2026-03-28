@@ -619,17 +619,15 @@ nonisolated struct ScopeRenderService: Sendable {
         guard let ctx = createContext(width: outW, height: outH) else { return nil }
         fillBackground(ctx, width: outW, height: outH)
 
-        // Step 1: All CGContext API drawing first (guides use CG coordinate system: origin at bottom-left)
-        drawChromaticityGuides(ctx, width: outW, height: outH, xyMin: xyMin, xyRange: xyRange, targetGamut: targetGamut)
-
-        // Step 2: All raw pixel data operations (row 0 = CG y=height-1 = top of image)
+        // Step 1: CIE background via raw pixel data (must come before guides so it doesn't overwrite them)
         guard let outputData = ctx.data?.bindMemory(to: UInt8.self, capacity: outW * outH * 4) else {
             return ctx.makeImage()
         }
         let outStride = outW * 4
-
-        // Draw dim colorful CIE background into raw pixel data
         drawChromaticityBackground(outputData, width: outW, height: outH, stride: outStride, xyMin: xyMin, xyRange: xyRange)
+
+        // Step 2: Guides via CGContext API (composited on top of the background)
+        drawChromaticityGuides(ctx, width: outW, height: outH, xyMin: xyMin, xyRange: xyRange, targetGamut: targetGamut)
 
         // Render bin data (logarithmic intensity, same as vectorscope)
         let logMax = log2f(1 + Float(maxCount))
@@ -907,8 +905,8 @@ nonisolated struct ScopeRenderService: Sendable {
 
         for triangle in Self.gamutTriangles {
             let isTarget = triangle.name == targetName
-            let alpha: CGFloat = isTarget ? 0.7 : 0.3
-            let lineWidth: CGFloat = isTarget ? 2.0 : 1.0
+            let alpha: CGFloat = isTarget ? 0.9 : 0.5
+            let lineWidth: CGFloat = isTarget ? 2.5 : 1.5
 
             ctx.setStrokeColor(red: triangle.color.r, green: triangle.color.g, blue: triangle.color.b, alpha: alpha)
             ctx.setLineWidth(lineWidth)
