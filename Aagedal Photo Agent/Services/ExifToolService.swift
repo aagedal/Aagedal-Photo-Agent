@@ -96,6 +96,8 @@ final class ExifToolService {
     private var isExecuting = false
     private var generation = 0
     private let maxQueueSize = 100
+    private var commandTimeoutTask: Task<Void, Never>?
+    private let commandTimeoutSeconds: TimeInterval = 30
 
     deinit {
         MainActor.assumeIsolated {
@@ -220,6 +222,9 @@ final class ExifToolService {
         guard isRunning else { return }
         exifToolLog.warning("ExifTool process terminated unexpectedly")
 
+        commandTimeoutTask?.cancel()
+        commandTimeoutTask = nil
+
         pendingContinuation?.resume(throwing: NSError(
             domain: "ExifToolService", code: 2,
             userInfo: [NSLocalizedDescriptionKey: "ExifTool process terminated unexpectedly"]
@@ -244,6 +249,9 @@ final class ExifToolService {
 
     func stop() {
         guard isRunning else { return }
+
+        commandTimeoutTask?.cancel()
+        commandTimeoutTask = nil
 
         // Resume pending continuation and drain command queue to prevent hanging callers
         let pendingError = CancellationError()
@@ -283,6 +291,8 @@ final class ExifToolService {
         // Guard against unbounded growth from a missing sentinel
         if accumulatedOutput.utf8.count > maxAccumulatedOutputSize {
             exifToolLog.error("ExifTool output exceeded \(self.maxAccumulatedOutputSize) bytes without sentinel — restarting")
+            commandTimeoutTask?.cancel()
+            commandTimeoutTask = nil
             accumulatedOutput = ""
             pendingContinuation?.resume(throwing: NSError(
                 domain: "ExifToolService", code: 3,
@@ -300,6 +310,8 @@ final class ExifToolService {
             if let newlineAfterReady = accumulatedOutput[readyRange.upperBound...].firstIndex(of: "\n") {
                 let result = String(accumulatedOutput[..<readyRange.lowerBound])
                 accumulatedOutput = String(accumulatedOutput[accumulatedOutput.index(after: newlineAfterReady)...])
+                commandTimeoutTask?.cancel()
+                commandTimeoutTask = nil
                 pendingContinuation?.resume(returning: result)
                 pendingContinuation = nil
                 isExecuting = false
@@ -344,6 +356,7 @@ final class ExifToolService {
                 self.accumulatedOutput = ""
                 self.pendingContinuation = continuation
                 self.sendCommand(arguments)
+                self.startCommandTimeout(label: label)
             }
             if !self.isExecuting {
                 self.dequeueNext()
@@ -384,6 +397,23 @@ final class ExifToolService {
             pendingContinuation = nil
             isExecuting = false
             dequeueNext()
+        }
+    }
+
+    private func startCommandTimeout(label: String) {
+        commandTimeoutTask?.cancel()
+        commandTimeoutTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(self?.commandTimeoutSeconds ?? 30))
+            guard !Task.isCancelled, let self, self.pendingContinuation != nil else { return }
+            exifToolLog.error("ExifTool command timed out after \(self.commandTimeoutSeconds)s: \(label, privacy: .public)")
+            self.pendingContinuation?.resume(throwing: NSError(
+                domain: "ExifToolService", code: 5,
+                userInfo: [NSLocalizedDescriptionKey: "ExifTool command timed out after \(Int(self.commandTimeoutSeconds))s — possible stalled process"]
+            ))
+            self.pendingContinuation = nil
+            self.isExecuting = false
+            self.accumulatedOutput = ""
+            self.stop()
         }
     }
 
