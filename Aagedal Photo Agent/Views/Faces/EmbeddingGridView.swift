@@ -85,8 +85,9 @@ struct EmbeddingGridView: View {
             detailRow("Added", value: embedding.addedAt.formatted(date: .abbreviated, time: .shortened))
 
             if let mode = embedding.recognitionMode {
-                detailRow("Mode", value: mode == .visionFeaturePrint ? "Face" : "Face + Clothing")
+                detailRow("Scan mode", value: mode == .visionFeaturePrint ? "Vision" : "Face + Clothing")
             }
+            detailRow("Stored data", value: "Face only")
 
             HStack(spacing: 8) {
                 let isRepresentative = person.representativeThumbnailID == embedding.id

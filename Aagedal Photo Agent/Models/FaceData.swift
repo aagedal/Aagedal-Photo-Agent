@@ -90,6 +90,26 @@ nonisolated struct MergeSuggestion: Identifiable {
     let similarity: Float  // 0.0-1.0, higher = more similar
 }
 
+/// A moderate-confidence match between a face group and a known person,
+/// requiring user confirmation (unlike auto-matches which are applied immediately).
+nonisolated struct KnownPersonSuggestion: Identifiable {
+    let id = UUID()
+    let groupID: UUID
+    let personID: UUID
+    let personName: String
+    let confidence: Float         // best confidence across sampled faces
+    let sampledFaceCount: Int     // how many faces from the group were checked
+    let matchedFaceCount: Int     // how many of those matched this person
+}
+
+/// Summary of a Known People check run, for UI feedback.
+nonisolated struct KnownPeopleCheckResult {
+    let autoMatchCount: Int       // groups auto-named (high confidence)
+    let suggestionCount: Int      // groups with suggestions (moderate confidence)
+    let noMatchCount: Int         // groups with no match at all
+    let totalChecked: Int         // total unnamed groups checked
+}
+
 nonisolated struct FolderFaceData: Codable {
     var folderURL: URL
     var faces: [DetectedFace]

@@ -267,7 +267,6 @@ struct FaceSuggestionsPanel: View {
     @State private var isRefining = false
     @State private var isCheckingKnown = false
     @State private var lastRefinementCount = 0
-    @State private var lastKnownCount = 0
 
     /// The single selected group for thumbnail replacement (if any)
     private var replaceThumbnailCandidate: (groupID: UUID, personID: UUID)? {
@@ -357,13 +356,6 @@ struct FaceSuggestionsPanel: View {
                                     if isCheckingKnown {
                                         ProgressView()
                                             .controlSize(.small)
-                                    } else if lastKnownCount > 0 {
-                                        Text("+\(lastKnownCount)")
-                                            .font(.caption)
-                                            .foregroundStyle(.white)
-                                            .padding(.horizontal, 6)
-                                            .padding(.vertical, 2)
-                                            .background(.green, in: Capsule())
                                     }
                                 }
                                 .padding(.horizontal, 12)
@@ -377,6 +369,28 @@ struct FaceSuggestionsPanel: View {
                     }
                     .padding(.horizontal)
                     .padding(.top)
+
+                    // Check results summary
+                    if let result = viewModel.lastKnownPeopleCheckResult, result.totalChecked > 0 {
+                        HStack(spacing: 8) {
+                            if result.autoMatchCount > 0 {
+                                Label("\(result.autoMatchCount) matched", systemImage: "checkmark.circle.fill")
+                                    .font(.caption)
+                                    .foregroundStyle(.green)
+                            }
+                            if result.suggestionCount > 0 {
+                                Label("\(result.suggestionCount) suggestion\(result.suggestionCount == 1 ? "" : "s")", systemImage: "questionmark.circle.fill")
+                                    .font(.caption)
+                                    .foregroundStyle(.orange)
+                            }
+                            if result.autoMatchCount == 0 && result.suggestionCount == 0 {
+                                Label("No matches found", systemImage: "minus.circle")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(.horizontal)
+                    }
 
                     // Replace Thumbnail card (single selection)
                     if let candidate = replaceThumbnailCandidate {
@@ -398,11 +412,31 @@ struct FaceSuggestionsPanel: View {
                         }
                     }
 
+                    // Known People suggestions
+                    if !viewModel.knownPersonSuggestions.isEmpty {
+                        Divider()
+                            .padding(.horizontal)
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Known People Suggestions")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal)
+
+                            LazyVStack(spacing: 8) {
+                                ForEach(viewModel.knownPersonSuggestions) { suggestion in
+                                    KnownPersonSuggestionRow(suggestion: suggestion, viewModel: viewModel)
+                                }
+                            }
+                            .padding(.horizontal)
+                        }
+                    }
+
                     Divider()
                         .padding(.horizontal)
 
                     // Merge suggestions list
-                    if viewModel.mergeSuggestions.isEmpty {
+                    if viewModel.mergeSuggestions.isEmpty && viewModel.knownPersonSuggestions.isEmpty {
                         VStack(spacing: 8) {
                             Image(systemName: "checkmark.circle")
                                 .font(.system(size: 32))
@@ -417,7 +451,7 @@ struct FaceSuggestionsPanel: View {
                         }
                         .frame(maxWidth: .infinity)
                         .padding()
-                    } else {
+                    } else if !viewModel.mergeSuggestions.isEmpty {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Merge Suggestions")
                                 .font(.subheadline)
@@ -437,40 +471,18 @@ struct FaceSuggestionsPanel: View {
             }
         }
         .background(.background)
+        .onAppear {
+            if knownPeopleMode != "off" && viewModel.lastKnownPeopleCheckResult == nil {
+                checkKnownPeople()
+            }
+        }
     }
 
     private func checkKnownPeople() {
-        guard let faceData = viewModel.faceData else { return }
-
+        guard viewModel.faceData != nil else { return }
         isCheckingKnown = true
-        lastKnownCount = 0
-
-        // Batch-match all unnamed groups at once
-        let unnamedGroups = viewModel.unnamedGroups
-        let facesToMatch = unnamedGroups.compactMap { group -> (id: UUID, featurePrintData: Data)? in
-            guard let face = viewModel.face(byID: group.representativeFaceID) else { return nil }
-            return (id: group.id, featurePrintData: face.featurePrintData)
-        }
-
-        let batchMatches = KnownPeopleService.shared.bestAutoMatches(facesToMatch)
-
-        var matchCount = 0
-        var lastMatchedGroupID: UUID?
-
-        for group in unnamedGroups {
-            if let bestMatch = batchMatches[group.id] {
-                viewModel.nameGroup(group.id, name: bestMatch.person.name)
-                viewModel.knownPersonMatchByGroup[group.id] = (personID: bestMatch.person.id, confidence: bestMatch.confidence)
-                lastMatchedGroupID = group.id
-                matchCount += 1
-            }
-        }
-
-        // Select the last matched group for thumbnail replacement suggestion
-        viewModel.selectGroupForThumbnailReplacement(lastMatchedGroupID)
-
+        _ = viewModel.checkKnownPeopleWithSuggestions()
         isCheckingKnown = false
-        lastKnownCount = matchCount
     }
 }
 
@@ -698,6 +710,115 @@ struct SuggestionRow: View {
 
             Text(group?.name ?? "Unnamed")
                 .font(.system(size: 10))
+                .lineLimit(1)
+                .frame(maxWidth: 60)
+        }
+    }
+}
+
+// MARK: - Known Person Suggestion Row
+
+struct KnownPersonSuggestionRow: View {
+    let suggestion: KnownPersonSuggestion
+    @Bindable var viewModel: FaceRecognitionViewModel
+
+    private var group: FaceGroup? {
+        viewModel.group(byID: suggestion.groupID)
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            // Face group thumbnail
+            groupPreview
+
+            // Match indicator
+            VStack(spacing: 2) {
+                Image(systemName: "arrow.right")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                Text("\(Int(suggestion.confidence * 100))%")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(suggestion.confidence >= 0.55 ? .orange : .secondary)
+                if suggestion.sampledFaceCount > 1 {
+                    Text("\(suggestion.matchedFaceCount)/\(suggestion.sampledFaceCount)")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .frame(width: 36)
+
+            // Known person thumbnail + name
+            knownPersonPreview
+
+            Spacer()
+
+            // Actions
+            VStack(spacing: 4) {
+                Button {
+                    viewModel.acceptKnownPersonSuggestion(suggestion)
+                } label: {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                }
+                .buttonStyle(.plain)
+                .help("Accept: name group as \(suggestion.personName)")
+
+                Button {
+                    viewModel.dismissKnownPersonSuggestion(suggestion)
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Dismiss suggestion")
+            }
+        }
+        .padding(8)
+        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    @ViewBuilder
+    private var groupPreview: some View {
+        VStack(spacing: 4) {
+            if let group,
+               let image = viewModel.thumbnailImage(for: group.representativeFaceID) {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 48, height: 48)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+            } else {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(.quaternary)
+                    .frame(width: 48, height: 48)
+            }
+            Text("Unnamed")
+                .font(.system(size: 10))
+                .lineLimit(1)
+                .frame(maxWidth: 60)
+        }
+    }
+
+    @ViewBuilder
+    private var knownPersonPreview: some View {
+        VStack(spacing: 4) {
+            if let thumbnail = KnownPeopleService.shared.loadThumbnail(for: suggestion.personID) {
+                Image(nsImage: thumbnail)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 48, height: 48)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+            } else {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(.quaternary)
+                    .overlay {
+                        Image(systemName: "person.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(width: 48, height: 48)
+            }
+            Text(suggestion.personName)
+                .font(.system(size: 10, weight: .medium))
                 .lineLimit(1)
                 .frame(maxWidth: 60)
         }

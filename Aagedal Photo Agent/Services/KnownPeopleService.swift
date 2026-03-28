@@ -502,7 +502,7 @@ final class KnownPeopleService {
         let minConfidenceGap: Float
     }
 
-    private func currentAutoMatchPolicy() -> MatchPolicy {
+    func currentAutoMatchPolicy() -> MatchPolicy {
         let minConfidence = Float(UserDefaults.standard.object(forKey: UserDefaultsKeys.knownPeopleMinConfidence) as? Double ?? 0.60)
         return MatchPolicy(
             threshold: 0.45,
@@ -736,6 +736,69 @@ final class KnownPeopleService {
                 maxResults: 1
             ).first {
                 results[face.id] = bestMatch
+            }
+        }
+
+        return results
+    }
+
+    /// Match multiple faces per group against the Known People database for suggestion generation.
+    /// Loads the database once, checks up to N faces per group, and aggregates results.
+    /// Returns ALL matches within threshold (not just strict auto-matches), enabling the caller
+    /// to separate auto-matches from suggestions.
+    ///
+    /// For each group, the result contains matches sorted by confidence, with vote counts
+    /// indicating how many sampled faces agreed on each person.
+    func matchGroupsForSuggestions(
+        groups: [(groupID: UUID, faceEmbeddings: [(faceID: UUID, featurePrintData: Data)])],
+        threshold: Float = 0.45,
+        maxResultsPerFace: Int = 3
+    ) -> [UUID: [(match: KnownPersonMatch, matchedFaceCount: Int)]] {
+        let db = loadDatabase()
+        guard !db.people.isEmpty else { return [:] }
+
+        var results: [UUID: [(match: KnownPersonMatch, matchedFaceCount: Int)]] = [:]
+
+        for group in groups {
+            // Track per-person: best match and how many sampled faces matched
+            var personAggregation: [UUID: (bestMatch: KnownPersonMatch, matchCount: Int)] = [:]
+
+            for faceEmbedding in group.faceEmbeddings {
+                let queryFP: VNFeaturePrintObservation
+                do {
+                    guard let unarchived = try NSKeyedUnarchiver.unarchivedObject(
+                        ofClass: VNFeaturePrintObservation.self,
+                        from: faceEmbedding.featurePrintData
+                    ) else {
+                        continue
+                    }
+                    queryFP = unarchived
+                } catch {
+                    continue
+                }
+
+                let faceMatches = matchFaceAgainstDatabase(
+                    queryFP: queryFP,
+                    database: db,
+                    threshold: threshold,
+                    maxResults: maxResultsPerFace
+                )
+
+                for match in faceMatches {
+                    if let existing = personAggregation[match.person.id] {
+                        let bestMatch = match.confidence > existing.bestMatch.confidence ? match : existing.bestMatch
+                        personAggregation[match.person.id] = (bestMatch: bestMatch, matchCount: existing.matchCount + 1)
+                    } else {
+                        personAggregation[match.person.id] = (bestMatch: match, matchCount: 1)
+                    }
+                }
+            }
+
+            if !personAggregation.isEmpty {
+                let sorted = personAggregation.values
+                    .sorted { $0.bestMatch.confidence > $1.bestMatch.confidence }
+                    .map { (match: $0.bestMatch, matchedFaceCount: $0.matchCount) }
+                results[group.groupID] = sorted
             }
         }
 

@@ -44,6 +44,12 @@ final class FaceRecognitionViewModel {
     // Merge suggestions for similar groups
     var mergeSuggestions: [MergeSuggestion] = []
 
+    // Known People suggestions (moderate-confidence matches requiring user confirmation)
+    var knownPersonSuggestions: [KnownPersonSuggestion] = []
+
+    // Result summary from the last Known People check
+    var lastKnownPeopleCheckResult: KnownPeopleCheckResult?
+
     // Intermediate groups shown during active scan (for live UI feedback)
     var scanningGroups: [FaceGroup] = []
 
@@ -156,6 +162,8 @@ final class FaceRecognitionViewModel {
         // Clear stale group-level state that references old group IDs
         knownPersonMatchByGroup.removeAll()
         mergeSuggestions.removeAll()
+        knownPersonSuggestions.removeAll()
+        lastKnownPeopleCheckResult = nil
 
         // Rebuild sorted groups
         guard let groups = faceData?.groups else {
@@ -625,6 +633,122 @@ final class FaceRecognitionViewModel {
 
     func matchKnownPeople() {
         applyKnownPeopleMatches()
+    }
+
+    /// Select up to `maxSamples` faces from a group for Known People matching.
+    /// Prioritizes higher quality faces. Always includes the representative face.
+    func sampleFaces(from group: FaceGroup, maxSamples: Int = 5) -> [DetectedFace] {
+        let allFaces = faces(in: group)
+        guard allFaces.count > maxSamples else { return allFaces }
+
+        var sorted = allFaces.sorted { ($0.qualityScore ?? 0) > ($1.qualityScore ?? 0) }
+
+        // Ensure representative face is included
+        if let repIndex = sorted.firstIndex(where: { $0.id == group.representativeFaceID }), repIndex >= maxSamples {
+            sorted.swapAt(0, repIndex)
+        }
+
+        return Array(sorted.prefix(maxSamples))
+    }
+
+    /// Check unnamed groups against Known People database.
+    /// Produces both auto-matches (applied immediately) and suggestions (for user review).
+    func checkKnownPeopleWithSuggestions(maxSamplesPerGroup: Int = 5) -> KnownPeopleCheckResult {
+        guard faceData != nil else {
+            return KnownPeopleCheckResult(autoMatchCount: 0, suggestionCount: 0, noMatchCount: 0, totalChecked: 0)
+        }
+
+        let policy = KnownPeopleService.shared.currentAutoMatchPolicy()
+        let suggestionMinConfidence: Float = max(policy.minConfidence - 0.15, 0.40)
+
+        let groupsToCheck = unnamedGroups
+        guard !groupsToCheck.isEmpty else {
+            return KnownPeopleCheckResult(autoMatchCount: 0, suggestionCount: 0, noMatchCount: 0, totalChecked: 0)
+        }
+
+        // Build input: sample multiple faces per group
+        let groupInputs: [(groupID: UUID, faceEmbeddings: [(faceID: UUID, featurePrintData: Data)])] =
+            groupsToCheck.compactMap { group in
+                let sampled = sampleFaces(from: group, maxSamples: maxSamplesPerGroup)
+                guard !sampled.isEmpty else { return nil }
+                let embeddings = sampled.map { (faceID: $0.id, featurePrintData: $0.featurePrintData) }
+                return (groupID: group.id, faceEmbeddings: embeddings)
+            }
+
+        // Batch match all groups
+        let allMatches = KnownPeopleService.shared.matchGroupsForSuggestions(groups: groupInputs)
+
+        var autoMatchCount = 0
+        var suggestionCount = 0
+        var noMatchCount = 0
+        var newSuggestions: [KnownPersonSuggestion] = []
+        var lastAutoMatchedGroupID: UUID?
+
+        for group in groupsToCheck {
+            guard let matches = allMatches[group.id], let best = matches.first else {
+                noMatchCount += 1
+                continue
+            }
+
+            // Check if best match passes the strict auto-match policy
+            let passesAutoMatch: Bool
+            if best.match.confidence >= policy.minConfidence {
+                if matches.count >= 2 {
+                    passesAutoMatch = (best.match.confidence - matches[1].match.confidence) >= policy.minConfidenceGap
+                } else {
+                    passesAutoMatch = true
+                }
+            } else {
+                passesAutoMatch = false
+            }
+
+            if passesAutoMatch {
+                nameGroup(group.id, name: best.match.person.name)
+                knownPersonMatchByGroup[group.id] = (personID: best.match.person.id, confidence: best.match.confidence)
+                lastAutoMatchedGroupID = group.id
+                autoMatchCount += 1
+            } else if best.match.confidence >= suggestionMinConfidence {
+                let sampledCount = groupInputs.first(where: { $0.groupID == group.id })?.faceEmbeddings.count ?? 1
+                newSuggestions.append(KnownPersonSuggestion(
+                    groupID: group.id,
+                    personID: best.match.person.id,
+                    personName: best.match.person.name,
+                    confidence: best.match.confidence,
+                    sampledFaceCount: sampledCount,
+                    matchedFaceCount: best.matchedFaceCount
+                ))
+                suggestionCount += 1
+            } else {
+                noMatchCount += 1
+            }
+        }
+
+        knownPersonSuggestions = newSuggestions
+
+        let result = KnownPeopleCheckResult(
+            autoMatchCount: autoMatchCount,
+            suggestionCount: suggestionCount,
+            noMatchCount: noMatchCount,
+            totalChecked: groupsToCheck.count
+        )
+        lastKnownPeopleCheckResult = result
+
+        if lastAutoMatchedGroupID != nil {
+            selectGroupForThumbnailReplacement(lastAutoMatchedGroupID)
+        }
+
+        return result
+    }
+
+    func acceptKnownPersonSuggestion(_ suggestion: KnownPersonSuggestion) {
+        nameGroup(suggestion.groupID, name: suggestion.personName)
+        knownPersonMatchByGroup[suggestion.groupID] = (personID: suggestion.personID, confidence: suggestion.confidence)
+        knownPersonSuggestions.removeAll { $0.id == suggestion.id }
+        selectGroupForThumbnailReplacement(suggestion.groupID)
+    }
+
+    func dismissKnownPersonSuggestion(_ suggestion: KnownPersonSuggestion) {
+        knownPersonSuggestions.removeAll { $0.id == suggestion.id }
     }
 
     /// Match a specific group against Known People and track the match.
