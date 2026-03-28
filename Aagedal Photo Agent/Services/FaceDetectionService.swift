@@ -414,6 +414,8 @@ nonisolated struct FaceDetectionService: Sendable {
 
         // Iteratively merge closest clusters until all distances exceed threshold
         while clusters.count > 1 {
+            guard !Task.isCancelled else { break }
+
             // Find minimum distance pair
             var minDistance: Float = .infinity
             var minI = 0
@@ -500,6 +502,7 @@ nonisolated struct FaceDetectionService: Sendable {
     private func buildDistanceMatrix(_ faces: [DetectedFace], cache: FeaturePrintCache) -> [Int64: Float] {
         var matrix: [Int64: Float] = [:]
         for i in 0..<faces.count {
+            guard !Task.isCancelled else { break }
             for j in (i + 1)..<faces.count {
                 if let fp1 = cache.getFeaturePrint(for: faces[i]),
                    let fp2 = cache.getFeaturePrint(for: faces[j]),
@@ -567,6 +570,8 @@ nonisolated struct FaceDetectionService: Sendable {
         var distanceMatrix = buildDistanceMatrix(faces, cache: fpCache)
 
         while clusters.count > 1 {
+            guard !Task.isCancelled else { break }
+
             var minDistance: Float = .infinity
             var minI = 0
             var minJ = 1
@@ -680,6 +685,8 @@ nonisolated struct FaceDetectionService: Sendable {
         // Iterate: each face adopts the highest-weighted neighbor label
         var faceIDs = faces.map(\.id)
         for _ in 0..<config.chineseWhispersIterations {
+            guard !Task.isCancelled else { break }
+
             // Shuffle for randomness (reduces order dependency)
             faceIDs.shuffle()
 
@@ -740,6 +747,7 @@ nonisolated struct FaceDetectionService: Sendable {
         var edges: [GraphEdge] = []
 
         for i in 0..<faces.count {
+            guard !Task.isCancelled else { break }
             guard let fp1 = cache.getFeaturePrint(for: faces[i]) else { continue }
 
             for j in (i + 1)..<faces.count {
@@ -1577,6 +1585,7 @@ nonisolated struct FaceDetectionService: Sendable {
         // Build initial distance matrix
         var distanceMatrix: [Int64: Float] = [:]
         for i in 0..<faces.count {
+            guard !Task.isCancelled else { break }
             for j in (i + 1)..<faces.count {
                 if let distance = computeModeAwareDistance(
                     face1: faces[i],
@@ -1592,6 +1601,8 @@ nonisolated struct FaceDetectionService: Sendable {
 
         // Iteratively merge closest clusters
         while clusters.count > 1 {
+            guard !Task.isCancelled else { break }
+
             var minDistance: Float = .infinity
             var minI = 0
             var minJ = 1
