@@ -313,6 +313,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         guard let settings else {
             let ptr = buffer.contents().bindMemory(to: EditParams.self, capacity: 1)
             ptr.pointee = params
+            ptr.pointee.gamutClipMode = gamutClipMode
             return
         }
 

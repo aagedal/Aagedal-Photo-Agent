@@ -165,6 +165,7 @@ struct FullScreenImageView: View {
     fileprivate var zoomController: ZoomController?
 
     @State private var currentImage: LoadedImage?
+    @State private var originalCGImage: CGImage?
     @State private var isLoading = false
     @State private var loadError: String?
     @State private var fullLoadTask: Task<Void, Never>?
@@ -545,7 +546,7 @@ struct FullScreenImageView: View {
             viewModel.selectNext()
             return .handled
         }
-        .task(id: "\(currentImageFile?.url.absoluteString ?? "nil")|\(renderEdits)|\(scopeViewModel.showClippedGamut)|\(scopeViewModel.targetGamut.rawValue)") {
+        .task(id: "\(currentImageFile?.url.absoluteString ?? "nil")|\(renderEdits)") {
             // Reset zoom when changing images
             zoomScale = 1.0
             lastZoomScale = 1.0
@@ -593,6 +594,18 @@ struct FullScreenImageView: View {
                 currentImage = makeLoadedImage(from: rotated)
             }
             imageCache.invalidateImage(for: url)
+        }
+        .onChange(of: scopeViewModel.showClippedGamut) {
+            guard let original = originalCGImage else { return }
+            let image = scopeViewModel.showClippedGamut
+                ? Self.gamutClipped(original, targetGamut: scopeViewModel.targetGamut)
+                : original
+            currentImage = LoadedImage(cgImage: image, size: CGSize(width: original.width, height: original.height))
+        }
+        .onChange(of: scopeViewModel.targetGamut) {
+            guard scopeViewModel.showClippedGamut, let original = originalCGImage else { return }
+            let image = Self.gamutClipped(original, targetGamut: scopeViewModel.targetGamut)
+            currentImage = LoadedImage(cgImage: image, size: CGSize(width: original.width, height: original.height))
         }
     }
 
@@ -1077,6 +1090,7 @@ struct FullScreenImageView: View {
     }
 
     private func makeLoadedImage(from cgImage: CGImage) -> LoadedImage {
+        originalCGImage = cgImage
         let image = scopeViewModel.showClippedGamut
             ? Self.gamutClipped(cgImage, targetGamut: scopeViewModel.targetGamut)
             : cgImage

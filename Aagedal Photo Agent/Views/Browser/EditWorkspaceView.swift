@@ -1430,9 +1430,6 @@ struct EditWorkspaceView: View {
         }
 
         editLog.debug("renderPreview: full path (CGImage generation)")
-        // Build CIFilter chain as fallback CIImage (used if Metal compute is unavailable,
-        // e.g. during "before" toggle, and as source for CGImage generation).
-        previewCIImage = CameraRawApproximation.apply(to: sourceCIImage, settings: settings)
 
         // On release / initial load: produce CGImage for scope display and export
         previewRenderTask?.cancel()
