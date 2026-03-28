@@ -601,11 +601,17 @@ final class BrowserViewModel {
 
         // Process in batches — apply each batch directly to self.images so concurrent
         // user edits (rating/label changes) are not overwritten by a stale snapshot.
+        // Suppress the images didSet cascade during the loop to avoid N/batchSize
+        // redundant sort + filter + UI rebuild cycles; do a single rebuild at the end.
         let batchSize = 50
         let urls = images.filter(\.isImageFile).map(\.url)
 
+        suppressImagesCascade = true
         for batchStart in stride(from: 0, to: urls.count, by: batchSize) {
-            guard !Task.isCancelled, currentFolderURL == folderURL else { return }
+            guard !Task.isCancelled, currentFolderURL == folderURL else {
+                suppressImagesCascade = false
+                return
+            }
             let batchEnd = min(batchStart + batchSize, urls.count)
             let batchURLs = Array(urls[batchStart..<batchEnd])
 
@@ -616,6 +622,8 @@ final class BrowserViewModel {
                 logger.warning("Batch metadata load failed (batch at offset \(batchStart)): \(error.localizedDescription)")
             }
         }
+        suppressImagesCascade = false
+        rebuildSortedCache()
     }
 
     private func loadBasicMetadata(for urls: [URL]) async {
@@ -640,8 +648,12 @@ final class BrowserViewModel {
 
         let batchSize = 50
 
+        suppressImagesCascade = true
         for batchStart in stride(from: 0, to: urls.count, by: batchSize) {
-            guard !Task.isCancelled, currentFolderURL == folderURL else { return }
+            guard !Task.isCancelled, currentFolderURL == folderURL else {
+                suppressImagesCascade = false
+                return
+            }
             let batchEnd = min(batchStart + batchSize, urls.count)
             let batchURLs = Array(urls[batchStart..<batchEnd])
 
@@ -652,6 +664,8 @@ final class BrowserViewModel {
                 logger.warning("Incremental metadata load failed: \(error.localizedDescription)")
             }
         }
+        suppressImagesCascade = false
+        rebuildSortedCache()
     }
 
     private func drainPendingMetadataIfNeeded() {
