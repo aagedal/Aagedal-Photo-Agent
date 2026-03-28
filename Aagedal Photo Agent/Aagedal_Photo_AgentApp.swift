@@ -202,7 +202,7 @@ struct Aagedal_Photo_AgentApp: App {
                 Button("Toggle HDR") {
                     NotificationCenter.default.post(name: .toggleHDR, object: nil)
                 }
-                .keyboardShortcut("h", modifiers: .command)
+                .keyboardShortcut("h", modifiers: [])
 
                 Button("Reset All Edits") {
                     NotificationCenter.default.post(name: .resetAllEdits, object: nil)
