@@ -940,6 +940,16 @@ struct ContentView: View {
                         scopeViewModel.scopeMode = mode
                     }
                 }
+                .onChange(of: settingsViewModel.exportColorGamutSDR) { _, newValue in
+                    if scopeViewModel.waveformScale == .percentage {
+                        scopeViewModel.targetGamut = newValue
+                    }
+                }
+                .onChange(of: settingsViewModel.exportColorGamutHDR) { _, newValue in
+                    if scopeViewModel.waveformScale == .nits {
+                        scopeViewModel.targetGamut = newValue
+                    }
+                }
             }
         }
         .frame(minWidth: 180)
@@ -1156,6 +1166,7 @@ struct ContentView: View {
         scopeImageTask?.cancel()
         scopeImageTask = nil
         scopeViewModel.waveformScale = isNativeHDR ? .nits : .percentage
+        scopeViewModel.targetGamut = isNativeHDR ? settingsViewModel.exportColorGamutHDR : settingsViewModel.exportColorGamutSDR
 
         guard let url else {
             scopeViewModel.updateImage(nil)

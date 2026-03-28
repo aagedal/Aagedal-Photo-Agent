@@ -24,6 +24,8 @@ struct ScopeParams {
     var cropTop: Float = 0
     var cropRight: Float = 1
     var cropBottom: Float = 1
+    var clipMode: UInt32 = 0      // 0=unclipped, 1=clipped
+    var targetGamut: UInt32 = 0   // 0=sRGB, 1=displayP3, 2=rec2020
 }
 
 /// Manages Metal compute pipelines for real-time scope rendering (waveform, parade, vectorscope).
@@ -40,9 +42,11 @@ final class MetalScopePipeline: @unchecked Sendable {
     private let waveformAccumulateState: MTLComputePipelineState
     private let paradeAccumulateState: MTLComputePipelineState
     private let vectorscopeAccumulateState: MTLComputePipelineState
+    private let chromaticityAccumulateState: MTLComputePipelineState
     private let waveformRenderState: MTLComputePipelineState
     private let paradeRenderState: MTLComputePipelineState
     private let vectorscopeRenderState: MTLComputePipelineState
+    private let chromaticityRenderState: MTLComputePipelineState
     private let findMaxCountState: MTLComputePipelineState
 
     // Render pipeline for blit
@@ -75,9 +79,11 @@ final class MetalScopePipeline: @unchecked Sendable {
         guard let wfAccum = library.makeFunction(name: "waveformAccumulate"),
               let parAccum = library.makeFunction(name: "paradeAccumulate"),
               let vsAccum = library.makeFunction(name: "vectorscopeAccumulate"),
+              let chromAccum = library.makeFunction(name: "chromaticityAccumulate"),
               let wfRender = library.makeFunction(name: "waveformRender"),
               let parRender = library.makeFunction(name: "paradeRender"),
               let vsRender = library.makeFunction(name: "vectorscopeRender"),
+              let chromRender = library.makeFunction(name: "chromaticityRender"),
               let findMax = library.makeFunction(name: "scopeFindMaxCount"),
               let blitVert = library.makeFunction(name: "scopeBlitVertex"),
               let blitFrag = library.makeFunction(name: "scopeBlitFragment")
@@ -90,9 +96,11 @@ final class MetalScopePipeline: @unchecked Sendable {
             self.waveformAccumulateState = try device.makeComputePipelineState(function: wfAccum)
             self.paradeAccumulateState = try device.makeComputePipelineState(function: parAccum)
             self.vectorscopeAccumulateState = try device.makeComputePipelineState(function: vsAccum)
+            self.chromaticityAccumulateState = try device.makeComputePipelineState(function: chromAccum)
             self.waveformRenderState = try device.makeComputePipelineState(function: wfRender)
             self.paradeRenderState = try device.makeComputePipelineState(function: parRender)
             self.vectorscopeRenderState = try device.makeComputePipelineState(function: vsRender)
+            self.chromaticityRenderState = try device.makeComputePipelineState(function: chromRender)
             self.findMaxCountState = try device.makeComputePipelineState(function: findMax)
         } catch {
             scopePipelineLog.error("MetalScopePipeline: compute pipeline error: \(error)")
@@ -152,6 +160,8 @@ final class MetalScopePipeline: @unchecked Sendable {
         maskBuffer: MTLBuffer?,
         mode: ScopeViewModel.ScopeMode,
         scale: WaveformScale,
+        clipMode: Bool = false,
+        targetGamut: UInt32 = 0,
         cropLeft: Float = 0, cropTop: Float = 0,
         cropRight: Float = 1, cropBottom: Float = 1,
         drawable: CAMetalDrawable,
@@ -215,6 +225,17 @@ final class MetalScopePipeline: @unchecked Sendable {
                                     sourceTexture: sourceTexture, editParamsBuffer: editParamsBuffer,
                                     lutTexture: lutTexture, maskBuffer: maskBuffer,
                                     drawable: drawable, drawableSize: drawableSize)
+
+        case .chromaticity:
+            let workSize = UInt32(min(min(outW, outH), 360))
+            params.sampleWidth = workSize
+            params.sampleHeight = UInt32(max(Float(workSize) * srcAspect, 1))
+            params.clipMode = clipMode ? 1 : 0
+            params.targetGamut = targetGamut
+            return encodeChromaticity(commandBuffer: commandBuffer, params: params,
+                                     sourceTexture: sourceTexture, editParamsBuffer: editParamsBuffer,
+                                     lutTexture: lutTexture, maskBuffer: maskBuffer,
+                                     drawable: drawable, drawableSize: drawableSize)
         }
     }
 
@@ -378,6 +399,62 @@ final class MetalScopePipeline: @unchecked Sendable {
         // Step 4: Render
         guard let render = commandBuffer.makeComputeCommandEncoder() else { return false }
         render.setComputePipelineState(vectorscopeRenderState)
+        render.setTexture(outputTexture, index: 0)
+        render.setBuffer(binBuffer, offset: 0, index: 0)
+        render.setBuffer(scopeParamsBuffer, offset: 0, index: 1)
+        render.setBuffer(maxCountBuffer, offset: 0, index: 2)
+        let renderGrid = MTLSize(width: Int(params.outputWidth), height: Int(params.outputHeight), depth: 1)
+        render.dispatchThreads(renderGrid, threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
+        render.endEncoding()
+
+        return encodeBlitToDrawable(commandBuffer: commandBuffer, drawable: drawable, drawableSize: drawableSize)
+    }
+
+    // MARK: - Chromaticity
+
+    private nonisolated func encodeChromaticity(
+        commandBuffer: MTLCommandBuffer,
+        params: ScopeParams,
+        sourceTexture: MTLTexture,
+        editParamsBuffer: MTLBuffer,
+        lutTexture: MTLTexture,
+        maskBuffer: MTLBuffer?,
+        drawable: CAMetalDrawable,
+        drawableSize: CGSize
+    ) -> Bool {
+        let pixelCount = Int(params.outputWidth * params.outputHeight)
+        let binBufferSize = pixelCount * 4 * MemoryLayout<UInt32>.size
+
+        let paramsPtr = scopeParamsBuffer.contents().bindMemory(to: ScopeParams.self, capacity: 1)
+        paramsPtr.pointee = params
+
+        // Step 1: Clear
+        guard let blit = commandBuffer.makeBlitCommandEncoder() else { return false }
+        blit.fill(buffer: binBuffer, range: 0..<binBufferSize, value: 0)
+        blit.fill(buffer: maxCountBuffer, range: 0..<MemoryLayout<UInt32>.size, value: 0)
+        blit.endEncoding()
+
+        // Step 2: Accumulate
+        guard let accum = commandBuffer.makeComputeCommandEncoder() else { return false }
+        accum.setComputePipelineState(chromaticityAccumulateState)
+        accum.setTexture(sourceTexture, index: 0)
+        accum.setTexture(lutTexture, index: 1)
+        accum.setBuffer(binBuffer, offset: 0, index: 0)
+        accum.setBuffer(editParamsBuffer, offset: 0, index: 1)
+        accum.setBuffer(scopeParamsBuffer, offset: 0, index: 2)
+        if let maskBuf = maskBuffer {
+            accum.setBuffer(maskBuf, offset: 0, index: 3)
+        }
+        let accumGrid = MTLSize(width: Int(params.sampleWidth), height: Int(params.sampleHeight), depth: 1)
+        accum.dispatchThreads(accumGrid, threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
+        accum.endEncoding()
+
+        // Step 3: Find max
+        encodeFindMax(commandBuffer: commandBuffer, binCount: pixelCount)
+
+        // Step 4: Render
+        guard let render = commandBuffer.makeComputeCommandEncoder() else { return false }
+        render.setComputePipelineState(chromaticityRenderState)
         render.setTexture(outputTexture, index: 0)
         render.setBuffer(binBuffer, offset: 0, index: 0)
         render.setBuffer(scopeParamsBuffer, offset: 0, index: 1)

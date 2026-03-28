@@ -503,6 +503,16 @@ final class SettingsViewModel {
         didSet { UserDefaults.standard.set(exportTIFFCompression.rawValue, forKey: UserDefaultsKeys.exportTIFFCompression) }
     }
 
+    /// SDR export color gamut. Default: sRGB
+    var exportColorGamutSDR: TargetColorGamut {
+        didSet { UserDefaults.standard.set(exportColorGamutSDR.rawValue, forKey: UserDefaultsKeys.exportColorGamutSDR) }
+    }
+
+    /// HDR export color gamut. Default: Display P3
+    var exportColorGamutHDR: TargetColorGamut {
+        didSet { UserDefaults.standard.set(exportColorGamutHDR.rawValue, forKey: UserDefaultsKeys.exportColorGamutHDR) }
+    }
+
     /// Known People database mode. Default: off
     var knownPeopleMode: KnownPeopleMode {
         didSet {
@@ -823,6 +833,12 @@ final class SettingsViewModel {
 
         let storedTIFFCompression = UserDefaults.standard.string(forKey: UserDefaultsKeys.exportTIFFCompression) ?? TIFFCompression.lzw.rawValue
         self.exportTIFFCompression = TIFFCompression(rawValue: storedTIFFCompression) ?? .lzw
+
+        let storedColorGamutSDR = UserDefaults.standard.string(forKey: UserDefaultsKeys.exportColorGamutSDR) ?? TargetColorGamut.sRGB.rawValue
+        self.exportColorGamutSDR = TargetColorGamut(rawValue: storedColorGamutSDR) ?? .sRGB
+
+        let storedColorGamutHDR = UserDefaults.standard.string(forKey: UserDefaultsKeys.exportColorGamutHDR) ?? TargetColorGamut.displayP3.rawValue
+        self.exportColorGamutHDR = TargetColorGamut(rawValue: storedColorGamutHDR) ?? .displayP3
 
         self.detectedEditors = Self.detectEditors()
 

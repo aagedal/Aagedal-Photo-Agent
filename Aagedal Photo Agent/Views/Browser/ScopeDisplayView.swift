@@ -9,6 +9,7 @@ struct ScopeDisplayView: View {
                 Text("Wave").tag(ScopeViewModel.ScopeMode.waveform)
                 Text("Parade").tag(ScopeViewModel.ScopeMode.parade)
                 Text("Vector").tag(ScopeViewModel.ScopeMode.vectorscope)
+                Text("Gamut").tag(ScopeViewModel.ScopeMode.chromaticity)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
@@ -25,6 +26,8 @@ struct ScopeDisplayView: View {
                         editPipeline: editPipeline,
                         mode: scopeViewModel.scopeMode,
                         waveformScale: scopeViewModel.waveformScale,
+                        showClippedGamut: scopeViewModel.showClippedGamut,
+                        targetGamut: UInt32(TargetColorGamut.allCases.firstIndex(of: scopeViewModel.targetGamut) ?? 0),
                         coordinator: scopeViewModel.metalScopeCoordinator
                     )
                 } else if let image = scopeViewModel.scopeImage {
@@ -38,9 +41,34 @@ struct ScopeDisplayView: View {
                 }
 
                 // Unified label overlay for both Metal and CPU scope paths
-                if scopeViewModel.scopeMode != .vectorscope {
+                if scopeViewModel.scopeMode != .vectorscope && scopeViewModel.scopeMode != .chromaticity {
                     ScopeLabelsOverlay(scale: scopeViewModel.waveformScale)
                         .allowsHitTesting(false)
+                }
+
+                // Clip toggle for chromaticity mode
+                if scopeViewModel.scopeMode == .chromaticity {
+                    VStack {
+                        HStack {
+                            Spacer()
+                            Button {
+                                scopeViewModel.showClippedGamut.toggle()
+                            } label: {
+                                Text("C")
+                                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                    .foregroundColor(scopeViewModel.showClippedGamut ? .white : .gray)
+                                    .padding(4)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 3)
+                                            .fill(scopeViewModel.showClippedGamut ? Color.accentColor.opacity(0.7) : Color.black.opacity(0.4))
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                            .padding(6)
+                            .help(scopeViewModel.showClippedGamut ? "Showing clipped gamut" : "Showing full gamut")
+                        }
+                        Spacer()
+                    }
                 }
             }
             .aspectRatio(1, contentMode: .fit)

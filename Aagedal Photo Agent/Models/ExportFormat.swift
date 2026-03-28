@@ -100,6 +100,31 @@ nonisolated enum ExportFormatHDR: String, CaseIterable, Identifiable {
     }
 }
 
+/// Target color gamut for export
+nonisolated enum TargetColorGamut: String, CaseIterable, Identifiable, Sendable {
+    case sRGB = "sRGB"
+    case displayP3 = "displayP3"
+    case rec2020 = "rec2020"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .sRGB: return "sRGB"
+        case .displayP3: return "Display P3"
+        case .rec2020: return "Rec. 2020"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .sRGB: return "Standard gamut for web and most displays. Widest compatibility."
+        case .displayP3: return "Wider gamut used by modern Apple displays. 25% more colors than sRGB."
+        case .rec2020: return "Ultra-wide gamut for HDR and cinema workflows. Limited display support."
+        }
+    }
+}
+
 /// TIFF compression method
 nonisolated enum TIFFCompression: String, CaseIterable, Identifiable {
     case none = "none"

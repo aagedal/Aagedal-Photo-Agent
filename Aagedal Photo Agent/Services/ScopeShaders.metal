@@ -71,6 +71,8 @@ struct ScopeParams {
     float cropTop;
     float cropRight;
     float cropBottom;
+    uint clipMode;        // 0=unclipped, 1=clipped
+    uint targetGamut;     // 0=sRGB, 1=displayP3, 2=rec2020
 };
 
 // ============================================================
@@ -758,6 +760,318 @@ kernel void vectorscopeRender(
     // Flip Y for bin lookup (scope data has Y=0 at top, we rendered CbCr with Y increasing downward)
     uint srcY = outH - 1 - gid.y;
     uint idx = srcY * outW + gid.x;
+    uint count = bins[idx];
+
+    if (count == 0) {
+        output.write(half4(half3(bg), 1.0h), gid);
+        return;
+    }
+
+    float logMax = log2(1.0 + float(maxCount));
+    float gain = 3.0;
+    float intensity = min(log2(1.0 + float(count)) / logMax * gain, 1.0);
+
+    float invCount = 1.0 / float(count);
+    float avgR = float(bins[pixelCount + idx]) * invCount / 255.0;
+    float avgG = float(bins[2 * pixelCount + idx]) * invCount / 255.0;
+    float avgB = float(bins[3 * pixelCount + idx]) * invCount / 255.0;
+
+    // Saturation boost (matches CPU)
+    float gray = (avgR + avgG + avgB) / 3.0;
+    float satBoost = 2.0;
+    avgR = max(gray + (avgR - gray) * satBoost, 0.05);
+    avgG = max(gray + (avgG - gray) * satBoost, 0.05);
+    avgB = max(gray + (avgB - gray) * satBoost, 0.05);
+    float maxC = max(max(avgR, avgG), max(avgB, 0.01));
+    avgR /= maxC; avgG /= maxC; avgB /= maxC;
+
+    float3 dataColor = float3(avgR, avgG, avgB) * intensity;
+    float3 result = bg + dataColor;
+    result = min(result, float3(1.0));
+    output.write(half4(half3(result), 1.0h), gid);
+}
+
+// ============================================================
+// Chromaticity — Color Space Matrices (column-major for Metal)
+// ============================================================
+
+// sRGB linear -> XYZ (D65)
+constant float3x3 sRGBtoXYZ = float3x3(
+    float3(0.4124564, 0.2126729, 0.0193339),   // column 0 (R)
+    float3(0.3575761, 0.7151522, 0.1191920),   // column 1 (G)
+    float3(0.1804375, 0.0721750, 0.9503041)    // column 2 (B)
+);
+
+// Display P3 linear -> XYZ (D65)
+constant float3x3 p3toXYZ = float3x3(
+    float3(0.4865709, 0.2289746, 0.0000000),
+    float3(0.2656677, 0.6917385, 0.0451134),
+    float3(0.1982173, 0.0792869, 1.0439444)
+);
+
+// Rec.2020 linear -> XYZ (D65)
+constant float3x3 rec2020toXYZ = float3x3(
+    float3(0.6369580, 0.2627002, 0.0000000),
+    float3(0.1446169, 0.6779981, 0.0280727),
+    float3(0.1688810, 0.0593017, 1.0609851)
+);
+
+// sRGB -> Display P3 (for gamut clipping)
+constant float3x3 sRGBtoP3 = float3x3(
+    float3( 0.8225929,  0.0331995,  0.0170854),
+    float3( 0.1775339,  0.9667835,  0.0723957),
+    float3(-0.0000000,  0.0000000,  0.9103014)
+);
+
+// sRGB -> Rec.2020 (for gamut clipping)
+constant float3x3 sRGBtoRec2020 = float3x3(
+    float3( 0.6275037,  0.0691084,  0.0163940),
+    float3( 0.3292755,  0.9195192,  0.0880112),
+    float3( 0.0433027,  0.0113596,  0.8953803)
+);
+
+// XYZ -> sRGB (for background color)
+constant float3x3 xyzToSRGB = float3x3(
+    float3( 3.2404548, -0.9692664,  0.0556434),
+    float3(-1.5371389,  1.8760109, -0.2040259),
+    float3(-0.4985315,  0.0415561,  1.0572252)
+);
+
+// Chromaticity diagram viewport
+constant float xyMin = -0.05;
+constant float xyRange = 0.90;
+
+// ============================================================
+// Spectral Locus Data (CIE 1931 2° observer, 5nm, 380–780nm)
+// ============================================================
+
+constant float2 spectralLocus[81] = {
+    float2(0.1741, 0.0050), float2(0.1740, 0.0050), float2(0.1738, 0.0049),
+    float2(0.1736, 0.0049), float2(0.1733, 0.0048), float2(0.1726, 0.0048),
+    float2(0.1714, 0.0051), float2(0.1689, 0.0069), float2(0.1644, 0.0109),
+    float2(0.1566, 0.0177), float2(0.1440, 0.0297), float2(0.1241, 0.0578),
+    float2(0.0913, 0.1327), float2(0.0687, 0.2007), float2(0.0454, 0.2950),
+    float2(0.0235, 0.4127), float2(0.0082, 0.5384), float2(0.0039, 0.6548),
+    float2(0.0139, 0.7502), float2(0.0389, 0.8120), float2(0.0743, 0.8338),
+    float2(0.1142, 0.8262), float2(0.1547, 0.8059), float2(0.1929, 0.7816),
+    float2(0.2296, 0.7543), float2(0.2658, 0.7243), float2(0.3016, 0.6923),
+    float2(0.3373, 0.6589), float2(0.3731, 0.6245), float2(0.4087, 0.5896),
+    float2(0.4441, 0.5547), float2(0.4788, 0.5202), float2(0.5125, 0.4866),
+    float2(0.5448, 0.4544), float2(0.5752, 0.4242), float2(0.6029, 0.3965),
+    float2(0.6270, 0.3725), float2(0.6482, 0.3514), float2(0.6658, 0.3340),
+    float2(0.6801, 0.3197), float2(0.6915, 0.3083), float2(0.7006, 0.2993),
+    float2(0.7079, 0.2920), float2(0.7140, 0.2859), float2(0.7190, 0.2809),
+    float2(0.7230, 0.2770), float2(0.7260, 0.2740), float2(0.7283, 0.2717),
+    float2(0.7300, 0.2700), float2(0.7311, 0.2689), float2(0.7320, 0.2680),
+    float2(0.7327, 0.2673), float2(0.7334, 0.2666), float2(0.7340, 0.2660),
+    float2(0.7344, 0.2656), float2(0.7346, 0.2654), float2(0.7347, 0.2653),
+    float2(0.7347, 0.2653), float2(0.7347, 0.2653), float2(0.7347, 0.2653),
+    float2(0.7347, 0.2653), float2(0.7347, 0.2653), float2(0.7347, 0.2653),
+    float2(0.7347, 0.2653), float2(0.7347, 0.2653), float2(0.7347, 0.2653),
+    float2(0.7347, 0.2653), float2(0.7347, 0.2653), float2(0.7347, 0.2653),
+    float2(0.7347, 0.2653), float2(0.7347, 0.2653), float2(0.7347, 0.2653),
+    float2(0.7347, 0.2653), float2(0.7347, 0.2653), float2(0.7347, 0.2653),
+    float2(0.7347, 0.2653), float2(0.7347, 0.2653), float2(0.7347, 0.2653),
+    float2(0.7347, 0.2653), float2(0.7347, 0.2653), float2(0.7347, 0.2653),
+};
+constant uint spectralLocusCount = 81;
+
+// ============================================================
+// Chromaticity Helpers
+// ============================================================
+
+inline float distToSegment(float2 p, float2 a, float2 b) {
+    float2 ab = b - a;
+    float t = clamp(dot(p - a, ab) / dot(ab, ab), 0.0, 1.0);
+    return length(p - (a + t * ab));
+}
+
+// Point-in-polygon test for spectral locus
+inline bool isInsideLocus(float2 pt) {
+    bool inside = false;
+    uint j = spectralLocusCount - 1;
+    for (uint i = 0; i < spectralLocusCount; i++) {
+        float xi = spectralLocus[i].x, yi = spectralLocus[i].y;
+        float xj = spectralLocus[j].x, yj = spectralLocus[j].y;
+        if (((yi > pt.y) != (yj > pt.y)) &&
+            (pt.x < (xj - xi) * (pt.y - yi) / (yj - yi) + xi)) {
+            inside = !inside;
+        }
+        j = i;
+    }
+    return inside;
+}
+
+// ============================================================
+// Chromaticity Accumulate
+// ============================================================
+
+kernel void chromaticityAccumulate(
+    texture2d<half, access::sample> source [[texture(0)]],
+    texture1d<float, access::sample> toneLUT [[texture(1)]],
+    device atomic_uint *bins [[buffer(0)]],
+    constant ScopeEditParams &editParams [[buffer(1)]],
+    constant ScopeParams &scopeParams [[buffer(2)]],
+    constant MaskParams *masks [[buffer(3)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    if (gid.x >= scopeParams.sampleWidth || gid.y >= scopeParams.sampleHeight) return;
+
+    // Remap UV from sample grid to crop region within source texture
+    float2 uv = (float2(gid) + 0.5) / float2(scopeParams.sampleWidth, scopeParams.sampleHeight);
+    uv = float2(scopeParams.cropLeft, scopeParams.cropTop)
+       + uv * float2(scopeParams.cropRight - scopeParams.cropLeft,
+                      scopeParams.cropBottom - scopeParams.cropTop);
+
+    constexpr sampler bilinear(filter::linear, address::clamp_to_edge);
+    half4 color = source.sample(bilinear, uv);
+    float3 rgb = float3(color.rgb);
+    rgb = applyEdits(rgb, uv, editParams, toneLUT, masks);
+
+    // Work in linear space for chromaticity — do NOT apply linearToSRGB
+    float3 linearRGB = rgb;
+    float3x3 xyzMat = sRGBtoXYZ;
+
+    if (scopeParams.clipMode == 1) {
+        if (scopeParams.targetGamut == 0) {
+            // sRGB: just clamp
+            linearRGB = clamp(linearRGB, 0.0, 1.0);
+        } else if (scopeParams.targetGamut == 1) {
+            // Display P3: convert, clamp, use P3 XYZ matrix
+            linearRGB = clamp(sRGBtoP3 * linearRGB, 0.0, 1.0);
+            xyzMat = p3toXYZ;
+        } else {
+            // Rec.2020: convert, clamp, use Rec.2020 XYZ matrix
+            linearRGB = clamp(sRGBtoRec2020 * linearRGB, 0.0, 1.0);
+            xyzMat = rec2020toXYZ;
+        }
+    }
+
+    float3 xyz = xyzMat * linearRGB;
+    float sum = xyz.x + xyz.y + xyz.z;
+    if (sum < 0.001) return;
+
+    float cx = xyz.x / sum;
+    float cy = xyz.y / sum;
+
+    int outW = int(scopeParams.outputWidth);
+    int outH = int(scopeParams.outputHeight);
+    int outX = int((cx - xyMin) / xyRange * float(outW - 1));
+    int outY = int((cy - xyMin) / xyRange * float(outH - 1));
+
+    if (outX < 0 || outX >= outW || outY < 0 || outY >= outH) return;
+
+    uint pixelCount = scopeParams.outputWidth * scopeParams.outputHeight;
+    uint idx = uint(outY) * scopeParams.outputWidth + uint(outX);
+
+    // Color accumulation: use sRGB-clamped values for display
+    float r = linearToSRGB(saturate(rgb.r));
+    float g = linearToSRGB(saturate(rgb.g));
+    float b = linearToSRGB(saturate(rgb.b));
+
+    atomic_fetch_add_explicit(&bins[idx], 1, memory_order_relaxed);
+    atomic_fetch_add_explicit(&bins[pixelCount + idx], uint(r * 255.0), memory_order_relaxed);
+    atomic_fetch_add_explicit(&bins[2 * pixelCount + idx], uint(g * 255.0), memory_order_relaxed);
+    atomic_fetch_add_explicit(&bins[3 * pixelCount + idx], uint(b * 255.0), memory_order_relaxed);
+}
+
+// ============================================================
+// Chromaticity Render
+// ============================================================
+
+kernel void chromaticityRender(
+    texture2d<half, access::write> output [[texture(0)]],
+    device uint *bins [[buffer(0)]],
+    constant ScopeParams &params [[buffer(1)]],
+    constant uint &maxCount [[buffer(2)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    uint outW = params.outputWidth;
+    uint outH = params.outputHeight;
+    if (gid.x >= outW || gid.y >= outH) return;
+
+    uint pixelCount = outW * outH;
+
+    // Compute CIE xy for this pixel
+    float cx = xyMin + (float(gid.x) + 0.5) / float(outW) * xyRange;
+    float cy = xyMin + (float(outH - 1 - gid.y) + 0.5) / float(outH) * xyRange;
+    float2 xyPos = float2(cx, cy);
+
+    // Background: dim colorful CIE diagram inside spectral locus
+    float3 bg = float3(0);
+    if (isInsideLocus(xyPos) && cy > 0.001) {
+        float Y = 0.5;
+        float X = (cx / cy) * Y;
+        float Z = ((1.0 - cx - cy) / cy) * Y;
+        float3 srgb = xyzToSRGB * float3(X, Y, Z);
+        srgb = max(srgb, 0.0);
+        float maxC = max(max(srgb.r, srgb.g), max(srgb.b, 0.001));
+        srgb /= maxC;
+        bg = srgb * 0.12;
+    }
+
+    // Spectral locus outline
+    float minLocusDist = 1e10;
+    for (uint i = 0; i < spectralLocusCount; i++) {
+        uint j = (i + 1) % spectralLocusCount;
+        float d = distToSegment(xyPos, spectralLocus[i], spectralLocus[j]);
+        minLocusDist = min(minLocusDist, d);
+    }
+    float locusPx = minLocusDist / xyRange * float(outW);
+    if (locusPx < 1.5) {
+        float blend = 1.0 - locusPx / 1.5;
+        bg = max(bg, float3(0.25 * blend * 0.8));
+    }
+
+    // Gamut triangles
+    // sRGB primaries
+    float2 sRGBTri[3] = { float2(0.640, 0.330), float2(0.300, 0.600), float2(0.150, 0.060) };
+    // Display P3 primaries
+    float2 p3Tri[3] = { float2(0.680, 0.320), float2(0.265, 0.690), float2(0.150, 0.060) };
+    // Rec.2020 primaries
+    float2 r2020Tri[3] = { float2(0.708, 0.292), float2(0.170, 0.797), float2(0.131, 0.046) };
+
+    struct GamutInfo {
+        float2 verts[3];
+        float3 color;
+        uint gamutId;  // 0=sRGB, 1=P3, 2=Rec2020
+    };
+
+    GamutInfo gamuts[3];
+    gamuts[0] = { { r2020Tri[0], r2020Tri[1], r2020Tri[2] }, float3(0.3, 0.8, 0.9), 2 };
+    gamuts[1] = { { p3Tri[0], p3Tri[1], p3Tri[2] }, float3(0.9, 0.6, 0.2), 1 };
+    gamuts[2] = { { sRGBTri[0], sRGBTri[1], sRGBTri[2] }, float3(0.8, 0.8, 0.8), 0 };
+
+    for (int g = 0; g < 3; g++) {
+        bool isTarget = (gamuts[g].gamutId == params.targetGamut);
+        float alpha = isTarget ? 0.7 : 0.3;
+        float lineThick = isTarget ? 2.0 : 1.0;
+
+        for (int e = 0; e < 3; e++) {
+            float2 a = gamuts[g].verts[e];
+            float2 b = gamuts[g].verts[(e + 1) % 3];
+            float d = distToSegment(xyPos, a, b);
+            float dPx = d / xyRange * float(outW);
+            if (dPx < lineThick) {
+                float blend = (1.0 - dPx / lineThick) * alpha;
+                bg = max(bg, gamuts[g].color * blend);
+            }
+        }
+    }
+
+    // D65 white point crosshair
+    float2 d65 = float2(0.3127, 0.3290);
+    float d65DistX = abs(cx - d65.x);
+    float d65DistY = abs(cy - d65.y);
+    float d65PxX = d65DistX / xyRange * float(outW);
+    float d65PxY = d65DistY / xyRange * float(outH);
+    float armLen = 5.0;
+    if ((d65PxX < 0.6 && d65PxY < armLen) || (d65PxY < 0.6 && d65PxX < armLen)) {
+        bg = max(bg, float3(0.56));
+    }
+
+    // Bin lookup (Y is NOT flipped for chromaticity — we stored outY directly)
+    uint idx = gid.y * outW + gid.x;
     uint count = bins[idx];
 
     if (count == 0) {

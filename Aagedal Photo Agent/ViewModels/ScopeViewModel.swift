@@ -8,6 +8,7 @@ final class ScopeViewModel {
         case waveform
         case parade
         case vectorscope
+        case chromaticity
     }
 
     var scopeMode: ScopeMode = .waveform {
@@ -32,6 +33,20 @@ final class ScopeViewModel {
     var waveformScale: WaveformScale = .percentage {
         didSet {
             guard waveformScale != oldValue else { return }
+            rerender()
+        }
+    }
+
+    var showClippedGamut: Bool = false {
+        didSet {
+            guard showClippedGamut != oldValue else { return }
+            rerender()
+        }
+    }
+
+    var targetGamut: TargetColorGamut = .sRGB {
+        didSet {
+            guard targetGamut != oldValue, scopeMode == .chromaticity else { return }
             rerender()
         }
     }
@@ -110,6 +125,8 @@ final class ScopeViewModel {
 
         let mode = scopeMode
         let scale = waveformScale
+        let clipped = showClippedGamut
+        let gamut = targetGamut
         let svc = service
         let size: CGFloat = 720
 
@@ -123,6 +140,8 @@ final class ScopeViewModel {
                     return svc.renderParade(from: cgImage, outputSize: outputSize, scale: scale)
                 case .vectorscope:
                     return svc.renderVectorscope(from: cgImage, outputSize: outputSize)
+                case .chromaticity:
+                    return svc.renderChromaticity(from: cgImage, outputSize: outputSize, clipped: clipped, targetGamut: gamut)
                 }
             }.value
 

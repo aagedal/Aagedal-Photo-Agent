@@ -67,6 +67,8 @@ nonisolated enum UserDefaultsKeys {
     static let exportQualitySDR = "exportQualitySDR"
     static let exportQualityHDR = "exportQualityHDR"
     static let exportTIFFCompression = "exportTIFFCompression"
+    static let exportColorGamutSDR = "exportColorGamutSDR"
+    static let exportColorGamutHDR = "exportColorGamutHDR"
 
     // MARK: - C2PA Signing
     static let c2paCertificatePath = "c2paCertificatePath"

@@ -460,6 +460,16 @@ struct SettingsView: View {
                         }
                     }
                 }
+
+                Picker("Color Gamut", selection: $settingsViewModel.exportColorGamutSDR) {
+                    ForEach(TargetColorGamut.allCases) { gamut in
+                        Text(gamut.displayName).tag(gamut)
+                    }
+                }
+
+                Text(settingsViewModel.exportColorGamutSDR.description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("HDR Format") {
@@ -498,6 +508,16 @@ struct SettingsView: View {
                         }
                     }
                 }
+
+                Picker("Color Gamut", selection: $settingsViewModel.exportColorGamutHDR) {
+                    ForEach(TargetColorGamut.allCases) { gamut in
+                        Text(gamut.displayName).tag(gamut)
+                    }
+                }
+
+                Text(settingsViewModel.exportColorGamutHDR.description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             if settingsViewModel.exportFormatSDR == .tiff || settingsViewModel.exportFormatHDR == .tiff16bit {
