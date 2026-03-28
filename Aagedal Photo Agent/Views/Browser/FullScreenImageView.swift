@@ -161,6 +161,7 @@ private class FullScreenWindow: NSWindow {
 
 struct FullScreenImageView: View {
     @Bindable var viewModel: BrowserViewModel
+    let scopeViewModel: ScopeViewModel
     fileprivate var zoomController: ZoomController?
 
     @State private var currentImage: LoadedImage?
@@ -544,7 +545,7 @@ struct FullScreenImageView: View {
             viewModel.selectNext()
             return .handled
         }
-        .task(id: "\(currentImageFile?.url.absoluteString ?? "nil")|\(renderEdits)") {
+        .task(id: "\(currentImageFile?.url.absoluteString ?? "nil")|\(renderEdits)|\(scopeViewModel.showClippedGamut)|\(scopeViewModel.targetGamut.rawValue)") {
             // Reset zoom when changing images
             zoomScale = 1.0
             lastZoomScale = 1.0
@@ -688,6 +689,38 @@ struct FullScreenImageView: View {
             return cgImage
         }
         return result
+    }
+
+    /// Apply gamut clipping to a CGImage by rendering through a target color space CGContext.
+    nonisolated private static func gamutClipped(_ cgImage: CGImage, targetGamut: TargetColorGamut) -> CGImage {
+        let targetCS: CGColorSpace
+        switch targetGamut {
+        case .sRGB:      targetCS = CGColorSpace(name: CGColorSpace.sRGB)!
+        case .displayP3: targetCS = CGColorSpace(name: CGColorSpace.displayP3)!
+        case .rec2020:   targetCS = CGColorSpace(name: CGColorSpace.itur_2020)!
+        }
+        let w = cgImage.width, h = cgImage.height
+        // Draw into target gamut (clips out-of-gamut values)
+        guard let clipCtx = CGContext(
+            data: nil, width: w, height: h,
+            bitsPerComponent: 8, bytesPerRow: w * 4,
+            space: targetCS,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return cgImage }
+        clipCtx.draw(cgImage, in: CGRect(x: 0, y: 0, width: w, height: h))
+        guard let clipped = clipCtx.makeImage() else { return cgImage }
+        // Convert back to extended linear sRGB for HDR-aware display
+        let bitmapInfo = CGBitmapInfo.floatComponents.rawValue
+            | CGBitmapInfo.byteOrder32Little.rawValue
+            | CGImageAlphaInfo.premultipliedLast.rawValue
+        guard let finalCtx = CGContext(
+            data: nil, width: w, height: h,
+            bitsPerComponent: 32, bytesPerRow: w * 16,
+            space: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!,
+            bitmapInfo: bitmapInfo
+        ) else { return clipped }
+        finalCtx.draw(clipped, in: CGRect(x: 0, y: 0, width: w, height: h))
+        return finalCtx.makeImage() ?? clipped
     }
 
     /// Apply CameraRaw adjustments + crop to a CIImage source, preserving HDR float values.
@@ -1043,7 +1076,10 @@ struct FullScreenImageView: View {
     }
 
     private func makeLoadedImage(from cgImage: CGImage) -> LoadedImage {
-        LoadedImage(cgImage: cgImage, size: CGSize(width: cgImage.width, height: cgImage.height))
+        let image = scopeViewModel.showClippedGamut
+            ? Self.gamutClipped(cgImage, targetGamut: scopeViewModel.targetGamut)
+            : cgImage
+        return LoadedImage(cgImage: image, size: CGSize(width: cgImage.width, height: cgImage.height))
     }
 
     private func makeLoadedImage(from nsImage: NSImage) -> LoadedImage? {
@@ -1230,6 +1266,7 @@ struct FullScreenImageView: View {
 
 struct FullScreenPresenter: ViewModifier {
     @Bindable var viewModel: BrowserViewModel
+    let scopeViewModel: ScopeViewModel
     @State private var fullScreenWindow: FullScreenWindow?
     @State private var zoomController: ZoomController?
     @State private var resignObserver: Any?
@@ -1295,7 +1332,7 @@ struct FullScreenPresenter: ViewModifier {
         }
 
         let hostingView = NSHostingView(
-            rootView: FullScreenImageView(viewModel: viewModel, zoomController: controller)
+            rootView: FullScreenImageView(viewModel: viewModel, scopeViewModel: scopeViewModel, zoomController: controller)
         )
         hostingView.wantsLayer = true
         if #available(macOS 26.0, *) {
@@ -1334,7 +1371,7 @@ struct FullScreenPresenter: ViewModifier {
 }
 
 extension View {
-    func fullScreenImagePresenter(viewModel: BrowserViewModel) -> some View {
-        modifier(FullScreenPresenter(viewModel: viewModel))
+    func fullScreenImagePresenter(viewModel: BrowserViewModel, scopeViewModel: ScopeViewModel) -> some View {
+        modifier(FullScreenPresenter(viewModel: viewModel, scopeViewModel: scopeViewModel))
     }
 }

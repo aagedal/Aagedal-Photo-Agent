@@ -9,7 +9,7 @@ struct ScopeEditParams {
     float exposure;
     float vibrance;
     float saturation;
-    float pad0;
+    uint gamutClipMode;      // 0=off (unused by scopes, kept for struct layout match)
 
     float3x3 whiteBalanceMatrix;
 

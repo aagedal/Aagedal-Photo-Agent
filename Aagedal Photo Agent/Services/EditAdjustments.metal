@@ -27,7 +27,7 @@ struct EditParams {
     float exposure;          // EV (legacy field, baked into LUT when LUT is active)
     float vibrance;          // -1..1
     float saturation;        // 0..2 (1=identity)
-    float pad0;              // alignment padding
+    uint gamutClipMode;      // 0=off, 1=sRGB, 2=P3, 3=Rec2020
 
     float3x3 whiteBalanceMatrix; // Bradford chromatic adaptation (identity if no WB)
 
@@ -42,6 +42,35 @@ struct EditParams {
     float lutDomainMin;      // -0.5 (extended range for color matrix overshoot)
     float lutDomainMax;      // 4.0 (HDR headroom)
 };
+
+// ============================================================
+// Gamut-clipping matrices (soft proof)
+// ============================================================
+
+// sRGB -> Display P3 (column-major)
+constant float3x3 sRGBtoP3_edit = float3x3(
+    float3( 0.8225929,  0.0331995,  0.0170854),
+    float3( 0.1775339,  0.9667835,  0.0723957),
+    float3( 0.0000000,  0.0000000,  0.9103014)
+);
+// Display P3 -> sRGB (column-major)
+constant float3x3 P3toSRGB_edit = float3x3(
+    float3( 1.2247452, -0.0420579, -0.0196423),
+    float3(-0.2249043,  1.0420810, -0.0786548),
+    float3( 0.0000000,  0.0000000,  1.0985373)
+);
+// sRGB -> Rec.2020 (column-major)
+constant float3x3 sRGBtoRec2020_edit = float3x3(
+    float3( 0.6275037,  0.0691084,  0.0163940),
+    float3( 0.3292755,  0.9195192,  0.0880112),
+    float3( 0.0433027,  0.0113596,  0.8953803)
+);
+// Rec.2020 -> sRGB (column-major)
+constant float3x3 Rec2020toSRGB_edit = float3x3(
+    float3( 1.6602270, -0.1245536, -0.0181550),
+    float3(-0.5875478,  1.1329261, -0.1006030),
+    float3(-0.0728383, -0.0083496,  1.1189982)
+);
 
 kernel void editAdjustments(
     texture2d<half, access::sample> source [[texture(0)]],
@@ -225,6 +254,20 @@ kernel void editAdjustments(
         }
 
         rgb = mix(rgb, adjusted, half(weight));
+    }
+
+    // 6. Gamut-clip soft proof: simulate target gamut by clamping out-of-gamut values
+    if (params.gamutClipMode == 1) {
+        // sRGB: clamp to [0,1] (working space IS extended linear sRGB)
+        rgb = clamp(rgb, half3(0), half3(1));
+    } else if (params.gamutClipMode == 2) {
+        // Display P3: sRGB -> P3, clamp, P3 -> sRGB
+        float3 p3 = sRGBtoP3_edit * float3(rgb);
+        rgb = half3(P3toSRGB_edit * clamp(p3, 0.0, 1.0));
+    } else if (params.gamutClipMode == 3) {
+        // Rec.2020: sRGB -> Rec.2020, clamp, Rec.2020 -> sRGB
+        float3 r2020 = sRGBtoRec2020_edit * float3(rgb);
+        rgb = half3(Rec2020toSRGB_edit * clamp(r2020, 0.0, 1.0));
     }
 
     destination.write(half4(rgb, color.a), gid);

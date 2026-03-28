@@ -50,7 +50,7 @@ struct EditParams {
     var exposure: Float = 0    // Legacy field kept for layout stability (baked into LUT)
     var vibrance: Float = 0
     var saturation: Float = 1
-    var pad0: Float = 0
+    var gamutClipMode: UInt32 = 0
 
     var whiteBalanceMatrix: simd_float3x3 = matrix_identity_float3x3
 
@@ -95,6 +95,9 @@ final class MetalEditPipeline: @unchecked Sendable {
     nonisolated(unsafe) private(set) var lutTexture: MTLTexture
     nonisolated(unsafe) private let identityLutTexture: MTLTexture
     nonisolated(unsafe) private(set) var maskBuffer: MTLBuffer?
+
+    /// Gamut clipping mode for soft proof preview. 0=off, 1=sRGB, 2=P3, 3=Rec.2020.
+    nonisolated(unsafe) var gamutClipMode: UInt32 = 0
     nonisolated(unsafe) private var float16Buffer = [UInt16](repeating: 0, count: ToneCurveGenerator.lutSize * 4)
 
     nonisolated(unsafe) private static let maxMasks = 8
@@ -411,6 +414,7 @@ final class MetalEditPipeline: @unchecked Sendable {
 
         let ptr = buffer.contents().bindMemory(to: EditParams.self, capacity: 1)
         ptr.pointee = params
+        ptr.pointee.gamutClipMode = gamutClipMode
 
         let elapsed = ContinuousClock.now - start
         if elapsed > .milliseconds(1) {

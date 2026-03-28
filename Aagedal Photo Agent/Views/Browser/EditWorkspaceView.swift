@@ -234,6 +234,7 @@ struct EditWorkspaceView: View {
                     }
                 }
             }
+            updateGamutClipMode()
             metadataViewModel.isInEditView = true
             editLog.info("[\(selectedImageURL?.lastPathComponent ?? "nil")] loadSelectedImagePreview triggered by: onAppear")
             loadSelectedImagePreview()
@@ -307,6 +308,12 @@ struct EditWorkspaceView: View {
             // during active mask drags for real-time feedback.
             metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
             metalCoordinator.requestRedraw()
+        }
+        .onChange(of: scopeViewModel.showClippedGamut) { _, _ in
+            updateGamutClipMode()
+        }
+        .onChange(of: scopeViewModel.targetGamut) { _, _ in
+            updateGamutClipMode()
         }
         .onReceive(NotificationCenter.default.publisher(for: .addNewMask)) { _ in
             guard canEditSingleImage else { return }
@@ -1336,6 +1343,21 @@ struct EditWorkspaceView: View {
                 editLog.info("[\(url.lastPathComponent)] precache: done in \(elapsed)")
             }
         }
+    }
+
+    private func updateGamutClipMode() {
+        guard let pipeline = metalPipeline else { return }
+        if scopeViewModel.showClippedGamut {
+            switch scopeViewModel.targetGamut {
+            case .sRGB:      pipeline.gamutClipMode = 1
+            case .displayP3: pipeline.gamutClipMode = 2
+            case .rec2020:   pipeline.gamutClipMode = 3
+            }
+        } else {
+            pipeline.gamutClipMode = 0
+        }
+        pipeline.updateParams(metadataViewModel.editingMetadata.cameraRaw)
+        metalCoordinator.requestRedraw()
     }
 
     private func renderPreview() {

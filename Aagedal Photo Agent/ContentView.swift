@@ -318,7 +318,7 @@ struct ContentView: View {
                     onNavigateToFace: nil
                 )
             }
-            .fullScreenImagePresenter(viewModel: browserViewModel)
+            .fullScreenImagePresenter(viewModel: browserViewModel, scopeViewModel: scopeViewModel)
             .onAppear {
                 browserViewModel.loadFavorites()
                 templateViewModel.loadTemplates()
@@ -874,7 +874,7 @@ struct ContentView: View {
             }
             .listStyle(.sidebar)
 
-            if ftpViewModel.isUploading || ftpViewModel.isRendering {
+            if ftpViewModel.isUploading || ftpViewModel.isRendering || ftpViewModel.uploadCompleted {
                 Divider()
                 FTPUploadProgressView(viewModel: ftpViewModel)
                     .padding(.horizontal, 12)
