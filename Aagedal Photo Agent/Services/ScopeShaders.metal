@@ -1079,9 +1079,8 @@ kernel void chromaticityRender(
     gamuts[2] = { { adobeTri[0], adobeTri[1], adobeTri[2] }, float3(0.6, 0.9, 0.4), 3 };
     gamuts[3] = { { sRGBTri[0], sRGBTri[1], sRGBTri[2] }, float3(0.8, 0.8, 0.8), 0 };
 
-    // Display gamut indicator: subtle fill showing the display's gamut capability
-    // Find the display gamut triangle vertices (if different from sRGB)
-    if (params.displayGamut != 0) {
+    // Display gamut indicator: fill and enhanced outline showing the display's gamut capability
+    if (params.displayGamut != 0 && params.displayGamut != params.targetGamut) {
         float2 dispTri[3];
         if (params.displayGamut == 1) { dispTri[0] = p3Tri[0]; dispTri[1] = p3Tri[1]; dispTri[2] = p3Tri[2]; }
         else if (params.displayGamut == 2) { dispTri[0] = r2020Tri[0]; dispTri[1] = r2020Tri[1]; dispTri[2] = r2020Tri[2]; }
@@ -1089,14 +1088,15 @@ kernel void chromaticityRender(
 
         if (isInsideTriangle(xyPos, dispTri[0], dispTri[1], dispTri[2])
             && !isInsideTriangle(xyPos, sRGBTri[0], sRGBTri[1], sRGBTri[2])) {
-            bg = max(bg, float3(0.06, 0.04, 0.0));
+            bg = max(bg, float3(0.12, 0.08, 0.0));
         }
     }
 
     for (int g = 0; g < 4; g++) {
         bool isTarget = (gamuts[g].gamutId == params.targetGamut);
-        float alpha = isTarget ? 0.7 : 0.3;
-        float lineThick = isTarget ? 2.0 : 1.0;
+        bool isDisplay = (gamuts[g].gamutId == params.displayGamut) && !isTarget;
+        float alpha = isTarget ? 0.7 : (isDisplay ? 0.55 : 0.3);
+        float lineThick = isTarget ? 2.0 : (isDisplay ? 1.5 : 1.0);
 
         for (int e = 0; e < 3; e++) {
             float2 a = gamuts[g].verts[e];

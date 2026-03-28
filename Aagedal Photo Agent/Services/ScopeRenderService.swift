@@ -949,8 +949,9 @@ nonisolated struct ScopeRenderService: Sendable {
         }
         ctx.strokePath()
 
-        // Display gamut indicator: subtle fill between sRGB and the display gamut
-        if displayGamut != .sRGB, let dispTriangle = Self.gamutTriangles.first(where: { $0.gamut == displayGamut }) {
+        // Display gamut indicator: fill between sRGB and the display gamut
+        if displayGamut != .sRGB, displayGamut != targetGamut,
+           let dispTriangle = Self.gamutTriangles.first(where: { $0.gamut == displayGamut }) {
             let disp = dispTriangle.primaries
             let dp0 = toPixel(x: disp[0].x, y: disp[0].y)
             let dp1 = toPixel(x: disp[1].x, y: disp[1].y)
@@ -972,7 +973,7 @@ nonisolated struct ScopeRenderService: Sendable {
             ctx.beginPath()
             ctx.addPath(dispPath)
             ctx.addPath(srgbPath)
-            ctx.setFillColor(red: 0.45, green: 0.30, blue: 0.0, alpha: 0.08)
+            ctx.setFillColor(red: 0.45, green: 0.30, blue: 0.0, alpha: 0.15)
             ctx.fillPath(using: .evenOdd)
             ctx.restoreGState()
         }
@@ -980,8 +981,9 @@ nonisolated struct ScopeRenderService: Sendable {
         // Gamut triangles
         for triangle in Self.gamutTriangles {
             let isTarget = triangle.gamut == targetGamut
-            let alpha: CGFloat = isTarget ? 0.9 : 0.5
-            let lineWidth: CGFloat = isTarget ? 2.5 : 1.5
+            let isDisplay = triangle.gamut == displayGamut && !isTarget
+            let alpha: CGFloat = isTarget ? 0.9 : (isDisplay ? 0.7 : 0.5)
+            let lineWidth: CGFloat = isTarget ? 2.5 : (isDisplay ? 2.0 : 1.5)
 
             ctx.setStrokeColor(red: triangle.color.r, green: triangle.color.g, blue: triangle.color.b, alpha: alpha)
             ctx.setLineWidth(lineWidth)

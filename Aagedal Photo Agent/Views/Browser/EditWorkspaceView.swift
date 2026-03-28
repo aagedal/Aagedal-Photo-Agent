@@ -202,6 +202,13 @@ struct EditWorkspaceView: View {
             Divider()
             filmstrip
         }
+        .background(
+            DisplayGamutObserver(
+                scopeViewModel: scopeViewModel,
+                settingsViewModel: settingsViewModel,
+                isHDR: isHDREnabled
+            )
+        )
         .focusable()
         .focused($isWorkspaceFocused)
         .focusEffectDisabled()
@@ -379,9 +386,9 @@ struct EditWorkspaceView: View {
                             // Crop editing mode: zoom via cropZoomScale only
                             MetalPreviewView(
                                 ciImage: displayCIImage,
-                                isHDR: isHDREnabled && !isMutingDevelop,
+                                isHDR: isHDREnabled && !isShowingBefore,
                                 metalPipeline: metalPipeline,
-                                useComputeShader: !isShowingBefore && !isMutingDevelop && metalPipeline?.hasSourceTexture == true,
+                                useComputeShader: !isShowingBefore && metalPipeline?.hasSourceTexture == true,
 
                                 coordinator: metalCoordinator
                             )
@@ -444,9 +451,9 @@ struct EditWorkspaceView: View {
                             ZStack {
                                 MetalPreviewView(
                                     ciImage: displayCIImage,
-                                    isHDR: isHDREnabled && !isMutingDevelop,
+                                    isHDR: isHDREnabled && !isShowingBefore,
                                     metalPipeline: metalPipeline,
-                                    useComputeShader: !isShowingBefore && !isMutingDevelop && metalPipeline?.hasSourceTexture == true,
+                                    useComputeShader: !isShowingBefore && metalPipeline?.hasSourceTexture == true,
 
                                     coordinator: metalCoordinator
                                 )
@@ -513,9 +520,9 @@ struct EditWorkspaceView: View {
                         ZStack {
                             MetalPreviewView(
                                 ciImage: displayCIImage,
-                                isHDR: isHDREnabled && !isShowingBefore && !isMutingDevelop,
+                                isHDR: isHDREnabled && !isShowingBefore,
                                 metalPipeline: metalPipeline,
-                                useComputeShader: !isShowingBefore && !isMutingDevelop && metalPipeline?.hasSourceTexture == true,
+                                useComputeShader: !isShowingBefore && metalPipeline?.hasSourceTexture == true,
 
                                 coordinator: metalCoordinator
                             )
@@ -1192,7 +1199,7 @@ struct EditWorkspaceView: View {
                     let phase2Start = ContinuousClock.now
                     let rawResult: FullScreenImageCache.RAWDecodeResult? = await Task.detached(priority: .userInitiated) {
                         FullScreenImageCache.loadRAWImage(
-                            from: selectedImageURL, draftMode: true
+                            from: selectedImageURL, draftMode: false
                         )
                     }.value
                     let rawCIImage = rawResult?.image
@@ -2783,10 +2790,14 @@ struct EditWorkspaceView: View {
         if chars == "d" && modifiers.isDisjoint(with: [.command, .option, .control]) {
             if isKeyUp {
                 isMutingDevelop = false
+                metalPipeline?.updateParams(metadataViewModel.editingMetadata.cameraRaw)
+                metalCoordinator.requestRedraw()
                 return nil
             }
             guard !isTextFieldActive(), canEditSingleImage else { return event }
             isMutingDevelop = true
+            metalPipeline?.updateParams(nil)
+            metalCoordinator.requestRedraw()
             return nil
         }
 
@@ -2860,5 +2871,30 @@ struct EditWorkspaceView: View {
 private extension CGFloat {
     func clamped(to range: ClosedRange<CGFloat>) -> CGFloat {
         Swift.min(Swift.max(self, range.lowerBound), range.upperBound)
+    }
+}
+
+/// Lightweight hidden view that observes format settings and HDR state,
+/// updating the scope's display gamut. Extracted to avoid SwiftUI type-check
+/// timeouts in EditWorkspaceView's large body.
+private struct DisplayGamutObserver: View {
+    let scopeViewModel: ScopeViewModel
+    let settingsViewModel: SettingsViewModel
+    let isHDR: Bool
+
+    var body: some View {
+        let gamut = isHDR ? settingsViewModel.exportColorGamutHDR : settingsViewModel.exportColorGamutSDR
+        Color.clear
+            .onChange(of: gamut) { _, newValue in
+                scopeViewModel.displayGamut = newValue
+            }
+            .onChange(of: isHDR) { _, _ in
+                scopeViewModel.displayGamut = isHDR
+                    ? settingsViewModel.exportColorGamutHDR
+                    : settingsViewModel.exportColorGamutSDR
+            }
+            .onAppear {
+                scopeViewModel.displayGamut = gamut
+            }
     }
 }
