@@ -105,6 +105,7 @@ nonisolated enum TargetColorGamut: String, CaseIterable, Identifiable, Sendable 
     case sRGB = "sRGB"
     case displayP3 = "displayP3"
     case rec2020 = "rec2020"
+    case adobeRGB = "adobeRGB"
 
     var id: String { rawValue }
 
@@ -113,6 +114,7 @@ nonisolated enum TargetColorGamut: String, CaseIterable, Identifiable, Sendable 
         case .sRGB: return "sRGB"
         case .displayP3: return "Display P3"
         case .rec2020: return "Rec. 2020"
+        case .adobeRGB: return "Adobe RGB"
         }
     }
 
@@ -121,6 +123,17 @@ nonisolated enum TargetColorGamut: String, CaseIterable, Identifiable, Sendable 
         case .sRGB: return "Standard gamut for web and most displays. Widest compatibility."
         case .displayP3: return "Wider gamut used by modern Apple displays. 25% more colors than sRGB."
         case .rec2020: return "Ultra-wide gamut for HDR and cinema workflows. Limited display support."
+        case .adobeRGB: return "Wide gamut for print and photography workflows. Common in Adobe software."
+        }
+    }
+
+    /// Index used in Metal shader params (targetGamut / displayGamut fields).
+    var shaderIndex: UInt32 {
+        switch self {
+        case .sRGB: return 0
+        case .displayP3: return 1
+        case .rec2020: return 2
+        case .adobeRGB: return 3
         }
     }
 }

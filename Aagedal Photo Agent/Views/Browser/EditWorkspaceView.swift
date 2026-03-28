@@ -322,6 +322,12 @@ struct EditWorkspaceView: View {
         .onReceive(NotificationCenter.default.publisher(for: .toggleHDR)) { _ in
             guard canEditSingleImage else { return }
             hdrToggleBinding.wrappedValue.toggle()
+            // Auto-switch soft-proof target gamut from format settings
+            if scopeViewModel.showClippedGamut {
+                scopeViewModel.targetGamut = hdrToggleBinding.wrappedValue
+                    ? settingsViewModel.exportColorGamutHDR
+                    : settingsViewModel.exportColorGamutSDR
+            }
         }
         .overlay(alignment: .top) {
             if let feedback = copyPasteFeedback {
@@ -1352,6 +1358,7 @@ struct EditWorkspaceView: View {
             case .sRGB:      pipeline.gamutClipMode = 1
             case .displayP3: pipeline.gamutClipMode = 2
             case .rec2020:   pipeline.gamutClipMode = 3
+            case .adobeRGB:  pipeline.gamutClipMode = 4
             }
         } else {
             pipeline.gamutClipMode = 0

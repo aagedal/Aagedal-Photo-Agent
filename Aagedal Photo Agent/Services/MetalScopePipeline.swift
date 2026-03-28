@@ -25,7 +25,8 @@ struct ScopeParams {
     var cropRight: Float = 1
     var cropBottom: Float = 1
     var clipMode: UInt32 = 0      // 0=unclipped, 1=clipped
-    var targetGamut: UInt32 = 0   // 0=sRGB, 1=displayP3, 2=rec2020
+    var targetGamut: UInt32 = 0   // 0=sRGB, 1=displayP3, 2=rec2020, 3=adobeRGB
+    var displayGamut: UInt32 = 0  // gamut index for display capability indicator (same encoding)
 }
 
 /// Manages Metal compute pipelines for real-time scope rendering (waveform, parade, vectorscope).
@@ -162,6 +163,7 @@ final class MetalScopePipeline: @unchecked Sendable {
         scale: WaveformScale,
         clipMode: Bool = false,
         targetGamut: UInt32 = 0,
+        displayGamut: UInt32 = 0,
         cropLeft: Float = 0, cropTop: Float = 0,
         cropRight: Float = 1, cropBottom: Float = 1,
         drawable: CAMetalDrawable,
@@ -232,6 +234,7 @@ final class MetalScopePipeline: @unchecked Sendable {
             params.sampleHeight = UInt32(max(Float(workSize) * srcAspect, 1))
             params.clipMode = clipMode ? 1 : 0
             params.targetGamut = targetGamut
+            params.displayGamut = displayGamut
             return encodeChromaticity(commandBuffer: commandBuffer, params: params,
                                      sourceTexture: sourceTexture, editParamsBuffer: editParamsBuffer,
                                      lutTexture: lutTexture, maskBuffer: maskBuffer,

@@ -71,6 +71,18 @@ constant float3x3 Rec2020toSRGB_edit = float3x3(
     float3(-0.5875478,  1.1329261, -0.1006030),
     float3(-0.0728383, -0.0083496,  1.1189982)
 );
+// sRGB -> Adobe RGB (column-major)
+constant float3x3 sRGBtoAdobeRGB_edit = float3x3(
+    float3( 0.7151522,  0.0000000,  0.0000000),
+    float3( 0.2848478,  0.9998940,  0.0411493),
+    float3( 0.0000000,  0.0000000,  0.9587507)
+);
+// Adobe RGB -> sRGB (column-major)
+constant float3x3 AdobeRGBtoSRGB_edit = float3x3(
+    float3( 1.3982403,  0.0000000,  0.0000000),
+    float3(-0.3982659,  1.0001061, -0.0429013),
+    float3( 0.0000000,  0.0000000,  1.0427550)
+);
 
 kernel void editAdjustments(
     texture2d<half, access::sample> source [[texture(0)]],
@@ -268,6 +280,10 @@ kernel void editAdjustments(
         // Rec.2020: sRGB -> Rec.2020, clamp, Rec.2020 -> sRGB
         float3 r2020 = sRGBtoRec2020_edit * float3(rgb);
         rgb = half3(Rec2020toSRGB_edit * clamp(r2020, 0.0, 1.0));
+    } else if (params.gamutClipMode == 4) {
+        // Adobe RGB: sRGB -> Adobe RGB, clamp, Adobe RGB -> sRGB
+        float3 aRgb = sRGBtoAdobeRGB_edit * float3(rgb);
+        rgb = half3(AdobeRGBtoSRGB_edit * clamp(aRgb, 0.0, 1.0));
     }
 
     destination.write(half4(rgb, color.a), gid);

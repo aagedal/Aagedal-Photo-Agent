@@ -19,6 +19,7 @@ struct MetalScopeView: NSViewRepresentable {
     let waveformScale: WaveformScale
     var showClippedGamut: Bool = false
     var targetGamut: UInt32 = 0
+    var displayGamut: UInt32 = 0
     var coordinator: Coordinator?
 
     func makeCoordinator() -> Coordinator {
@@ -52,6 +53,7 @@ struct MetalScopeView: NSViewRepresentable {
         context.coordinator.waveformScale = waveformScale
         context.coordinator.clipMode = showClippedGamut
         context.coordinator.targetGamut = targetGamut
+        context.coordinator.displayGamut = displayGamut
         if let metalLayer = mtkView.layer as? CAMetalLayer {
             let backingScale = mtkView.window?.backingScaleFactor ?? 2.0
             metalLayer.contentsScale = backingScale
@@ -73,6 +75,7 @@ struct MetalScopeView: NSViewRepresentable {
         var waveformScale: WaveformScale = .percentage
         var clipMode: Bool = false
         var targetGamut: UInt32 = 0
+        var displayGamut: UInt32 = 0
         var cropLeft: Float = 0
         var cropTop: Float = 0
         var cropRight: Float = 1
@@ -124,6 +127,7 @@ struct MetalScopeView: NSViewRepresentable {
                 scale: waveformScale,
                 clipMode: clipMode,
                 targetGamut: targetGamut,
+                displayGamut: displayGamut,
                 cropLeft: cropLeft, cropTop: cropTop,
                 cropRight: cropRight, cropBottom: cropBottom,
                 drawable: drawable,

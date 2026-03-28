@@ -51,6 +51,13 @@ final class ScopeViewModel {
         }
     }
 
+    var displayGamut: TargetColorGamut = .sRGB {
+        didSet {
+            guard displayGamut != oldValue, scopeMode == .chromaticity else { return }
+            rerender()
+        }
+    }
+
     var scopeImage: NSImage?
     var isComputing = false
 
@@ -127,6 +134,7 @@ final class ScopeViewModel {
         let scale = waveformScale
         let clipped = showClippedGamut
         let gamut = targetGamut
+        let dispGamut = displayGamut
         let svc = service
         let size: CGFloat = 720
 
@@ -141,7 +149,7 @@ final class ScopeViewModel {
                 case .vectorscope:
                     return svc.renderVectorscope(from: cgImage, outputSize: outputSize)
                 case .chromaticity:
-                    return svc.renderChromaticity(from: cgImage, outputSize: outputSize, clipped: clipped, targetGamut: gamut)
+                    return svc.renderChromaticity(from: cgImage, outputSize: outputSize, clipped: clipped, targetGamut: gamut, displayGamut: dispGamut)
                 }
             }.value
 

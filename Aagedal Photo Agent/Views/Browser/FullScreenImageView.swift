@@ -698,6 +698,7 @@ struct FullScreenImageView: View {
         case .sRGB:      targetCS = CGColorSpace(name: CGColorSpace.sRGB)!
         case .displayP3: targetCS = CGColorSpace(name: CGColorSpace.displayP3)!
         case .rec2020:   targetCS = CGColorSpace(name: CGColorSpace.itur_2020)!
+        case .adobeRGB:  targetCS = CGColorSpace(name: CGColorSpace.adobeRGB1998)!
         }
         let w = cgImage.width, h = cgImage.height
         // Draw into target gamut (clips out-of-gamut values)

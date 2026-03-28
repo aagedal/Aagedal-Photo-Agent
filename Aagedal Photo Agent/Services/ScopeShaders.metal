@@ -72,7 +72,8 @@ struct ScopeParams {
     float cropRight;
     float cropBottom;
     uint clipMode;        // 0=unclipped, 1=clipped
-    uint targetGamut;     // 0=sRGB, 1=displayP3, 2=rec2020
+    uint targetGamut;     // 0=sRGB, 1=displayP3, 2=rec2020, 3=adobeRGB
+    uint displayGamut;    // gamut index for display capability indicator (same encoding)
 };
 
 // ============================================================
@@ -725,8 +726,8 @@ kernel void vectorscopeRender(
     float2 fromCenter = float2(gid) - float2(centerX, centerY);
     float skinProj = dot(fromCenter, skinDir);
     float skinDist = length(fromCenter - skinDir * skinProj);
-    if (skinProj >= 0 && skinProj <= radius && skinDist < 1.0) {
-        bg = float3(0.36, 0.30, 0.24);
+    if (skinProj >= 0 && skinProj <= radius && skinDist < 1.5) {
+        bg = float3(0.50, 0.42, 0.34);
     }
 
     // Color target boxes (BT.709 75%) — Cr (Y) negated to match flipped bin lookup
@@ -739,12 +740,12 @@ kernel void vectorscopeRender(
         float2(-0.3750, -0.0344),   // Yellow
     };
     float3 targetColors[6] = {
-        float3(0.7, 0.15, 0.15),
-        float3(0.7, 0.15, 0.7),
-        float3(0.15, 0.15, 0.7),
-        float3(0.15, 0.7, 0.7),
-        float3(0.15, 0.7, 0.15),
-        float3(0.7, 0.7, 0.15),
+        float3(0.85, 0.20, 0.20),
+        float3(0.85, 0.20, 0.85),
+        float3(0.20, 0.20, 0.85),
+        float3(0.20, 0.85, 0.85),
+        float3(0.20, 0.85, 0.20),
+        float3(0.85, 0.85, 0.20),
     };
     float boxSize = 18.0;
     for (int i = 0; i < 6; i++) {
@@ -753,7 +754,7 @@ kernel void vectorscopeRender(
         float2 tDist = abs(float2(gid) - float2(tx, ty));
         if (tDist.x < boxSize/2 + 1.25 && tDist.y < boxSize/2 + 1.25 &&
             (tDist.x > boxSize/2 - 1.25 || tDist.y > boxSize/2 - 1.25)) {
-            bg = targetColors[i] * 0.85;
+            bg = targetColors[i];
         }
     }
 
@@ -768,8 +769,8 @@ kernel void vectorscopeRender(
     }
 
     float logMax = log2(1.0 + float(maxCount));
-    float gain = 3.0;
-    float intensity = min(log2(1.0 + float(count)) / logMax * gain, 1.0);
+    float gain = 5.0;
+    float intensity = max(min(log2(1.0 + float(count)) / logMax * gain, 1.0), 0.15);
 
     float invCount = 1.0 / float(count);
     float avgR = float(bins[pixelCount + idx]) * invCount / 255.0;
@@ -828,6 +829,20 @@ constant float3x3 sRGBtoRec2020 = float3x3(
     float3( 0.6275037,  0.0691084,  0.0163940),
     float3( 0.3292755,  0.9195192,  0.0880112),
     float3( 0.0433027,  0.0113596,  0.8953803)
+);
+
+// Adobe RGB (1998) linear -> XYZ (D65)
+constant float3x3 adobeRGBtoXYZ = float3x3(
+    float3(0.5767309, 0.2973769, 0.0270343),
+    float3(0.1855540, 0.6273491, 0.0706872),
+    float3(0.1881852, 0.0752741, 0.9911085)
+);
+
+// sRGB -> Adobe RGB (for gamut clipping)
+constant float3x3 sRGBtoAdobeRGB = float3x3(
+    float3( 0.7151522,  0.0000000,  0.0000000),
+    float3( 0.2848478,  0.9998940,  0.0411493),
+    float3( 0.0000000,  0.0000000,  0.9587507)
 );
 
 // XYZ -> sRGB (for background color)
@@ -902,6 +917,20 @@ inline bool isInsideLocus(float2 pt) {
     return inside;
 }
 
+// Point-in-triangle test (barycentric method)
+inline bool isInsideTriangle(float2 p, float2 a, float2 b, float2 c) {
+    float2 v0 = c - a, v1 = b - a, v2 = p - a;
+    float d00 = dot(v0, v0);
+    float d01 = dot(v0, v1);
+    float d02 = dot(v0, v2);
+    float d11 = dot(v1, v1);
+    float d12 = dot(v1, v2);
+    float inv = 1.0 / (d00 * d11 - d01 * d01);
+    float u = (d11 * d02 - d01 * d12) * inv;
+    float v = (d00 * d12 - d01 * d02) * inv;
+    return (u >= 0.0) && (v >= 0.0) && (u + v <= 1.0);
+}
+
 // ============================================================
 // Chromaticity Accumulate
 // ============================================================
@@ -940,14 +969,19 @@ kernel void chromaticityAccumulate(
             // Display P3: convert, clamp, use P3 XYZ matrix
             linearRGB = clamp(sRGBtoP3 * linearRGB, 0.0, 1.0);
             xyzMat = p3toXYZ;
-        } else {
+        } else if (scopeParams.targetGamut == 2) {
             // Rec.2020: convert, clamp, use Rec.2020 XYZ matrix
             linearRGB = clamp(sRGBtoRec2020 * linearRGB, 0.0, 1.0);
             xyzMat = rec2020toXYZ;
+        } else {
+            // Adobe RGB: convert, clamp, use Adobe RGB XYZ matrix
+            linearRGB = clamp(sRGBtoAdobeRGB * linearRGB, 0.0, 1.0);
+            xyzMat = adobeRGBtoXYZ;
         }
     }
 
     float3 xyz = xyzMat * linearRGB;
+    if (xyz.x < 0.0 || xyz.y < 0.0 || xyz.z < 0.0) return;  // skip imaginary colors
     float sum = xyz.x + xyz.y + xyz.z;
     if (sum < 0.001) return;
 
@@ -1030,19 +1064,36 @@ kernel void chromaticityRender(
     float2 p3Tri[3] = { float2(0.680, 0.320), float2(0.265, 0.690), float2(0.150, 0.060) };
     // Rec.2020 primaries
     float2 r2020Tri[3] = { float2(0.708, 0.292), float2(0.170, 0.797), float2(0.131, 0.046) };
+    // Adobe RGB primaries (shares R and B with sRGB, different G)
+    float2 adobeTri[3] = { float2(0.640, 0.330), float2(0.210, 0.710), float2(0.150, 0.060) };
 
     struct GamutInfo {
         float2 verts[3];
         float3 color;
-        uint gamutId;  // 0=sRGB, 1=P3, 2=Rec2020
+        uint gamutId;  // 0=sRGB, 1=P3, 2=Rec2020, 3=AdobeRGB
     };
 
-    GamutInfo gamuts[3];
+    GamutInfo gamuts[4];
     gamuts[0] = { { r2020Tri[0], r2020Tri[1], r2020Tri[2] }, float3(0.3, 0.8, 0.9), 2 };
     gamuts[1] = { { p3Tri[0], p3Tri[1], p3Tri[2] }, float3(0.9, 0.6, 0.2), 1 };
-    gamuts[2] = { { sRGBTri[0], sRGBTri[1], sRGBTri[2] }, float3(0.8, 0.8, 0.8), 0 };
+    gamuts[2] = { { adobeTri[0], adobeTri[1], adobeTri[2] }, float3(0.6, 0.9, 0.4), 3 };
+    gamuts[3] = { { sRGBTri[0], sRGBTri[1], sRGBTri[2] }, float3(0.8, 0.8, 0.8), 0 };
 
-    for (int g = 0; g < 3; g++) {
+    // Display gamut indicator: subtle fill showing the display's gamut capability
+    // Find the display gamut triangle vertices (if different from sRGB)
+    if (params.displayGamut != 0) {
+        float2 dispTri[3];
+        if (params.displayGamut == 1) { dispTri[0] = p3Tri[0]; dispTri[1] = p3Tri[1]; dispTri[2] = p3Tri[2]; }
+        else if (params.displayGamut == 2) { dispTri[0] = r2020Tri[0]; dispTri[1] = r2020Tri[1]; dispTri[2] = r2020Tri[2]; }
+        else { dispTri[0] = adobeTri[0]; dispTri[1] = adobeTri[1]; dispTri[2] = adobeTri[2]; }
+
+        if (isInsideTriangle(xyPos, dispTri[0], dispTri[1], dispTri[2])
+            && !isInsideTriangle(xyPos, sRGBTri[0], sRGBTri[1], sRGBTri[2])) {
+            bg = max(bg, float3(0.06, 0.04, 0.0));
+        }
+    }
+
+    for (int g = 0; g < 4; g++) {
         bool isTarget = (gamuts[g].gamutId == params.targetGamut);
         float alpha = isTarget ? 0.7 : 0.3;
         float lineThick = isTarget ? 2.0 : 1.0;
@@ -1080,8 +1131,8 @@ kernel void chromaticityRender(
     }
 
     float logMax = log2(1.0 + float(maxCount));
-    float gain = 3.0;
-    float intensity = min(log2(1.0 + float(count)) / logMax * gain, 1.0);
+    float gain = 5.0;
+    float intensity = max(min(log2(1.0 + float(count)) / logMax * gain, 1.0), 0.15);
 
     float invCount = 1.0 / float(count);
     float avgR = float(bins[pixelCount + idx]) * invCount / 255.0;

@@ -925,9 +925,12 @@ struct ContentView: View {
                     } else {
                         scopeViewModel.updateImage(nil)
                     }
-                    // Auto-select waveform scale based on HDR state
+                    // Auto-select waveform scale and display gamut from settings
                     if let isHDR = notification.userInfo?["isHDR"] as? Bool {
                         scopeViewModel.waveformScale = isHDR ? .nits : .percentage
+                        scopeViewModel.displayGamut = isHDR
+                            ? settingsViewModel.exportColorGamutHDR
+                            : settingsViewModel.exportColorGamutSDR
                     }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: .editSliderDragStateChanged)) { notification in

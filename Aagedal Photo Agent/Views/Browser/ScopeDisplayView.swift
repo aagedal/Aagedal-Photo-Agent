@@ -27,7 +27,8 @@ struct ScopeDisplayView: View {
                         mode: scopeViewModel.scopeMode,
                         waveformScale: scopeViewModel.waveformScale,
                         showClippedGamut: scopeViewModel.showClippedGamut,
-                        targetGamut: UInt32(TargetColorGamut.allCases.firstIndex(of: scopeViewModel.targetGamut) ?? 0),
+                        targetGamut: scopeViewModel.targetGamut.shaderIndex,
+                        displayGamut: scopeViewModel.displayGamut.shaderIndex,
                         coordinator: scopeViewModel.metalScopeCoordinator
                     )
                 } else if let image = scopeViewModel.scopeImage {

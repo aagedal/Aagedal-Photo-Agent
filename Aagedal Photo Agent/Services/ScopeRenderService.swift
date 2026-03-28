@@ -389,11 +389,20 @@ nonisolated struct ScopeRenderService: Sendable {
                 let outY = Int(centerY + cr * radius * 2)
 
                 guard outX >= 0, outX < outW, outY >= 0, outY < outH else { continue }
-                let idx = outY * outW + outX
-                bins[idx].count &+= 1
-                bins[idx].sumR += r
-                bins[idx].sumG += g
-                bins[idx].sumB += b
+                // Spread to 2×2 neighborhood so data survives downscale interpolation
+                for dy in 0...1 {
+                    let ny = outY + dy
+                    guard ny >= 0, ny < outH else { continue }
+                    for dx in 0...1 {
+                        let nx = outX + dx
+                        guard nx >= 0, nx < outW else { continue }
+                        let idx = ny * outW + nx
+                        bins[idx].count &+= 1
+                        bins[idx].sumR += r
+                        bins[idx].sumG += g
+                        bins[idx].sumB += b
+                    }
+                }
             }
         }
 
@@ -422,8 +431,8 @@ nonisolated struct ScopeRenderService: Sendable {
         ctx.strokePath()
 
         let skinAngle: Float = 2.146
-        ctx.setStrokeColor(red: 0.6, green: 0.5, blue: 0.4, alpha: 0.6)
-        ctx.setLineWidth(1.5)
+        ctx.setStrokeColor(red: 0.7, green: 0.58, blue: 0.47, alpha: 0.7)
+        ctx.setLineWidth(2.0)
         ctx.move(to: CGPoint(x: CGFloat(centerX), y: CGFloat(centerY)))
         ctx.addLine(to: CGPoint(
             x: CGFloat(centerX + cos(skinAngle) * radius),
@@ -435,7 +444,7 @@ nonisolated struct ScopeRenderService: Sendable {
 
         // Logarithmic intensity: makes sparse bins visible while keeping dense areas bright
         let logMax = log2f(1 + Float(maxCount))
-        let gain: Float = 3.0
+        let gain: Float = 7.0
         guard let outputData = ctx.data?.bindMemory(to: UInt8.self, capacity: outW * outH * 4) else {
             return ctx.makeImage()
         }
@@ -447,7 +456,7 @@ nonisolated struct ScopeRenderService: Sendable {
                 let count = bins[idx].count
                 guard count > 0 else { continue }
 
-                let intensity = min(log2f(1 + Float(count)) / logMax * gain, 1.0)
+                let intensity = max(min(log2f(1 + Float(count)) / logMax * gain, 1.0), 0.15)
                 let invCount = 1.0 / Float(count)
                 var avgR = bins[idx].sumR * invCount
                 var avgG = bins[idx].sumG * invCount
@@ -483,7 +492,7 @@ nonisolated struct ScopeRenderService: Sendable {
 
     // MARK: - CIE 1931 Chromaticity Diagram
 
-    func renderChromaticity(from cgImage: CGImage, outputSize: CGSize, clipped: Bool, targetGamut: TargetColorGamut) -> CGImage? {
+    func renderChromaticity(from cgImage: CGImage, outputSize: CGSize, clipped: Bool, targetGamut: TargetColorGamut, displayGamut: TargetColorGamut = .sRGB) -> CGImage? {
         let outW = Int(outputSize.width)
         let outH = Int(outputSize.height)
         let size = min(outW, outH)
@@ -537,6 +546,18 @@ nonisolated struct ScopeRenderService: Sendable {
             ( 0.0163940,  0.0880112,  0.8953803)
         )
 
+        let adobeRGBtoXYZMat: Mat3 = (
+            (0.5767309, 0.1855540, 0.1881852),
+            (0.2973769, 0.6273491, 0.0752741),
+            (0.0270343, 0.0706872, 0.9911085)
+        )
+
+        let sRGBtoAdobeRGBMat: Mat3 = (
+            ( 0.7151522,  0.2848478, 0.0),
+            ( 0.0000000,  0.9998940, 0.0),
+            ( 0.0000000,  0.0411493, 0.9587507)
+        )
+
         // Helper: row-major mat3 × vec3
         func dot3(_ row: (Float, Float, Float), _ r: Float, _ g: Float, _ b: Float) -> Float {
             row.0 * r + row.1 * g + row.2 * b
@@ -585,12 +606,19 @@ nonisolated struct ScopeRenderService: Sendable {
                         let rb = dot3(sRGBtoRec2020Mat.r2, r, g, b)
                         r = max(0, min(rr, 1)); g = max(0, min(rg, 1)); b = max(0, min(rb, 1))
                         xyzMatrix = rec2020toXYZMat
+                    case .adobeRGB:
+                        let ar = dot3(sRGBtoAdobeRGBMat.r0, r, g, b)
+                        let ag = dot3(sRGBtoAdobeRGBMat.r1, r, g, b)
+                        let ab = dot3(sRGBtoAdobeRGBMat.r2, r, g, b)
+                        r = max(0, min(ar, 1)); g = max(0, min(ag, 1)); b = max(0, min(ab, 1))
+                        xyzMatrix = adobeRGBtoXYZMat
                     }
                 }
 
                 let X = dot3(xyzMatrix.r0, r, g, b)
                 let Y = dot3(xyzMatrix.r1, r, g, b)
                 let Z = dot3(xyzMatrix.r2, r, g, b)
+                guard X >= 0, Y >= 0, Z >= 0 else { continue }  // skip imaginary colors
                 let sum = X + Y + Z
                 guard sum > 0.001 else { continue }
 
@@ -627,11 +655,11 @@ nonisolated struct ScopeRenderService: Sendable {
         drawChromaticityBackground(outputData, width: outW, height: outH, stride: outStride, xyMin: xyMin, xyRange: xyRange)
 
         // Step 2: Guides via CGContext API (composited on top of the background)
-        drawChromaticityGuides(ctx, width: outW, height: outH, xyMin: xyMin, xyRange: xyRange, targetGamut: targetGamut)
+        drawChromaticityGuides(ctx, width: outW, height: outH, xyMin: xyMin, xyRange: xyRange, targetGamut: targetGamut, displayGamut: displayGamut)
 
         // Render bin data (logarithmic intensity, same as vectorscope)
         let logMax = log2f(1 + Float(maxCount))
-        let gain: Float = 3.0
+        let gain: Float = 5.0
 
         for py in 0..<outH {
             for px in 0..<outW {
@@ -639,7 +667,7 @@ nonisolated struct ScopeRenderService: Sendable {
                 let count = bins[idx].count
                 guard count > 0 else { continue }
 
-                let intensity = min(log2f(1 + Float(count)) / logMax * gain, 1.0)
+                let intensity = max(min(log2f(1 + Float(count)) / logMax * gain, 1.0), 0.15)
                 let invCount = 1.0 / Float(count)
                 var avgR = bins[idx].sumR * invCount
                 var avgG = bins[idx].sumG * invCount
@@ -760,10 +788,11 @@ nonisolated struct ScopeRenderService: Sendable {
     ]
 
     /// Gamut triangle primary coordinates in CIE xy
-    private static let gamutTriangles: [(name: String, primaries: [(x: Float, y: Float)], color: (r: CGFloat, g: CGFloat, b: CGFloat))] = [
-        ("Rec. 2020", [(0.708, 0.292), (0.170, 0.797), (0.131, 0.046)], (0.3, 0.8, 0.9)),
-        ("Display P3", [(0.680, 0.320), (0.265, 0.690), (0.150, 0.060)], (0.9, 0.6, 0.2)),
-        ("sRGB", [(0.640, 0.330), (0.300, 0.600), (0.150, 0.060)], (0.8, 0.8, 0.8)),
+    private static let gamutTriangles: [(name: String, gamut: TargetColorGamut, primaries: [(x: Float, y: Float)], color: (r: CGFloat, g: CGFloat, b: CGFloat))] = [
+        ("Rec. 2020", .rec2020, [(0.708, 0.292), (0.170, 0.797), (0.131, 0.046)], (0.3, 0.8, 0.9)),
+        ("Display P3", .displayP3, [(0.680, 0.320), (0.265, 0.690), (0.150, 0.060)], (0.9, 0.6, 0.2)),
+        ("Adobe RGB", .adobeRGB, [(0.640, 0.330), (0.210, 0.710), (0.150, 0.060)], (0.6, 0.9, 0.4)),
+        ("sRGB", .sRGB, [(0.640, 0.330), (0.300, 0.600), (0.150, 0.060)], (0.8, 0.8, 0.8)),
     ]
 
     /// Point-in-polygon test for the spectral locus
@@ -898,7 +927,7 @@ nonisolated struct ScopeRenderService: Sendable {
     }
 
     /// Draw spectral locus outline, gamut triangles, and D65 white point
-    private func drawChromaticityGuides(_ ctx: CGContext, width: Int, height: Int, xyMin: Float, xyRange: Float, targetGamut: TargetColorGamut) {
+    private func drawChromaticityGuides(_ ctx: CGContext, width: Int, height: Int, xyMin: Float, xyRange: Float, targetGamut: TargetColorGamut, displayGamut: TargetColorGamut = .sRGB) {
         // Helper to convert CIE xy to CGContext coordinates (origin at bottom-left, y increases upward)
         func toPixel(x: Float, y: Float) -> CGPoint {
             let px = CGFloat((x - xyMin) / xyRange * Float(width - 1))
@@ -920,16 +949,37 @@ nonisolated struct ScopeRenderService: Sendable {
         }
         ctx.strokePath()
 
-        // Gamut triangles
-        let targetName: String
-        switch targetGamut {
-        case .sRGB: targetName = "sRGB"
-        case .displayP3: targetName = "Display P3"
-        case .rec2020: targetName = "Rec. 2020"
+        // Display gamut indicator: subtle fill between sRGB and the display gamut
+        if displayGamut != .sRGB, let dispTriangle = Self.gamutTriangles.first(where: { $0.gamut == displayGamut }) {
+            let disp = dispTriangle.primaries
+            let dp0 = toPixel(x: disp[0].x, y: disp[0].y)
+            let dp1 = toPixel(x: disp[1].x, y: disp[1].y)
+            let dp2 = toPixel(x: disp[2].x, y: disp[2].y)
+
+            ctx.saveGState()
+            ctx.beginPath()
+            ctx.move(to: dp0); ctx.addLine(to: dp1); ctx.addLine(to: dp2); ctx.closePath()
+            let dispPath = ctx.path!.copy()!
+
+            let srgb = Self.gamutTriangles.first(where: { $0.gamut == .sRGB })!.primaries
+            ctx.beginPath()
+            ctx.move(to: toPixel(x: srgb[0].x, y: srgb[0].y))
+            ctx.addLine(to: toPixel(x: srgb[1].x, y: srgb[1].y))
+            ctx.addLine(to: toPixel(x: srgb[2].x, y: srgb[2].y))
+            ctx.closePath()
+            let srgbPath = ctx.path!.copy()!
+
+            ctx.beginPath()
+            ctx.addPath(dispPath)
+            ctx.addPath(srgbPath)
+            ctx.setFillColor(red: 0.45, green: 0.30, blue: 0.0, alpha: 0.08)
+            ctx.fillPath(using: .evenOdd)
+            ctx.restoreGState()
         }
 
+        // Gamut triangles
         for triangle in Self.gamutTriangles {
-            let isTarget = triangle.name == targetName
+            let isTarget = triangle.gamut == targetGamut
             let alpha: CGFloat = isTarget ? 0.9 : 0.5
             let lineWidth: CGFloat = isTarget ? 2.5 : 1.5
 
@@ -1016,12 +1066,12 @@ nonisolated struct ScopeRenderService: Sendable {
     private func drawColorTargets(_ ctx: CGContext, centerX: Float, centerY: Float, radius: Float) {
         // BT.709 75% color bar targets
         let targets: [(cb: Float, cr: Float, r: CGFloat, g: CGFloat, b: CGFloat)] = [
-            (-0.0860,  0.3750, 0.7, 0.15, 0.15),   // Red
-            ( 0.2891,  0.3407, 0.7, 0.15, 0.7),     // Magenta
-            ( 0.3750, -0.0344, 0.15, 0.15, 0.7),    // Blue
-            ( 0.0860, -0.3750, 0.15, 0.7, 0.7),     // Cyan
-            (-0.2891, -0.3407, 0.15, 0.7, 0.15),    // Green
-            (-0.3750,  0.0344, 0.7, 0.7, 0.15),     // Yellow
+            (-0.0860,  0.3750, 0.85, 0.20, 0.20),   // Red
+            ( 0.2891,  0.3407, 0.85, 0.20, 0.85),    // Magenta
+            ( 0.3750, -0.0344, 0.20, 0.20, 0.85),    // Blue
+            ( 0.0860, -0.3750, 0.20, 0.85, 0.85),    // Cyan
+            (-0.2891, -0.3407, 0.20, 0.85, 0.20),    // Green
+            (-0.3750,  0.0344, 0.85, 0.85, 0.20),    // Yellow
         ]
 
         ctx.setLineWidth(2.5)
@@ -1030,7 +1080,7 @@ nonisolated struct ScopeRenderService: Sendable {
             let x = CGFloat(centerX + target.cb * radius * 2)
             let y = CGFloat(centerY + target.cr * radius * 2)
             let rect = CGRect(x: x - boxSize / 2, y: y - boxSize / 2, width: boxSize, height: boxSize)
-            ctx.setStrokeColor(red: target.r, green: target.g, blue: target.b, alpha: 0.85)
+            ctx.setStrokeColor(red: target.r, green: target.g, blue: target.b, alpha: 1.0)
             ctx.stroke(rect)
         }
     }
