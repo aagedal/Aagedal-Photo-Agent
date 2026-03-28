@@ -322,9 +322,10 @@ struct EditWorkspaceView: View {
         .onReceive(NotificationCenter.default.publisher(for: .toggleHDR)) { _ in
             guard canEditSingleImage else { return }
             hdrToggleBinding.wrappedValue.toggle()
-            // Auto-switch soft-proof target gamut from format settings
+            // Auto-switch soft-proof target gamut and display gamut from format settings
+            updateDisplayGamut()
             if scopeViewModel.showClippedGamut {
-                scopeViewModel.targetGamut = hdrToggleBinding.wrappedValue
+                scopeViewModel.targetGamut = isHDREnabled
                     ? settingsViewModel.exportColorGamutHDR
                     : settingsViewModel.exportColorGamutSDR
             }
@@ -1351,7 +1352,14 @@ struct EditWorkspaceView: View {
         }
     }
 
+    private func updateDisplayGamut() {
+        scopeViewModel.displayGamut = isHDREnabled
+            ? settingsViewModel.exportColorGamutHDR
+            : settingsViewModel.exportColorGamutSDR
+    }
+
     private func updateGamutClipMode() {
+        updateDisplayGamut()
         guard let pipeline = metalPipeline else { return }
         if scopeViewModel.showClippedGamut {
             switch scopeViewModel.targetGamut {
@@ -1368,6 +1376,7 @@ struct EditWorkspaceView: View {
     }
 
     private func renderPreview() {
+        updateDisplayGamut()
         let renderStart = ContinuousClock.now
         guard let sourceCIImage else {
             previewCIImage = nil
