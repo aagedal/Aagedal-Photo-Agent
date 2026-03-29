@@ -7,7 +7,10 @@ nonisolated private let cacheLogger = Logger(subsystem: "com.aagedal.photo-agent
 /// LRU image cache with directional prefetching for full-screen image navigation.
 /// Maintains separate caches for unedited and edited (CameraRaw) versions so toggling
 /// edit rendering doesn't require re-decoding previously viewed images.
-/// Each retina cache holds up to 12 screen-resolution images. NSCache auto-evicts under memory pressure.
+/// Each retina cache holds up to 12 screen-resolution images with a 256 MB cost limit;
+/// preview caches hold up to 50 items with a 128 MB cost limit. Cost is the decoded
+/// byte size of each CGImage, so HDR (RGBAh, 8 B/px) images evict sooner than SDR.
+/// NSCache also auto-evicts under system memory pressure.
 final class FullScreenImageCache: @unchecked Sendable {
     // Unedited image caches
     nonisolated(unsafe) private let cache = NSCache<NSURL, CGImage>()
@@ -25,9 +28,13 @@ final class FullScreenImageCache: @unchecked Sendable {
 
     init() {
         cache.countLimit = 12
+        cache.totalCostLimit = 256 * 1024 * 1024            // 256 MB
         displayPreviewCache.countLimit = 50
+        displayPreviewCache.totalCostLimit = 128 * 1024 * 1024  // 128 MB
         editedCache.countLimit = 12
+        editedCache.totalCostLimit = 256 * 1024 * 1024          // 256 MB
         editedDisplayPreviewCache.countLimit = 50
+        editedDisplayPreviewCache.totalCostLimit = 128 * 1024 * 1024  // 128 MB
     }
 
     // MARK: - Cache Access
@@ -39,7 +46,7 @@ final class FullScreenImageCache: @unchecked Sendable {
 
     nonisolated func store(_ image: CGImage, for url: URL, isEdited: Bool = false) {
         let c = isEdited ? editedCache : cache
-        c.setObject(image, forKey: url as NSURL)
+        c.setObject(image, forKey: url as NSURL, cost: Self.byteSize(of: image))
     }
 
     // MARK: - Display Preview Cache (960px)
@@ -51,7 +58,7 @@ final class FullScreenImageCache: @unchecked Sendable {
 
     nonisolated func storeDisplayPreview(_ image: CGImage, for url: URL, isEdited: Bool = false) {
         let c = isEdited ? editedDisplayPreviewCache : displayPreviewCache
-        c.setObject(image, forKey: url as NSURL)
+        c.setObject(image, forKey: url as NSURL, cost: Self.byteSize(of: image))
     }
 
     nonisolated func clearDisplayPreviews() {
@@ -123,7 +130,7 @@ final class FullScreenImageCache: @unchecked Sendable {
                             guard self.displayPreviewCache.object(forKey: url as NSURL) == nil else { return }
                             guard let image = Self.loadDownsampled(from: url, maxPixelSize: screenMaxPx) else { return }
                             guard !Task.isCancelled else { return }
-                            self.displayPreviewCache.setObject(image, forKey: url as NSURL)
+                            self.storeDisplayPreview(image, for: url)
                         }
                     }
                 }
@@ -192,7 +199,7 @@ final class FullScreenImageCache: @unchecked Sendable {
                     let filename = url.lastPathComponent
                     cacheLogger.info("Prefetching \(filename) (edited=\(isEdited))")
 
-                    let settings = settingsForURL?(url)
+                    var settings = settingsForURL?(url)
                     let orientation = orientationForURL?(url) ?? 1
                     var image: CGImage?
                     let isRAW = Self.isRawFile(url)
@@ -200,8 +207,14 @@ final class FullScreenImageCache: @unchecked Sendable {
                     if settings != nil {
                         let ciImage: CIImage?
                         if isRAW {
-                            // Use CIRAWFilter for flat/neutral decode matching EditWorkspaceView
-                            ciImage = Self.loadRAWPreview(from: url, maxPixelSize: screenMaxPx)
+                            // Use CIRAWFilter for flat/neutral decode — get as-shot WB for correct rendering
+                            if let rawResult = Self.loadRAWImage(from: url, draftMode: false) {
+                                settings?.asShotNeutralTemperature = Double(rawResult.neutralTemperature)
+                                settings?.asShotNeutralTint = Double(rawResult.neutralTint)
+                                ciImage = Self.downsample(rawResult.image, maxPixelSize: screenMaxPx)
+                            } else {
+                                ciImage = nil
+                            }
                         } else {
                             ciImage = Self.loadHDRPreview(from: url, maxPixelSize: screenMaxPx)
                         }
@@ -324,17 +337,21 @@ final class FullScreenImageCache: @unchecked Sendable {
         let neutralTint: Float
     }
 
-    /// Load a RAW image via CIRAWFilter at a target max pixel size.
-    /// Uses flat/neutral decode (no auto-boost) matching EditWorkspaceView's pipeline,
-    /// then downsamples to the target resolution. Returns CIImage for downstream processing.
-    nonisolated static func loadRAWPreview(from url: URL, maxPixelSize: CGFloat, draftMode: Bool = false) -> CIImage? {
-        guard let result = loadRAWImage(from: url, draftMode: draftMode) else { return nil }
-        let ciImage = result.image
+    /// Downsample a CIImage if its longest side exceeds the target by more than 1.5×.
+    nonisolated static func downsample(_ ciImage: CIImage, maxPixelSize: CGFloat) -> CIImage {
         let extent = ciImage.extent
         let longestSide = max(extent.width, extent.height)
         guard longestSide > maxPixelSize * 1.5 else { return ciImage }
         let scale = maxPixelSize / longestSide
         return ciImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+    }
+
+    /// Load a RAW image via CIRAWFilter at a target max pixel size.
+    /// Uses flat/neutral decode (no auto-boost) matching EditWorkspaceView's pipeline,
+    /// then downsamples to the target resolution. Returns CIImage for downstream processing.
+    nonisolated static func loadRAWPreview(from url: URL, maxPixelSize: CGFloat, draftMode: Bool = false) -> CIImage? {
+        guard let result = loadRAWImage(from: url, draftMode: draftMode) else { return nil }
+        return downsample(result.image, maxPixelSize: maxPixelSize)
     }
 
     /// Load a RAW image using CIRAWFilter for optimized decoding.
@@ -443,6 +460,11 @@ final class FullScreenImageCache: @unchecked Sendable {
 
         cacheLogger.warning("\(filename): No preview found")
         return nil
+    }
+
+    /// Decoded byte size of a CGImage (actual backing-store footprint).
+    nonisolated private static func byteSize(of image: CGImage) -> Int {
+        image.bytesPerRow * image.height
     }
 
     // RAW extension check usable from nonisolated context (avoids MainActor-isolated SupportedImageFormats)

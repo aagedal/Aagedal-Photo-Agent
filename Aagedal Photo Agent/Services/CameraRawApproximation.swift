@@ -35,9 +35,11 @@ enum CameraRawApproximation {
 
         // 1. White Balance (chromatic adaptation before tonal — matches ACR pipeline order)
         if let target = temperatureTintTarget(for: settings) {
+            let targetTemp = CGFloat(settings.asShotNeutralTemperature ?? 6500)
+            let targetTint = CGFloat(settings.asShotNeutralTint ?? 0)
             output = applyFilter(named: "CITemperatureAndTint", input: output, values: [
                 "inputNeutral": CIVector(x: target.temperature, y: target.tint),
-                "inputTargetNeutral": CIVector(x: 6500, y: 0),
+                "inputTargetNeutral": CIVector(x: targetTemp, y: targetTint),
             ]) ?? output
         }
 

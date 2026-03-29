@@ -103,6 +103,12 @@ struct CameraRawSettings: Codable, Sendable, Equatable {
     var toneCurve: ToneCurve?
     var localAdjustments: [MaskAdjustment]?
 
+    /// As-shot neutral white balance from the RAW decoder (CIRAWFilter.neutralTemperature/Tint).
+    /// Used as the reference point for white balance correction in renderOffscreen().
+    /// Per-image metadata — excluded from isEmpty, merged(), and paste operations.
+    var asShotNeutralTemperature: Double?
+    var asShotNeutralTint: Double?
+
     var isEmpty: Bool {
         version == nil
             && processVersion == nil

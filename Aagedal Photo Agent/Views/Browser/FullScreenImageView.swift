@@ -870,9 +870,13 @@ struct FullScreenImageView: View {
                 var image: CGImage?
                 if needsHDRLoad {
                     if isRAWFile {
-                        // Use CIRAWFilter for flat/neutral decode matching EditWorkspaceView's pipeline
-                        if let ciImage = FullScreenImageCache.loadRAWPreview(from: url, maxPixelSize: screenMaxPx) {
-                            image = Self.applyCameraRaw(to: ciImage, settings: cameraRaw, exifOrientation: imageOrientation)
+                        // Use CIRAWFilter for flat/neutral decode — get as-shot WB for correct rendering
+                        if let rawResult = FullScreenImageCache.loadRAWImage(from: url, draftMode: false) {
+                            var settings = cameraRaw
+                            settings?.asShotNeutralTemperature = Double(rawResult.neutralTemperature)
+                            settings?.asShotNeutralTint = Double(rawResult.neutralTint)
+                            let ciImage = FullScreenImageCache.downsample(rawResult.image, maxPixelSize: screenMaxPx)
+                            image = Self.applyCameraRaw(to: ciImage, settings: settings, exifOrientation: imageOrientation)
                         }
                     } else {
                         if let ciImage = FullScreenImageCache.loadHDRPreview(from: url, maxPixelSize: screenMaxPx) {
@@ -924,9 +928,13 @@ struct FullScreenImageView: View {
             var image: CGImage?
             if needsHDRLoad {
                 if isRAW {
-                    // Use CIRAWFilter for flat/neutral decode matching EditWorkspaceView's pipeline
-                    if let ciImage = FullScreenImageCache.loadRAWPreview(from: url, maxPixelSize: screenMaxPx) {
-                        image = Self.applyCameraRaw(to: ciImage, settings: cameraRaw, exifOrientation: imageOrientation)
+                    // Use CIRAWFilter for flat/neutral decode — get as-shot WB for correct rendering
+                    if let rawResult = FullScreenImageCache.loadRAWImage(from: url, draftMode: false) {
+                        var settings = cameraRaw
+                        settings?.asShotNeutralTemperature = Double(rawResult.neutralTemperature)
+                        settings?.asShotNeutralTint = Double(rawResult.neutralTint)
+                        let ciImage = FullScreenImageCache.downsample(rawResult.image, maxPixelSize: screenMaxPx)
+                        image = Self.applyCameraRaw(to: ciImage, settings: settings, exifOrientation: imageOrientation)
                     }
                 } else {
                     if let ciImage = FullScreenImageCache.loadHDRPreview(from: url, maxPixelSize: screenMaxPx) {
@@ -1031,9 +1039,12 @@ struct FullScreenImageView: View {
             var image: CGImage?
             if needsHDRFullRes {
                 if isRAWFile {
-                    // Use CIRAWFilter for flat/neutral full-res decode matching EditWorkspaceView
+                    // Use CIRAWFilter for flat/neutral full-res decode — get as-shot WB
                     if let rawResult = FullScreenImageCache.loadRAWImage(from: url, draftMode: false) {
-                        image = Self.applyCameraRaw(to: rawResult.image, settings: cameraRaw, exifOrientation: orientation)
+                        var settings = cameraRaw
+                        settings?.asShotNeutralTemperature = Double(rawResult.neutralTemperature)
+                        settings?.asShotNeutralTint = Double(rawResult.neutralTint)
+                        image = Self.applyCameraRaw(to: rawResult.image, settings: settings, exifOrientation: orientation)
                     }
                 } else {
                     if let ciImage = FullScreenImageCache.loadHDRFullResolution(from: url) {

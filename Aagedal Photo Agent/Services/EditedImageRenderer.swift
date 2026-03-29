@@ -7,12 +7,16 @@ nonisolated enum EditedImageRenderer {
 
     private static func loadAndProcess(from sourceURL: URL, cameraRaw: CameraRawSettings?) throws -> CIImage {
         let input: CIImage
+        var effectiveSettings = cameraRaw
 
         let rawExtensions: Set<String> = ["raw", "cr2", "cr3", "nef", "nrw", "arw", "raf", "dng", "rw2", "orf", "pef", "srw"]
         if rawExtensions.contains(sourceURL.pathExtension.lowercased()) {
             // Full-quality CIRAWFilter decode for export (no draft mode)
             if let rawResult = FullScreenImageCache.loadRAWImage(from: sourceURL, draftMode: false) {
                 input = rawResult.image
+                // Propagate as-shot WB so renderOffscreen uses the correct reference
+                effectiveSettings?.asShotNeutralTemperature = Double(rawResult.neutralTemperature)
+                effectiveSettings?.asShotNeutralTint = Double(rawResult.neutralTint)
             } else {
                 // Fallback to generic CIImage for unsupported RAW formats
                 guard let ciImage = CIImage(contentsOf: sourceURL, options: [
@@ -40,7 +44,7 @@ nonisolated enum EditedImageRenderer {
             exifOrientation = orientation
         }
 
-        return CameraRawApproximation.applyWithCrop(to: input, settings: cameraRaw, exifOrientation: exifOrientation)
+        return CameraRawApproximation.applyWithCrop(to: input, settings: effectiveSettings, exifOrientation: exifOrientation)
     }
 
     // MARK: - Unified Render

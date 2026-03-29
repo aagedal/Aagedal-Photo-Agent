@@ -822,7 +822,16 @@ final class MetalEditPipeline: @unchecked Sendable {
         uploadCmdBuf.commit()
         uploadCmdBuf.waitUntilCompleted()
 
-        // 2. Generate LUT and set parameters
+        // 2. Propagate as-shot WB reference so the ephemeral pipeline computes
+        //    the same white balance matrix as the live edit preview.
+        if let asTemp = settings.asShotNeutralTemperature {
+            pipeline.asShotTemperature = asTemp
+        }
+        if let asTint = settings.asShotNeutralTint {
+            pipeline.asShotTint = asTint
+        }
+
+        // 3. Generate LUT and set parameters
         pipeline.updateParams(settings)
 
         // 3. Create output texture (managed — CIImage can create from it)

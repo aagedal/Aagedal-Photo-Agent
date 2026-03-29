@@ -1501,7 +1501,14 @@ struct EditWorkspaceView: View {
             return
         }
 
-        let settings = metadataViewModel.editingMetadata.cameraRaw
+        let settings: CameraRawSettings? = {
+            var s = metadataViewModel.editingMetadata.cameraRaw
+            if let asShot = asShotWhiteBalance {
+                s?.asShotNeutralTemperature = Double(asShot.temperature)
+                s?.asShotNeutralTint = Double(asShot.tint)
+            }
+            return s
+        }()
 
         // Keep Metal scope coordinator's crop region up to date
         if let coordinator = scopeViewModel.metalScopeCoordinator {
@@ -1610,7 +1617,14 @@ struct EditWorkspaceView: View {
 
     private func performScopeUpdate() {
         guard let sourceCIImage else { return }
-        let settings = metadataViewModel.editingMetadata.cameraRaw
+        let settings: CameraRawSettings? = {
+            var s = metadataViewModel.editingMetadata.cameraRaw
+            if let asShot = asShotWhiteBalance {
+                s?.asShotNeutralTemperature = Double(asShot.temperature)
+                s?.asShotNeutralTint = Double(asShot.tint)
+            }
+            return s
+        }()
         let hdr = isHDREnabled
         let orientation = selectedImageOrientation
 
