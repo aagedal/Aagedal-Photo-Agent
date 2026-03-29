@@ -710,6 +710,7 @@ struct XMPSidecarService: Sendable {
         return childElements(from: bag, prefix: "rdf", localName: "li")
             .compactMap { $0.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
+            .uniqued()
     }
 
     private func parseSeq(from description: XMLElement, prefix: String, localName: String) -> [String] {

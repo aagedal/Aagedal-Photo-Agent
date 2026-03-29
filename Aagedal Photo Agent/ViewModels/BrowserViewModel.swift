@@ -120,6 +120,7 @@ final class BrowserViewModel {
     private let xmpSidecarService = XMPSidecarService()
 
     private let logger = Logger(subsystem: "com.aagedal.photo-agent", category: "BrowserViewModel")
+    private let perfLog = Logger(subsystem: "com.aagedal.photo-agent", category: "MetadataPerf")
     @ObservationIgnored var onImagesDeleted: ((Set<URL>) -> Void)?
     @ObservationIgnored private var searchDebounceTask: Task<Void, Never>?
     @ObservationIgnored private var filterDebounceTask: Task<Void, Never>?
@@ -615,6 +616,9 @@ final class BrowserViewModel {
         // redundant sort + filter + UI rebuild cycles; do a single rebuild at the end.
         let batchSize = 50
         let urls = images.filter(\.isImageFile).map(\.url)
+        let totalBatchStart = ContinuousClock.now
+        let totalBatches = (urls.count + batchSize - 1) / batchSize
+        perfLog.info("[BrowserVM] loadBasicMetadata START — \(urls.count) images, \(totalBatches) batches")
 
         suppressImagesCascade = true
         for batchStart in stride(from: 0, to: urls.count, by: batchSize) {
@@ -624,15 +628,23 @@ final class BrowserViewModel {
             }
             let batchEnd = min(batchStart + batchSize, urls.count)
             let batchURLs = Array(urls[batchStart..<batchEnd])
+            let batchIndex = batchStart / batchSize
+            let batchTimer = ContinuousClock.now
 
             do {
                 let results = try await exifToolService.readBatchBasicMetadata(urls: batchURLs)
+                let batchMs = Int(batchTimer.duration(to: .now).components.seconds * 1000)
+                    + Int(batchTimer.duration(to: .now).components.attoseconds / 1_000_000_000_000_000)
+                perfLog.info("[BrowserVM] batch \(batchIndex)/\(totalBatches) DONE — \(batchURLs.count) files in \(batchMs)ms")
                 applyBatchMetadataResults(results, to: &images, localIndex: urlToImageIndex, cachedSidecars: cachedSidecars)
             } catch {
                 logger.warning("Batch metadata load failed (batch at offset \(batchStart)): \(error.localizedDescription)")
             }
         }
         suppressImagesCascade = false
+        let totalMs = Int(totalBatchStart.duration(to: .now).components.seconds * 1000)
+            + Int(totalBatchStart.duration(to: .now).components.attoseconds / 1_000_000_000_000_000)
+        perfLog.info("[BrowserVM] loadBasicMetadata DONE — \(urls.count) images in \(totalMs)ms")
         rebuildSortedCache()
     }
 

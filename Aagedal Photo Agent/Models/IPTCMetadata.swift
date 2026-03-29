@@ -332,8 +332,8 @@ struct IPTCMetadata: Codable, Sendable, Equatable {
         title = try container.decodeIfPresent(String.self, forKey: .title)
         description = try container.decodeIfPresent(String.self, forKey: .description)
         extendedDescription = try container.decodeIfPresent(String.self, forKey: .extendedDescription)
-        keywords = try container.decodeIfPresent([String].self, forKey: .keywords) ?? []
-        personShown = try container.decodeIfPresent([String].self, forKey: .personShown) ?? []
+        keywords = (try container.decodeIfPresent([String].self, forKey: .keywords) ?? []).uniqued()
+        personShown = (try container.decodeIfPresent([String].self, forKey: .personShown) ?? []).uniqued()
         digitalSourceType = try container.decodeIfPresent(DigitalSourceType.self, forKey: .digitalSourceType)
         creator = try container.decodeIfPresent(String.self, forKey: .creator)
         credit = try container.decodeIfPresent(String.self, forKey: .credit)
@@ -429,5 +429,13 @@ enum DigitalSourceType: String, Codable, CaseIterable, Sendable {
         case .compositeSynthetic: return "Composite (Synthetic)"
         case .compositeWithTrainedAlgorithmicMedia: return "Composite (AI)"
         }
+    }
+}
+
+extension Array where Element: Hashable {
+    /// Returns the array with duplicates removed, preserving the order of first occurrences.
+    func uniqued() -> [Element] {
+        var seen = Set<Element>()
+        return filter { seen.insert($0).inserted }
     }
 }

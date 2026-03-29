@@ -72,6 +72,8 @@ final class MetadataViewModel {
     // Batch metadata state - stores common values across selected images
     var batchCommonMetadata: IPTCMetadata?
     var batchDifferingFields: Set<String> = []
+    var batchPartialKeywords: [String] = []
+    var batchPartialPersonShown: [String] = []
     var isLoadingBatchMetadata = false
 
     // Geocoding state
@@ -84,6 +86,7 @@ final class MetadataViewModel {
     private let xmpSidecarService = XMPSidecarService()
     private let geocodingService = GeocodingService()
     private let logger = Logger(subsystem: "com.aagedal.photo-agent", category: "MetadataViewModel")
+    private let perfLog = Logger(subsystem: "com.aagedal.photo-agent", category: "MetadataPerf")
     private var previousEditingMetadata: IPTCMetadata?
     @ObservationIgnored private var metadataLoadTask: Task<Void, Never>?
 
@@ -182,6 +185,8 @@ final class MetadataViewModel {
         xmpMetadata = nil
         batchCommonMetadata = nil
         batchDifferingFields = []
+        batchPartialKeywords = []
+        batchPartialPersonShown = []
 
         if let folderURL {
             currentFolderURL = folderURL
@@ -212,8 +217,13 @@ final class MetadataViewModel {
             isLoading = true
 
             metadataLoadTask = Task {
+                let loadStart = ContinuousClock.now
+                self.perfLog.info("[MetadataVM] loadMetadata START — \(imageURL.lastPathComponent, privacy: .public)")
                 do {
                     let (embedded, conflict) = try await exifToolService.readFullMetadataWithConflictCheck(url: imageURL)
+                    let exifMs = Int(loadStart.duration(to: .now).components.seconds * 1000)
+                        + Int(loadStart.duration(to: .now).components.attoseconds / 1_000_000_000_000_000)
+                    self.perfLog.info("[MetadataVM] ExifTool returned — \(exifMs)ms for \(imageURL.lastPathComponent, privacy: .public)")
                     guard !Task.isCancelled else { return }
                     let xmpMeta = self.loadXMPMetadataIfAllowed(for: imageURL)
                     // Preserve the user's manual reference source selection when
@@ -273,6 +283,9 @@ final class MetadataViewModel {
                     }
                     self.previousEditingMetadata = self.editingMetadata
                     self.metadataLoadGeneration += 1
+                    let totalMs = Int(loadStart.duration(to: .now).components.seconds * 1000)
+                        + Int(loadStart.duration(to: .now).components.attoseconds / 1_000_000_000_000_000)
+                    self.perfLog.info("[MetadataVM] loadMetadata DONE — \(imageURL.lastPathComponent, privacy: .public) total \(totalMs)ms")
                     if self.metadataReferenceSource == .xmp, self.xmpMetadata == nil {
                         self.metadataReferenceSource = .embedded
                     }
@@ -369,9 +382,16 @@ final class MetadataViewModel {
         compareOptionalField(allMetadata, keyPath: \.event, fieldName: "event", common: &common, differing: &differing)
         compareOptionalField(allMetadata, keyPath: \.digitalSourceType, fieldName: "digitalSourceType", common: &common, differing: &differing)
 
-        // Array fields
-        compareArrayField(allMetadata, keyPath: \.keywords, fieldName: "keywords", common: &common, differing: &differing)
-        compareArrayField(allMetadata, keyPath: \.personShown, fieldName: "personShown", common: &common, differing: &differing)
+        // Array fields — compute intersection (common to all) and partial (some but not all)
+        let (commonKW, partialKW) = computeArrayFieldPartials(allMetadata, keyPath: \.keywords)
+        common.keywords = commonKW
+        if !partialKW.isEmpty { differing.insert("keywords") }
+        self.batchPartialKeywords = partialKW
+
+        let (commonPS, partialPS) = computeArrayFieldPartials(allMetadata, keyPath: \.personShown)
+        common.personShown = commonPS
+        if !partialPS.isEmpty { differing.insert("personShown") }
+        self.batchPartialPersonShown = partialPS
 
         // GPS - check if all have the same coordinates
         let latitudes = allMetadata.compactMap(\.latitude)
@@ -412,19 +432,34 @@ final class MetadataViewModel {
         }
     }
 
-    private func compareArrayField(
+    /// Compute intersection (common to all images) and partial (in some but not all) for an array field.
+    private func computeArrayFieldPartials(
         _ allMetadata: [IPTCMetadata],
-        keyPath: WritableKeyPath<IPTCMetadata, [String]>,
-        fieldName: String,
-        common: inout IPTCMetadata,
-        differing: inout Set<String>
-    ) {
+        keyPath: KeyPath<IPTCMetadata, [String]>
+    ) -> (common: [String], partial: [String]) {
         let sets = allMetadata.map { Set($0[keyPath: keyPath]) }
-        if let first = sets.first, sets.allSatisfy({ $0 == first }) {
-            common[keyPath: keyPath] = allMetadata.first?[keyPath: keyPath] ?? []
-        } else {
-            differing.insert(fieldName)
+        guard let first = sets.first else { return ([], []) }
+        let intersection = sets.dropFirst().reduce(first) { $0.intersection($1) }
+        let union = sets.dropFirst().reduce(first) { $0.union($1) }
+        let common = (allMetadata.first?[keyPath: keyPath] ?? []).filter { intersection.contains($0) }
+        let partial = union.subtracting(intersection).sorted()
+        return (common, partial)
+    }
+
+    func promotePartialKeyword(_ keyword: String) {
+        if !editingMetadata.keywords.contains(keyword) {
+            editingMetadata.keywords.append(keyword)
         }
+        batchPartialKeywords.removeAll { $0 == keyword }
+        hasChanges = true
+    }
+
+    func promotePartialPerson(_ person: String) {
+        if !editingMetadata.personShown.contains(person) {
+            editingMetadata.personShown.append(person)
+        }
+        batchPartialPersonShown.removeAll { $0 == person }
+        hasChanges = true
     }
 
     /// Check for pending sidecars once after batch loading, instead of on every UI access.
@@ -564,10 +599,10 @@ final class MetadataViewModel {
                     }
                     if edited.keywords != original?.keywords {
                         // Clear then set keywords
-                        fields[ExifToolWriteTag.subject] = edited.keywords.joined(separator: ", ")
+                        fields[ExifToolWriteTag.subject] = edited.keywords.uniqued().joined(separator: ", ")
                     }
                     if edited.personShown != original?.personShown {
-                        fields[ExifToolWriteTag.personInImage] = edited.personShown.joined(separator: ", ")
+                        fields[ExifToolWriteTag.personInImage] = edited.personShown.uniqued().joined(separator: ", ")
                     }
                     if edited.digitalSourceType != original?.digitalSourceType {
                         fields[ExifToolWriteTag.digitalSourceType] = edited.digitalSourceType?.rawValue ?? ""
@@ -981,8 +1016,8 @@ final class MetadataViewModel {
         fields[ExifToolWriteTag.headline] = metadata.title ?? ""
         fields[ExifToolWriteTag.description] = metadata.description ?? ""
         fields[ExifToolWriteTag.extendedDescription] = metadata.extendedDescription ?? ""
-        fields[ExifToolWriteTag.subject] = metadata.keywords.joined(separator: ", ")
-        fields[ExifToolWriteTag.personInImage] = metadata.personShown.joined(separator: ", ")
+        fields[ExifToolWriteTag.subject] = metadata.keywords.uniqued().joined(separator: ", ")
+        fields[ExifToolWriteTag.personInImage] = metadata.personShown.uniqued().joined(separator: ", ")
         fields[ExifToolWriteTag.digitalSourceType] = metadata.digitalSourceType?.rawValue ?? ""
         fields[ExifToolWriteTag.creator] = metadata.creator ?? ""
         fields[ExifToolWriteTag.credit] = metadata.credit ?? ""

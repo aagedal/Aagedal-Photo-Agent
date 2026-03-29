@@ -666,6 +666,11 @@ struct MetadataPanel: View {
             keywords: $viewModel.editingMetadata.keywords,
             differs: viewModel.keywordsDiffer(),
             hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("keywords"),
+            partialKeywords: viewModel.isBatchEdit ? viewModel.batchPartialKeywords : [],
+            selectedCount: viewModel.selectedCount,
+            onPromotePartial: { keyword in
+                viewModel.promotePartialKeyword(keyword)
+            },
             onChange: { viewModel.markChanged() },
             onCommit: { commitEdits() },
             showPresetSelectionIndicator: true,
@@ -686,6 +691,11 @@ struct MetadataPanel: View {
             keywords: $viewModel.editingMetadata.personShown,
             differs: viewModel.personShownDiffer(),
             hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("personShown"),
+            partialKeywords: viewModel.isBatchEdit ? viewModel.batchPartialPersonShown : [],
+            selectedCount: viewModel.selectedCount,
+            onPromotePartial: { person in
+                viewModel.promotePartialPerson(person)
+            },
             placeholder: "Add name",
             onChange: { viewModel.markChanged() },
             onCommit: { commitEdits() },
@@ -1358,6 +1368,9 @@ struct KeywordsEditorWithDiff: View {
     @Binding var keywords: [String]
     var differs: Bool = false
     var hasMultipleValues: Bool = false
+    var partialKeywords: [String] = []
+    var selectedCount: Int = 0
+    var onPromotePartial: ((String) -> Void)? = nil
     var placeholder: String = "Add keyword"
     var onChange: (() -> Void)? = nil
     var onCommit: (() -> Void)? = nil
@@ -1370,6 +1383,7 @@ struct KeywordsEditorWithDiff: View {
     var focusedField: FocusState<String?>.Binding? = nil
 
     @State private var inputText = ""
+    @State private var promotingKeyword: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -1452,6 +1466,44 @@ struct KeywordsEditorWithDiff: View {
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
                     .background(.secondary.opacity(0.2), in: Capsule())
+                }
+
+                ForEach(partialKeywords, id: \.self) { keyword in
+                    Button {
+                        promotingKeyword = keyword
+                    } label: {
+                        Text(keyword)
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(.orange.opacity(0.12), in: Capsule())
+                    .overlay(Capsule().strokeBorder(.orange.opacity(0.3), lineWidth: 0.5))
+                    .help("Present in some images — click to add to all")
+                    .popover(isPresented: Binding(
+                        get: { promotingKeyword == keyword },
+                        set: { if !$0 { promotingKeyword = nil } }
+                    )) {
+                        VStack(spacing: 8) {
+                            Text("Add \"\(keyword)\" to all \(selectedCount) images?")
+                                .font(.caption)
+                            HStack(spacing: 8) {
+                                Button("Cancel") {
+                                    promotingKeyword = nil
+                                }
+                                Button("Add to All") {
+                                    onPromotePartial?(keyword)
+                                    promotingKeyword = nil
+                                    onChange?()
+                                    onCommit?()
+                                }
+                                .buttonStyle(.borderedProminent)
+                            }
+                        }
+                        .padding(10)
+                    }
                 }
             }
 

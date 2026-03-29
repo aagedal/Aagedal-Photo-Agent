@@ -2,18 +2,28 @@ import SwiftUI
 
 struct ScopeDisplayView: View {
     let scopeViewModel: ScopeViewModel
+    @State private var hoveredMode: ScopeViewModel.ScopeMode?
 
     var body: some View {
         VStack(spacing: 4) {
-            Picker("", selection: Bindable(scopeViewModel).scopeMode) {
-                Text("Wave").tag(ScopeViewModel.ScopeMode.waveform)
-                Text("Parade").tag(ScopeViewModel.ScopeMode.parade)
-                Text("Vector").tag(ScopeViewModel.ScopeMode.vectorscope)
-                Text("Gamut").tag(ScopeViewModel.ScopeMode.chromaticity)
+            HStack(spacing: 8) {
+                ForEach(ScopeViewModel.ScopeMode.allCases, id: \.self) { mode in
+                    Text(label(for: mode))
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(
+                            scopeViewModel.scopeMode == mode
+                                ? Color.primary
+                                : Color.secondary.opacity(0.5)
+                        )
+                        .underline(hoveredMode == mode)
+                        .onHover { hovering in
+                            hoveredMode = hovering ? mode : nil
+                        }
+                        .onTapGesture {
+                            scopeViewModel.scopeMode = mode
+                        }
+                }
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .controlSize(.small)
 
             ZStack {
                 Color(nsColor: NSColor(white: 0.1, alpha: 1))
@@ -50,6 +60,15 @@ struct ScopeDisplayView: View {
             }
             .aspectRatio(1, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: 4))
+        }
+    }
+
+    private func label(for mode: ScopeViewModel.ScopeMode) -> String {
+        switch mode {
+        case .waveform: "Wave"
+        case .parade: "Parade"
+        case .vectorscope: "Vector"
+        case .chromaticity: "Gamut"
         }
     }
 }

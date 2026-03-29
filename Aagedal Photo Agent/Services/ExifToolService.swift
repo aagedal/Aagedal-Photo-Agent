@@ -3,6 +3,7 @@ import Foundation
 import os.log
 
 private let exifToolLog = Logger(subsystem: Bundle.main.bundleIdentifier ?? "AagedalPhotoAgent", category: "ExifToolService")
+nonisolated(unsafe) private let perfLog = Logger(subsystem: Bundle.main.bundleIdentifier ?? "AagedalPhotoAgent", category: "MetadataPerf")
 
 enum ExifToolReadKey {
     static let sourceFile = "SourceFile"
@@ -98,6 +99,7 @@ final class ExifToolService {
     private let maxQueueSize = 100
     private var commandTimeoutTask: Task<Void, Never>?
     private let commandTimeoutSeconds: TimeInterval = 30
+    private var commandStartTime: ContinuousClock.Instant?
 
     deinit {
         MainActor.assumeIsolated {
@@ -312,6 +314,12 @@ final class ExifToolService {
                 accumulatedOutput = String(accumulatedOutput[accumulatedOutput.index(after: newlineAfterReady)...])
                 commandTimeoutTask?.cancel()
                 commandTimeoutTask = nil
+                if let start = commandStartTime {
+                    let execMs = Int(start.duration(to: .now).components.seconds * 1000)
+                        + Int(start.duration(to: .now).components.attoseconds / 1_000_000_000_000_000)
+                    perfLog.info("[ExifTool] COMPLETED — exec \(execMs)ms, response \(result.count) chars")
+                    commandStartTime = nil
+                }
                 pendingContinuation?.resume(returning: result)
                 pendingContinuation = nil
                 isExecuting = false
@@ -322,6 +330,7 @@ final class ExifToolService {
 
     private func dequeueNext() {
         guard !isExecuting, !commandQueue.isEmpty else { return }
+        perfLog.info("[ExifTool] dequeueNext: \(self.commandQueue.count) remaining")
         isExecuting = true
         let next = commandQueue.removeFirst()
         next()
@@ -354,20 +363,27 @@ final class ExifToolService {
         }
 
         let label = arguments.first(where: { $0.hasSuffix(".path") || !$0.hasPrefix("-") }) ?? arguments.prefix(3).joined(separator: " ")
-        exifToolLog.debug("Queuing command: \(label, privacy: .public) (queue depth: \(self.commandQueue.count))")
+        let queueDepthAtEntry = commandQueue.count
+        exifToolLog.debug("Queuing command: \(label, privacy: .public) (queue depth: \(queueDepthAtEntry))")
+        perfLog.info("[ExifTool] QUEUED \(label, privacy: .public) — queue depth \(queueDepthAtEntry)")
 
         guard commandQueue.count < maxQueueSize else {
             throw NSError(domain: "ExifToolService", code: 1,
                 userInfo: [NSLocalizedDescriptionKey: "Command queue full — ExifTool may be unresponsive"])
         }
 
+        let queuedAt = ContinuousClock.now
         return try await withCheckedThrowingContinuation { continuation in
             self.commandQueue.append { [weak self] in
                 guard let self else {
                     continuation.resume(throwing: CancellationError())
                     return
                 }
+                let waitMs = Int(queuedAt.duration(to: .now).components.seconds * 1000)
+                    + Int(queuedAt.duration(to: .now).components.attoseconds / 1_000_000_000_000_000)
+                perfLog.info("[ExifTool] DEQUEUED \(label, privacy: .public) — waited \(waitMs)ms, queue depth was \(queueDepthAtEntry)")
                 exifToolLog.debug("Executing command: \(label, privacy: .public)")
+                self.commandStartTime = .now
                 self.accumulatedOutput = ""
                 self.pendingContinuation = continuation
                 self.sendCommand(arguments)
@@ -437,6 +453,8 @@ final class ExifToolService {
     /// Read basic metadata (rating, label, C2PA) for a batch of files.
     func readBatchBasicMetadata(urls: [URL]) async throws -> [[String: Any]] {
         guard !urls.isEmpty else { return [] }
+        let batchStart = ContinuousClock.now
+        perfLog.info("[Batch] readBatchBasicMetadata START — \(urls.count) files")
 
         var args = [
             "-json", "-charset", "iptc=UTF8",
@@ -482,6 +500,9 @@ final class ExifToolService {
         args += urls.map(\.path)
 
         let output = try await execute(args)
+        let batchMs = Int(batchStart.duration(to: .now).components.seconds * 1000)
+            + Int(batchStart.duration(to: .now).components.attoseconds / 1_000_000_000_000_000)
+        perfLog.info("[Batch] readBatchBasicMetadata DONE — \(urls.count) files in \(batchMs)ms")
         return try parseJSON(output)
     }
 
@@ -525,6 +546,8 @@ final class ExifToolService {
 
     /// Read full metadata for a single file, also checking for XMP vs IPTC description conflicts.
     func readFullMetadataWithConflictCheck(url: URL) async throws -> (IPTCMetadata, DescriptionConflict?) {
+        let singleStart = ContinuousClock.now
+        perfLog.info("[Single] readFullMetadataWithConflictCheck START — \(url.lastPathComponent, privacy: .public)")
         exifToolLog.debug("readFullMetadataWithConflictCheck: \(url.lastPathComponent, privacy: .public)")
         let args = [
             "-json", "-n", "-charset", "iptc=UTF8",
@@ -536,6 +559,9 @@ final class ExifToolService {
             url.path
         ]
         let output = try await execute(args)
+        let singleMs = Int(singleStart.duration(to: .now).components.seconds * 1000)
+            + Int(singleStart.duration(to: .now).components.attoseconds / 1_000_000_000_000_000)
+        perfLog.info("[Single] readFullMetadataWithConflictCheck DONE — \(url.lastPathComponent, privacy: .public) in \(singleMs)ms")
         let results = try parseJSON(output)
 
         guard let dict = results.first else {
@@ -786,8 +812,13 @@ final class ExifToolService {
 
         for (tag, values) in add {
             for value in values {
+                // Remove first to prevent duplicates if value already exists
+                args.append("-\(tag)-=\(value)")
+                if tag == ExifToolWriteTag.subject {
+                    args.append("-\(ExifToolWriteTag.iptcKeywords)-=\(value)")
+                }
+                // Then add exactly one instance
                 args.append("-\(tag)+=\(value)")
-                // Mirror IPTC for Subject → Keywords
                 if tag == ExifToolWriteTag.subject {
                     args.append("-\(ExifToolWriteTag.iptcKeywords)+=\(value)")
                 }
@@ -955,7 +986,7 @@ final class ExifToolService {
     }
 
     private func parseStringOrArray(_ value: Any?) -> [String] {
-        if let array = value as? [String] { return array }
+        if let array = value as? [String] { return array.uniqued() }
         if let str = value as? String { return [str] }
         return []
     }
