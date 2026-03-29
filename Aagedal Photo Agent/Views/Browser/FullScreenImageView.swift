@@ -563,7 +563,8 @@ struct FullScreenImageView: View {
             await loadImage()
         }
         .onChange(of: renderEdits) {
-            imageCache.clearAll()
+            // Cancel stale prefetch (targets may be wrong for the new mode) but
+            // keep both caches intact so switching back is instant.
             imageCache.cancelAllPrefetch()
             // Show loading overlay immediately so the user has feedback
             // while the new version loads. The old image stays visible as
@@ -762,6 +763,11 @@ struct FullScreenImageView: View {
         let filename = currentImageFile?.url.lastPathComponent ?? "nil"
         imageLogger.info("loadImage called for \(filename)")
 
+        // Guarantee isLoading is cleared when loadImage returns, regardless of
+        // exit path (cache hit, cancellation, Phase 0.5 completion).
+        // Phase 2 runs as a detached background task and does NOT need to manage isLoading.
+        defer { isLoading = false }
+
         // Bump generation so any in-flight Phase 2 detached tasks discard their results
         renderGeneration += 1
         let expectedGeneration = renderGeneration
@@ -793,6 +799,7 @@ struct FullScreenImageView: View {
             return
         }
 
+        let isEdited = renderEdits
         let cameraRaw = renderEdits ? currentImageFile?.cameraRawSettings : nil
         let isNativeHDR = currentImageFile?.isNativeHDR == true
         let needsHDRLoad = cameraRaw != nil || isNativeHDR
@@ -841,29 +848,36 @@ struct FullScreenImageView: View {
         }
 
         // Phase 0: Instant — check retina cache, then display preview cache, then thumbnail
-        if let cached = imageCache.cachedImage(for: url) {
-            imageLogger.info("\(filename): Phase 0 cache hit")
+        if let cached = imageCache.cachedImage(for: url, isEdited: isEdited) {
+            imageLogger.info("\(filename): Phase 0 cache hit (edited=\(isEdited))")
             currentImage = makeLoadedImage(from: cached)
             isLoading = false
             triggerPrefetch(for: url)
             return
         }
 
-        if let displayPreview = imageCache.cachedDisplayPreview(for: url) {
-            imageLogger.info("\(filename): Phase 0 display preview cache hit")
+        if let displayPreview = imageCache.cachedDisplayPreview(for: url, isEdited: isEdited) {
+            imageLogger.info("\(filename): Phase 0 display preview cache hit (edited=\(isEdited))")
             currentImage = makeLoadedImage(from: displayPreview)
             isLoading = false
             // Skip Phase 0.5, go directly to Phase 2 for retina upgrade
             let screenScale = NSScreen.main?.backingScaleFactor ?? 2.0
             let screenLogicalPx = max(NSScreen.main?.frame.width ?? 3840, NSScreen.main?.frame.height ?? 2160)
             let screenMaxPx = screenLogicalPx * screenScale
+            let isRAWFile = SupportedImageFormats.isRaw(url: url)
             let fullStart = CFAbsoluteTimeGetCurrent()
             fullLoadTask = Task.detached(priority: .medium) {
                 var image: CGImage?
                 if needsHDRLoad {
-                    // HDR-preserving path: same decoder as EditWorkspaceView
-                    if let ciImage = FullScreenImageCache.loadHDRPreview(from: url, maxPixelSize: screenMaxPx) {
-                        image = Self.applyCameraRaw(to: ciImage, settings: cameraRaw, exifOrientation: imageOrientation)
+                    if isRAWFile {
+                        // Use CIRAWFilter for flat/neutral decode matching EditWorkspaceView's pipeline
+                        if let ciImage = FullScreenImageCache.loadRAWPreview(from: url, maxPixelSize: screenMaxPx) {
+                            image = Self.applyCameraRaw(to: ciImage, settings: cameraRaw, exifOrientation: imageOrientation)
+                        }
+                    } else {
+                        if let ciImage = FullScreenImageCache.loadHDRPreview(from: url, maxPixelSize: screenMaxPx) {
+                            image = Self.applyCameraRaw(to: ciImage, settings: cameraRaw, exifOrientation: imageOrientation)
+                        }
                     }
                 }
                 if image == nil {
@@ -880,7 +894,7 @@ struct FullScreenImageView: View {
                           currentImageFile?.url == url else { return }
                     imageLogger.info("\(filename): Phase 2 done in \(String(format: "%.1f", fullElapsed * 1000))ms (\(image.width)x\(image.height))")
                     currentImage = makeLoadedImage(from: image)
-                    imageCache.store(image, for: url)
+                    imageCache.store(image, for: url, isEdited: isEdited)
                     triggerPrefetch(for: url)
                 }
             }
@@ -902,48 +916,22 @@ struct FullScreenImageView: View {
         let screenMaxPx = screenLogicalPx * screenScale
         imageLogger.info("\(filename): isRAW=\(isRAW)")
 
-        // Phase 0.5: Quick 960px preview (<5ms non-RAW)
-        let previewStart = CFAbsoluteTimeGetCurrent()
-        let preview: CGImage?
-        if isRAW {
-            // RAW: extract embedded JPEG preview (already small, ~1-3MP)
-            preview = await Task.detached(priority: .medium) {
-                guard let raw = FullScreenImageCache.extractEmbeddedPreview(from: url) else { return nil as CGImage? }
-                return Self.applyCameraRaw(to: raw, settings: cameraRaw, exifOrientation: imageOrientation)
-            }.value
-        } else if needsHDRLoad {
-            // HDR-preserving path: same decoder as EditWorkspaceView for consistent rendering
-            preview = await Task.detached(priority: .medium) {
-                if let ciImage = FullScreenImageCache.loadHDRPreview(from: url, maxPixelSize: 960) {
-                    return Self.applyCameraRaw(to: ciImage, settings: cameraRaw, exifOrientation: imageOrientation)
-                }
-                guard let raw = FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: 960) else { return nil as CGImage? }
-                return Self.applyCameraRaw(to: raw, settings: cameraRaw, exifOrientation: imageOrientation)
-            }.value
-        } else {
-            // Non-RAW, no edits: quick downsample at 960px
-            preview = await Task.detached(priority: .medium) {
-                guard let raw = FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: 960) else { return nil as CGImage? }
-                return Self.applyCameraRaw(to: raw, settings: cameraRaw, exifOrientation: imageOrientation)
-            }.value
-        }
-        let previewElapsed = CFAbsoluteTimeGetCurrent() - previewStart
-        guard !Task.isCancelled else { return }
-        if let preview, currentImageFile?.url == url {
-            imageLogger.info("\(filename): Phase 0.5 in \(String(format: "%.1f", previewElapsed * 1000))ms (\(preview.width)x\(preview.height))")
-            currentImage = makeLoadedImage(from: preview)
-            imageCache.storeDisplayPreview(preview, for: url)
-        }
-
-        // Phase 2: Retina-resolution decode (screen pixels, preserving HDR color space)
+        // Launch Phase 2 immediately (fire-and-forget) so it runs in parallel with Phase 0.5.
+        // Phase 0.5 provides a quick preview; Phase 2 replaces it with retina resolution.
         let fullStart = CFAbsoluteTimeGetCurrent()
-        imageLogger.info("\(filename): Phase 2 starting (retina resolution)")
+        imageLogger.info("\(filename): Phase 2 starting (retina resolution, parallel with Phase 0.5)")
         fullLoadTask = Task.detached(priority: .medium) {
             var image: CGImage?
             if needsHDRLoad {
-                // HDR-preserving path: same decoder as EditWorkspaceView
-                if let ciImage = FullScreenImageCache.loadHDRPreview(from: url, maxPixelSize: screenMaxPx) {
-                    image = Self.applyCameraRaw(to: ciImage, settings: cameraRaw, exifOrientation: imageOrientation)
+                if isRAW {
+                    // Use CIRAWFilter for flat/neutral decode matching EditWorkspaceView's pipeline
+                    if let ciImage = FullScreenImageCache.loadRAWPreview(from: url, maxPixelSize: screenMaxPx) {
+                        image = Self.applyCameraRaw(to: ciImage, settings: cameraRaw, exifOrientation: imageOrientation)
+                    }
+                } else {
+                    if let ciImage = FullScreenImageCache.loadHDRPreview(from: url, maxPixelSize: screenMaxPx) {
+                        image = Self.applyCameraRaw(to: ciImage, settings: cameraRaw, exifOrientation: imageOrientation)
+                    }
                 }
             }
             if image == nil {
@@ -976,31 +964,64 @@ struct FullScreenImageView: View {
                     currentImage = makeLoadedImage(from: image)
                     isLoading = false
                     loadError = nil
-                    imageCache.store(image, for: url)
+                    imageCache.store(image, for: url, isEdited: isEdited)
                     triggerPrefetch(for: url)
                 } else {
                     imageLogger.info("\(filename): Phase 2 done but image changed, discarding")
                 }
             }
         }
+
+        // Phase 0.5: Quick 960px preview (<5ms non-RAW) — runs in parallel with Phase 2
+        let previewStart = CFAbsoluteTimeGetCurrent()
+        let preview: CGImage? = await Task.detached(priority: .userInitiated) {
+            if isRAW {
+                guard let raw = FullScreenImageCache.extractEmbeddedPreview(from: url) else { return nil as CGImage? }
+                return Self.applyCameraRaw(to: raw, settings: cameraRaw, exifOrientation: imageOrientation) as CGImage
+            }
+            // Try HDR CIImage path first; fall through to CGImage if crop/render fails
+            if needsHDRLoad,
+               let ciImage = FullScreenImageCache.loadHDRPreview(from: url, maxPixelSize: 960),
+               let result = Self.applyCameraRaw(to: ciImage, settings: cameraRaw, exifOrientation: imageOrientation) {
+                return result
+            }
+            // CGImage fallback — applyCameraRaw(to: CGImage) always returns a valid image
+            guard let raw = FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: 960) else { return nil as CGImage? }
+            return Self.applyCameraRaw(to: raw, settings: cameraRaw, exifOrientation: imageOrientation) as CGImage
+        }.value
+        let previewElapsed = CFAbsoluteTimeGetCurrent() - previewStart
+        guard !Task.isCancelled else { return }
+        if let preview, currentImageFile?.url == url {
+            imageLogger.info("\(filename): Phase 0.5 in \(String(format: "%.1f", previewElapsed * 1000))ms (\(preview.width)x\(preview.height))")
+            currentImage = makeLoadedImage(from: preview)
+            imageCache.storeDisplayPreview(preview, for: url, isEdited: isEdited)
+        }
+        // defer { isLoading = false } at function entry handles clearing the loading overlay.
+        // Phase 2 upgrades quality silently in the background.
     }
 
-    /// Lazily loads full source resolution when the user zooms past 100%.
-    /// This avoids decoding massive images during normal navigation.
+    /// Lazily loads full source resolution when the user zooms in far enough that
+    /// the retina-resolution Phase 2 image runs out of detail.
     private func loadFullResIfNeeded() {
         guard !isFullResLoaded else { return }
-        let zoom100 = calculateZoomTo100()
-        guard zoom100 < 1.0, zoomScale >= zoom100 * 0.9 else { return } // only needed for images larger than screen
-        // Actually: we need full res when zoomed past the point where retina pixels run out.
-        // At zoomScale=1.0, we have screenMaxPx worth of pixels. We need more when zoomScale > 1.0
-        // and the image has more source pixels than screenMaxPx.
-        guard zoomScale > 1.0 else { return }
         guard let url = currentImageFile?.url else { return }
         guard fullResTask == nil else { return }
+
+        // Only needed when source has more pixels than the retina-resolution Phase 2 load.
+        // Phase 2 uses loadDownsampled which only downsamples at 1.5x, so match that threshold.
+        let screenScale = NSScreen.main?.backingScaleFactor ?? 2.0
+        let screenLogicalPx = max(NSScreen.main?.frame.width ?? 3840, NSScreen.main?.frame.height ?? 2160)
+        let screenMaxPx = screenLogicalPx * screenScale
+        let sourceMax = max(sourcePixelSize?.width ?? 0, sourcePixelSize?.height ?? 0)
+        guard sourceMax > screenMaxPx * 1.5 else { return }
+
+        // Trigger when zooming in (retina pixels start running out)
+        guard zoomScale > 1.0 else { return }
 
         let filename = url.lastPathComponent
         let cameraRaw = renderEdits ? currentImageFile?.cameraRawSettings : nil
         let needsHDRFullRes = cameraRaw != nil || currentImageFile?.isNativeHDR == true
+        let isRAWFile = SupportedImageFormats.isRaw(url: url)
         let orientation = currentImageFile?.exifOrientation ?? 1
         let expectedGeneration = renderGeneration
         imageLogger.info("\(filename): Loading full resolution for zoom")
@@ -1009,9 +1030,15 @@ struct FullScreenImageView: View {
             let fullStart = CFAbsoluteTimeGetCurrent()
             var image: CGImage?
             if needsHDRFullRes {
-                // HDR-preserving path: same decoder as EditWorkspaceView
-                if let ciImage = FullScreenImageCache.loadHDRFullResolution(from: url) {
-                    image = Self.applyCameraRaw(to: ciImage, settings: cameraRaw, exifOrientation: orientation)
+                if isRAWFile {
+                    // Use CIRAWFilter for flat/neutral full-res decode matching EditWorkspaceView
+                    if let rawResult = FullScreenImageCache.loadRAWImage(from: url, draftMode: false) {
+                        image = Self.applyCameraRaw(to: rawResult.image, settings: cameraRaw, exifOrientation: orientation)
+                    }
+                } else {
+                    if let ciImage = FullScreenImageCache.loadHDRFullResolution(from: url) {
+                        image = Self.applyCameraRaw(to: ciImage, settings: cameraRaw, exifOrientation: orientation)
+                    }
                 }
             }
             if image == nil {
@@ -1079,6 +1106,7 @@ struct FullScreenImageView: View {
                 images: imageURLs,
                 direction: direction,
                 screenMaxPx: screenMaxPx,
+                isEdited: true,
                 settingsForURL: { url in settingsLookup[url] },
                 orientationForURL: { url in orientationLookup[url] ?? 1 }
             )
@@ -1088,6 +1116,7 @@ struct FullScreenImageView: View {
                 images: imageURLs,
                 direction: direction,
                 screenMaxPx: screenMaxPx,
+                isEdited: false,
                 orientationForURL: { url in orientationLookup[url] ?? 1 }
             )
         }

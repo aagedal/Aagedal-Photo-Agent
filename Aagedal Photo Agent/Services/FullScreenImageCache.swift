@@ -5,10 +5,17 @@ import os.log
 nonisolated private let cacheLogger = Logger(subsystem: "com.aagedal.photo-agent", category: "FullScreenCache")
 
 /// LRU image cache with directional prefetching for full-screen image navigation.
-/// Holds up to 12 screen-resolution images (~480MB). NSCache auto-evicts under memory pressure.
+/// Maintains separate caches for unedited and edited (CameraRaw) versions so toggling
+/// edit rendering doesn't require re-decoding previously viewed images.
+/// Each retina cache holds up to 12 screen-resolution images. NSCache auto-evicts under memory pressure.
 final class FullScreenImageCache: @unchecked Sendable {
+    // Unedited image caches
     nonisolated(unsafe) private let cache = NSCache<NSURL, CGImage>()
     nonisolated(unsafe) private let displayPreviewCache = NSCache<NSURL, CGImage>()
+    // Edited image caches (CameraRaw applied)
+    nonisolated(unsafe) private let editedCache = NSCache<NSURL, CGImage>()
+    nonisolated(unsafe) private let editedDisplayPreviewCache = NSCache<NSURL, CGImage>()
+
     nonisolated(unsafe) private var prefetchTasks: [URL: Task<Void, Never>] = [:]
     nonisolated(unsafe) private var previewGenerationTask: Task<Void, Never>?
     nonisolated(unsafe) private var _isGeneratingPreviews = false
@@ -19,42 +26,59 @@ final class FullScreenImageCache: @unchecked Sendable {
     init() {
         cache.countLimit = 12
         displayPreviewCache.countLimit = 50
+        editedCache.countLimit = 12
+        editedDisplayPreviewCache.countLimit = 50
     }
 
     // MARK: - Cache Access
 
-    nonisolated func cachedImage(for url: URL) -> CGImage? {
-        cache.object(forKey: url as NSURL)
+    nonisolated func cachedImage(for url: URL, isEdited: Bool = false) -> CGImage? {
+        let c = isEdited ? editedCache : cache
+        return c.object(forKey: url as NSURL)
     }
 
-    nonisolated func store(_ image: CGImage, for url: URL) {
-        cache.setObject(image, forKey: url as NSURL)
+    nonisolated func store(_ image: CGImage, for url: URL, isEdited: Bool = false) {
+        let c = isEdited ? editedCache : cache
+        c.setObject(image, forKey: url as NSURL)
     }
 
     // MARK: - Display Preview Cache (960px)
 
-    nonisolated func cachedDisplayPreview(for url: URL) -> CGImage? {
-        displayPreviewCache.object(forKey: url as NSURL)
+    nonisolated func cachedDisplayPreview(for url: URL, isEdited: Bool = false) -> CGImage? {
+        let c = isEdited ? editedDisplayPreviewCache : displayPreviewCache
+        return c.object(forKey: url as NSURL)
     }
 
-    nonisolated func storeDisplayPreview(_ image: CGImage, for url: URL) {
-        displayPreviewCache.setObject(image, forKey: url as NSURL)
+    nonisolated func storeDisplayPreview(_ image: CGImage, for url: URL, isEdited: Bool = false) {
+        let c = isEdited ? editedDisplayPreviewCache : displayPreviewCache
+        c.setObject(image, forKey: url as NSURL)
     }
 
     nonisolated func clearDisplayPreviews() {
         displayPreviewCache.removeAllObjects()
+        editedDisplayPreviewCache.removeAllObjects()
     }
 
     nonisolated func invalidateImage(for url: URL) {
         cache.removeObject(forKey: url as NSURL)
         displayPreviewCache.removeObject(forKey: url as NSURL)
+        editedCache.removeObject(forKey: url as NSURL)
+        editedDisplayPreviewCache.removeObject(forKey: url as NSURL)
+    }
+
+    /// Clear edited caches only (e.g. when edit parameters change globally).
+    nonisolated func clearEdited() {
+        editedCache.removeAllObjects()
+        editedDisplayPreviewCache.removeAllObjects()
     }
 
     /// Clear all cached images and cancel in-flight tasks.
-    /// Call on folder switch or rendering mode change to avoid stale cache hits.
+    /// Call on folder switch to avoid stale cache hits.
     nonisolated func clearAll() {
         cache.removeAllObjects()
         displayPreviewCache.removeAllObjects()
+        editedCache.removeAllObjects()
+        editedDisplayPreviewCache.removeAllObjects()
         cancelAllPrefetch()
         cancelPreviewGeneration()
     }
@@ -126,7 +150,7 @@ final class FullScreenImageCache: @unchecked Sendable {
 
     /// Prefetch adjacent images based on navigation direction.
     /// Loads 4 images ahead in travel direction and 2 behind, at medium priority.
-    nonisolated func startPrefetch(currentIndex: Int, images: [URL], direction: NavigationDirection, screenMaxPx: CGFloat, settingsForURL: (@Sendable (URL) -> CameraRawSettings?)? = nil, orientationForURL: (@Sendable (URL) -> Int)? = nil) {
+    nonisolated func startPrefetch(currentIndex: Int, images: [URL], direction: NavigationDirection, screenMaxPx: CGFloat, isEdited: Bool = false, settingsForURL: (@Sendable (URL) -> CameraRawSettings?)? = nil, orientationForURL: (@Sendable (URL) -> Int)? = nil) {
         let ahead: [Int]
         let behind: [Int]
 
@@ -159,28 +183,36 @@ final class FullScreenImageCache: @unchecked Sendable {
             // Atomically check cache/prefetch state AND register the task to prevent
             // a race where two concurrent callers both pass the guard and create duplicates.
             let alreadyHandled = lock.withLock { () -> Bool in
-                if cachedImage(for: url) != nil { return true }
+                if cachedImage(for: url, isEdited: isEdited) != nil { return true }
                 if prefetchTasks[url] != nil { return true }
 
                 let task = Task.detached(priority: .medium) { [weak self] in
                     guard let self, !Task.isCancelled else { return }
                     defer { self.removePrefetchTask(for: url) }
                     let filename = url.lastPathComponent
-                    cacheLogger.info("Prefetching \(filename)")
+                    cacheLogger.info("Prefetching \(filename) (edited=\(isEdited))")
 
                     let settings = settingsForURL?(url)
                     let orientation = orientationForURL?(url) ?? 1
                     var image: CGImage?
+                    let isRAW = Self.isRawFile(url)
 
-                    if settings != nil,
-                       let ciImage = Self.loadHDRPreview(from: url, maxPixelSize: screenMaxPx) {
-                        // HDR-preserving path: same decoder as EditWorkspaceView
-                        let processed = settings.map { CameraRawApproximation.applyWithCrop(to: ciImage, settings: $0, exifOrientation: orientation) } ?? ciImage
-                        image = CameraRawApproximation.ciContext.createCGImage(
-                            processed, from: processed.extent,
-                            format: .RGBAh,
-                            colorSpace: CameraRawApproximation.workingColorSpace
-                        )
+                    if settings != nil {
+                        let ciImage: CIImage?
+                        if isRAW {
+                            // Use CIRAWFilter for flat/neutral decode matching EditWorkspaceView
+                            ciImage = Self.loadRAWPreview(from: url, maxPixelSize: screenMaxPx)
+                        } else {
+                            ciImage = Self.loadHDRPreview(from: url, maxPixelSize: screenMaxPx)
+                        }
+                        if let ciImage {
+                            let processed = settings.map { CameraRawApproximation.applyWithCrop(to: ciImage, settings: $0, exifOrientation: orientation) } ?? ciImage
+                            image = CameraRawApproximation.ciContext.createCGImage(
+                                processed, from: processed.extent,
+                                format: .RGBAh,
+                                colorSpace: CameraRawApproximation.workingColorSpace
+                            )
+                        }
                     }
                     if image == nil {
                         // SDR fallback (or no edits active)
@@ -198,8 +230,8 @@ final class FullScreenImageCache: @unchecked Sendable {
                         return
                     }
 
-                    self.store(image, for: url)
-                    cacheLogger.info("Prefetched \(filename) (\(image.width)x\(image.height))")
+                    self.store(image, for: url, isEdited: isEdited)
+                    cacheLogger.info("Prefetched \(filename) (\(image.width)x\(image.height), edited=\(isEdited))")
                 }
 
                 prefetchTasks[url] = task
@@ -290,6 +322,19 @@ final class FullScreenImageCache: @unchecked Sendable {
         let image: CIImage
         let neutralTemperature: Float
         let neutralTint: Float
+    }
+
+    /// Load a RAW image via CIRAWFilter at a target max pixel size.
+    /// Uses flat/neutral decode (no auto-boost) matching EditWorkspaceView's pipeline,
+    /// then downsamples to the target resolution. Returns CIImage for downstream processing.
+    nonisolated static func loadRAWPreview(from url: URL, maxPixelSize: CGFloat, draftMode: Bool = false) -> CIImage? {
+        guard let result = loadRAWImage(from: url, draftMode: draftMode) else { return nil }
+        let ciImage = result.image
+        let extent = ciImage.extent
+        let longestSide = max(extent.width, extent.height)
+        guard longestSide > maxPixelSize * 1.5 else { return ciImage }
+        let scale = maxPixelSize / longestSide
+        return ciImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
     }
 
     /// Load a RAW image using CIRAWFilter for optimized decoding.
@@ -398,6 +443,16 @@ final class FullScreenImageCache: @unchecked Sendable {
 
         cacheLogger.warning("\(filename): No preview found")
         return nil
+    }
+
+    // RAW extension check usable from nonisolated context (avoids MainActor-isolated SupportedImageFormats)
+    nonisolated private static let rawExtensions: Set<String> = [
+        "raw", "cr2", "cr3", "nef", "nrw", "arw", "raf",
+        "dng", "rw2", "orf", "pef", "srw",
+    ]
+
+    nonisolated static func isRawFile(_ url: URL) -> Bool {
+        rawExtensions.contains(url.pathExtension.lowercased())
     }
 
     enum NavigationDirection {

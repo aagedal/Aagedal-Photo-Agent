@@ -384,11 +384,15 @@ final class BrowserViewModel {
     func loadFolder(url: URL) {
         // Cancel any in-flight folder load to prevent stale results overwriting
         loadFolderTask?.cancel()
+        // Reset in case the cancelled task's metadata loop left this true,
+        // otherwise the images.didSet below won't rebuild urlToImageIndex.
+        suppressImagesCascade = false
 
         currentFolderURL = url
         currentFolderName = url.lastPathComponent
         isLoading = true
         errorMessage = nil
+        images = []
         selectedImageIDs.removeAll()
         lastClickedImageURL = nil
         manualOrder.removeAll()
@@ -690,7 +694,9 @@ final class BrowserViewModel {
             guard let sourcePath = dict[ExifToolReadKey.sourceFile] as? String else { continue }
             let sourceURL = URL(fileURLWithPath: sourcePath)
 
-            if let index = localIndex[sourceURL] {
+            // Bounds-check: localIndex can become stale when images are modified during
+            // an async ExifTool await (e.g. user switches folder while batch is in-flight).
+            if let index = localIndex[sourceURL], index < updated.count {
                 if let rating = dict[ExifToolReadKey.rating] as? Int,
                    let starRating = StarRating(rawValue: rating) {
                     updated[index].starRating = starRating

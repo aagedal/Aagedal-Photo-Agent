@@ -57,8 +57,13 @@ struct SettingsView: View {
                 .tabItem {
                     Label("Updates", systemImage: "arrow.triangle.2.circlepath")
                 }
+
+            KeyboardShortcutsSettingsView()
+                .tabItem {
+                    Label("Shortcuts", systemImage: "keyboard")
+                }
         }
-        .frame(width: 500, height: 580)
+        .frame(width: 560, height: 580)
         .onAppear {
             ftpViewModel.loadConnections()
             templateViewModel.loadTemplates()

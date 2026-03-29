@@ -1263,9 +1263,14 @@ struct EditWorkspaceView: View {
                     )
                 }
             } else {
-                // Non-RAW: HDR-preserving path (keeps float values >1.0 for HEIC-HLG, AVIF, JXL).
+                // Non-RAW two-phase load (mirrors RAW strategy):
+                // Phase 1: Quick preview at screen resolution for immediate display.
+                // Phase 2: Full-resolution CIImage → Metal texture for sharp editing.
+
+                // Phase 1: HDR-preserving path (keeps float values >1.0 for HEIC-HLG, AVIF, JXL).
                 // Falls back to SDR CGImageSource path for formats CIImage can't decode.
-                let previewSource = await Task.detached(priority: .medium) { () -> (image: NSImage?, ciImage: CIImage?) in
+                let phase1Start = ContinuousClock.now
+                let previewSource = await Task.detached(priority: .userInitiated) { () -> (image: NSImage?, ciImage: CIImage?) in
                     if let ciImage = FullScreenImageCache.loadHDRPreview(from: selectedImageURL, maxPixelSize: previewMaxPixelSize) {
                         let ctx = CameraRawApproximation.ciContext
                         if let cgImage = ctx.createCGImage(ciImage, from: ciImage.extent, format: .RGBAh, colorSpace: CameraRawApproximation.workingColorSpace) {
@@ -1289,30 +1294,89 @@ struct EditWorkspaceView: View {
                     }
                     return (image: nil, ciImage: nil)
                 }.value
+                let phase1Elapsed = ContinuousClock.now - phase1Start
 
                 guard !Task.isCancelled else { return }
 
                 if let image = previewSource.image {
                     sourceImage = image
                     sourceCIImage = previewSource.ciImage
+                    editLog.info("[\(filename)] Phase 1: preview in \(phase1Elapsed) (\(image.size.width)x\(image.size.height))")
                 } else {
                     let thumbnail = await browserViewModel.thumbnailService.loadThumbnail(for: selectedImageURL)
                     guard !Task.isCancelled else { return }
                     sourceImage = thumbnail
                     sourceCIImage = thumbnail?.tiffRepresentation.flatMap { CIImage(data: $0) }
+                    editLog.info("[\(filename)] Phase 1: thumbnail fallback in \(phase1Elapsed)")
                 }
 
-                // Upload source to Metal texture for compute shader fast path.
+                // Upload Phase 1 preview to Metal for immediate interactive editing
                 if let ci = sourceCIImage, let pipeline = metalPipeline {
                     await Task.detached(priority: .medium) {
                         pipeline.uploadSourceImage(ci)
                     }.value
                     guard !Task.isCancelled else { return }
-                    renderPreview()
                 }
 
                 renderPreview()
                 isLoadingPreview = false
+                isDecodingFullResolution = true
+
+                // Phase 2: Load full-resolution CIImage → Metal texture.
+                // After upload, materialize sourceCIImage at screen resolution to release
+                // the full-resolution CIImage graph (same strategy as RAW path).
+                if let pipeline = metalPipeline {
+                    let phase2Start = ContinuousClock.now
+                    let fullResCIImage: CIImage? = await Task.detached(priority: .userInitiated) {
+                        if let ci = FullScreenImageCache.loadHDRFullResolution(from: selectedImageURL) {
+                            return ci
+                        }
+                        if let cg = FullScreenImageCache.loadFullResolution(from: selectedImageURL) {
+                            return CIImage(cgImage: cg)
+                        }
+                        return nil
+                    }.value
+
+                    guard !Task.isCancelled else { return }
+
+                    if let fullResCIImage {
+                        let extent = fullResCIImage.extent
+                        editLog.info("[\(filename)] Phase 2: full-res decoded in \(ContinuousClock.now - phase2Start) (\(Int(extent.width))x\(Int(extent.height)))")
+
+                        let uploadStart = ContinuousClock.now
+                        await Task.detached(priority: .medium) {
+                            pipeline.uploadSourceImage(fullResCIImage)
+                        }.value
+                        guard !Task.isCancelled else { return }
+                        editLog.info("[\(filename)] Phase 2: texture uploaded in \(ContinuousClock.now - uploadStart)")
+
+                        // Materialize sourceCIImage at screen resolution to release the
+                        // full-res CIImage graph. Metal texture holds full-res for editing.
+                        let materialized: CIImage? = await Task.detached(priority: .medium) {
+                            let maxDim = max(extent.width, extent.height)
+                            let targetPx = previewMaxPixelSize
+                            let scale = maxDim > targetPx * 1.5 ? targetPx / maxDim : 1.0
+                            let downsampled = scale < 1.0
+                                ? fullResCIImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+                                : fullResCIImage
+                            guard let cgImage = CameraRawApproximation.ciContext.createCGImage(
+                                downsampled, from: downsampled.extent,
+                                format: .RGBAh,
+                                colorSpace: CameraRawApproximation.workingColorSpace
+                            ) else { return nil }
+                            return CIImage(cgImage: cgImage)
+                        }.value
+                        sourceCIImage = materialized ?? fullResCIImage
+
+                        let totalPhase2 = ContinuousClock.now - phase2Start
+                        editLog.info("[\(filename)] Phase 2: complete in \(totalPhase2)")
+                    }
+
+                    isDecodingFullResolution = false
+                    renderPreview()
+                } else {
+                    isDecodingFullResolution = false
+                }
             }
         }
     }
@@ -1390,7 +1454,6 @@ struct EditWorkspaceView: View {
         guard let sourceCIImage else {
             previewCIImage = nil
             previewImage = sourceImage
-            previewCGImage = nil
             NotificationCenter.default.post(name: .scopeSourceImageDidChange, object: nil, userInfo: ["isHDR": isHDREnabled])
             return
         }
@@ -1476,12 +1539,9 @@ struct EditWorkspaceView: View {
             guard !Task.isCancelled else { return }
             if let result {
                 previewImage = result.0
-                previewCGImage = result.1
-                previewCIImage = CIImage(cgImage: result.1)
                 NotificationCenter.default.post(name: .scopeSourceImageDidChange, object: nil, userInfo: ["cgImage": result.2 ?? result.1, "isHDR": hdr])
             } else {
                 previewImage = fallback
-                previewCGImage = nil
                 NotificationCenter.default.post(name: .scopeSourceImageDidChange, object: nil, userInfo: ["isHDR": hdr])
             }
         }
