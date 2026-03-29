@@ -329,12 +329,13 @@ struct EditWorkspaceView: View {
             guard canEditSingleImage else { return }
             hdrToggleBinding.wrappedValue.toggle()
             // Auto-switch soft-proof target gamut and display gamut from format settings
-            updateDisplayGamut()
             if scopeViewModel.showClippedGamut {
                 scopeViewModel.targetGamut = isHDREnabled
                     ? settingsViewModel.exportColorGamutHDR
                     : settingsViewModel.exportColorGamutSDR
             }
+            // Refresh gamut clip pipeline so HDR flag is immediately applied/cleared
+            updateGamutClipMode()
         }
         .overlay(alignment: .top) {
             if let feedback = copyPasteFeedback {
@@ -474,8 +475,17 @@ struct EditWorkspaceView: View {
                                    let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
                                    maskIdx < masks.count,
                                    !isShowingBefore {
+                                    let cropVpOrigin = SIMD2<Float>(
+                                        Float(-imageRect.minX / imageRect.width),
+                                        Float(-imageRect.minY / imageRect.height)
+                                    )
+                                    let cropVpSize = SIMD2<Float>(
+                                        Float(geometry.size.width / imageRect.width),
+                                        Float(geometry.size.height / imageRect.height)
+                                    )
                                     MaskOverlayRepresentable(
-                                        imageRect: imageRect,
+                                        viewportOrigin: cropVpOrigin,
+                                        viewportSize: cropVpSize,
                                         viewSize: geometry.size,
                                         geometry: dragMaskGeometry ?? masks[maskIdx].geometry,
                                         inverted: masks[maskIdx].inverted,
@@ -513,8 +523,9 @@ struct EditWorkspaceView: View {
                             .gesture(editPanGesture(in: geometry.size, imageSize: geometry.size))
                         }
                     } else {
-                        // Normal fit: image fits within view, with zoom/pan support
-                        let imageRect = fittedImageRect(in: geometry.size, imageSize: imageSize)
+                        // Normal fit: Metal viewport handles zoom/pan and letterboxing
+                        let vpOrigin = currentViewportOrigin
+                        let vpSize = currentViewportSize
 
                         ZStack {
                             MetalPreviewView(
@@ -525,8 +536,7 @@ struct EditWorkspaceView: View {
 
                                 coordinator: metalCoordinator
                             )
-                                .frame(width: imageRect.width, height: imageRect.height)
-                                .position(x: geometry.size.width * 0.5, y: geometry.size.height * 0.5)
+                                .frame(width: geometry.size.width, height: geometry.size.height)
 
                             // Ellipse mask overlay
                             if let maskIdx = selectedMaskIndex,
@@ -534,7 +544,8 @@ struct EditWorkspaceView: View {
                                maskIdx < masks.count,
                                !isShowingBefore {
                                 MaskOverlayRepresentable(
-                                    imageRect: imageRect,
+                                    viewportOrigin: vpOrigin,
+                                    viewportSize: vpSize,
                                     viewSize: geometry.size,
                                     geometry: dragMaskGeometry ?? masks[maskIdx].geometry,
                                     inverted: masks[maskIdx].inverted,
@@ -570,8 +581,6 @@ struct EditWorkspaceView: View {
                             }
                         }
                         .frame(width: geometry.size.width, height: geometry.size.height)
-                        .scaleEffect(editZoomScale)
-                        .offset(editOffset)
                         .gesture(editPanGesture(in: geometry.size, imageSize: imageSize))
                     }
                 } else if isLoadingPreview {
@@ -619,8 +628,14 @@ struct EditWorkspaceView: View {
             .background(
                 GeometryReader { proxy in
                     Color.clear
-                        .onAppear { previewPaneFrame = proxy.frame(in: .global) }
-                        .onChange(of: proxy.size) { _, _ in previewPaneFrame = proxy.frame(in: .global) }
+                        .onAppear {
+                            previewPaneFrame = proxy.frame(in: .global)
+                            syncViewportToMetal()
+                        }
+                        .onChange(of: proxy.size) { _, _ in
+                            previewPaneFrame = proxy.frame(in: .global)
+                            syncViewportToMetal()
+                        }
                 }
             )
             .onContinuousHover { phase in
@@ -639,6 +654,7 @@ struct EditWorkspaceView: View {
                             cropZoomScale = (lastCropZoomScale * dampened).clamped(to: 0.25...3.0)
                         } else {
                             editZoomScale = (lastEditZoomScale * dampened).clamped(to: 1.0...10.0)
+                            syncViewportToMetal()
                         }
                     }
                     .onEnded { _ in
@@ -647,11 +663,10 @@ struct EditWorkspaceView: View {
                         } else {
                             lastEditZoomScale = editZoomScale
                             if editZoomScale <= 1.0 {
-                                withAnimation(.easeOut(duration: 0.2)) {
-                                    editOffset = .zero
-                                    lastEditOffset = .zero
-                                }
+                                editOffset = .zero
+                                lastEditOffset = .zero
                             }
+                            syncViewportToMetal()
                         }
                     }
             )
@@ -1114,6 +1129,8 @@ struct EditWorkspaceView: View {
         sourceImage = nil
         sourceCIImage = nil
         asShotWhiteBalance = nil
+        metalPipeline?.asShotTemperature = 6500
+        metalPipeline?.asShotTint = 0
         previewCIImage = nil
         previewImage = nil
         isLoadingPreview = false
@@ -1193,6 +1210,7 @@ struct EditWorkspaceView: View {
                 // the heavyweight CIRAWFilter pipeline (~260MB per instance).
                 if let pipeline = metalPipeline {
                     let cacheHit = pipeline.applyCachedTexture(for: selectedImageURL)
+                    if cacheHit { syncViewportToMetal() }
                     editLog.info("[\(filename)] Phase 2: starting (cacheHit=\(cacheHit))")
 
                     let phase2Start = ContinuousClock.now
@@ -1206,6 +1224,11 @@ struct EditWorkspaceView: View {
 
                     if let rawResult {
                         asShotWhiteBalance = (temperature: rawResult.neutralTemperature, tint: rawResult.neutralTint)
+                        // Propagate to Metal pipeline so WB adjustments are relative to as-shot
+                        if let pipeline = metalPipeline {
+                            pipeline.asShotTemperature = Double(rawResult.neutralTemperature)
+                            pipeline.asShotTint = Double(rawResult.neutralTint)
+                        }
                     }
 
                     guard !Task.isCancelled else {
@@ -1254,6 +1277,7 @@ struct EditWorkspaceView: View {
                     }
                     let totalPhase2 = ContinuousClock.now - phase2Start
                     editLog.info("[\(filename)] Phase 2: complete in \(totalPhase2), hasTexture=\(pipeline.hasSourceTexture)")
+                    syncViewportToMetal()
                     renderPreview()
 
                     // Pre-cache adjacent RAW images at screen resolution for instant navigation.
@@ -1316,6 +1340,7 @@ struct EditWorkspaceView: View {
                         pipeline.uploadSourceImage(ci)
                     }.value
                     guard !Task.isCancelled else { return }
+                    syncViewportToMetal()
                 }
 
                 renderPreview()
@@ -1373,6 +1398,7 @@ struct EditWorkspaceView: View {
                     }
 
                     isDecodingFullResolution = false
+                    syncViewportToMetal()
                     renderPreview()
                 } else {
                     isDecodingFullResolution = false
@@ -1485,9 +1511,9 @@ struct EditWorkspaceView: View {
         // Full render: update Metal compute params + request redraw.
         if let pipeline = metalPipeline, pipeline.hasSourceTexture {
             pipeline.updateParams(settings)
+            syncViewportToMetal()
             // Metal overlay is only used during active drags — SwiftUI handles static display
             pipeline.updateOverlayParams(geometry: nil, visible: false)
-            metalCoordinator.requestRedraw()
         }
         if lockedCropImageRect != nil {
             editLog.debug("renderPreview: crop interaction path (full-res Metal, skip CGImage)")
@@ -2671,11 +2697,100 @@ struct EditWorkspaceView: View {
 
     private let maxEditZoom: CGFloat = 10.0
 
+    /// Image dimensions from the Metal source texture (resolution-stable across Phase 1→2).
+    /// Falls back to sourceCIImage/sourceImage for initial display before texture upload.
+    private var metalImageSize: CGSize? {
+        metalPipeline?.sourceTextureSize ?? sourceCIImage?.extent.size ?? sourceImage?.size
+    }
+
+    /// Current viewport origin for the Metal shader. Recomputed from zoom/offset state.
+    private var currentViewportOrigin: SIMD2<Float> {
+        guard let imageSize = metalImageSize else { return .zero }
+        let containerSize = previewPaneFrame.size
+        guard containerSize.width > 0, containerSize.height > 0,
+              imageSize.width > 0, imageSize.height > 0 else { return .zero }
+
+        let imageAspect = imageSize.width / imageSize.height
+        let containerAspect = containerSize.width / containerSize.height
+
+        let vpW: CGFloat
+        let vpH: CGFloat
+        if containerAspect > imageAspect {
+            vpH = 1.0 / editZoomScale
+            vpW = (1.0 / editZoomScale) * (containerAspect / imageAspect)
+        } else {
+            vpW = 1.0 / editZoomScale
+            vpH = (1.0 / editZoomScale) * (imageAspect / containerAspect)
+        }
+
+        let fittedScale = min(containerSize.width / imageSize.width,
+                              containerSize.height / imageSize.height)
+        let fittedWidth = imageSize.width * fittedScale
+        let fittedHeight = imageSize.height * fittedScale
+
+        let offsetNormX = editOffset.width / (fittedWidth * editZoomScale)
+        let offsetNormY = editOffset.height / (fittedHeight * editZoomScale)
+
+        return SIMD2<Float>(Float(0.5 - offsetNormX - vpW / 2),
+                            Float(0.5 - offsetNormY - vpH / 2))
+    }
+
+    /// Current viewport size for the Metal shader.
+    private var currentViewportSize: SIMD2<Float> {
+        guard let imageSize = metalImageSize else { return SIMD2<Float>(1, 1) }
+        let containerSize = previewPaneFrame.size
+        guard containerSize.width > 0, containerSize.height > 0,
+              imageSize.width > 0, imageSize.height > 0 else { return SIMD2<Float>(1, 1) }
+
+        let imageAspect = imageSize.width / imageSize.height
+        let containerAspect = containerSize.width / containerSize.height
+
+        if containerAspect > imageAspect {
+            return SIMD2<Float>(Float((1.0 / editZoomScale) * (containerAspect / imageAspect)),
+                                Float(1.0 / editZoomScale))
+        } else {
+            return SIMD2<Float>(Float(1.0 / editZoomScale),
+                                Float((1.0 / editZoomScale) * (imageAspect / containerAspect)))
+        }
+    }
+
+    /// Sync the current zoom/pan state to the Metal pipeline's viewport parameters.
+    /// When crop is active, the MetalPreviewView frame already matches the source aspect
+    /// ratio (via cropFittedImageRect), so the shader uses an identity viewport.
+    private func syncViewportToMetal() {
+        if (isCropEnabled || showCropControls), !isShowingBefore {
+            // Crop path: frame matches source aspect → identity viewport (stretch-to-fill)
+            metalPipeline?.updateViewport(
+                zoomScale: 1.0,
+                offset: .zero,
+                containerSize: CGSize(width: 100, height: 100),
+                imageSize: CGSize(width: 100, height: 100)
+            )
+            metalCoordinator.viewportOrigin = .zero
+            metalCoordinator.viewportSize = SIMD2<Float>(1, 1)
+            metalCoordinator.requestRedraw()
+            return
+        }
+
+        guard let imageSize = metalImageSize else { return }
+        metalPipeline?.updateViewport(
+            zoomScale: editZoomScale,
+            offset: editOffset,
+            containerSize: previewPaneFrame.size,
+            imageSize: imageSize
+        )
+        // Also sync to the CIImage fallback path (used for "before" toggle)
+        metalCoordinator.viewportOrigin = currentViewportOrigin
+        metalCoordinator.viewportSize = currentViewportSize
+        metalCoordinator.requestRedraw()
+    }
+
     private func resetEditZoom() {
         editZoomScale = 1.0
         lastEditZoomScale = 1.0
         editOffset = .zero
         lastEditOffset = .zero
+        syncViewportToMetal()
     }
 
     private func handleEditScrollZoom(delta: CGFloat, event: NSEvent) {
@@ -2692,17 +2807,16 @@ struct EditWorkspaceView: View {
             height: editOffset.height * ratio + cursorFromCenter.height * (1 - ratio)
         )
 
-        withAnimation(.easeOut(duration: 0.1)) {
-            editZoomScale = newScale
-            lastEditZoomScale = newScale
-            if newScale <= 1.0 {
-                editOffset = .zero
-                lastEditOffset = .zero
-            } else {
-                editOffset = newOffset
-                lastEditOffset = newOffset
-            }
+        editZoomScale = newScale
+        lastEditZoomScale = newScale
+        if newScale <= 1.0 {
+            editOffset = .zero
+            lastEditOffset = .zero
+        } else {
+            editOffset = newOffset
+            lastEditOffset = newOffset
         }
+        syncViewportToMetal()
     }
 
     /// Compute cursor position relative to preview pane center (in SwiftUI coordinates).
@@ -2728,11 +2842,13 @@ struct EditWorkspaceView: View {
                     width: lastEditOffset.width + value.translation.width,
                     height: lastEditOffset.height + value.translation.height
                 )
+                syncViewportToMetal()
             }
             .onEnded { _ in
                 guard editZoomScale > 1.0 else {
                     editOffset = .zero
                     lastEditOffset = .zero
+                    syncViewportToMetal()
                     return
                 }
                 lastEditOffset = editOffset
@@ -2741,48 +2857,51 @@ struct EditWorkspaceView: View {
     }
 
     private func constrainEditOffset(in containerSize: CGSize, imageSize: CGSize) {
-        let imageRect = fittedImageRect(in: containerSize, imageSize: imageSize)
-        let scaledWidth = imageRect.width * editZoomScale
-        let scaledHeight = imageRect.height * editZoomScale
+        let imgSize = metalImageSize ?? imageSize
+        let fittedScale = min(containerSize.width / imgSize.width,
+                              containerSize.height / imgSize.height)
+        let scaledWidth = imgSize.width * fittedScale * editZoomScale
+        let scaledHeight = imgSize.height * fittedScale * editZoomScale
         let maxOffsetX = max(0, (scaledWidth - containerSize.width) / 2)
         let maxOffsetY = max(0, (scaledHeight - containerSize.height) / 2)
-        withAnimation(.easeOut(duration: 0.2)) {
-            editOffset = CGSize(
-                width: editOffset.width.clamped(to: -maxOffsetX...maxOffsetX),
-                height: editOffset.height.clamped(to: -maxOffsetY...maxOffsetY)
-            )
-            lastEditOffset = editOffset
-        }
+        editOffset = CGSize(
+            width: editOffset.width.clamped(to: -maxOffsetX...maxOffsetX),
+            height: editOffset.height.clamped(to: -maxOffsetY...maxOffsetY)
+        )
+        lastEditOffset = editOffset
+        syncViewportToMetal()
     }
 
     private func toggleEditZoom() {
-        guard let imageSize = currentImageSize else { return }
         let containerSize = previewPaneFrame.size
         guard containerSize.width > 0, containerSize.height > 0 else { return }
 
-        let zoom100 = calculateEditZoomTo100(in: containerSize, imageSize: imageSize)
+        let zoom100 = calculateEditZoomTo100(in: containerSize)
         let isAt100 = abs(editZoomScale - zoom100) < 0.01
 
-        withAnimation(.easeInOut(duration: 0.2)) {
-            if isAt100 || editZoomScale > 1.0 {
-                // Return to fit
-                editZoomScale = 1.0
-                editOffset = .zero
-            } else {
-                // Zoom to 100% (clamped to max)
-                editZoomScale = min(zoom100, maxEditZoom)
-            }
-            lastEditZoomScale = editZoomScale
-            lastEditOffset = editOffset
+        if isAt100 || editZoomScale > 1.0 {
+            // Return to fit
+            editZoomScale = 1.0
+            editOffset = .zero
+        } else {
+            // Zoom to 100% (clamped to max)
+            editZoomScale = min(zoom100, maxEditZoom)
         }
+        lastEditZoomScale = editZoomScale
+        lastEditOffset = editOffset
+        syncViewportToMetal()
     }
 
-    private func calculateEditZoomTo100(in containerSize: CGSize, imageSize: CGSize) -> CGFloat {
-        let imageRect = fittedImageRect(in: containerSize, imageSize: imageSize)
-        guard imageRect.width > 0 else { return 1.0 }
+    private func calculateEditZoomTo100(in containerSize: CGSize) -> CGFloat {
         let backingScale = NSScreen.main?.backingScaleFactor ?? 2.0
+        // Use source texture dimensions for accurate 1:1 pixel mapping
+        let sourceWidth = CGFloat(metalPipeline?.sourceTextureSize?.width ?? currentImageSize?.width ?? 1)
+        let sourceHeight = CGFloat(metalPipeline?.sourceTextureSize?.height ?? currentImageSize?.height ?? 1)
+        let fittedScale = min(containerSize.width / sourceWidth, containerSize.height / sourceHeight)
+        let fittedWidth = sourceWidth * fittedScale
+        guard fittedWidth > 0 else { return 1.0 }
         // At zoom100, 1 source pixel = 1 physical screen pixel
-        return imageSize.width / (imageRect.width * backingScale)
+        return sourceWidth / (fittedWidth * backingScale)
     }
 
     // MARK: - Key Event Handling

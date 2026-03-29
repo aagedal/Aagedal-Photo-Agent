@@ -20,6 +20,9 @@ struct ScopeEditParams {
     float2 sourceSize;
     float2 drawableSize;
 
+    float2 viewportOrigin;   // unused by scopes, kept for struct layout match
+    float2 viewportSize;     // unused by scopes, kept for struct layout match
+
     float lutDomainMin;
     float lutDomainMax;
 };
@@ -1095,8 +1098,11 @@ kernel void chromaticityRender(
     for (int g = 0; g < 4; g++) {
         bool isTarget = (gamuts[g].gamutId == params.targetGamut);
         bool isDisplay = (gamuts[g].gamutId == params.displayGamut) && !isTarget;
-        float alpha = isTarget ? 0.7 : (isDisplay ? 0.55 : 0.3);
-        float lineThick = isTarget ? 2.0 : (isDisplay ? 1.5 : 1.0);
+        // Dim sRGB when a wider gamut is active (target or display) so it doesn't compete visually
+        bool widerGamutActive = (params.targetGamut != 0 || params.displayGamut != 0);
+        bool dimSRGB = (gamuts[g].gamutId == 0 && widerGamutActive);
+        float alpha = dimSRGB ? 0.12 : (isTarget ? 0.7 : (isDisplay ? 0.55 : 0.3));
+        float lineThick = dimSRGB ? 0.8 : (isTarget ? 2.5 : (isDisplay ? 1.5 : 1.0));
 
         for (int e = 0; e < 3; e++) {
             float2 a = gamuts[g].verts[e];

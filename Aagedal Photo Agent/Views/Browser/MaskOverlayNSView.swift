@@ -1,10 +1,12 @@
 import AppKit
+import simd
 import SwiftUI
 
 // MARK: - NSViewRepresentable wrapper
 
 struct MaskOverlayRepresentable: NSViewRepresentable {
-    let imageRect: CGRect
+    let viewportOrigin: SIMD2<Float>
+    let viewportSize: SIMD2<Float>
     let viewSize: CGSize
     let geometry: EllipseMaskGeometry
     let inverted: Bool
@@ -22,7 +24,8 @@ struct MaskOverlayRepresentable: NSViewRepresentable {
         context.coordinator.onStart = onStart
         context.coordinator.onChange = onChange
         context.coordinator.onCommit = onCommit
-        view.imageRect = imageRect
+        view.viewportOrigin = viewportOrigin
+        view.viewportSize = viewportSize
         view.maskGeometry = geometry
         return view
     }
@@ -33,7 +36,8 @@ struct MaskOverlayRepresentable: NSViewRepresentable {
         context.coordinator.onCommit = onCommit
         // Don't override geometry during drag — coordinator owns it
         if !context.coordinator.isDragging {
-            nsView.imageRect = imageRect
+            nsView.viewportOrigin = viewportOrigin
+            nsView.viewportSize = viewportSize
             nsView.maskGeometry = geometry
             nsView.needsDisplay = true
         }
@@ -116,7 +120,8 @@ nonisolated(unsafe) private let rotateCursor: NSCursor = {
 final class MaskOverlayNSView: NSView {
     private weak var coordinator: MaskOverlayRepresentable.Coordinator?
 
-    var imageRect: CGRect = .zero
+    var viewportOrigin: SIMD2<Float> = .zero
+    var viewportSize: SIMD2<Float> = SIMD2<Float>(1, 1)
     var maskGeometry: EllipseMaskGeometry = EllipseMaskGeometry()
 
     private let handleSize: CGFloat = 10
@@ -135,13 +140,24 @@ final class MaskOverlayNSView: NSView {
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
 
-    // MARK: - Geometry helpers
+    // MARK: - Viewport coordinate helpers
+
+    /// Scale factor from UV delta to screen pixels (X axis)
+    private var uvToScreenScaleX: CGFloat {
+        guard viewportSize.x > 0 else { return 0 }
+        return bounds.width / CGFloat(viewportSize.x)
+    }
+
+    /// Scale factor from UV delta to screen pixels (Y axis)
+    private var uvToScreenScaleY: CGFloat {
+        guard viewportSize.y > 0 else { return 0 }
+        return bounds.height / CGFloat(viewportSize.y)
+    }
 
     private var center: CGPoint {
-        CGPoint(
-            x: imageRect.minX + maskGeometry.centerX * imageRect.width,
-            y: imageRect.minY + maskGeometry.centerY * imageRect.height
-        )
+        let cx = (CGFloat(maskGeometry.centerX) - CGFloat(viewportOrigin.x)) / CGFloat(viewportSize.x) * bounds.width
+        let cy = (CGFloat(maskGeometry.centerY) - CGFloat(viewportOrigin.y)) / CGFloat(viewportSize.y) * bounds.height
+        return CGPoint(x: cx, y: cy)
     }
 
     private var angleRadians: CGFloat { maskGeometry.rotation * .pi / 180 }
@@ -149,7 +165,7 @@ final class MaskOverlayNSView: NSView {
     private func ellipseTransform(radiusScale: CGFloat = 1) -> CGAffineTransform {
         CGAffineTransform(scaleX: maskGeometry.radiusX * radiusScale, y: maskGeometry.radiusY * radiusScale)
             .concatenating(CGAffineTransform(rotationAngle: angleRadians))
-            .concatenating(CGAffineTransform(scaleX: imageRect.width, y: imageRect.height))
+            .concatenating(CGAffineTransform(scaleX: uvToScreenScaleX, y: uvToScreenScaleY))
             .concatenating(CGAffineTransform(translationX: center.x, y: center.y))
     }
 
@@ -159,8 +175,8 @@ final class MaskOverlayNSView: NSView {
         let rotX = uvDx * cosR - uvDy * sinR
         let rotY = uvDx * sinR + uvDy * cosR
         return CGPoint(
-            x: rotX * imageRect.width + center.x,
-            y: rotY * imageRect.height + center.y
+            x: rotX * uvToScreenScaleX + center.x,
+            y: rotY * uvToScreenScaleY + center.y
         )
     }
 
@@ -172,20 +188,20 @@ final class MaskOverlayNSView: NSView {
     private func isInRotationZone(_ point: CGPoint) -> Bool {
         let cosR = cos(angleRadians)
         let sinR = sin(angleRadians)
-        let uvDx = (point.x - center.x) / imageRect.width
-        let uvDy = (point.y - center.y) / imageRect.height
+        let uvDx = (point.x - center.x) / uvToScreenScaleX
+        let uvDy = (point.y - center.y) / uvToScreenScaleY
         let localX = uvDx * cosR + uvDy * sinR
         let localY = -uvDx * sinR + uvDy * cosR
 
         guard maskGeometry.radiusX > 0, maskGeometry.radiusY > 0 else { return false }
-        let marginX = 20.0 / imageRect.width
-        let marginY = 20.0 / imageRect.height
+        let marginX = 20.0 / uvToScreenScaleX
+        let marginY = 20.0 / uvToScreenScaleY
         let innerRx = maskGeometry.radiusX + marginX
         let innerRy = maskGeometry.radiusY + marginY
         let innerNorm = (localX * localX) / (innerRx * innerRx)
                       + (localY * localY) / (innerRy * innerRy)
-        let extentX = 84.0 / imageRect.width
-        let extentY = 84.0 / imageRect.height
+        let extentX = 84.0 / uvToScreenScaleX
+        let extentY = 84.0 / uvToScreenScaleY
         let outerRx = maskGeometry.radiusX + extentX
         let outerRy = maskGeometry.radiusY + extentY
         let outerNorm = (localX * localX) / (outerRx * outerRx)
@@ -197,8 +213,8 @@ final class MaskOverlayNSView: NSView {
     private func ellipseDistance(_ point: CGPoint) -> CGFloat {
         let cosR = cos(angleRadians)
         let sinR = sin(angleRadians)
-        let uvDx = (point.x - center.x) / imageRect.width
-        let uvDy = (point.y - center.y) / imageRect.height
+        let uvDx = (point.x - center.x) / uvToScreenScaleX
+        let uvDy = (point.y - center.y) / uvToScreenScaleY
         let localX = uvDx * cosR + uvDy * sinR
         let localY = -uvDx * sinR + uvDy * cosR
         guard maskGeometry.radiusX > 0, maskGeometry.radiusY > 0 else { return .greatestFiniteMagnitude }
@@ -211,7 +227,7 @@ final class MaskOverlayNSView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
-        guard imageRect.width > 0, imageRect.height > 0 else { return }
+        guard viewportSize.x > 0, viewportSize.y > 0 else { return }
 
         // Outer ellipse
         let unitCircle = CGPath(ellipseIn: CGRect(x: -1, y: -1, width: 2, height: 2), transform: nil)
@@ -263,7 +279,7 @@ final class MaskOverlayNSView: NSView {
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         let local = convert(point, from: superview)
-        guard imageRect.width > 0, imageRect.height > 0 else { return nil }
+        guard viewportSize.x > 0, viewportSize.y > 0 else { return nil }
 
         // Check handle hit areas first
         for pos in [topHandle, rightHandle, bottomHandle, leftHandle] {
@@ -439,8 +455,9 @@ final class MaskOverlayNSView: NSView {
         var geo = startGeometry
         let cosR = cos(startGeometry.rotation * .pi / 180)
         let sinR = sin(startGeometry.rotation * .pi / 180)
-        let uvDx = translation.width / imageRect.width
-        let uvDy = translation.height / imageRect.height
+        // Convert screen-space translation to UV delta via viewport
+        let uvDx = translation.width / uvToScreenScaleX
+        let uvDy = translation.height / uvToScreenScaleY
 
         let uniform = NSEvent.modifierFlags.contains(.shift)
 

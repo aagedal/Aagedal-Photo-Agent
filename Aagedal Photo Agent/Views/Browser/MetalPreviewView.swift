@@ -120,6 +120,10 @@ struct MetalPreviewView: NSViewRepresentable {
         var useComputeShader: Bool = false
         weak var mtkView: MTKView?
 
+        /// Viewport for CIImage fallback rendering (set from EditWorkspaceView)
+        var viewportOrigin: SIMD2<Float> = .zero
+        var viewportSize: SIMD2<Float> = SIMD2<Float>(1, 1)
+
         // Draw rate logging
         var drawCount: Int = 0
         var drawLogStart: ContinuousClock.Instant = .now
@@ -185,21 +189,27 @@ struct MetalPreviewView: NSViewRepresentable {
                 }
             }
 
-            // Standard path: CIImage → CIContext → drawable
+            // Standard path: CIImage → CIContext → drawable (viewport-aware)
             guard let ciImage,
                   let commandBuffer = Self.commandQueue.makeCommandBuffer() else { return }
 
             let extent = ciImage.extent
             guard extent.width > 0, extent.height > 0 else { return }
 
-            // Scale CIImage to fill the drawable.
-            // Parent SwiftUI view handles aspect-fit layout via .frame(width:height:).
-            let scaleX = drawableSize.width / extent.width
-            let scaleY = drawableSize.height / extent.height
+            // Compute viewport region in CIImage coordinates.
+            // The viewport maps normalized [0,1] source coords to the visible area.
+            let vpOriginX = CGFloat(viewportOrigin.x) * extent.width + extent.origin.x
+            let vpOriginY = CGFloat(viewportOrigin.y) * extent.height + extent.origin.y
+            let vpWidth = CGFloat(viewportSize.x) * extent.width
+            let vpHeight = CGFloat(viewportSize.y) * extent.height
+
+            // Scale the viewport region to fill the drawable
+            let scaleX = drawableSize.width / vpWidth
+            let scaleY = drawableSize.height / vpHeight
             let scaled = ciImage
                 .transformed(by: CGAffineTransform(
-                    translationX: -extent.origin.x,
-                    y: -extent.origin.y
+                    translationX: -vpOriginX,
+                    y: -vpOriginY
                 ))
                 .transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
 

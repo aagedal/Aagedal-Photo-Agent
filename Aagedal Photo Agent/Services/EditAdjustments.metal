@@ -39,6 +39,9 @@ struct EditParams {
     float2 sourceSize;       // source texture dimensions
     float2 drawableSize;     // output drawable dimensions
 
+    float2 viewportOrigin;   // top-left of visible region in normalized [0,1] source coords
+    float2 viewportSize;     // fraction of source visible per axis (1,1 = full image)
+
     float lutDomainMin;      // -0.5 (extended range for color matrix overshoot)
     float lutDomainMax;      // 4.0 (HDR headroom)
 };
@@ -96,11 +99,15 @@ kernel void editAdjustments(
         return;
     }
 
-    // Map drawable pixel to source texture coordinate (stretch-to-fill)
-    float2 sourceCoord = float2(gid) / params.scale;
+    // Map drawable pixel through viewport to source UV
+    float2 drawableNorm = float2(gid) / params.drawableSize;
+    float2 uv = params.viewportOrigin + drawableNorm * params.viewportSize;
 
-    // Normalize to [0,1] for sampling
-    float2 uv = sourceCoord / params.sourceSize;
+    // Letterbox: black for pixels outside source bounds
+    if (uv.x < 0.0 || uv.x >= 1.0 || uv.y < 0.0 || uv.y >= 1.0) {
+        destination.write(half4(0, 0, 0, 1), gid);
+        return;
+    }
 
     constexpr sampler bilinear(filter::linear, address::clamp_to_edge);
     half4 color = source.sample(bilinear, uv);
@@ -269,21 +276,26 @@ kernel void editAdjustments(
     }
 
     // 6. Gamut-clip soft proof: simulate target gamut by clamping out-of-gamut values
+    //    In HDR mode, only clamp negative values (out-of-gamut chromaticity) — values > 1.0
+    //    represent HDR brightness, not out-of-gamut colors, so the upper bound stays unclamped.
+    bool isHDRGamut = (params.activeFlags & (1u << 4)) != 0;
+    half3 gamutHi = isHDRGamut ? half3(65504.0h) : half3(1.0h);
+    float3 gamutHiF = isHDRGamut ? float3(65504.0) : float3(1.0);
     if (params.gamutClipMode == 1) {
-        // sRGB: clamp to [0,1] (working space IS extended linear sRGB)
-        rgb = clamp(rgb, half3(0), half3(1));
+        // sRGB: clamp (working space IS extended linear sRGB)
+        rgb = clamp(rgb, half3(0), gamutHi);
     } else if (params.gamutClipMode == 2) {
         // Display P3: sRGB -> P3, clamp, P3 -> sRGB
         float3 p3 = sRGBtoP3_edit * float3(rgb);
-        rgb = half3(P3toSRGB_edit * clamp(p3, 0.0, 1.0));
+        rgb = half3(P3toSRGB_edit * clamp(p3, 0.0, gamutHiF));
     } else if (params.gamutClipMode == 3) {
         // Rec.2020: sRGB -> Rec.2020, clamp, Rec.2020 -> sRGB
         float3 r2020 = sRGBtoRec2020_edit * float3(rgb);
-        rgb = half3(Rec2020toSRGB_edit * clamp(r2020, 0.0, 1.0));
+        rgb = half3(Rec2020toSRGB_edit * clamp(r2020, 0.0, gamutHiF));
     } else if (params.gamutClipMode == 4) {
         // Adobe RGB: sRGB -> Adobe RGB, clamp, Adobe RGB -> sRGB
         float3 aRgb = sRGBtoAdobeRGB_edit * float3(rgb);
-        rgb = half3(AdobeRGBtoSRGB_edit * clamp(aRgb, 0.0, 1.0));
+        rgb = half3(AdobeRGBtoSRGB_edit * clamp(aRgb, 0.0, gamutHiF));
     }
 
     destination.write(half4(rgb, color.a), gid);

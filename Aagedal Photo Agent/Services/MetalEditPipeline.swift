@@ -42,6 +42,9 @@ struct MaskOverlayParams {
     var scale: SIMD2<Float> = .zero
     var sourceSize: SIMD2<Float> = .zero
     var drawableSize: SIMD2<Float> = .zero
+
+    var viewportOrigin: SIMD2<Float> = .zero
+    var viewportSize: SIMD2<Float> = SIMD2<Float>(1, 1)
 }
 
 /// Uniform buffer layout matching the Metal `EditParams` struct.
@@ -60,6 +63,9 @@ struct EditParams {
     var scale: SIMD2<Float> = .zero
     var sourceSize: SIMD2<Float> = .zero
     var drawableSize: SIMD2<Float> = .zero
+
+    var viewportOrigin: SIMD2<Float> = .zero
+    var viewportSize: SIMD2<Float> = SIMD2<Float>(1, 1)
 
     var lutDomainMin: Float = ToneCurveGenerator.domainMin
     var lutDomainMax: Float = ToneCurveGenerator.domainMax
@@ -98,6 +104,11 @@ final class MetalEditPipeline: @unchecked Sendable {
 
     /// Gamut clipping mode for soft proof preview. 0=off, 1=sRGB, 2=P3, 3=Rec.2020.
     nonisolated(unsafe) var gamutClipMode: UInt32 = 0
+
+    /// As-shot white balance from the RAW decoder. Used as the reference point for WB
+    /// adjustments so that "Custom at as-shot temperature" produces an identity matrix.
+    nonisolated(unsafe) var asShotTemperature: Double = 6500
+    nonisolated(unsafe) var asShotTint: Double = 0
     nonisolated(unsafe) private var float16Buffer = [UInt16](repeating: 0, count: ToneCurveGenerator.lutSize * 4)
 
     nonisolated(unsafe) private static let maxMasks = 8
@@ -113,11 +124,21 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// Avoids contention with the main ciContext which handles large texture uploads/precaches.
     private let wbCIContext: CIContext
 
-    // Cached WB matrix — only recompute when temperature/tint actually change
-    nonisolated(unsafe) private var cachedWBKey: (Double, Double)?
+    // Cached WB matrix — only recompute when temperature/tint or as-shot reference change
+    nonisolated(unsafe) private var cachedWBKey: (Double, Double, Double, Double)?
     nonisolated(unsafe) private var cachedWBMatrix: simd_float3x3?
 
+    // Cached viewport — preserved across updateParams() calls
+    nonisolated(unsafe) private var cachedViewportOrigin: SIMD2<Float> = .zero
+    nonisolated(unsafe) private var cachedViewportSize: SIMD2<Float> = SIMD2<Float>(1, 1)
+
     nonisolated var hasSourceTexture: Bool { sourceTexture != nil }
+
+    /// Source texture dimensions for viewport calculations (resolution-stable).
+    nonisolated var sourceTextureSize: CGSize? {
+        guard let tex = sourceTexture else { return nil }
+        return CGSize(width: tex.width, height: tex.height)
+    }
 
     /// Converts an array of `Float` values to IEEE 754 half-precision `UInt16` values
     /// using Accelerate, avoiding `Float16` which is unavailable on macOS.
@@ -314,6 +335,8 @@ final class MetalEditPipeline: @unchecked Sendable {
             let ptr = buffer.contents().bindMemory(to: EditParams.self, capacity: 1)
             ptr.pointee = params
             ptr.pointee.gamutClipMode = gamutClipMode
+            ptr.pointee.viewportOrigin = cachedViewportOrigin
+            ptr.pointee.viewportSize = cachedViewportSize
             return
         }
 
@@ -416,6 +439,8 @@ final class MetalEditPipeline: @unchecked Sendable {
         let ptr = buffer.contents().bindMemory(to: EditParams.self, capacity: 1)
         ptr.pointee = params
         ptr.pointee.gamutClipMode = gamutClipMode
+        ptr.pointee.viewportOrigin = cachedViewportOrigin
+        ptr.pointee.viewportSize = cachedViewportSize
 
         let elapsed = ContinuousClock.now - start
         if elapsed > .milliseconds(1) {
@@ -552,19 +577,25 @@ final class MetalEditPipeline: @unchecked Sendable {
         let finalTemp = min(max(temperature ?? 6500, 2000), 50000)
         let finalTint = min(max(tint ?? 0, -150), 150)
 
-        // Return cached matrix if temperature/tint haven't changed
-        if let key = cachedWBKey, key.0 == finalTemp, key.1 == finalTint {
+        // Return cached matrix if temperature/tint and as-shot reference haven't changed
+        if let key = cachedWBKey,
+           key.0 == finalTemp, key.1 == finalTint,
+           key.2 == asShotTemperature, key.3 == asShotTint {
             return cachedWBMatrix
         }
 
         let matrix = extractWBMatrix(temperature: finalTemp, tint: finalTint)
-        cachedWBKey = (finalTemp, finalTint)
+        cachedWBKey = (finalTemp, finalTint, asShotTemperature, asShotTint)
         cachedWBMatrix = matrix
         return matrix
     }
 
     nonisolated private func extractWBMatrix(temperature: Double, tint: Double) -> simd_float3x3 {
         let colorSpace = Self.colorSpace
+        // Use as-shot WB as the target neutral so that "Custom at as-shot" = identity.
+        // The CIRAWFilter already decoded the image referenced to the as-shot WB.
+        let targetTemp = asShotTemperature
+        let targetTint = asShotTint
 
         func renderBasis(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat) -> SIMD3<Float> {
             let ciImage = CIImage(color: CIColor(red: r, green: g, blue: b, colorSpace: colorSpace)!)
@@ -575,7 +606,7 @@ final class MetalEditPipeline: @unchecked Sendable {
             }
             filter.setValue(ciImage, forKey: kCIInputImageKey)
             filter.setValue(CIVector(x: CGFloat(temperature), y: CGFloat(tint)), forKey: "inputNeutral")
-            filter.setValue(CIVector(x: 6500, y: 0), forKey: "inputTargetNeutral")
+            filter.setValue(CIVector(x: CGFloat(targetTemp), y: CGFloat(targetTint)), forKey: "inputTargetNeutral")
 
             guard let output = filter.outputImage else {
                 return SIMD3<Float>(Float(r), Float(g), Float(b))
@@ -615,6 +646,68 @@ final class MetalEditPipeline: @unchecked Sendable {
 
     nonisolated func clearSourceTexture() {
         sourceTexture = nil
+    }
+
+    // MARK: - Viewport
+
+    /// Update viewport parameters for zoom/pan rendering.
+    /// The viewport defines which region of the source texture is visible in the drawable.
+    /// At zoomScale=1 and offset=zero, the full source is shown with aspect-fit letterboxing.
+    nonisolated func updateViewport(
+        zoomScale: CGFloat,
+        offset: CGSize,
+        containerSize: CGSize,
+        imageSize: CGSize
+    ) {
+        guard let buffer = paramsBuffer else { return }
+        guard containerSize.width > 0, containerSize.height > 0,
+              imageSize.width > 0, imageSize.height > 0 else { return }
+
+        let imageAspect = imageSize.width / imageSize.height
+        let containerAspect = containerSize.width / containerSize.height
+
+        // Viewport size in normalized source coordinates.
+        // At zoom=1, the entire source is visible; at zoom=2, half per axis.
+        // Adjust for aspect ratio mismatch so letterboxing is rendered by the shader.
+        let vpW: CGFloat
+        let vpH: CGFloat
+        if containerAspect > imageAspect {
+            // Container is wider than image: letterbox sides
+            vpH = 1.0 / zoomScale
+            vpW = (1.0 / zoomScale) * (containerAspect / imageAspect)
+        } else {
+            // Container is taller than image: letterbox top/bottom
+            vpW = 1.0 / zoomScale
+            vpH = (1.0 / zoomScale) * (imageAspect / containerAspect)
+        }
+
+        // Convert pan offset from SwiftUI points to normalized source coordinates.
+        // fittedSize is the image size in view points at zoom=1.
+        let fittedScale = min(containerSize.width / imageSize.width,
+                              containerSize.height / imageSize.height)
+        let fittedWidth = imageSize.width * fittedScale
+        let fittedHeight = imageSize.height * fittedScale
+
+        let offsetNormX = offset.width / (fittedWidth * zoomScale)
+        let offsetNormY = offset.height / (fittedHeight * zoomScale)
+
+        // Viewport center: (0.5, 0.5) = source center, shifted by pan offset
+        let originX = 0.5 - offsetNormX - vpW / 2
+        let originY = 0.5 - offsetNormY - vpH / 2
+
+        cachedViewportOrigin = SIMD2<Float>(Float(originX), Float(originY))
+        cachedViewportSize = SIMD2<Float>(Float(vpW), Float(vpH))
+
+        let ptr = buffer.contents().bindMemory(to: EditParams.self, capacity: 1)
+        ptr.pointee.viewportOrigin = cachedViewportOrigin
+        ptr.pointee.viewportSize = cachedViewportSize
+
+        // Also update overlay params
+        if let overlayBuf = overlayParamsBuffer {
+            let overlayPtr = overlayBuf.contents().bindMemory(to: MaskOverlayParams.self, capacity: 1)
+            overlayPtr.pointee.viewportOrigin = cachedViewportOrigin
+            overlayPtr.pointee.viewportSize = cachedViewportSize
+        }
     }
 
     // MARK: - Texture Pre-Caching
@@ -749,6 +842,8 @@ final class MetalEditPipeline: @unchecked Sendable {
         ptr.pointee.scale = SIMD2<Float>(1.0, 1.0)
         ptr.pointee.sourceSize = SIMD2<Float>(Float(width), Float(height))
         ptr.pointee.drawableSize = SIMD2<Float>(Float(width), Float(height))
+        ptr.pointee.viewportOrigin = .zero
+        ptr.pointee.viewportSize = SIMD2<Float>(1.0, 1.0)
 
         encoder.setComputePipelineState(pipeline.pipelineState)
         encoder.setTexture(srcTexture, index: 0)

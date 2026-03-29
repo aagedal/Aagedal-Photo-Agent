@@ -16,6 +16,9 @@ struct MaskOverlayParams {
     float2 scale;        // source→drawable (same as EditParams.scale)
     float2 sourceSize;   // source texture dimensions
     float2 drawableSize; // output drawable dimensions
+
+    float2 viewportOrigin; // top-left of visible region in normalized [0,1] source coords
+    float2 viewportSize;   // fraction of source visible per axis
 };
 
 // ============================================================
@@ -52,13 +55,16 @@ kernel void maskOverlay(
     if (params.visible == 0) return;
     if (gid.x >= uint(params.drawableSize.x) || gid.y >= uint(params.drawableSize.y)) return;
 
-    // Map drawable pixel to source UV (same transform as editAdjustments)
-    float2 sourceCoord = float2(gid) / params.scale;
-    float2 uv = sourceCoord / params.sourceSize;
+    // Map drawable pixel through viewport to source UV (same as editAdjustments)
+    float2 drawableNorm = float2(gid) / params.drawableSize;
+    float2 uv = params.viewportOrigin + drawableNorm * params.viewportSize;
+
+    // Skip overlay for letterbox pixels outside source bounds
+    if (uv.x < 0.0 || uv.x >= 1.0 || uv.y < 0.0 || uv.y >= 1.0) return;
 
     // Anti-aliasing size in UV space (approximately 1 drawable pixel)
-    float pixelSizeU = 1.0 / (params.sourceSize.x * params.scale.x);
-    float pixelSizeV = 1.0 / (params.sourceSize.y * params.scale.y);
+    float pixelSizeU = params.viewportSize.x / params.drawableSize.x;
+    float pixelSizeV = params.viewportSize.y / params.drawableSize.y;
     float aa = max(pixelSizeU, pixelSizeV);
 
     // Transform to ellipse local space
