@@ -982,8 +982,11 @@ nonisolated struct ScopeRenderService: Sendable {
         for triangle in Self.gamutTriangles {
             let isTarget = triangle.gamut == targetGamut
             let isDisplay = triangle.gamut == displayGamut && !isTarget
-            let alpha: CGFloat = isTarget ? 0.9 : (isDisplay ? 0.7 : 0.5)
-            let lineWidth: CGFloat = isTarget ? 2.5 : (isDisplay ? 2.0 : 1.5)
+            // Dim sRGB when a wider gamut is active (target or display) so it doesn't compete visually
+            let widerGamutActive = targetGamut != .sRGB || displayGamut != .sRGB
+            let dimSRGB = triangle.gamut == .sRGB && widerGamutActive
+            let alpha: CGFloat = dimSRGB ? 0.2 : (isTarget ? 0.9 : (isDisplay ? 0.7 : 0.5))
+            let lineWidth: CGFloat = dimSRGB ? 1.0 : (isTarget ? 3.0 : (isDisplay ? 2.0 : 1.5))
 
             ctx.setStrokeColor(red: triangle.color.r, green: triangle.color.g, blue: triangle.color.b, alpha: alpha)
             ctx.setLineWidth(lineWidth)

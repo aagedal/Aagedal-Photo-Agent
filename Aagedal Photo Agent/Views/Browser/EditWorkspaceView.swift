@@ -111,6 +111,13 @@ struct EditWorkspaceView: View {
         metadataViewModel.editingMetadata.cameraRaw?.hdrEditMode == 1
     }
 
+    private var saveErrorPresented: Binding<Bool> {
+        Binding(
+            get: { saveError != nil },
+            set: { if !$0 { saveError = nil } }
+        )
+    }
+
     private var hdrToggleBinding: Binding<Bool> {
         Binding(
             get: { metadataViewModel.editingMetadata.cameraRaw?.hdrEditMode == 1 },
@@ -215,55 +222,10 @@ struct EditWorkspaceView: View {
             isWorkspaceFocused = true
         }
         .onAppear {
-            ensureSingleSelection()
-            if metalPipeline == nil {
-                let device = MetalPreviewView.Coordinator.device
-                let queue = MetalPreviewView.Coordinator.commandQueue
-                metalPipeline = MetalEditPipeline(device: device, commandQueue: queue)
-                // Pre-warm CIContext's CITemperatureAndTint Metal kernels in the background
-                // so the first white balance slider drag doesn't stall for ~5s.
-                if let pipeline = metalPipeline {
-                    Task.detached(priority: .low) {
-                        pipeline.warmupCIContext()
-                    }
-                }
-            }
-            // Create Metal scope pipeline and share edit pipeline references
-            if let pipeline = metalPipeline {
-                scopeViewModel.metalEditPipeline = pipeline
-                if scopeViewModel.metalScopePipeline == nil {
-                    let device = MetalPreviewView.Coordinator.device
-                    let queue = MetalPreviewView.Coordinator.commandQueue
-                    if let scopePipeline = MetalScopePipeline(device: device, commandQueue: queue) {
-                        scopeViewModel.metalScopePipeline = scopePipeline
-                        scopeViewModel.metalScopeCoordinator = MetalScopeView.Coordinator(scopePipeline: scopePipeline)
-                    }
-                }
-            }
-            updateGamutClipMode()
-            metadataViewModel.isInEditView = true
-            editLog.info("[\(selectedImageURL?.lastPathComponent ?? "nil")] loadSelectedImagePreview triggered by: onAppear")
-            loadSelectedImagePreview()
-            keyEventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { event in
-                return handleKeyEvent(event)
-            }
+            handleEditWorkspaceAppear()
         }
         .onDisappear {
-            metadataViewModel.isInEditView = false
-            metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
-            metalCoordinator.stopContinuousRendering()
-            scopeViewModel.metalScopeCoordinator?.stopContinuousRendering()
-            scopeViewModel.clearMetal()
-            previewTask?.cancel()
-            previewTask = nil
-            previewRenderTask?.cancel()
-            previewRenderTask = nil
-            scopeThrottleTask?.cancel()
-            scopeThrottleTask = nil
-            if let monitor = keyEventMonitor {
-                NSEvent.removeMonitor(monitor)
-                keyEventMonitor = nil
-            }
+            handleEditWorkspaceDisappear()
         }
         .onChange(of: browserViewModel.selectedImageIDs) { _, _ in
             ensureAtLeastOneSelected()
@@ -308,6 +270,14 @@ struct EditWorkspaceView: View {
             editLog.info("[\(selectedImageURL?.lastPathComponent ?? "nil")] loadSelectedImagePreview triggered by: onChange(exifOrientation) \(oldVal ?? 0) → \(newVal ?? 0)")
             loadSelectedImagePreview()
         }
+        .onChange(of: isShowingBefore) { _, _ in
+            // Re-sync viewport: crop mode uses identity viewport, but the "before"
+            // view falls to the normal-fit path and needs a proper viewport.
+            syncViewportToMetal()
+        }
+        .onChange(of: isMutingDevelop) { _, _ in
+            syncViewportToMetal()
+        }
         .onChange(of: selectedMaskIndex) { _, _ in
             // Clear Metal overlay — the AppKit MaskOverlayNSView handles
             // static display with interactive handles. Metal overlay is only used
@@ -350,10 +320,7 @@ struct EditWorkspaceView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: copyPasteFeedback)
-        .alert("Export Failed", isPresented: Binding(
-            get: { saveError != nil },
-            set: { if !$0 { saveError = nil } }
-        )) {
+        .alert("Export Failed", isPresented: saveErrorPresented) {
             Button("OK", role: .cancel) { saveError = nil }
         } message: {
             if let error = saveError {
@@ -1062,6 +1029,56 @@ struct EditWorkspaceView: View {
         }
         .frame(height: 120)
         .background(Color(nsColor: .underPageBackgroundColor))
+    }
+
+    private func handleEditWorkspaceDisappear() {
+        metadataViewModel.isInEditView = false
+        metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
+        metalCoordinator.stopContinuousRendering()
+        scopeViewModel.metalScopeCoordinator?.stopContinuousRendering()
+        scopeViewModel.clearMetal()
+        previewTask?.cancel()
+        previewTask = nil
+        previewRenderTask?.cancel()
+        previewRenderTask = nil
+        scopeThrottleTask?.cancel()
+        scopeThrottleTask = nil
+        if let monitor = keyEventMonitor {
+            NSEvent.removeMonitor(monitor)
+            keyEventMonitor = nil
+        }
+    }
+
+    private func handleEditWorkspaceAppear() {
+        ensureSingleSelection()
+        if metalPipeline == nil {
+            let device = MetalPreviewView.Coordinator.device
+            let queue = MetalPreviewView.Coordinator.commandQueue
+            metalPipeline = MetalEditPipeline(device: device, commandQueue: queue)
+            if let pipeline = metalPipeline {
+                Task.detached(priority: .low) {
+                    pipeline.warmupCIContext()
+                }
+            }
+        }
+        if let pipeline = metalPipeline {
+            scopeViewModel.metalEditPipeline = pipeline
+            if scopeViewModel.metalScopePipeline == nil {
+                let device = MetalPreviewView.Coordinator.device
+                let queue = MetalPreviewView.Coordinator.commandQueue
+                if let scopePipeline = MetalScopePipeline(device: device, commandQueue: queue) {
+                    scopeViewModel.metalScopePipeline = scopePipeline
+                    scopeViewModel.metalScopeCoordinator = MetalScopeView.Coordinator(scopePipeline: scopePipeline)
+                }
+            }
+        }
+        updateGamutClipMode()
+        metadataViewModel.isInEditView = true
+        editLog.info("[\(selectedImageURL?.lastPathComponent ?? "nil")] loadSelectedImagePreview triggered by: onAppear")
+        loadSelectedImagePreview()
+        keyEventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { [self] event in
+            handleKeyEvent(event)
+        }
     }
 
     private func ensureSingleSelection() {
@@ -2799,23 +2816,84 @@ struct EditWorkspaceView: View {
         let newScale = (oldScale * zoomFactor).clamped(to: 1.0...maxEditZoom)
         guard newScale != oldScale else { return }
 
-        // Cursor-anchored zoom: keep content under cursor fixed
+        if newScale <= 1.0 {
+            editZoomScale = newScale
+            lastEditZoomScale = newScale
+            editOffset = .zero
+            lastEditOffset = .zero
+            syncViewportToMetal()
+            return
+        }
+
+        // Cursor-anchored zoom in viewport UV space: compute which UV coordinate
+        // is under the cursor, then solve for the offset that keeps it there
+        // after the zoom change.
+        let containerSize = previewPaneFrame.size
+        guard containerSize.width > 0, containerSize.height > 0,
+              let imageSize = metalImageSize else {
+            editZoomScale = newScale
+            lastEditZoomScale = newScale
+            syncViewportToMetal()
+            return
+        }
+
         let cursorFromCenter = editCursorFromCenter(event: event)
-        let ratio = newScale / oldScale
+        let screenNormX = 0.5 + cursorFromCenter.width / containerSize.width
+        let screenNormY = 0.5 + cursorFromCenter.height / containerSize.height
+
+        // Current viewport: UV at cursor
+        let vpOrigin = currentViewportOrigin
+        let vpSize = currentViewportSize
+        let uvX = Double(vpOrigin.x) + screenNormX * Double(vpSize.x)
+        let uvY = Double(vpOrigin.y) + screenNormY * Double(vpSize.y)
+
+        // New viewport size at newScale
+        let imageAspect = imageSize.width / imageSize.height
+        let containerAspect = containerSize.width / containerSize.height
+        let newVpW: Double
+        let newVpH: Double
+        if containerAspect > imageAspect {
+            newVpH = 1.0 / newScale
+            newVpW = (1.0 / newScale) * (containerAspect / imageAspect)
+        } else {
+            newVpW = 1.0 / newScale
+            newVpH = (1.0 / newScale) * (imageAspect / containerAspect)
+        }
+
+        // Solve for new offset: place uvX at screenNormX in new viewport
+        // newVpOrigin = uv - screenNorm * newVpSize
+        // vpOrigin = 0.5 - offNorm - vpSize/2, so offNorm = 0.5 - vpSize/2 - vpOrigin
+        let newVpOriginX = uvX - screenNormX * newVpW
+        let newVpOriginY = uvY - screenNormY * newVpH
+
+        let fittedScale = min(containerSize.width / imageSize.width,
+                              containerSize.height / imageSize.height)
+        let fittedWidth = imageSize.width * fittedScale
+        let fittedHeight = imageSize.height * fittedScale
+
+        let offNormX = 0.5 - newVpW / 2 - newVpOriginX
+        let offNormY = 0.5 - newVpH / 2 - newVpOriginY
         let newOffset = CGSize(
-            width: editOffset.width * ratio + cursorFromCenter.width * (1 - ratio),
-            height: editOffset.height * ratio + cursorFromCenter.height * (1 - ratio)
+            width: offNormX * fittedWidth * newScale,
+            height: offNormY * fittedHeight * newScale
         )
 
         editZoomScale = newScale
         lastEditZoomScale = newScale
-        if newScale <= 1.0 {
-            editOffset = .zero
-            lastEditOffset = .zero
-        } else {
-            editOffset = newOffset
-            lastEditOffset = newOffset
-        }
+        editOffset = newOffset
+        lastEditOffset = newOffset
+
+        // Constrain to valid bounds
+        let scaledWidth = fittedWidth * newScale
+        let scaledHeight = fittedHeight * newScale
+        let maxOffsetX = max(0, (scaledWidth - containerSize.width) / 2)
+        let maxOffsetY = max(0, (scaledHeight - containerSize.height) / 2)
+        editOffset = CGSize(
+            width: editOffset.width.clamped(to: -maxOffsetX...maxOffsetX),
+            height: editOffset.height.clamped(to: -maxOffsetY...maxOffsetY)
+        )
+        lastEditOffset = editOffset
+
         syncViewportToMetal()
     }
 
