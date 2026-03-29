@@ -33,7 +33,6 @@ struct KeyboardShortcutsSettingsView: View {
             ("\u{2318}D", "Duplicate"),
             ("\u{2318}\u{232B}", "Move to Trash"),
             ("\u{2318}J", "Add New Mask"),
-            ("H", "Toggle HDR"),
         ]),
         ("Metadata", [
             ("\u{2318}P", "Process Variables"),
@@ -56,13 +55,14 @@ struct KeyboardShortcutsSettingsView: View {
             ("\u{2318}Z", "Undo"),
             ("\u{2318}\u{21E7}Z", "Redo"),
             ("Z", "Toggle Zoom Fit / 100%"),
+            ("H", "Toggle HDR"),
         ]),
         ("Full Screen", [
             ("Escape / Space", "Dismiss"),
             ("Z", "Toggle Zoom at Cursor"),
             ("H", "Toggle UI Visibility"),
             ("S", "Toggle Scaling Filter"),
-            ("G", "Toggle Face Rectangles"),
+            ("F", "Toggle Face Rectangles"),
             ("E", "Toggle Edit Rendering"),
             ("\u{2318}0\u{2013}5", "Set Rating"),
             ("\u{2318}\u{2325}0\u{2013}8", "Set Color Label"),

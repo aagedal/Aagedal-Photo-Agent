@@ -327,9 +327,24 @@ final class ExifToolService {
         next()
     }
 
+    /// Execute an ExifTool command with automatic retry on transient failures.
+    func execute(_ arguments: [String]) async throws -> String {
+        do {
+            return try await executeOnce(arguments)
+        } catch {
+            let nsError = error as NSError
+            // Retry on timeout (5) or unexpected termination (2) — the process
+            // is restarted automatically by executeOnce when !isRunning.
+            guard nsError.domain == "ExifToolService",
+                  [2, 5].contains(nsError.code) else { throw error }
+            exifToolLog.warning("Retrying command after transient failure: \(nsError.localizedDescription, privacy: .public)")
+            return try await executeOnce(arguments)
+        }
+    }
+
     /// Execute an ExifTool command and return the response.
     /// Commands are serialized to prevent concurrent access to the single ExifTool process.
-    func execute(_ arguments: [String]) async throws -> String {
+    private func executeOnce(_ arguments: [String]) async throws -> String {
         // Restart if path changed (user changed settings)
         if isRunning, let current = exifToolPath, current != runningPath {
             stop()

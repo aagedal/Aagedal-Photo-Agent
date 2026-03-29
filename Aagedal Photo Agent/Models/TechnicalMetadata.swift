@@ -157,6 +157,57 @@ struct TechnicalMetadata {
         c2paEdited = (dict[ExifKey.relationship] as? String) == "parentOf"
     }
 
+    // MARK: - ImageIO fast path
+
+    /// Read technical metadata directly from the image file using CGImageSource.
+    /// Much faster than ExifTool since it avoids subprocess overhead.
+    /// C2PA detail fields are not populated — use ExifToolService.readC2PAMetadata for those.
+    static func fromImageIO(url: URL, hasC2PA: Bool = false) -> TechnicalMetadata {
+        var dict: [String: Any] = [:]
+
+        if let source = CGImageSourceCreateWithURL(url as CFURL, nil) {
+            let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any] ?? [:]
+            let tiff = props[kCGImagePropertyTIFFDictionary as String] as? [String: Any] ?? [:]
+            let exif = props[kCGImagePropertyExifDictionary as String] as? [String: Any] ?? [:]
+
+            // Camera / lens
+            dict[ExifKey.make] = tiff[kCGImagePropertyTIFFMake as String]
+            dict[ExifKey.model] = tiff[kCGImagePropertyTIFFModel as String]
+            dict[ExifKey.lensModel] = exif[kCGImagePropertyExifLensModel as String]
+
+            // Date
+            dict[ExifKey.dateTimeOriginal] = exif[kCGImagePropertyExifDateTimeOriginal as String]
+
+            // Exposure
+            dict[ExifKey.focalLength] = exif[kCGImagePropertyExifFocalLength as String]
+            dict[ExifKey.fNumber] = exif[kCGImagePropertyExifFNumber as String]
+            dict[ExifKey.exposureTime] = exif[kCGImagePropertyExifExposureTime as String]
+
+            // ISO — ImageIO returns an array of speed ratings
+            if let isoArr = exif[kCGImagePropertyExifISOSpeedRatings as String] as? [Any],
+               let first = isoArr.first {
+                dict[ExifKey.iso] = first
+            }
+
+            // Dimensions
+            dict[ExifKey.imageWidth] = props[kCGImagePropertyPixelWidth as String]
+            dict[ExifKey.imageHeight] = props[kCGImagePropertyPixelHeight as String]
+        }
+
+        // File modification date
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+           let modDate = attrs[.modificationDate] as? Date {
+            let formatter = DateFormatter()
+            formatter.dateFormat = "yyyy:MM:dd HH:mm:ssZ"
+            dict[ExifKey.fileModifyDate] = formatter.string(from: modDate)
+        }
+
+        // Build via the existing init (which also calls nativeImageInfo for bitDepth/colorSpace)
+        var meta = TechnicalMetadata(from: dict, fileURL: url)
+        meta.hasC2PA = hasC2PA
+        return meta
+    }
+
     // MARK: - Native Apple API color space detection
 
     private struct NativeImageInfo {

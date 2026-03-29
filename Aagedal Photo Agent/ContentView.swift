@@ -1153,19 +1153,9 @@ struct ContentView: View {
             return
         }
 
-        let url = image.url
-        let service = browserViewModel.exifToolService
-        technicalMetadataTask = Task {
-            do {
-                let result = try await service.readTechnicalMetadata(url: url)
-                guard !Task.isCancelled else { return }
-                technicalMetadataCache[url] = result
-                technicalMetadata = result
-            } catch {
-                guard !Task.isCancelled else { return }
-                technicalMetadata = nil
-            }
-        }
+        let result = TechnicalMetadata.fromImageIO(url: image.url, hasC2PA: image.hasC2PA)
+        technicalMetadataCache[image.url] = result
+        technicalMetadata = result
     }
 
     private func loadScopeImage(for url: URL?, isNativeHDR: Bool = false) {

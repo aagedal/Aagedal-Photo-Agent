@@ -110,8 +110,8 @@ private class FullScreenWindow: NSWindow {
             return
         }
 
-        // G key (keyCode 5) → toggle face rectangles
-        if keyCode == 5 && !hasCmd && !hasOption && !event.isARepeat {
+        // F key (keyCode 3) → toggle face rectangles
+        if keyCode == 3 && !hasCmd && !hasOption && !event.isARepeat {
             onToggleFaceRectangles?()
             return
         }
