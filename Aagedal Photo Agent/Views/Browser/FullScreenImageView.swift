@@ -360,16 +360,16 @@ struct FullScreenImageView: View {
 
                 if !hideOverlays {
                     if isLoading {
-                        VStack {
-                            HStack {
-                                ProgressView()
-                                    .scaleEffect(0.5)
-                                    .tint(.white)
-                                    .padding(12)
-                                Spacer()
-                            }
-                            Spacer()
+                        VStack(spacing: 8) {
+                            ProgressView()
+                                .controlSize(.small)
+                                .tint(.white)
+                            Text("Loading\u{2026}")
+                                .font(.caption)
+                                .foregroundStyle(.white.opacity(0.7))
                         }
+                        .padding(12)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
                     }
 
                     if let loadError, currentImage == nil {
@@ -547,12 +547,15 @@ struct FullScreenImageView: View {
             return .handled
         }
         .task(id: "\(currentImageFile?.url.absoluteString ?? "nil")|\(renderEdits)") {
-            // Reset zoom when changing images
-            zoomScale = 1.0
-            lastZoomScale = 1.0
-            offset = .zero
-            lastOffset = .zero
-            isZoomedTo100 = false
+            let urlChanged = currentImageFile?.url != lastOrientationURL
+            if urlChanged {
+                // Reset zoom/pan only when navigating to a different image
+                zoomScale = 1.0
+                lastZoomScale = 1.0
+                offset = .zero
+                lastOffset = .zero
+                isZoomedTo100 = false
+            }
             isFullResLoaded = false
             fullResTask?.cancel()
             fullResTask = nil
@@ -562,9 +565,9 @@ struct FullScreenImageView: View {
         .onChange(of: renderEdits) {
             imageCache.clearAll()
             imageCache.cancelAllPrefetch()
-            // Clear the displayed image immediately so the stale render
-            // doesn't linger while the new version loads.
-            currentImage = nil
+            // Keep the current image visible as a placeholder while the
+            // new version loads — avoids a black flash. The .task will
+            // replace it once Phase 0.5 or Phase 2 completes.
         }
         .onChange(of: currentImageFile?.cameraRawSettings) {
             // Invalidate cached image when edits change (e.g. mask adjustments
@@ -928,6 +931,7 @@ struct FullScreenImageView: View {
         if let preview, currentImageFile?.url == url {
             imageLogger.info("\(filename): Phase 0.5 in \(String(format: "%.1f", previewElapsed * 1000))ms (\(preview.width)x\(preview.height))")
             currentImage = makeLoadedImage(from: preview)
+            isLoading = false
             imageCache.storeDisplayPreview(preview, for: url)
         }
 

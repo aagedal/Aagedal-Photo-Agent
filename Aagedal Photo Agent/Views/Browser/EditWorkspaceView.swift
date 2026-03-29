@@ -20,7 +20,6 @@ struct EditWorkspaceView: View {
     @State private var isDraggingEditSlider = false
     @State private var previewCIImage: CIImage?
     @State private var previewImage: NSImage?
-    @State private var previewCGImage: CGImage?
     @State private var previewTask: Task<Void, Never>?
     @State private var previewRenderTask: Task<Void, Never>?
     @State private var isLoadingPreview = false
@@ -1215,7 +1214,10 @@ struct EditWorkspaceView: View {
                     }
                     editLog.info("[\(filename)] Phase 2: decoded in \(decodeElapsed) (result=\(rawCIImage != nil))")
 
-                    if !cacheHit, let rawCIImage {
+                    if let rawCIImage {
+                        if cacheHit {
+                            editLog.info("[\(filename)] Phase 2: upgrading cached texture to full resolution")
+                        }
                         let uploadStart = ContinuousClock.now
                         await Task.detached(priority: .medium) {
                             pipeline.uploadSourceImage(rawCIImage)
@@ -1475,6 +1477,7 @@ struct EditWorkspaceView: View {
             if let result {
                 previewImage = result.0
                 previewCGImage = result.1
+                previewCIImage = CIImage(cgImage: result.1)
                 NotificationCenter.default.post(name: .scopeSourceImageDidChange, object: nil, userInfo: ["cgImage": result.2 ?? result.1, "isHDR": hdr])
             } else {
                 previewImage = fallback

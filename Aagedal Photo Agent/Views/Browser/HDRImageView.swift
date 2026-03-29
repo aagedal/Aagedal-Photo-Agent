@@ -22,15 +22,20 @@ struct HDRImageView: NSViewRepresentable {
     private func updateLayer(_ view: NSView) {
         guard let layer = view.layer else { return }
         layer.contents = cgImage
+        // Use half-float backing store for HDR so values > 1.0 are preserved.
+        // Default RGBA8Uint clips extended-range values to [0, 1].
+        layer.contentsFormat = isHDR ? .RGBA16Float : .RGBA8Uint
         let filter: CALayerContentsFilter = useNearestNeighbor ? .nearest : .linear
         layer.magnificationFilter = filter
         layer.minificationFilter = filter
         // Opaque when HDR — non-opaque layer compositing can clip EDR values to SDR.
         layer.isOpaque = isHDR
+        // Always set wantsExtendedDynamicRangeContent — this is the fundamental EDR
+        // enabler. preferredDynamicRange (macOS 26+) controls layer compositing but
+        // doesn't replace this property. Matches MetalPreviewView's approach.
+        layer.wantsExtendedDynamicRangeContent = isHDR
         if #available(macOS 26.0, *) {
             layer.preferredDynamicRange = isHDR ? .high : .standard
-        } else {
-            layer.wantsExtendedDynamicRangeContent = isHDR
         }
         // Walk ancestor layers to ensure SwiftUI intermediate hosting layers
         // don't clip extended-range pixel values to [0, 1] during compositing.
