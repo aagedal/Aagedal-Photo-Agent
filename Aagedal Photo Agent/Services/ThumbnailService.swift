@@ -8,7 +8,9 @@ private let thumbnailLogger = Logger(subsystem: "com.aagedal.photo-agent", categ
 @Observable
 final class ThumbnailService {
     nonisolated(unsafe) private let cache = NSCache<NSURL, NSImage>()
+    nonisolated(unsafe) private let editedCache = NSCache<NSURL, NSImage>()
     @ObservationIgnored private var inFlightTasks: [URL: Task<NSImage?, Never>] = [:]
+    @ObservationIgnored private var editedInFlightTasks: [URL: Task<NSImage?, Never>] = [:]
     private let thumbnailSize = CGSize(width: 240, height: 240)
 
     // Background pre-generation state
@@ -19,13 +21,19 @@ final class ThumbnailService {
 
     init() {
         cache.countLimit = 500
+        editedCache.countLimit = 500
     }
 
-    func thumbnail(for url: URL) -> NSImage? {
-        cache.object(forKey: url as NSURL)
+    /// Returns the best available thumbnail. Checks editedCache first unless preferOriginal is true.
+    func thumbnail(for url: URL, preferOriginal: Bool = false) -> NSImage? {
+        if !preferOriginal, let edited = editedCache.object(forKey: url as NSURL) {
+            return edited
+        }
+        return cache.object(forKey: url as NSURL)
     }
 
-    func loadThumbnail(for url: URL, cameraRawSettings: CameraRawSettings? = nil, exifOrientation: Int = 1) async -> NSImage? {
+    /// Loads or generates the original (unedited) thumbnail for a URL.
+    func loadThumbnail(for url: URL) async -> NSImage? {
         if let cached = cache.object(forKey: url as NSURL) {
             return cached
         }
@@ -55,13 +63,6 @@ final class ThumbnailService {
             return nil as NSImage?
         }
 
-            if let settings = cameraRawSettings, !settings.isEmpty {
-                if let processed = applyCameraRaw(to: image, settings: settings, exifOrientation: exifOrientation) {
-                    cache.setObject(processed, forKey: url as NSURL)
-                    return processed
-                }
-            }
-
             cache.setObject(image, forKey: url as NSURL)
             return image
         }
@@ -69,6 +70,43 @@ final class ThumbnailService {
         inFlightTasks[url] = task
         let result = await task.value
         inFlightTasks.removeValue(forKey: url)
+
+        return result
+    }
+
+    /// Renders an edited thumbnail by applying CameraRaw settings to the original thumbnail.
+    /// Stores the result in the edited cache. Runs the heavy work at utility priority.
+    func renderEditedThumbnail(for url: URL, settings: CameraRawSettings, exifOrientation: Int) async -> NSImage? {
+        if let cached = editedCache.object(forKey: url as NSURL) {
+            return cached
+        }
+
+        // Coalesce with existing in-flight edited request
+        if let existingTask = editedInFlightTasks[url] {
+            return await existingTask.value
+        }
+
+        let task = Task<NSImage?, Never> {
+            // Get or load the original thumbnail
+            let original: NSImage
+            if let cached = cache.object(forKey: url as NSURL) {
+                original = cached
+            } else if let loaded = await loadThumbnail(for: url) {
+                original = loaded
+            } else {
+                return nil
+            }
+
+            guard let edited = applyCameraRaw(to: original, settings: settings, exifOrientation: exifOrientation) else {
+                return nil
+            }
+            editedCache.setObject(edited, forKey: url as NSURL)
+            return edited
+        }
+
+        editedInFlightTasks[url] = task
+        let result = await task.value
+        editedInFlightTasks.removeValue(forKey: url)
 
         return result
     }
@@ -139,19 +177,32 @@ final class ThumbnailService {
         return NSImage(cgImage: outputCG, size: NSSize(width: outputCG.width, height: outputCG.height))
     }
 
+    /// Invalidates only the edited thumbnail for a URL (original remains cached).
+    func invalidateEditedThumbnail(for url: URL) {
+        editedCache.removeObject(forKey: url as NSURL)
+    }
+
+    /// Invalidates both original and edited thumbnails for a URL.
     func invalidateThumbnail(for url: URL) {
         cache.removeObject(forKey: url as NSURL)
+        editedCache.removeObject(forKey: url as NSURL)
     }
 
     /// Rotates the cached thumbnail in-place for instant visual feedback during rotation.
     /// Falls back to invalidation if no cached thumbnail exists.
     func rotateThumbnailInCache(for url: URL, clockwise: Bool) {
-        guard let existing = cache.object(forKey: url as NSURL),
-              let rotated = rotateImage90(existing, clockwise: clockwise) else {
+        if let existing = cache.object(forKey: url as NSURL),
+           let rotated = rotateImage90(existing, clockwise: clockwise) {
+            cache.setObject(rotated, forKey: url as NSURL)
+        } else {
             cache.removeObject(forKey: url as NSURL)
-            return
         }
-        cache.setObject(rotated, forKey: url as NSURL)
+        if let existing = editedCache.object(forKey: url as NSURL),
+           let rotated = rotateImage90(existing, clockwise: clockwise) {
+            editedCache.setObject(rotated, forKey: url as NSURL)
+        } else {
+            editedCache.removeObject(forKey: url as NSURL)
+        }
     }
 
     private func rotateImage90(_ image: NSImage, clockwise: Bool) -> NSImage? {
@@ -187,10 +238,15 @@ final class ThumbnailService {
     func clearCache() {
         cancelBackgroundGeneration()
         cache.removeAllObjects()
+        editedCache.removeAllObjects()
         for task in inFlightTasks.values {
             task.cancel()
         }
         inFlightTasks.removeAll()
+        for task in editedInFlightTasks.values {
+            task.cancel()
+        }
+        editedInFlightTasks.removeAll()
     }
 
     // MARK: - Background Pre-generation
@@ -214,7 +270,7 @@ final class ThumbnailService {
                 await withTaskGroup(of: Void.self) { group in
                     for image in batch {
                         group.addTask {
-                            _ = await self.loadThumbnail(for: image.url, cameraRawSettings: image.cameraRawSettings, exifOrientation: image.exifOrientation)
+                            _ = await self.loadThumbnail(for: image.url)
                         }
                     }
                 }

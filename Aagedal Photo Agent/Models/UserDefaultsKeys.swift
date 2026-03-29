@@ -55,6 +55,7 @@ nonisolated enum UserDefaultsKeys {
     static let thumbnailSortReversed = "thumbnailSortReversed"
     static let thumbnailScale = "thumbnailScale"
     static let previewMode = "previewMode"
+    static let showOriginalThumbnails = "showOriginalThumbnails"
     static let lastScopeMode = "lastScopeMode"
 
     // MARK: - Multi-Select Behavior

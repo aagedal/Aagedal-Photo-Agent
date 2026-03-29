@@ -504,8 +504,7 @@ struct FullScreenImageView: View {
         .onAppear {
             isFocused = true
             // Initialize render edits from UserDefaults
-            let previewMode = UserDefaults.standard.string(forKey: UserDefaultsKeys.previewMode) ?? "performance"
-            renderEdits = previewMode == "editing"
+            renderEdits = !UserDefaults.standard.bool(forKey: UserDefaultsKeys.showOriginalThumbnails)
             // Initialize face rectangles from context (visible by default when opened from face view)
             showFaceRectangles = viewModel.fullScreenFaceContext?.highlightedFaceID != nil
             // Register actions with the controller

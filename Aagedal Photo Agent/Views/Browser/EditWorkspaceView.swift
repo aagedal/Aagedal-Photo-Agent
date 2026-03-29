@@ -134,7 +134,7 @@ struct EditWorkspaceView: View {
                         browserViewModel.images[index].cameraRawSettings = CameraRawSettings()
                     }
                     browserViewModel.images[index].cameraRawSettings?.hdrEditMode = newValue ? 1 : 0
-                    browserViewModel.thumbnailService.invalidateThumbnail(for: url)
+                    browserViewModel.thumbnailService.invalidateEditedThumbnail(for: url)
                 }
             }
         )
@@ -1047,6 +1047,24 @@ struct EditWorkspaceView: View {
             NSEvent.removeMonitor(monitor)
             keyEventMonitor = nil
         }
+
+        // Render edited thumbnail in background for the image we just edited
+        if let url = selectedImageURL,
+           let index = browserViewModel.urlToImageIndex[url] {
+            let imageFile = browserViewModel.images[index]
+            if let settings = imageFile.cameraRawSettings, !settings.isEmpty {
+                let orientation = imageFile.exifOrientation
+                let thumbnailService = browserViewModel.thumbnailService
+                thumbnailService.invalidateEditedThumbnail(for: url)
+                Task.detached(priority: .utility) {
+                    _ = await thumbnailService.renderEditedThumbnail(
+                        for: url,
+                        settings: settings,
+                        exifOrientation: orientation
+                    )
+                }
+            }
+        }
     }
 
     private func handleEditWorkspaceAppear() {
@@ -1696,13 +1714,18 @@ struct EditWorkspaceView: View {
     private func syncCameraRawToImageFile() {
         guard let url = selectedImageURL,
               let index = browserViewModel.urlToImageIndex[url] else { return }
-        let newSettings = metadataViewModel.editingMetadata.cameraRaw
+        var newSettings = metadataViewModel.editingMetadata.cameraRaw
+        // Propagate as-shot WB reference so thumbnail rendering computes the correct WB matrix
+        if let asShot = asShotWhiteBalance {
+            newSettings?.asShotNeutralTemperature = Double(asShot.temperature)
+            newSettings?.asShotNeutralTint = Double(asShot.tint)
+        }
         let oldSettings = browserViewModel.images[index].cameraRawSettings
         guard newSettings != oldSettings else { return }
         browserViewModel.images[index].cameraRawSettings = newSettings
         browserViewModel.images[index].hasDevelopEdits = newSettings != nil && !newSettings!.isEmpty
         browserViewModel.images[index].hasCropEdits = newSettings?.crop?.isEmpty == false
-        browserViewModel.thumbnailService.invalidateThumbnail(for: url)
+        browserViewModel.thumbnailService.invalidateEditedThumbnail(for: url)
     }
 
     private func fittedImageRect(in containerSize: CGSize, imageSize: CGSize) -> CGRect {
@@ -2652,7 +2675,7 @@ struct EditWorkspaceView: View {
                 if includeCrop, cameraRaw.crop?.hasCrop == true {
                     browserViewModel.images[index].hasCropEdits = true
                 }
-                browserViewModel.thumbnailService.invalidateThumbnail(for: url)
+                browserViewModel.thumbnailService.invalidateEditedThumbnail(for: url)
             }
         }
 

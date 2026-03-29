@@ -103,7 +103,7 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
         item.configure(
             with: data,
             thumbnailService: viewModel.thumbnailService,
-            renderEdits: viewModel.renderEditsInPreviews,
+            showOriginals: viewModel.showOriginalThumbnails,
             imageFile: imageFile,
             isSelected: isSelected,
             isActive: isActive
@@ -114,21 +114,21 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
     // MARK: - Observation
 
     private func startObservation() {
-        // 1. Data loop — watch visibleImages and renderEditsInPreviews
+        // 1. Data loop — watch visibleImages and showOriginalThumbnails
         observationTasks.append(Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
                 let (images, _) = await withCheckedContinuation { continuation in
                     withObservationTracking {
                         _ = self.viewModel.visibleImages
-                        _ = self.viewModel.renderEditsInPreviews
+                        _ = self.viewModel.showOriginalThumbnails
                     } onChange: {
                         Task { @MainActor [weak self] in
                             guard let self else {
                                 continuation.resume(returning: ([] as [ImageFile], false))
                                 return
                             }
-                            continuation.resume(returning: (self.viewModel.visibleImages, self.viewModel.renderEditsInPreviews))
+                            continuation.resume(returning: (self.viewModel.visibleImages, self.viewModel.showOriginalThumbnails))
                         }
                     }
                 }
@@ -297,13 +297,9 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
         for indexPath in indexPaths {
             guard indexPath.item < viewModel.visibleImages.count else { continue }
             let image = viewModel.visibleImages[indexPath.item]
-            if viewModel.thumbnailService.thumbnail(for: image.url) == nil {
+            if viewModel.thumbnailService.thumbnail(for: image.url, preferOriginal: viewModel.showOriginalThumbnails) == nil {
                 Task {
-                    _ = await viewModel.thumbnailService.loadThumbnail(
-                        for: image.url,
-                        cameraRawSettings: viewModel.renderEditsInPreviews ? image.cameraRawSettings : nil,
-                        exifOrientation: image.exifOrientation
-                    )
+                    _ = await viewModel.thumbnailService.loadThumbnail(for: image.url)
                 }
             }
         }

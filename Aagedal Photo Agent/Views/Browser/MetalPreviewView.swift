@@ -36,7 +36,7 @@ struct MetalPreviewView: NSViewRepresentable {
         mtkView.isPaused = true
         mtkView.framebufferOnly = false
         mtkView.colorPixelFormat = .rgba16Float
-        mtkView.clearColor = MTLClearColorMake(0, 0, 0, 0)
+        mtkView.clearColor = MTLClearColorMake(0.0197, 0.0197, 0.0197, 1)
         if let metalLayer = mtkView.layer as? CAMetalLayer {
             metalLayer.colorspace = Coordinator.colorSpace
             // Configure EDR eagerly so the first draw can show HDR content.

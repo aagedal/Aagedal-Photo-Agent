@@ -953,6 +953,9 @@ struct ContentView: View {
                         scopeViewModel.targetGamut = newValue
                     }
                 }
+                .onChange(of: settingsViewModel.showOriginalThumbnails) { _, newValue in
+                    browserViewModel.showOriginalThumbnails = newValue
+                }
                 .onReceive(NotificationCenter.default.publisher(for: .toggleGamutClipping)) { _ in
                     scopeViewModel.showClippedGamut.toggle()
                 }

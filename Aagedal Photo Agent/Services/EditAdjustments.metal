@@ -103,9 +103,10 @@ kernel void editAdjustments(
     float2 drawableNorm = float2(gid) / params.drawableSize;
     float2 uv = params.viewportOrigin + drawableNorm * params.viewportSize;
 
-    // Letterbox: black for pixels outside source bounds
+    // Letterbox: dark gray for pixels outside source bounds
+    // 0.0197 linear ≈ sRGB 0.15, matching SwiftUI previewBackground
     if (uv.x < 0.0 || uv.x >= 1.0 || uv.y < 0.0 || uv.y >= 1.0) {
-        destination.write(half4(0, 0, 0, 1), gid);
+        destination.write(half4(0.0197, 0.0197, 0.0197, 1), gid);
         return;
     }
 

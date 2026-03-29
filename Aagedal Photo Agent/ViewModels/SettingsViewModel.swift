@@ -228,17 +228,6 @@ enum QuickListType: String, CaseIterable {
     }
 }
 
-enum PreviewMode: String, CaseIterable {
-    case performance
-    case editing
-
-    var displayName: String {
-        switch self {
-        case .performance: return "Performance"
-        case .editing: return "Editing"
-        }
-    }
-}
 
 @Observable
 final class SettingsViewModel {
@@ -253,8 +242,8 @@ final class SettingsViewModel {
         }
     }
 
-    var previewMode: PreviewMode {
-        didSet { UserDefaults.standard.set(previewMode.rawValue, forKey: UserDefaultsKeys.previewMode) }
+    var showOriginalThumbnails: Bool {
+        didSet { UserDefaults.standard.set(showOriginalThumbnails, forKey: UserDefaultsKeys.showOriginalThumbnails) }
     }
 
     var exifToolSource: ExifToolSource {
@@ -736,8 +725,7 @@ final class SettingsViewModel {
         self.rawRenderAsHDR = UserDefaults.standard.bool(forKey: UserDefaultsKeys.rawRenderAsHDR)
         self.showAllFiles = UserDefaults.standard.bool(forKey: UserDefaultsKeys.showAllFiles)
 
-        let storedPreviewMode = UserDefaults.standard.string(forKey: UserDefaultsKeys.previewMode) ?? PreviewMode.performance.rawValue
-        self.previewMode = PreviewMode(rawValue: storedPreviewMode) ?? .performance
+        self.showOriginalThumbnails = UserDefaults.standard.bool(forKey: UserDefaultsKeys.showOriginalThumbnails)
 
         let sourceRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.exifToolSource) ?? "bundled"
         self.exifToolSource = ExifToolSource(rawValue: sourceRaw) ?? .bundled

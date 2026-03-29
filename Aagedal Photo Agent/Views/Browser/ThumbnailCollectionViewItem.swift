@@ -25,7 +25,7 @@ final class ThumbnailCollectionViewItem: NSCollectionViewItem {
     func configure(
         with data: ThumbnailCellData,
         thumbnailService: ThumbnailService,
-        renderEdits: Bool,
+        showOriginals: Bool,
         imageFile: ImageFile,
         isSelected: Bool,
         isActive: Bool
@@ -34,24 +34,18 @@ final class ThumbnailCollectionViewItem: NSCollectionViewItem {
         thumbnailView.configure(with: data)
         thumbnailView.updateSelection(isSelected: isSelected, isActive: isActive)
 
-        // Synchronous cache check
-        if let cached = thumbnailService.thumbnail(for: data.url) {
+        // Synchronous cache check — prefer edited unless showOriginals
+        if let cached = thumbnailService.thumbnail(for: data.url, preferOriginal: showOriginals) {
             thumbnailView.setThumbnailNSImage(cached)
             return
         }
 
-        // Async load
+        // Async load — always loads original (edited thumbnails are rendered separately)
         thumbnailLoadTask?.cancel()
         let url = data.url
-        let settings = renderEdits ? imageFile.cameraRawSettings : nil
-        let orientation = imageFile.exifOrientation
 
         thumbnailLoadTask = Task { [weak self] in
-            let image = await thumbnailService.loadThumbnail(
-                for: url,
-                cameraRawSettings: settings,
-                exifOrientation: orientation
-            )
+            let image = await thumbnailService.loadThumbnail(for: url)
             guard !Task.isCancelled,
                   let self,
                   self.currentURL == url else { return }

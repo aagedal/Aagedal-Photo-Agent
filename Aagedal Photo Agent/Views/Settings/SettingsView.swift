@@ -163,16 +163,8 @@ struct SettingsView: View {
             }
 
             Section("Preview") {
-                Picker("Mode", selection: $settingsViewModel.previewMode) {
-                    ForEach(PreviewMode.allCases, id: \.self) { mode in
-                        Text(mode.displayName).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-
-                Text(settingsViewModel.previewMode == .performance
-                    ? "Thumbnails and full screen show the original image. Faster browsing and selection."
-                    : "Thumbnails and full screen show develop edits (crop, tone). Slower but accurate preview.")
+                Toggle("Always show original thumbnails", isOn: $settingsViewModel.showOriginalThumbnails)
+                Text("When enabled, browser thumbnails always show the original image without develop edits. Edited thumbnails are still rendered in the background for quick toggling.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 

@@ -104,14 +104,9 @@ final class BrowserViewModel {
         }
     }
 
-    var renderEditsInPreviews: Bool {
+    var showOriginalThumbnails: Bool = false {
         didSet {
-            UserDefaults.standard.set(renderEditsInPreviews ? "editing" : "performance", forKey: UserDefaultsKeys.previewMode)
-            thumbnailService.clearCache()
-            thumbnailService.startBackgroundGeneration(for: visibleImages)
-            retinaPreCacheTask?.cancel()
-            fullScreenImageCache.clearAll()
-            preCacheSelectedRetinaImage()
+            UserDefaults.standard.set(showOriginalThumbnails, forKey: UserDefaultsKeys.showOriginalThumbnails)
         }
     }
 
@@ -162,8 +157,7 @@ final class BrowserViewModel {
         if storedScale >= 0.5 && storedScale <= 2.0 {
             thumbnailScale = storedScale
         }
-        let previewMode = UserDefaults.standard.string(forKey: UserDefaultsKeys.previewMode) ?? "performance"
-        self.renderEditsInPreviews = previewMode == "editing"
+        self.showOriginalThumbnails = UserDefaults.standard.bool(forKey: UserDefaultsKeys.showOriginalThumbnails)
         self.showAllFiles = UserDefaults.standard.bool(forKey: UserDefaultsKeys.showAllFiles)
     }
 
@@ -295,7 +289,7 @@ final class BrowserViewModel {
         let screenLogicalPx = max(NSScreen.main?.frame.width ?? 3840,
                                    NSScreen.main?.frame.height ?? 2160)
         let screenMaxPx = screenLogicalPx * screenScale
-        let cameraRaw = renderEditsInPreviews ? imageFile.cameraRawSettings : nil
+        let cameraRaw = showOriginalThumbnails ? nil : imageFile.cameraRawSettings
         let orientation = imageFile.exifOrientation
 
         retinaPreCacheTask = Task.detached(priority: .utility) { [weak self] in
