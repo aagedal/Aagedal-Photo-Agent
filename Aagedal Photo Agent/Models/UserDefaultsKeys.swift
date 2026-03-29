@@ -76,6 +76,9 @@ nonisolated enum UserDefaultsKeys {
     static let c2paCertificateExpiry = "c2paCertificateExpiry"
     static let c2paDefaultAuthor = "c2paDefaultAuthor"
 
+    // MARK: - Variable Processing
+    static let addJobIdToKeywords = "addJobIdToKeywords"
+
     // MARK: - Quick List Bookmarks
     static let keywordsListBookmark = "keywordsListBookmark"
     static let personShownListBookmark = "personShownListBookmark"

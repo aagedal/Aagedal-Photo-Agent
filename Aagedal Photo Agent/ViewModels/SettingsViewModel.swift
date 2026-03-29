@@ -302,6 +302,9 @@ final class SettingsViewModel {
         didSet { UserDefaults.standard.set(askOnMultipleMetadataSources, forKey: UserDefaultsKeys.metadataAskOnMultipleSources) }
     }
 
+    var addJobIdToKeywords: Bool {
+        didSet { UserDefaults.standard.set(addJobIdToKeywords, forKey: UserDefaultsKeys.addJobIdToKeywords) }
+    }
 
     var multiSelectKeywordsMode: MultiSelectFieldMode {
         didSet { UserDefaults.standard.set(multiSelectKeywordsMode.rawValue, forKey: UserDefaultsKeys.multiSelectKeywordsMode) }
@@ -768,6 +771,8 @@ final class SettingsViewModel {
 
         let askOnMultipleSourcesStored = UserDefaults.standard.object(forKey: UserDefaultsKeys.metadataAskOnMultipleSources) as? Bool
         self.askOnMultipleMetadataSources = askOnMultipleSourcesStored ?? false
+
+        self.addJobIdToKeywords = UserDefaults.standard.bool(forKey: UserDefaultsKeys.addJobIdToKeywords)
 
         let keywordsModeRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.multiSelectKeywordsMode) ?? MultiSelectFieldMode.add.rawValue
         self.multiSelectKeywordsMode = MultiSelectFieldMode(rawValue: keywordsModeRaw) ?? .add

@@ -741,6 +741,17 @@ struct MetadataPanel: View {
             onInsertVariable: {
                 openVariableReference(for: .jobId)
             },
+            trailingLabelContent: AnyView(
+                Button {
+                    settingsViewModel.addJobIdToKeywords.toggle()
+                } label: {
+                    Image(systemName: settingsViewModel.addJobIdToKeywords ? "tag.fill" : "tag")
+                        .font(.caption)
+                        .foregroundStyle(settingsViewModel.addJobIdToKeywords ? Color.accentColor : Color.secondary)
+                }
+                .buttonStyle(.plain)
+                .help(settingsViewModel.addJobIdToKeywords ? "Job ID will be added to keywords during variable processing (click to disable)" : "Add Job ID to keywords during variable processing")
+            ),
             focusKey: "jobId",
             focusedField: $focusedField
         )
@@ -1527,6 +1538,7 @@ struct EditableTextField: View {
     var showsDifference: Bool = false
     var hasMultipleValues: Bool = false
     var onInsertVariable: (() -> Void)? = nil
+    var trailingLabelContent: AnyView? = nil
     var onAddCurrentToQuickList: (() -> Void)? = nil
     var presetList: [String] = []
     var onChooseListFile: (() -> Void)? = nil
@@ -1556,6 +1568,9 @@ struct EditableTextField: View {
                     }
                     .buttonStyle(.plain)
                     .help("Variable Reference")
+                }
+                if let trailingLabelContent {
+                    trailingLabelContent
                 }
                 if !presetList.isEmpty || onChooseListFile != nil {
                     Menu {

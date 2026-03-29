@@ -1482,6 +1482,13 @@ final class MetadataViewModel {
         editingMetadata.country = resolveIfPresent(editingMetadata.country, interpolator: interpolator, filename: filename, ref: snapshot)
         editingMetadata.event = resolveIfPresent(editingMetadata.event, interpolator: interpolator, filename: filename, ref: snapshot)
 
+        // Add resolved Job ID to keywords if enabled (after all variables are resolved)
+        if UserDefaults.standard.bool(forKey: UserDefaultsKeys.addJobIdToKeywords),
+           let jobId = editingMetadata.jobId, !jobId.isEmpty,
+           !editingMetadata.keywords.contains(jobId) {
+            editingMetadata.keywords.append(jobId)
+        }
+
         hasChanges = true
     }
 
@@ -1740,6 +1747,14 @@ final class MetadataViewModel {
                 resolvedMeta.city = resolveIfChanged(meta.city, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
                 resolvedMeta.country = resolveIfChanged(meta.country, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
                 resolvedMeta.event = resolveIfChanged(meta.event, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+
+                // Add resolved Job ID to keywords if enabled (after all variables are resolved)
+                if UserDefaults.standard.bool(forKey: UserDefaultsKeys.addJobIdToKeywords),
+                   let jobId = resolvedMeta.jobId, !jobId.isEmpty,
+                   !resolvedMeta.keywords.contains(jobId) {
+                    resolvedMeta.keywords.append(jobId)
+                    changed = true
+                }
 
                 if changed {
                     let result = try await writeResolvedVariables(
