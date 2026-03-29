@@ -209,6 +209,7 @@ final class FullScreenImageCache: @unchecked Sendable {
                         if isRAW {
                             // Use CIRAWFilter for flat/neutral decode — get as-shot WB for correct rendering
                             if let rawResult = Self.loadRAWImage(from: url, draftMode: false) {
+                                guard !Task.isCancelled else { return }
                                 settings?.asShotNeutralTemperature = Double(rawResult.neutralTemperature)
                                 settings?.asShotNeutralTint = Double(rawResult.neutralTint)
                                 ciImage = Self.downsample(rawResult.image, maxPixelSize: screenMaxPx)
@@ -217,9 +218,11 @@ final class FullScreenImageCache: @unchecked Sendable {
                             }
                         } else {
                             ciImage = Self.loadHDRPreview(from: url, maxPixelSize: screenMaxPx)
+                            guard !Task.isCancelled else { return }
                         }
                         if let ciImage {
                             let processed = settings.map { CameraRawApproximation.applyWithCrop(to: ciImage, settings: $0, exifOrientation: orientation) } ?? ciImage
+                            guard !Task.isCancelled else { return }
                             image = CameraRawApproximation.ciContext.createCGImage(
                                 processed, from: processed.extent,
                                 format: .RGBAh,
@@ -227,12 +230,14 @@ final class FullScreenImageCache: @unchecked Sendable {
                             )
                         }
                     }
+                    guard !Task.isCancelled else { return }
                     if image == nil {
                         // SDR fallback (or no edits active)
                         guard var loaded = Self.loadDownsampled(from: url, maxPixelSize: screenMaxPx) else {
                             cacheLogger.info("Prefetch failed: \(filename)")
                             return
                         }
+                        guard !Task.isCancelled else { return }
                         if let settings {
                             loaded = Self.applyCameraRaw(to: loaded, settings: settings, exifOrientation: orientation)
                         }
