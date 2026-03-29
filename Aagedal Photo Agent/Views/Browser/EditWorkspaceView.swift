@@ -1236,6 +1236,7 @@ struct EditWorkspaceView: View {
                     sourceCIImage = thumbnail?.tiffRepresentation.flatMap { CIImage(data: $0) }
                 }
 
+                syncViewportToMetal()
                 renderPreview()
                 isLoadingPreview = false
                 isDecodingFullResolution = true

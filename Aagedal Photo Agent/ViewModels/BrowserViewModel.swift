@@ -401,14 +401,26 @@ final class BrowserViewModel {
         loadFolderTask = Task {
             do {
                 // Phase 1: Scan folder and show grid immediately
-                var files = try fileSystemService.scanFolder(at: url, includeAllFiles: showAllFiles)
-                guard !Task.isCancelled, self.currentFolderURL == url else { return }
-                // Phase 1.5: Eagerly read EXIF orientation (metadata-only, no pixel decode)
-                await self.readOrientationsEagerly(for: &files)
+                let files = try fileSystemService.scanFolder(at: url, includeAllFiles: showAllFiles)
                 guard !Task.isCancelled, self.currentFolderURL == url else { return }
                 self.images = files
                 self.isLoading = false
                 self.thumbnailService.startBackgroundGeneration(for: self.visibleImages)
+
+                // Phase 1.5: Read EXIF orientations in background (deferred).
+                // Thumbnails don't need this (QL/CGImageSource apply transforms internally).
+                // Phase 5 (ExifTool) also sets it; this provides it sooner for full-screen entry.
+                var orientedFiles = files
+                await self.readOrientationsEagerly(for: &orientedFiles)
+                guard !Task.isCancelled, self.currentFolderURL == url else { return }
+                let nonDefault = orientedFiles.enumerated().filter { $0.element.exifOrientation != 1 }
+                if !nonDefault.isEmpty {
+                    self.suppressImagesCascade = true
+                    for (index, file) in nonDefault {
+                        self.images[index].exifOrientation = file.exifOrientation
+                    }
+                    self.suppressImagesCascade = false
+                }
 
                 // Phase 2: Discover subfolders (non-blocking, after grid is visible)
                 let discoveredSubfolders = (try? fileSystemService.listSubfolders(at: url)) ?? []
