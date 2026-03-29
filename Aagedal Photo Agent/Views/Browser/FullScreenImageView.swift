@@ -565,9 +565,10 @@ struct FullScreenImageView: View {
         .onChange(of: renderEdits) {
             imageCache.clearAll()
             imageCache.cancelAllPrefetch()
-            // Keep the current image visible as a placeholder while the
-            // new version loads — avoids a black flash. The .task will
-            // replace it once Phase 0.5 or Phase 2 completes.
+            // Show loading overlay immediately so the user has feedback
+            // while the new version loads. The old image stays visible as
+            // a placeholder underneath — the .task will replace it.
+            isLoading = true
         }
         .onChange(of: currentImageFile?.cameraRawSettings) {
             // Invalidate cached image when edits change (e.g. mask adjustments
@@ -931,7 +932,6 @@ struct FullScreenImageView: View {
         if let preview, currentImageFile?.url == url {
             imageLogger.info("\(filename): Phase 0.5 in \(String(format: "%.1f", previewElapsed * 1000))ms (\(preview.width)x\(preview.height))")
             currentImage = makeLoadedImage(from: preview)
-            isLoading = false
             imageCache.storeDisplayPreview(preview, for: url)
         }
 
