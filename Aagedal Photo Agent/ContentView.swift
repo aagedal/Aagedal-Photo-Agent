@@ -457,6 +457,11 @@ struct ContentView: View {
             browserViewModel.selectedImageIDs = [firstVisible.url]
             browserViewModel.lastClickedImageURL = firstVisible.url
         }
+        // Don't open edit mode for non-image files (visible when "Show all files" is on)
+        guard let selectedURL = browserViewModel.lastClickedImageURL ?? browserViewModel.selectedImageIDs.first,
+              SupportedImageFormats.isSupported(url: selectedURL) else {
+            return
+        }
         mainViewMode = .editing
     }
 
