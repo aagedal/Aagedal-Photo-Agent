@@ -3,7 +3,7 @@ import CoreImage
 import os
 import SwiftUI
 
-nonisolated(unsafe) private let editLog = Logger(
+nonisolated private let editLog = Logger(
     subsystem: "com.aagedal.photo-agent", category: "EditWorkspace"
 )
 

@@ -3,7 +3,7 @@ import MetalKit
 import os
 import SwiftUI
 
-nonisolated(unsafe) private let metalPreviewLog = Logger(
+nonisolated private let metalPreviewLog = Logger(
     subsystem: "com.aagedal.photo-agent", category: "MetalPreview"
 )
 
@@ -107,10 +107,10 @@ struct MetalPreviewView: NSViewRepresentable {
     }
 
     class Coordinator: NSObject, MTKViewDelegate {
-        nonisolated(unsafe) static let device = MTLCreateSystemDefaultDevice()!
-        nonisolated(unsafe) static let commandQueue = device.makeCommandQueue()!
-        nonisolated(unsafe) static let colorSpace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
-        nonisolated(unsafe) static let ciContext = CIContext(mtlDevice: device, options: [
+        nonisolated static let device = MTLCreateSystemDefaultDevice()!
+        nonisolated static let commandQueue = device.makeCommandQueue()!
+        nonisolated static let colorSpace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
+        nonisolated static let ciContext = CIContext(mtlDevice: device, options: [
             .workingFormat: CIFormat.RGBAh,
             .workingColorSpace: colorSpace,
         ])

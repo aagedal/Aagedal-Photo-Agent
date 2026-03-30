@@ -3,7 +3,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 import os
 
-nonisolated(unsafe) private let metadataPanelLog = Logger(subsystem: "com.aagedal.photo-agent", category: "MetadataPanel")
+nonisolated private let metadataPanelLog = Logger(subsystem: "com.aagedal.photo-agent", category: "MetadataPanel")
 
 struct MetadataPanel: View {
     @Bindable var viewModel: MetadataViewModel
@@ -280,31 +280,40 @@ struct MetadataPanel: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 VStack(spacing: 0) {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 10) {
-                            if viewModel.isBatchEdit {
-                                BatchEditBanner(
-                                    count: viewModel.selectedCount,
-                                    isLoading: viewModel.isLoadingBatchMetadata
-                                )
-                            }
+                    ScrollViewReader { scrollProxy in
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 10) {
+                                if viewModel.isBatchEdit {
+                                    BatchEditBanner(
+                                        count: viewModel.selectedCount,
+                                        isLoading: viewModel.isLoadingBatchMetadata
+                                    )
+                                }
 
-                            ratingAndLabelSection
-                            actionButtons
-                            Divider()
-                            priorityFieldsSection
-                            Divider()
-                            classificationSection
-                            Divider()
-                            additionalFieldsSection
+                                ratingAndLabelSection
+                                actionButtons
+                                Divider()
+                                priorityFieldsSection
+                                Divider()
+                                classificationSection
+                                Divider()
+                                additionalFieldsSection
+                            }
+                            .padding()
                         }
-                        .padding()
-                    }
-                    .overlay(alignment: .bottomTrailing) {
-                        if viewModel.isLoading {
-                            ProgressView()
-                                .controlSize(.small)
-                                .padding(8)
+                        .overlay(alignment: .bottomTrailing) {
+                            if viewModel.isLoading {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .padding(8)
+                            }
+                        }
+                        .onChange(of: focusedField) { _, newValue in
+                            if let field = newValue {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    scrollProxy.scrollTo(field, anchor: .center)
+                                }
+                            }
                         }
                     }
 
@@ -329,17 +338,6 @@ struct MetadataPanel: View {
             viewModel.applyReferenceSource(next)
             return .handled
         }
-        .onKeyPress("v") {
-            let modifiers = NSEvent.modifierFlags
-            guard modifiers.contains(.option),
-                  !modifiers.contains(.command),
-                  !modifiers.contains(.shift),
-                  !modifiers.contains(.control) else {
-                return .ignored
-            }
-            openVariableReferenceFromShortcut()
-            return .handled
-        }
         .onKeyPress(.escape) {
             guard focusedField != nil else { return .ignored }
             focusedField = nil
@@ -349,6 +347,9 @@ struct MetadataPanel: View {
         .onReceive(NotificationCenter.default.publisher(for: .showRawMetadata)) { _ in
             guard !viewModel.isBatchEdit, viewModel.selectedCount == 1 else { return }
             showingRawMetadata = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .showVariableReference)) { _ in
+            openVariableReferenceFromShortcut()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSTextView.didChangeSelectionNotification)) { notification in
             guard !isShowingVariableReference,
@@ -432,6 +433,7 @@ struct MetadataPanel: View {
         }
         .onChange(of: focusedField) { oldValue, newValue in
             guard oldValue != nil, oldValue != newValue else { return }
+            flushBufferedFields()
             commitDebounceTask?.cancel()
             commitDebounceTask = Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(200))
@@ -571,6 +573,7 @@ struct MetadataPanel: View {
             focusKey: "title",
             focusedField: $focusedField
         )
+        .id("title")
 
         VStack(alignment: .leading, spacing: 2) {
             HStack {
@@ -612,6 +615,7 @@ struct MetadataPanel: View {
                 onCommit: { commitEdits() }
             )
         }
+        .id("description")
         .sheet(isPresented: $isShowingVariableReference) {
             VariableReferenceView(
                 isPresented: $isShowingVariableReference,
@@ -660,6 +664,7 @@ struct MetadataPanel: View {
                 }
             }
         }
+        .id("extendedDescription")
 
         KeywordsEditorWithDiff(
             label: "Keywords",
@@ -685,6 +690,7 @@ struct MetadataPanel: View {
             focusKey: "keywords",
             focusedField: $focusedField
         )
+        .id("keywords")
 
         KeywordsEditorWithDiff(
             label: "Person Shown",
@@ -712,6 +718,7 @@ struct MetadataPanel: View {
             focusKey: "personShown",
             focusedField: $focusedField
         )
+        .id("personShown")
 
         EditableTextField(
             label: "Copyright",
@@ -737,6 +744,7 @@ struct MetadataPanel: View {
             focusKey: "copyright",
             focusedField: $focusedField
         )
+        .id("copyright")
 
         EditableTextField(
             label: "Job ID",
@@ -765,6 +773,7 @@ struct MetadataPanel: View {
             focusKey: "jobId",
             focusedField: $focusedField
         )
+        .id("jobId")
     }
 
     // MARK: - Classification
@@ -1137,6 +1146,7 @@ struct MetadataPanel: View {
             focusKey: "creator",
             focusedField: $focusedField
         )
+        .id("creator")
         EditableTextField(
             label: "Credit",
             text: Binding(
@@ -1161,6 +1171,7 @@ struct MetadataPanel: View {
             focusKey: "credit",
             focusedField: $focusedField
         )
+        .id("credit")
         EditableTextField(
             label: "City",
             text: Binding(
@@ -1185,6 +1196,7 @@ struct MetadataPanel: View {
             focusKey: "city",
             focusedField: $focusedField
         )
+        .id("city")
         EditableTextField(
             label: "Country",
             text: Binding(
@@ -1209,6 +1221,7 @@ struct MetadataPanel: View {
             focusKey: "country",
             focusedField: $focusedField
         )
+        .id("country")
         EditableTextField(
             label: "Event",
             text: Binding(
@@ -1233,6 +1246,7 @@ struct MetadataPanel: View {
             focusKey: "event",
             focusedField: $focusedField
         )
+        .id("event")
     }
 
     private var referenceSourcePicker: some View {

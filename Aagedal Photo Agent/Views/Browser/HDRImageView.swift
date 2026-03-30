@@ -30,13 +30,7 @@ struct HDRImageView: NSViewRepresentable {
         layer.minificationFilter = filter
         // Opaque when HDR — non-opaque layer compositing can clip EDR values to SDR.
         layer.isOpaque = isHDR
-        // Always set wantsExtendedDynamicRangeContent — this is the fundamental EDR
-        // enabler. preferredDynamicRange (macOS 26+) controls layer compositing but
-        // doesn't replace this property. Matches MetalPreviewView's approach.
-        layer.wantsExtendedDynamicRangeContent = isHDR
-        if #available(macOS 26.0, *) {
-            layer.preferredDynamicRange = isHDR ? .high : .standard
-        }
+        layer.preferredDynamicRange = isHDR ? .high : .standard
         // Walk ancestor layers to ensure SwiftUI intermediate hosting layers
         // don't clip extended-range pixel values to [0, 1] during compositing.
         Self.enableEDRAncestors(for: view, isHDR: isHDR)
@@ -49,13 +43,10 @@ struct HDRImageView: NSViewRepresentable {
         while let ancestor = current {
             ancestor.wantsLayer = true
             if let layer = ancestor.layer {
-                if #available(macOS 26.0, *) {
-                    let target: CALayer.DynamicRange = isHDR ? .high : .standard
-                    if layer.preferredDynamicRange != target {
-                        layer.preferredDynamicRange = target
-                    }
+                let target: CALayer.DynamicRange = isHDR ? .high : .standard
+                if layer.preferredDynamicRange != target {
+                    layer.preferredDynamicRange = target
                 }
-                layer.wantsExtendedDynamicRangeContent = isHDR
             }
             current = ancestor.superview
         }

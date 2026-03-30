@@ -503,8 +503,8 @@ struct FullScreenImageView: View {
         .focusEffectDisabled()
         .onAppear {
             isFocused = true
-            // Initialize render edits from UserDefaults
-            renderEdits = !UserDefaults.standard.bool(forKey: UserDefaultsKeys.showOriginalThumbnails)
+            // Full screen always starts with originals; press E to toggle edits
+            renderEdits = false
             // Initialize face rectangles from context (visible by default when opened from face view)
             showFaceRectangles = viewModel.fullScreenFaceContext?.highlightedFaceID != nil
             // Register actions with the controller

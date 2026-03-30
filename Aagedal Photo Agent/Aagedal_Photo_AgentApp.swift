@@ -124,6 +124,11 @@ struct Aagedal_Photo_AgentApp: App {
 
                 Divider()
 
+                Button("Variable Reference") {
+                    NotificationCenter.default.post(name: .showVariableReference, object: nil)
+                }
+                .keyboardShortcut("v", modifiers: .option)
+
                 Button("Show Raw Metadata") {
                     NotificationCenter.default.post(name: .showRawMetadata, object: nil)
                 }
@@ -301,4 +306,5 @@ extension Notification.Name {
     static let toggleGamutClipping = Notification.Name("toggleGamutClipping")
     static let signSelectedC2PA = Notification.Name("signSelectedC2PA")
     static let toggleHDR = Notification.Name("toggleHDR")
+    static let showVariableReference = Notification.Name("showVariableReference")
 }

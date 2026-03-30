@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 import os.log
 
-nonisolated(unsafe) private let knownPeopleSidebarLog = Logger(
+nonisolated private let knownPeopleSidebarLog = Logger(
     subsystem: Bundle.main.bundleIdentifier ?? "AagedalPhotoAgent",
     category: "PersonEditSidebar"
 )

@@ -5,7 +5,7 @@ import os
 import QuartzCore
 import simd
 
-nonisolated(unsafe) private let metalPipelineLog = Logger(
+nonisolated private let metalPipelineLog = Logger(
     subsystem: "com.aagedal.photo-agent", category: "MetalEditPipeline"
 )
 
@@ -111,13 +111,13 @@ final class MetalEditPipeline: @unchecked Sendable {
     nonisolated(unsafe) var asShotTint: Double = 0
     nonisolated(unsafe) private var float16Buffer = [UInt16](repeating: 0, count: ToneCurveGenerator.lutSize * 4)
 
-    nonisolated(unsafe) private static let maxMasks = 8
+    nonisolated private static let maxMasks = 8
 
     // Overlay pipeline (mask overlay rendering)
     private let overlayPipelineState: MTLComputePipelineState?
     nonisolated(unsafe) private let overlayParamsBuffer: MTLBuffer?
 
-    nonisolated(unsafe) private static let colorSpace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
+    nonisolated private static let colorSpace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
 
     private let ciContext: CIContext
     /// Separate lightweight CIContext for white balance 1×1 pixel renders.

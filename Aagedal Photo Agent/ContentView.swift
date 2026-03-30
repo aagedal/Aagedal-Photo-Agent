@@ -1,5 +1,6 @@
 import AppKit
 import CoreImage
+import os.log
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -1350,7 +1351,7 @@ struct ContentView: View {
                 let isHDR = cameraRaw?.hdrEditMode == 1
                 do {
                     try await Task.detached(priority: .userInitiated) {
-                        try await EditedImageRenderer.render(from: url, cameraRaw: cameraRaw, isHDR: isHDR, outputFolder: outputFolder)
+                        _ = try await EditedImageRenderer.render(from: url, cameraRaw: cameraRaw, isHDR: isHDR, outputFolder: outputFolder)
                     }.value
                     successCount += 1
                 } catch {
@@ -1378,6 +1379,7 @@ struct ContentViewModifiers: ViewModifier {
     @Binding var technicalMetadata: TechnicalMetadata?
     @State private var selectionLoadTask: Task<Void, Never>?
     private let selectionDebounceNanoseconds: UInt64 = 200_000_000
+    private let perfLog = Logger(subsystem: "com.aagedal.photo-agent", category: "MetadataPerf")
 
     func body(content: Content) -> some View {
         let base = content
@@ -1407,8 +1409,13 @@ struct ContentViewModifiers: ViewModifier {
                 selectionLoadTask?.cancel()
                 let selected = browserViewModel.selectedImages
                 selectionLoadTask = Task {
+                    let selectionStart = ContinuousClock.now
+                    perfLog.info("[Selection] onChange — \(selected.count) image(s)")
                     try? await Task.sleep(nanoseconds: selectionDebounceNanoseconds)
                     guard !Task.isCancelled else { return }
+                    let debounceMs = Int(selectionStart.duration(to: .now).components.seconds * 1000)
+                        + Int(selectionStart.duration(to: .now).components.attoseconds / 1_000_000_000_000_000)
+                    perfLog.info("[Selection] debounce done — \(debounceMs)ms, dispatching loadMetadata")
                     metadataViewModel.loadMetadata(for: selected, folderURL: browserViewModel.currentFolderURL)
                     loadTechnicalMetadata()
                 }
@@ -1448,6 +1455,7 @@ struct ContentViewModifiers: ViewModifier {
                 browserViewModel.rotateCounterclockwise()
             }
             .onReceive(NotificationCenter.default.publisher(for: .faceMetadataDidChange)) { _ in
+                guard !metadataViewModel.hasChanges else { return }
                 let selected = browserViewModel.selectedImages
                 metadataViewModel.loadMetadata(for: selected, folderURL: browserViewModel.currentFolderURL)
                 browserViewModel.refreshPendingStatus()
@@ -1531,8 +1539,12 @@ struct AutoRefreshModifier: ViewModifier {
 
                                 // If any currently selected file was modified externally,
                                 // reload full metadata so the browser reflects the changes.
+                                // Skip if the user has pending edits or a save is in flight
+                                // to avoid overwriting unsaved changes.
                                 let selectedURLs = Set(metadataViewModel.selectedURLs)
                                 if !selectedURLs.isEmpty,
+                                   !metadataViewModel.hasChanges,
+                                   !metadataViewModel.isSaving,
                                    !browserViewModel.lastRefreshModifiedURLs.isDisjoint(with: selectedURLs) {
                                     metadataViewModel.loadMetadata(
                                         for: browserViewModel.selectedImages,

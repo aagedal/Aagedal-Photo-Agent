@@ -2,7 +2,7 @@ import Metal
 import os
 import QuartzCore
 
-nonisolated(unsafe) private let scopePipelineLog = Logger(
+nonisolated private let scopePipelineLog = Logger(
     subsystem: "com.aagedal.photo-agent", category: "MetalScopePipeline"
 )
 

@@ -2,7 +2,7 @@ import AppKit
 import os
 import SwiftUI
 
-nonisolated(unsafe) private let sliderLog = Logger(
+nonisolated private let sliderLog = Logger(
     subsystem: "com.aagedal.photo-agent", category: "EditSlider"
 )
 

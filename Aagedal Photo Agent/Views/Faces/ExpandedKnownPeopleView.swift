@@ -3,7 +3,7 @@ import AppKit
 import UniformTypeIdentifiers
 import os.log
 
-nonisolated(unsafe) private let knownPeopleViewLog = Logger(
+nonisolated private let knownPeopleViewLog = Logger(
     subsystem: Bundle.main.bundleIdentifier ?? "AagedalPhotoAgent",
     category: "ExpandedKnownPeopleView"
 )

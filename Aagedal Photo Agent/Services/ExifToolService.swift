@@ -3,7 +3,7 @@ import Foundation
 import os.log
 
 private let exifToolLog = Logger(subsystem: Bundle.main.bundleIdentifier ?? "AagedalPhotoAgent", category: "ExifToolService")
-nonisolated(unsafe) private let perfLog = Logger(subsystem: Bundle.main.bundleIdentifier ?? "AagedalPhotoAgent", category: "MetadataPerf")
+nonisolated private let perfLog = Logger(subsystem: Bundle.main.bundleIdentifier ?? "AagedalPhotoAgent", category: "MetadataPerf")
 
 enum ExifToolReadKey {
     static let sourceFile = "SourceFile"

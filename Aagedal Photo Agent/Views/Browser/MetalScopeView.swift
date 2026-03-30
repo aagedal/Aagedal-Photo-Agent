@@ -2,7 +2,7 @@ import MetalKit
 import os
 import SwiftUI
 
-nonisolated(unsafe) private let metalScopeLog = Logger(
+nonisolated private let metalScopeLog = Logger(
     subsystem: "com.aagedal.photo-agent", category: "MetalScope"
 )
 

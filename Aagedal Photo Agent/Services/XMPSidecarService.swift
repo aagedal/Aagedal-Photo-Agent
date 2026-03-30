@@ -1,7 +1,7 @@
 import Foundation
 import os
 
-nonisolated(unsafe) private let xmpLog = Logger(subsystem: "com.aagedal.photo-agent", category: "XMPSidecarService")
+nonisolated private let xmpLog = Logger(subsystem: "com.aagedal.photo-agent", category: "XMPSidecarService")
 
 struct XMPSidecarService: Sendable {
     private enum Namespace {

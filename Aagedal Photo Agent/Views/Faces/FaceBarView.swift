@@ -355,7 +355,7 @@ struct FaceBarView: View {
     }
 
     private func checkKnownPeople() {
-        guard let faceData = viewModel.faceData else { return }
+        guard viewModel.faceData != nil else { return }
 
         isCheckingKnownPeople = true
         knownPeopleMatchCount = 0
