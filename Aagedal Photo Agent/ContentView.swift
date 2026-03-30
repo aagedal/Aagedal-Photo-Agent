@@ -237,6 +237,9 @@ struct ContentView: View {
             .onReceive(NotificationCenter.default.publisher(for: .showImport)) { _ in
                 isShowingImport = true
             }
+            .onReceive(NotificationCenter.default.publisher(for: .importStarted)) { notification in
+                handleImportStarted(notification)
+            }
             .onReceive(NotificationCenter.default.publisher(for: .importCompleted)) { notification in
                 handleImportCompleted(notification)
             }
@@ -656,12 +659,15 @@ struct ContentView: View {
         )
     }
 
-    private func handleImportCompleted(_ notification: NotificationCenter.Publisher.Output) {
-        if let folderURL = notification.object as? URL,
-           importViewModel.configuration.openFolderAfterImport {
-            isShowingImport = false
+    private func handleImportStarted(_ notification: NotificationCenter.Publisher.Output) {
+        isShowingImport = false
+        if let folderURL = notification.object as? URL {
             browserViewModel.loadFolder(url: folderURL)
         }
+    }
+
+    private func handleImportCompleted(_ notification: NotificationCenter.Publisher.Output) {
+        // Import already opened the folder on start — nothing else needed.
     }
 
     // MARK: - Sidebar
@@ -892,6 +898,23 @@ struct ContentView: View {
                 Divider()
                 VStack(alignment: .leading, spacing: 8) {
                     UpdatePillButton()
+                    if importViewModel.isImporting {
+                        VStack(alignment: .leading, spacing: 4) {
+                            if importViewModel.importPhase == .copying {
+                                Text("Importing \(importViewModel.copiedFiles) of \(importViewModel.totalFiles)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                ProgressView(value: Double(importViewModel.copiedFiles), total: Double(max(importViewModel.totalFiles, 1)))
+                            } else if importViewModel.importPhase == .applyingMetadata {
+                                Text("Writing metadata…")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                ProgressView()
+                                    .controlSize(.small)
+                            }
+                        }
+                        Divider()
+                    }
                     if isRenderingEditedFolder {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Exporting image \(renderExportCurrent) of \(renderExportTotal)")

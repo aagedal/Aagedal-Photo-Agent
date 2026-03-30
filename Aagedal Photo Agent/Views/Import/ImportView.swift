@@ -32,6 +32,7 @@ struct ImportView: View {
 
                 sourceSection
                 destinationSection
+                dateSortingSection
                 fileTypeSection
                 conflictSection
                 metadataSection
@@ -117,6 +118,65 @@ struct ImportView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    // MARK: - Date Sorting Section
+
+    @ViewBuilder
+    private var dateSortingSection: some View {
+        GroupBox("Sort by Capture Date") {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Toggle("Sort files into per-date folders", isOn: $viewModel.sortByDate)
+                    Spacer()
+                    if viewModel.isScanningDates {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else if viewModel.sortByDate && viewModel.dateGroups.isEmpty && !viewModel.sourceFiles.isEmpty {
+                        Button("Scan Dates") {
+                            viewModel.scanCaptureDates()
+                        }
+                        .controlSize(.small)
+                    }
+                }
+
+                if viewModel.sortByDate {
+                    if viewModel.dateGroups.isEmpty && !viewModel.isScanningDates {
+                        Text("Click \"Scan Dates\" to detect capture dates from source files.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach($viewModel.dateGroups) { $group in
+                            HStack(spacing: 8) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(group.dateString)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    Text("\(group.files.count) files")
+                                        .font(.caption2)
+                                        .foregroundStyle(.tertiary)
+                                }
+                                .frame(width: 100, alignment: .leading)
+
+                                TextField("Folder name", text: $group.folderName)
+                                    .textFieldStyle(.roundedBorder)
+                                    .font(.callout)
+                            }
+                        }
+
+                        Text("Each date group will be imported into a separate folder under the destination base.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .onChange(of: viewModel.sortByDate) { _, newValue in
+            if newValue && viewModel.dateGroups.isEmpty && !viewModel.sourceFiles.isEmpty {
+                viewModel.scanCaptureDates()
+            }
         }
     }
 
@@ -345,9 +405,6 @@ struct ImportView: View {
     @ViewBuilder
     private var formFooter: some View {
         HStack {
-            Toggle("Open folder after import", isOn: $viewModel.configuration.openFolderAfterImport)
-                .font(.caption)
-
             Spacer()
 
             Button("Cancel") {
@@ -360,7 +417,7 @@ struct ImportView: View {
             }
             .buttonStyle(.borderedProminent)
             .keyboardShortcut(.defaultAction)
-            .disabled(viewModel.filteredSourceFiles.isEmpty || viewModel.configuration.importTitle.trimmingCharacters(in: .whitespaces).isEmpty)
+            .disabled(viewModel.filteredSourceFiles.isEmpty || (!viewModel.sortByDate && viewModel.configuration.importTitle.trimmingCharacters(in: .whitespaces).isEmpty) || (viewModel.sortByDate && viewModel.dateGroups.isEmpty))
         }
         .padding()
     }

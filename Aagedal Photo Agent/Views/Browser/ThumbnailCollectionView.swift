@@ -357,11 +357,16 @@ final class ThumbnailCollectionView: NSCollectionView {
 
         menu.addItem(NSMenuItem.separator())
 
-        // Add to Subfolder
+        // Add to Subfolder / Move to Folder
         if viewModel.currentFolderURL != nil {
             let subfolderItem = NSMenuItem(title: "Add to Subfolder...", action: #selector(contextAddToSubfolder(_:)), keyEquivalent: "")
             subfolderItem.target = self
             menu.addItem(subfolderItem)
+
+            let moveToFolderItem = NSMenuItem(title: "Move to Folder...", action: #selector(contextMoveToFolder(_:)), keyEquivalent: "")
+            moveToFolderItem.target = self
+            menu.addItem(moveToFolderItem)
+
             menu.addItem(NSMenuItem.separator())
         }
 
@@ -497,6 +502,10 @@ final class ThumbnailCollectionView: NSCollectionView {
 
     @objc private func contextRemoveAllIPTC(_ sender: Any?) {
         NotificationCenter.default.post(name: .removeAllIPTC, object: nil)
+    }
+
+    @objc private func contextMoveToFolder(_ sender: Any?) {
+        viewModel?.promptMoveSelectedImagesToFolder()
     }
 
     @objc private func contextDelete(_ sender: Any?) {

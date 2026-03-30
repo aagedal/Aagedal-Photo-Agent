@@ -298,6 +298,9 @@ struct MetadataPanel: View {
                                 classificationSection
                                 Divider()
                                 additionalFieldsSection
+                                Divider()
+                                gpsSection
+                                    .id("gps")
                             }
                             .padding()
                         }
@@ -316,13 +319,6 @@ struct MetadataPanel: View {
                             }
                         }
                     }
-
-                    Divider()
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        gpsSection
-                    }
-                    .padding()
                 }
             }
         }
@@ -448,24 +444,36 @@ struct MetadataPanel: View {
     @ViewBuilder
     private var ratingAndLabelSection: some View {
         if let image = browserViewModel.firstSelectedImage {
-            HStack {
-                HStack(spacing: 2) {
+            HStack(spacing: 8) {
+                HStack(spacing: 1) {
                     ForEach(1...5, id: \.self) { star in
                         Image(systemName: star <= image.starRating.rawValue ? "star.fill" : "star")
-                            .font(.caption)
-                            .foregroundStyle(star <= image.starRating.rawValue ? .yellow : .secondary)
+                            .font(.system(size: 14))
+                            .frame(width: 18)
+                            .foregroundStyle(star <= image.starRating.rawValue ? .yellow : .secondary.opacity(0.5))
+                            .onTapGesture {
+                                let rating = StarRating(rawValue: star) ?? .none
+                                browserViewModel.setRating(image.starRating == rating ? .none : rating)
+                            }
+                    }
+                }
+
+                Divider()
+                    .frame(height: 14)
+
+                HStack(spacing: 4) {
+                    ForEach(ColorLabel.allCases.filter { $0 != .none }, id: \.self) { label in
+                        Circle()
+                            .fill(label.color!.opacity(image.colorLabel == label ? 1.0 : 0.35))
+                            .frame(width: 12, height: 12)
+                            .help(label.displayName)
+                            .onTapGesture {
+                                browserViewModel.setLabel(image.colorLabel == label ? .none : label)
+                            }
                     }
                 }
 
                 Spacer()
-
-                if let color = image.colorLabel.color {
-                    Circle()
-                        .fill(color)
-                        .frame(width: 12, height: 12)
-                    Text(image.colorLabel.displayName)
-                        .font(.caption)
-                }
 
                 if image.hasC2PA {
                     Label("C2PA", systemImage: "checkmark.seal.fill")

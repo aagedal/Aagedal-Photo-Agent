@@ -1852,6 +1852,79 @@ final class BrowserViewModel {
         expandedFolders.insert(folderURL)
     }
 
+    func promptMoveSelectedImagesToFolder() {
+        guard let folderURL = currentFolderURL else { return }
+        guard !selectedImageIDs.isEmpty else { return }
+
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.message = "Choose a destination folder to move \(selectedImageIDs.count) file(s)"
+        panel.prompt = "Move Here"
+
+        guard panel.runModal() == .OK, let destinationFolder = panel.url else { return }
+
+        // Don't move to the same folder
+        if destinationFolder.standardizedFileURL == folderURL.standardizedFileURL {
+            presentMoveErrorAlert(message: "Destination is the same as the current folder.")
+            return
+        }
+
+        let urlsToMove = selectedImageIDs
+        var moved: Set<URL> = []
+        var failures: [String] = []
+        let fileManager = FileManager.default
+
+        for url in urlsToMove {
+            let destinationURL = destinationFolder.appendingPathComponent(url.lastPathComponent)
+            if fileManager.fileExists(atPath: destinationURL.path) {
+                failures.append("\(url.lastPathComponent) already exists in destination.")
+                continue
+            }
+            do {
+                try fileManager.moveItem(at: url, to: destinationURL)
+
+                // Move XMP sidecar
+                let xmpSource = xmpSidecarService.sidecarURL(for: url)
+                if fileManager.fileExists(atPath: xmpSource.path) {
+                    let xmpDestination = xmpSidecarService.sidecarURL(for: destinationURL)
+                    do {
+                        try fileManager.moveItem(at: xmpSource, to: xmpDestination)
+                    } catch {
+                        failures.append("\(url.lastPathComponent) XMP sidecar: \(error.localizedDescription)")
+                    }
+                }
+
+                // Move metadata sidecar
+                do {
+                    try sidecarService.moveSidecar(for: url, from: folderURL, to: destinationFolder)
+                } catch {
+                    failures.append("\(url.lastPathComponent) metadata sidecar: \(error.localizedDescription)")
+                }
+
+                moved.insert(url)
+            } catch {
+                failures.append("\(url.lastPathComponent): \(error.localizedDescription)")
+            }
+        }
+
+        if !moved.isEmpty {
+            images.removeAll { moved.contains($0.url) }
+            manualOrder.removeAll { moved.contains($0) }
+            selectedImageIDs.subtract(moved)
+            if let last = lastClickedImageURL, moved.contains(last) {
+                lastClickedImageURL = nil
+            }
+            onImagesDeleted?(moved)
+        }
+
+        if !failures.isEmpty {
+            presentMoveErrorAlert(message: "Failed to move \(failures.count) item(s):\n" + failures.prefix(5).joined(separator: "\n"))
+        }
+    }
+
     private func presentMoveErrorAlert(message: String) {
         let alert = NSAlert()
         alert.messageText = "Move Failed"

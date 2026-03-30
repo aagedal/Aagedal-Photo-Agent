@@ -275,6 +275,7 @@ extension Notification.Name {
     static let openInInternalEditor = Notification.Name("openInInternalEditor")
     static let deleteSelected = Notification.Name("deleteSelected")
     static let showImport = Notification.Name("showImport")
+    static let importStarted = Notification.Name("importStarted")
     static let importCompleted = Notification.Name("importCompleted")
     static let selectPreviousImage = Notification.Name("selectPreviousImage")
     static let selectNextImage = Notification.Name("selectNextImage")
