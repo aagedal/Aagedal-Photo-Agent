@@ -1236,6 +1236,18 @@ struct EditWorkspaceView: View {
                     sourceCIImage = thumbnail?.tiffRepresentation.flatMap { CIImage(data: $0) }
                 }
 
+                // Upload Phase 1 preview to Metal for immediate interactive editing
+                // (mirrors non-RAW path so WB/tonal adjustments render as soon as
+                // metadata loads, even before the full RAW decode completes).
+                if let ci = sourceCIImage, let pipeline = metalPipeline {
+                    await Task.detached(priority: .medium) {
+                        pipeline.uploadSourceImage(ci)
+                    }.value
+                    guard !Task.isCancelled else {
+                        editLog.info("[\(filename)] Phase 1: cancelled during Metal upload")
+                        return
+                    }
+                }
                 syncViewportToMetal()
                 renderPreview()
                 isLoadingPreview = false
