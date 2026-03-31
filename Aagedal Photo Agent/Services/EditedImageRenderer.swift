@@ -358,8 +358,12 @@ nonisolated enum EditedImageRenderer {
         return nil
     }
 
-    /// Copy IPTC/XMP/EXIF metadata from source to destination using ExifTool.
-    /// Copies IPTC and XMP (excluding Camera Raw edit settings which are already baked in).
+    /// Copy all metadata from source to destination using ExifTool.
+    /// Copies all metadata groups (EXIF, IPTC, XMP, GPS, MakerNotes, etc.) with targeted exclusions:
+    /// - XMP-crs (Camera Raw settings already baked into pixels)
+    /// - IFD1 (thumbnail IFD is wrong for the rendered file)
+    /// - ICC_Profile (renderer sets the correct color space per export settings)
+    /// Resets Orientation to Normal (1) since the renderer already applies rotation to pixels.
     private static func copyMetadata(from source: URL, to destination: URL) async {
         guard let exiftool = exifToolPath else { return }
 
@@ -370,9 +374,11 @@ nonisolated enum EditedImageRenderer {
                     "-m",
                     "-charset", "iptc=UTF8",
                     "-TagsFromFile", source.path,
-                    "-IPTC:all",
-                    "-XMP:all",
+                    "-all:all",
                     "--XMP-crs:all",
+                    "--IFD1:all",
+                    "--ICC_Profile:all",
+                    "-Orientation#=1",
                     "-overwrite_original",
                     destination.path
                 ]
