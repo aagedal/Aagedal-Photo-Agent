@@ -48,8 +48,6 @@ struct ContentView: View {
     @State private var renderedOutputFolderURL: URL?
     @State private var scopeViewModel = ScopeViewModel()
     @State private var scopeImageTask: Task<Void, Never>?
-    @State private var isSigningC2PA = false
-    @State private var c2paSigningMessage: String?
 
     init() {
         let browser = BrowserViewModel()
@@ -281,8 +279,8 @@ struct ContentView: View {
             .onReceive(NotificationCenter.default.publisher(for: .openInInternalEditor)) { _ in
                 openEditWorkspace()
             }
-            .onReceive(NotificationCenter.default.publisher(for: .signSelectedC2PA)) { _ in
-                signSelectedImagesWithC2PA()
+            .onReceive(NotificationCenter.default.publisher(for: .renderAndSignSelected)) { _ in
+                renderAndSignSelected()
             }
             .onReceive(NotificationCenter.default.publisher(for: .writeAllPendingMetadata)) { _ in
                 let c2paPending = browserViewModel.images.filter { image in
@@ -1078,72 +1076,122 @@ struct ContentView: View {
         .frame(minWidth: 300)
     }
 
-    // MARK: - C2PA Signing
+    // MARK: - Render and Sign
 
-    private func signSelectedImagesWithC2PA() {
+    private func renderAndSignSelected() {
         guard C2PASigningService.isAvailable else {
-            c2paSigningMessage = "c2patool not found in app bundle"
+            browserViewModel.errorMessage = "c2patool not found in app bundle"
             return
         }
+        guard !isRenderingEditedFolder else { return }
 
         let certPath = settingsViewModel.c2paCertificatePath
         guard settingsViewModel.c2paHasCertificate else {
-            c2paSigningMessage = "No signing certificate configured. Import one in Settings → Signing."
+            browserViewModel.errorMessage = "No signing certificate configured. Import one in Settings → Signing."
             return
         }
 
         let selected = browserViewModel.selectedImages
         guard !selected.isEmpty else {
-            c2paSigningMessage = "No images selected"
+            browserViewModel.errorMessage = "No images selected"
             return
         }
 
         guard let privateKeyPEM = KeychainService.load(forKey: "c2pa_private_key") else {
-            c2paSigningMessage = "No private key found in Keychain for C2PA signing."
+            browserViewModel.errorMessage = "No private key found in Keychain for C2PA signing."
             return
         }
 
+        guard let folderURL = browserViewModel.currentFolderURL else { return }
+
         let author = settingsViewModel.c2paDefaultAuthor.isEmpty ? nil : settingsViewModel.c2paDefaultAuthor
-        isSigningC2PA = true
-        c2paSigningMessage = "Signing \(selected.count) image\(selected.count == 1 ? "" : "s")..."
+
+        isRenderingEditedFolder = true
+        renderExportCurrent = 0
+        renderExportTotal = selected.count
+        renderEditedFolderSuccessCount = 0
+        renderEditedFolderFailureCount = 0
+        renderedOutputFolderURL = nil
 
         Task {
-            var signed = 0
-            var errors = 0
+            let urls = selected.map(\.url)
 
-            for image in selected {
+            // Read metadata and overlay CameraRawSettings
+            var metadataByURL: [URL: IPTCMetadata]
+            do {
+                metadataByURL = try await browserViewModel.exifToolService.readBatchFullMetadata(urls: urls)
+            } catch {
+                isRenderingEditedFolder = false
+                browserViewModel.errorMessage = "Failed to read metadata: \(error.localizedDescription)"
+                return
+            }
+            overlayCameraRawSettings(onto: &metadataByURL, urls: urls)
+
+            var successCount = 0
+            var failureCount = 0
+            var createdFolders: Set<String> = []
+            var lastOutputFolder: URL?
+
+            for (index, image) in selected.enumerated() {
+                renderExportCurrent = index + 1
+                let cameraRaw = metadataByURL[image.url]?.cameraRaw
+                let isHDR = cameraRaw?.hdrEditMode == 1
+
+                // Determine output folder per format
+                let folderName = EditedImageRenderer.formatFolderName(prefix: "Signed", isHDR: isHDR)
+                let outputFolder = folderURL.appendingPathComponent(folderName, isDirectory: true)
+
+                // Create folder on first encounter
+                if !createdFolders.contains(folderName) {
+                    do {
+                        try FileManager.default.createDirectory(at: outputFolder, withIntermediateDirectories: true)
+                        createdFolders.insert(folderName)
+                        lastOutputFolder = outputFolder
+                    } catch {
+                        failureCount += 1
+                        continue
+                    }
+                }
+
                 do {
+                    // Step 1: Render the image
+                    let renderedURL = try await Task.detached(priority: .userInitiated) {
+                        try await EditedImageRenderer.render(from: image.url, cameraRaw: cameraRaw, isHDR: isHDR, outputFolder: outputFolder)
+                    }.value
+
+                    // Step 2: Build C2PA actions from edit settings
+                    let actions = C2PAAction.fromSettings(cameraRaw)
+
+                    // Step 3: Sign — preserve history if source already had C2PA
                     if image.hasC2PA {
-                        try await C2PASigningService.signPreservingHistory(
-                            imageURL: image.url,
+                        try await C2PASigningService.signWithParentIngredient(
+                            imageURL: renderedURL,
+                            parentURL: image.url,
                             certificatePath: certPath,
                             privateKeyPEM: privateKeyPEM,
-                            author: author
+                            author: author,
+                            actions: actions
                         )
                     } else {
                         try await C2PASigningService.sign(
-                            imageURL: image.url,
+                            imageURL: renderedURL,
                             certificatePath: certPath,
                             privateKeyPEM: privateKeyPEM,
-                            author: author
+                            author: author,
+                            actions: actions
                         )
                     }
-                    // Update the image's C2PA flag
-                    if let index = browserViewModel.urlToImageIndex[image.url] {
-                        browserViewModel.images[index].hasC2PA = true
-                    }
-                    signed += 1
+
+                    successCount += 1
                 } catch {
-                    errors += 1
+                    failureCount += 1
                 }
             }
 
-            isSigningC2PA = false
-            if errors == 0 {
-                c2paSigningMessage = "Signed \(signed) image\(signed == 1 ? "" : "s") successfully"
-            } else {
-                c2paSigningMessage = "Signed \(signed), failed \(errors) of \(selected.count) images"
-            }
+            renderEditedFolderSuccessCount = successCount
+            renderEditedFolderFailureCount = failureCount
+            renderedOutputFolderURL = lastOutputFolder
+            isRenderingEditedFolder = false
         }
     }
 
@@ -1346,15 +1394,6 @@ struct ContentView: View {
         renderedOutputFolderURL = nil
 
         Task {
-            let outputFolder = folderURL.appendingPathComponent("Edited", isDirectory: true)
-            do {
-                try FileManager.default.createDirectory(at: outputFolder, withIntermediateDirectories: true)
-            } catch {
-                isRenderingEditedFolder = false
-                browserViewModel.errorMessage = "Failed to create Edited folder: \(error.localizedDescription)"
-                return
-            }
-
             var metadataByURL: [URL: IPTCMetadata]
             do {
                 metadataByURL = try await browserViewModel.exifToolService.readBatchFullMetadata(urls: urls)
@@ -1367,11 +1406,30 @@ struct ContentView: View {
 
             var successCount = 0
             var failureCount = 0
+            var createdFolders: Set<String> = []
+            var lastOutputFolder: URL?
 
             for (index, url) in urls.enumerated() {
                 renderExportCurrent = index + 1
                 let cameraRaw = metadataByURL[url]?.cameraRaw
                 let isHDR = cameraRaw?.hdrEditMode == 1
+
+                // Format-aware folder naming
+                let folderName = EditedImageRenderer.formatFolderName(prefix: "Edited", isHDR: isHDR)
+                let outputFolder = folderURL.appendingPathComponent(folderName, isDirectory: true)
+
+                if !createdFolders.contains(folderName) {
+                    do {
+                        try FileManager.default.createDirectory(at: outputFolder, withIntermediateDirectories: true)
+                        createdFolders.insert(folderName)
+                        lastOutputFolder = outputFolder
+                    } catch {
+                        browserViewModel.errorMessage = "Failed to create \(folderName) folder: \(error.localizedDescription)"
+                        failureCount += 1
+                        continue
+                    }
+                }
+
                 do {
                     try await Task.detached(priority: .userInitiated) {
                         _ = try await EditedImageRenderer.render(from: url, cameraRaw: cameraRaw, isHDR: isHDR, outputFolder: outputFolder)
@@ -1384,7 +1442,7 @@ struct ContentView: View {
 
             renderEditedFolderSuccessCount = successCount
             renderEditedFolderFailureCount = failureCount
-            renderedOutputFolderURL = outputFolder
+            renderedOutputFolderURL = lastOutputFolder
             isRenderingEditedFolder = false
         }
     }

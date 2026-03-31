@@ -3,6 +3,102 @@ import os
 
 nonisolated private let logger = Logger(subsystem: "com.aagedal.photo-agent", category: "C2PASigning")
 
+// MARK: - C2PA Action Model
+
+nonisolated struct C2PAAction: Sendable {
+    let action: String
+    let softwareAgent: String?
+    let description: String?
+    let digitalSourceType: String?
+
+    init(action: String, softwareAgent: String? = nil, description: String? = nil, digitalSourceType: String? = nil) {
+        self.action = action
+        self.softwareAgent = softwareAgent
+        self.description = description
+        self.digitalSourceType = digitalSourceType
+    }
+}
+
+// MainActor extension for building actions from MainActor-isolated CameraRawSettings
+extension C2PAAction {
+    /// Build detailed C2PA actions describing what edits were applied.
+    @MainActor
+    static func fromSettings(_ settings: CameraRawSettings?, claimGenerator: String? = nil) -> [C2PAAction] {
+        guard let settings, !settings.isEmpty else {
+            return [C2PAAction(action: "c2pa.created")]
+        }
+
+        var actions: [C2PAAction] = [C2PAAction(action: "c2pa.opened", softwareAgent: claimGenerator)]
+
+        // Color / tonal adjustments
+        var colorParts: [String] = []
+        if let v = settings.exposure2012, v != 0 { colorParts.append("Exposure \(v >= 0 ? "+" : "")\(String(format: "%.2f", v))") }
+        if let v = settings.contrast2012, v != 0 { colorParts.append("Contrast \(v > 0 ? "+" : "")\(v)") }
+        if let v = settings.highlights2012, v != 0 { colorParts.append("Highlights \(v > 0 ? "+" : "")\(v)") }
+        if let v = settings.shadows2012, v != 0 { colorParts.append("Shadows \(v > 0 ? "+" : "")\(v)") }
+        if let v = settings.whites2012, v != 0 { colorParts.append("Whites \(v > 0 ? "+" : "")\(v)") }
+        if let v = settings.blacks2012, v != 0 { colorParts.append("Blacks \(v > 0 ? "+" : "")\(v)") }
+        if let v = settings.saturation, v != 0 { colorParts.append("Saturation \(v > 0 ? "+" : "")\(v)") }
+        if let v = settings.vibrance, v != 0 { colorParts.append("Vibrance \(v > 0 ? "+" : "")\(v)") }
+
+        // White balance
+        if let temp = settings.temperature ?? settings.incrementalTemperature,
+           let tintVal = settings.tint ?? settings.incrementalTint {
+            colorParts.append("White Balance \(temp)K/\(tintVal > 0 ? "+" : "")\(tintVal)")
+        } else if let temp = settings.temperature ?? settings.incrementalTemperature {
+            colorParts.append("White Balance \(temp)K")
+        }
+
+        // Tone curve
+        if let curve = settings.toneCurve, !curve.isEmpty {
+            colorParts.append("Tone curve adjusted")
+        }
+
+        // HDR tone mapping
+        if settings.hdrEditMode == 1 {
+            colorParts.append("HDR tone mapping")
+        }
+
+        if !colorParts.isEmpty {
+            actions.append(C2PAAction(
+                action: "c2pa.color_adjustments",
+                softwareAgent: claimGenerator,
+                description: colorParts.joined(separator: ", ")
+            ))
+        }
+
+        // Crop
+        if let crop = settings.crop, !(crop.isEmpty) {
+            var cropDesc = "Image cropped"
+            if let angle = crop.angle, abs(angle) > 0.01 {
+                cropDesc += String(format: ", rotated %.1f°", angle)
+            }
+            actions.append(C2PAAction(
+                action: "c2pa.cropped",
+                softwareAgent: claimGenerator,
+                description: cropDesc
+            ))
+        }
+
+        // Local mask adjustments
+        if let masks = settings.localAdjustments, !masks.isEmpty {
+            let activeMasks = masks.filter { $0.enabled && $0.hasAdjustments }
+            if !activeMasks.isEmpty {
+                actions.append(C2PAAction(
+                    action: "c2pa.edited",
+                    softwareAgent: claimGenerator,
+                    description: "\(activeMasks.count) local mask adjustment\(activeMasks.count == 1 ? "" : "s")"
+                ))
+            }
+        }
+
+        // General edited action
+        actions.append(C2PAAction(action: "c2pa.edited", softwareAgent: claimGenerator))
+
+        return actions
+    }
+}
+
 enum C2PASigningError: Error, LocalizedError {
     case c2patoolMissing
     case certificateNotConfigured
@@ -44,19 +140,12 @@ nonisolated enum C2PASigningService {
     // MARK: - Signing
 
     /// Sign an image with a C2PA manifest (first-time signing, no prior C2PA).
-    /// - Parameters:
-    ///   - imageURL: The image to sign.
-    ///   - certificatePath: Path to the PEM certificate chain file.
-    ///   - privateKeyPEM: PEM-encoded private key (from Keychain).
-    ///   - author: Author name for the CreativeWork assertion.
-    ///   - actions: C2PA action URIs (e.g. "c2pa.created").
-    ///   - digitalSourceType: Optional IPTC digital source type URI.
     static func sign(
         imageURL: URL,
         certificatePath: String,
         privateKeyPEM: String,
         author: String?,
-        actions: [String] = ["c2pa.created"],
+        actions: [C2PAAction] = [C2PAAction(action: "c2pa.created")],
         digitalSourceType: String? = nil
     ) async throws {
         guard let toolPath = c2patoolPath else {
@@ -84,14 +173,22 @@ nonisolated enum C2PASigningService {
         )
 
         // Build manifest JSON (signing credentials go inside the manifest)
+        let claimGenerator = "Aagedal Photo Agent/\(appVersion)"
+        let effectiveActions = actions.map { a in
+            C2PAAction(
+                action: a.action,
+                softwareAgent: a.softwareAgent ?? claimGenerator,
+                description: a.description,
+                digitalSourceType: a.digitalSourceType ?? digitalSourceType
+            )
+        }
         let manifestData = try buildManifestJSON(
             title: imageURL.lastPathComponent,
             author: author,
-            actions: actions,
-            digitalSourceType: digitalSourceType,
+            actions: effectiveActions,
             certificatePath: certificatePath,
             privateKeyPath: keyFile.path(percentEncoded: false),
-            claimGenerator: "Aagedal Photo Agent/\(appVersion)"
+            claimGenerator: claimGenerator
         )
         try manifestData.write(to: manifestFile)
 
@@ -153,7 +250,7 @@ nonisolated enum C2PASigningService {
         certificatePath: String,
         privateKeyPEM: String,
         author: String?,
-        actions: [String] = ["c2pa.opened", "c2pa.edited"],
+        actions: [C2PAAction] = [C2PAAction(action: "c2pa.opened"), C2PAAction(action: "c2pa.edited")],
         digitalSourceType: String? = nil
     ) async throws {
         guard let toolPath = c2patoolPath else {
@@ -197,14 +294,22 @@ nonisolated enum C2PASigningService {
             ofItemAtPath: keyFile.path(percentEncoded: false)
         )
 
+        let claimGenerator = "Aagedal Photo Agent/\(appVersion)"
+        let effectiveActions = actions.map { a in
+            C2PAAction(
+                action: a.action,
+                softwareAgent: a.softwareAgent ?? claimGenerator,
+                description: a.description,
+                digitalSourceType: a.digitalSourceType ?? digitalSourceType
+            )
+        }
         let manifestData = try buildManifestJSON(
             title: imageURL.lastPathComponent,
             author: author,
-            actions: actions,
-            digitalSourceType: digitalSourceType,
+            actions: effectiveActions,
             certificatePath: certificatePath,
             privateKeyPath: keyFile.path(percentEncoded: false),
-            claimGenerator: "Aagedal Photo Agent/\(appVersion)"
+            claimGenerator: claimGenerator
         )
         try manifestData.write(to: manifestFile)
 
@@ -256,6 +361,125 @@ nonisolated enum C2PASigningService {
         logger.info("Re-signed successfully: \(imageURL.lastPathComponent, privacy: .public)")
     }
 
+    // MARK: - Sign Rendered Image with Parent Ingredient
+
+    /// Sign a rendered image, preserving C2PA history from the original source.
+    ///
+    /// The rendered output is a new file without C2PA. The parent source may have
+    /// existing C2PA data that should be preserved as a parent ingredient.
+    static func signWithParentIngredient(
+        imageURL: URL,
+        parentURL: URL,
+        certificatePath: String,
+        privateKeyPEM: String,
+        author: String?,
+        actions: [C2PAAction]
+    ) async throws {
+        guard let toolPath = c2patoolPath else {
+            throw C2PASigningError.c2patoolMissing
+        }
+
+        let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
+
+        let tempDir = FileManager.default.temporaryDirectory
+        let ingredientDir = tempDir.appendingPathComponent("c2pa_ingredient_\(UUID().uuidString)")
+        let keyFile = tempDir.appendingPathComponent("c2pa_key_\(UUID().uuidString).pem")
+        let manifestFile = tempDir.appendingPathComponent("c2pa_manifest_\(UUID().uuidString).json")
+        let outputFile = tempDir.appendingPathComponent("c2pa_output_\(UUID().uuidString)_\(imageURL.lastPathComponent)")
+
+        defer {
+            try? FileManager.default.removeItem(at: ingredientDir)
+            try? FileManager.default.removeItem(at: keyFile)
+            try? FileManager.default.removeItem(at: manifestFile)
+            try? FileManager.default.removeItem(at: outputFile)
+        }
+
+        // Step 1: Extract ingredient data from the parent (original signed) image
+        do {
+            _ = try await Process.run(
+                executableURL: URL(fileURLWithPath: toolPath),
+                arguments: [parentURL.path(percentEncoded: false), "--ingredient", "-o", ingredientDir.path(percentEncoded: false)]
+            )
+        } catch {
+            let message = error.localizedDescription
+            logger.error("c2patool ingredient extraction failed: \(message, privacy: .public)")
+            throw C2PASigningError.processFailed("Ingredient extraction failed: \(message)")
+        }
+
+        // Step 2: Write private key and build manifest
+        try Data(privateKeyPEM.utf8).write(to: keyFile)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: keyFile.path(percentEncoded: false)
+        )
+
+        let claimGenerator = "Aagedal Photo Agent/\(appVersion)"
+        let effectiveActions = actions.map { a in
+            C2PAAction(
+                action: a.action,
+                softwareAgent: a.softwareAgent ?? claimGenerator,
+                description: a.description,
+                digitalSourceType: a.digitalSourceType
+            )
+        }
+        let manifestData = try buildManifestJSON(
+            title: imageURL.lastPathComponent,
+            author: author,
+            actions: effectiveActions,
+            certificatePath: certificatePath,
+            privateKeyPath: keyFile.path(percentEncoded: false),
+            claimGenerator: claimGenerator
+        )
+        try manifestData.write(to: manifestFile)
+
+        // Step 3: Sign rendered output with parent ingredient
+        let imagePath = imageURL.path(percentEncoded: false)
+        let signArguments = [
+            imagePath,
+            "-m", manifestFile.path(percentEncoded: false),
+            "-p", ingredientDir.path(percentEncoded: false),
+            "-o", outputFile.path(percentEncoded: false),
+            "-f",
+        ]
+
+        logger.info("Signing rendered image with parent ingredient: \(imageURL.lastPathComponent, privacy: .public)")
+
+        do {
+            _ = try await Process.run(
+                executableURL: URL(fileURLWithPath: toolPath),
+                arguments: signArguments
+            )
+        } catch {
+            let message = error.localizedDescription
+            logger.error("c2patool signing failed: \(message, privacy: .public)")
+            throw C2PASigningError.processFailed(message)
+        }
+
+        guard FileManager.default.fileExists(atPath: outputFile.path(percentEncoded: false)) else {
+            throw C2PASigningError.outputMissing
+        }
+
+        // Replace rendered output with signed version
+        let backupURL = imageURL.deletingLastPathComponent()
+            .appendingPathComponent(".\(imageURL.lastPathComponent).c2pa_backup")
+        defer { try? FileManager.default.removeItem(at: backupURL) }
+
+        let attrs = try? FileManager.default.attributesOfItem(atPath: imagePath)
+        let creationDate = attrs?[.creationDate] as? Date
+
+        try FileManager.default.moveItem(at: imageURL, to: backupURL)
+        try FileManager.default.moveItem(at: outputFile, to: imageURL)
+
+        if let creationDate {
+            try? FileManager.default.setAttributes(
+                [.creationDate: creationDate],
+                ofItemAtPath: imagePath
+            )
+        }
+
+        logger.info("Signed with parent ingredient: \(imageURL.lastPathComponent, privacy: .public)")
+    }
+
     // MARK: - Manifest Builder
 
     /// Build c2patool manifest definition JSON.
@@ -265,8 +489,7 @@ nonisolated enum C2PASigningService {
     static func buildManifestJSON(
         title: String?,
         author: String?,
-        actions: [String],
-        digitalSourceType: String?,
+        actions: [C2PAAction],
         certificatePath: String,
         privateKeyPath: String,
         claimGenerator: String
@@ -302,10 +525,16 @@ nonisolated enum C2PASigningService {
             ])
         }
 
-        // Actions assertion
+        // Actions assertion with structured entries
         let actionEntries: [[String: Any]] = actions.map { action in
-            var entry: [String: Any] = ["action": action]
-            if let digitalSourceType {
+            var entry: [String: Any] = ["action": action.action]
+            if let softwareAgent = action.softwareAgent {
+                entry["softwareAgent"] = softwareAgent
+            }
+            if let description = action.description {
+                entry["parameters"] = ["description": description]
+            }
+            if let digitalSourceType = action.digitalSourceType {
                 entry["digitalSourceType"] = digitalSourceType
             }
             return entry

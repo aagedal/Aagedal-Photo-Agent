@@ -232,6 +232,34 @@ nonisolated enum EditedImageRenderer {
         }
     }
 
+    // MARK: - Output Folder Naming
+
+    /// Returns a format-aware subfolder name like "Signed_JPEG" or "Edited_HEIC_10bit".
+    static func formatFolderName(prefix: String, isHDR: Bool) -> String {
+        let formatName: String
+        if isHDR {
+            let format = ExportFormatHDR(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportFormatHDR) ?? "") ?? .jxl
+            formatName = switch format {
+            case .heic10bit: "HEIC_10bit"
+            case .avif10bit: "AVIF_10bit"
+            case .jxl: "JPEG_XL"
+            case .tiff16bit: "TIFF_16bit"
+            case .png16bit: "PNG_16bit"
+            }
+        } else {
+            let format = ExportFormatSDR(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportFormatSDR) ?? "") ?? .jpeg
+            formatName = switch format {
+            case .jpeg: "JPEG"
+            case .png: "PNG"
+            case .tiff: "TIFF"
+            case .heic: "HEIC"
+            case .avif: "AVIF"
+            case .jxl: "JPEG_XL"
+            }
+        }
+        return "\(prefix)_\(formatName)"
+    }
+
     // MARK: - Output URL
 
     static func outputURL(for sourceURL: URL, in outputFolder: URL, extension ext: String) -> URL {
