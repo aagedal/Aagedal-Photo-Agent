@@ -58,6 +58,7 @@ final class BrowserViewModel {
     var sortFeedback: String?
     @ObservationIgnored private var sortFeedbackTask: Task<Void, Never>?
     var favoriteFolders: [FavoriteFolder] = []
+    var recentFolders: [RecentFolder] = []
     var openFolders: [URL] = []
     var subfoldersByOpenFolder: [URL: [URL]] = [:]
     var expandedFolders: Set<URL> = []
@@ -90,6 +91,11 @@ final class BrowserViewModel {
     var personShownFilter: PersonShownFilter = .any {
         didSet { scheduleFilterRebuild() }
     }
+    var editedFilter: EditedFilter = .any {
+        didSet { scheduleFilterRebuild() }
+    }
+
+    @ObservationIgnored private var folderFilterStates: [URL: FolderFilterState] = [:]
 
     var thumbnailScale: Double = 1.0 {
         didSet {
@@ -111,6 +117,7 @@ final class BrowserViewModel {
     }
 
     var copiedCameraRawSettings: CameraRawSettings?
+    var copiedIPTCMetadata: IPTCMetadata?
 
     let fileSystemService = FileSystemService()
     let thumbnailService = ThumbnailService()
@@ -132,6 +139,7 @@ final class BrowserViewModel {
     @ObservationIgnored private var suppressImagesCascade = false
 
     private let favoritesKey = UserDefaultsKeys.favoriteFolders
+    private let recentFoldersKey = UserDefaultsKeys.recentFolders
 
     private(set) var sortedImages: [ImageFile] = []
     private(set) var urlToSortedIndex: [URL: Int] = [:]
@@ -144,6 +152,7 @@ final class BrowserViewModel {
             || minimumStarRating != .none
             || !selectedColorLabels.isEmpty
             || personShownFilter != .any
+            || editedFilter != .any
     }
 
     @ObservationIgnored private(set) var selectedImagesCache: [ImageFile] = []
@@ -330,6 +339,14 @@ final class BrowserViewModel {
         case .present:
             if image.personShown.isEmpty { return false }
         }
+        switch editedFilter {
+        case .any:
+            break
+        case .edited:
+            if !image.hasDevelopEdits && !image.hasCropEdits { return false }
+        case .unedited:
+            if image.hasDevelopEdits || image.hasCropEdits { return false }
+        }
         guard !query.isEmpty else { return true }
         if image.filenameLowercased.contains(query) {
             return true
@@ -362,6 +379,7 @@ final class BrowserViewModel {
         minimumStarRating = .none
         selectedColorLabels.removeAll()
         personShownFilter = .any
+        editedFilter = .any
     }
 
     func openFolder() {
@@ -383,8 +401,11 @@ final class BrowserViewModel {
         // otherwise the images.didSet below won't rebuild urlToImageIndex.
         suppressImagesCascade = false
 
+        saveCurrentFilterState()
+
         currentFolderURL = url
         currentFolderName = url.lastPathComponent
+        trackRecentFolder(url: url)
         isLoading = true
         errorMessage = nil
         images = []
@@ -393,6 +414,8 @@ final class BrowserViewModel {
         manualOrder.removeAll()
         thumbnailService.cancelBackgroundGeneration()
         fullScreenImageCache.clearAll()
+
+        restoreFilterState(for: url)
 
         // Add to open folders if not already there, unless it's a subfolder of an existing open folder
         if !openFolders.contains(url) && !isSubfolderOfOpenFolder(url) {
@@ -429,6 +452,15 @@ final class BrowserViewModel {
                 self.subfoldersByOpenFolder[url] = discoveredSubfolders
                 if !discoveredSubfolders.isEmpty {
                     self.expandedFolders.insert(url)
+                }
+
+                // Phase 2.5: Eagerly discover sub-subfolders (one level deeper)
+                for subfolder in discoveredSubfolders {
+                    let subSubfolders = (try? fileSystemService.listSubfolders(at: subfolder)) ?? []
+                    guard !Task.isCancelled, self.currentFolderURL == url else { return }
+                    if !subSubfolders.isEmpty {
+                        self.subfoldersByOpenFolder[subfolder] = subSubfolders
+                    }
                 }
 
                 // Phase 3: Load sidecars and apply pending overrides
@@ -742,14 +774,16 @@ final class BrowserViewModel {
                 }
                 updated[index].cameraRawSettings = newSettings
 
+                // Load XMP sidecar once — fast fileExists check for non-existent files.
+                let xmpMeta = xmpSidecarService.loadSidecar(for: sourceURL)
+
                 // ExifTool reads CRS from the image file itself but NOT from the
                 // adjacent .xmp sidecar where edited CameraRaw settings are stored.
                 // For RAW files, the XMP sidecar is the authoritative CRS source —
                 // replace rather than merge to avoid stale embedded values leaking
                 // through nil sidecar fields (e.g. Adobe omitting Temperature).
                 if SupportedImageFormats.isRaw(url: sourceURL),
-                   let xmpMeta = xmpSidecarService.loadSidecar(for: sourceURL),
-                   let xmpCRS = xmpMeta.cameraRaw, !xmpCRS.isEmpty {
+                   let xmpCRS = xmpMeta?.cameraRaw, !xmpCRS.isEmpty {
                     var finalCRS = xmpCRS
                     // Preserve in-memory localAdjustments (written to image, not sidecar)
                     if (xmpCRS.localAdjustments?.isEmpty ?? true),
@@ -758,6 +792,19 @@ final class BrowserViewModel {
                     }
                     updated[index].cameraRawSettings = finalCRS
                     applySidecarCropState(to: &updated[index], cameraRaw: finalCRS)
+                }
+
+                // XMP sidecar rating/label overrides — written by writeToXMPSidecar
+                // mode for C2PA images (and any other images using that mode).
+                // ExifTool only reads from the image file, not adjacent .xmp files.
+                if let xmpMeta {
+                    if let xmpRating = xmpMeta.rating,
+                       let starRating = StarRating(rawValue: xmpRating) {
+                        updated[index].starRating = starRating
+                    }
+                    if let xmpLabel = xmpMeta.label, !xmpLabel.isEmpty {
+                        updated[index].colorLabel = ColorLabel.fromMetadataLabel(xmpLabel)
+                    }
                 }
 
                 applyPendingSidecarOverrides(to: &updated, for: sourceURL, index: index, cachedSidecar: cachedSidecars[sourceURL])
@@ -1607,6 +1654,134 @@ final class BrowserViewModel {
         return favoriteFolders.contains { $0.url == url }
     }
 
+    // MARK: - Recent Folders
+
+    func loadRecentFolders() {
+        guard let data = UserDefaults.standard.data(forKey: recentFoldersKey),
+              let decoded = try? JSONDecoder().decode([RecentFolder].self, from: data) else {
+            return
+        }
+        recentFolders = decoded
+    }
+
+    private func saveRecentFolders() {
+        if let data = try? JSONEncoder().encode(recentFolders) {
+            UserDefaults.standard.set(data, forKey: recentFoldersKey)
+        }
+    }
+
+    private func trackRecentFolder(url: URL) {
+        recentFolders.removeAll { $0.url == url }
+        recentFolders.insert(RecentFolder(url: url), at: 0)
+        if recentFolders.count > 3 {
+            recentFolders = Array(recentFolders.prefix(3))
+        }
+        saveRecentFolders()
+    }
+
+    // MARK: - Subfolder Actions
+
+    func openSubfolderAsRoot(_ url: URL) {
+        if !openFolders.contains(url) {
+            openFolders.append(url)
+        }
+        loadFolder(url: url)
+    }
+
+    var showTrashSubfolderConfirmation = false
+    @ObservationIgnored var pendingTrashSubfolderURL: URL?
+
+    func confirmTrashSubfolder(_ url: URL) {
+        pendingTrashSubfolderURL = url
+        showTrashSubfolderConfirmation = true
+    }
+
+    func trashPendingSubfolder() {
+        guard let subfolderURL = pendingTrashSubfolderURL else { return }
+        pendingTrashSubfolderURL = nil
+
+        do {
+            try FileManager.default.trashItem(at: subfolderURL, resultingItemURL: nil)
+        } catch {
+            errorMessage = "Failed to trash folder: \(error.localizedDescription)"
+            return
+        }
+
+        // Remove from subfoldersByOpenFolder for the parent
+        for (parentURL, subfolders) in subfoldersByOpenFolder {
+            if subfolders.contains(subfolderURL) {
+                subfoldersByOpenFolder[parentURL] = subfolders.filter { $0 != subfolderURL }
+                break
+            }
+        }
+
+        // Clean up any sub-subfolder entries for the trashed folder
+        subfoldersByOpenFolder.removeValue(forKey: subfolderURL)
+        expandedFolders.remove(subfolderURL)
+
+        // If the trashed folder was the currently viewed folder, navigate away
+        if currentFolderURL == subfolderURL {
+            if let parent = openFolders.first {
+                loadFolder(url: parent)
+            } else {
+                currentFolderURL = nil
+                currentFolderName = nil
+                images = []
+                selectedImageIDs.removeAll()
+            }
+        }
+    }
+
+    var showRenameSubfolderAlert = false
+    var renameSubfolderNewName = ""
+    @ObservationIgnored var pendingRenameSubfolderURL: URL?
+
+    func promptRenameSubfolder(_ url: URL) {
+        pendingRenameSubfolderURL = url
+        renameSubfolderNewName = url.lastPathComponent
+        showRenameSubfolderAlert = true
+    }
+
+    func renamePendingSubfolder() {
+        guard let oldURL = pendingRenameSubfolderURL else { return }
+        pendingRenameSubfolderURL = nil
+        let trimmed = renameSubfolderNewName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != oldURL.lastPathComponent else { return }
+
+        let newURL = oldURL.deletingLastPathComponent().appendingPathComponent(trimmed, isDirectory: true)
+        do {
+            try FileManager.default.moveItem(at: oldURL, to: newURL)
+        } catch {
+            errorMessage = "Failed to rename folder: \(error.localizedDescription)"
+            return
+        }
+
+        // Update subfoldersByOpenFolder: replace old URL with new in parent's list
+        for (parentURL, subfolders) in subfoldersByOpenFolder {
+            if let idx = subfolders.firstIndex(of: oldURL) {
+                var updated = subfolders
+                updated[idx] = newURL
+                subfoldersByOpenFolder[parentURL] = updated
+                break
+            }
+        }
+
+        // Move any sub-subfolder entries from old key to new key
+        if let children = subfoldersByOpenFolder.removeValue(forKey: oldURL) {
+            subfoldersByOpenFolder[newURL] = children
+        }
+
+        // Update expansion state
+        if expandedFolders.remove(oldURL) != nil {
+            expandedFolders.insert(newURL)
+        }
+
+        // If the renamed folder was the current folder, reload it
+        if currentFolderURL == oldURL {
+            loadFolder(url: newURL)
+        }
+    }
+
     func closeOpenFolder(_ url: URL) {
         // Clean up subfolder entries that belong to this open folder
         let childURLs = subfoldersByOpenFolder[url] ?? []
@@ -2400,6 +2575,55 @@ final class BrowserViewModel {
             case .missing: return "Missing Person Shown"
             case .present: return "Has Person Shown"
             }
+        }
+    }
+
+    enum EditedFilter: String, CaseIterable {
+        case any = "Any"
+        case edited = "Edited"
+        case unedited = "Unedited"
+
+        var displayName: String {
+            switch self {
+            case .any: return "Any"
+            case .edited: return "Is Edited"
+            case .unedited: return "Not Edited"
+            }
+        }
+    }
+
+    struct FolderFilterState {
+        var minimumStarRating: StarRating = .none
+        var selectedColorLabels: Set<ColorLabel> = []
+        var personShownFilter: PersonShownFilter = .any
+        var editedFilter: EditedFilter = .any
+        var searchText: String = ""
+    }
+
+    private func saveCurrentFilterState() {
+        guard let url = currentFolderURL else { return }
+        folderFilterStates[url] = FolderFilterState(
+            minimumStarRating: minimumStarRating,
+            selectedColorLabels: selectedColorLabels,
+            personShownFilter: personShownFilter,
+            editedFilter: editedFilter,
+            searchText: searchText
+        )
+    }
+
+    private func restoreFilterState(for url: URL) {
+        if let saved = folderFilterStates[url] {
+            minimumStarRating = saved.minimumStarRating
+            selectedColorLabels = saved.selectedColorLabels
+            personShownFilter = saved.personShownFilter
+            editedFilter = saved.editedFilter
+            searchText = saved.searchText
+        } else {
+            minimumStarRating = .none
+            selectedColorLabels = []
+            personShownFilter = .any
+            editedFilter = .any
+            searchText = ""
         }
     }
 }

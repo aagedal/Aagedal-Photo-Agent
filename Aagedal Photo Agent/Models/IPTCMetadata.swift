@@ -408,6 +408,35 @@ extension IPTCMetadata {
     }
 }
 
+extension IPTCMetadata {
+    /// Convert editable IPTC fields to an ExifTool write-tag dictionary.
+    /// Excludes rating, label, cameraRaw, and orientation (managed separately).
+    func toExifToolFields() -> [String: String] {
+        var fields: [String: String] = [:]
+        if let v = title { fields[ExifToolWriteTag.headline] = v }
+        if let v = description { fields[ExifToolWriteTag.description] = v }
+        if let v = extendedDescription { fields[ExifToolWriteTag.extendedDescription] = v }
+        if !keywords.isEmpty { fields[ExifToolWriteTag.subject] = keywords.joined(separator: ", ") }
+        if !personShown.isEmpty { fields[ExifToolWriteTag.personInImage] = personShown.joined(separator: ", ") }
+        if let v = digitalSourceType { fields[ExifToolWriteTag.digitalSourceType] = v.rawValue }
+        if let v = creator { fields[ExifToolWriteTag.creator] = v }
+        if let v = credit { fields[ExifToolWriteTag.credit] = v }
+        if let v = copyright { fields[ExifToolWriteTag.rights] = v }
+        if let v = jobId { fields[ExifToolWriteTag.transmissionReference] = v }
+        if let v = dateCreated { fields[ExifToolWriteTag.dateCreated] = v }
+        if let v = city { fields[ExifToolWriteTag.city] = v }
+        if let v = country { fields[ExifToolWriteTag.country] = v }
+        if let v = event { fields[ExifToolWriteTag.event] = v }
+        if let lat = latitude, let lon = longitude {
+            fields[ExifToolWriteTag.gpsLatitude] = String(abs(lat))
+            fields[ExifToolWriteTag.gpsLatitudeRef] = lat >= 0 ? "N" : "S"
+            fields[ExifToolWriteTag.gpsLongitude] = String(abs(lon))
+            fields[ExifToolWriteTag.gpsLongitudeRef] = lon >= 0 ? "E" : "W"
+        }
+        return fields
+    }
+}
+
 enum DigitalSourceType: String, Codable, CaseIterable, Sendable {
     case trainedAlgorithmicMedia = "trainedAlgorithmicMedia"
     case digitalCapture = "digitalCapture"

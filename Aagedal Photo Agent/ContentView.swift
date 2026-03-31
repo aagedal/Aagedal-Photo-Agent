@@ -124,6 +124,29 @@ struct ContentView: View {
                 let count = browserViewModel.selectedImageIDs.count
                 Text("Are you sure you want to move \(count) \(count == 1 ? "image" : "images") to the Trash?")
             }
+            .alert("Move Folder to Trash", isPresented: $browserViewModel.showTrashSubfolderConfirmation) {
+                Button("Cancel", role: .cancel) {
+                    browserViewModel.pendingTrashSubfolderURL = nil
+                }
+                Button("Move to Trash", role: .destructive) {
+                    browserViewModel.trashPendingSubfolder()
+                }
+            } message: {
+                if let url = browserViewModel.pendingTrashSubfolderURL {
+                    Text("Are you sure you want to move \"\(url.lastPathComponent)\" and all its contents to the Trash?")
+                }
+            }
+            .alert("Rename Folder", isPresented: $browserViewModel.showRenameSubfolderAlert) {
+                TextField("Name", text: $browserViewModel.renameSubfolderNewName)
+                Button("Cancel", role: .cancel) {
+                    browserViewModel.pendingRenameSubfolderURL = nil
+                }
+                Button("Rename") {
+                    browserViewModel.renamePendingSubfolder()
+                }
+            } message: {
+                Text("Enter a new name for this folder.")
+            }
             .alert("Reset All Edits", isPresented: $browserViewModel.showResetEditsConfirmation) {
                 Button("Cancel", role: .cancel) { }
                 Button("Reset", role: .destructive) {
@@ -282,6 +305,12 @@ struct ContentView: View {
             .onReceive(NotificationCenter.default.publisher(for: .renderAndSignSelected)) { _ in
                 renderAndSignSelected()
             }
+            .onReceive(NotificationCenter.default.publisher(for: .copyIPTCMetadata)) { _ in
+                copyIPTCMetadata()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .pasteIPTCMetadata)) { _ in
+                pasteIPTCMetadata()
+            }
             .onReceive(NotificationCenter.default.publisher(for: .writeAllPendingMetadata)) { _ in
                 let c2paPending = browserViewModel.images.filter { image in
                     image.hasPendingMetadataChanges && image.hasC2PA
@@ -323,6 +352,7 @@ struct ContentView: View {
             .fullScreenImagePresenter(viewModel: browserViewModel, scopeViewModel: scopeViewModel)
             .onAppear {
                 browserViewModel.loadFavorites()
+                browserViewModel.loadRecentFolders()
                 templateViewModel.loadTemplates()
                 ftpViewModel.loadConnections()
                 Task { await UpdateChecker.shared.checkIfNeeded() }
@@ -566,6 +596,49 @@ struct ContentView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
+        // Show filter and sort controls in the toolbar when in edit mode
+        // (BrowserView provides these in browser mode, but isn't in the hierarchy during editing)
+        if mainViewMode == .editing {
+            ToolbarItemGroup(placement: .automatic) {
+                ColorLabelFilterBar(selectedLabels: $browserViewModel.selectedColorLabels)
+                    .disabled(browserViewModel.images.isEmpty)
+                    .padding(8)
+            }
+
+            ToolbarItemGroup(placement: .automatic) {
+                StarRatingFilterBar(minimumRating: $browserViewModel.minimumStarRating)
+                    .disabled(browserViewModel.images.isEmpty)
+                    .padding(8)
+
+                editFilterMenu
+            }
+
+            ToolbarItemGroup(placement: .automatic) {
+                Button {
+                    browserViewModel.sortReversed.toggle()
+                } label: {
+                    Image(systemName: browserViewModel.sortReversed ? "arrow.up" : "arrow.down")
+                }
+                .help(browserViewModel.sortReversed ? "Sort ascending" : "Sort descending")
+                .disabled(browserViewModel.sortOrder == .manual)
+
+                Picker("Sort", selection: Binding(
+                    get: { browserViewModel.sortOrder },
+                    set: { newValue in
+                        if newValue == .manual && browserViewModel.sortOrder != .manual {
+                            browserViewModel.initializeManualOrder(from: browserViewModel.sortedImages)
+                        }
+                        browserViewModel.sortOrder = newValue
+                    }
+                )) {
+                    ForEach(BrowserViewModel.SortOrder.allCases, id: \.self) { order in
+                        Text(order.rawValue).tag(order)
+                    }
+                }
+                .pickerStyle(.menu)
+            }
+        }
+
         ToolbarItem(placement: .secondaryAction) {
             if metadataViewModel.isProcessingFolder {
                 HStack(spacing: 4) {
@@ -636,6 +709,38 @@ struct ContentView: View {
                 }
             }
         }
+    }
+
+    private var editFilterMenu: some View {
+        Menu {
+            Picker("Person Shown", selection: $browserViewModel.personShownFilter) {
+                ForEach(BrowserViewModel.PersonShownFilter.allCases, id: \.self) { filter in
+                    Text(filter.displayName).tag(filter)
+                }
+            }
+
+            Picker("Edited", selection: $browserViewModel.editedFilter) {
+                ForEach(BrowserViewModel.EditedFilter.allCases, id: \.self) { filter in
+                    Text(filter.displayName).tag(filter)
+                }
+            }
+
+            Divider()
+
+            Button("Clear Filters") {
+                browserViewModel.clearFilters()
+            }
+            .disabled(!browserViewModel.isFilteringActive)
+        } label: {
+            Label(
+                "Filters",
+                systemImage: browserViewModel.isFilteringActive
+                    ? "line.3.horizontal.decrease.circle.fill"
+                    : "line.3.horizontal.decrease.circle"
+            )
+        }
+        .help("Filter images")
+        .disabled(browserViewModel.images.isEmpty)
     }
 
     @ViewBuilder
@@ -718,7 +823,25 @@ struct ContentView: View {
                     }
                 }
 
-                if !browserViewModel.favoriteFolders.isEmpty && !browserViewModel.openFolders.isEmpty {
+                if !browserViewModel.recentFolders.isEmpty {
+                    Section("Recent") {
+                        ForEach(browserViewModel.recentFolders) { recent in
+                            Button {
+                                browserViewModel.loadFolder(url: recent.url)
+                            } label: {
+                                Label(recent.name, systemImage: "clock")
+                            }
+                            .listRowInsets(EdgeInsets(top: 1, leading: 8, bottom: 1, trailing: 8))
+                            .contextMenu {
+                                Button("Reveal in Finder") {
+                                    revealInFinder(recent.url)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (!browserViewModel.favoriteFolders.isEmpty || !browserViewModel.recentFolders.isEmpty) && !browserViewModel.openFolders.isEmpty {
                     HStack {
                         Rectangle()
                             .fill(Color(nsColor: .separatorColor))
@@ -795,7 +918,31 @@ struct ContentView: View {
                                         let subSubfolders = browserViewModel.subfoldersByOpenFolder[subfolderURL] ?? []
 
                                         VStack(alignment: .leading, spacing: 2) {
-                                            HStack(spacing: 6) {
+                                            HStack(spacing: 4) {
+                                                if !subSubfolders.isEmpty {
+                                                    Image(systemName: "chevron.right")
+                                                        .font(.caption2)
+                                                        .fontWeight(.semibold)
+                                                        .foregroundStyle(.secondary)
+                                                        .rotationEffect(.degrees(
+                                                            browserViewModel.expandedFolders.contains(subfolderURL) ? 90 : 0
+                                                        ))
+                                                        .animation(.easeInOut(duration: 0.15),
+                                                                   value: browserViewModel.expandedFolders.contains(subfolderURL))
+                                                        .frame(width: 10, alignment: .center)
+                                                        .contentShape(Rectangle())
+                                                        .onTapGesture {
+                                                            if browserViewModel.expandedFolders.contains(subfolderURL) {
+                                                                browserViewModel.expandedFolders.remove(subfolderURL)
+                                                            } else {
+                                                                browserViewModel.expandedFolders.insert(subfolderURL)
+                                                            }
+                                                        }
+                                                } else {
+                                                    Spacer()
+                                                        .frame(width: 10)
+                                                }
+
                                                 Image(systemName: isSubCurrent ? "folder.fill" : "folder")
                                                     .foregroundStyle(isSubCurrent ? Color.accentColor : Color.secondary)
                                                 Text(subfolderURL.lastPathComponent)
@@ -803,7 +950,7 @@ struct ContentView: View {
                                                 Spacer()
                                             }
                                             .font(.callout)
-                                            .padding(.leading, 22)
+                                            .padding(.leading, 12)
                                             .padding(.vertical, 3)
                                             .padding(.trailing, 6)
                                             .background(
@@ -815,30 +962,64 @@ struct ContentView: View {
                                                 browserViewModel.loadFolder(url: subfolderURL)
                                             }
                                             .contextMenu {
+                                                Button("Open as Folder") {
+                                                    browserViewModel.openSubfolderAsRoot(subfolderURL)
+                                                }
+
                                                 Button("Reveal in Finder") {
                                                     revealInFinder(subfolderURL)
                                                 }
+
+                                                Divider()
+
+                                                Button("Rename...") {
+                                                    browserViewModel.promptRenameSubfolder(subfolderURL)
+                                                }
+
+                                                Button("Move to Trash", role: .destructive) {
+                                                    browserViewModel.confirmTrashSubfolder(subfolderURL)
+                                                }
                                             }
 
-                                            // Sub-subfolders shown when this subfolder is active
-                                            if isSubCurrent, !subSubfolders.isEmpty {
+                                            // Sub-subfolders
+                                            if browserViewModel.expandedFolders.contains(subfolderURL), !subSubfolders.isEmpty {
                                                 ForEach(subSubfolders, id: \.self) { subSubURL in
+                                                    let isSubSubCurrent = subSubURL == browserViewModel.currentFolderURL
                                                     HStack(spacing: 6) {
-                                                        Image(systemName: "folder")
-                                                            .foregroundStyle(.secondary)
+                                                        Image(systemName: isSubSubCurrent ? "folder.fill" : "folder")
+                                                            .foregroundStyle(isSubSubCurrent ? Color.accentColor : Color.secondary)
                                                         Text(subSubURL.lastPathComponent)
+                                                            .foregroundStyle(isSubSubCurrent ? Color.accentColor : Color.primary)
                                                         Spacer()
                                                     }
                                                     .font(.callout)
-                                                    .padding(.leading, 42)
+                                                    .padding(.leading, 32)
                                                     .padding(.vertical, 2)
+                                                    .background(
+                                                        RoundedRectangle(cornerRadius: 6)
+                                                            .fill(isSubSubCurrent ? Color.accentColor.opacity(0.15) : Color.clear)
+                                                    )
                                                     .contentShape(Rectangle())
                                                     .onTapGesture {
                                                         browserViewModel.loadFolder(url: subSubURL)
                                                     }
                                                     .contextMenu {
+                                                        Button("Open as Folder") {
+                                                            browserViewModel.openSubfolderAsRoot(subSubURL)
+                                                        }
+
                                                         Button("Reveal in Finder") {
                                                             revealInFinder(subSubURL)
+                                                        }
+
+                                                        Divider()
+
+                                                        Button("Rename...") {
+                                                            browserViewModel.promptRenameSubfolder(subSubURL)
+                                                        }
+
+                                                        Button("Move to Trash", role: .destructive) {
+                                                            browserViewModel.confirmTrashSubfolder(subSubURL)
                                                         }
                                                     }
                                                 }
@@ -891,37 +1072,43 @@ struct ContentView: View {
                     .padding(.vertical, 8)
             }
 
+            if importViewModel.isImporting {
+                Divider()
+                VStack(alignment: .leading, spacing: 4) {
+                    if importViewModel.importPhase == .copying {
+                        Text("Importing \(importViewModel.copiedFiles) of \(importViewModel.totalFiles)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        ProgressView(value: Double(importViewModel.copiedFiles), total: Double(max(importViewModel.totalFiles, 1)))
+                    } else if importViewModel.importPhase == .applyingMetadata {
+                        Text("Writing metadata…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 4)
+            }
+
+            if isRenderingEditedFolder {
+                Divider()
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Exporting image \(renderExportCurrent) of \(renderExportTotal)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    ProgressView(value: Double(renderExportCurrent), total: Double(max(renderExportTotal, 1)))
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 4)
+            }
+
             if browserViewModel.selectedImageIDs.count == 1,
                let selectedImage = browserViewModel.selectedImages.first {
                 Divider()
                 VStack(alignment: .leading, spacing: 8) {
                     UpdatePillButton()
-                    if importViewModel.isImporting {
-                        VStack(alignment: .leading, spacing: 4) {
-                            if importViewModel.importPhase == .copying {
-                                Text("Importing \(importViewModel.copiedFiles) of \(importViewModel.totalFiles)")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                ProgressView(value: Double(importViewModel.copiedFiles), total: Double(max(importViewModel.totalFiles, 1)))
-                            } else if importViewModel.importPhase == .applyingMetadata {
-                                Text("Writing metadata…")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                ProgressView()
-                                    .controlSize(.small)
-                            }
-                        }
-                        Divider()
-                    }
-                    if isRenderingEditedFolder {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Exporting image \(renderExportCurrent) of \(renderExportTotal)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            ProgressView(value: Double(renderExportCurrent), total: Double(max(renderExportTotal, 1)))
-                        }
-                        Divider()
-                    }
                     ScopeDisplayView(scopeViewModel: scopeViewModel)
                     Divider()
                     if let meta = technicalMetadata, meta.hasC2PA {
@@ -1159,6 +1346,9 @@ struct ContentView: View {
                         try await EditedImageRenderer.render(from: image.url, cameraRaw: cameraRaw, isHDR: isHDR, outputFolder: outputFolder)
                     }.value
 
+                    // Step 1b: Apply pending sidecar IPTC edits to rendered file
+                    await overlaySidecarIPTC(sourceURL: image.url, renderedURL: renderedURL, folderURL: folderURL)
+
                     // Step 2: Build C2PA actions from edit settings
                     let actions = C2PAAction.fromSettings(cameraRaw)
 
@@ -1192,6 +1382,114 @@ struct ContentView: View {
             renderEditedFolderFailureCount = failureCount
             renderedOutputFolderURL = lastOutputFolder
             isRenderingEditedFolder = false
+        }
+    }
+
+    // MARK: - Sidecar IPTC Overlay
+
+    /// Apply pending sidecar IPTC edits to a rendered output file.
+    /// Checks both XMP sidecars (default for C2PA) and JSON sidecars (history-only mode).
+    /// Called after render (and before C2PA signing) so the output includes edited metadata.
+    private func overlaySidecarIPTC(sourceURL: URL, renderedURL: URL, folderURL: URL) async {
+        // Prefer XMP sidecar IPTC (default write mode for C2PA files)
+        let xmpService = XMPSidecarService()
+        if let xmpMeta = xmpService.loadSidecar(for: sourceURL) {
+            let fields = xmpMeta.toExifToolFields()
+            if !fields.isEmpty {
+                do {
+                    try await browserViewModel.exifToolService.writeFields(fields, to: [renderedURL])
+                } catch {}
+                return
+            }
+        }
+
+        // Fall back to JSON sidecar (history-only mode)
+        let sidecarService = MetadataSidecarService()
+        guard let sidecar = sidecarService.loadSidecar(for: sourceURL, in: folderURL),
+              sidecar.pendingChanges else { return }
+
+        let fields = sidecar.metadata.toExifToolFields()
+        guard !fields.isEmpty else { return }
+
+        do {
+            try await browserViewModel.exifToolService.writeFields(fields, to: [renderedURL])
+        } catch {}
+    }
+
+    // MARK: - Copy & Paste IPTC
+
+    private func copyIPTCMetadata() {
+        guard browserViewModel.selectedImages.count == 1 else {
+            browserViewModel.errorMessage = "Select a single image to copy IPTC metadata from."
+            return
+        }
+
+        let source = metadataViewModel.editingMetadata
+        browserViewModel.copiedIPTCMetadata = IPTCMetadata(
+            title: source.title,
+            description: source.description,
+            extendedDescription: source.extendedDescription,
+            keywords: source.keywords,
+            personShown: source.personShown,
+            digitalSourceType: source.digitalSourceType,
+            latitude: source.latitude,
+            longitude: source.longitude,
+            creator: source.creator,
+            credit: source.credit,
+            copyright: source.copyright,
+            jobId: source.jobId,
+            dateCreated: source.dateCreated,
+            city: source.city,
+            country: source.country,
+            event: source.event
+        )
+    }
+
+    private func pasteIPTCMetadata() {
+        guard let copied = browserViewModel.copiedIPTCMetadata else {
+            browserViewModel.errorMessage = "No IPTC metadata copied."
+            return
+        }
+
+        let selected = browserViewModel.selectedImages
+        guard !selected.isEmpty else {
+            browserViewModel.errorMessage = "No images selected."
+            return
+        }
+
+        guard let folderURL = browserViewModel.currentFolderURL else { return }
+
+        let fields = copied.toExifToolFields()
+        guard !fields.isEmpty else { return }
+
+        let c2paImages = selected.filter { $0.hasC2PA }
+        let normalImages = selected.filter { !$0.hasC2PA }
+
+        Task {
+            // Write directly to non-C2PA images
+            if !normalImages.isEmpty {
+                let normalURLs = normalImages.map(\.url)
+                do {
+                    try await browserViewModel.exifToolService.writeFields(fields, to: normalURLs)
+                } catch {
+                    browserViewModel.errorMessage = "Failed to paste IPTC: \(error.localizedDescription)"
+                }
+            }
+
+            // For C2PA images, write to XMP sidecar (preserving camera raw edits)
+            let xmpService = XMPSidecarService()
+            for image in c2paImages {
+                let existing = xmpService.loadSidecar(for: image.url) ?? IPTCMetadata()
+                let merged = existing.merged(preferring: copied)
+                do {
+                    try xmpService.saveSidecar(metadata: merged, for: image.url)
+                } catch {
+                    browserViewModel.errorMessage = "Failed to save XMP sidecar for \(image.url.lastPathComponent): \(error.localizedDescription)"
+                }
+            }
+
+            // Reload metadata panel to reflect changes
+            reloadMetadataForSelection()
         }
     }
 
@@ -1362,6 +1660,10 @@ struct ContentView: View {
                     let outputURL = try await Task.detached(priority: .userInitiated) {
                         try await EditedImageRenderer.saveAs(from: url, cameraRaw: cameraRaw, format: format)
                     }.value
+                    // Apply pending sidecar IPTC edits to saved file
+                    if let folderURL = browserViewModel.currentFolderURL {
+                        await overlaySidecarIPTC(sourceURL: url, renderedURL: outputURL, folderURL: folderURL)
+                    }
                     savedURLs.append(outputURL)
                 } catch {
                     browserViewModel.errorMessage = "Save As failed for \(url.lastPathComponent): \(error.localizedDescription)"
@@ -1431,9 +1733,11 @@ struct ContentView: View {
                 }
 
                 do {
-                    try await Task.detached(priority: .userInitiated) {
-                        _ = try await EditedImageRenderer.render(from: url, cameraRaw: cameraRaw, isHDR: isHDR, outputFolder: outputFolder)
+                    let renderedURL = try await Task.detached(priority: .userInitiated) {
+                        try await EditedImageRenderer.render(from: url, cameraRaw: cameraRaw, isHDR: isHDR, outputFolder: outputFolder)
                     }.value
+                    // Apply pending sidecar IPTC edits to rendered file
+                    await overlaySidecarIPTC(sourceURL: url, renderedURL: renderedURL, folderURL: folderURL)
                     successCount += 1
                 } catch {
                     failureCount += 1

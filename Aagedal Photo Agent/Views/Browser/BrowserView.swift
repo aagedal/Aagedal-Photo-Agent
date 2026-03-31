@@ -165,6 +165,12 @@ struct BrowserView: View {
                 }
             }
 
+            Picker("Edited", selection: $viewModel.editedFilter) {
+                ForEach(BrowserViewModel.EditedFilter.allCases, id: \.self) { filter in
+                    Text(filter.displayName).tag(filter)
+                }
+            }
+
             Divider()
 
             Button("Clear Filters") {

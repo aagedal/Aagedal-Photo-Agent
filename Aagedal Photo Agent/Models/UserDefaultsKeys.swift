@@ -42,8 +42,9 @@ nonisolated enum UserDefaultsKeys {
     static let knownPeopleMode = "knownPeopleMode"
     static let knownPeopleMinConfidence = "knownPeopleMinConfidence"
 
-    // MARK: - Favorites & FTP
+    // MARK: - Favorites, Recent & FTP
     static let favoriteFolders = "favoriteFolders"
+    static let recentFolders = "recentFolders"
     static let ftpConnections = "ftpConnections"
     static let lastUsedFTPConnectionID = "lastUsedFTPConnectionID"
     static let ftpUploadHistory = "ftpUploadHistory"

@@ -55,13 +55,25 @@ private let allVariables: [VariableDefinition] = [
     VariableDefinition(
         variable: "{dateCreated}",
         category: "Date",
-        description: "Date Created from metadata (if available).",
+        description: "Date Created from metadata, date only.",
+        example: "Jan 27, 2026"
+    ),
+    VariableDefinition(
+        variable: "{dateCreated:yyyy-MM-dd}",
+        category: "Date",
+        description: "Date Created with custom format. Supports any DateFormatter pattern.",
         example: "2026-01-27"
     ),
     VariableDefinition(
         variable: "{dateCaptured}",
         category: "Date",
-        description: "EXIF DateTimeOriginal from metadata (if available).",
+        description: "EXIF DateTimeOriginal, date only.",
+        example: "Jan 27, 2026"
+    ),
+    VariableDefinition(
+        variable: "{dateCaptured:yyyy-MM-dd}",
+        category: "Date",
+        description: "EXIF DateTimeOriginal with custom format. Supports any DateFormatter pattern.",
         example: "2026-01-27"
     ),
 
@@ -83,6 +95,18 @@ private let allVariables: [VariableDefinition] = [
         category: "Shortcuts",
         description: "Filename of the selected image without its file extension.",
         example: "IMG_4023"
+    ),
+    VariableDefinition(
+        variable: "{seq}",
+        category: "Shortcuts",
+        description: "Sequence number when processing multiple images. Starts at 1 for each batch.",
+        example: "1, 2, 3, …"
+    ),
+    VariableDefinition(
+        variable: "{seq:3}",
+        category: "Shortcuts",
+        description: "Zero-padded sequence number. The number after the colon sets the minimum width.",
+        example: "001, 002, 003, …"
     ),
 
     // Field references

@@ -140,6 +140,18 @@ struct Aagedal_Photo_AgentApp: App {
                     NotificationCenter.default.post(name: .renderAndSignSelected, object: nil)
                 }
                 .keyboardShortcut("s", modifiers: [.command, .option])
+
+                Divider()
+
+                Button("Copy IPTC Metadata") {
+                    NotificationCenter.default.post(name: .copyIPTCMetadata, object: nil)
+                }
+                .keyboardShortcut("c", modifiers: [.command, .option])
+
+                Button("Paste IPTC Metadata") {
+                    NotificationCenter.default.post(name: .pasteIPTCMetadata, object: nil)
+                }
+                .keyboardShortcut("v", modifiers: [.command, .option])
             }
 
             CommandMenu("Image") {
@@ -309,4 +321,6 @@ extension Notification.Name {
     static let renderAndSignSelected = Notification.Name("renderAndSignSelected")
     static let toggleHDR = Notification.Name("toggleHDR")
     static let showVariableReference = Notification.Name("showVariableReference")
+    static let copyIPTCMetadata = Notification.Name("copyIPTCMetadata")
+    static let pasteIPTCMetadata = Notification.Name("pasteIPTCMetadata")
 }

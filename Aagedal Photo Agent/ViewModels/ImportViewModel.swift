@@ -302,8 +302,10 @@ final class ImportViewModel {
                     try await exifToolService.start()
 
                     if processVariables {
+                        var sequenceNumber = 1
                         for url in copiedURLs {
-                            let resolved = await self.resolveMetadataForFile(url, metadata: metadata, interpolator: interpolator)
+                            let resolved = await self.resolveMetadataForFile(url, metadata: metadata, interpolator: interpolator, sequenceIndex: sequenceNumber)
+                            sequenceNumber += 1
                             let fields = await Self.buildMetadataFields(from: resolved)
                             if !fields.isEmpty {
                                 try await exifToolService.writeFields(fields, to: [url])
@@ -389,7 +391,7 @@ final class ImportViewModel {
         "Imported \(copiedFiles), renamed \(renamedFiles), skipped \(skippedFiles), failed \(failedFiles)."
     }
 
-    private func resolveMetadataForFile(_ url: URL, metadata: IPTCMetadata, interpolator: PresetVariableInterpolator) async -> IPTCMetadata {
+    private func resolveMetadataForFile(_ url: URL, metadata: IPTCMetadata, interpolator: PresetVariableInterpolator, sequenceIndex: Int = 1) async -> IPTCMetadata {
         let filename = url.lastPathComponent
         var reference = metadata
 
@@ -398,24 +400,24 @@ final class ImportViewModel {
         }
 
         var resolved = metadata
-        resolved.title = Self.resolveField(metadata.title, filename: filename, ref: reference, interpolator: interpolator)
-        resolved.description = Self.resolveField(metadata.description, filename: filename, ref: reference, interpolator: interpolator)
-        resolved.extendedDescription = Self.resolveField(metadata.extendedDescription, filename: filename, ref: reference, interpolator: interpolator)
-        resolved.creator = Self.resolveField(metadata.creator, filename: filename, ref: reference, interpolator: interpolator)
-        resolved.credit = Self.resolveField(metadata.credit, filename: filename, ref: reference, interpolator: interpolator)
-        resolved.copyright = Self.resolveField(metadata.copyright, filename: filename, ref: reference, interpolator: interpolator)
-        resolved.jobId = Self.resolveField(metadata.jobId, filename: filename, ref: reference, interpolator: interpolator)
-        resolved.dateCreated = Self.resolveField(metadata.dateCreated, filename: filename, ref: reference, interpolator: interpolator)
-        resolved.city = Self.resolveField(metadata.city, filename: filename, ref: reference, interpolator: interpolator)
-        resolved.country = Self.resolveField(metadata.country, filename: filename, ref: reference, interpolator: interpolator)
-        resolved.event = Self.resolveField(metadata.event, filename: filename, ref: reference, interpolator: interpolator)
+        resolved.title = Self.resolveField(metadata.title, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
+        resolved.description = Self.resolveField(metadata.description, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
+        resolved.extendedDescription = Self.resolveField(metadata.extendedDescription, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
+        resolved.creator = Self.resolveField(metadata.creator, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
+        resolved.credit = Self.resolveField(metadata.credit, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
+        resolved.copyright = Self.resolveField(metadata.copyright, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
+        resolved.jobId = Self.resolveField(metadata.jobId, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
+        resolved.dateCreated = Self.resolveField(metadata.dateCreated, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
+        resolved.city = Self.resolveField(metadata.city, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
+        resolved.country = Self.resolveField(metadata.country, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
+        resolved.event = Self.resolveField(metadata.event, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
 
         return resolved
     }
 
-    private static func resolveField(_ value: String?, filename: String, ref: IPTCMetadata, interpolator: PresetVariableInterpolator) -> String? {
+    private static func resolveField(_ value: String?, filename: String, ref: IPTCMetadata, interpolator: PresetVariableInterpolator, sequenceIndex: Int = 1) -> String? {
         guard let value, !value.isEmpty else { return value }
-        let resolved = interpolator.resolve(value, filename: filename, existingMetadata: ref)
+        let resolved = interpolator.resolve(value, filename: filename, existingMetadata: ref, sequenceIndex: sequenceIndex)
         return resolved.isEmpty ? nil : resolved
     }
 

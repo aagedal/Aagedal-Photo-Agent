@@ -7,7 +7,7 @@ struct FTPUploadView: View {
     let exifToolService: ExifToolService
     var onStartUpload: (() -> Void)?
 
-    @State private var activeFiles: [URL] = []
+    @State private var activeFiles: [URL]
     @State private var selectedServerID: UUID?
     @State private var processVariablesBeforeUpload = false
     @State private var signWithC2PABeforeUpload = false
@@ -18,6 +18,14 @@ struct FTPUploadView: View {
     @State private var expandedHistoryID: UUID?
     @State private var preprocessErrors: [String] = []
     @State private var isFileListExpanded = false
+
+    init(viewModel: FTPViewModel, files: [URL], exifToolService: ExifToolService, onStartUpload: (() -> Void)? = nil) {
+        self.viewModel = viewModel
+        self.files = files
+        self.exifToolService = exifToolService
+        self.onStartUpload = onStartUpload
+        self._activeFiles = State(initialValue: files)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -176,10 +184,12 @@ struct FTPUploadView: View {
         .padding()
         .frame(minWidth: 480)
         .onAppear {
-            activeFiles = files
             viewModel.loadConnections()
             viewModel.loadHistory()
             selectedServerID = viewModel.selectedConnectionID
+        }
+        .onChange(of: files) { _, newFiles in
+            activeFiles = newFiles
         }
     }
 
@@ -349,6 +359,7 @@ struct FTPUploadView: View {
     private func processVariables(for files: [URL]) async {
         let interpolator = PresetVariableInterpolator()
         var processed = 0
+        var sequenceNumber = 1
 
         for url in files {
             do {
@@ -359,17 +370,17 @@ struct FTPUploadView: View {
                 var changed = false
                 var resolved = meta
 
-                resolved.title = resolveIfChanged(meta.title, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                resolved.description = resolveIfChanged(meta.description, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                resolved.extendedDescription = resolveIfChanged(meta.extendedDescription, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                resolved.creator = resolveIfChanged(meta.creator, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                resolved.credit = resolveIfChanged(meta.credit, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                resolved.copyright = resolveIfChanged(meta.copyright, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                resolved.jobId = resolveIfChanged(meta.jobId, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                resolved.dateCreated = resolveIfChanged(meta.dateCreated, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                resolved.city = resolveIfChanged(meta.city, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                resolved.country = resolveIfChanged(meta.country, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
-                resolved.event = resolveIfChanged(meta.event, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed)
+                resolved.title = resolveIfChanged(meta.title, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
+                resolved.description = resolveIfChanged(meta.description, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
+                resolved.extendedDescription = resolveIfChanged(meta.extendedDescription, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
+                resolved.creator = resolveIfChanged(meta.creator, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
+                resolved.credit = resolveIfChanged(meta.credit, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
+                resolved.copyright = resolveIfChanged(meta.copyright, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
+                resolved.jobId = resolveIfChanged(meta.jobId, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
+                resolved.dateCreated = resolveIfChanged(meta.dateCreated, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
+                resolved.city = resolveIfChanged(meta.city, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
+                resolved.country = resolveIfChanged(meta.country, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
+                resolved.event = resolveIfChanged(meta.event, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
 
                 if changed {
                     var fields: [String: String] = [:]
@@ -398,13 +409,14 @@ struct FTPUploadView: View {
             }
 
             processed += 1
+            sequenceNumber += 1
             variablesProcessProgress = "\(processed)/\(files.count)"
         }
     }
 
-    private func resolveIfChanged(_ value: String?, interpolator: PresetVariableInterpolator, filename: String, ref: IPTCMetadata, changed: inout Bool) -> String? {
+    private func resolveIfChanged(_ value: String?, interpolator: PresetVariableInterpolator, filename: String, ref: IPTCMetadata, changed: inout Bool, sequenceIndex: Int = 1) -> String? {
         guard let value, !value.isEmpty else { return value }
-        let resolved = interpolator.resolve(value, filename: filename, existingMetadata: ref)
+        let resolved = interpolator.resolve(value, filename: filename, existingMetadata: ref, sequenceIndex: sequenceIndex)
         if resolved != value { changed = true }
         return resolved.isEmpty ? nil : resolved
     }

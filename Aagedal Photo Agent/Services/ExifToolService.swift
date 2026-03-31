@@ -754,7 +754,7 @@ final class ExifToolService {
         let creationDates = captureCreationDates(for: urls)
         defer { restoreCreationDates(creationDates) }
 
-        var args = ["-overwrite_original", "-charset", "iptc=UTF8", "-sep", ", "]
+        var args = ["-overwrite_original", "-charset", "UTF8", "-charset", "iptc=UTF8", "-sep", ", "]
         var tempFiles: [URL] = []
         defer {
             for file in tempFiles {
@@ -795,7 +795,7 @@ final class ExifToolService {
         let creationDates = captureCreationDates(for: urls)
         defer { restoreCreationDates(creationDates) }
 
-        var args = ["-overwrite_original", "-charset", "iptc=UTF8"]
+        var args = ["-overwrite_original", "-charset", "UTF8", "-charset", "iptc=UTF8"]
 
         for (tag, values) in remove {
             for value in values {
