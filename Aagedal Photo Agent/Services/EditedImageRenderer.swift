@@ -375,6 +375,7 @@ nonisolated enum EditedImageRenderer {
                     "-charset", "iptc=UTF8",
                     "-TagsFromFile", source.path,
                     "-all:all",
+                    "-IPTC:CodedCharacterSet=UTF8",
                     "--XMP-crs:all",
                     "--IFD1:all",
                     "--ICC_Profile:all",

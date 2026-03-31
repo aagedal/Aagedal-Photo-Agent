@@ -454,15 +454,6 @@ final class BrowserViewModel {
                     self.expandedFolders.insert(url)
                 }
 
-                // Phase 2.5: Eagerly discover sub-subfolders (one level deeper)
-                for subfolder in discoveredSubfolders {
-                    let subSubfolders = (try? fileSystemService.listSubfolders(at: subfolder)) ?? []
-                    guard !Task.isCancelled, self.currentFolderURL == url else { return }
-                    if !subSubfolders.isEmpty {
-                        self.subfoldersByOpenFolder[subfolder] = subSubfolders
-                    }
-                }
-
                 // Phase 3: Load sidecars and apply pending overrides
                 let allSidecars = sidecarService.loadAllSidecars(in: url)
                 var updated = files
@@ -1637,16 +1628,63 @@ final class BrowserViewModel {
         }
     }
 
+    func loadFavoriteTopLevelSubfolders() {
+        for favorite in favoriteFolders {
+            let url = favorite.url
+            guard subfoldersByOpenFolder[url] == nil else { continue }
+            let subfolders = (try? fileSystemService.listSubfolders(at: url)) ?? []
+            subfoldersByOpenFolder[url] = subfolders
+        }
+    }
+
+    /// Lazily loads direct subfolders for a URL if not already cached.
+    func ensureSubfoldersLoaded(for url: URL) {
+        guard subfoldersByOpenFolder[url] == nil else { return }
+        let discovered = (try? fileSystemService.listSubfolders(at: url)) ?? []
+        subfoldersByOpenFolder[url] = discovered
+    }
+
+    /// Toggles expansion of a folder in the sidebar, triggering lazy load on first expand.
+    func toggleFolderExpansion(_ url: URL) {
+        if expandedFolders.contains(url) {
+            expandedFolders.remove(url)
+        } else {
+            expandedFolders.insert(url)
+            ensureSubfoldersLoaded(for: url)
+        }
+    }
+
+    /// Recursively removes all cached subfolder entries rooted at a URL.
+    private func removeSubfolderCacheRecursively(for url: URL) {
+        guard let children = subfoldersByOpenFolder.removeValue(forKey: url) else { return }
+        expandedFolders.remove(url)
+        for child in children {
+            removeSubfolderCacheRecursively(for: child)
+        }
+    }
+
     func addCurrentFolderToFavorites() {
         guard let url = currentFolderURL else { return }
         guard !favoriteFolders.contains(where: { $0.url == url }) else { return }
         favoriteFolders.append(FavoriteFolder(url: url))
         saveFavorites()
+        loadFavoriteTopLevelSubfolders()
+    }
+
+    func addFolderToFavorites(_ url: URL) {
+        guard !favoriteFolders.contains(where: { $0.url == url }) else { return }
+        favoriteFolders.append(FavoriteFolder(url: url))
+        saveFavorites()
+        loadFavoriteTopLevelSubfolders()
     }
 
     func removeFavorite(_ favorite: FavoriteFolder) {
         favoriteFolders.removeAll { $0.id == favorite.id }
         saveFavorites()
+        let url = favorite.url
+        if !openFolders.contains(url) {
+            removeSubfolderCacheRecursively(for: url)
+        }
     }
 
     var isCurrentFolderFavorited: Bool {
@@ -1707,7 +1745,7 @@ final class BrowserViewModel {
             return
         }
 
-        // Remove from subfoldersByOpenFolder for the parent
+        // Remove from parent's children list
         for (parentURL, subfolders) in subfoldersByOpenFolder {
             if subfolders.contains(subfolderURL) {
                 subfoldersByOpenFolder[parentURL] = subfolders.filter { $0 != subfolderURL }
@@ -1715,9 +1753,8 @@ final class BrowserViewModel {
             }
         }
 
-        // Clean up any sub-subfolder entries for the trashed folder
-        subfoldersByOpenFolder.removeValue(forKey: subfolderURL)
-        expandedFolders.remove(subfolderURL)
+        // Recursively clean up all cached descendants
+        removeSubfolderCacheRecursively(for: subfolderURL)
 
         // If the trashed folder was the currently viewed folder, navigate away
         if currentFolderURL == subfolderURL {
@@ -1756,7 +1793,7 @@ final class BrowserViewModel {
             return
         }
 
-        // Update subfoldersByOpenFolder: replace old URL with new in parent's list
+        // Update parent's children list: replace old URL with new
         for (parentURL, subfolders) in subfoldersByOpenFolder {
             if let idx = subfolders.firstIndex(of: oldURL) {
                 var updated = subfolders
@@ -1766,14 +1803,13 @@ final class BrowserViewModel {
             }
         }
 
-        // Move any sub-subfolder entries from old key to new key
-        if let children = subfoldersByOpenFolder.removeValue(forKey: oldURL) {
-            subfoldersByOpenFolder[newURL] = children
-        }
+        // Remove all cached descendants of the old path (they have stale URLs)
+        removeSubfolderCacheRecursively(for: oldURL)
 
-        // Update expansion state
+        // Update expansion state and re-discover children of renamed folder
         if expandedFolders.remove(oldURL) != nil {
             expandedFolders.insert(newURL)
+            ensureSubfoldersLoaded(for: newURL)
         }
 
         // If the renamed folder was the current folder, reload it
@@ -1783,18 +1819,17 @@ final class BrowserViewModel {
     }
 
     func closeOpenFolder(_ url: URL) {
-        // Clean up subfolder entries that belong to this open folder
-        let childURLs = subfoldersByOpenFolder[url] ?? []
-        for child in childURLs {
-            subfoldersByOpenFolder.removeValue(forKey: child)
+        let isAlsoFavorite = favoriteFolders.contains { $0.url == url }
+        if !isAlsoFavorite {
+            removeSubfolderCacheRecursively(for: url)
         }
         openFolders.removeAll { $0 == url }
-        subfoldersByOpenFolder.removeValue(forKey: url)
-        expandedFolders.remove(url)
-        // If we closed the current folder (or it was browsing a subfolder of this folder),
+        // If we closed the current folder (or it was browsing a subfolder of it),
         // switch to another open folder or clear
-        let currentIsChild = childURLs.contains(currentFolderURL ?? URL(fileURLWithPath: "/"))
-        if currentFolderURL == url || currentIsChild {
+        let currentPath = (currentFolderURL ?? URL(fileURLWithPath: "/")).path(percentEncoded: false)
+        let closedPath = url.path(percentEncoded: false)
+        let currentIsDescendant = currentPath.hasPrefix(closedPath + "/")
+        if currentFolderURL == url || currentIsDescendant {
             if let nextFolder = openFolders.first {
                 loadFolder(url: nextFolder)
             } else {
@@ -1802,16 +1837,26 @@ final class BrowserViewModel {
                 currentFolderName = nil
                 images = []
                 selectedImageIDs.removeAll()
-                subfoldersByOpenFolder = [:]
+                // Only clear subfolder data for non-favorite entries
+                let favoriteURLs = Set(favoriteFolders.map(\.url))
+                for key in subfoldersByOpenFolder.keys {
+                    if !favoriteURLs.contains(key) {
+                        subfoldersByOpenFolder.removeValue(forKey: key)
+                    }
+                }
             }
         }
     }
 
     private func isSubfolderOfOpenFolder(_ url: URL) -> Bool {
-        for (_, subfolders) in subfoldersByOpenFolder {
-            if subfolders.contains(url) {
-                return true
-            }
+        let path = url.path(percentEncoded: false)
+        for parentURL in openFolders {
+            let parentPath = parentURL.path(percentEncoded: false)
+            if path.hasPrefix(parentPath + "/") { return true }
+        }
+        for favorite in favoriteFolders {
+            let favPath = favorite.url.path(percentEncoded: false)
+            if path.hasPrefix(favPath + "/") { return true }
         }
         return false
     }

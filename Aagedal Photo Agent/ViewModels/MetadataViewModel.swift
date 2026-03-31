@@ -2019,7 +2019,12 @@ final class MetadataViewModel {
 
         do {
             try sidecarService.saveSidecar(sidecar, for: imageURL, in: folderURL)
-            syncCameraRawToXMPSidecar(for: imageURL, metadata: editingMetadata)
+            if pendingChanges {
+                // C2PA: save full metadata to XMP sidecar for render+sign overlay
+                try xmpSidecarService.saveSidecar(metadata: editingMetadata, for: imageURL)
+            } else {
+                syncCameraRawToXMPSidecar(for: imageURL, metadata: editingMetadata)
+            }
             sidecarHistory = newHistory
             previousEditingMetadata = editingMetadata
             hasChanges = pendingChanges
@@ -2128,6 +2133,10 @@ final class MetadataViewModel {
 
             do {
                 try sidecarService.saveSidecar(sidecar, for: imageURL, in: folderURL)
+                if pendingChanges {
+                    // C2PA: save full metadata to XMP sidecar for render+sign overlay
+                    try xmpSidecarService.saveSidecar(metadata: existingMeta, for: imageURL)
+                }
             } catch {
                 saveError = "Failed to save metadata sidecar: \(error.localizedDescription)"
             }

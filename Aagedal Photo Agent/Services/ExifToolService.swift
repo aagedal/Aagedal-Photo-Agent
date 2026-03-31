@@ -508,7 +508,7 @@ final class ExifToolService {
 
     /// Read all metadata for a single file as pretty-printed JSON string.
     func readRawJSON(url: URL) async throws -> String {
-        let args = ["-json", "-G", "-struct", "-n", url.path]
+        let args = ["-json", "-G", "-struct", "-n", "-charset", "iptc=UTF8", url.path]
         let output = try await execute(args)
         // Re-serialize with sorted keys for readability
         let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -754,7 +754,7 @@ final class ExifToolService {
         let creationDates = captureCreationDates(for: urls)
         defer { restoreCreationDates(creationDates) }
 
-        var args = ["-overwrite_original", "-charset", "UTF8", "-charset", "iptc=UTF8", "-sep", ", "]
+        var args = ["-overwrite_original", "-charset", "UTF8", "-charset", "iptc=UTF8", "-IPTC:CodedCharacterSet=UTF8", "-sep", ", "]
         var tempFiles: [URL] = []
         defer {
             for file in tempFiles {
@@ -795,7 +795,7 @@ final class ExifToolService {
         let creationDates = captureCreationDates(for: urls)
         defer { restoreCreationDates(creationDates) }
 
-        var args = ["-overwrite_original", "-charset", "UTF8", "-charset", "iptc=UTF8"]
+        var args = ["-overwrite_original", "-charset", "UTF8", "-charset", "iptc=UTF8", "-IPTC:CodedCharacterSet=UTF8"]
 
         for (tag, values) in remove {
             for value in values {

@@ -352,6 +352,7 @@ struct ContentView: View {
             .fullScreenImagePresenter(viewModel: browserViewModel, scopeViewModel: scopeViewModel)
             .onAppear {
                 browserViewModel.loadFavorites()
+                browserViewModel.loadFavoriteTopLevelSubfolders()
                 browserViewModel.loadRecentFolders()
                 templateViewModel.loadTemplates()
                 ftpViewModel.loadConnections()
@@ -802,23 +803,14 @@ struct ContentView: View {
                 if !browserViewModel.favoriteFolders.isEmpty {
                     Section("Favorites") {
                         ForEach(browserViewModel.favoriteFolders) { favorite in
-                            Button {
-                                browserViewModel.loadFolder(url: favorite.url)
-                            } label: {
-                                Label(favorite.name, systemImage: "folder.fill")
-                            }
-                            .listRowInsets(EdgeInsets(top: 1, leading: 8, bottom: 1, trailing: 8))
-                            .contextMenu {
-                                Button("Reveal in Finder") {
-                                    revealInFinder(favorite.url)
-                                }
-
-                                Divider()
-
-                                Button("Remove from Favorites", role: .destructive) {
-                                    browserViewModel.removeFavorite(favorite)
-                                }
-                            }
+                            FolderTreeRow(
+                                url: favorite.url,
+                                depth: 0,
+                                section: .favoriteRoot,
+                                isRootOfSection: true,
+                                viewModel: browserViewModel,
+                                revealInFinder: revealInFinder
+                            )
                         }
                     }
                 }
@@ -854,201 +846,14 @@ struct ContentView: View {
                 if !browserViewModel.openFolders.isEmpty {
                     Section("Open Folders") {
                         ForEach(browserViewModel.openFolders, id: \.self) { folderURL in
-                            let isCurrent = folderURL == browserViewModel.currentFolderURL
-                            let subfolders = browserViewModel.subfoldersByOpenFolder[folderURL] ?? []
-                            let hasSubfolders = !subfolders.isEmpty
-                            let isExpanded = browserViewModel.expandedFolders.contains(folderURL)
-
-                            VStack(alignment: .leading, spacing: 2) {
-                                // Parent folder row
-                                HStack(spacing: 4) {
-                                    if hasSubfolders {
-                                        Image(systemName: "chevron.right")
-                                            .font(.caption2)
-                                            .fontWeight(.semibold)
-                                            .foregroundStyle(.secondary)
-                                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                                            .animation(.easeInOut(duration: 0.15), value: isExpanded)
-                                            .frame(width: 12, alignment: .center)
-                                            .contentShape(Rectangle())
-                                            .onTapGesture {
-                                                if isExpanded {
-                                                    browserViewModel.expandedFolders.remove(folderURL)
-                                                } else {
-                                                    browserViewModel.expandedFolders.insert(folderURL)
-                                                }
-                                            }
-                                    } else {
-                                        Spacer()
-                                            .frame(width: 12)
-                                    }
-
-                                    Image(systemName: "folder.fill")
-                                        .foregroundStyle(isCurrent ? Color.accentColor : Color.secondary)
-                                    Text(folderURL.lastPathComponent)
-                                        .font(.callout)
-                                        .foregroundStyle(isCurrent ? Color.accentColor : Color.primary)
-                                    Spacer()
-
-                                    Button {
-                                        browserViewModel.closeOpenFolder(folderURL)
-                                    } label: {
-                                        Image(systemName: "xmark.circle.fill")
-                                            .font(.caption)
-                                    }
-                                    .buttonStyle(.borderless)
-                                    .foregroundStyle(.secondary)
-                                    .help("Close Folder")
-                                }
-                                .padding(.vertical, 4)
-                                .padding(.horizontal, 6)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 6)
-                                        .fill(isCurrent ? Color.accentColor.opacity(0.15) : Color.clear)
-                                )
-                                .contentShape(Rectangle())
-                                .onTapGesture {
-                                    browserViewModel.loadFolder(url: folderURL)
-                                }
-
-                                // Subfolders
-                                if isExpanded {
-                                    ForEach(subfolders, id: \.self) { subfolderURL in
-                                        let isSubCurrent = subfolderURL == browserViewModel.currentFolderURL
-                                        let subSubfolders = browserViewModel.subfoldersByOpenFolder[subfolderURL] ?? []
-
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            HStack(spacing: 4) {
-                                                if !subSubfolders.isEmpty {
-                                                    Image(systemName: "chevron.right")
-                                                        .font(.caption2)
-                                                        .fontWeight(.semibold)
-                                                        .foregroundStyle(.secondary)
-                                                        .rotationEffect(.degrees(
-                                                            browserViewModel.expandedFolders.contains(subfolderURL) ? 90 : 0
-                                                        ))
-                                                        .animation(.easeInOut(duration: 0.15),
-                                                                   value: browserViewModel.expandedFolders.contains(subfolderURL))
-                                                        .frame(width: 10, alignment: .center)
-                                                        .contentShape(Rectangle())
-                                                        .onTapGesture {
-                                                            if browserViewModel.expandedFolders.contains(subfolderURL) {
-                                                                browserViewModel.expandedFolders.remove(subfolderURL)
-                                                            } else {
-                                                                browserViewModel.expandedFolders.insert(subfolderURL)
-                                                            }
-                                                        }
-                                                } else {
-                                                    Spacer()
-                                                        .frame(width: 10)
-                                                }
-
-                                                Image(systemName: isSubCurrent ? "folder.fill" : "folder")
-                                                    .foregroundStyle(isSubCurrent ? Color.accentColor : Color.secondary)
-                                                Text(subfolderURL.lastPathComponent)
-                                                    .foregroundStyle(isSubCurrent ? Color.accentColor : Color.primary)
-                                                Spacer()
-                                            }
-                                            .font(.callout)
-                                            .padding(.leading, 12)
-                                            .padding(.vertical, 3)
-                                            .padding(.trailing, 6)
-                                            .background(
-                                                RoundedRectangle(cornerRadius: 6)
-                                                    .fill(isSubCurrent ? Color.accentColor.opacity(0.15) : Color.clear)
-                                            )
-                                            .contentShape(Rectangle())
-                                            .onTapGesture {
-                                                browserViewModel.loadFolder(url: subfolderURL)
-                                            }
-                                            .contextMenu {
-                                                Button("Open as Folder") {
-                                                    browserViewModel.openSubfolderAsRoot(subfolderURL)
-                                                }
-
-                                                Button("Reveal in Finder") {
-                                                    revealInFinder(subfolderURL)
-                                                }
-
-                                                Divider()
-
-                                                Button("Rename...") {
-                                                    browserViewModel.promptRenameSubfolder(subfolderURL)
-                                                }
-
-                                                Button("Move to Trash", role: .destructive) {
-                                                    browserViewModel.confirmTrashSubfolder(subfolderURL)
-                                                }
-                                            }
-
-                                            // Sub-subfolders
-                                            if browserViewModel.expandedFolders.contains(subfolderURL), !subSubfolders.isEmpty {
-                                                ForEach(subSubfolders, id: \.self) { subSubURL in
-                                                    let isSubSubCurrent = subSubURL == browserViewModel.currentFolderURL
-                                                    HStack(spacing: 6) {
-                                                        Image(systemName: isSubSubCurrent ? "folder.fill" : "folder")
-                                                            .foregroundStyle(isSubSubCurrent ? Color.accentColor : Color.secondary)
-                                                        Text(subSubURL.lastPathComponent)
-                                                            .foregroundStyle(isSubSubCurrent ? Color.accentColor : Color.primary)
-                                                        Spacer()
-                                                    }
-                                                    .font(.callout)
-                                                    .padding(.leading, 32)
-                                                    .padding(.vertical, 2)
-                                                    .background(
-                                                        RoundedRectangle(cornerRadius: 6)
-                                                            .fill(isSubSubCurrent ? Color.accentColor.opacity(0.15) : Color.clear)
-                                                    )
-                                                    .contentShape(Rectangle())
-                                                    .onTapGesture {
-                                                        browserViewModel.loadFolder(url: subSubURL)
-                                                    }
-                                                    .contextMenu {
-                                                        Button("Open as Folder") {
-                                                            browserViewModel.openSubfolderAsRoot(subSubURL)
-                                                        }
-
-                                                        Button("Reveal in Finder") {
-                                                            revealInFinder(subSubURL)
-                                                        }
-
-                                                        Divider()
-
-                                                        Button("Rename...") {
-                                                            browserViewModel.promptRenameSubfolder(subSubURL)
-                                                        }
-
-                                                        Button("Move to Trash", role: .destructive) {
-                                                            browserViewModel.confirmTrashSubfolder(subSubURL)
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
-                            .contextMenu {
-                                Button("Reveal in Finder") {
-                                    revealInFinder(folderURL)
-                                }
-
-                                Divider()
-
-                                Button {
-                                    browserViewModel.addCurrentFolderToFavorites()
-                                } label: {
-                                    Label("Add to Favorites", systemImage: "star")
-                                }
-                                .disabled(browserViewModel.favoriteFolders.contains { $0.url == folderURL })
-
-                                Divider()
-
-                                Button("Close", role: .destructive) {
-                                    browserViewModel.closeOpenFolder(folderURL)
-                                }
-                            }
+                            FolderTreeRow(
+                                url: folderURL,
+                                depth: 0,
+                                section: .openRoot,
+                                isRootOfSection: true,
+                                viewModel: browserViewModel,
+                                revealInFinder: revealInFinder
+                            )
                         }
                     }
                 }
@@ -1394,7 +1199,16 @@ struct ContentView: View {
         // Prefer XMP sidecar IPTC (default write mode for C2PA files)
         let xmpService = XMPSidecarService()
         if let xmpMeta = xmpService.loadSidecar(for: sourceURL) {
-            let fields = xmpMeta.toExifToolFields()
+            var fields = xmpMeta.toExifToolFields()
+            // Rating and label are excluded from toExifToolFields() (managed separately
+            // in normal flow). For rendered output we must include them because the source
+            // file may be C2PA-protected and hold stale values.
+            if let rating = xmpMeta.rating {
+                fields[ExifToolWriteTag.rating] = String(rating)
+            }
+            if let label = xmpMeta.label, !label.isEmpty {
+                fields[ExifToolWriteTag.label] = label
+            }
             if !fields.isEmpty {
                 do {
                     try await browserViewModel.exifToolService.writeFields(fields, to: [renderedURL])
@@ -1408,7 +1222,13 @@ struct ContentView: View {
         guard let sidecar = sidecarService.loadSidecar(for: sourceURL, in: folderURL),
               sidecar.pendingChanges else { return }
 
-        let fields = sidecar.metadata.toExifToolFields()
+        var fields = sidecar.metadata.toExifToolFields()
+        if let rating = sidecar.metadata.rating {
+            fields[ExifToolWriteTag.rating] = String(rating)
+        }
+        if let label = sidecar.metadata.label, !label.isEmpty {
+            fields[ExifToolWriteTag.label] = label
+        }
         guard !fields.isEmpty else { return }
 
         do {
