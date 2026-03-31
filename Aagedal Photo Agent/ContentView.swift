@@ -1582,6 +1582,7 @@ struct ContentViewModifiers: ViewModifier {
     let loadTechnicalMetadata: () -> Void
     @Binding var technicalMetadataCache: [URL: TechnicalMetadata]
     @Binding var technicalMetadata: TechnicalMetadata?
+    @Environment(\.scenePhase) private var scenePhase
     @State private var selectionLoadTask: Task<Void, Never>?
     private let selectionDebounceNanoseconds: UInt64 = 200_000_000
     private let perfLog = Logger(subsystem: "com.aagedal.photo-agent", category: "MetadataPerf")
@@ -1623,6 +1624,20 @@ struct ContentViewModifiers: ViewModifier {
                     perfLog.info("[Selection] debounce done — \(debounceMs)ms, dispatching loadMetadata")
                     metadataViewModel.loadMetadata(for: selected, folderURL: browserViewModel.currentFolderURL)
                     loadTechnicalMetadata()
+                }
+            }
+            .onChange(of: scenePhase) { oldPhase, newPhase in
+                if oldPhase == .active, newPhase != .active,
+                   metadataViewModel.hasChanges {
+                    let hasC2PA = browserViewModel.selectedImages.contains { $0.hasC2PA }
+                    let mode = hasC2PA
+                        ? settingsViewModel.metadataWriteModeC2PA
+                        : settingsViewModel.metadataWriteModeNonC2PA
+                    if hasC2PA, mode == .writeToFile {
+                        metadataViewModel.saveToSidecar()
+                    } else {
+                        metadataViewModel.commitEdits(mode: mode, hasC2PA: hasC2PA)
+                    }
                 }
             }
             .onDrop(of: [.fileURL], isTargeted: nil) { providers in

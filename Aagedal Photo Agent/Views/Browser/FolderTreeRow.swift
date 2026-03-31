@@ -30,6 +30,10 @@ struct FolderTreeRow: View {
         return true // Optimistic — show chevron until loaded
     }
 
+    private var isFavoriteSection: Bool {
+        section == .favoriteRoot || section == .favoriteChild
+    }
+
     private var childSection: SidebarFolderSection {
         switch section {
         case .favoriteRoot, .favoriteChild: .favoriteChild
@@ -119,11 +123,20 @@ struct FolderTreeRow: View {
                 .fill(isCurrent ? Color.accentColor.opacity(0.15) : Color.clear)
         )
         .contentShape(Rectangle())
-        .onTapGesture(count: 2) {
-            viewModel.loadFolder(url: url)
+        .applyIf(isFavoriteSection) { view in
+            view
+                .onTapGesture(count: 2) {
+                    viewModel.loadFolder(url: url, addToOpenFolders: isRootOfSection)
+                }
+                .onTapGesture(count: 1) {
+                    viewModel.toggleFolderExpansion(url)
+                }
         }
-        .onTapGesture(count: 1) {
-            viewModel.toggleFolderExpansion(url)
+        .applyIf(!isFavoriteSection) { view in
+            view
+                .onTapGesture {
+                    viewModel.loadFolder(url: url, addToOpenFolders: isRootOfSection)
+                }
         }
     }
 
@@ -146,7 +159,7 @@ struct FolderTreeRow: View {
 
         case .favoriteChild:
             Button("Open") {
-                viewModel.loadFolder(url: url)
+                viewModel.loadFolder(url: url, addToOpenFolders: false)
             }
             Button("Reveal in Finder") {
                 revealInFinder(url)
@@ -189,6 +202,17 @@ struct FolderTreeRow: View {
             Button("Move to Trash", role: .destructive) {
                 viewModel.confirmTrashSubfolder(url)
             }
+        }
+    }
+}
+
+extension View {
+    @ViewBuilder
+    fileprivate func applyIf(_ condition: Bool, transform: (Self) -> some View) -> some View {
+        if condition {
+            transform(self)
+        } else {
+            self
         }
     }
 }

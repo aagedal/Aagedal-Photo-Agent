@@ -137,6 +137,21 @@ final class MetadataViewModel {
     ) -> IPTCMetadata? {
         switch source {
         case .embedded:
+            // For RAW files, CRS edits live exclusively in the XMP sidecar
+            // (the image file is never modified for C2PA). Override embedded
+            // CRS with XMP CRS even when the user prefers embedded IPTC.
+            if let embedded, let url = imageURL,
+               SupportedImageFormats.isRaw(url: url),
+               let xmpCRS = xmp?.cameraRaw, !xmpCRS.isEmpty {
+                var result = embedded
+                var finalCRS = xmpCRS
+                if (xmpCRS.localAdjustments?.isEmpty ?? true),
+                   let masks = embedded.cameraRaw?.localAdjustments, !masks.isEmpty {
+                    finalCRS.localAdjustments = masks
+                }
+                result.cameraRaw = finalCRS
+                return result
+            }
             return embedded
         case .xmp:
             if let embedded, let xmp {

@@ -1032,6 +1032,9 @@ struct EditWorkspaceView: View {
     }
 
     private func handleEditWorkspaceDisappear() {
+        // Flush any unsaved edit adjustments (CRS) to disk before tearing down.
+        commitEditAdjustments()
+
         metadataViewModel.isInEditView = false
         metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
         metalCoordinator.stopContinuousRendering()

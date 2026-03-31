@@ -394,7 +394,7 @@ final class BrowserViewModel {
 
     @ObservationIgnored private var loadFolderTask: Task<Void, Never>?
 
-    func loadFolder(url: URL) {
+    func loadFolder(url: URL, addToOpenFolders: Bool = true) {
         // Cancel any in-flight folder load to prevent stale results overwriting
         loadFolderTask?.cancel()
         // Reset in case the cancelled task's metadata loop left this true,
@@ -418,7 +418,7 @@ final class BrowserViewModel {
         restoreFilterState(for: url)
 
         // Add to open folders if not already there, unless it's a subfolder of an existing open folder
-        if !openFolders.contains(url) && !isSubfolderOfOpenFolder(url) {
+        if addToOpenFolders && !openFolders.contains(url) && !isSubfolderOfOpenFolder(url) {
             openFolders.append(url)
         }
 
