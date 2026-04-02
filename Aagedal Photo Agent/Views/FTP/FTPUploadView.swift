@@ -184,6 +184,7 @@ struct FTPUploadView: View {
         .padding()
         .frame(minWidth: 480)
         .onAppear {
+            activeFiles = files
             viewModel.loadConnections()
             viewModel.loadHistory()
             selectedServerID = viewModel.selectedConnectionID

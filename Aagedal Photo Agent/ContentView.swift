@@ -13,6 +13,11 @@ enum MainViewMode {
     case peopleDatabase    // Known People database view
 }
 
+struct FTPUploadItem: Identifiable {
+    let id = UUID()
+    let urls: [URL]
+}
+
 struct ContentView: View {
     @State private var browserViewModel: BrowserViewModel
     @State private var metadataViewModel: MetadataViewModel
@@ -25,8 +30,7 @@ struct ContentView: View {
     @State private var isShowingTemplateEditor = false
     @State private var isShowingTemplatePicker = false
     @State private var isShowingTemplatePalette = false
-    @State private var isShowingFTPUpload = false
-    @State private var ftpUploadFileURLs: [URL] = []
+    @State private var ftpUploadItem: FTPUploadItem?
     @State private var isShowingSaveTemplateName = false
     @State private var isShowingImport = false
     @State private var isShowingWriteAllC2PAWarning = false
@@ -85,7 +89,14 @@ struct ContentView: View {
         contentBase
             .sheet(isPresented: $isShowingTemplatePicker) { templatePickerSheet }
             .sheet(isPresented: $isShowingSaveTemplateName) { saveTemplateSheet }
-            .sheet(isPresented: $isShowingFTPUpload) { ftpUploadSheet }
+            .sheet(item: $ftpUploadItem) { item in
+                FTPUploadView(
+                    viewModel: ftpViewModel,
+                    files: item.urls,
+                    exifToolService: browserViewModel.exifToolService,
+                    onStartUpload: { ftpUploadItem = nil }
+                )
+            }
             .sheet(isPresented: $isShowingImport) { importSheet }
             .sheet(item: $c2paMetadata) { metadata in
                 C2PADetailSheet(metadata: metadata)
@@ -296,15 +307,13 @@ struct ContentView: View {
             .onReceive(NotificationCenter.default.publisher(for: .uploadSelected)) { _ in
                 let urls = browserViewModel.selectedImages.map(\.url)
                 if !urls.isEmpty {
-                    ftpUploadFileURLs = urls
-                    isShowingFTPUpload = true
+                    ftpUploadItem = FTPUploadItem(urls: urls)
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .uploadAll)) { _ in
                 let urls = browserViewModel.images.map(\.url)
                 if !urls.isEmpty {
-                    ftpUploadFileURLs = urls
-                    isShowingFTPUpload = true
+                    ftpUploadItem = FTPUploadItem(urls: urls)
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .showKnownPeopleDatabase)) { _ in
@@ -753,16 +762,6 @@ struct ContentView: View {
         }
         .help("Filter images")
         .disabled(browserViewModel.images.isEmpty)
-    }
-
-    @ViewBuilder
-    private var ftpUploadSheet: some View {
-        FTPUploadView(
-            viewModel: ftpViewModel,
-            files: ftpUploadFileURLs,
-            exifToolService: browserViewModel.exifToolService,
-            onStartUpload: { isShowingFTPUpload = false }
-        )
     }
 
     @ViewBuilder
