@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 enum SidebarFolderSection {
     case favoriteRoot
@@ -14,6 +15,8 @@ struct FolderTreeRow: View {
     let isRootOfSection: Bool
     @Bindable var viewModel: BrowserViewModel
     let revealInFinder: (URL) -> Void
+
+    @State private var isDropHighlighted = false
 
     private var isCurrent: Bool {
         url == viewModel.currentFolderURL
@@ -120,7 +123,12 @@ struct FolderTreeRow: View {
         .padding(.horizontal, 6)
         .background(
             RoundedRectangle(cornerRadius: 6)
-                .fill(isCurrent ? Color.accentColor.opacity(0.15) : Color.clear)
+                .fill(isCurrent ? Color.accentColor.opacity(0.15) :
+                      isDropHighlighted ? Color.accentColor.opacity(0.1) : Color.clear)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(isDropHighlighted ? Color.accentColor : Color.clear, lineWidth: 2)
         )
         .contentShape(Rectangle())
         .applyIf(isFavoriteSection) { view in
@@ -138,6 +146,15 @@ struct FolderTreeRow: View {
                     viewModel.loadFolder(url: url, addToOpenFolders: isRootOfSection)
                 }
         }
+        .onDrag {
+            NSItemProvider(object: url as NSURL)
+        }
+        .onDrop(of: [.fileURL], delegate: FolderDropDelegate(
+            targetURL: url,
+            section: section,
+            viewModel: viewModel,
+            isHighlighted: $isDropHighlighted
+        ))
     }
 
     @ViewBuilder
@@ -149,6 +166,9 @@ struct FolderTreeRow: View {
             }
             Button("Reveal in Finder") {
                 revealInFinder(url)
+            }
+            Button("New Subfolder...") {
+                viewModel.promptNewSubfolder(url)
             }
             Divider()
             Button("Remove from Favorites", role: .destructive) {
@@ -164,6 +184,9 @@ struct FolderTreeRow: View {
             Button("Reveal in Finder") {
                 revealInFinder(url)
             }
+            Button("New Subfolder...") {
+                viewModel.promptNewSubfolder(url)
+            }
             Divider()
             Button("Rename...") {
                 viewModel.promptRenameSubfolder(url)
@@ -175,6 +198,9 @@ struct FolderTreeRow: View {
         case .openRoot:
             Button("Reveal in Finder") {
                 revealInFinder(url)
+            }
+            Button("New Subfolder...") {
+                viewModel.promptNewSubfolder(url)
             }
             Divider()
             Button {
@@ -195,6 +221,9 @@ struct FolderTreeRow: View {
             Button("Reveal in Finder") {
                 revealInFinder(url)
             }
+            Button("New Subfolder...") {
+                viewModel.promptNewSubfolder(url)
+            }
             Divider()
             Button("Rename...") {
                 viewModel.promptRenameSubfolder(url)
@@ -203,6 +232,52 @@ struct FolderTreeRow: View {
                 viewModel.confirmTrashSubfolder(url)
             }
         }
+    }
+}
+
+// MARK: - Folder Drop Delegate
+
+struct FolderDropDelegate: DropDelegate {
+    let targetURL: URL
+    let section: SidebarFolderSection
+    let viewModel: BrowserViewModel
+    @Binding var isHighlighted: Bool
+
+    func dropEntered(info: DropInfo) {
+        isHighlighted = true
+    }
+
+    func dropExited(info: DropInfo) {
+        isHighlighted = false
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func validateDrop(info: DropInfo) -> Bool {
+        info.hasItemsConforming(to: [.fileURL])
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        isHighlighted = false
+        guard let provider = info.itemProviders(for: [.fileURL]).first else { return false }
+
+        provider.loadItem(forTypeIdentifier: "public.file-url", options: nil) { item, _ in
+            guard let data = item as? Data,
+                  let sourceURL = URL(dataRepresentation: data, relativeTo: nil) else { return }
+            Task { @MainActor in
+                // Both are favorite roots → reorder instead of filesystem move
+                let sourceIsFavoriteRoot = viewModel.favoriteFolders.contains { $0.url == sourceURL }
+                let targetIsFavoriteRoot = section == .favoriteRoot
+                if sourceIsFavoriteRoot && targetIsFavoriteRoot {
+                    viewModel.reorderFavorite(from: sourceURL, relativeTo: targetURL)
+                } else {
+                    viewModel.moveFolder(sourceURL, into: targetURL)
+                }
+            }
+        }
+        return true
     }
 }
 

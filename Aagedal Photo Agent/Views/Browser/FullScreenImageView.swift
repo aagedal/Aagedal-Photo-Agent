@@ -693,10 +693,21 @@ struct FullScreenImageView: View {
     }
 
     /// Apply CameraRaw adjustments + crop to a CGImage, preserving HDR color space.
-    nonisolated private static func applyCameraRaw(to cgImage: CGImage, settings: CameraRawSettings?, exifOrientation: Int = 1) -> CGImage {
-        guard let settings else { return cgImage }
+    /// When `fileOrientation` differs from `exifOrientation`, the image pixels have
+    /// the file's orientation baked in (e.g. C2PA images where the file wasn't modified).
+    /// Crop uses `fileOrientation` to match the pixel layout, then a corrective rotation
+    /// is applied to reach the target `exifOrientation`.
+    nonisolated private static func applyCameraRaw(to cgImage: CGImage, settings: CameraRawSettings?, exifOrientation: Int = 1, fileOrientation: Int = 0) -> CGImage {
+        guard let settings else {
+            return applyOrientationCorrection(cgImage, fileOrientation: fileOrientation, targetOrientation: exifOrientation)
+        }
+        let cropOrientation = fileOrientation > 0 ? fileOrientation : exifOrientation
         let ciImage = CIImage(cgImage: cgImage)
-        let processed = CameraRawApproximation.applyWithCrop(to: ciImage, settings: settings, exifOrientation: exifOrientation)
+        var processed = CameraRawApproximation.applyWithCrop(to: ciImage, settings: settings, exifOrientation: cropOrientation)
+
+        let correction = ImageFile.orientationCorrection(from: cropOrientation, to: exifOrientation)
+        if correction != .up { processed = processed.oriented(correction) }
+
         let extent = processed.extent
         guard extent.width > 0, extent.height > 0 else { return cgImage }
 
@@ -745,13 +756,18 @@ struct FullScreenImageView: View {
     }
 
     /// Apply CameraRaw adjustments + crop to a CIImage source, preserving HDR float values.
-    nonisolated private static func applyCameraRaw(to ciImage: CIImage, settings: CameraRawSettings?, exifOrientation: Int = 1) -> CGImage? {
-        let processed: CIImage
+    nonisolated private static func applyCameraRaw(to ciImage: CIImage, settings: CameraRawSettings?, exifOrientation: Int = 1, fileOrientation: Int = 0) -> CGImage? {
+        let cropOrientation = fileOrientation > 0 ? fileOrientation : exifOrientation
+        var processed: CIImage
         if let settings {
-            processed = CameraRawApproximation.applyWithCrop(to: ciImage, settings: settings, exifOrientation: exifOrientation)
+            processed = CameraRawApproximation.applyWithCrop(to: ciImage, settings: settings, exifOrientation: cropOrientation)
         } else {
             processed = ciImage
         }
+
+        let correction = ImageFile.orientationCorrection(from: cropOrientation, to: exifOrientation)
+        if correction != .up { processed = processed.oriented(correction) }
+
         let extent = processed.extent
         guard extent.width > 0, extent.height > 0 else { return nil }
         return CameraRawApproximation.ciContext.createCGImage(
@@ -759,6 +775,27 @@ struct FullScreenImageView: View {
             format: .RGBAh,
             colorSpace: CameraRawApproximation.workingColorSpace
         )
+    }
+
+    /// Correct a CGImage's orientation when the file's baked-in orientation
+    /// differs from the target (in-memory) orientation.
+    nonisolated private static func applyOrientationCorrection(
+        _ cgImage: CGImage,
+        fileOrientation: Int,
+        targetOrientation: Int
+    ) -> CGImage {
+        let delta = ImageFile.rotationDelta(from: fileOrientation > 0 ? fileOrientation : targetOrientation, to: targetOrientation)
+        guard delta > 0 else { return cgImage }
+        var result = cgImage
+        switch delta {
+        case 1: result = rotateCGImage90(result, clockwise: true) ?? result
+        case 2:
+            result = rotateCGImage90(result, clockwise: true) ?? result
+            result = rotateCGImage90(result, clockwise: true) ?? result
+        case 3: result = rotateCGImage90(result, clockwise: false) ?? result
+        default: break
+        }
+        return result
     }
 
     private func loadImage() async {
@@ -851,6 +888,17 @@ struct FullScreenImageView: View {
             lastLoadedOrientation = imageOrientation
         }
 
+        // File orientation = what the OS baked into the loaded pixels.
+        // When it differs from imageOrientation (e.g. C2PA images where
+        // the file isn't modified), applyCameraRaw applies corrective rotation.
+        let fileOrientation = lastLoadedOrientation
+
+        // If corrective rotation swaps width/height, adjust sourcePixelSize
+        let delta = ImageFile.rotationDelta(from: fileOrientation, to: imageOrientation)
+        if (delta == 1 || delta == 3), let size = sourcePixelSize {
+            sourcePixelSize = CGSize(width: size.height, height: size.width)
+        }
+
         // Phase 0: Instant — check retina cache, then display preview cache, then thumbnail
         if let cached = imageCache.cachedImage(for: url, isEdited: isEdited) {
             imageLogger.info("\(filename): Phase 0 cache hit (edited=\(isEdited))")
@@ -882,12 +930,12 @@ struct FullScreenImageView: View {
                             settings?.asShotNeutralTemperature = Double(rawResult.neutralTemperature)
                             settings?.asShotNeutralTint = Double(rawResult.neutralTint)
                             let ciImage = FullScreenImageCache.downsample(rawResult.image, maxPixelSize: screenMaxPx)
-                            image = Self.applyCameraRaw(to: ciImage, settings: settings, exifOrientation: imageOrientation)
+                            image = Self.applyCameraRaw(to: ciImage, settings: settings, exifOrientation: imageOrientation, fileOrientation: fileOrientation)
                         }
                     } else {
                         if let ciImage = FullScreenImageCache.loadHDRPreview(from: url, maxPixelSize: screenMaxPx) {
                             guard !Task.isCancelled else { return }
-                            image = Self.applyCameraRaw(to: ciImage, settings: cameraRaw, exifOrientation: imageOrientation)
+                            image = Self.applyCameraRaw(to: ciImage, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: fileOrientation)
                         }
                     }
                 }
@@ -897,7 +945,7 @@ struct FullScreenImageView: View {
                         return
                     }
                     guard !Task.isCancelled else { return }
-                    loaded = Self.applyCameraRaw(to: loaded, settings: cameraRaw, exifOrientation: imageOrientation)
+                    loaded = Self.applyCameraRaw(to: loaded, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: fileOrientation)
                     image = loaded
                 }
                 guard let image, !Task.isCancelled else { return }
@@ -907,6 +955,7 @@ struct FullScreenImageView: View {
                           currentImageFile?.url == url else { return }
                     imageLogger.info("\(filename): Phase 2 done in \(String(format: "%.1f", fullElapsed * 1000))ms (\(image.width)x\(image.height))")
                     currentImage = makeLoadedImage(from: image)
+                    lastLoadedOrientation = imageOrientation
                     imageCache.store(image, for: url, isEdited: isEdited)
                     triggerPrefetch(for: url)
                 }
@@ -945,12 +994,12 @@ struct FullScreenImageView: View {
                         settings?.asShotNeutralTemperature = Double(rawResult.neutralTemperature)
                         settings?.asShotNeutralTint = Double(rawResult.neutralTint)
                         let ciImage = FullScreenImageCache.downsample(rawResult.image, maxPixelSize: screenMaxPx)
-                        image = Self.applyCameraRaw(to: ciImage, settings: settings, exifOrientation: imageOrientation)
+                        image = Self.applyCameraRaw(to: ciImage, settings: settings, exifOrientation: imageOrientation, fileOrientation: fileOrientation)
                     }
                 } else {
                     if let ciImage = FullScreenImageCache.loadHDRPreview(from: url, maxPixelSize: screenMaxPx) {
                         guard !Task.isCancelled else { return }
-                        image = Self.applyCameraRaw(to: ciImage, settings: cameraRaw, exifOrientation: imageOrientation)
+                        image = Self.applyCameraRaw(to: ciImage, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: fileOrientation)
                     }
                 }
             }
@@ -967,7 +1016,7 @@ struct FullScreenImageView: View {
                     return
                 }
                 guard !Task.isCancelled else { return }
-                loaded = Self.applyCameraRaw(to: loaded, settings: cameraRaw, exifOrientation: imageOrientation)
+                loaded = Self.applyCameraRaw(to: loaded, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: fileOrientation)
                 image = loaded
             }
             guard let image else { return }
@@ -984,6 +1033,7 @@ struct FullScreenImageView: View {
                 if currentImageFile?.url == url {
                     imageLogger.info("\(filename): Phase 2 done in \(String(format: "%.1f", fullElapsed * 1000))ms (\(image.width)x\(image.height))")
                     currentImage = makeLoadedImage(from: image)
+                    lastLoadedOrientation = imageOrientation
                     isLoading = false
                     loadError = nil
                     imageCache.store(image, for: url, isEdited: isEdited)
@@ -1003,13 +1053,13 @@ struct FullScreenImageView: View {
             if isRAW {
                 guard let raw = FullScreenImageCache.extractEmbeddedPreview(from: url) else { return nil }
                 guard !Task.isCancelled else { return nil }
-                return Self.applyCameraRaw(to: raw, settings: cameraRaw, exifOrientation: imageOrientation)
+                return Self.applyCameraRaw(to: raw, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: fileOrientation)
             }
             // Try HDR CIImage path first; fall through to CGImage if crop/render fails
             if needsHDRLoad,
                let ciImage = FullScreenImageCache.loadHDRPreview(from: url, maxPixelSize: 960) {
                 guard !Task.isCancelled else { return nil }
-                if let result = Self.applyCameraRaw(to: ciImage, settings: cameraRaw, exifOrientation: imageOrientation) {
+                if let result = Self.applyCameraRaw(to: ciImage, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: fileOrientation) {
                     return result
                 }
             }
@@ -1017,7 +1067,7 @@ struct FullScreenImageView: View {
             guard !Task.isCancelled else { return nil }
             guard let raw = FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: 960) else { return nil }
             guard !Task.isCancelled else { return nil }
-            return Self.applyCameraRaw(to: raw, settings: cameraRaw, exifOrientation: imageOrientation)
+            return Self.applyCameraRaw(to: raw, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: fileOrientation)
         }
         phase05Task = p05
         let preview = await p05.value
@@ -1055,6 +1105,7 @@ struct FullScreenImageView: View {
         let needsHDRFullRes = cameraRaw != nil || currentImageFile?.isNativeHDR == true
         let isRAWFile = SupportedImageFormats.isRaw(url: url)
         let orientation = currentImageFile?.exifOrientation ?? 1
+        let zoomFileOrientation = lastLoadedOrientation
         let expectedGeneration = renderGeneration
         imageLogger.info("\(filename): Loading full resolution for zoom")
         isLoading = true
@@ -1070,12 +1121,12 @@ struct FullScreenImageView: View {
                         var settings = cameraRaw
                         settings?.asShotNeutralTemperature = Double(rawResult.neutralTemperature)
                         settings?.asShotNeutralTint = Double(rawResult.neutralTint)
-                        image = Self.applyCameraRaw(to: rawResult.image, settings: settings, exifOrientation: orientation)
+                        image = Self.applyCameraRaw(to: rawResult.image, settings: settings, exifOrientation: orientation, fileOrientation: zoomFileOrientation)
                     }
                 } else {
                     if let ciImage = FullScreenImageCache.loadHDRFullResolution(from: url) {
                         guard !Task.isCancelled else { return }
-                        image = Self.applyCameraRaw(to: ciImage, settings: cameraRaw, exifOrientation: orientation)
+                        image = Self.applyCameraRaw(to: ciImage, settings: cameraRaw, exifOrientation: orientation, fileOrientation: zoomFileOrientation)
                     }
                 }
             }
@@ -1083,7 +1134,7 @@ struct FullScreenImageView: View {
             if image == nil {
                 guard var loaded = FullScreenImageCache.loadFullResolution(from: url) else { return }
                 guard !Task.isCancelled else { return }
-                loaded = Self.applyCameraRaw(to: loaded, settings: cameraRaw, exifOrientation: orientation)
+                loaded = Self.applyCameraRaw(to: loaded, settings: cameraRaw, exifOrientation: orientation, fileOrientation: zoomFileOrientation)
                 image = loaded
             }
             guard let image else { return }

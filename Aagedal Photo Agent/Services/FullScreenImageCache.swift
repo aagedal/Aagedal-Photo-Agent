@@ -335,7 +335,7 @@ final class FullScreenImageCache: @unchecked Sendable {
         ]
         return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
     }
-
+    
     struct RAWDecodeResult: @unchecked Sendable {
         let image: CIImage
         let neutralTemperature: Float

@@ -147,6 +147,17 @@ struct ContentView: View {
             } message: {
                 Text("Enter a new name for this folder.")
             }
+            .alert("New Subfolder", isPresented: $browserViewModel.showNewSubfolderAlert) {
+                TextField("Name", text: $browserViewModel.newSubfolderName)
+                Button("Cancel", role: .cancel) {
+                    browserViewModel.pendingNewSubfolderParentURL = nil
+                }
+                Button("Create") {
+                    browserViewModel.createPendingSubfolder()
+                }
+            } message: {
+                Text("Enter a name for the new subfolder.")
+            }
             .alert("Reset All Edits", isPresented: $browserViewModel.showResetEditsConfirmation) {
                 Button("Cancel", role: .cancel) { }
                 Button("Reset", role: .destructive) {
@@ -1755,15 +1766,20 @@ struct AutoRefreshModifier: ViewModifier {
                                 // the rebuild cascade steals TextField focus.
                                 guard browserViewModel.searchText.isEmpty else { return }
 
+                                // Skip the folder refresh while the user has unsaved
+                                // metadata edits — the rebuildVisibleCache cascade can
+                                // change selectedImageIDs (via the filter intersection
+                                // check), which triggers onChange → loadMetadata and
+                                // overwrites the in-progress edits.  The refresh will
+                                // run on the next cycle after the user saves/commits.
+                                guard !metadataViewModel.hasChanges else { return }
+
                                 browserViewModel.refreshCurrentFolderIfNeeded()
 
                                 // If any currently selected file was modified externally,
                                 // reload full metadata so the browser reflects the changes.
-                                // Skip if the user has pending edits or a save is in flight
-                                // to avoid overwriting unsaved changes.
                                 let selectedURLs = Set(metadataViewModel.selectedURLs)
                                 if !selectedURLs.isEmpty,
-                                   !metadataViewModel.hasChanges,
                                    !metadataViewModel.isSaving,
                                    !browserViewModel.lastRefreshModifiedURLs.isDisjoint(with: selectedURLs) {
                                     metadataViewModel.loadMetadata(
@@ -1771,6 +1787,9 @@ struct AutoRefreshModifier: ViewModifier {
                                         folderURL: browserViewModel.currentFolderURL
                                     )
                                 }
+                                // Clear after processing so stale URLs don't trigger
+                                // repeated reloads on every subsequent 5-second cycle.
+                                browserViewModel.clearLastRefreshModifiedURLs()
                             }
                         }
                     }

@@ -1,4 +1,5 @@
 import Foundation
+import ImageIO
 import UniformTypeIdentifiers
 
 struct ThumbnailCropRegion: Sendable, Equatable {
@@ -136,6 +137,28 @@ struct ImageFile: Identifiable, Hashable, Sendable {
         case 4: return 7
         case 7: return 2
         default: return 8
+        }
+    }
+
+    /// Number of 90° CW rotations needed to correct from `fileOrientation`
+    /// (baked into pixels by the OS) to `targetOrientation` (in-memory).
+    /// Returns 0 when no correction is needed.
+    nonisolated static func rotationDelta(from fileOrientation: Int, to targetOrientation: Int) -> Int {
+        guard fileOrientation != targetOrientation else { return 0 }
+        let cwSteps: [Int: Int] = [1: 0, 6: 1, 3: 2, 8: 3]
+        let fromStep = cwSteps[fileOrientation] ?? 0
+        let toStep = cwSteps[targetOrientation] ?? 0
+        return (toStep - fromStep + 4) % 4
+    }
+
+    /// CGImagePropertyOrientation to apply as corrective rotation from
+    /// `fileOrientation` to `targetOrientation`.  Returns `.up` (no-op) when equal.
+    nonisolated static func orientationCorrection(from fileOrientation: Int, to targetOrientation: Int) -> CGImagePropertyOrientation {
+        switch rotationDelta(from: fileOrientation, to: targetOrientation) {
+        case 1: return .right   // 90° CW
+        case 2: return .down    // 180°
+        case 3: return .left    // 270° CW
+        default: return .up
         }
     }
 

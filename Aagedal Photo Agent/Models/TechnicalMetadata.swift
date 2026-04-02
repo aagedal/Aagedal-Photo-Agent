@@ -24,6 +24,10 @@ struct TechnicalMetadata {
         static let claimGeneratorInfoName = "Claim_Generator_InfoName"
         static let authorName = "AuthorName"
         static let relationship = "Relationship"
+        static let serialNumber = "SerialNumber"
+        static let software = "Software"
+        static let lensID = "LensID"
+        static let whiteBalance = "WhiteBalance"
     }
 
     var camera: String?
@@ -38,6 +42,10 @@ struct TechnicalMetadata {
     var imageHeight: Int?
     var bitDepth: Int?
     var colorSpace: String?
+    var serialNumber: String?
+    var software: String?
+    var lensID: String?
+    var whiteBalance: String?
 
     // C2PA
     var hasC2PA: Bool
@@ -103,6 +111,26 @@ struct TechnicalMetadata {
             iso = String(isoVal)
         } else if let isoVal = dict[ExifKey.iso] as? Double {
             iso = String(Int(isoVal))
+        }
+
+        // Serial number
+        serialNumber = dict[ExifKey.serialNumber] as? String
+
+        // Software / firmware
+        software = dict[ExifKey.software] as? String
+
+        // Lens ID (Composite tag — text description when available, numeric otherwise)
+        if let lid = dict[ExifKey.lensID] as? String {
+            lensID = lid
+        } else if let lid = dict[ExifKey.lensID] as? Int, lid != 65535, lid != 0 {
+            lensID = String(lid)
+        }
+
+        // White balance (EXIF numeric: 0 = Auto, 1 = Manual)
+        if let wb = dict[ExifKey.whiteBalance] as? Int {
+            whiteBalance = wb == 0 ? "Auto" : "Manual"
+        } else if let wb = dict[ExifKey.whiteBalance] as? String {
+            whiteBalance = wb
         }
 
         // Resolution — prefer EXIF, fall back to File
@@ -188,6 +216,13 @@ struct TechnicalMetadata {
                let first = isoArr.first {
                 dict[ExifKey.iso] = first
             }
+
+            // Body serial number & firmware
+            dict[ExifKey.serialNumber] = exif[kCGImagePropertyExifBodySerialNumber as String]
+            dict[ExifKey.software] = tiff[kCGImagePropertyTIFFSoftware as String]
+
+            // White balance
+            dict[ExifKey.whiteBalance] = exif[kCGImagePropertyExifWhiteBalance as String]
 
             // Dimensions
             dict[ExifKey.imageWidth] = props[kCGImagePropertyPixelWidth as String]

@@ -284,6 +284,12 @@ struct XMPSidecarService: Sendable {
             setSimple(on: description, prefix: "exif", localName: "GPSLongitude", value: nil)
         }
 
+        if let orientation = metadata.exifOrientation {
+            setSimple(on: description, prefix: "exif", localName: "Orientation", value: String(orientation))
+        } else {
+            setSimple(on: description, prefix: "exif", localName: "Orientation", value: nil)
+        }
+
         updateCameraRawSettings(on: description, settings: metadata.cameraRaw)
     }
 
@@ -569,6 +575,7 @@ struct XMPSidecarService: Sendable {
         let event = parseSimple(from: description, prefix: "Iptc4xmpExt", localName: "Event")
         let latValue = parseSimple(from: description, prefix: "exif", localName: "GPSLatitude")
         let lonValue = parseSimple(from: description, prefix: "exif", localName: "GPSLongitude")
+        let orientationValue = parseSimple(from: description, prefix: "exif", localName: "Orientation")
         let cameraRaw = parseCameraRawSettings(from: description)
 
         return IPTCMetadata(
@@ -590,7 +597,8 @@ struct XMPSidecarService: Sendable {
             event: event,
             rating: ratingValue.flatMap { Int($0) },
             label: label,
-            cameraRaw: cameraRaw
+            cameraRaw: cameraRaw,
+            exifOrientation: orientationValue.flatMap { Int($0) }
         )
     }
 

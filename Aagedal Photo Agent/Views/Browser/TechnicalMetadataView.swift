@@ -11,8 +11,17 @@ struct TechnicalMetadataView: View {
                 if let camera = m.camera {
                     row("Camera", camera)
                 }
+                if let sn = m.serialNumber {
+                    row("Serial No.", sn)
+                }
+                if let sw = m.software {
+                    row("Firmware", sw)
+                }
                 if let lens = m.lens {
                     row("Lens", lens)
+                }
+                if let lid = m.lensID {
+                    row("Lens ID", lid)
                 }
                 if let date = m.captureDate {
                     row("Captured", date)
@@ -31,6 +40,9 @@ struct TechnicalMetadataView: View {
                 }
                 if let iso = m.iso {
                     row("ISO", iso)
+                }
+                if let wb = m.whiteBalance {
+                    row("White Balance", wb)
                 }
                 if let res = m.resolution {
                     row("Resolution", res)

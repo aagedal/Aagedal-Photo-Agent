@@ -315,17 +315,33 @@ final class MetadataViewModel {
             }
         } else {
             // Batch mode: load metadata for all selected images and find common values
-            metadata = nil
-            editingMetadata = IPTCMetadata()
-            previousEditingMetadata = nil
-            embeddedMetadata = nil
-            xmpMetadata = nil
-            metadataReferenceSource = .embedded
+            //
+            // When reloading the same batch (e.g. auto-refresh after external edit),
+            // skip the synchronous editingMetadata reset to avoid blanking the fields
+            // while the user is editing.  The async load will update only if values
+            // actually changed — mirroring the single-image isReloadingSameImage
+            // optimisation.
+            let selectionSnapshot = Set(images.map(\.url))
+            let isReloadingSameBatch = selectedCount > 1
+                && selectionSnapshot == Set(selectedURLs)
+                && batchCommonMetadata != nil
+
+            if !isReloadingSameBatch {
+                metadata = nil
+                editingMetadata = IPTCMetadata()
+                previousEditingMetadata = nil
+                embeddedMetadata = nil
+                xmpMetadata = nil
+                metadataReferenceSource = .embedded
+            }
             isLoadingBatchMetadata = true
 
-            let selectionSnapshot = Set(images.map(\.url))
             metadataLoadTask = Task {
-                await loadBatchMetadata(for: images, selectionSnapshot: selectionSnapshot)
+                await loadBatchMetadata(
+                    for: images,
+                    selectionSnapshot: selectionSnapshot,
+                    isReload: isReloadingSameBatch
+                )
                 guard !Task.isCancelled else { return }
                 self.isLoadingBatchMetadata = false
                 self.refreshPendingSidecarsFlag(for: selectionSnapshot)
@@ -356,7 +372,7 @@ final class MetadataViewModel {
     }
 
     /// Load metadata for all selected images and compute common values
-    private func loadBatchMetadata(for images: [ImageFile], selectionSnapshot: Set<URL>) async {
+    private func loadBatchMetadata(for images: [ImageFile], selectionSnapshot: Set<URL>, isReload: Bool = false) async {
         let urls = images.map(\.url)
         var allMetadata: [IPTCMetadata] = []
 
@@ -425,9 +441,14 @@ final class MetadataViewModel {
 
         self.batchCommonMetadata = common
         self.batchDifferingFields = differing
-        // Pre-populate editing metadata with common values
-        self.editingMetadata = common
-        self.previousEditingMetadata = common
+        // Pre-populate editing metadata with common values.
+        // On redundant reloads (same batch, e.g. auto-refresh), skip the
+        // update when the loaded values match what's already displayed to
+        // avoid overwriting the user's in-progress edits.
+        if !isReload || self.editingMetadata != common {
+            self.editingMetadata = common
+            self.previousEditingMetadata = common
+        }
     }
 
     private func compareOptionalField<T: Equatable>(

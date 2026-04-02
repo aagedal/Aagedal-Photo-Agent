@@ -466,7 +466,6 @@ struct EditWorkspaceView: View {
                                                 var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
                                                 settings.localAdjustments?[maskIdx].geometry = newGeometry
                                                 pipeline.updateParams(settings)
-                                                pipeline.updateOverlayParams(geometry: newGeometry, visible: true)
                                             }
                                         },
                                         onCommit: {
@@ -476,7 +475,6 @@ struct EditWorkspaceView: View {
                                                 }
                                                 dragMaskGeometry = nil
                                             }
-                                            metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
                                             isDraggingMask = false
                                             isDraggingEditSlider = false
                                             commitEditAdjustments()
@@ -528,7 +526,6 @@ struct EditWorkspaceView: View {
                                             var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
                                             settings.localAdjustments?[maskIdx].geometry = newGeometry
                                             pipeline.updateParams(settings)
-                                            pipeline.updateOverlayParams(geometry: newGeometry, visible: true)
                                         }
                                     },
                                     onCommit: {
@@ -539,7 +536,6 @@ struct EditWorkspaceView: View {
                                             }
                                             dragMaskGeometry = nil
                                         }
-                                        metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
                                         isDraggingMask = false
                                         isDraggingEditSlider = false
                                         commitEditAdjustments()
@@ -1192,6 +1188,19 @@ struct EditWorkspaceView: View {
         let previewMaxPixelSize = previewWorkingMaxPixelSize
         isLoadingPreview = true
         let isRaw = SupportedImageFormats.isRaw(url: selectedImageURL)
+
+        // Detect the file's baked-in orientation for corrective rotation.
+        // C2PA images can't be modified, so the file orientation may differ
+        // from the in-memory orientation after the user rotates.
+        let targetOrientation = selectedImageOrientation
+        let fileOrientation: Int = {
+            guard let source = CGImageSourceCreateWithURL(selectedImageURL as CFURL, nil),
+                  let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+                  let o = props[kCGImagePropertyOrientation] as? Int else { return targetOrientation }
+            return o
+        }()
+        let orientationCorrection = ImageFile.orientationCorrection(from: fileOrientation, to: targetOrientation)
+
         editLog.info("[\(filename)] loadSelectedImagePreview: starting previewTask (isRaw=\(isRaw), maxPx=\(Int(previewMaxPixelSize)))")
 
         previewTask = Task {
@@ -1243,8 +1252,9 @@ struct EditWorkspaceView: View {
                 // (mirrors non-RAW path so WB/tonal adjustments render as soon as
                 // metadata loads, even before the full RAW decode completes).
                 if let ci = sourceCIImage, let pipeline = metalPipeline {
+                    let uploadCI = orientationCorrection != .up ? ci.oriented(orientationCorrection) : ci
                     await Task.detached(priority: .medium) {
-                        pipeline.uploadSourceImage(ci)
+                        pipeline.uploadSourceImage(uploadCI)
                     }.value
                     guard !Task.isCancelled else {
                         editLog.info("[\(filename)] Phase 1: cancelled during Metal upload")
@@ -1293,8 +1303,9 @@ struct EditWorkspaceView: View {
                             editLog.info("[\(filename)] Phase 2: upgrading cached texture to full resolution")
                         }
                         let uploadStart = ContinuousClock.now
+                        let uploadRAW = orientationCorrection != .up ? rawCIImage.oriented(orientationCorrection) : rawCIImage
                         await Task.detached(priority: .medium) {
-                            pipeline.uploadSourceImage(rawCIImage)
+                            pipeline.uploadSourceImage(uploadRAW)
                         }.value
                         let uploadElapsed = ContinuousClock.now - uploadStart
                         guard !Task.isCancelled else {
@@ -1387,8 +1398,9 @@ struct EditWorkspaceView: View {
 
                 // Upload Phase 1 preview to Metal for immediate interactive editing
                 if let ci = sourceCIImage, let pipeline = metalPipeline {
+                    let uploadCI = orientationCorrection != .up ? ci.oriented(orientationCorrection) : ci
                     await Task.detached(priority: .medium) {
-                        pipeline.uploadSourceImage(ci)
+                        pipeline.uploadSourceImage(uploadCI)
                     }.value
                     guard !Task.isCancelled else { return }
                     syncViewportToMetal()
@@ -1420,8 +1432,9 @@ struct EditWorkspaceView: View {
                         editLog.info("[\(filename)] Phase 2: full-res decoded in \(ContinuousClock.now - phase2Start) (\(Int(extent.width))x\(Int(extent.height)))")
 
                         let uploadStart = ContinuousClock.now
+                        let uploadFull = orientationCorrection != .up ? fullResCIImage.oriented(orientationCorrection) : fullResCIImage
                         await Task.detached(priority: .medium) {
-                            pipeline.uploadSourceImage(fullResCIImage)
+                            pipeline.uploadSourceImage(uploadFull)
                         }.value
                         guard !Task.isCancelled else { return }
                         editLog.info("[\(filename)] Phase 2: texture uploaded in \(ContinuousClock.now - uploadStart)")

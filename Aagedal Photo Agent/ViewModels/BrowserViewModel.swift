@@ -132,6 +132,12 @@ final class BrowserViewModel {
     @ObservationIgnored private var searchDebounceTask: Task<Void, Never>?
     @ObservationIgnored private var filterDebounceTask: Task<Void, Never>?
     @ObservationIgnored private(set) var lastRefreshModifiedURLs: Set<URL> = []
+
+    /// Clear after the auto-refresh modifier has processed the modified URLs,
+    /// so stale entries don't trigger repeated metadata reloads.
+    func clearLastRefreshModifiedURLs() {
+        lastRefreshModifiedURLs = []
+    }
     @ObservationIgnored private var isAutoRefreshing = false
     @ObservationIgnored private var isMetadataLoading = false
     @ObservationIgnored private var pendingMetadataURLs: Set<URL> = []
@@ -785,9 +791,10 @@ final class BrowserViewModel {
                     applySidecarCropState(to: &updated[index], cameraRaw: finalCRS)
                 }
 
-                // XMP sidecar rating/label overrides — written by writeToXMPSidecar
-                // mode for C2PA images (and any other images using that mode).
-                // ExifTool only reads from the image file, not adjacent .xmp files.
+                // XMP sidecar rating/label/orientation overrides — written by
+                // writeToXMPSidecar mode for C2PA images (and any other images
+                // using that mode).  ExifTool only reads from the image file,
+                // not adjacent .xmp files.
                 if let xmpMeta {
                     if let xmpRating = xmpMeta.rating,
                        let starRating = StarRating(rawValue: xmpRating) {
@@ -795,6 +802,12 @@ final class BrowserViewModel {
                     }
                     if let xmpLabel = xmpMeta.label, !xmpLabel.isEmpty {
                         updated[index].colorLabel = ColorLabel.fromMetadataLabel(xmpLabel)
+                    }
+                    if let xmpOrientation = xmpMeta.exifOrientation {
+                        updated[index].exifOrientation = xmpOrientation
+                        // Recompute crop region with corrected orientation
+                        updated[index].cropRegion = cropRegion(
+                            in: dict, exifOrientation: xmpOrientation)
                     }
                 }
 
@@ -1816,6 +1829,138 @@ final class BrowserViewModel {
         if currentFolderURL == oldURL {
             loadFolder(url: newURL)
         }
+    }
+
+    // MARK: - New Subfolder
+
+    var showNewSubfolderAlert = false
+    var newSubfolderName = ""
+    @ObservationIgnored var pendingNewSubfolderParentURL: URL?
+
+    func promptNewSubfolder(_ parentURL: URL) {
+        pendingNewSubfolderParentURL = parentURL
+        newSubfolderName = ""
+        showNewSubfolderAlert = true
+    }
+
+    func createPendingSubfolder() {
+        guard let parentURL = pendingNewSubfolderParentURL else { return }
+        pendingNewSubfolderParentURL = nil
+        let trimmed = newSubfolderName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            errorMessage = "Subfolder name can't be empty."
+            return
+        }
+        if trimmed.rangeOfCharacter(from: CharacterSet(charactersIn: "/:")) != nil {
+            errorMessage = "Subfolder name can't contain / or : characters."
+            return
+        }
+
+        let newFolderURL = parentURL.appendingPathComponent(trimmed, isDirectory: true)
+        if FileManager.default.fileExists(atPath: newFolderURL.path) {
+            errorMessage = "A folder named \"\(trimmed)\" already exists."
+            return
+        }
+
+        do {
+            try FileManager.default.createDirectory(at: newFolderURL, withIntermediateDirectories: false)
+        } catch {
+            errorMessage = "Failed to create subfolder: \(error.localizedDescription)"
+            return
+        }
+
+        // Update cache: append and re-sort
+        if subfoldersByOpenFolder[parentURL] != nil {
+            subfoldersByOpenFolder[parentURL]!.append(newFolderURL)
+            subfoldersByOpenFolder[parentURL]!.sort { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+        } else {
+            ensureSubfoldersLoaded(for: parentURL)
+        }
+        expandedFolders.insert(parentURL)
+    }
+
+    // MARK: - Move Folder
+
+    func moveFolder(_ sourceURL: URL, into destinationURL: URL) {
+        let sourcePath = sourceURL.path(percentEncoded: false)
+        let destPath = destinationURL.path(percentEncoded: false)
+
+        // Can't move into itself
+        guard sourceURL != destinationURL else { return }
+        // Can't move into own descendant
+        guard !destPath.hasPrefix(sourcePath + "/") else {
+            errorMessage = "Cannot move a folder into its own subfolder."
+            return
+        }
+        // Already in that parent — no-op
+        guard sourceURL.deletingLastPathComponent().path(percentEncoded: false) != destPath else { return }
+
+        let newURL = destinationURL.appendingPathComponent(sourceURL.lastPathComponent, isDirectory: true)
+        if FileManager.default.fileExists(atPath: newURL.path) {
+            errorMessage = "A folder named \"\(sourceURL.lastPathComponent)\" already exists in \"\(destinationURL.lastPathComponent)\"."
+            return
+        }
+
+        do {
+            try FileManager.default.moveItem(at: sourceURL, to: newURL)
+        } catch {
+            errorMessage = "Failed to move folder: \(error.localizedDescription)"
+            return
+        }
+
+        // Remove source from its old parent's cache
+        for (parentURL, children) in subfoldersByOpenFolder {
+            if children.contains(sourceURL) {
+                subfoldersByOpenFolder[parentURL] = children.filter { $0 != sourceURL }
+                break
+            }
+        }
+
+        // Add to destination's cache
+        if subfoldersByOpenFolder[destinationURL] != nil {
+            subfoldersByOpenFolder[destinationURL]!.append(newURL)
+            subfoldersByOpenFolder[destinationURL]!.sort { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+        } else {
+            ensureSubfoldersLoaded(for: destinationURL)
+        }
+
+        // Purge stale descendant caches
+        removeSubfolderCacheRecursively(for: sourceURL)
+        expandedFolders.insert(destinationURL)
+
+        // Update favorites if the moved folder was a favorite root
+        if let favIndex = favoriteFolders.firstIndex(where: { $0.url == sourceURL }) {
+            favoriteFolders[favIndex].url = newURL
+            favoriteFolders[favIndex].name = newURL.lastPathComponent
+            saveFavorites()
+        }
+
+        // Update openFolders if the moved folder was an open root
+        if let openIndex = openFolders.firstIndex(of: sourceURL) {
+            openFolders[openIndex] = newURL
+        }
+
+        // Handle current folder
+        if currentFolderURL == sourceURL {
+            loadFolder(url: newURL)
+        } else if let current = currentFolderURL,
+                  current.path(percentEncoded: false).hasPrefix(sourcePath + "/") {
+            // Current folder was a descendant of the moved folder — its path is now invalid
+            let relativeSuffix = current.path(percentEncoded: false).dropFirst(sourcePath.count)
+            let newCurrentPath = newURL.path(percentEncoded: false) + relativeSuffix
+            loadFolder(url: URL(fileURLWithPath: String(newCurrentPath)))
+        }
+    }
+
+    // MARK: - Reorder Favorites
+
+    func reorderFavorite(from sourceURL: URL, relativeTo targetURL: URL) {
+        guard sourceURL != targetURL else { return }
+        guard let sourceIndex = favoriteFolders.firstIndex(where: { $0.url == sourceURL }),
+              let targetIndex = favoriteFolders.firstIndex(where: { $0.url == targetURL }) else { return }
+        let item = favoriteFolders.remove(at: sourceIndex)
+        favoriteFolders.insert(item, at: targetIndex)
+        saveFavorites()
     }
 
     func closeOpenFolder(_ url: URL) {
