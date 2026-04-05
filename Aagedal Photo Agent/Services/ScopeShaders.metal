@@ -142,9 +142,9 @@ inline float3 applyEdits(
         // Highlight desaturation — HDR-aware thresholds (mirrors EditAdjustments.metal)
         float lum = dot(rgb, float3(0.2126, 0.7152, 0.0722));
         bool isHDR = (params.activeFlags & (1u << 4)) != 0;
-        float desatLow  = isHDR ? 1.5  : 0.55;
-        float desatHigh = isHDR ? 4.0  : 1.3;
-        float desatMax  = isHDR ? 0.5  : 0.7;
+        float desatLow  = isHDR ? 1.5  : 0.85;
+        float desatHigh = isHDR ? 4.0  : 1.6;
+        float desatMax  = isHDR ? 0.5  : 0.40;
         float desat = smoothstep(desatLow, desatHigh, lum) * desatMax;
         rgb = mix(rgb, float3(lum), desat);
     }
@@ -243,7 +243,8 @@ inline float3 applyEdits(
                     float t = (x - knee) / (1.0 - knee);
                     float tClamped = min(t, 2.0);
                     if (mask.whites > 0) {
-                        float wt = tClamped * (2.0 - tClamped);
+                        float tSat = min(tClamped, 1.0);
+                        float wt = tSat * tSat * (3.0 - 2.0 * tSat);
                         x += mask.whites * 1.2 * wt;
                     } else {
                         float pull = sqrt(tClamped) * 0.25;

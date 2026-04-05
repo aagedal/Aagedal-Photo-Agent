@@ -76,7 +76,13 @@ struct EditParams {
 /// NSCache-compatible wrapper for MTLTexture (value types can't be cached directly).
 final class MTLTextureWrapper: @unchecked Sendable {
     nonisolated(unsafe) let texture: MTLTexture
-    nonisolated init(_ texture: MTLTexture) { self.texture = texture }
+    nonisolated(unsafe) let neutralTemperature: Float
+    nonisolated(unsafe) let neutralTint: Float
+    nonisolated init(_ texture: MTLTexture, neutralTemperature: Float = 6500, neutralTint: Float = 0) {
+        self.texture = texture
+        self.neutralTemperature = neutralTemperature
+        self.neutralTint = neutralTint
+    }
 }
 
 /// Handles ALL edit operations via a unified shader: tonal adjustments through a 1D LUT
@@ -714,7 +720,7 @@ final class MetalEditPipeline: @unchecked Sendable {
 
     /// Pre-render a CIImage to a Metal texture and cache it by URL.
     /// Call from a background task for adjacent images (prev/next).
-    nonisolated func precacheTexture(for url: URL, ciImage: CIImage) {
+    nonisolated func precacheTexture(for url: URL, ciImage: CIImage, neutralTemperature: Float = 6500, neutralTint: Float = 0) {
         let extent = ciImage.extent
         guard extent.width > 0, extent.height > 0 else { return }
 
@@ -751,15 +757,15 @@ final class MetalEditPipeline: @unchecked Sendable {
 
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
-        textureCache.setObject(MTLTextureWrapper(texture), forKey: url as NSURL)
+        textureCache.setObject(MTLTextureWrapper(texture, neutralTemperature: neutralTemperature, neutralTint: neutralTint), forKey: url as NSURL)
     }
 
-    /// Promote a pre-cached texture to sourceTexture. Returns true if cache hit.
-    nonisolated func applyCachedTexture(for url: URL) -> Bool {
-        guard let wrapper = textureCache.object(forKey: url as NSURL) else { return false }
+    /// Promote a pre-cached texture to sourceTexture. Returns as-shot WB on hit, nil on miss.
+    nonisolated func applyCachedTexture(for url: URL) -> (neutralTemperature: Float, neutralTint: Float)? {
+        guard let wrapper = textureCache.object(forKey: url as NSURL) else { return nil }
         sourceTexture = wrapper.texture
         textureCache.removeObject(forKey: url as NSURL)
-        return true
+        return (neutralTemperature: wrapper.neutralTemperature, neutralTint: wrapper.neutralTint)
     }
 
     // MARK: - Offscreen Rendering

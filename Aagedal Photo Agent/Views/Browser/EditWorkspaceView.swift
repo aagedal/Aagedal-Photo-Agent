@@ -1210,9 +1210,8 @@ struct EditWorkspaceView: View {
             }
 
             if isRaw {
-                // RAW three-phase load: embedded JPEG preview (instant), then
-                // CIRAWFilter draft decode at full sensor resolution (fast), then
-                // full-quality refinement in background.
+                // RAW two-phase load: embedded JPEG preview (instant), then
+                // full-quality CIRAWFilter decode at full sensor resolution.
 
                 // Phase 1: Extract embedded JPEG preview from RAW container (no RAW decode)
                 let phase1Start = ContinuousClock.now
@@ -1270,8 +1269,17 @@ struct EditWorkspaceView: View {
                 // After upload, materialize sourceCIImage at screen resolution to release
                 // the heavyweight CIRAWFilter pipeline (~260MB per instance).
                 if let pipeline = metalPipeline {
-                    let cacheHit = pipeline.applyCachedTexture(for: selectedImageURL)
-                    if cacheHit { syncViewportToMetal() }
+                    let cachedWB = pipeline.applyCachedTexture(for: selectedImageURL)
+                    let cacheHit = cachedWB != nil
+                    if let cachedWB {
+                        // Apply cached as-shot WB from the flat RAW pre-decode so the
+                        // precached texture renders with correct white balance and tone.
+                        asShotWhiteBalance = (temperature: cachedWB.neutralTemperature, tint: cachedWB.neutralTint)
+                        pipeline.asShotTemperature = Double(cachedWB.neutralTemperature)
+                        pipeline.asShotTint = Double(cachedWB.neutralTint)
+                        syncViewportToMetal()
+                        renderPreview()
+                    }
                     editLog.info("[\(filename)] Phase 2: starting (cacheHit=\(cacheHit))")
 
                     let phase2Start = ContinuousClock.now
@@ -1313,6 +1321,11 @@ struct EditWorkspaceView: View {
                             return
                         }
                         editLog.info("[\(filename)] Phase 2: texture uploaded in \(uploadElapsed)")
+                        // Eagerly update Metal params before state changes — setting
+                        // isDecodingFullResolution triggers SwiftUI re-eval → setNeedsDisplay,
+                        // which would otherwise draw the new flat RAW texture with stale params.
+                        syncViewportToMetal()
+                        renderPreview()
                     }
                     isDecodingFullResolution = false
 
@@ -1502,13 +1515,20 @@ struct EditWorkspaceView: View {
                     return
                 }
                 let start = ContinuousClock.now
-                guard let ciImage = FullScreenImageCache.loadHDRPreview(
-                    from: url, maxPixelSize: screenMaxPx
+                // Use the same flat CIRAWFilter decode as Phase 2 so the precached
+                // texture matches the final render (no auto-boost / tone mismatch).
+                guard let rawResult = FullScreenImageCache.loadRAWImage(
+                    from: url, draftMode: false
                 ) else {
                     editLog.info("[\(url.lastPathComponent)] precache: decode failed")
                     continue
                 }
-                pipeline.precacheTexture(for: url, ciImage: ciImage)
+                let ciImage = FullScreenImageCache.downsample(rawResult.image, maxPixelSize: screenMaxPx)
+                pipeline.precacheTexture(
+                    for: url, ciImage: ciImage,
+                    neutralTemperature: rawResult.neutralTemperature,
+                    neutralTint: rawResult.neutralTint
+                )
                 let elapsed = ContinuousClock.now - start
                 editLog.info("[\(url.lastPathComponent)] precache: done in \(elapsed)")
             }

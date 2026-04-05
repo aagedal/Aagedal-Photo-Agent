@@ -117,8 +117,10 @@ nonisolated struct ToneCurveGenerator: Sendable {
                     let t = (x - knee) / (1.0 - knee) // 0 at knee, 1 at linear 1.0
                     let tClamped = min(t, 2.0) // allow some HDR headroom
                     if whites > 0 {
-                        // Positive: smooth ramp, stronger at top
-                        let weight = tClamped * (2.0 - tClamped) // parabolic, peaks at t=1
+                        // Positive: smoothstep ramp peaking at t=1, clamped so super-white
+                        // values keep the full lift (prevents non-monotonic LUT reversal).
+                        let tSat = min(tClamped, 1.0)
+                        let weight = tSat * tSat * (3.0 - 2.0 * tSat) // smoothstep
                         x += whites * 1.2 * weight
                     } else {
                         // Negative: compress toward knee, preserving order.

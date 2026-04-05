@@ -48,6 +48,8 @@ nonisolated enum UserDefaultsKeys {
     static let ftpConnections = "ftpConnections"
     static let lastUsedFTPConnectionID = "lastUsedFTPConnectionID"
     static let ftpUploadHistory = "ftpUploadHistory"
+    static let ftpCheckIPTCBeforeUpload = "ftpCheckIPTCBeforeUpload"
+    static let ftpCheckedIPTCFields = "ftpCheckedIPTCFields"
 
     // MARK: - Browser
     static let rawRenderAsHDR = "rawRenderAsHDR"

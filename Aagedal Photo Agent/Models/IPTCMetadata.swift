@@ -461,6 +461,53 @@ enum DigitalSourceType: String, Codable, CaseIterable, Sendable {
     }
 }
 
+// MARK: - Field Key (for upload metadata check)
+
+extension IPTCMetadata {
+    nonisolated enum FieldKey: String, CaseIterable, Codable, Sendable {
+        case title, description, extendedDescription, keywords, personShown
+        case creator, credit, copyright, jobId, dateCreated, city, country, event
+
+        var displayName: String {
+            switch self {
+            case .title: return "Headline"
+            case .description: return "Description"
+            case .extendedDescription: return "Extended Description"
+            case .keywords: return "Keywords"
+            case .personShown: return "Person Shown"
+            case .creator: return "Creator"
+            case .credit: return "Credit"
+            case .copyright: return "Copyright"
+            case .jobId: return "Job ID"
+            case .dateCreated: return "Date Created"
+            case .city: return "City"
+            case .country: return "Country"
+            case .event: return "Event"
+            }
+        }
+
+        func isEmpty(in metadata: IPTCMetadata) -> Bool {
+            switch self {
+            case .title: return metadata.title?.isEmpty ?? true
+            case .description: return metadata.description?.isEmpty ?? true
+            case .extendedDescription: return metadata.extendedDescription?.isEmpty ?? true
+            case .keywords: return metadata.keywords.isEmpty
+            case .personShown: return metadata.personShown.isEmpty
+            case .creator: return metadata.creator?.isEmpty ?? true
+            case .credit: return metadata.credit?.isEmpty ?? true
+            case .copyright: return metadata.copyright?.isEmpty ?? true
+            case .jobId: return metadata.jobId?.isEmpty ?? true
+            case .dateCreated: return metadata.dateCreated?.isEmpty ?? true
+            case .city: return metadata.city?.isEmpty ?? true
+            case .country: return metadata.country?.isEmpty ?? true
+            case .event: return metadata.event?.isEmpty ?? true
+            }
+        }
+
+        static let defaultCheckedFields: Set<FieldKey> = [.title, .description, .creator, .copyright]
+    }
+}
+
 extension Array where Element: Hashable {
     /// Returns the array with duplicates removed, preserving the order of first occurrences.
     func uniqued() -> [Element] {

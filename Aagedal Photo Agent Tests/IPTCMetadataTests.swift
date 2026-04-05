@@ -1,0 +1,465 @@
+import Testing
+import Foundation
+@testable import Aagedal_Photo_Agent
+
+// MARK: - toExifToolFields
+
+@Suite("IPTCMetadata.toExifToolFields")
+struct ToExifToolFieldsTests {
+
+    @Test("empty metadata produces empty dict")
+    func emptyMetadataProducesEmptyDict() {
+        let metadata = IPTCMetadata()
+        #expect(metadata.toExifToolFields().isEmpty)
+    }
+
+    @Test("title maps to headline tag")
+    func titleMapsToHeadline() {
+        let metadata = IPTCMetadata(title: "My Photo")
+        let fields = metadata.toExifToolFields()
+        #expect(fields[ExifToolWriteTag.headline] == "My Photo")
+    }
+
+    @Test("description maps to XMP description tag")
+    func descriptionMapsToDescription() {
+        let metadata = IPTCMetadata(description: "A beautiful sunset")
+        let fields = metadata.toExifToolFields()
+        #expect(fields[ExifToolWriteTag.description] == "A beautiful sunset")
+    }
+
+    @Test("keywords joined with comma-space")
+    func keywordsJoinedWithCommaSpace() {
+        let metadata = IPTCMetadata(keywords: ["nature", "landscape", "sunset"])
+        let fields = metadata.toExifToolFields()
+        #expect(fields[ExifToolWriteTag.subject] == "nature, landscape, sunset")
+    }
+
+    @Test("single keyword not joined")
+    func singleKeywordNotJoined() {
+        let metadata = IPTCMetadata(keywords: ["nature"])
+        let fields = metadata.toExifToolFields()
+        #expect(fields[ExifToolWriteTag.subject] == "nature")
+    }
+
+    @Test("empty keywords not included")
+    func emptyKeywordsNotIncluded() {
+        let metadata = IPTCMetadata(keywords: [])
+        let fields = metadata.toExifToolFields()
+        #expect(fields[ExifToolWriteTag.subject] == nil)
+    }
+
+    @Test("personShown maps to PersonInImage tag")
+    func personShownMapsToPersonInImage() {
+        let metadata = IPTCMetadata(personShown: ["Alice", "Bob"])
+        let fields = metadata.toExifToolFields()
+        #expect(fields[ExifToolWriteTag.personInImage] == "Alice, Bob")
+    }
+
+    @Test("copyright maps to XMP rights tag")
+    func copyrightMapsToRights() {
+        let metadata = IPTCMetadata(copyright: "© 2026 Photographer")
+        let fields = metadata.toExifToolFields()
+        #expect(fields[ExifToolWriteTag.rights] == "© 2026 Photographer")
+    }
+
+    @Test("creator maps to XMP creator tag")
+    func creatorMapsToCreator() {
+        let metadata = IPTCMetadata(creator: "Jane Doe")
+        let fields = metadata.toExifToolFields()
+        #expect(fields[ExifToolWriteTag.creator] == "Jane Doe")
+    }
+
+    @Test("credit maps to credit tag")
+    func creditMapsToCredit() {
+        let metadata = IPTCMetadata(credit: "Wire Service")
+        let fields = metadata.toExifToolFields()
+        #expect(fields[ExifToolWriteTag.credit] == "Wire Service")
+    }
+
+    @Test("jobId maps to transmission reference tag")
+    func jobIdMapsToTransmissionReference() {
+        let metadata = IPTCMetadata(jobId: "JOB-001")
+        let fields = metadata.toExifToolFields()
+        #expect(fields[ExifToolWriteTag.transmissionReference] == "JOB-001")
+    }
+
+    @Test("city maps to city tag")
+    func cityMapsToCity() {
+        let metadata = IPTCMetadata(city: "Oslo")
+        let fields = metadata.toExifToolFields()
+        #expect(fields[ExifToolWriteTag.city] == "Oslo")
+    }
+
+    @Test("country maps to country tag")
+    func countryMapsToCountry() {
+        let metadata = IPTCMetadata(country: "Norway")
+        let fields = metadata.toExifToolFields()
+        #expect(fields[ExifToolWriteTag.country] == "Norway")
+    }
+
+    @Test("event maps to event tag")
+    func eventMapsToEvent() {
+        let metadata = IPTCMetadata(event: "World Cup 2026")
+        let fields = metadata.toExifToolFields()
+        #expect(fields[ExifToolWriteTag.event] == "World Cup 2026")
+    }
+
+    @Test("digitalSourceType maps to raw value")
+    func digitalSourceTypeMapsToRawValue() {
+        let metadata = IPTCMetadata(digitalSourceType: .digitalCapture)
+        let fields = metadata.toExifToolFields()
+        #expect(fields[ExifToolWriteTag.digitalSourceType] == "digitalCapture")
+    }
+
+    @Test("northern GPS coordinates use N/E refs")
+    func northernGPSCoordinatesUseNE() {
+        let metadata = IPTCMetadata(latitude: 59.913, longitude: 10.752)
+        let fields = metadata.toExifToolFields()
+        #expect(fields[ExifToolWriteTag.gpsLatitudeRef] == "N")
+        #expect(fields[ExifToolWriteTag.gpsLongitudeRef] == "E")
+        #expect(fields[ExifToolWriteTag.gpsLatitude] == "59.913")
+        #expect(fields[ExifToolWriteTag.gpsLongitude] == "10.752")
+    }
+
+    @Test("southern GPS coordinates use S/W refs with positive absolute value")
+    func southernGPSCoordinatesUseSW() {
+        let metadata = IPTCMetadata(latitude: -33.865, longitude: -70.649)
+        let fields = metadata.toExifToolFields()
+        #expect(fields[ExifToolWriteTag.gpsLatitudeRef] == "S")
+        #expect(fields[ExifToolWriteTag.gpsLongitudeRef] == "W")
+        #expect(fields[ExifToolWriteTag.gpsLatitude] == "33.865")
+        #expect(fields[ExifToolWriteTag.gpsLongitude] == "70.649")
+    }
+
+    @Test("GPS only included when both lat and lon are set")
+    func gpsRequiresBothCoordinates() {
+        let onlyLat = IPTCMetadata(latitude: 59.913, longitude: nil)
+        let onlyLon = IPTCMetadata(latitude: nil, longitude: 10.752)
+        #expect(onlyLat.toExifToolFields()[ExifToolWriteTag.gpsLatitude] == nil)
+        #expect(onlyLon.toExifToolFields()[ExifToolWriteTag.gpsLongitude] == nil)
+    }
+
+    @Test("rating not included in exiftool fields (managed separately)")
+    func ratingNotIncluded() {
+        let metadata = IPTCMetadata(rating: 5)
+        let fields = metadata.toExifToolFields()
+        #expect(fields[ExifToolWriteTag.rating] == nil)
+    }
+
+    @Test("label not included in exiftool fields (managed separately)")
+    func labelNotIncluded() {
+        let metadata = IPTCMetadata(label: "Red")
+        let fields = metadata.toExifToolFields()
+        #expect(fields[ExifToolWriteTag.label] == nil)
+    }
+}
+
+// MARK: - hasIPTCDifferences
+
+@Suite("IPTCMetadata.hasIPTCDifferences")
+struct HasIPTCDifferencesTests {
+
+    @Test("identical metadata has no differences")
+    func identicalHasNoDifferences() {
+        let a = IPTCMetadata(title: "Test", keywords: ["a", "b"], creator: "Alice")
+        #expect(a.hasIPTCDifferences(from: a) == false)
+    }
+
+    @Test("different title detected")
+    func differentTitleDetected() {
+        let a = IPTCMetadata(title: "Title A")
+        let b = IPTCMetadata(title: "Title B")
+        #expect(a.hasIPTCDifferences(from: b) == true)
+    }
+
+    @Test("different description detected")
+    func differentDescriptionDetected() {
+        let a = IPTCMetadata(description: "Desc A")
+        let b = IPTCMetadata(description: "Desc B")
+        #expect(a.hasIPTCDifferences(from: b) == true)
+    }
+
+    @Test("different keywords detected")
+    func differentKeywordsDetected() {
+        let a = IPTCMetadata(keywords: ["cat"])
+        let b = IPTCMetadata(keywords: ["dog"])
+        #expect(a.hasIPTCDifferences(from: b) == true)
+    }
+
+    @Test("different persons detected")
+    func differentPersonsDetected() {
+        let a = IPTCMetadata(personShown: ["Alice"])
+        let b = IPTCMetadata(personShown: ["Bob"])
+        #expect(a.hasIPTCDifferences(from: b) == true)
+    }
+
+    @Test("rating difference alone not detected by hasIPTCDifferences")
+    func ratingDifferenceNotDetected() {
+        let a = IPTCMetadata(rating: 3)
+        let b = IPTCMetadata(rating: 5)
+        #expect(a.hasIPTCDifferences(from: b) == false)
+    }
+
+    @Test("label difference alone not detected by hasIPTCDifferences")
+    func labelDifferenceNotDetected() {
+        let a = IPTCMetadata(label: "Red")
+        let b = IPTCMetadata(label: "Blue")
+        #expect(a.hasIPTCDifferences(from: b) == false)
+    }
+
+    @Test("nil vs nil title has no difference")
+    func nilVsNilTitleNoDifference() {
+        let a = IPTCMetadata(title: nil)
+        let b = IPTCMetadata(title: nil)
+        #expect(a.hasIPTCDifferences(from: b) == false)
+    }
+}
+
+// MARK: - merged
+
+@Suite("IPTCMetadata.merged")
+struct MergedTests {
+
+    @Test("override non-empty title wins")
+    func overrideTitleWins() {
+        let base = IPTCMetadata(title: "Base Title")
+        let override = IPTCMetadata(title: "Override Title")
+        let result = base.merged(preferring: override)
+        #expect(result.title == "Override Title")
+    }
+
+    @Test("base title kept when override is nil")
+    func baseTitleKeptWhenOverrideNil() {
+        let base = IPTCMetadata(title: "Base Title")
+        let override = IPTCMetadata(title: nil)
+        let result = base.merged(preferring: override)
+        #expect(result.title == "Base Title")
+    }
+
+    @Test("base title kept when override is empty string")
+    func baseTitleKeptWhenOverrideEmpty() {
+        let base = IPTCMetadata(title: "Base Title")
+        let override = IPTCMetadata(title: "")
+        let result = base.merged(preferring: override)
+        #expect(result.title == "Base Title")
+    }
+
+    @Test("override keywords win when non-empty")
+    func overrideKeywordsWin() {
+        let base = IPTCMetadata(keywords: ["nature"])
+        let override = IPTCMetadata(keywords: ["city", "travel"])
+        let result = base.merged(preferring: override)
+        #expect(result.keywords == ["city", "travel"])
+    }
+
+    @Test("base keywords kept when override empty")
+    func baseKeywordsKeptWhenOverrideEmpty() {
+        let base = IPTCMetadata(keywords: ["nature"])
+        let override = IPTCMetadata(keywords: [])
+        let result = base.merged(preferring: override)
+        #expect(result.keywords == ["nature"])
+    }
+
+    @Test("override rating wins when set")
+    func overrideRatingWins() {
+        let base = IPTCMetadata(rating: 3)
+        let override = IPTCMetadata(rating: 5)
+        let result = base.merged(preferring: override)
+        #expect(result.rating == 5)
+    }
+
+    @Test("base rating kept when override is nil")
+    func baseRatingKeptWhenOverrideNil() {
+        let base = IPTCMetadata(rating: 3)
+        let override = IPTCMetadata(rating: nil)
+        let result = base.merged(preferring: override)
+        #expect(result.rating == 3)
+    }
+
+    @Test("merging two empty metadata produces empty")
+    func mergingEmptyProducesEmpty() {
+        let base = IPTCMetadata()
+        let override = IPTCMetadata()
+        let result = base.merged(preferring: override)
+        #expect(result.title == nil)
+        #expect(result.keywords.isEmpty)
+        #expect(result.rating == nil)
+    }
+
+    @Test("GPS coordinates merged when override has both")
+    func gpsCoordinatesMerged() {
+        let base = IPTCMetadata(latitude: 1.0, longitude: 2.0)
+        let override = IPTCMetadata(latitude: 59.913, longitude: 10.752)
+        let result = base.merged(preferring: override)
+        #expect(result.latitude == 59.913)
+        #expect(result.longitude == 10.752)
+    }
+
+    @Test("digitalSourceType merged from override")
+    func digitalSourceTypeMerged() {
+        let base = IPTCMetadata(digitalSourceType: .digitalCapture)
+        let override = IPTCMetadata(digitalSourceType: .trainedAlgorithmicMedia)
+        let result = base.merged(preferring: override)
+        #expect(result.digitalSourceType == .trainedAlgorithmicMedia)
+    }
+}
+
+// MARK: - Codable
+
+@Suite("IPTCMetadata Codable")
+struct IPTCMetadataCodableTests {
+
+    private let encoder: JSONEncoder = {
+        let e = JSONEncoder()
+        e.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return e
+    }()
+
+    private let decoder = JSONDecoder()
+
+    @Test("all IPTC fields survive encode/decode roundtrip")
+    func allFieldsRoundtrip() throws {
+        let original = IPTCMetadata(
+            title: "Test Title",
+            description: "A description",
+            extendedDescription: "Extended",
+            keywords: ["kw1", "kw2"],
+            personShown: ["Alice"],
+            digitalSourceType: .digitalCapture,
+            latitude: 59.913,
+            longitude: 10.752,
+            creator: "Creator Name",
+            credit: "Credit Line",
+            copyright: "© 2026",
+            jobId: "JOB123",
+            dateCreated: "2026-01-01",
+            captureDate: "2026-01-01T12:00:00",
+            city: "Oslo",
+            country: "Norway",
+            event: "Test Event",
+            rating: 4,
+            label: "Red"
+        )
+        let data = try encoder.encode(original)
+        let decoded = try decoder.decode(IPTCMetadata.self, from: data)
+
+        #expect(decoded.title == "Test Title")
+        #expect(decoded.description == "A description")
+        #expect(decoded.extendedDescription == "Extended")
+        #expect(decoded.keywords == ["kw1", "kw2"])
+        #expect(decoded.personShown == ["Alice"])
+        #expect(decoded.digitalSourceType == .digitalCapture)
+        #expect(decoded.latitude == 59.913)
+        #expect(decoded.longitude == 10.752)
+        #expect(decoded.creator == "Creator Name")
+        #expect(decoded.credit == "Credit Line")
+        #expect(decoded.copyright == "© 2026")
+        #expect(decoded.jobId == "JOB123")
+        #expect(decoded.dateCreated == "2026-01-01")
+        #expect(decoded.captureDate == "2026-01-01T12:00:00")
+        #expect(decoded.city == "Oslo")
+        #expect(decoded.country == "Norway")
+        #expect(decoded.event == "Test Event")
+        #expect(decoded.rating == 4)
+        #expect(decoded.label == "Red")
+    }
+
+    @Test("cameraRaw excluded from JSON serialization")
+    func cameraRawExcludedFromJSON() throws {
+        var crs = CameraRawSettings()
+        crs.exposure2012 = 1.5
+        crs.temperature = 5500
+        let metadata = IPTCMetadata(cameraRaw: crs)
+        let data = try encoder.encode(metadata)
+        let jsonString = String(data: data, encoding: .utf8) ?? ""
+        #expect(!jsonString.contains("cameraRaw"))
+        #expect(!jsonString.contains("exposure"))
+        #expect(!jsonString.contains("temperature"))
+    }
+
+    @Test("exifOrientation excluded from JSON serialization")
+    func exifOrientationExcludedFromJSON() throws {
+        let metadata = IPTCMetadata(exifOrientation: 6)
+        let data = try encoder.encode(metadata)
+        let jsonString = String(data: data, encoding: .utf8) ?? ""
+        #expect(!jsonString.contains("exifOrientation"))
+    }
+
+    @Test("cameraRaw is nil after decoding (sourced from XMP only)")
+    func cameraRawNilAfterDecode() throws {
+        let original = IPTCMetadata(cameraRaw: CameraRawSettings())
+        let data = try encoder.encode(original)
+        let decoded = try decoder.decode(IPTCMetadata.self, from: data)
+        #expect(decoded.cameraRaw == nil)
+    }
+
+    @Test("duplicate keywords deduplicated on decode")
+    func duplicateKeywordsDeduplicated() throws {
+        let json = """
+        {"keywords": ["nature", "travel", "nature", "city", "travel"]}
+        """.data(using: .utf8)!
+        let decoded = try decoder.decode(IPTCMetadata.self, from: json)
+        #expect(decoded.keywords == ["nature", "travel", "city"])
+    }
+
+    @Test("duplicate personShown deduplicated on decode")
+    func duplicatePersonsDeduplicated() throws {
+        let json = """
+        {"keywords": [], "personShown": ["Alice", "Bob", "Alice"]}
+        """.data(using: .utf8)!
+        let decoded = try decoder.decode(IPTCMetadata.self, from: json)
+        #expect(decoded.personShown.count == 2)
+        #expect(decoded.personShown.contains("Alice"))
+        #expect(decoded.personShown.contains("Bob"))
+    }
+
+    @Test("missing optional fields decode to nil/empty")
+    func missingOptionalFieldsDecodeToNilOrEmpty() throws {
+        let json = "{}".data(using: .utf8)!
+        let decoded = try decoder.decode(IPTCMetadata.self, from: json)
+        #expect(decoded.title == nil)
+        #expect(decoded.keywords.isEmpty)
+        #expect(decoded.personShown.isEmpty)
+        #expect(decoded.rating == nil)
+    }
+}
+
+// MARK: - FieldKey
+
+@Suite("IPTCMetadata.FieldKey")
+struct FieldKeyTests {
+
+    @Test("isEmpty returns true for nil string fields")
+    func isEmptyForNilStringFields() {
+        let metadata = IPTCMetadata()
+        #expect(IPTCMetadata.FieldKey.title.isEmpty(in: metadata))
+        #expect(IPTCMetadata.FieldKey.description.isEmpty(in: metadata))
+        #expect(IPTCMetadata.FieldKey.creator.isEmpty(in: metadata))
+        #expect(IPTCMetadata.FieldKey.copyright.isEmpty(in: metadata))
+    }
+
+    @Test("isEmpty returns false when fields have values")
+    func isEmptyFalseWhenFieldsHaveValues() {
+        let metadata = IPTCMetadata(
+            title: "T", description: "D", keywords: ["k"],
+            creator: "C", copyright: "©"
+        )
+        #expect(IPTCMetadata.FieldKey.title.isEmpty(in: metadata) == false)
+        #expect(IPTCMetadata.FieldKey.keywords.isEmpty(in: metadata) == false)
+    }
+
+    @Test("isEmpty true for empty string")
+    func isEmptyTrueForEmptyString() {
+        let metadata = IPTCMetadata(title: "")
+        #expect(IPTCMetadata.FieldKey.title.isEmpty(in: metadata))
+    }
+
+    @Test("defaultCheckedFields contains expected fields")
+    func defaultCheckedFieldsContainExpectedFields() {
+        let defaults = IPTCMetadata.FieldKey.defaultCheckedFields
+        #expect(defaults.contains(.title))
+        #expect(defaults.contains(.description))
+        #expect(defaults.contains(.creator))
+        #expect(defaults.contains(.copyright))
+    }
+}

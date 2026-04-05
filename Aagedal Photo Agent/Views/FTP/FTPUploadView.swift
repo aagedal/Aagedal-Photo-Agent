@@ -18,6 +18,13 @@ struct FTPUploadView: View {
     @State private var expandedHistoryID: UUID?
     @State private var preprocessErrors: [String] = []
     @State private var isFileListExpanded = false
+    @State private var checkIPTCBeforeUpload: Bool
+    @State private var checkedIPTCFields: Set<IPTCMetadata.FieldKey>
+    @State private var isCheckingIPTC = false
+    @State private var iptcCheckProgress = ""
+    @State private var showIPTCCheckResults = false
+    @State private var iptcCheckResults: [IPTCCheckResult] = []
+    @State private var pendingUploadRenderFirst = false
 
     init(viewModel: FTPViewModel, files: [URL], exifToolService: ExifToolService, onStartUpload: (() -> Void)? = nil) {
         self.viewModel = viewModel
@@ -25,6 +32,16 @@ struct FTPUploadView: View {
         self.exifToolService = exifToolService
         self.onStartUpload = onStartUpload
         self._activeFiles = State(initialValue: files)
+
+        let storedCheck = UserDefaults.standard.bool(forKey: UserDefaultsKeys.ftpCheckIPTCBeforeUpload)
+        self._checkIPTCBeforeUpload = State(initialValue: storedCheck)
+
+        if let data = UserDefaults.standard.data(forKey: UserDefaultsKeys.ftpCheckedIPTCFields),
+           let keys = try? JSONDecoder().decode([IPTCMetadata.FieldKey].self, from: data) {
+            self._checkedIPTCFields = State(initialValue: Set(keys))
+        } else {
+            self._checkedIPTCFields = State(initialValue: IPTCMetadata.FieldKey.defaultCheckedFields)
+        }
     }
 
     var body: some View {
@@ -122,6 +139,43 @@ struct FTPUploadView: View {
                         }
                     }
 
+                    // IPTC metadata check option
+                    Toggle("Check IPTC metadata before upload", isOn: $checkIPTCBeforeUpload)
+                        .font(.subheadline)
+                        .onChange(of: checkIPTCBeforeUpload) { _, newValue in
+                            UserDefaults.standard.set(newValue, forKey: UserDefaultsKeys.ftpCheckIPTCBeforeUpload)
+                        }
+
+                    if checkIPTCBeforeUpload {
+                        DisclosureGroup("Required fields") {
+                            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 4) {
+                                ForEach(IPTCMetadata.FieldKey.allCases, id: \.self) { field in
+                                    Toggle(field.displayName, isOn: Binding(
+                                        get: { checkedIPTCFields.contains(field) },
+                                        set: { isOn in
+                                            if isOn { checkedIPTCFields.insert(field) }
+                                            else { checkedIPTCFields.remove(field) }
+                                            persistCheckedFields()
+                                        }
+                                    ))
+                                    .font(.caption)
+                                    .toggleStyle(.checkbox)
+                                }
+                            }
+                        }
+                        .font(.caption)
+
+                        if isCheckingIPTC {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("Checking metadata... \(iptcCheckProgress)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+
                     if !preprocessErrors.isEmpty {
                         VStack(alignment: .leading, spacing: 2) {
                             ForEach(preprocessErrors, id: \.self) { error in
@@ -191,6 +245,25 @@ struct FTPUploadView: View {
         }
         .onChange(of: files) { _, newFiles in
             activeFiles = newFiles
+        }
+        .sheet(isPresented: $showIPTCCheckResults) {
+            IPTCCheckResultsView(
+                results: iptcCheckResults,
+                totalFileCount: activeFiles.count,
+                onCancel: {
+                    showIPTCCheckResults = false
+                    iptcCheckResults = []
+                },
+                onProceed: {
+                    showIPTCCheckResults = false
+                    iptcCheckResults = []
+                    guard let id = selectedServerID,
+                          let connection = viewModel.connections.first(where: { $0.id == id }) else { return }
+                    Task {
+                        await continueUpload(renderFirst: pendingUploadRenderFirst, connection: connection)
+                    }
+                }
+            )
         }
     }
 
@@ -290,7 +363,7 @@ struct FTPUploadView: View {
     // MARK: - Upload Logic
 
     private var uploadDisabled: Bool {
-        selectedServerID == nil || viewModel.isUploading || viewModel.isRendering || isProcessingVariables || isSigningC2PA || activeFiles.isEmpty
+        selectedServerID == nil || viewModel.isUploading || viewModel.isRendering || isProcessingVariables || isSigningC2PA || isCheckingIPTC || activeFiles.isEmpty
     }
 
     private func startUpload(renderFirst: Bool) {
@@ -302,19 +375,81 @@ struct FTPUploadView: View {
         Task {
             preprocessErrors = []
 
-            if processVariablesBeforeUpload {
-                isProcessingVariables = true
-                variablesProcessProgress = "0/\(activeFiles.count)"
-                await processVariables(for: activeFiles)
-                isProcessingVariables = false
-                variablesProcessProgress = ""
+            // IPTC metadata check (before any side effects)
+            if checkIPTCBeforeUpload && !checkedIPTCFields.isEmpty {
+                let passed = await performIPTCCheck(files: activeFiles)
+                if !passed {
+                    pendingUploadRenderFirst = renderFirst
+                    return
+                }
             }
 
-            if signWithC2PABeforeUpload {
-                await signFilesWithC2PA(activeFiles)
+            await continueUpload(renderFirst: renderFirst, connection: connection)
+        }
+    }
+
+    private func continueUpload(renderFirst: Bool, connection: FTPConnection) async {
+        if processVariablesBeforeUpload {
+            isProcessingVariables = true
+            variablesProcessProgress = "0/\(activeFiles.count)"
+            await processVariables(for: activeFiles)
+            isProcessingVariables = false
+            variablesProcessProgress = ""
+        }
+
+        if signWithC2PABeforeUpload {
+            await signFilesWithC2PA(activeFiles)
+        }
+
+        beginUpload(files: activeFiles, connection: connection, renderFirst: renderFirst)
+    }
+
+    private func performIPTCCheck(files: [URL]) async -> Bool {
+        isCheckingIPTC = true
+        iptcCheckProgress = ""
+        defer { isCheckingIPTC = false; iptcCheckProgress = "" }
+
+        do {
+            iptcCheckProgress = "Reading metadata..."
+            let metadataMap = try await exifToolService.readBatchFullMetadata(urls: files)
+
+            var results: [IPTCCheckResult] = []
+            for url in files {
+                guard let metadata = metadataMap[url] else {
+                    results.append(IPTCCheckResult(
+                        fileName: url.lastPathComponent,
+                        url: url,
+                        missingFields: Array(checkedIPTCFields).sorted { $0.displayName < $1.displayName }
+                    ))
+                    continue
+                }
+                let missing = checkedIPTCFields.filter { $0.isEmpty(in: metadata) }
+                    .sorted { $0.displayName < $1.displayName }
+                if !missing.isEmpty {
+                    results.append(IPTCCheckResult(
+                        fileName: url.lastPathComponent,
+                        url: url,
+                        missingFields: missing
+                    ))
+                }
             }
 
-            beginUpload(files: activeFiles, connection: connection, renderFirst: renderFirst)
+            if results.isEmpty {
+                return true
+            }
+
+            iptcCheckResults = results
+            showIPTCCheckResults = true
+            return false
+        } catch {
+            preprocessErrors.append("IPTC check failed: \(error.localizedDescription)")
+            return true // Don't block upload on check failure
+        }
+    }
+
+    private func persistCheckedFields() {
+        if let data = try? JSONEncoder().encode(Array(checkedIPTCFields)) {
+            UserDefaults.standard.set(data, forKey: UserDefaultsKeys.ftpCheckedIPTCFields)
         }
     }
 
