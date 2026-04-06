@@ -938,7 +938,7 @@ struct EditWorkspaceView: View {
         if let url = selectedImageURL,
            let index = browserViewModel.urlToImageIndex[url] {
             let imageFile = browserViewModel.images[index]
-            if let settings = imageFile.cameraRawSettings, !settings.isEmpty {
+            if let settings = imageFile.cameraRawSettings, settings.crop?.isEmpty == false {
                 let orientation = imageFile.exifOrientation
                 let thumbnailService = browserViewModel.thumbnailService
                 thumbnailService.invalidateEditedThumbnail(for: url)

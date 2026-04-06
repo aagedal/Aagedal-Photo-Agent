@@ -32,6 +32,11 @@ final class ThumbnailService {
         return cache.object(forKey: url as NSURL)
     }
 
+    /// Checks whether an edited thumbnail exists in cache for the given URL.
+    func hasEditedThumbnail(for url: URL) -> Bool {
+        editedCache.object(forKey: url as NSURL) != nil
+    }
+
     /// Loads or generates the original (unedited) thumbnail for a URL.
     func loadThumbnail(for url: URL) async -> NSImage? {
         if let cached = cache.object(forKey: url as NSURL) {
@@ -97,7 +102,7 @@ final class ThumbnailService {
                 return nil
             }
 
-            guard let edited = applyCameraRaw(to: original, settings: settings, exifOrientation: exifOrientation) else {
+            guard let edited = applyCrop(to: original, settings: settings, exifOrientation: exifOrientation) else {
                 return nil
             }
             editedCache.setObject(edited, forKey: url as NSURL)
@@ -153,24 +158,23 @@ final class ThumbnailService {
         }
     }
 
-    nonisolated private func applyCameraRaw(to nsImage: NSImage, settings: CameraRawSettings, exifOrientation: Int = 1) -> NSImage? {
+    /// Applies only crop/rotation to the thumbnail — skips tonal and color adjustments.
+    /// The QL thumbnail already has camera processing baked in, so applying the full
+    /// CameraRaw pipeline would produce incorrect white balance and color.
+    nonisolated private func applyCrop(to nsImage: NSImage, settings: CameraRawSettings, exifOrientation: Int = 1) -> NSImage? {
+        guard settings.crop?.hasCrop == true else { return nil }
         guard let cgImage = nsImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
             return nil
         }
         let ciImage = CIImage(cgImage: cgImage)
-        let processed = CameraRawApproximation.applyWithCrop(to: ciImage, settings: settings, exifOrientation: exifOrientation)
-        let extent = processed.extent
-        guard extent.width > 0, extent.height > 0 else { return nil }
-
-        let isHDR = settings.hdrEditMode == 1
-        let format: CIFormat = isHDR ? .RGBAh : .RGBA8
-        let colorSpace = isHDR ? CameraRawApproximation.workingColorSpace : CGColorSpaceCreateDeviceRGB()
+        let extent = ciImage.extent
+        let cropped = CameraRawApproximation.applyCrop(
+            to: ciImage, originalExtent: extent, settings: settings, exifOrientation: exifOrientation)
+        let croppedExtent = cropped.extent
+        guard croppedExtent.width > 0, croppedExtent.height > 0 else { return nil }
 
         guard let outputCG = CameraRawApproximation.ciContext.createCGImage(
-            processed,
-            from: extent,
-            format: format,
-            colorSpace: colorSpace
+            cropped, from: croppedExtent, format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB()
         ) else {
             return nil
         }

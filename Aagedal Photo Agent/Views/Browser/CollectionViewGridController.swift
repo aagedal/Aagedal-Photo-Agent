@@ -302,6 +302,16 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
                     _ = await viewModel.thumbnailService.loadThumbnail(for: image.url)
                 }
             }
+            // Pre-render cropped thumbnails for images with crop edits
+            if !viewModel.showOriginalThumbnails,
+               let settings = image.cameraRawSettings, settings.crop?.isEmpty == false,
+               !viewModel.thumbnailService.hasEditedThumbnail(for: image.url) {
+                let orientation = image.exifOrientation
+                Task {
+                    _ = await viewModel.thumbnailService.renderEditedThumbnail(
+                        for: image.url, settings: settings, exifOrientation: orientation)
+                }
+            }
         }
     }
 
