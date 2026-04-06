@@ -80,6 +80,25 @@ struct ScopeParams {
 };
 
 // ============================================================
+// HSL per-color channel parameters — must match EditAdjustments.metal
+// ============================================================
+
+struct HSLChannelParams {
+    float saturation;       // -1..1
+    float luminance;        // -1..1
+    float hueShift;         // degrees (-30..30)
+    float _pad;
+};
+
+struct HSLParams {
+    HSLChannelParams channels[7]; // 0=Red, 1=Yellow, 2=Green, 3=Cyan, 4=Blue, 5=Magenta, 6=SkinTone
+    uint activeFlags;             // bit0 = any HSL active
+    uint _pad0;
+    uint _pad1;
+    uint _pad2;
+};
+
+// ============================================================
 // Nits scale conversion (matches WaveformScale in Swift)
 // ============================================================
 
@@ -121,7 +140,8 @@ inline float3 applyEdits(
     float2 uv,
     constant ScopeEditParams &params,
     texture1d<float, access::sample> toneLUT,
-    constant MaskParams *masks)
+    constant MaskParams *masks,
+    constant HSLParams &hslParams)
 {
     // 1. White Balance
     if (params.activeFlags & (1u << 3)) {
@@ -165,7 +185,94 @@ inline float3 applyEdits(
         rgb = mix(float3(lum), rgb, params.saturation);
     }
 
-    // 5. Local mask adjustments — mirrors EditAdjustments.metal
+    // 5. Per-color HSL adjustments — mirrors EditAdjustments.metal
+    if (hslParams.activeFlags & 1u) {
+        float hdrPeak = max3(rgb.r, rgb.g, rgb.b);
+        float hdrScale = 1.0;
+        if (hdrPeak > 1.0) {
+            hdrScale = hdrPeak;
+            rgb /= hdrScale;
+        }
+
+        float maxC = max3(rgb.r, rgb.g, rgb.b);
+        float minC = min3(rgb.r, rgb.g, rgb.b);
+        float chroma = maxC - minC;
+
+        if (chroma > 0.001) {
+            float sat = (maxC > 0.001) ? (chroma / maxC) : 0.0;
+
+            float hue = 0.0;
+            if (maxC == rgb.r)      hue = fmod((rgb.g - rgb.b) / chroma + 6.0, 6.0) * 60.0;
+            else if (maxC == rgb.g) hue = ((rgb.b - rgb.r) / chroma + 2.0) * 60.0;
+            else                    hue = ((rgb.r - rgb.g) / chroma + 4.0) * 60.0;
+
+            float centers[7] = { 0.0, 60.0, 120.0, 180.0, 240.0, 300.0, 22.0 };
+            float sigmas[7] = { 22.0, 22.0, 22.0, 22.0, 22.0, 22.0, 11.0 };
+
+            float totalSatDelta = 0.0;
+            float totalDensDelta = 0.0;
+            float totalHueDelta = 0.0;
+
+            for (int i = 0; i < 7; i++) {
+                float dist = abs(hue - centers[i]);
+                if (dist > 180.0) dist = 360.0 - dist;
+                float weight = exp(-0.5 * (dist * dist) / (sigmas[i] * sigmas[i]));
+                if (i == 6) {
+                    weight *= smoothstep(0.05, 0.20, sat);
+                }
+                totalSatDelta += weight * hslParams.channels[i].saturation;
+                totalDensDelta += weight * hslParams.channels[i].luminance;
+                totalHueDelta += weight * hslParams.channels[i].hueShift;
+            }
+
+            if (abs(totalHueDelta) > 0.001) {
+                float mx = max3(rgb.r, rgb.g, rgb.b);
+                float mn = min3(rgb.r, rgb.g, rgb.b);
+                float ch = mx - mn;
+                float lum2 = (mx + mn) * 0.5;
+                float sat2 = 0.0;
+                if (ch > 0.001) {
+                    sat2 = ch / (1.0 - abs(2.0 * lum2 - 1.0) + 0.001);
+                    sat2 = clamp(sat2, 0.0, 1.0);
+                }
+                float hue2 = 0.0;
+                if (ch > 0.001) {
+                    if (mx == rgb.r)      hue2 = fmod((rgb.g - rgb.b) / ch + 6.0, 6.0) * 60.0;
+                    else if (mx == rgb.g) hue2 = ((rgb.b - rgb.r) / ch + 2.0) * 60.0;
+                    else                  hue2 = ((rgb.r - rgb.g) / ch + 4.0) * 60.0;
+                }
+                hue2 = fmod(hue2 + totalHueDelta + 360.0, 360.0);
+                float C = (1.0 - abs(2.0 * lum2 - 1.0)) * sat2;
+                float hP = hue2 / 60.0;
+                float X = C * (1.0 - abs(fmod(hP, 2.0) - 1.0));
+                float3 rgb1;
+                if      (hP < 1.0) rgb1 = float3(C, X, 0);
+                else if (hP < 2.0) rgb1 = float3(X, C, 0);
+                else if (hP < 3.0) rgb1 = float3(0, C, X);
+                else if (hP < 4.0) rgb1 = float3(0, X, C);
+                else if (hP < 5.0) rgb1 = float3(X, 0, C);
+                else               rgb1 = float3(C, 0, X);
+                rgb = rgb1 + float3(lum2 - C * 0.5);
+            }
+
+            if (abs(totalSatDelta) > 0.001) {
+                float lumR = dot(rgb, float3(0.2126, 0.7152, 0.0722));
+                rgb = mix(float3(lumR), rgb, 1.0 + totalSatDelta);
+            }
+
+            if (abs(totalDensDelta) > 0.001) {
+                float Y = dot(rgb, float3(0.2126, 0.7152, 0.0722));
+                float3 colorChroma = rgb - float3(Y);
+                float gain = pow(2.0, -totalDensDelta);
+                float Y_new = clamp(Y * gain, 0.0, 1.0);
+                rgb = float3(Y_new) + colorChroma;
+            }
+
+            rgb = max(rgb, 0.0) * hdrScale;
+        }
+    }
+
+    // 6. Local mask adjustments — mirrors EditAdjustments.metal
     for (uint m = 0; m < params.maskCount && m < 8; m++) {
         constant MaskParams &mask = masks[m];
 
@@ -286,6 +393,7 @@ kernel void waveformAccumulate(
     constant ScopeEditParams &editParams [[buffer(1)]],
     constant ScopeParams &scopeParams [[buffer(2)]],
     constant MaskParams *masks [[buffer(3)]],
+    constant HSLParams &hslParams [[buffer(4)]],
     uint2 gid [[thread_position_in_grid]])
 {
     if (gid.x >= scopeParams.sampleWidth || gid.y >= scopeParams.sampleHeight) return;
@@ -299,7 +407,7 @@ kernel void waveformAccumulate(
     constexpr sampler bilinear(filter::linear, address::clamp_to_edge);
     half4 color = source.sample(bilinear, uv);
     float3 rgb = float3(color.rgb);
-    rgb = applyEdits(rgb, uv, editParams, toneLUT, masks);
+    rgb = applyEdits(rgb, uv, editParams, toneLUT, masks, hslParams);
 
     int levels = int(scopeParams.levels);
     int level;
@@ -467,6 +575,7 @@ kernel void paradeAccumulate(
     constant ScopeEditParams &editParams [[buffer(1)]],
     constant ScopeParams &scopeParams [[buffer(2)]],
     constant MaskParams *masks [[buffer(3)]],
+    constant HSLParams &hslParams [[buffer(4)]],
     uint2 gid [[thread_position_in_grid]])
 {
     uint sW = scopeParams.channelWidth;
@@ -482,7 +591,7 @@ kernel void paradeAccumulate(
     constexpr sampler bilinear(filter::linear, address::clamp_to_edge);
     half4 color = source.sample(bilinear, uv);
     float3 rgb = float3(color.rgb);
-    rgb = applyEdits(rgb, uv, editParams, toneLUT, masks);
+    rgb = applyEdits(rgb, uv, editParams, toneLUT, masks, hslParams);
 
     // Convert linear → sRGB before binning (matches CPU scope path)
     float r = linearToSRGB(saturate(rgb.r));
@@ -639,6 +748,7 @@ kernel void vectorscopeAccumulate(
     constant ScopeEditParams &editParams [[buffer(1)]],
     constant ScopeParams &scopeParams [[buffer(2)]],
     constant MaskParams *masks [[buffer(3)]],
+    constant HSLParams &hslParams [[buffer(4)]],
     uint2 gid [[thread_position_in_grid]])
 {
     if (gid.x >= scopeParams.sampleWidth || gid.y >= scopeParams.sampleHeight) return;
@@ -652,7 +762,7 @@ kernel void vectorscopeAccumulate(
     constexpr sampler bilinear(filter::linear, address::clamp_to_edge);
     half4 color = source.sample(bilinear, uv);
     float3 rgb = float3(color.rgb);
-    rgb = applyEdits(rgb, uv, editParams, toneLUT, masks);
+    rgb = applyEdits(rgb, uv, editParams, toneLUT, masks, hslParams);
 
     // Convert linear → sRGB before CbCr computation (matches CPU scope path)
     float r = linearToSRGB(saturate(rgb.r));
@@ -946,6 +1056,7 @@ kernel void chromaticityAccumulate(
     constant ScopeEditParams &editParams [[buffer(1)]],
     constant ScopeParams &scopeParams [[buffer(2)]],
     constant MaskParams *masks [[buffer(3)]],
+    constant HSLParams &hslParams [[buffer(4)]],
     uint2 gid [[thread_position_in_grid]])
 {
     if (gid.x >= scopeParams.sampleWidth || gid.y >= scopeParams.sampleHeight) return;
@@ -959,7 +1070,7 @@ kernel void chromaticityAccumulate(
     constexpr sampler bilinear(filter::linear, address::clamp_to_edge);
     half4 color = source.sample(bilinear, uv);
     float3 rgb = float3(color.rgb);
-    rgb = applyEdits(rgb, uv, editParams, toneLUT, masks);
+    rgb = applyEdits(rgb, uv, editParams, toneLUT, masks, hslParams);
 
     // Work in linear space for chromaticity — do NOT apply linearToSRGB
     float3 linearRGB = rgb;

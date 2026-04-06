@@ -5,10 +5,12 @@ import SwiftUI
 /// Renders a Catmull-Rom spline through control points.
 struct CurveEditorView: View {
     @Binding var toneCurve: ToneCurve?
+    @Binding var isMuted: Bool
     /// Called during drag with the modified ToneCurve for direct Metal update.
     /// The binding is NOT updated during drag to avoid SwiftUI observation overhead.
     var onDragCurveChanged: ((ToneCurve?) -> Void)?
     var onEditingChanged: ((Bool) -> Void)?
+    var onMuteToggled: (() -> Void)?
 
     @State private var selectedChannel: CurveChannel = .master
     @State private var dragIndex: Int?
@@ -125,11 +127,27 @@ struct CurveEditorView: View {
 
     var body: some View {
         VStack(spacing: 4) {
-            HStack(spacing: 0) {
+            HStack(spacing: 6) {
                 Text("Tone Curve")
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.secondary)
+                    .onTapGesture(count: 2) {
+                        guard toneCurve != nil else { return }
+                        toneCurve = nil
+                        selectedPointIndex = nil
+                        onDragCurveChanged?(nil)
+                    }
                 Spacer()
+                Button {
+                    isMuted.toggle()
+                    onMuteToggled?()
+                } label: {
+                    Image(systemName: isMuted ? "eye.slash" : "eye")
+                        .font(.system(size: 11))
+                        .foregroundStyle(isMuted ? .orange : .secondary)
+                }
+                .buttonStyle(.plain)
+                .help(isMuted ? "Show tone curve" : "Hide tone curve")
                 Button {
                     toneCurve = nil
                     selectedPointIndex = nil

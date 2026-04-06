@@ -37,6 +37,10 @@ struct EditWorkspaceView: View {
     @State private var isMutingDevelop = false
     @State private var isMutingSelectedMask = false
     @State private var isMutingGlobal = false
+    @State private var isMutingColor = false
+    @State private var isMutingExposure = false
+    @State private var isMutingToneCurve = false
+    @State private var isMutingHSL = false
     @State private var mutedMaskIndex: Int?
     @State private var showCropControls = false
     @State private var lockedCropImageRect: CGRect?
@@ -274,9 +278,11 @@ struct EditWorkspaceView: View {
             // Re-sync viewport: crop mode uses identity viewport, but the "before"
             // view falls to the normal-fit path and needs a proper viewport.
             syncViewportToMetal()
+            renderPreview()
         }
         .onChange(of: isMutingDevelop) { _, _ in
             syncViewportToMetal()
+            renderPreview()
         }
         .onChange(of: selectedMaskIndex) { _, _ in
             // Clear Metal overlay — the AppKit MaskOverlayNSView handles
@@ -465,7 +471,7 @@ struct EditWorkspaceView: View {
                                             if let pipeline = metalPipeline, pipeline.hasSourceTexture {
                                                 var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
                                                 settings.localAdjustments?[maskIdx].geometry = newGeometry
-                                                pipeline.updateParams(settings)
+                                                pipeline.updateParams(settingsForPipeline(settings))
                                             }
                                         },
                                         onCommit: {
@@ -525,7 +531,7 @@ struct EditWorkspaceView: View {
                                         if let pipeline = metalPipeline, pipeline.hasSourceTexture {
                                             var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
                                             settings.localAdjustments?[maskIdx].geometry = newGeometry
-                                            pipeline.updateParams(settings)
+                                            pipeline.updateParams(settingsForPipeline(settings))
                                         }
                                     },
                                     onCommit: {
@@ -718,152 +724,8 @@ struct EditWorkspaceView: View {
                     if selectedMaskIndex != nil {
                         maskAdjustmentSliders
                     } else {
-
-                    // ── Color ──
-                    Text("Color")
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.secondary)
-                    Divider()
-
-                    if usesIncrementalWhiteBalance {
-                        sliderRow(
-                            "WB Temp",
-                            value: whiteBalanceTemperatureBinding,
-                            range: -100...100,
-                            step: 1,
-                            gradientColors: [.blue, .yellow],
-                            formatter: signedIntString,
-                            settingsMutator: { settings, value in
-                                settings.whiteBalance = "Custom"
-                                settings.incrementalTemperature = Int(value.rounded())
-                            },
-                            onReset: {
-                                whiteBalanceTemperatureBinding.wrappedValue = 0
-                            }
-                        )
-                    } else {
-                        kelvinTemperatureSliderRow
+                        globalAdjustmentSliders
                     }
-
-                    sliderRow(
-                        "Tint",
-                        value: whiteBalanceTintBinding,
-                        range: -150...150,
-                        step: 1,
-                        gradientColors: [.green, .pink],
-                        formatter: signedIntString,
-                        settingsMutator: { settings, value in
-                            settings.whiteBalance = "Custom"
-                            settings.tint = Int(value.rounded())
-                        },
-                        onReset: {
-                            whiteBalanceTintBinding.wrappedValue = asShotTintValue
-                        }
-                    )
-
-                    sliderRow("Saturation", value: toneSliderBinding(\.saturation), range: -100...100, step: 1, gradientColors: [.gray, .red], formatter: signedIntString, settingsMutator: { $0.saturation = Int($1.rounded()) }, onReset: {
-                        toneSliderBinding(\.saturation).wrappedValue = 0
-                    })
-                    sliderRow("Vibrance", value: toneSliderBinding(\.vibrance), range: -100...100, step: 1, gradientColors: [.gray, .orange], formatter: signedIntString, settingsMutator: { $0.vibrance = Int($1.rounded()) }, onReset: {
-                        toneSliderBinding(\.vibrance).wrappedValue = 0
-                    })
-
-                    // ── Exposure ──
-                    HStack {
-                        Text("Exposure")
-                            .font(.subheadline.weight(.medium))
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Text("HDR")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(isHDREnabled ? Color.orange : Color.secondary.opacity(0.5))
-                            .underline(isHoveringHDR)
-                            .onHover { hovering in
-                                isHoveringHDR = hovering
-                            }
-                            .onTapGesture {
-                                guard canEditSingleImage else { return }
-                                hdrToggleBinding.wrappedValue.toggle()
-                            }
-                            .help("Toggle HDR mode (\u{2318}H)")
-                    }
-                    .padding(.top, 2)
-                    Divider()
-
-                    sliderRow(
-                        "Exposure",
-                        value: exposureBinding,
-                        range: -5...5,
-                        step: 0.01,
-                        formatter: { signedDoubleString($0, precision: 2) },
-                        settingsMutator: { $0.exposure2012 = ($1 * 100).rounded() / 100 },
-                        onReset: {
-                            exposureBinding.wrappedValue = 0
-                        }
-                    )
-
-                    sliderRow("Contrast", value: toneSliderBinding(\.contrast2012), range: -100...100, step: 1, formatter: signedIntString, settingsMutator: { $0.contrast2012 = Int($1.rounded()) }, onReset: {
-                        toneSliderBinding(\.contrast2012).wrappedValue = 0
-                    })
-                    sliderRow("Highlights", value: toneSliderBinding(\.highlights2012), range: -100...100, step: 1, formatter: signedIntString, settingsMutator: { $0.highlights2012 = Int($1.rounded()) }, onReset: {
-                        toneSliderBinding(\.highlights2012).wrappedValue = 0
-                    })
-                    sliderRow("Shadows", value: toneSliderBinding(\.shadows2012), range: -100...100, step: 1, formatter: signedIntString, settingsMutator: { $0.shadows2012 = Int($1.rounded()) }, onReset: {
-                        toneSliderBinding(\.shadows2012).wrappedValue = 0
-                    })
-                    sliderRow("Whites", value: toneSliderBinding(\.whites2012), range: -100...100, step: 1, formatter: signedIntString, settingsMutator: { $0.whites2012 = Int($1.rounded()) }, onReset: {
-                        toneSliderBinding(\.whites2012).wrappedValue = 0
-                    })
-                    sliderRow("Blacks", value: toneSliderBinding(\.blacks2012), range: -100...100, step: 1, formatter: signedIntString, settingsMutator: { $0.blacks2012 = Int($1.rounded()) }, onReset: {
-                        toneSliderBinding(\.blacks2012).wrappedValue = 0
-                    })
-
-                    // ── Tone Curve ──
-                    CurveEditorView(
-                        toneCurve: toneCurveBinding,
-                        onDragCurveChanged: { dragCurve in
-                            if let pipeline = metalPipeline, pipeline.hasSourceTexture {
-                                var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
-                                settings.toneCurve = dragCurve
-                                pipeline.updateParams(settings)
-                                metalCoordinator.requestRedraw()
-                            }
-                        },
-                        onEditingChanged: { editing in
-                            isDraggingEditSlider = editing
-                            if !editing {
-                                commitEditAdjustments()
-                            }
-                        }
-                    )
-                    .padding(.top, 2)
-
-                    // ── Hue / Saturation / Density ──
-                    Text("Hue / Saturation / Density")
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.secondary)
-                        .padding(.top, 2)
-                    Divider()
-
-                    HSLAdjustmentView(
-                        adjustments: hslAdjustmentsBinding,
-                        onEditingChanged: { editing in
-                            isDraggingEditSlider = editing
-                        },
-                        onDragChanged: { adjustments in
-                            if let pipeline = metalPipeline, pipeline.hasSourceTexture {
-                                var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
-                                settings.hslAdjustments = adjustments.isEmpty ? nil : adjustments
-                                pipeline.updateParams(settings)
-                                metalCoordinator.requestRedraw()
-                            }
-                        },
-                        onDragEnded: {
-                            commitEditAdjustments()
-                        }
-                    )
-
-                    } // end global adjustments else block
 
                     // ── Crop ──
                     Text("Crop")
@@ -1579,8 +1441,44 @@ struct EditWorkspaceView: View {
         } else {
             pipeline.gamutClipMode = 0
         }
-        pipeline.updateParams(metadataViewModel.editingMetadata.cameraRaw)
+        pipeline.updateParams(settingsForPipeline(metadataViewModel.editingMetadata.cameraRaw))
         metalCoordinator.requestRedraw()
+    }
+
+    /// Returns a copy of the given settings with any per-section muted adjustments stripped,
+    /// so the pipeline preview reflects the toggled eye-icon state without altering the ViewModel.
+    /// `isMutingDevelop` (D key) acts as a universal mute for all adjustment sections.
+    private func settingsForPipeline(_ settings: CameraRawSettings?) -> CameraRawSettings? {
+        guard var s = settings else { return nil }
+        if isMutingDevelop || isMutingColor {
+            s.whiteBalance = nil
+            s.temperature = nil
+            s.tint = nil
+            s.incrementalTemperature = nil
+            s.incrementalTint = nil
+            s.asShotNeutralTemperature = nil
+            s.asShotNeutralTint = nil
+            s.saturation = nil
+            s.vibrance = nil
+        }
+        if isMutingDevelop || isMutingExposure {
+            s.exposure2012 = nil
+            s.contrast2012 = nil
+            s.highlights2012 = nil
+            s.shadows2012 = nil
+            s.whites2012 = nil
+            s.blacks2012 = nil
+        }
+        if isMutingDevelop || isMutingToneCurve {
+            s.toneCurve = nil
+        }
+        if isMutingDevelop || isMutingHSL {
+            s.hslAdjustments = nil
+        }
+        if isMutingDevelop {
+            s.localAdjustments = nil
+        }
+        return s
     }
 
     private func renderPreview() {
@@ -1594,12 +1492,19 @@ struct EditWorkspaceView: View {
         }
 
         let settings: CameraRawSettings? = {
+            if isShowingBefore { return nil }
+            if isMutingGlobal {
+                var masksOnly = CameraRawSettings()
+                masksOnly.localAdjustments = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments
+                masksOnly.hdrEditMode = metadataViewModel.editingMetadata.cameraRaw?.hdrEditMode
+                return masksOnly
+            }
             var s = metadataViewModel.editingMetadata.cameraRaw
             if let asShot = asShotWhiteBalance {
                 s?.asShotNeutralTemperature = Double(asShot.temperature)
                 s?.asShotNeutralTint = Double(asShot.tint)
             }
-            return s
+            return settingsForPipeline(s)
         }()
 
         // Keep Metal scope coordinator's crop region up to date
@@ -2091,7 +1996,7 @@ struct EditWorkspaceView: View {
                     let kelvin = kelvinValue(forNormalizedLogScale: dragValue)
                     settings.whiteBalance = "Custom"
                     settings.temperature = Int(kelvin.rounded())
-                    pipeline.updateParams(settings)
+                    pipeline.updateParams(settingsForPipeline(settings))
                     metalCoordinator.requestRedraw()
                 }
             },
@@ -2302,7 +2207,7 @@ struct EditWorkspaceView: View {
                     if let pipeline = metalPipeline, pipeline.hasSourceTexture {
                         var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
                         mutator(&settings, dragValue)
-                        pipeline.updateParams(settings)
+                        pipeline.updateParams(settingsForPipeline(settings))
                         metalCoordinator.requestRedraw()
                     }
                 }
@@ -2314,6 +2219,223 @@ struct EditWorkspaceView: View {
                 }
             }
         )
+    }
+
+    // MARK: - Global Adjustment Sliders
+
+    @ViewBuilder
+    private var globalAdjustmentSliders: some View {
+        // ── Color ──
+        sectionHeader("Color", isMuted: $isMutingColor, hasAdjustments: hasColorAdjustments, onReset: resetColorAdjustments)
+        Divider()
+
+        if usesIncrementalWhiteBalance {
+            sliderRow(
+                "WB Temp",
+                value: whiteBalanceTemperatureBinding,
+                range: -100...100,
+                step: 1,
+                gradientColors: [.blue, .yellow],
+                formatter: signedIntString,
+                settingsMutator: { settings, value in
+                    settings.whiteBalance = "Custom"
+                    settings.incrementalTemperature = Int(value.rounded())
+                },
+                onReset: {
+                    whiteBalanceTemperatureBinding.wrappedValue = 0
+                }
+            )
+        } else {
+            kelvinTemperatureSliderRow
+        }
+
+        sliderRow(
+            "Tint",
+            value: whiteBalanceTintBinding,
+            range: -150...150,
+            step: 1,
+            gradientColors: [.green, .pink],
+            formatter: signedIntString,
+            settingsMutator: { settings, value in
+                settings.whiteBalance = "Custom"
+                settings.tint = Int(value.rounded())
+            },
+            onReset: {
+                whiteBalanceTintBinding.wrappedValue = asShotTintValue
+            }
+        )
+
+        sliderRow("Saturation", value: toneSliderBinding(\.saturation), range: -100...100, step: 1, gradientColors: [.gray, .red], formatter: signedIntString, settingsMutator: { $0.saturation = Int($1.rounded()) }, onReset: {
+            toneSliderBinding(\.saturation).wrappedValue = 0
+        })
+        sliderRow("Vibrance", value: toneSliderBinding(\.vibrance), range: -100...100, step: 1, gradientColors: [.gray, .orange], formatter: signedIntString, settingsMutator: { $0.vibrance = Int($1.rounded()) }, onReset: {
+            toneSliderBinding(\.vibrance).wrappedValue = 0
+        })
+
+        // ── Exposure ──
+        exposureSectionHeader
+        Divider()
+
+        sliderRow(
+            "Exposure",
+            value: exposureBinding,
+            range: -5...5,
+            step: 0.01,
+            formatter: { signedDoubleString($0, precision: 2) },
+            settingsMutator: { $0.exposure2012 = ($1 * 100).rounded() / 100 },
+            onReset: {
+                exposureBinding.wrappedValue = 0
+            }
+        )
+
+        sliderRow("Contrast", value: toneSliderBinding(\.contrast2012), range: -100...100, step: 1, formatter: signedIntString, settingsMutator: { $0.contrast2012 = Int($1.rounded()) }, onReset: {
+            toneSliderBinding(\.contrast2012).wrappedValue = 0
+        })
+        sliderRow("Highlights", value: toneSliderBinding(\.highlights2012), range: -100...100, step: 1, formatter: signedIntString, settingsMutator: { $0.highlights2012 = Int($1.rounded()) }, onReset: {
+            toneSliderBinding(\.highlights2012).wrappedValue = 0
+        })
+        sliderRow("Shadows", value: toneSliderBinding(\.shadows2012), range: -100...100, step: 1, formatter: signedIntString, settingsMutator: { $0.shadows2012 = Int($1.rounded()) }, onReset: {
+            toneSliderBinding(\.shadows2012).wrappedValue = 0
+        })
+        sliderRow("Whites", value: toneSliderBinding(\.whites2012), range: -100...100, step: 1, formatter: signedIntString, settingsMutator: { $0.whites2012 = Int($1.rounded()) }, onReset: {
+            toneSliderBinding(\.whites2012).wrappedValue = 0
+        })
+        sliderRow("Blacks", value: toneSliderBinding(\.blacks2012), range: -100...100, step: 1, formatter: signedIntString, settingsMutator: { $0.blacks2012 = Int($1.rounded()) }, onReset: {
+            toneSliderBinding(\.blacks2012).wrappedValue = 0
+        })
+
+        // ── Tone Curve ──
+        CurveEditorView(
+            toneCurve: toneCurveBinding,
+            isMuted: $isMutingToneCurve,
+            onDragCurveChanged: { dragCurve in
+                if let pipeline = metalPipeline, pipeline.hasSourceTexture {
+                    var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
+                    settings.toneCurve = dragCurve
+                    pipeline.updateParams(settingsForPipeline(settings))
+                    metalCoordinator.requestRedraw()
+                }
+            },
+            onEditingChanged: { editing in
+                isDraggingEditSlider = editing
+                if !editing {
+                    commitEditAdjustments()
+                }
+            },
+            onMuteToggled: {
+                renderPreview()
+            }
+        )
+        .padding(.top, 2)
+
+        // ── Hue / Saturation / Density ──
+        sectionHeader("Hue / Saturation / Density", isMuted: $isMutingHSL, hasAdjustments: hasHSLAdjustments, onReset: resetHSLAdjustments)
+            .padding(.top, 2)
+        Divider()
+
+        HSLAdjustmentView(
+            adjustments: hslAdjustmentsBinding,
+            onEditingChanged: { editing in
+                isDraggingEditSlider = editing
+            },
+            onDragChanged: { adjustments in
+                if let pipeline = metalPipeline, pipeline.hasSourceTexture {
+                    var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
+                    settings.hslAdjustments = adjustments.isEmpty ? nil : adjustments
+                    pipeline.updateParams(settingsForPipeline(settings))
+                    metalCoordinator.requestRedraw()
+                }
+            },
+            onDragEnded: {
+                commitEditAdjustments()
+            }
+        )
+    }
+
+    // MARK: - Section Headers
+
+    private func sectionHeader(
+        _ title: String,
+        isMuted: Binding<Bool>,
+        hasAdjustments: Bool = false,
+        onReset: (() -> Void)? = nil
+    ) -> some View {
+        HStack(spacing: 6) {
+            Text(title)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.secondary)
+                .onTapGesture(count: 2) {
+                    if hasAdjustments { onReset?() }
+                }
+            Spacer()
+            Button {
+                isMuted.wrappedValue.toggle()
+                renderPreview()
+            } label: {
+                Image(systemName: isMuted.wrappedValue ? "eye.slash" : "eye")
+                    .font(.system(size: 11))
+                    .foregroundStyle(isMuted.wrappedValue ? .orange : .secondary)
+            }
+            .buttonStyle(.plain)
+            .help(isMuted.wrappedValue ? "Show \(title.lowercased())" : "Hide \(title.lowercased())")
+            if let onReset {
+                Button {
+                    onReset()
+                } label: {
+                    Image(systemName: "arrow.counterclockwise")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .disabled(!hasAdjustments)
+                .help("Reset \(title.lowercased())")
+            }
+        }
+    }
+
+    private var exposureSectionHeader: some View {
+        HStack(spacing: 6) {
+            Text("Exposure")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.secondary)
+                .onTapGesture(count: 2) {
+                    if hasExposureAdjustments { resetExposureAdjustments() }
+                }
+            Spacer()
+            Button {
+                isMutingExposure.toggle()
+                renderPreview()
+            } label: {
+                Image(systemName: isMutingExposure ? "eye.slash" : "eye")
+                    .font(.system(size: 11))
+                    .foregroundStyle(isMutingExposure ? .orange : .secondary)
+            }
+            .buttonStyle(.plain)
+            .help(isMutingExposure ? "Show exposure adjustments" : "Hide exposure adjustments")
+            Button {
+                resetExposureAdjustments()
+            } label: {
+                Image(systemName: "arrow.counterclockwise")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .disabled(!hasExposureAdjustments)
+            .help("Reset exposure")
+            Text("HDR")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(isHDREnabled ? Color.orange : Color.secondary.opacity(0.5))
+                .underline(isHoveringHDR)
+                .onHover { hovering in
+                    isHoveringHDR = hovering
+                }
+                .onTapGesture {
+                    guard canEditSingleImage else { return }
+                    hdrToggleBinding.wrappedValue.toggle()
+                }
+                .help("Toggle HDR mode (\u{2318}H)")
+        }
+        .padding(.top, 2)
     }
 
     // MARK: - Mask UI
@@ -2614,6 +2736,62 @@ struct EditWorkspaceView: View {
     private var isSelectedImageRaw: Bool {
         guard let url = selectedImageURL else { return false }
         return SupportedImageFormats.isRaw(url: url)
+    }
+
+    private var hasColorAdjustments: Bool {
+        guard let cameraRaw = metadataViewModel.editingMetadata.cameraRaw else { return false }
+        return cameraRaw.temperature != nil
+            || cameraRaw.tint != nil
+            || cameraRaw.incrementalTemperature != nil
+            || cameraRaw.incrementalTint != nil
+            || cameraRaw.saturation != nil
+            || cameraRaw.vibrance != nil
+    }
+
+    private var hasExposureAdjustments: Bool {
+        guard let cameraRaw = metadataViewModel.editingMetadata.cameraRaw else { return false }
+        return cameraRaw.exposure2012 != nil
+            || cameraRaw.contrast2012 != nil
+            || cameraRaw.highlights2012 != nil
+            || cameraRaw.shadows2012 != nil
+            || cameraRaw.whites2012 != nil
+            || cameraRaw.blacks2012 != nil
+    }
+
+    private var hasHSLAdjustments: Bool {
+        !(metadataViewModel.editingMetadata.cameraRaw?.hslAdjustments?.isEmpty ?? true)
+    }
+
+    private func resetColorAdjustments() {
+        updateCameraRaw { cameraRaw in
+            cameraRaw.whiteBalance = isSelectedImageRaw ? "As Shot" : nil
+            cameraRaw.temperature = nil
+            cameraRaw.tint = nil
+            cameraRaw.incrementalTemperature = nil
+            cameraRaw.incrementalTint = nil
+            cameraRaw.saturation = nil
+            cameraRaw.vibrance = nil
+        }
+        commitEditAdjustments()
+    }
+
+    private func resetExposureAdjustments() {
+        updateCameraRaw { cameraRaw in
+            cameraRaw.exposure2012 = nil
+            cameraRaw.contrast2012 = nil
+            cameraRaw.highlights2012 = nil
+            cameraRaw.shadows2012 = nil
+            cameraRaw.whites2012 = nil
+            cameraRaw.blacks2012 = nil
+        }
+        commitEditAdjustments()
+    }
+
+    private func resetHSLAdjustments() {
+        updateCameraRaw { cameraRaw in
+            cameraRaw.hslAdjustments = nil
+        }
+        commitEditAdjustments()
     }
 
     private func resetDevelopAdjustments() {
@@ -3162,6 +3340,7 @@ struct EditWorkspaceView: View {
                 masksOnly.hdrEditMode = metadataViewModel.editingMetadata.cameraRaw?.hdrEditMode
                 metalPipeline?.updateParams(masksOnly)
                 metalCoordinator.requestRedraw()
+                renderPreview()
             }
             return nil
         }
@@ -3170,14 +3349,10 @@ struct EditWorkspaceView: View {
         if chars == "d" && modifiers.isDisjoint(with: [.command, .option, .control]) {
             if isKeyUp {
                 isMutingDevelop = false
-                metalPipeline?.updateParams(metadataViewModel.editingMetadata.cameraRaw)
-                metalCoordinator.requestRedraw()
                 return nil
             }
             guard !isTextFieldActive(), canEditSingleImage else { return event }
             isMutingDevelop = true
-            metalPipeline?.updateParams(nil)
-            metalCoordinator.requestRedraw()
             return nil
         }
 

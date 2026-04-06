@@ -58,6 +58,8 @@ final class MetalScopePipeline: @unchecked Sendable {
     nonisolated(unsafe) private let scopeParamsBuffer: MTLBuffer
     nonisolated(unsafe) private let maxCountBuffer: MTLBuffer
     nonisolated(unsafe) private let binCountBuffer: MTLBuffer
+    /// Zero-filled HSL params buffer used when the edit pipeline has no HSL buffer.
+    nonisolated(unsafe) private let emptyHSLBuffer: MTLBuffer
 
     // Output texture (720×720, reused)
     nonisolated(unsafe) private(set) var outputTexture: MTLTexture
@@ -124,15 +126,18 @@ final class MetalScopePipeline: @unchecked Sendable {
         guard let binBuf = device.makeBuffer(length: maxBinBytes, options: .storageModeShared),
               let paramsBuf = device.makeBuffer(length: MemoryLayout<ScopeParams>.stride, options: .storageModeShared),
               let maxBuf = device.makeBuffer(length: MemoryLayout<UInt32>.size, options: .storageModeShared),
-              let binCountBuf = device.makeBuffer(length: MemoryLayout<UInt32>.size, options: .storageModeShared)
+              let binCountBuf = device.makeBuffer(length: MemoryLayout<UInt32>.size, options: .storageModeShared),
+              let emptyHSL = device.makeBuffer(length: MemoryLayout<HSLParams>.stride, options: .storageModeShared)
         else {
             scopePipelineLog.error("MetalScopePipeline: buffer allocation failed")
             return nil
         }
+        memset(emptyHSL.contents(), 0, MemoryLayout<HSLParams>.stride)
         self.binBuffer = binBuf
         self.scopeParamsBuffer = paramsBuf
         self.maxCountBuffer = maxBuf
         self.binCountBuffer = binCountBuf
+        self.emptyHSLBuffer = emptyHSL
 
         // Output texture
         let texDesc = MTLTextureDescriptor.texture2DDescriptor(
@@ -159,6 +164,7 @@ final class MetalScopePipeline: @unchecked Sendable {
         editParamsBuffer: MTLBuffer,
         lutTexture: MTLTexture,
         maskBuffer: MTLBuffer?,
+        hslBuffer: MTLBuffer?,
         mode: ScopeViewModel.ScopeMode,
         scale: WaveformScale,
         clipMode: Bool = false,
@@ -201,6 +207,7 @@ final class MetalScopePipeline: @unchecked Sendable {
             return encodeWaveform(commandBuffer: commandBuffer, params: params,
                                  sourceTexture: sourceTexture, editParamsBuffer: editParamsBuffer,
                                  lutTexture: lutTexture, maskBuffer: maskBuffer,
+                                 hslBuffer: hslBuffer,
                                  drawable: drawable, drawableSize: drawableSize)
 
         case .parade:
@@ -217,6 +224,7 @@ final class MetalScopePipeline: @unchecked Sendable {
             return encodeParade(commandBuffer: commandBuffer, params: params,
                                sourceTexture: sourceTexture, editParamsBuffer: editParamsBuffer,
                                lutTexture: lutTexture, maskBuffer: maskBuffer,
+                               hslBuffer: hslBuffer,
                                drawable: drawable, drawableSize: drawableSize)
 
         case .vectorscope:
@@ -226,6 +234,7 @@ final class MetalScopePipeline: @unchecked Sendable {
             return encodeVectorscope(commandBuffer: commandBuffer, params: params,
                                     sourceTexture: sourceTexture, editParamsBuffer: editParamsBuffer,
                                     lutTexture: lutTexture, maskBuffer: maskBuffer,
+                                    hslBuffer: hslBuffer,
                                     drawable: drawable, drawableSize: drawableSize)
 
         case .chromaticity:
@@ -238,6 +247,7 @@ final class MetalScopePipeline: @unchecked Sendable {
             return encodeChromaticity(commandBuffer: commandBuffer, params: params,
                                      sourceTexture: sourceTexture, editParamsBuffer: editParamsBuffer,
                                      lutTexture: lutTexture, maskBuffer: maskBuffer,
+                                     hslBuffer: hslBuffer,
                                      drawable: drawable, drawableSize: drawableSize)
         }
     }
@@ -251,6 +261,7 @@ final class MetalScopePipeline: @unchecked Sendable {
         editParamsBuffer: MTLBuffer,
         lutTexture: MTLTexture,
         maskBuffer: MTLBuffer?,
+        hslBuffer: MTLBuffer?,
         drawable: CAMetalDrawable,
         drawableSize: CGSize
     ) -> Bool {
@@ -278,6 +289,7 @@ final class MetalScopePipeline: @unchecked Sendable {
         if let maskBuf = maskBuffer {
             accum.setBuffer(maskBuf, offset: 0, index: 3)
         }
+        accum.setBuffer(hslBuffer ?? emptyHSLBuffer, offset: 0, index: 4)
         let accumGrid = MTLSize(width: Int(params.sampleWidth), height: Int(params.sampleHeight), depth: 1)
         let accumTG = MTLSize(width: 16, height: 16, depth: 1)
         accum.dispatchThreads(accumGrid, threadsPerThreadgroup: accumTG)
@@ -310,6 +322,7 @@ final class MetalScopePipeline: @unchecked Sendable {
         editParamsBuffer: MTLBuffer,
         lutTexture: MTLTexture,
         maskBuffer: MTLBuffer?,
+        hslBuffer: MTLBuffer?,
         drawable: CAMetalDrawable,
         drawableSize: CGSize
     ) -> Bool {
@@ -336,6 +349,7 @@ final class MetalScopePipeline: @unchecked Sendable {
         if let maskBuf = maskBuffer {
             accum.setBuffer(maskBuf, offset: 0, index: 3)
         }
+        accum.setBuffer(hslBuffer ?? emptyHSLBuffer, offset: 0, index: 4)
         let accumGrid = MTLSize(width: Int(params.channelWidth), height: Int(params.sampleHeight), depth: 1)
         accum.dispatchThreads(accumGrid, threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
         accum.endEncoding()
@@ -366,6 +380,7 @@ final class MetalScopePipeline: @unchecked Sendable {
         editParamsBuffer: MTLBuffer,
         lutTexture: MTLTexture,
         maskBuffer: MTLBuffer?,
+        hslBuffer: MTLBuffer?,
         drawable: CAMetalDrawable,
         drawableSize: CGSize
     ) -> Bool {
@@ -392,6 +407,7 @@ final class MetalScopePipeline: @unchecked Sendable {
         if let maskBuf = maskBuffer {
             accum.setBuffer(maskBuf, offset: 0, index: 3)
         }
+        accum.setBuffer(hslBuffer ?? emptyHSLBuffer, offset: 0, index: 4)
         let accumGrid = MTLSize(width: Int(params.sampleWidth), height: Int(params.sampleHeight), depth: 1)
         accum.dispatchThreads(accumGrid, threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
         accum.endEncoding()
@@ -422,6 +438,7 @@ final class MetalScopePipeline: @unchecked Sendable {
         editParamsBuffer: MTLBuffer,
         lutTexture: MTLTexture,
         maskBuffer: MTLBuffer?,
+        hslBuffer: MTLBuffer?,
         drawable: CAMetalDrawable,
         drawableSize: CGSize
     ) -> Bool {
@@ -448,6 +465,7 @@ final class MetalScopePipeline: @unchecked Sendable {
         if let maskBuf = maskBuffer {
             accum.setBuffer(maskBuf, offset: 0, index: 3)
         }
+        accum.setBuffer(hslBuffer ?? emptyHSLBuffer, offset: 0, index: 4)
         let accumGrid = MTLSize(width: Int(params.sampleWidth), height: Int(params.sampleHeight), depth: 1)
         accum.dispatchThreads(accumGrid, threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
         accum.endEncoding()
