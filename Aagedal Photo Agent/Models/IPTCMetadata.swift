@@ -73,6 +73,33 @@ struct MaskAdjustment: Codable, Sendable, Equatable, Identifiable {
     }
 }
 
+struct HSLColorAdjustment: Codable, Sendable, Equatable {
+    var saturation: Int?    // -100..+100
+    var luminance: Int?     // -100..+100 ("Density" in UI)
+    var hueShift: Int?      // -100..+100 (maps to ±30°)
+
+    nonisolated var isEmpty: Bool {
+        (saturation ?? 0) == 0 && (luminance ?? 0) == 0 && (hueShift ?? 0) == 0
+    }
+}
+
+struct HSLAdjustments: Codable, Sendable, Equatable {
+    var red: HSLColorAdjustment?
+    var yellow: HSLColorAdjustment?
+    var green: HSLColorAdjustment?
+    var cyan: HSLColorAdjustment?
+    var blue: HSLColorAdjustment?
+    var magenta: HSLColorAdjustment?
+    var skinTone: HSLColorAdjustment?
+
+    nonisolated var isEmpty: Bool {
+        (red?.isEmpty ?? true) && (yellow?.isEmpty ?? true)
+            && (green?.isEmpty ?? true) && (cyan?.isEmpty ?? true)
+            && (blue?.isEmpty ?? true) && (magenta?.isEmpty ?? true)
+            && (skinTone?.isEmpty ?? true)
+    }
+}
+
 struct CameraRawSettings: Codable, Sendable, Equatable {
     var version: String?
     var processVersion: String?
@@ -102,6 +129,7 @@ struct CameraRawSettings: Codable, Sendable, Equatable {
     var sdrBlend: Int?
     var toneCurve: ToneCurve?
     var localAdjustments: [MaskAdjustment]?
+    var hslAdjustments: HSLAdjustments?
 
     /// As-shot neutral white balance from the RAW decoder (CIRAWFilter.neutralTemperature/Tint).
     /// Used as the reference point for white balance correction in renderOffscreen().
@@ -138,6 +166,7 @@ struct CameraRawSettings: Codable, Sendable, Equatable {
             && sdrBlend == nil
             && (toneCurve?.isEmpty ?? true)
             && (localAdjustments?.isEmpty ?? true)
+            && (hslAdjustments?.isEmpty ?? true)
     }
 
     func merged(preferring override: CameraRawSettings) -> CameraRawSettings {
@@ -176,6 +205,7 @@ struct CameraRawSettings: Codable, Sendable, Equatable {
         if let value = override.sdrBlend { result.sdrBlend = value }
         if let value = override.toneCurve { result.toneCurve = value }
         if let value = override.localAdjustments { result.localAdjustments = value }
+        if let value = override.hslAdjustments { result.hslAdjustments = value }
         return result
     }
 }

@@ -331,6 +331,21 @@ struct XMPSidecarService: Sendable {
         setSimple(on: description, prefix: "crs", localName: "Saturation", value: settings.saturation.map(formatSignedInt))
         setSimple(on: description, prefix: "crs", localName: "Vibrance", value: settings.vibrance.map(formatSignedInt))
 
+        // HSL per-color adjustments (ACR-compatible tags + custom SkinTone)
+        func writeHSLChannel(_ adj: HSLColorAdjustment?, color: String) {
+            setSimple(on: description, prefix: "crs", localName: "HueAdjustment\(color)", value: adj?.hueShift.map(formatSignedInt))
+            setSimple(on: description, prefix: "crs", localName: "SaturationAdjustment\(color)", value: adj?.saturation.map(formatSignedInt))
+            setSimple(on: description, prefix: "crs", localName: "LuminanceAdjustment\(color)", value: adj?.luminance.map(formatSignedInt))
+        }
+        let hsl = settings.hslAdjustments
+        writeHSLChannel(hsl?.red, color: "Red")
+        writeHSLChannel(hsl?.yellow, color: "Yellow")
+        writeHSLChannel(hsl?.green, color: "Green")
+        writeHSLChannel(hsl?.cyan, color: "Aqua")
+        writeHSLChannel(hsl?.blue, color: "Blue")
+        writeHSLChannel(hsl?.magenta, color: "Magenta")
+        writeHSLChannel(hsl?.skinTone, color: "SkinTone")
+
         let hasSettings = settings.hasSettings ?? !settings.isEmpty
         setSimple(on: description, prefix: "crs", localName: "HasSettings", value: formatBool(hasSettings))
 
@@ -407,6 +422,14 @@ struct XMPSidecarService: Sendable {
             "ToneCurvePV2012Green",
             "ToneCurvePV2012Blue",
             "ToneCurveName2012",
+            // HSL per-color adjustments
+            "HueAdjustmentRed", "SaturationAdjustmentRed", "LuminanceAdjustmentRed",
+            "HueAdjustmentYellow", "SaturationAdjustmentYellow", "LuminanceAdjustmentYellow",
+            "HueAdjustmentGreen", "SaturationAdjustmentGreen", "LuminanceAdjustmentGreen",
+            "HueAdjustmentAqua", "SaturationAdjustmentAqua", "LuminanceAdjustmentAqua",
+            "HueAdjustmentBlue", "SaturationAdjustmentBlue", "LuminanceAdjustmentBlue",
+            "HueAdjustmentMagenta", "SaturationAdjustmentMagenta", "LuminanceAdjustmentMagenta",
+            "HueAdjustmentSkinTone", "SaturationAdjustmentSkinTone", "LuminanceAdjustmentSkinTone",
         ]
         for field in fields {
             removeProperty(from: description, prefix: "crs", localName: field)
@@ -420,6 +443,14 @@ struct XMPSidecarService: Sendable {
         } else {
             removeProperty(from: description, prefix: "crs", localName: localName)
         }
+    }
+
+    private func parseHSLChannel(from description: XMLElement, color: String) -> HSLColorAdjustment? {
+        let hue = parseSimple(from: description, prefix: "crs", localName: "HueAdjustment\(color)").flatMap(parseSignedInt)
+        let sat = parseSimple(from: description, prefix: "crs", localName: "SaturationAdjustment\(color)").flatMap(parseSignedInt)
+        let lum = parseSimple(from: description, prefix: "crs", localName: "LuminanceAdjustment\(color)").flatMap(parseSignedInt)
+        guard hue != nil || sat != nil || lum != nil else { return nil }
+        return HSLColorAdjustment(saturation: sat, luminance: lum, hueShift: hue)
     }
 
     private func parseToneCurveChannel(from description: XMLElement, localName: String) -> [ToneCurvePoint]? {
@@ -658,6 +689,18 @@ struct XMPSidecarService: Sendable {
             return tc.isEmpty ? nil : tc
         }()
 
+        // HSL per-color adjustments (ACR-compatible tags + custom SkinTone)
+        let hslRaw = HSLAdjustments(
+            red: parseHSLChannel(from: description, color: "Red"),
+            yellow: parseHSLChannel(from: description, color: "Yellow"),
+            green: parseHSLChannel(from: description, color: "Green"),
+            cyan: parseHSLChannel(from: description, color: "Aqua"),
+            blue: parseHSLChannel(from: description, color: "Blue"),
+            magenta: parseHSLChannel(from: description, color: "Magenta"),
+            skinTone: parseHSLChannel(from: description, color: "SkinTone")
+        )
+        let hslAdjustments: HSLAdjustments? = hslRaw.isEmpty ? nil : hslRaw
+
         let settings = CameraRawSettings(
             version: version,
             processVersion: processVersion,
@@ -685,7 +728,8 @@ struct XMPSidecarService: Sendable {
             sdrShadows: sdrShadows,
             sdrWhites: sdrWhites,
             sdrBlend: sdrBlend,
-            toneCurve: toneCurve
+            toneCurve: toneCurve,
+            hslAdjustments: hslAdjustments
         )
         return settings.isEmpty ? nil : settings
     }

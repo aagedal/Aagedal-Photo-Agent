@@ -23,6 +23,21 @@ struct MaskParams {
     uint  _pad;
 };
 
+struct HSLChannelParams {
+    float saturation;       // -1..1
+    float luminance;        // -1..1
+    float hueShift;         // degrees (-30..30)
+    float _pad;
+};
+
+struct HSLParams {
+    HSLChannelParams channels[7]; // 0=Red, 1=Yellow, 2=Green, 3=Cyan, 4=Blue, 5=Magenta, 6=SkinTone
+    uint activeFlags;             // bit0 = any HSL active
+    uint _pad0;
+    uint _pad1;
+    uint _pad2;
+};
+
 struct EditParams {
     float exposure;          // EV (legacy field, baked into LUT when LUT is active)
     float vibrance;          // -1..1
@@ -93,6 +108,7 @@ kernel void editAdjustments(
     texture1d<float, access::sample> toneLUT [[texture(2)]],
     constant EditParams &params [[buffer(0)]],
     constant MaskParams *masks [[buffer(1)]],
+    constant HSLParams &hslParams [[buffer(2)]],
     uint2 gid [[thread_position_in_grid]])
 {
     if (gid.x >= uint(params.drawableSize.x) || gid.y >= uint(params.drawableSize.y)) {
@@ -151,6 +167,129 @@ kernel void editAdjustments(
         float desatMax  = isHDR ? 0.5  : 0.40;
         float desat = smoothstep(desatLow, desatHigh, lum) * desatMax;
         rgb = half3(mix(rgbF, float3(lum), desat));
+    }
+
+    // 2.5. Per-color HSL adjustments (Hue / Saturation / Density)
+    //
+    // Processing order: Hue → Saturation → Density.
+    // Hue shift changes the base color first, then sat/density modify its appearance.
+    //   Hue shift:  rotate hue in HSL space (round-trip only when active)
+    //   Saturation: mix toward/away from luminance in RGB space
+    //   Density:    adjust luminance while preserving chrominance (Resolve Hue-vs-Lum style)
+    if (hslParams.activeFlags & 1u) {
+        float3 rgbF = float3(rgb);
+
+        // HDR safety: normalize super-white pixels to 0-1, restore after
+        float hdrPeak = max3(rgbF.r, rgbF.g, rgbF.b);
+        float hdrScale = 1.0;
+        if (hdrPeak > 1.0) {
+            hdrScale = hdrPeak;
+            rgbF /= hdrScale;
+        }
+
+        // Extract hue and saturation for weight computation
+        float maxC = max3(rgbF.r, rgbF.g, rgbF.b);
+        float minC = min3(rgbF.r, rgbF.g, rgbF.b);
+        float chroma = maxC - minC;
+
+        if (chroma > 0.001) {
+            float sat = (maxC > 0.001) ? (chroma / maxC) : 0.0;
+
+            // Hue in degrees [0, 360)
+            float hue = 0.0;
+            if (maxC == rgbF.r)      hue = fmod((rgbF.g - rgbF.b) / chroma + 6.0, 6.0) * 60.0;
+            else if (maxC == rgbF.g) hue = ((rgbF.b - rgbF.r) / chroma + 2.0) * 60.0;
+            else                     hue = ((rgbF.r - rgbF.g) / chroma + 4.0) * 60.0;
+
+            // Channel centers (degrees) and Gaussian sigmas.
+            // Gaussian weighting: smooth decay, no hard cutoff at any boundary.
+            // Sigma ~22° for primaries (≈40° FWHM), ~11° for skin tone.
+            float centers[7] = { 0.0, 60.0, 120.0, 180.0, 240.0, 300.0, 22.0 };
+            float sigmas[7] = { 22.0, 22.0, 22.0, 22.0, 22.0, 22.0, 11.0 };
+
+            float totalSatDelta = 0.0;
+            float totalDensDelta = 0.0;
+            float totalHueDelta = 0.0;
+
+            for (int i = 0; i < 7; i++) {
+                float dist = abs(hue - centers[i]);
+                if (dist > 180.0) dist = 360.0 - dist;
+
+                // Gaussian: smooth decay, effectively zero beyond ~3 sigma
+                float weight = exp(-0.5 * (dist * dist) / (sigmas[i] * sigmas[i]));
+
+                // Skin tone: gate on saturation (desaturated pixels are not skin)
+                if (i == 6) {
+                    weight *= smoothstep(0.05, 0.20, sat);
+                }
+
+                totalSatDelta += weight * hslParams.channels[i].saturation;
+                totalDensDelta += weight * hslParams.channels[i].luminance;
+                totalHueDelta += weight * hslParams.channels[i].hueShift;
+            }
+
+            // 1. Hue shift — rotate hue in HSL space (must come first so sat/dens
+            //    operate on the final color, not the pre-shift color).
+            if (abs(totalHueDelta) > 0.001) {
+                float mx = max3(rgbF.r, rgbF.g, rgbF.b);
+                float mn = min3(rgbF.r, rgbF.g, rgbF.b);
+                float ch = mx - mn;
+                float lum2 = (mx + mn) * 0.5;
+                float sat2 = 0.0;
+                if (ch > 0.001) {
+                    sat2 = ch / (1.0 - abs(2.0 * lum2 - 1.0) + 0.001);
+                    sat2 = clamp(sat2, 0.0, 1.0);
+                }
+
+                float hue2 = 0.0;
+                if (ch > 0.001) {
+                    if (mx == rgbF.r)      hue2 = fmod((rgbF.g - rgbF.b) / ch + 6.0, 6.0) * 60.0;
+                    else if (mx == rgbF.g) hue2 = ((rgbF.b - rgbF.r) / ch + 2.0) * 60.0;
+                    else                   hue2 = ((rgbF.r - rgbF.g) / ch + 4.0) * 60.0;
+                }
+
+                hue2 = fmod(hue2 + totalHueDelta + 360.0, 360.0);
+
+                float C = (1.0 - abs(2.0 * lum2 - 1.0)) * sat2;
+                float hP = hue2 / 60.0;
+                float X = C * (1.0 - abs(fmod(hP, 2.0) - 1.0));
+                float3 rgb1;
+                if      (hP < 1.0) rgb1 = float3(C, X, 0);
+                else if (hP < 2.0) rgb1 = float3(X, C, 0);
+                else if (hP < 3.0) rgb1 = float3(0, C, X);
+                else if (hP < 4.0) rgb1 = float3(0, X, C);
+                else if (hP < 5.0) rgb1 = float3(X, 0, C);
+                else               rgb1 = float3(C, 0, X);
+                rgbF = rgb1 + float3(lum2 - C * 0.5);
+            }
+
+            // 2. Saturation — mix toward/away from luminance in RGB space.
+            if (abs(totalSatDelta) > 0.001) {
+                float lumR = dot(rgbF, float3(0.2126, 0.7152, 0.0722));
+                rgbF = mix(float3(lumR), rgbF, 1.0 + totalSatDelta);
+            }
+
+            // 3. Density — adjust luminance while preserving chrominance.
+            //    Positive slider = more dense = darker (photography convention).
+            //    Negative slider = less dense = brighter.
+            //    Uses pow() for both directions: multiplicative in nature,
+            //    so the effect naturally tapers near the hue boundary (no hard edges).
+            if (abs(totalDensDelta) > 0.001) {
+                float Y = dot(rgbF, float3(0.2126, 0.7152, 0.0722));
+                float3 colorChroma = rgbF - float3(Y);
+
+                // Negate: positive slider → darker → lower luminance.
+                // pow(2, ...) gives ~2x range: +1 → 0.5x, -1 → 2x.
+                float gain = pow(2.0, -totalDensDelta);
+                float Y_new = clamp(Y * gain, 0.0, 1.0);
+
+                rgbF = float3(Y_new) + colorChroma;
+            }
+
+            // Restore HDR brightness and clamp
+            rgbF = max(rgbF, 0.0) * hdrScale;
+            rgb = half3(rgbF);
+        }
     }
 
     // 3. Vibrance: selective saturation boost on less-saturated pixels

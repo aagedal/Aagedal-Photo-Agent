@@ -37,8 +37,6 @@
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		8E0556B52F28C3F600BCFB49 /* Aagedal Photo Agent */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-			);
 			path = "Aagedal Photo Agent";
 			sourceTree = "<group>";
 		};
@@ -69,7 +67,6 @@
 				38D2DABC30701F41BE3F6B54 /* IPTCMetadataTests.swift */,
 				9CB424FD4CEB2C23AEFF5DB0 /* MetadataSidecarServiceTests.swift */,
 			);
-			name = "Aagedal Photo Agent Tests";
 			path = "Aagedal Photo Agent Tests";
 			sourceTree = "<group>";
 		};

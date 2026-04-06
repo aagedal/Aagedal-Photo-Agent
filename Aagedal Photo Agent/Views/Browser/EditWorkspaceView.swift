@@ -768,6 +768,31 @@ struct EditWorkspaceView: View {
                         toneSliderBinding(\.vibrance).wrappedValue = 0
                     })
 
+                    // ── Hue / Saturation / Density ──
+                    Text("Hue / Saturation / Density")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 2)
+                    Divider()
+
+                    HSLAdjustmentView(
+                        adjustments: hslAdjustmentsBinding,
+                        onEditingChanged: { editing in
+                            isDraggingEditSlider = editing
+                        },
+                        onDragChanged: { adjustments in
+                            if let pipeline = metalPipeline, pipeline.hasSourceTexture {
+                                var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
+                                settings.hslAdjustments = adjustments.isEmpty ? nil : adjustments
+                                pipeline.updateParams(settings)
+                                metalCoordinator.requestRedraw()
+                            }
+                        },
+                        onDragEnded: {
+                            commitEditAdjustments()
+                        }
+                    )
+
                     // ── Exposure ──
                     HStack {
                         Text("Exposure")
@@ -1961,6 +1986,18 @@ struct EditWorkspaceView: View {
             || cameraRaw.toneCurve != nil
             || (cameraRaw.crop?.isEmpty == false)
             || !(cameraRaw.localAdjustments?.isEmpty ?? true)
+            || !(cameraRaw.hslAdjustments?.isEmpty ?? true)
+    }
+
+    private var hslAdjustmentsBinding: Binding<HSLAdjustments> {
+        Binding(
+            get: { metadataViewModel.editingMetadata.cameraRaw?.hslAdjustments ?? HSLAdjustments() },
+            set: { newValue in
+                updateCameraRaw { cameraRaw in
+                    cameraRaw.hslAdjustments = newValue.isEmpty ? nil : newValue
+                }
+            }
+        )
     }
 
     private func toneSliderBinding(_ keyPath: WritableKeyPath<CameraRawSettings, Int?>) -> Binding<Double> {

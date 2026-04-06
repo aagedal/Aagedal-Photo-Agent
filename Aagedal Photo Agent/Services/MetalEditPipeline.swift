@@ -47,6 +47,29 @@ struct MaskOverlayParams {
     var viewportSize: SIMD2<Float> = SIMD2<Float>(1, 1)
 }
 
+/// GPU HSL per-color channel parameters matching Metal `HSLChannelParams`.
+struct HSLChannelParams {
+    var saturation: Float = 0
+    var luminance: Float = 0
+    var hueShift: Float = 0
+    var _pad: Float = 0
+}
+
+/// GPU HSL adjustment parameters matching Metal `HSLParams`.
+struct HSLParams {
+    var channels: (HSLChannelParams, HSLChannelParams, HSLChannelParams,
+                   HSLChannelParams, HSLChannelParams, HSLChannelParams,
+                   HSLChannelParams) = (
+        HSLChannelParams(), HSLChannelParams(), HSLChannelParams(),
+        HSLChannelParams(), HSLChannelParams(), HSLChannelParams(),
+        HSLChannelParams()
+    )
+    var activeFlags: UInt32 = 0
+    var _pad0: UInt32 = 0
+    var _pad1: UInt32 = 0
+    var _pad2: UInt32 = 0
+}
+
 /// Uniform buffer layout matching the Metal `EditParams` struct.
 /// Contains all edit operations: tonal (via LUT), vibrance, saturation, white balance.
 struct EditParams {
@@ -107,6 +130,7 @@ final class MetalEditPipeline: @unchecked Sendable {
     nonisolated(unsafe) private(set) var lutTexture: MTLTexture
     nonisolated(unsafe) private let identityLutTexture: MTLTexture
     nonisolated(unsafe) private(set) var maskBuffer: MTLBuffer?
+    nonisolated(unsafe) private(set) var hslBuffer: MTLBuffer?
 
     /// Gamut clipping mode for soft proof preview. 0=off, 1=sRGB, 2=P3, 3=Rec.2020.
     nonisolated(unsafe) var gamutClipMode: UInt32 = 0
@@ -205,8 +229,13 @@ final class MetalEditPipeline: @unchecked Sendable {
             length: MemoryLayout<MaskParams>.stride * Self.maxMasks,
             options: .storageModeShared
         )
+        self.hslBuffer = device.makeBuffer(
+            length: MemoryLayout<HSLParams>.stride,
+            options: .storageModeShared
+        )
         metalPipelineLog.info("MaskParams stride=\(MemoryLayout<MaskParams>.stride) size=\(MemoryLayout<MaskParams>.size) alignment=\(MemoryLayout<MaskParams>.alignment)")
         metalPipelineLog.info("EditParams stride=\(MemoryLayout<EditParams>.stride) size=\(MemoryLayout<EditParams>.size) alignment=\(MemoryLayout<EditParams>.alignment)")
+        metalPipelineLog.info("HSLParams stride=\(MemoryLayout<HSLParams>.stride) size=\(MemoryLayout<HSLParams>.size) alignment=\(MemoryLayout<HSLParams>.alignment)")
 
         // Create a 2-entry identity LUT: maps input → input (linear ramp from domainMin to domainMax).
         // Always bound at texture index 2 to avoid Metal validation errors on unbound textures.
@@ -442,6 +471,38 @@ final class MetalEditPipeline: @unchecked Sendable {
             }
         }
 
+        // 6. HSL per-color adjustments
+        if let hslBuf = hslBuffer {
+            var hslP = HSLParams()
+            var hslActive = false
+
+            if let hsl = settings.hslAdjustments, !hsl.isEmpty {
+                hslActive = true
+                withUnsafeMutablePointer(to: &hslP.channels) { tuplePtr in
+                    let ptr = UnsafeMutableRawPointer(tuplePtr)
+                        .assumingMemoryBound(to: HSLChannelParams.self)
+                    func encode(_ adj: HSLColorAdjustment?, at index: Int) {
+                        guard let adj, !adj.isEmpty else { return }
+                        var ch = HSLChannelParams()
+                        if let s = adj.saturation, s != 0 { ch.saturation = Float(s) / 100.0 }
+                        if let l = adj.luminance, l != 0 { ch.luminance = Float(l) / 100.0 }
+                        if let h = adj.hueShift, h != 0 { ch.hueShift = Float(h) / 100.0 * 30.0 }
+                        ptr[index] = ch
+                    }
+                    encode(hsl.red, at: 0)
+                    encode(hsl.yellow, at: 1)
+                    encode(hsl.green, at: 2)
+                    encode(hsl.cyan, at: 3)
+                    encode(hsl.blue, at: 4)
+                    encode(hsl.magenta, at: 5)
+                    encode(hsl.skinTone, at: 6)
+                }
+            }
+            hslP.activeFlags = hslActive ? 1 : 0
+            let hslPtr = hslBuf.contents().bindMemory(to: HSLParams.self, capacity: 1)
+            hslPtr.pointee = hslP
+        }
+
         let ptr = buffer.contents().bindMemory(to: EditParams.self, capacity: 1)
         ptr.pointee = params
         ptr.pointee.gamutClipMode = gamutClipMode
@@ -512,6 +573,9 @@ final class MetalEditPipeline: @unchecked Sendable {
         encoder.setBuffer(buffer, offset: 0, index: 0)
         if let maskBuf = maskBuffer {
             encoder.setBuffer(maskBuf, offset: 0, index: 1)
+        }
+        if let hslBuf = hslBuffer {
+            encoder.setBuffer(hslBuf, offset: 0, index: 2)
         }
 
         let threadgroupSize = MTLSize(width: 16, height: 16, depth: 1)
@@ -873,6 +937,9 @@ final class MetalEditPipeline: @unchecked Sendable {
         if let maskBuf = pipeline.maskBuffer {
             encoder.setBuffer(maskBuf, offset: 0, index: 1)
         }
+        if let hslBuf = pipeline.hslBuffer {
+            encoder.setBuffer(hslBuf, offset: 0, index: 2)
+        }
 
         let threadgroupSize = MTLSize(width: 16, height: 16, depth: 1)
         let gridSize = MTLSize(width: width, height: height, depth: 1)
@@ -898,6 +965,7 @@ final class MetalEditPipeline: @unchecked Sendable {
             || (settings.temperature == nil && settings.incrementalTemperature == nil
                 && settings.tint == nil && settings.incrementalTint == nil)
         let noMasks = settings.localAdjustments?.isEmpty ?? true
-        return noTonal && noVibrance && noSaturation && noWB && noMasks
+        let noHSL = settings.hslAdjustments?.isEmpty ?? true
+        return noTonal && noVibrance && noSaturation && noWB && noMasks && noHSL
     }
 }

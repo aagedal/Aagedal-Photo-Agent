@@ -26,6 +26,10 @@ enum CameraRawApproximation {
             Logger(subsystem: "com.aagedal.photo-agent", category: "CameraRawApproximation")
                 .warning("CIFilter fallback: mask adjustments will not be applied")
         }
+        if !(settings.hslAdjustments?.isEmpty ?? true) {
+            Logger(subsystem: "com.aagedal.photo-agent", category: "CameraRawApproximation")
+                .warning("CIFilter fallback: HSL adjustments will not be applied")
+        }
         return applyCIFilters(to: input, settings: settings)
     }
 
