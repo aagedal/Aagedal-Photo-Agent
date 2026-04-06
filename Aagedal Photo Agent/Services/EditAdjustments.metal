@@ -203,9 +203,11 @@ kernel void editAdjustments(
 
             // Channel centers (degrees) and Gaussian sigmas.
             // Gaussian weighting: smooth decay, no hard cutoff at any boundary.
-            // Sigma ~22° for primaries (≈40° FWHM), ~11° for skin tone.
+            // Sigma ~30° for primaries (≈71° FWHM), ~15° for skin tone.
+            // Wide overlap between adjacent channels prevents harsh edges
+            // at extreme slider values.
             float centers[7] = { 0.0, 60.0, 120.0, 180.0, 240.0, 300.0, 22.0 };
-            float sigmas[7] = { 22.0, 22.0, 22.0, 22.0, 22.0, 22.0, 11.0 };
+            float sigmas[7] = { 30.0, 30.0, 30.0, 30.0, 30.0, 30.0, 15.0 };
 
             float totalSatDelta = 0.0;
             float totalDensDelta = 0.0;
