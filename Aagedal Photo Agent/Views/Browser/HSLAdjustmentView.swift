@@ -127,7 +127,7 @@ private struct HSLChannelColumn: View {
 
             EditSlider(
                 value: hueBinding,
-                range: -100...100,
+                range: -25...25,
                 step: 1,
                 onEditingChanged: { editing in
                     if !editing { onDragEnded?() }

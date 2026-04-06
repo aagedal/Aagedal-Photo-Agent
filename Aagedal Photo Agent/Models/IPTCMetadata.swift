@@ -76,7 +76,7 @@ struct MaskAdjustment: Codable, Sendable, Equatable, Identifiable {
 struct HSLColorAdjustment: Codable, Sendable, Equatable {
     var saturation: Int?    // -100..+100
     var luminance: Int?     // -100..+100 ("Density" in UI)
-    var hueShift: Int?      // -100..+100 (maps to ±30°)
+    var hueShift: Int?      // -25..+25 (maps to ±7.5°)
 
     nonisolated var isEmpty: Bool {
         (saturation ?? 0) == 0 && (luminance ?? 0) == 0 && (hueShift ?? 0) == 0

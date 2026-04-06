@@ -768,31 +768,6 @@ struct EditWorkspaceView: View {
                         toneSliderBinding(\.vibrance).wrappedValue = 0
                     })
 
-                    // ── Hue / Saturation / Density ──
-                    Text("Hue / Saturation / Density")
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.secondary)
-                        .padding(.top, 2)
-                    Divider()
-
-                    HSLAdjustmentView(
-                        adjustments: hslAdjustmentsBinding,
-                        onEditingChanged: { editing in
-                            isDraggingEditSlider = editing
-                        },
-                        onDragChanged: { adjustments in
-                            if let pipeline = metalPipeline, pipeline.hasSourceTexture {
-                                var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
-                                settings.hslAdjustments = adjustments.isEmpty ? nil : adjustments
-                                pipeline.updateParams(settings)
-                                metalCoordinator.requestRedraw()
-                            }
-                        },
-                        onDragEnded: {
-                            commitEditAdjustments()
-                        }
-                    )
-
                     // ── Exposure ──
                     HStack {
                         Text("Exposure")
@@ -862,6 +837,31 @@ struct EditWorkspaceView: View {
                         }
                     )
                     .padding(.top, 2)
+
+                    // ── Hue / Saturation / Density ──
+                    Text("Hue / Saturation / Density")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 2)
+                    Divider()
+
+                    HSLAdjustmentView(
+                        adjustments: hslAdjustmentsBinding,
+                        onEditingChanged: { editing in
+                            isDraggingEditSlider = editing
+                        },
+                        onDragChanged: { adjustments in
+                            if let pipeline = metalPipeline, pipeline.hasSourceTexture {
+                                var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
+                                settings.hslAdjustments = adjustments.isEmpty ? nil : adjustments
+                                pipeline.updateParams(settings)
+                                metalCoordinator.requestRedraw()
+                            }
+                        },
+                        onDragEnded: {
+                            commitEditAdjustments()
+                        }
+                    )
 
                     } // end global adjustments else block
 
