@@ -12,6 +12,7 @@ struct XMPSidecarService: Sendable {
         static let photoshop = "http://ns.adobe.com/photoshop/1.0/"
         static let iptcCore = "http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/"
         static let iptcExt = "http://iptc.org/std/Iptc4xmpExt/2008-02-29/"
+        static let tiff = "http://ns.adobe.com/tiff/1.0/"
         static let exif = "http://ns.adobe.com/exif/1.0/"
         static let crs = "http://ns.adobe.com/camera-raw-settings/1.0/"
     }
@@ -573,6 +574,8 @@ struct XMPSidecarService: Sendable {
             return Namespace.iptcCore
         case "Iptc4xmpExt":
             return Namespace.iptcExt
+        case "tiff":
+            return Namespace.tiff
         case "exif":
             return Namespace.exif
         case "crs":
@@ -606,7 +609,13 @@ struct XMPSidecarService: Sendable {
         let event = parseSimple(from: description, prefix: "Iptc4xmpExt", localName: "Event")
         let latValue = parseSimple(from: description, prefix: "exif", localName: "GPSLatitude")
         let lonValue = parseSimple(from: description, prefix: "exif", localName: "GPSLongitude")
-        let orientationValue = parseSimple(from: description, prefix: "exif", localName: "Orientation")
+        // Prefer tiff:Orientation (original camera orientation) over exif:Orientation.
+        // Adobe-authored sidecars set exif:Orientation to the "processed" display orientation
+        // (often 1) while tiff:Orientation retains the actual sensor orientation — using the
+        // wrong one causes corrective-rotation mismatches in full-screen and edit views.
+        let tiffOrientation = parseSimple(from: description, prefix: "tiff", localName: "Orientation")
+        let exifOrientationRaw = parseSimple(from: description, prefix: "exif", localName: "Orientation")
+        let orientationValue = tiffOrientation ?? exifOrientationRaw
         let cameraRaw = parseCameraRawSettings(from: description)
 
         return IPTCMetadata(

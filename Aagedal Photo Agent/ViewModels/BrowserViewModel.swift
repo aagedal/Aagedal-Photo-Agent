@@ -2601,6 +2601,16 @@ final class BrowserViewModel {
             thumbnailService.invalidateThumbnail(for: url)
         }
 
+        // Clear CRS from XMP sidecars for RAW files — the sidecar is the
+        // authoritative CRS source and would re-set hasDevelopEdits on next load.
+        for url in urls where SupportedImageFormats.isRaw(url: url) {
+            do {
+                try xmpSidecarService.saveCameraRawOnly(nil, orientation: nil, for: url)
+            } catch {
+                logger.error("Failed to clear CRS from XMP sidecar for \(url.lastPathComponent): \(error.localizedDescription)")
+            }
+        }
+
         // Write cleared CRS fields to XMP in the image files
         Task {
             var clearFields: [String: String] = [:]
