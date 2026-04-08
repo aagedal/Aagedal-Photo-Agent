@@ -9,8 +9,9 @@ final class BrowserViewModel {
         didSet {
             guard !suppressImagesCascade else { return }
             urlToImageIndex = Dictionary(uniqueKeysWithValues: images.enumerated().map { ($1.url, $0) })
+            guard !isBatchUpdating else { return }
             let sameSet = images.count == oldValue.count
-            rebuildSortedCache(forceSort: !sameSet)
+            setNeedsSortRebuild(forceSort: !sameSet)
         }
     }
     var selectedImageIDs: Set<URL> = [] {
@@ -44,14 +45,16 @@ final class BrowserViewModel {
     var sortOrder: SortOrder = .name {
         didSet {
             UserDefaults.standard.set(sortOrder.rawValue, forKey: UserDefaultsKeys.thumbnailSortOrder)
-            rebuildSortedCache()
+            guard !isBatchUpdating else { return }
+            setNeedsSortRebuild(forceSort: true)
             showSortFeedback()
         }
     }
     var sortReversed: Bool = false {
         didSet {
             UserDefaults.standard.set(sortReversed, forKey: UserDefaultsKeys.thumbnailSortReversed)
-            rebuildSortedCache()
+            guard !isBatchUpdating else { return }
+            setNeedsSortRebuild(forceSort: true)
             showSortFeedback()
         }
     }
@@ -64,35 +67,37 @@ final class BrowserViewModel {
     var expandedFolders: Set<URL> = []
     var manualOrder: [URL] = [] {
         didSet {
-            if sortOrder == .manual { rebuildSortedCache() }
+            guard !isBatchUpdating else { return }
+            if sortOrder == .manual { setNeedsSortRebuild(forceSort: true) }
         }
     }
     @ObservationIgnored var draggedImageURLs: Set<URL> = []
     var searchText: String = "" {
         didSet {
+            guard !isBatchUpdating else { return }
             searchDebounceTask?.cancel()
             if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                rebuildVisibleCache()
+                setNeedsVisibleRebuild()
             } else {
                 searchDebounceTask = Task { @MainActor [weak self] in
                     try? await Task.sleep(for: .milliseconds(200))
                     guard !Task.isCancelled else { return }
-                    self?.rebuildVisibleCache()
+                    self?.setNeedsVisibleRebuild()
                 }
             }
         }
     }
     var minimumStarRating: StarRating = .none {
-        didSet { scheduleFilterRebuild() }
+        didSet { if !isBatchUpdating { setNeedsVisibleRebuild() } }
     }
     var selectedColorLabels: Set<ColorLabel> = [] {
-        didSet { scheduleFilterRebuild() }
+        didSet { if !isBatchUpdating { setNeedsVisibleRebuild() } }
     }
     var personShownFilter: PersonShownFilter = .any {
-        didSet { scheduleFilterRebuild() }
+        didSet { if !isBatchUpdating { setNeedsVisibleRebuild() } }
     }
     var editedFilter: EditedFilter = .any {
-        didSet { scheduleFilterRebuild() }
+        didSet { if !isBatchUpdating { setNeedsVisibleRebuild() } }
     }
 
     @ObservationIgnored private var folderFilterStates: [URL: FolderFilterState] = [:]
@@ -130,7 +135,11 @@ final class BrowserViewModel {
     private let perfLog = Logger(subsystem: "com.aagedal.photo-agent", category: "MetadataPerf")
     @ObservationIgnored var onImagesDeleted: ((Set<URL>) -> Void)?
     @ObservationIgnored private var searchDebounceTask: Task<Void, Never>?
-    @ObservationIgnored private var filterDebounceTask: Task<Void, Never>?
+    @ObservationIgnored private var needsSortRebuild = false
+    @ObservationIgnored private var needsVisibleRebuild = false
+    @ObservationIgnored private var needsForceSortOnRebuild = false
+    @ObservationIgnored private var rebuildCoalesceTask: Task<Void, Never>?
+    @ObservationIgnored private var isBatchUpdating = false
     @ObservationIgnored private(set) var lastRefreshModifiedURLs: Set<URL> = []
 
     /// Clear after the auto-refresh modifier has processed the modified URLs,
@@ -180,7 +189,7 @@ final class BrowserViewModel {
     deinit {
         sortFeedbackTask?.cancel()
         searchDebounceTask?.cancel()
-        filterDebounceTask?.cancel()
+        rebuildCoalesceTask?.cancel()
         retinaPreCacheTask?.cancel()
         loadFolderTask?.cancel()
     }
@@ -249,13 +258,50 @@ final class BrowserViewModel {
         }
     }
 
-    private func scheduleFilterRebuild() {
-        filterDebounceTask?.cancel()
-        filterDebounceTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(50))
-            guard !Task.isCancelled else { return }
-            self?.rebuildVisibleCache()
+    private func setNeedsSortRebuild(forceSort: Bool = true) {
+        needsSortRebuild = true
+        if forceSort { needsForceSortOnRebuild = true }
+        scheduleCoalescedRebuild()
+    }
+
+    private func setNeedsVisibleRebuild() {
+        needsVisibleRebuild = true
+        scheduleCoalescedRebuild()
+    }
+
+    private func scheduleCoalescedRebuild() {
+        guard rebuildCoalesceTask == nil else { return }
+        rebuildCoalesceTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.rebuildCoalesceTask = nil
+            self.flushRebuild()
         }
+    }
+
+    private func flushRebuild() {
+        if needsSortRebuild {
+            let forceSort = needsForceSortOnRebuild
+            needsSortRebuild = false
+            needsVisibleRebuild = false
+            needsForceSortOnRebuild = false
+            rebuildSortedCache(forceSort: forceSort)
+        } else if needsVisibleRebuild {
+            needsVisibleRebuild = false
+            rebuildVisibleCache()
+        }
+    }
+
+    private func rebuildNow() {
+        rebuildCoalesceTask?.cancel()
+        rebuildCoalesceTask = nil
+        flushRebuild()
+    }
+
+    func batchUpdate(_ block: () -> Void) {
+        isBatchUpdating = true
+        block()
+        isBatchUpdating = false
+        rebuildNow()
     }
 
     private func rebuildVisibleCache() {
@@ -381,11 +427,13 @@ final class BrowserViewModel {
     }
 
     func clearFilters() {
-        searchText = ""
-        minimumStarRating = .none
-        selectedColorLabels.removeAll()
-        personShownFilter = .any
-        editedFilter = .any
+        batchUpdate {
+            searchText = ""
+            minimumStarRating = .none
+            selectedColorLabels.removeAll()
+            personShownFilter = .any
+            editedFilter = .any
+        }
     }
 
     func openFolder() {
@@ -434,6 +482,7 @@ final class BrowserViewModel {
                 let files = try fileSystemService.scanFolder(at: url, includeAllFiles: showAllFiles)
                 guard !Task.isCancelled, self.currentFolderURL == url else { return }
                 self.images = files
+                self.rebuildNow()
                 self.isLoading = false
                 self.thumbnailService.startBackgroundGeneration(for: self.visibleImages)
 
@@ -472,6 +521,7 @@ final class BrowserViewModel {
                 }
                 guard !Task.isCancelled, self.currentFolderURL == url else { return }
                 self.images = updated
+                self.rebuildNow()
 
                 // Phase 4: Background display preview generation
                 self.fullScreenImageCache.startBackgroundPreviewGeneration(
@@ -2812,18 +2862,20 @@ final class BrowserViewModel {
     }
 
     private func restoreFilterState(for url: URL) {
-        if let saved = folderFilterStates[url] {
-            minimumStarRating = saved.minimumStarRating
-            selectedColorLabels = saved.selectedColorLabels
-            personShownFilter = saved.personShownFilter
-            editedFilter = saved.editedFilter
-            searchText = saved.searchText
-        } else {
-            minimumStarRating = .none
-            selectedColorLabels = []
-            personShownFilter = .any
-            editedFilter = .any
-            searchText = ""
+        batchUpdate {
+            if let saved = folderFilterStates[url] {
+                minimumStarRating = saved.minimumStarRating
+                selectedColorLabels = saved.selectedColorLabels
+                personShownFilter = saved.personShownFilter
+                editedFilter = saved.editedFilter
+                searchText = saved.searchText
+            } else {
+                minimumStarRating = .none
+                selectedColorLabels = []
+                personShownFilter = .any
+                editedFilter = .any
+                searchText = ""
+            }
         }
     }
 }
