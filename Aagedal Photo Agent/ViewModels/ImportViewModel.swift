@@ -210,14 +210,23 @@ final class ImportViewModel {
         }
         let metadata = configuration.metadata
 
+        // Pre-compute file→date-group folder name for O(1) lookup (avoids O(N×M) linear scan).
+        var fileDateFolder: [URL: String] = [:]
+        if sortByDate {
+            for group in dateGroups {
+                for file in group.files {
+                    fileDateFolder[file] = group.folderName
+                }
+            }
+        }
+
         // Pre-compute file→target folder on main actor (SupportedImageFormats is MainActor).
         var fileTargetFolder: [URL: URL] = [:]
         for file in filesToCopy {
             let baseFolder: URL
             if sortByDate {
-                // Find the date group for this file
-                if let group = dateGroups.first(where: { $0.files.contains(file) }) {
-                    baseFolder = baseURL.appendingPathComponent(group.folderName)
+                if let folderName = fileDateFolder[file] {
+                    baseFolder = baseURL.appendingPathComponent(folderName)
                 } else {
                     baseFolder = destURL
                 }

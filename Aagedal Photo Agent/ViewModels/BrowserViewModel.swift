@@ -1367,7 +1367,7 @@ final class BrowserViewModel {
     ) {
         guard !selectedImageIDs.isEmpty else { return }
         let urls = selectedImages.map(\.url)
-        let lookup = Dictionary(uniqueKeysWithValues: images.map { ($0.url, $0) })
+        let c2paByURL = Dictionary(uniqueKeysWithValues: selectedImages.map { ($0.url, $0.hasC2PA) })
 
         // Phase 1: In-place mutation — skip the didSet cascade since URLs don't change
         suppressImagesCascade = true
@@ -1434,7 +1434,7 @@ final class BrowserViewModel {
             var strictNonRawChoice: PMNonRAWXMPSidecarChoice?
             if strictPM {
                 let hasNonRawXMPTarget = urls.contains { url in
-                    let hasC2PA = lookup[url]?.hasC2PA ?? false
+                    let hasC2PA = c2paByURL[url] ?? false
                     let mode = MetadataWriteMode.current(forC2PA: hasC2PA)
                     return mode == .writeToXMPSidecar && !SupportedImageFormats.isRaw(url: url)
                 }
@@ -1447,7 +1447,7 @@ final class BrowserViewModel {
             }
 
             for url in urls {
-                let hasC2PA = lookup[url]?.hasC2PA ?? false
+                let hasC2PA = c2paByURL[url] ?? false
                 let mode = MetadataWriteMode.current(forC2PA: hasC2PA)
 
                 switch mode {
@@ -2019,6 +2019,7 @@ final class BrowserViewModel {
             removeSubfolderCacheRecursively(for: url)
         }
         openFolders.removeAll { $0 == url }
+        folderFilterStates.removeValue(forKey: url)
         // If we closed the current folder (or it was browsing a subfolder of it),
         // switch to another open folder or clear
         let currentPath = (currentFolderURL ?? URL(fileURLWithPath: "/")).path(percentEncoded: false)
