@@ -2881,8 +2881,12 @@ struct EditWorkspaceView: View {
             do {
                 let outputFolder = selectedImageURL.deletingLastPathComponent().appendingPathComponent("Edited", isDirectory: true)
                 try FileManager.default.createDirectory(at: outputFolder, withIntermediateDirectories: true)
+                let exifTool = browserViewModel.exifToolService
+                let copier: EditedImageRenderer.MetadataCopier = { src, dst in
+                    try? await exifTool.copyMetadataToRenderedFile(from: src, to: dst)
+                }
                 let outputURL = try await Task.detached(priority: .userInitiated) {
-                    try await EditedImageRenderer.render(from: selectedImageURL, cameraRaw: settings, isHDR: hdr, outputFolder: outputFolder)
+                    try await EditedImageRenderer.render(from: selectedImageURL, cameraRaw: settings, isHDR: hdr, outputFolder: outputFolder, metadataCopier: copier)
                 }.value
                 browserViewModel.thumbnailService.invalidateThumbnail(for: outputURL)
             } catch {

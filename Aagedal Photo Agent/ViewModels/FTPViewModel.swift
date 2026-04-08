@@ -268,7 +268,10 @@ final class FTPViewModel {
                 guard !Task.isCancelled else { break }
                 do {
                     let cameraRaw = metadataMap[url]?.cameraRaw
-                    try await EditedImageRenderer.renderJPEG(from: url, cameraRaw: cameraRaw, outputFolder: tempDir)
+                    let copier: EditedImageRenderer.MetadataCopier = { src, dst in
+                        try? await exifToolService.copyMetadataToRenderedFile(from: src, to: dst)
+                    }
+                    try await EditedImageRenderer.renderJPEG(from: url, cameraRaw: cameraRaw, outputFolder: tempDir, metadataCopier: copier)
                     let outputURL = EditedImageRenderer.outputURL(for: url, in: tempDir, extension: "jpg")
                     renderedURLs.append(outputURL)
                 } catch {

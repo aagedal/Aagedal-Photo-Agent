@@ -881,6 +881,28 @@ final class ExifToolService {
         try await writeFields([ExifToolWriteTag.label: label.xmpLabelValue ?? ""], to: urls)
     }
 
+    /// Copy all metadata from source to rendered destination using the persistent ExifTool process.
+    /// Copies all metadata groups (EXIF, IPTC, XMP, GPS, MakerNotes) with targeted exclusions:
+    /// - XMP-crs (Camera Raw settings already baked into pixels)
+    /// - IFD1 (thumbnail IFD is wrong for the rendered file)
+    /// - ICC_Profile (renderer sets the correct color space per export settings)
+    /// Resets Orientation to Normal (1) since the renderer already applies rotation to pixels.
+    func copyMetadataToRenderedFile(from source: URL, to destination: URL) async throws {
+        _ = try await execute([
+            "-m",
+            "-charset", "iptc=UTF8",
+            "-TagsFromFile", source.path,
+            "-all:all",
+            "-IPTC:CodedCharacterSet=UTF8",
+            "--XMP-crs:all",
+            "--IFD1:all",
+            "--ICC_Profile:all",
+            "-Orientation#=1",
+            "-overwrite_original",
+            destination.path
+        ])
+    }
+
     /// Read technical/EXIF metadata for a single file.
     func readTechnicalMetadata(url: URL) async throws -> TechnicalMetadata {
         exifToolLog.debug("readTechnicalMetadata: \(url.lastPathComponent, privacy: .public)")

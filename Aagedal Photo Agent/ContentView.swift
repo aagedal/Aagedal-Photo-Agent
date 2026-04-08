@@ -1135,9 +1135,13 @@ struct ContentView: View {
                 }
 
                 do {
-                    // Step 1: Render the image
+                    // Step 1: Render the image (metadata copy via persistent ExifTool process)
+                    let exifTool = browserViewModel.exifToolService
+                    let copier: EditedImageRenderer.MetadataCopier = { src, dst in
+                        try? await exifTool.copyMetadataToRenderedFile(from: src, to: dst)
+                    }
                     let renderedURL = try await Task.detached(priority: .userInitiated) {
-                        try await EditedImageRenderer.render(from: image.url, cameraRaw: cameraRaw, isHDR: isHDR, outputFolder: outputFolder)
+                        try await EditedImageRenderer.render(from: image.url, cameraRaw: cameraRaw, isHDR: isHDR, outputFolder: outputFolder, metadataCopier: copier)
                     }.value
 
                     // Step 1b: Apply pending sidecar IPTC edits to rendered file
@@ -1466,8 +1470,12 @@ struct ContentView: View {
                 renderExportCurrent = index + 1
                 let cameraRaw = metadataByURL[url]?.cameraRaw
                 do {
+                    let exifTool = browserViewModel.exifToolService
+                    let copier: EditedImageRenderer.MetadataCopier = { src, dst in
+                        try? await exifTool.copyMetadataToRenderedFile(from: src, to: dst)
+                    }
                     let outputURL = try await Task.detached(priority: .userInitiated) {
-                        try await EditedImageRenderer.saveAs(from: url, cameraRaw: cameraRaw, format: format)
+                        try await EditedImageRenderer.saveAs(from: url, cameraRaw: cameraRaw, format: format, metadataCopier: copier)
                     }.value
                     // Apply pending sidecar IPTC edits to saved file
                     if let folderURL = browserViewModel.currentFolderURL {
@@ -1542,8 +1550,12 @@ struct ContentView: View {
                 }
 
                 do {
+                    let exifTool = browserViewModel.exifToolService
+                    let copier: EditedImageRenderer.MetadataCopier = { src, dst in
+                        try? await exifTool.copyMetadataToRenderedFile(from: src, to: dst)
+                    }
                     let renderedURL = try await Task.detached(priority: .userInitiated) {
-                        try await EditedImageRenderer.render(from: url, cameraRaw: cameraRaw, isHDR: isHDR, outputFolder: outputFolder)
+                        try await EditedImageRenderer.render(from: url, cameraRaw: cameraRaw, isHDR: isHDR, outputFolder: outputFolder, metadataCopier: copier)
                     }.value
                     // Apply pending sidecar IPTC edits to rendered file
                     await overlaySidecarIPTC(sourceURL: url, renderedURL: renderedURL, folderURL: folderURL)

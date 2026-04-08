@@ -49,9 +49,15 @@ nonisolated enum EditedImageRenderer {
 
     // MARK: - Unified Render
 
+    /// Closure type for copying metadata from a source image to a rendered destination.
+    /// Pass `ExifToolService.copyMetadataToRenderedFile` to use the persistent process.
+    typealias MetadataCopier = @Sendable (URL, URL) async -> Void
+
     /// Renders the image to the configured format. Returns the output URL.
+    /// When `metadataCopier` is provided (e.g. from ExifToolService), it uses the persistent
+    /// ExifTool process instead of spawning a fresh one — significantly faster for batch renders.
     @discardableResult
-    static func render(from sourceURL: URL, cameraRaw: CameraRawSettings?, isHDR: Bool, outputFolder: URL) async throws -> URL {
+    static func render(from sourceURL: URL, cameraRaw: CameraRawSettings?, isHDR: Bool, outputFolder: URL, metadataCopier: MetadataCopier? = nil) async throws -> URL {
         let output = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw)
 
         let destURL: URL
@@ -60,7 +66,11 @@ nonisolated enum EditedImageRenderer {
         } else {
             destURL = try await renderSDRFormat(output, sourceURL: sourceURL, outputFolder: outputFolder)
         }
-        await copyMetadata(from: sourceURL, to: destURL)
+        if let metadataCopier {
+            await metadataCopier(sourceURL, destURL)
+        } else {
+            await copyMetadata(from: sourceURL, to: destURL)
+        }
         return destURL
     }
 
@@ -278,7 +288,7 @@ nonisolated enum EditedImageRenderer {
 
     // MARK: - Legacy API
 
-    static func renderJPEG(from sourceURL: URL, cameraRaw: CameraRawSettings?, outputFolder: URL) async throws {
+    static func renderJPEG(from sourceURL: URL, cameraRaw: CameraRawSettings?, outputFolder: URL, metadataCopier: MetadataCopier? = nil) async throws {
         let output = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw)
         let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
         guard let data = CameraRawApproximation.ciContext.jpegRepresentation(of: output, colorSpace: colorSpace, options: [:]) else {
@@ -286,7 +296,11 @@ nonisolated enum EditedImageRenderer {
         }
         let destinationURL = outputURL(for: sourceURL, in: outputFolder, extension: "jpg")
         try data.write(to: destinationURL, options: .atomic)
-        await copyMetadata(from: sourceURL, to: destinationURL)
+        if let metadataCopier {
+            await metadataCopier(sourceURL, destinationURL)
+        } else {
+            await copyMetadata(from: sourceURL, to: destinationURL)
+        }
     }
 
     @discardableResult
@@ -310,7 +324,7 @@ nonisolated enum EditedImageRenderer {
     /// Render and save next to the original file in a specific format (JPEG or PNG).
     /// Returns the output URL. Handles name collisions by appending a number.
     @discardableResult
-    static func saveAs(from sourceURL: URL, cameraRaw: CameraRawSettings?, format: SaveAsFormat) async throws -> URL {
+    static func saveAs(from sourceURL: URL, cameraRaw: CameraRawSettings?, format: SaveAsFormat, metadataCopier: MetadataCopier? = nil) async throws -> URL {
         let output = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw)
         let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
         let ctx = CameraRawApproximation.ciContext
@@ -340,30 +354,48 @@ nonisolated enum EditedImageRenderer {
             try data.write(to: destURL, options: .atomic)
         }
 
-        await copyMetadata(from: sourceURL, to: destURL)
+        if let metadataCopier {
+            await metadataCopier(sourceURL, destURL)
+        } else {
+            await copyMetadata(from: sourceURL, to: destURL)
+        }
         return destURL
     }
 
     // MARK: - Metadata Copy
 
+    /// Resolve ExifTool path respecting user settings (bundled / homebrew / custom).
     private static var exifToolPath: String? {
-        if let bundledDir = Bundle.main.path(forResource: "ExifTool", ofType: nil) {
-            let path = (bundledDir as NSString).appendingPathComponent("exiftool")
-            if FileManager.default.isExecutableFile(atPath: path) { return path }
+        let sourceRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.exifToolSource) ?? "bundled"
+
+        switch sourceRaw {
+        case "homebrew":
+            for path in ["/opt/homebrew/bin/exiftool", "/usr/local/bin/exiftool"] {
+                if FileManager.default.isExecutableFile(atPath: path) { return path }
+            }
+            return nil
+        case "custom":
+            if let customPath = UserDefaults.standard.string(forKey: UserDefaultsKeys.exifToolCustomPath),
+               FileManager.default.isExecutableFile(atPath: customPath) {
+                return customPath
+            }
+            return nil
+        default: // "bundled"
+            if let bundledDir = Bundle.main.path(forResource: "ExifTool", ofType: nil) {
+                let path = (bundledDir as NSString).appendingPathComponent("exiftool")
+                if FileManager.default.isExecutableFile(atPath: path) { return path }
+            }
+            if let path = Bundle.main.path(forResource: "exiftool", ofType: nil) { return path }
+            // Fallback to Homebrew if bundled not found
+            for path in ["/opt/homebrew/bin/exiftool", "/usr/local/bin/exiftool"] {
+                if FileManager.default.isExecutableFile(atPath: path) { return path }
+            }
+            return nil
         }
-        if let path = Bundle.main.path(forResource: "exiftool", ofType: nil) { return path }
-        for path in ["/opt/homebrew/bin/exiftool", "/usr/local/bin/exiftool"] {
-            if FileManager.default.isExecutableFile(atPath: path) { return path }
-        }
-        return nil
     }
 
-    /// Copy all metadata from source to destination using ExifTool.
-    /// Copies all metadata groups (EXIF, IPTC, XMP, GPS, MakerNotes, etc.) with targeted exclusions:
-    /// - XMP-crs (Camera Raw settings already baked into pixels)
-    /// - IFD1 (thumbnail IFD is wrong for the rendered file)
-    /// - ICC_Profile (renderer sets the correct color space per export settings)
-    /// Resets Orientation to Normal (1) since the renderer already applies rotation to pixels.
+    /// Copy all metadata from source to rendered destination by spawning a one-off ExifTool process.
+    /// Prefer `ExifToolService.copyMetadataToRenderedFile(from:to:)` when a persistent process is available.
     private static func copyMetadata(from source: URL, to destination: URL) async {
         guard let exiftool = exifToolPath else { return }
 
