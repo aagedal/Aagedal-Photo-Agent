@@ -140,12 +140,13 @@ final class FaceGroupCollectionController: NSViewController, NSCollectionViewDel
                 cardCallbacks.onToggleExpand = { [weak self] gid in
                     self?.toggleExpand(groupID: gid)
                 }
+                let isUnmatched = groupID == FaceRecognitionViewModel.unmatchedGroupID
                 cell.configure(
                     group: group,
                     viewModel: self.viewModel,
                     selectionState: self.selectionState,
                     settingsViewModel: self.settingsViewModel,
-                    isExpanded: self.expandedGroupIDs.contains(groupID),
+                    isExpanded: isUnmatched || self.expandedGroupIDs.contains(groupID),
                     callbacks: cardCallbacks
                 )
             }
@@ -257,14 +258,19 @@ final class FaceGroupCollectionController: NSViewController, NSCollectionViewDel
             return NSSize(width: minCardWidth, height: 120)
         }
 
-        let width = cardWidth(for: collectionView.bounds.width)
+        let isUnmatched = groupID == FaceRecognitionViewModel.unmatchedGroupID
+        // Unmatched group spans full width; others use normal column width
+        let width = isUnmatched
+            ? collectionView.bounds.width - gridPadding * 2
+            : cardWidth(for: collectionView.bounds.width)
         let faceCount = viewModel.group(byID: groupID)?.faceIDs.count ?? 0
-        let isExpanded = expandedGroupIDs.contains(groupID)
+        // Unmatched group is always expanded
+        let isExpanded = isUnmatched || expandedGroupIDs.contains(groupID)
         let height = FaceGroupCardView.computeHeight(
             faceCount: faceCount,
             cardWidth: width,
             isExpanded: isExpanded,
-            maxVisibleFaces: maxVisibleFaces
+            maxVisibleFaces: isUnmatched ? .max : maxVisibleFaces
         )
         return NSSize(width: width, height: height)
     }
@@ -359,7 +365,8 @@ final class FaceGroupCollectionController: NSViewController, NSCollectionViewDel
         var faceIDs: [UUID] = []
         for group in viewModel.sortedGroups {
             let faces = viewModel.faces(in: group)
-            let isExpanded = expandedGroupIDs.contains(group.id)
+            let isUnmatched = group.id == FaceRecognitionViewModel.unmatchedGroupID
+            let isExpanded = isUnmatched || expandedGroupIDs.contains(group.id)
             let visibleFaces = isExpanded ? faces : Array(faces.prefix(maxVisibleFaces))
             faceIDs.append(contentsOf: visibleFaces.map(\.id))
         }

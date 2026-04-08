@@ -44,7 +44,7 @@ nonisolated struct FaceDetectionService: Sendable {
     struct DetectionConfig: Sendable {
         var minConfidence: Float = 0.7
         var minFaceSize: Int = 50
-        var clusteringThreshold: Float = 0.55
+        var clusteringThreshold: Float = 0.45
 
         /// Recognition mode for embedding generation and distance computation
         var recognitionMode: FaceRecognitionMode = .visionFeaturePrint
@@ -76,7 +76,7 @@ nonisolated struct FaceDetectionService: Sendable {
         nonisolated init(
             minConfidence: Float = 0.7,
             minFaceSize: Int = 50,
-            clusteringThreshold: Float = 0.55,
+            clusteringThreshold: Float = 0.45,
             recognitionMode: FaceRecognitionMode = .visionFeaturePrint,
             faceWeight: Float = 0.7,
             clothingWeight: Float = 0.3,
@@ -171,16 +171,45 @@ nonisolated struct FaceDetectionService: Sendable {
             let facePixelWidth = Int(observation.boundingBox.width * CGFloat(cgImage.width))
             guard facePixelWidth >= config.minFaceSize else { continue }
 
+            // Standard bounding box crop for thumbnail and blur score (unchanged from original)
             let expandedRect = expandBoundingBox(observation.boundingBox, by: 0.15, imageSize: imageSize)
-
             guard let croppedImage = cropFace(from: cgImage, normalizedRect: expandedRect) else { continue }
 
             // Compute blur score for quality assessment
             let blurScore = computeBlurScore(for: croppedImage)
 
-            // Always generate Vision feature print (used as fallback and for Vision mode)
-            guard let featurePrintData = try await generateFeaturePrint(for: croppedImage) else { continue }
+            // Try eye-aligned crop for feature print only (improves clustering consistency)
+            // Pre-crop a generous region (3x bbox) to avoid transforming the full-res image
+            var featurePrintImage: CGImage = croppedImage
+            if let (leftEyeNorm, rightEyeNorm) = computeEyeCenters(from: observation) {
+                let preCropRect = expandBoundingBox(observation.boundingBox, by: 2.0, imageSize: imageSize)
+                if let preCrop = cropFace(from: cgImage, normalizedRect: preCropRect) {
+                    // Eye coords relative to pre-crop, in CG bottom-left pixel space
+                    // Both eye norms and preCropRect use Vision normalized coords (bottom-left origin)
+                    let fullW = CGFloat(cgImage.width)
+                    let fullH = CGFloat(cgImage.height)
+                    let leftPixel = CGPoint(
+                        x: (leftEyeNorm.x - preCropRect.origin.x) * fullW,
+                        y: (leftEyeNorm.y - preCropRect.origin.y) * fullH
+                    )
+                    let rightPixel = CGPoint(
+                        x: (rightEyeNorm.x - preCropRect.origin.x) * fullW,
+                        y: (rightEyeNorm.y - preCropRect.origin.y) * fullH
+                    )
+                    let eyeDx = rightPixel.x - leftPixel.x
+                    let eyeDy = rightPixel.y - leftPixel.y
+                    let interEyeDist = sqrt(eyeDx * eyeDx + eyeDy * eyeDy)
+                    if interEyeDist >= 20,
+                       let aligned = createAlignedFaceCrop(from: preCrop, leftEyePixel: leftPixel, rightEyePixel: rightPixel) {
+                        featurePrintImage = aligned
+                    }
+                }
+            }
 
+            // Generate feature print from aligned crop (or fallback to bbox crop)
+            guard let featurePrintData = try await generateFeaturePrint(for: featurePrintImage) else { continue }
+
+            // Thumbnail always from original bbox crop (preserves existing appearance)
             let thumbnailData = generateThumbnail(from: croppedImage, size: 120)
             guard let thumbnailData else { continue }
 
@@ -1220,6 +1249,97 @@ nonisolated struct FaceDetectionService: Sendable {
         )
 
         return cgImage.cropping(to: pixelRect)
+    }
+
+    // MARK: - Eye-Aligned Face Cropping
+
+    /// Extract eye center positions from face observation landmarks.
+    /// Returns centers in full-image normalized coordinates (Vision bottom-left origin), or nil if both eyes aren't detected.
+    private func computeEyeCenters(from observation: VNFaceObservation) -> (leftEye: CGPoint, rightEye: CGPoint)? {
+        guard let landmarks = observation.landmarks,
+              let leftEyeRegion = landmarks.leftEye,
+              let rightEyeRegion = landmarks.rightEye else {
+            return nil
+        }
+
+        let leftPoints = leftEyeRegion.normalizedPoints
+        let rightPoints = rightEyeRegion.normalizedPoints
+        guard !leftPoints.isEmpty, !rightPoints.isEmpty else { return nil }
+
+        // Compute centroids of each eye's point cloud (in face-bbox-relative coords, bottom-left origin)
+        let leftCenter = CGPoint(
+            x: leftPoints.map(\.x).reduce(0, +) / CGFloat(leftPoints.count),
+            y: leftPoints.map(\.y).reduce(0, +) / CGFloat(leftPoints.count)
+        )
+        let rightCenter = CGPoint(
+            x: rightPoints.map(\.x).reduce(0, +) / CGFloat(rightPoints.count),
+            y: rightPoints.map(\.y).reduce(0, +) / CGFloat(rightPoints.count)
+        )
+
+        // Convert from face-bbox-relative to full-image normalized coords
+        let bbox = observation.boundingBox
+        let leftImageNorm = CGPoint(
+            x: bbox.origin.x + leftCenter.x * bbox.width,
+            y: bbox.origin.y + leftCenter.y * bbox.height
+        )
+        let rightImageNorm = CGPoint(
+            x: bbox.origin.x + rightCenter.x * bbox.width,
+            y: bbox.origin.y + rightCenter.y * bbox.height
+        )
+
+        return (leftEye: leftImageNorm, rightEye: rightImageNorm)
+    }
+
+    /// Create an aligned face crop by rotating and scaling so eyes land at canonical positions.
+    /// All coordinates use CG/Vision bottom-left origin convention.
+    /// Output: square CGImage of `outputSize` x `outputSize` with eyes at 35% from top (65% from bottom).
+    private func createAlignedFaceCrop(
+        from cgImage: CGImage,
+        leftEyePixel: CGPoint,
+        rightEyePixel: CGPoint,
+        outputSize: Int = 224
+    ) -> CGImage? {
+        let size = CGFloat(outputSize)
+
+        // Target eye positions in CG bottom-left coords
+        // 35% from top = 65% from bottom; horizontally at 35% and 65%
+        let desiredLeftEye = CGPoint(x: size * 0.35, y: size * 0.65)
+        let desiredDist = size * 0.30  // 0.65 - 0.35
+
+        // Compute rotation angle and scale from actual eye positions (bottom-left coords)
+        let dx = rightEyePixel.x - leftEyePixel.x
+        let dy = rightEyePixel.y - leftEyePixel.y
+        let actualDist = sqrt(dx * dx + dy * dy)
+        guard actualDist > 0 else { return nil }
+
+        let angle = atan2(dy, dx)
+        let scale = desiredDist / actualDist
+
+        // Build transform: source CG pixel → output CG pixel
+        // Applied right-to-left: translate to origin → rotate → scale → translate to target
+        var transform = CGAffineTransform.identity
+        transform = transform.translatedBy(x: desiredLeftEye.x, y: desiredLeftEye.y)
+        transform = transform.scaledBy(x: scale, y: scale)
+        transform = transform.rotated(by: -angle)
+        transform = transform.translatedBy(x: -leftEyePixel.x, y: -leftEyePixel.y)
+
+        // Create output context (CG contexts use bottom-left origin by default)
+        let colorSpace = cgImage.colorSpace ?? CGColorSpaceCreateDeviceRGB()
+        guard let context = CGContext(
+            data: nil,
+            width: outputSize,
+            height: outputSize,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+
+        context.interpolationQuality = .high
+        context.concatenate(transform)
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: cgImage.width, height: cgImage.height))
+
+        return context.makeImage()
     }
 
     private func generateThumbnail(from cgImage: CGImage, size: Int) -> Data? {

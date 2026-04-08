@@ -423,9 +423,10 @@ final class FaceGroupCardView: NSView {
         self.callbacks = callbacks
 
         // Header
-        let name = group.name ?? "Unnamed"
+        let isUnmatched = group.id == FaceRecognitionViewModel.unmatchedGroupID
+        let name = isUnmatched ? "Unmatched Faces" : (group.name ?? "Unnamed")
         nameLabel.stringValue = name
-        nameLabel.textColor = group.name != nil ? .labelColor : .secondaryLabelColor
+        nameLabel.textColor = isUnmatched ? .tertiaryLabelColor : (group.name != nil ? .labelColor : .secondaryLabelColor)
         nameLabel.font = .systemFont(ofSize: 13, weight: .semibold)
 
         let allFaces = viewModel.faces(in: group)
@@ -435,9 +436,11 @@ final class FaceGroupCardView: NSView {
         let visibleFaces = isExpanded ? allFaces : Array(allFaces.prefix(maxVisibleFaces))
         reconcileFaceSubviews(faces: visibleFaces, viewModel: viewModel)
 
-        // Expand button
+        // Expand button (hidden for the always-expanded unmatched group)
         let hiddenCount = allFaces.count - visibleFaces.count
-        if hiddenCount > 0 {
+        if isUnmatched {
+            expandButton.isHidden = true
+        } else if hiddenCount > 0 {
             expandButton.title = "Show \(hiddenCount) more ▾"
             expandButton.isHidden = false
         } else if isExpanded && allFaces.count > maxVisibleFaces {
@@ -500,10 +503,12 @@ final class FaceGroupCardView: NSView {
         }
 
         // Show "Set as Key Art" when exactly one face in this group is selected
-        // and it's not already the representative
+        // and it's not already the representative (not applicable to unmatched group)
         let visibleFaceIDs = Set(faceSubviews.compactMap { $0.isHidden ? nil : $0.faceID })
         let selectedInGroup = selectedIDs.intersection(visibleFaceIDs)
-        let shouldShow = selectedInGroup.count == 1
+        let isUnmatchedGroup = groupID == FaceRecognitionViewModel.unmatchedGroupID
+        let shouldShow = !isUnmatchedGroup
+            && selectedInGroup.count == 1
             && selectedIDs.count == 1
             && selectedInGroup.first != currentGroup?.representativeFaceID
         if keyArtButton.isHidden != !shouldShow {

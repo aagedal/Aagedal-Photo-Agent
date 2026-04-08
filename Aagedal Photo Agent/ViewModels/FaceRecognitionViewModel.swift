@@ -26,6 +26,8 @@ enum AddToKnownPeopleError: LocalizedError {
 
 @Observable
 final class FaceRecognitionViewModel {
+    /// Stable ID for the synthetic "Unmatched Faces" group (singletons with no match)
+    static let unmatchedGroupID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
     var faceData: FolderFaceData? {
         didSet { invalidateCaches() }
     }
@@ -54,7 +56,7 @@ final class FaceRecognitionViewModel {
     var scanningGroups: [FaceGroup] = []
 
     // Sort mode for face groups
-    var sortMode: FaceGroupSortMode = .manual {
+    var sortMode: FaceGroupSortMode = .bySize {
         didSet { invalidateCaches() }
     }
 
@@ -95,7 +97,7 @@ final class FaceRecognitionViewModel {
         let threshold: Double
         switch config.recognitionMode {
         case .visionFeaturePrint:
-            threshold = UserDefaults.standard.object(forKey: UserDefaultsKeys.visionClusteringThreshold) as? Double ?? 0.40
+            threshold = UserDefaults.standard.object(forKey: UserDefaultsKeys.visionClusteringThreshold) as? Double ?? 0.90
         case .faceAndClothing:
             threshold = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceClothingClusteringThreshold) as? Double ?? 0.48
         }
@@ -191,24 +193,41 @@ final class FaceRecognitionViewModel {
             ($0.name ?? "").localizedCaseInsensitiveCompare($1.name ?? "") == .orderedAscending
         }
 
+        // Separate singletons (no match) from multi-face unnamed groups
+        var multiface = unnamed.filter { $0.faceIDs.count > 1 }
+        let singletons = unnamed.filter { $0.faceIDs.count == 1 }
+
         switch sortMode {
         case .bySize:
-            // Unnamed sorted by size descending
-            unnamed.sort { $0.faceIDs.count > $1.faceIDs.count }
+            multiface.sort { $0.faceIDs.count > $1.faceIDs.count }
         case .manual:
-            // Unnamed kept in array order (insertion order)
             break
         }
 
-        namedGroups = named
-        unnamedGroups = unnamed
-        canRefine = !named.isEmpty && !unnamed.isEmpty
-        sortedGroups = named + unnamed
+        // Build synthetic "Unmatched Faces" group from singletons, always placed last
+        var unmatchedGroup: [FaceGroup] = []
+        if !singletons.isEmpty {
+            let allSingletonFaceIDs = singletons.flatMap(\.faceIDs)
+            unmatchedGroup = [FaceGroup(
+                id: Self.unmatchedGroupID,
+                name: nil,
+                representativeFaceID: singletons[0].representativeFaceID,
+                faceIDs: allSingletonFaceIDs
+            )]
+        }
 
-        // Rebuild group lookup
+        namedGroups = named
+        unnamedGroups = multiface + unmatchedGroup
+        canRefine = !named.isEmpty && !unnamedGroups.isEmpty
+        sortedGroups = named + multiface + unmatchedGroup
+
+        // Rebuild group lookup (includes synthetic unmatched group for card view operations)
         groupLookup = [:]
         for group in groups {
             groupLookup[group.id] = group
+        }
+        if let syntheticGroup = unmatchedGroup.first {
+            groupLookup[syntheticGroup.id] = syntheticGroup
         }
 
         // Rebuild face lookup and per-image index
@@ -261,7 +280,7 @@ final class FaceRecognitionViewModel {
         guard !isScanning else { return }
 
         let config = detectionConfig
-        let visionThreshold = UserDefaults.standard.object(forKey: UserDefaultsKeys.visionClusteringThreshold) as? Double ?? 0.40
+        let visionThreshold = UserDefaults.standard.object(forKey: UserDefaultsKeys.visionClusteringThreshold) as? Double ?? 0.90
         let visionClusteringThreshold = Float(visionThreshold)
         let storageService = self.storageService
         let detectionService = self.detectionService
@@ -281,7 +300,13 @@ final class FaceRecognitionViewModel {
 
         activeScanTask = Task(priority: .utility) {
             // Load existing data for incremental scan
-            let existingData = forceFullScan ? nil : storageService.loadFaceData(for: folderURL)
+            // Discard stale data if embedding version is outdated (pre-alignment feature prints)
+            let loadedData = forceFullScan ? nil : storageService.loadFaceData(for: folderURL)
+            let existingData: FolderFaceData? = if let loadedData, (loadedData.embeddingVersion ?? 0) >= 1 {
+                loadedData
+            } else {
+                nil
+            }
 
             // Determine which files need scanning
             let (toScan, toRemove, unchangedFiles) = await categorizeFiles(
@@ -427,7 +452,8 @@ final class FaceRecognitionViewModel {
                             lastScanDate: Date(),
                             scanComplete: false,
                             scannedFiles: scannedFiles,
-                            recognitionMode: config.recognitionMode
+                            recognitionMode: config.recognitionMode,
+                            embeddingVersion: 1
                         )
                         do {
                             try storageService.saveFaceData(progressData)
@@ -498,7 +524,8 @@ final class FaceRecognitionViewModel {
                 lastScanDate: Date(),
                 scanComplete: !isCancelled,
                 scannedFiles: scannedFiles,
-                recognitionMode: config.recognitionMode
+                recognitionMode: config.recognitionMode,
+                embeddingVersion: 1
             )
 
             do {

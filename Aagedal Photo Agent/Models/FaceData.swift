@@ -123,6 +123,9 @@ nonisolated struct FolderFaceData: Codable {
     /// The recognition mode used for this dataset (nil = legacy Vision mode)
     var recognitionMode: FaceRecognitionMode?
 
+    /// Embedding version for compatibility detection (nil/0 = legacy unaligned, 1 = eye-aligned crops)
+    var embeddingVersion: Int?
+
     init(
         folderURL: URL,
         faces: [DetectedFace],
@@ -130,7 +133,8 @@ nonisolated struct FolderFaceData: Codable {
         lastScanDate: Date,
         scanComplete: Bool,
         scannedFiles: [String: FileSignature] = [:],
-        recognitionMode: FaceRecognitionMode? = nil
+        recognitionMode: FaceRecognitionMode? = nil,
+        embeddingVersion: Int? = nil
     ) {
         self.folderURL = folderURL
         self.faces = faces
@@ -139,5 +143,6 @@ nonisolated struct FolderFaceData: Codable {
         self.scanComplete = scanComplete
         self.scannedFiles = scannedFiles
         self.recognitionMode = recognitionMode
+        self.embeddingVersion = embeddingVersion
     }
 }

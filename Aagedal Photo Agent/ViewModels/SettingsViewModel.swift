@@ -771,7 +771,7 @@ final class SettingsViewModel {
         // Face recognition settings with defaults
         // Mode-specific thresholds with optimized defaults
         let storedVisionThreshold = UserDefaults.standard.object(forKey: UserDefaultsKeys.visionClusteringThreshold) as? Double
-        self.visionClusteringThreshold = storedVisionThreshold ?? 0.40
+        self.visionClusteringThreshold = storedVisionThreshold ?? 0.90
 
         let storedFaceClothingThreshold = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceClothingClusteringThreshold) as? Double
         self.faceClothingClusteringThreshold = storedFaceClothingThreshold ?? 0.48
