@@ -193,9 +193,9 @@ final class FaceRecognitionViewModel {
             ($0.name ?? "").localizedCaseInsensitiveCompare($1.name ?? "") == .orderedAscending
         }
 
-        // Separate singletons (no match) from multi-face unnamed groups
-        var multiface = unnamed.filter { $0.faceIDs.count > 1 }
-        let singletons = unnamed.filter { $0.faceIDs.count == 1 }
+        // Separate auto-generated singletons from multi-face and user-created groups
+        var multiface = unnamed.filter { $0.faceIDs.count > 1 || $0.userCreated == true }
+        let singletons = unnamed.filter { $0.faceIDs.count == 1 && $0.userCreated != true }
 
         switch sortMode {
         case .bySize:
@@ -1482,8 +1482,15 @@ final class FaceRecognitionViewModel {
               let oldGroupID = data.faces[faceIndex].groupID,
               let groupIndex = groupIdx[oldGroupID] else { return }
 
-        // Don't ungroup if it's the only face in the group
-        guard data.groups[groupIndex].faceIDs.count > 1 else { return }
+        // If already solo, just mark as user-created (pulls it out of the unmatched pool)
+        if data.groups[groupIndex].faceIDs.count == 1 {
+            guard data.groups[groupIndex].userCreated != true else { return }
+            data.groups[groupIndex].userCreated = true
+            faceData = data
+            do { try storageService.saveFaceData(data) }
+            catch { errorMessage = "Failed to save face data: \(error.localizedDescription)" }
+            return
+        }
 
         // Remove from old group
         data.groups[groupIndex].faceIDs.removeAll { $0 == faceID }
@@ -1499,7 +1506,8 @@ final class FaceRecognitionViewModel {
             id: UUID(),
             name: nil,
             representativeFaceID: faceID,
-            faceIDs: [faceID]
+            faceIDs: [faceID],
+            userCreated: true
         )
         data.groups.append(newGroup)
         data.faces[faceIndex].groupID = newGroup.id
@@ -1564,9 +1572,12 @@ final class FaceRecognitionViewModel {
             guard group.faceIDs.count > 1 else { continue }
 
             // Create solo groups for each face except the first (which stays as representative)
+            // All resulting singletons go back to the unmatched pool (userCreated = nil)
             let remaining = Array(group.faceIDs.dropFirst())
             guard let firstFaceID = group.faceIDs.first else { continue }
             data.groups[groupIndex].faceIDs = [firstFaceID]
+            data.groups[groupIndex].userCreated = nil
+            data.groups[groupIndex].name = nil
 
             for faceID in remaining {
                 let newGroup = FaceGroup(
@@ -1588,6 +1599,46 @@ final class FaceRecognitionViewModel {
         } catch {
             errorMessage = "Failed to save face data: \(error.localizedDescription)"
         }
+    }
+
+    /// Move faces into the unmatched pool by splitting them into non-user-created singletons.
+    func moveToUnmatched(_ faceIDs: Set<UUID>) {
+        guard var data = faceData else { return }
+
+        let faceIdx = faceIndexMap(from: data)
+        let groupIdx = groupIndexMap(from: data)
+
+        for faceID in faceIDs {
+            guard let faceIndex = faceIdx[faceID],
+                  let oldGroupID = data.faces[faceIndex].groupID,
+                  let groupIndex = groupIdx[oldGroupID] else { continue }
+
+            if data.groups[groupIndex].faceIDs.count == 1 {
+                // Already a singleton — just clear userCreated so it joins the unmatched pool
+                data.groups[groupIndex].userCreated = nil
+            } else {
+                // Remove from old group
+                data.groups[groupIndex].faceIDs.removeAll { $0 == faceID }
+                if data.groups[groupIndex].representativeFaceID == faceID,
+                   let newRep = data.groups[groupIndex].faceIDs.first {
+                    data.groups[groupIndex].representativeFaceID = newRep
+                }
+
+                // Create new singleton (not user-created → goes to unmatched)
+                let newGroup = FaceGroup(
+                    id: UUID(),
+                    name: nil,
+                    representativeFaceID: faceID,
+                    faceIDs: [faceID]
+                )
+                data.groups.append(newGroup)
+                data.faces[faceIndex].groupID = newGroup.id
+            }
+        }
+
+        faceData = data
+        do { try storageService.saveFaceData(data) }
+        catch { errorMessage = "Failed to save face data: \(error.localizedDescription)" }
     }
 
     // MARK: - Move Faces Between Groups
@@ -1687,7 +1738,8 @@ final class FaceRecognitionViewModel {
             id: UUID(),
             name: nil,
             representativeFaceID: representativeID,
-            faceIDs: faceIDArray
+            faceIDs: faceIDArray,
+            userCreated: true
         )
 
         // Insert after the last source group (accounting for potential removal of empty groups)

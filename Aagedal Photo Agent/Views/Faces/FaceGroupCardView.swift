@@ -193,6 +193,7 @@ final class FaceGroupCardView: NSView {
     // MARK: - Card styling
 
     private let highlightBorder = CALayer()
+    private let dashedBorder = CAShapeLayer()
     private var isHighlighted = false
 
     // MARK: - Mouse state
@@ -233,6 +234,15 @@ final class FaceGroupCardView: NSView {
         highlightBorder.cornerRadius = 10
         highlightBorder.zPosition = 100
         layer?.addSublayer(highlightBorder)
+
+        // Dashed border for the unmatched faces group (hidden by default)
+        dashedBorder.fillColor = nil
+        dashedBorder.strokeColor = NSColor.tertiaryLabelColor.cgColor
+        dashedBorder.lineWidth = 1.5
+        dashedBorder.lineDashPattern = [6, 4]
+        dashedBorder.zPosition = 101
+        dashedBorder.isHidden = true
+        layer?.addSublayer(dashedBorder)
     }
 
     private func setupHeader() {
@@ -385,6 +395,8 @@ final class FaceGroupCardView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         highlightBorder.frame = bounds
+        dashedBorder.frame = bounds
+        dashedBorder.path = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 10, yRadius: 10).cgPath
         CATransaction.commit()
     }
 
@@ -428,6 +440,15 @@ final class FaceGroupCardView: NSView {
         nameLabel.stringValue = name
         nameLabel.textColor = isUnmatched ? .tertiaryLabelColor : (group.name != nil ? .labelColor : .secondaryLabelColor)
         nameLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+
+        // Dashed border for unmatched group, solid for normal groups
+        dashedBorder.isHidden = !isUnmatched
+        highlightBorder.isHidden = isUnmatched
+        if isUnmatched {
+            layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.5).cgColor
+        } else {
+            layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        }
 
         let allFaces = viewModel.faces(in: group)
         countLabel.stringValue = "\(allFaces.count)"
@@ -662,6 +683,80 @@ final class FaceGroupCardView: NSView {
         mouseDownPoint = nil // Prevent further drag starts
     }
 
+    override func rightMouseDown(with event: NSEvent) {
+        let containerPoint = faceContainer.convert(event.locationInWindow, from: nil)
+        var clickedFaceID: UUID?
+        for sub in faceSubviews where !sub.isHidden {
+            if sub.frame.contains(containerPoint), let fid = sub.faceID {
+                clickedFaceID = fid
+                break
+            }
+        }
+        guard let faceID = clickedFaceID, let viewModel, let groupID else {
+            super.rightMouseDown(with: event)
+            return
+        }
+
+        let menu = NSMenu()
+
+        // Show in Browser
+        if let face = viewModel.face(byID: faceID) {
+            let showItem = NSMenuItem(title: "Show in Browser", action: nil, keyEquivalent: "")
+            showItem.representedObject = face.imageURL
+            showItem.target = self
+            showItem.action = #selector(faceMenuShowInBrowser(_:))
+            menu.addItem(showItem)
+        }
+
+        // Set as Key Art (only for real groups, not unmatched)
+        let isUnmatched = groupID == FaceRecognitionViewModel.unmatchedGroupID
+        if !isUnmatched, currentGroup?.representativeFaceID != faceID {
+            let keyArtItem = NSMenuItem(title: "Set as Key Art", action: #selector(faceMenuSetKeyArt(_:)), keyEquivalent: "")
+            keyArtItem.representedObject = faceID
+            keyArtItem.target = self
+            menu.addItem(keyArtItem)
+        }
+
+        // Move to New Group
+        if let group = currentGroup, group.faceIDs.count > 1 || isUnmatched {
+            let moveItem = NSMenuItem(title: "Move to New Group", action: #selector(faceMenuMoveToNewGroup(_:)), keyEquivalent: "")
+            moveItem.representedObject = faceID
+            moveItem.target = self
+            menu.addItem(moveItem)
+        }
+
+        menu.addItem(NSMenuItem.separator())
+
+        // Delete Face Data
+        let deleteItem = NSMenuItem(title: "Delete Face Data", action: #selector(faceMenuDeleteFace(_:)), keyEquivalent: "")
+        deleteItem.representedObject = faceID
+        deleteItem.target = self
+        menu.addItem(deleteItem)
+
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
+    }
+
+    @objc private func faceMenuShowInBrowser(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        callbacks.onOpenFullScreen?(url, nil)
+    }
+
+    @objc private func faceMenuSetKeyArt(_ sender: NSMenuItem) {
+        guard let faceID = sender.representedObject as? UUID, let groupID else { return }
+        viewModel?.setRepresentativeFace(faceID, forGroup: groupID)
+    }
+
+    @objc private func faceMenuMoveToNewGroup(_ sender: NSMenuItem) {
+        guard let faceID = sender.representedObject as? UUID else { return }
+        viewModel?.ungroupFace(faceID)
+    }
+
+    @objc private func faceMenuDeleteFace(_ sender: NSMenuItem) {
+        guard let faceID = sender.representedObject as? UUID else { return }
+        viewModel?.deleteFaces(Set([faceID]))
+        selectionState?.selectedFaceIDs.remove(faceID)
+    }
+
     // MARK: - Editing
 
     private func startEditing() {
@@ -670,6 +765,7 @@ final class FaceGroupCardView: NSView {
         editingName = group.name ?? ""
         nameEditor.stringValue = editingName
         nameLabel.isHidden = true
+        countLabel.isHidden = true
         nameEditor.isHidden = false
 
         // Populate name preset menu
@@ -696,6 +792,7 @@ final class FaceGroupCardView: NSView {
         guard isEditingName else { return }
         isEditingName = false
         nameLabel.isHidden = false
+        countLabel.isHidden = false
         nameEditor.isHidden = true
         namePresetButton.isHidden = true
     }

@@ -140,7 +140,7 @@ struct FaceBarView: View {
 
             // Face group thumbnails (show in-progress groups during scanning)
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
+                HStack(spacing: 2) {
                     if viewModel.isScanning {
                         // During scanning: show intermediate groups (non-interactive)
                         ForEach(viewModel.scanningGroups) { group in

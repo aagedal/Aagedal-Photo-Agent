@@ -218,11 +218,16 @@ final class FaceGroupCollectionView: NSCollectionView {
             guard !ids.isEmpty else { return false }
 
             if let cardItem = targetItem as? FaceGroupCardItem, let targetGroupID = cardItem.cardView.groupID {
-                // Move faces to existing group, filtering out faces already in target (O(1) lookup per face)
-                let facesToMove = ids.filter { faceID in
-                    controller.viewModel.face(byID: faceID)?.groupID != targetGroupID
+                if targetGroupID == FaceRecognitionViewModel.unmatchedGroupID {
+                    // Dropping onto unmatched group: ungroup each face into singletons
+                    controller.viewModel.moveToUnmatched(ids)
+                } else {
+                    // Move faces to existing group, filtering out faces already in target (O(1) lookup per face)
+                    let facesToMove = ids.filter { faceID in
+                        controller.viewModel.face(byID: faceID)?.groupID != targetGroupID
+                    }
+                    controller.viewModel.moveFaces(Set(facesToMove), toGroup: targetGroupID)
                 }
-                controller.viewModel.moveFaces(Set(facesToMove), toGroup: targetGroupID)
             } else {
                 return false
             }

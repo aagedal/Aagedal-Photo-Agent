@@ -74,6 +74,8 @@ nonisolated struct FaceGroup: Codable, Identifiable {
     var name: String?
     var representativeFaceID: UUID
     var faceIDs: [UUID]
+    /// Groups explicitly created by the user (split, move-to-new-group) are excluded from the synthetic "Unmatched Faces" group.
+    var userCreated: Bool?
 }
 
 /// Tracks a file's identity for incremental scanning
