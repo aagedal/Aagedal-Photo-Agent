@@ -725,6 +725,14 @@ final class FaceGroupCardView: NSView {
             menu.addItem(moveItem)
         }
 
+        // Ungroup (move to Unmatched Faces)
+        if !isUnmatched {
+            let ungroupItem = NSMenuItem(title: "Ungroup", action: #selector(faceMenuUngroup(_:)), keyEquivalent: "")
+            ungroupItem.representedObject = faceID
+            ungroupItem.target = self
+            menu.addItem(ungroupItem)
+        }
+
         menu.addItem(NSMenuItem.separator())
 
         // Delete Face Data
@@ -751,6 +759,11 @@ final class FaceGroupCardView: NSView {
         viewModel?.ungroupFace(faceID)
     }
 
+    @objc private func faceMenuUngroup(_ sender: NSMenuItem) {
+        guard let faceID = sender.representedObject as? UUID else { return }
+        viewModel?.moveToUnmatched(Set([faceID]))
+    }
+
     @objc private func faceMenuDeleteFace(_ sender: NSMenuItem) {
         guard let faceID = sender.representedObject as? UUID else { return }
         viewModel?.deleteFaces(Set([faceID]))
@@ -765,7 +778,7 @@ final class FaceGroupCardView: NSView {
         editingName = group.name ?? ""
         nameEditor.stringValue = editingName
         nameLabel.isHidden = true
-        countLabel.isHidden = true
+        countBadge.isHidden = true
         nameEditor.isHidden = false
 
         // Populate name preset menu
@@ -792,7 +805,7 @@ final class FaceGroupCardView: NSView {
         guard isEditingName else { return }
         isEditingName = false
         nameLabel.isHidden = false
-        countLabel.isHidden = false
+        countBadge.isHidden = false
         nameEditor.isHidden = true
         namePresetButton.isHidden = true
     }

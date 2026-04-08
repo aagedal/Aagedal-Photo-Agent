@@ -8,7 +8,7 @@ struct FaceGroupThumbnail: View {
     var isExpanded: Bool = false      // Expanded mode sizing
 
     private var imageSize: CGFloat { isExpanded ? 70 : 56 }
-    private var nameWidth: CGFloat { isExpanded ? 100 : 64 }
+    private var nameWidth: CGFloat { isExpanded ? 80 : 56 }
     private var fontSize: CGFloat { isExpanded ? 12 : 11 }
 
     private var borderColor: Color {

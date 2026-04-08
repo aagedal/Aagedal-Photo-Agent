@@ -57,30 +57,9 @@ struct FaceBarView: View {
         let unnamedGroups = viewModel.unnamedGroups
         let canApplyAllNames = viewModel.scanComplete && !namedGroups.isEmpty && !isApplyingAllNames
 
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             // Scan button with settings
-            HStack(spacing: 4) {
-                Button {
-                    applyAllNamesToMetadata()
-                } label: {
-                    VStack(spacing: 2) {
-                        if isApplyingAllNames {
-                            ProgressView()
-                                .controlSize(.small)
-                        } else {
-                            Image(systemName: "person.badge.plus")
-                                .font(.system(size: 20))
-                        }
-                        Text("Apply Names")
-                            .font(.system(size: 10))
-                    }
-                    .frame(width: 56, height: 56)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .disabled(!canApplyAllNames)
-                .help("Apply all named faces to metadata")
-
+            HStack(spacing: 2) {
                 scanButton
 
                 VStack(spacing: 2) {
@@ -114,6 +93,27 @@ struct FaceBarView: View {
                     }
                 }
 
+                Button {
+                    applyAllNamesToMetadata()
+                } label: {
+                    VStack(spacing: 1) {
+                        if isApplyingAllNames {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Image(systemName: "person.badge.plus")
+                                .font(.system(size: 16))
+                        }
+                        Text("Apply")
+                            .font(.system(size: 9))
+                    }
+                    .frame(width: 40, height: 48)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(!canApplyAllNames)
+                .help("Apply all named faces to metadata")
+
                 // Expand/collapse button
                 if viewModel.scanComplete {
                     Button {
@@ -121,13 +121,13 @@ struct FaceBarView: View {
                         showMergeSuggestions = false
                         onToggleExpanded?()
                     } label: {
-                        VStack(spacing: 2) {
+                        VStack(spacing: 1) {
                             Image(systemName: isExpanded ? "rectangle.compress.vertical" : "rectangle.expand.vertical")
                                 .font(.system(size: 16))
-                            Text(isExpanded ? "Collapse" : "Expand")
+                            Text(isExpanded ? "Less" : "More")
                                 .font(.system(size: 9))
                         }
-                        .frame(width: 52, height: 48)
+                        .frame(width: 36, height: 48)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)

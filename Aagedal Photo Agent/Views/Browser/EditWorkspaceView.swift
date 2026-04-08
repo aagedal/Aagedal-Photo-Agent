@@ -1134,6 +1134,11 @@ struct EditWorkspaceView: View {
                     sourceCIImage = thumbnail?.tiffRepresentation.flatMap { CIImage(data: $0) }
                 }
 
+                // Sync viewport before Metal upload so the CIImage fallback path
+                // (used while the texture upload is in flight) letterboxes correctly
+                // instead of stretching the preview to fill the drawable.
+                syncViewportToMetal()
+
                 // Upload Phase 1 preview to Metal for immediate interactive editing
                 // (mirrors non-RAW path so WB/tonal adjustments render as soon as
                 // metadata loads, even before the full RAW decode completes).

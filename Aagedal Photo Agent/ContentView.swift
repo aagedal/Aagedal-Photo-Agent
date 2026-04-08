@@ -790,26 +790,6 @@ struct ContentView: View {
     private var sidebar: some View {
         VStack(spacing: 0) {
             List {
-                Section {
-                    HStack(spacing: 8) {
-                        Button {
-                            browserViewModel.openFolder()
-                        } label: {
-                            Image(systemName: "folder.badge.plus")
-                        }
-                        .buttonStyle(.borderless)
-                        .help("Open Folder")
-
-                        Button {
-                            isShowingImport = true
-                        } label: {
-                            Image(systemName: "square.and.arrow.down")
-                        }
-                        .buttonStyle(.borderless)
-                        .help("Import Photos")
-                    }
-                }
-
                 if !browserViewModel.favoriteFolders.isEmpty {
                     Section("Favorites") {
                         ForEach(browserViewModel.favoriteFolders) { favorite in
@@ -833,7 +813,6 @@ struct ContentView: View {
                             } label: {
                                 Label(recent.name, systemImage: "clock")
                             }
-                            .listRowInsets(EdgeInsets(top: 1, leading: 8, bottom: 1, trailing: 8))
                             .contextMenu {
                                 Button("Reveal in Finder") {
                                     revealInFinder(recent.url)

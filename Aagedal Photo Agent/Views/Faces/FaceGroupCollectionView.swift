@@ -8,6 +8,29 @@ final class FaceGroupCollectionView: NSCollectionView {
     private var draggedFaceIDs: Set<UUID> = []
     private var draggedGroupID: UUID?
 
+    // "New Group" overlay shown when dragging faces over empty space
+    private lazy var newGroupOverlay: NSView = {
+        let overlay = NSView()
+        overlay.wantsLayer = true
+        overlay.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.08).cgColor
+        overlay.layer?.cornerRadius = 10
+        overlay.layer?.borderColor = NSColor.controlAccentColor.withAlphaComponent(0.4).cgColor
+        overlay.layer?.borderWidth = 2
+
+        let label = NSTextField(labelWithString: "+ New Group")
+        label.font = .systemFont(ofSize: 13, weight: .medium)
+        label.textColor = .controlAccentColor
+        label.translatesAutoresizingMaskIntoConstraints = false
+        overlay.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.centerXAnchor.constraint(equalTo: overlay.centerXAnchor),
+            label.centerYAnchor.constraint(equalTo: overlay.centerYAnchor),
+        ])
+
+        overlay.isHidden = true
+        return overlay
+    }()
+
     // MARK: - First Responder
 
     override var acceptsFirstResponder: Bool { true }
@@ -146,6 +169,7 @@ final class FaceGroupCollectionView: NSCollectionView {
                 cardItem.cardView.setHighlighted(false)
             }
         }
+        hideNewGroupOverlay()
     }
 
     // MARK: - NSDraggingDestination
@@ -156,6 +180,7 @@ final class FaceGroupCollectionView: NSCollectionView {
 
     override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
         let location = convert(sender.draggingLocation, from: nil)
+        let isDraggingFaces = draggedGroupID == nil
 
         // Clear all highlights first
         for item in visibleItems() {
@@ -167,8 +192,16 @@ final class FaceGroupCollectionView: NSCollectionView {
         // Find item under cursor
         guard let indexPath = indexPathForItem(at: location),
               let item = self.item(at: indexPath) else {
+            // Over empty space — show "New Group" overlay for face drags
+            if isDraggingFaces {
+                showNewGroupOverlay(at: location)
+            } else {
+                hideNewGroupOverlay()
+            }
             return .move
         }
+
+        hideNewGroupOverlay()
 
         if let cardItem = item as? FaceGroupCardItem {
             // Don't highlight if dragging faces to their own group or dragging group onto itself
@@ -188,9 +221,11 @@ final class FaceGroupCollectionView: NSCollectionView {
                 cardItem.cardView.setHighlighted(false)
             }
         }
+        hideNewGroupOverlay()
     }
 
     override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        hideNewGroupOverlay()
         guard let controller else { return false }
 
         let location = convert(sender.draggingLocation, from: nil)
@@ -229,7 +264,8 @@ final class FaceGroupCollectionView: NSCollectionView {
                     controller.viewModel.moveFaces(Set(facesToMove), toGroup: targetGroupID)
                 }
             } else {
-                return false
+                // Dropped on empty space: create a new group from these faces
+                controller.viewModel.createNewGroup(withFaces: ids)
             }
 
             controller.selectionState.selectedFaceIDs.removeAll()
@@ -238,6 +274,26 @@ final class FaceGroupCollectionView: NSCollectionView {
         }
 
         return false
+    }
+
+    // MARK: - New Group Overlay
+
+    private func showNewGroupOverlay(at point: NSPoint) {
+        if newGroupOverlay.superview == nil {
+            addSubview(newGroupOverlay)
+        }
+        let size = NSSize(width: 160, height: 44)
+        newGroupOverlay.frame = NSRect(
+            x: point.x - size.width / 2,
+            y: point.y - size.height / 2,
+            width: size.width,
+            height: size.height
+        )
+        newGroupOverlay.isHidden = false
+    }
+
+    private func hideNewGroupOverlay() {
+        newGroupOverlay.isHidden = true
     }
 
     // MARK: - Mouse Click on Empty Area
