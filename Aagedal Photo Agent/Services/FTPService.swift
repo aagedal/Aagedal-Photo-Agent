@@ -23,6 +23,30 @@ struct FTPService: Sendable {
         }
     }
 
+    /// Guards a continuation against double-resume when Task cancellation
+    /// races with normal process termination.
+    private final class CancellationState: @unchecked Sendable {
+        nonisolated(unsafe) private var _resumed = false
+        nonisolated(unsafe) private var _cancelled = false
+        private let lock = NSLock()
+
+        nonisolated var isCancelled: Bool {
+            lock.withLock { _cancelled }
+        }
+
+        nonisolated func markCancelled() {
+            lock.withLock { _cancelled = true }
+        }
+
+        nonisolated func claimResume() -> Bool {
+            lock.withLock {
+                if _resumed { return false }
+                _resumed = true
+                return true
+            }
+        }
+    }
+
     /// Upload a single file to the FTP server using curl.
     nonisolated func uploadFile(
         localURL: URL,
@@ -100,22 +124,39 @@ struct FTPService: Sendable {
             }
         }
 
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
-            process.terminationHandler = { proc in
-                stderrPipe.fileHandleForReading.readabilityHandler = nil
-                if proc.terminationStatus == 0 {
-                    continuation.resume()
-                } else {
-                    let stderr = stderrBuffer.value
-                    continuation.resume(throwing: FTPError.uploadFailed(proc.terminationStatus, stderr))
+        let state = CancellationState()
+
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                process.terminationHandler = { proc in
+                    stderrPipe.fileHandleForReading.readabilityHandler = nil
+
+                    guard state.claimResume() else { return }
+
+                    if state.isCancelled {
+                        continuation.resume(throwing: CancellationError())
+                        return
+                    }
+
+                    if proc.terminationStatus == 0 {
+                        continuation.resume()
+                    } else {
+                        let stderr = stderrBuffer.value
+                        continuation.resume(throwing: FTPError.uploadFailed(proc.terminationStatus, stderr))
+                    }
+                }
+                do {
+                    try process.run()
+                } catch {
+                    stderrPipe.fileHandleForReading.readabilityHandler = nil
+                    if state.claimResume() {
+                        continuation.resume(throwing: error)
+                    }
                 }
             }
-            do {
-                try process.run()
-            } catch {
-                stderrPipe.fileHandleForReading.readabilityHandler = nil
-                continuation.resume(throwing: error)
-            }
+        } onCancel: {
+            state.markCancelled()
+            process.terminate()
         }
 
         let finalProgress = FTPUploadProgress(
