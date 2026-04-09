@@ -13,6 +13,13 @@ enum MainViewMode {
     case peopleDatabase    // Known People database view
 }
 
+private actor MetadataFailureTracker: Sendable {
+    private(set) var metadataCopyFailures: [String] = []
+    private(set) var sidecarOverlayFailures: [String] = []
+    func recordCopyFailure(_ filename: String) { metadataCopyFailures.append(filename) }
+    func recordOverlayFailure(_ filename: String) { sidecarOverlayFailures.append(filename) }
+}
+
 struct FTPUploadItem: Identifiable {
     let id = UUID()
     let urls: [URL]
@@ -50,6 +57,7 @@ struct ContentView: View {
     @State private var renderEditedFolderSuccessCount = 0
     @State private var renderEditedFolderFailureCount = 0
     @State private var renderedOutputFolderURL: URL?
+    @State private var renderExportTask: Task<Void, Never>?
     @State private var scopeViewModel = ScopeViewModel()
     @State private var scopeImageTask: Task<Void, Never>?
 
@@ -889,9 +897,18 @@ struct ContentView: View {
             if isRenderingEditedFolder {
                 Divider()
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Exporting image \(renderExportCurrent) of \(renderExportTotal)")
+                    HStack {
+                        Text("Exporting image \(renderExportCurrent) of \(renderExportTotal)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Cancel") {
+                            renderExportTask?.cancel()
+                        }
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.red)
+                    }
                     ProgressView(value: Double(renderExportCurrent), total: Double(max(renderExportTotal, 1)))
                 }
                 .padding(.horizontal, 12)
@@ -1094,8 +1111,10 @@ struct ContentView: View {
         renderEditedFolderFailureCount = 0
         renderedOutputFolderURL = nil
 
-        Task {
+        renderExportTask = Task {
+            defer { renderExportTask = nil }
             let urls = selected.map(\.url)
+            let failureTracker = MetadataFailureTracker()
 
             // Read metadata and overlay CameraRawSettings
             var metadataByURL: [URL: IPTCMetadata]
@@ -1114,6 +1133,7 @@ struct ContentView: View {
             var lastOutputFolder: URL?
 
             for (index, image) in selected.enumerated() {
+                guard !Task.isCancelled else { break }
                 renderExportCurrent = index + 1
                 let cameraRaw = metadataByURL[image.url]?.cameraRaw
                 let isHDR = cameraRaw?.hdrEditMode == 1
@@ -1138,14 +1158,21 @@ struct ContentView: View {
                     // Step 1: Render the image (metadata copy via persistent ExifTool process)
                     let exifTool = browserViewModel.exifToolService
                     let copier: EditedImageRenderer.MetadataCopier = { src, dst in
-                        try? await exifTool.copyMetadataToRenderedFile(from: src, to: dst)
+                        do {
+                            try await exifTool.copyMetadataToRenderedFile(from: src, to: dst)
+                        } catch {
+                            await failureTracker.recordCopyFailure(src.lastPathComponent)
+                        }
                     }
                     let renderedURL = try await Task.detached(priority: .userInitiated) {
                         try await EditedImageRenderer.render(from: image.url, cameraRaw: cameraRaw, isHDR: isHDR, outputFolder: outputFolder, metadataCopier: copier)
                     }.value
 
                     // Step 1b: Apply pending sidecar IPTC edits to rendered file
-                    await overlaySidecarIPTC(sourceURL: image.url, renderedURL: renderedURL, folderURL: folderURL)
+                    let overlayOk = await overlaySidecarIPTC(sourceURL: image.url, renderedURL: renderedURL, folderURL: folderURL)
+                    if !overlayOk {
+                        await failureTracker.recordOverlayFailure(image.url.lastPathComponent)
+                    }
 
                     // Step 2: Build C2PA actions from edit settings
                     let actions = C2PAAction.fromSettings(cameraRaw)
@@ -1180,6 +1207,18 @@ struct ContentView: View {
             renderEditedFolderFailureCount = failureCount
             renderedOutputFolderURL = lastOutputFolder
             isRenderingEditedFolder = false
+
+            let copyFailures = await failureTracker.metadataCopyFailures
+            let overlayFailures = await failureTracker.sidecarOverlayFailures
+            if Task.isCancelled {
+                browserViewModel.errorMessage = "Export cancelled. \(successCount) of \(selected.count) images signed."
+            } else if failureCount > 0 || !copyFailures.isEmpty || !overlayFailures.isEmpty {
+                var parts: [String] = []
+                if failureCount > 0 { parts.append("\(failureCount) render/sign \(failureCount == 1 ? "failure" : "failures")") }
+                if !copyFailures.isEmpty { parts.append("metadata copy failed for \(copyFailures.count) \(copyFailures.count == 1 ? "image" : "images")") }
+                if !overlayFailures.isEmpty { parts.append("IPTC overlay failed for \(overlayFailures.count) \(overlayFailures.count == 1 ? "image" : "images")") }
+                browserViewModel.errorMessage = "Signed \(successCount) of \(selected.count): \(parts.joined(separator: "; "))."
+            }
         }
     }
 
@@ -1188,7 +1227,8 @@ struct ContentView: View {
     /// Apply pending sidecar IPTC edits to a rendered output file.
     /// Checks both XMP sidecars (default for C2PA) and JSON sidecars (history-only mode).
     /// Called after render (and before C2PA signing) so the output includes edited metadata.
-    private func overlaySidecarIPTC(sourceURL: URL, renderedURL: URL, folderURL: URL) async {
+    @discardableResult
+    private func overlaySidecarIPTC(sourceURL: URL, renderedURL: URL, folderURL: URL) async -> Bool {
         // Prefer XMP sidecar IPTC (default write mode for C2PA files)
         let xmpService = XMPSidecarService()
         if let xmpMeta = xmpService.loadSidecar(for: sourceURL) {
@@ -1205,15 +1245,17 @@ struct ContentView: View {
             if !fields.isEmpty {
                 do {
                     try await browserViewModel.exifToolService.writeFields(fields, to: [renderedURL])
-                } catch {}
-                return
+                    return true
+                } catch {
+                    return false
+                }
             }
         }
 
         // Fall back to JSON sidecar (history-only mode)
         let sidecarService = MetadataSidecarService()
         guard let sidecar = sidecarService.loadSidecar(for: sourceURL, in: folderURL),
-              sidecar.pendingChanges else { return }
+              sidecar.pendingChanges else { return true }
 
         var fields = sidecar.metadata.toExifToolFields()
         if let rating = sidecar.metadata.rating {
@@ -1222,11 +1264,14 @@ struct ContentView: View {
         if let label = sidecar.metadata.label, !label.isEmpty {
             fields[ExifToolWriteTag.label] = label
         }
-        guard !fields.isEmpty else { return }
+        guard !fields.isEmpty else { return true }
 
         do {
             try await browserViewModel.exifToolService.writeFields(fields, to: [renderedURL])
-        } catch {}
+            return true
+        } catch {
+            return false
+        }
     }
 
     // MARK: - Copy & Paste IPTC
@@ -1454,7 +1499,10 @@ struct ContentView: View {
         renderExportCurrent = 0
         renderExportTotal = urls.count
 
-        Task {
+        renderExportTask = Task {
+            defer { renderExportTask = nil }
+            let failureTracker = MetadataFailureTracker()
+
             var metadataByURL: [URL: IPTCMetadata]
             do {
                 metadataByURL = try await browserViewModel.exifToolService.readBatchFullMetadata(urls: urls)
@@ -1467,19 +1515,27 @@ struct ContentView: View {
 
             var savedURLs: [URL] = []
             for (index, url) in urls.enumerated() {
+                guard !Task.isCancelled else { break }
                 renderExportCurrent = index + 1
                 let cameraRaw = metadataByURL[url]?.cameraRaw
                 do {
                     let exifTool = browserViewModel.exifToolService
                     let copier: EditedImageRenderer.MetadataCopier = { src, dst in
-                        try? await exifTool.copyMetadataToRenderedFile(from: src, to: dst)
+                        do {
+                            try await exifTool.copyMetadataToRenderedFile(from: src, to: dst)
+                        } catch {
+                            await failureTracker.recordCopyFailure(src.lastPathComponent)
+                        }
                     }
                     let outputURL = try await Task.detached(priority: .userInitiated) {
                         try await EditedImageRenderer.saveAs(from: url, cameraRaw: cameraRaw, format: format, metadataCopier: copier)
                     }.value
                     // Apply pending sidecar IPTC edits to saved file
                     if let folderURL = browserViewModel.currentFolderURL {
-                        await overlaySidecarIPTC(sourceURL: url, renderedURL: outputURL, folderURL: folderURL)
+                        let overlayOk = await overlaySidecarIPTC(sourceURL: url, renderedURL: outputURL, folderURL: folderURL)
+                        if !overlayOk {
+                            await failureTracker.recordOverlayFailure(url.lastPathComponent)
+                        }
                     }
                     savedURLs.append(outputURL)
                 } catch {
@@ -1495,6 +1551,17 @@ struct ContentView: View {
                 if !newFiles.isEmpty {
                     browserViewModel.refreshCurrentFolderIfNeeded()
                 }
+            }
+
+            let copyFailures = await failureTracker.metadataCopyFailures
+            let overlayFailures = await failureTracker.sidecarOverlayFailures
+            if Task.isCancelled {
+                browserViewModel.errorMessage = "Save As cancelled. \(savedURLs.count) of \(urls.count) images saved."
+            } else if !copyFailures.isEmpty || !overlayFailures.isEmpty {
+                var parts: [String] = []
+                if !copyFailures.isEmpty { parts.append("metadata copy failed for \(copyFailures.count) \(copyFailures.count == 1 ? "image" : "images")") }
+                if !overlayFailures.isEmpty { parts.append("IPTC overlay failed for \(overlayFailures.count) \(overlayFailures.count == 1 ? "image" : "images")") }
+                browserViewModel.errorMessage = "Saved \(savedURLs.count) images. Warning: \(parts.joined(separator: "; "))."
             }
         }
     }
@@ -1512,7 +1579,10 @@ struct ContentView: View {
         renderEditedFolderFailureCount = 0
         renderedOutputFolderURL = nil
 
-        Task {
+        renderExportTask = Task {
+            defer { renderExportTask = nil }
+            let failureTracker = MetadataFailureTracker()
+
             var metadataByURL: [URL: IPTCMetadata]
             do {
                 metadataByURL = try await browserViewModel.exifToolService.readBatchFullMetadata(urls: urls)
@@ -1525,10 +1595,12 @@ struct ContentView: View {
 
             var successCount = 0
             var failureCount = 0
+            var renderFailedNames: [String] = []
             var createdFolders: Set<String> = []
             var lastOutputFolder: URL?
 
             for (index, url) in urls.enumerated() {
+                guard !Task.isCancelled else { break }
                 renderExportCurrent = index + 1
                 let cameraRaw = metadataByURL[url]?.cameraRaw
                 let isHDR = cameraRaw?.hdrEditMode == 1
@@ -1552,16 +1624,24 @@ struct ContentView: View {
                 do {
                     let exifTool = browserViewModel.exifToolService
                     let copier: EditedImageRenderer.MetadataCopier = { src, dst in
-                        try? await exifTool.copyMetadataToRenderedFile(from: src, to: dst)
+                        do {
+                            try await exifTool.copyMetadataToRenderedFile(from: src, to: dst)
+                        } catch {
+                            await failureTracker.recordCopyFailure(src.lastPathComponent)
+                        }
                     }
                     let renderedURL = try await Task.detached(priority: .userInitiated) {
                         try await EditedImageRenderer.render(from: url, cameraRaw: cameraRaw, isHDR: isHDR, outputFolder: outputFolder, metadataCopier: copier)
                     }.value
                     // Apply pending sidecar IPTC edits to rendered file
-                    await overlaySidecarIPTC(sourceURL: url, renderedURL: renderedURL, folderURL: folderURL)
+                    let overlayOk = await overlaySidecarIPTC(sourceURL: url, renderedURL: renderedURL, folderURL: folderURL)
+                    if !overlayOk {
+                        await failureTracker.recordOverlayFailure(url.lastPathComponent)
+                    }
                     successCount += 1
                 } catch {
                     failureCount += 1
+                    renderFailedNames.append(url.lastPathComponent)
                 }
             }
 
@@ -1569,6 +1649,22 @@ struct ContentView: View {
             renderEditedFolderFailureCount = failureCount
             renderedOutputFolderURL = lastOutputFolder
             isRenderingEditedFolder = false
+
+            let copyFailures = await failureTracker.metadataCopyFailures
+            let overlayFailures = await failureTracker.sidecarOverlayFailures
+            if Task.isCancelled {
+                browserViewModel.errorMessage = "Export cancelled. \(successCount) of \(urls.count) images exported."
+            } else if failureCount > 0 || !copyFailures.isEmpty || !overlayFailures.isEmpty {
+                var parts: [String] = []
+                if failureCount > 0 {
+                    let names = renderFailedNames.prefix(5).joined(separator: ", ")
+                    let suffix = renderFailedNames.count > 5 ? " and \(renderFailedNames.count - 5) more" : ""
+                    parts.append("\(failureCount) render \(failureCount == 1 ? "failure" : "failures") (\(names)\(suffix))")
+                }
+                if !copyFailures.isEmpty { parts.append("metadata copy failed for \(copyFailures.count) \(copyFailures.count == 1 ? "image" : "images")") }
+                if !overlayFailures.isEmpty { parts.append("IPTC overlay failed for \(overlayFailures.count) \(overlayFailures.count == 1 ? "image" : "images")") }
+                browserViewModel.errorMessage = "Exported \(successCount) of \(urls.count): \(parts.joined(separator: "; "))."
+            }
         }
     }
 

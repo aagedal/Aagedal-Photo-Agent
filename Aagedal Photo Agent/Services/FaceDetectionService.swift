@@ -1538,15 +1538,14 @@ nonisolated struct FaceDetectionService: Sendable {
             threshold: visionThreshold
         )
 
-        let candidateFaceIDs = Set(faces.map(\.id))
+        let faceLookup = Dictionary(uniqueKeysWithValues: faces.map { ($0.id, $0) })
         var remainingFaces: [DetectedFace] = []
         var filteredGroups: [FaceGroup] = []
 
         for group in faceOnlyGroups {
             if group.faceIDs.count == 1,
                let faceID = group.faceIDs.first,
-               candidateFaceIDs.contains(faceID),
-               let face = faces.first(where: { $0.id == faceID }) {
+               let face = faceLookup[faceID] {
                 remainingFaces.append(face)
             } else {
                 filteredGroups.append(group)
