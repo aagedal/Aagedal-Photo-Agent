@@ -24,6 +24,7 @@ final class FullScreenImageCache: @unchecked Sendable {
     nonisolated(unsafe) private var _isGeneratingPreviews = false
     nonisolated(unsafe) private var _previewsCompleted = 0
     nonisolated(unsafe) private var _previewsTotal = 0
+    nonisolated(unsafe) private var _previewGeneration: UInt64 = 0
     private let lock = NSLock()
 
     init() {
@@ -105,48 +106,65 @@ final class FullScreenImageCache: @unchecked Sendable {
     // MARK: - Background Display Preview Generation
 
     nonisolated func startBackgroundPreviewGeneration(for urls: [URL], screenMaxPx: CGFloat) {
-        cancelPreviewGeneration()
+        // Filter outside the lock — NSCache is thread-safe
         let uncached = urls.filter { displayPreviewCache.object(forKey: $0 as NSURL) == nil }
-        guard !uncached.isEmpty else { return }
 
         lock.withLock {
+            // Cancel existing task atomically with new task creation
+            previewGenerationTask?.cancel()
+
+            guard !uncached.isEmpty else {
+                previewGenerationTask = nil
+                _isGeneratingPreviews = false
+                _previewsCompleted = 0
+                _previewsTotal = 0
+                return
+            }
+
             _isGeneratingPreviews = true
             _previewsCompleted = 0
             _previewsTotal = uncached.count
-        }
+            _previewGeneration += 1
+            let generation = _previewGeneration
 
-        let task = Task.detached(priority: .utility) { [weak self] in
-            guard let self else { return }
-            let batchSize = 4
-            for batchStart in stride(from: 0, to: uncached.count, by: batchSize) {
-                guard !Task.isCancelled else { break }
-                let batchEnd = min(batchStart + batchSize, uncached.count)
-                let batch = uncached[batchStart..<batchEnd]
+            previewGenerationTask = Task.detached(priority: .utility) { [weak self] in
+                guard let self else { return }
+                let batchSize = 4
+                for batchStart in stride(from: 0, to: uncached.count, by: batchSize) {
+                    guard !Task.isCancelled else { break }
+                    let batchEnd = min(batchStart + batchSize, uncached.count)
+                    let batch = uncached[batchStart..<batchEnd]
 
-                await withTaskGroup(of: Void.self) { group in
-                    for url in batch {
-                        group.addTask {
-                            guard !Task.isCancelled else { return }
-                            guard self.displayPreviewCache.object(forKey: url as NSURL) == nil else { return }
-                            guard let image = Self.loadDownsampled(from: url, maxPixelSize: screenMaxPx) else { return }
-                            guard !Task.isCancelled else { return }
-                            self.storeDisplayPreview(image, for: url)
+                    await withTaskGroup(of: Void.self) { group in
+                        for url in batch {
+                            group.addTask {
+                                guard !Task.isCancelled else { return }
+                                guard self.displayPreviewCache.object(forKey: url as NSURL) == nil else { return }
+                                guard let image = Self.loadDownsampled(from: url, maxPixelSize: screenMaxPx) else { return }
+                                guard !Task.isCancelled else { return }
+                                self.storeDisplayPreview(image, for: url)
+                            }
                         }
                     }
+
+                    self.lock.withLock {
+                        guard self._previewGeneration == generation else { return }
+                        self._previewsCompleted = batchEnd
+                    }
                 }
-
-                self.lock.withLock { self._previewsCompleted = batchEnd }
+                self.lock.withLock {
+                    guard self._previewGeneration == generation else { return }
+                    self._isGeneratingPreviews = false
+                }
             }
-            self.lock.withLock { self._isGeneratingPreviews = false }
         }
-
-        lock.withLock { previewGenerationTask = task }
     }
 
     nonisolated func cancelPreviewGeneration() {
         lock.withLock {
             previewGenerationTask?.cancel()
             previewGenerationTask = nil
+            _previewGeneration += 1
             _isGeneratingPreviews = false
             _previewsCompleted = 0
             _previewsTotal = 0
