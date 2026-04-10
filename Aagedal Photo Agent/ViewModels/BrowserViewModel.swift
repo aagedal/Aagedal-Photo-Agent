@@ -152,6 +152,7 @@ final class BrowserViewModel {
     @ObservationIgnored private var pendingMetadataURLs: Set<URL> = []
     @ObservationIgnored private var retinaPreCacheTask: Task<Void, Never>?
     @ObservationIgnored private var suppressImagesCascade = false
+    @ObservationIgnored private var pendingMetadataDrainTask: Task<Void, Never>?
 
     private let favoritesKey = UserDefaultsKeys.favoriteFolders
     private let recentFoldersKey = UserDefaultsKeys.recentFolders
@@ -192,6 +193,7 @@ final class BrowserViewModel {
         rebuildCoalesceTask?.cancel()
         retinaPreCacheTask?.cancel()
         loadFolderTask?.cancel()
+        pendingMetadataDrainTask?.cancel()
     }
 
     var selectedImages: [ImageFile] { selectedImagesCache }
@@ -451,6 +453,7 @@ final class BrowserViewModel {
     func loadFolder(url: URL, addToOpenFolders: Bool = true) {
         // Cancel any in-flight folder load to prevent stale results overwriting
         loadFolderTask?.cancel()
+        pendingMetadataDrainTask?.cancel()
         // Reset in case the cancelled task's metadata loop left this true,
         // otherwise the images.didSet below won't rebuild urlToImageIndex.
         suppressImagesCascade = false
@@ -700,11 +703,9 @@ final class BrowserViewModel {
         perfLog.info("[BrowserVM] loadBasicMetadata START — \(urls.count) images, \(totalBatches) batches")
 
         suppressImagesCascade = true
+        defer { suppressImagesCascade = false }
         for batchStart in stride(from: 0, to: urls.count, by: batchSize) {
-            guard !Task.isCancelled, currentFolderURL == folderURL else {
-                suppressImagesCascade = false
-                return
-            }
+            guard !Task.isCancelled, currentFolderURL == folderURL else { return }
             let batchEnd = min(batchStart + batchSize, urls.count)
             let batchURLs = Array(urls[batchStart..<batchEnd])
             let batchIndex = batchStart / batchSize
@@ -720,7 +721,6 @@ final class BrowserViewModel {
                 logger.warning("Batch metadata load failed (batch at offset \(batchStart)): \(error.localizedDescription)")
             }
         }
-        suppressImagesCascade = false
         let totalMs = Int(totalBatchStart.duration(to: .now).components.seconds * 1000)
             + Int(totalBatchStart.duration(to: .now).components.attoseconds / 1_000_000_000_000_000)
         perfLog.info("[BrowserVM] loadBasicMetadata DONE — \(urls.count) images in \(totalMs)ms")
@@ -750,11 +750,9 @@ final class BrowserViewModel {
         let batchSize = 50
 
         suppressImagesCascade = true
+        defer { suppressImagesCascade = false }
         for batchStart in stride(from: 0, to: urls.count, by: batchSize) {
-            guard !Task.isCancelled, currentFolderURL == folderURL else {
-                suppressImagesCascade = false
-                return
-            }
+            guard !Task.isCancelled, currentFolderURL == folderURL else { return }
             let batchEnd = min(batchStart + batchSize, urls.count)
             let batchURLs = Array(urls[batchStart..<batchEnd])
 
@@ -765,7 +763,6 @@ final class BrowserViewModel {
                 logger.warning("Incremental metadata load failed: \(error.localizedDescription)")
             }
         }
-        suppressImagesCascade = false
         rebuildSortedCache()
     }
 
@@ -774,7 +771,8 @@ final class BrowserViewModel {
         guard !pendingMetadataURLs.isEmpty else { return }
         let urls = Array(pendingMetadataURLs)
         pendingMetadataURLs.removeAll()
-        Task {
+        pendingMetadataDrainTask?.cancel()
+        pendingMetadataDrainTask = Task {
             await loadBasicMetadata(for: urls)
         }
     }
