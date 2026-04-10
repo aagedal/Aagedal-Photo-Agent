@@ -153,6 +153,9 @@ final class BrowserViewModel {
     @ObservationIgnored private var retinaPreCacheTask: Task<Void, Never>?
     @ObservationIgnored private var suppressImagesCascade = false
     @ObservationIgnored private var pendingMetadataDrainTask: Task<Void, Never>?
+    @ObservationIgnored private var autoRefreshTask: Task<Void, Never>?
+    @ObservationIgnored private var metadataWriteTask: Task<Void, Never>?
+    @ObservationIgnored private var exifToolBatchTask: Task<Void, Never>?
 
     private let favoritesKey = UserDefaultsKeys.favoriteFolders
     private let recentFoldersKey = UserDefaultsKeys.recentFolders
@@ -454,6 +457,9 @@ final class BrowserViewModel {
         // Cancel any in-flight folder load to prevent stale results overwriting
         loadFolderTask?.cancel()
         pendingMetadataDrainTask?.cancel()
+        autoRefreshTask?.cancel()
+        metadataWriteTask?.cancel()
+        exifToolBatchTask?.cancel()
         // Reset in case the cancelled task's metadata loop left this true,
         // otherwise the images.didSet below won't rebuild urlToImageIndex.
         suppressImagesCascade = false
@@ -546,8 +552,9 @@ final class BrowserViewModel {
         guard let folderURL = currentFolderURL else { return }
         guard !isLoading, !isMetadataLoading, !isAutoRefreshing else { return }
         isAutoRefreshing = true
+        autoRefreshTask?.cancel()
 
-        Task {
+        autoRefreshTask = Task {
             defer { self.isAutoRefreshing = false }
 
             let scanned: [ImageFile]
@@ -1419,7 +1426,8 @@ final class BrowserViewModel {
             }
         }
 
-        Task {
+        metadataWriteTask?.cancel()
+        metadataWriteTask = Task {
             var writeToFileWithSidecar: [URL] = []
             var writeToFileWithoutSidecar: [URL] = []
             var writeToSidecar: [URL] = []
@@ -2661,7 +2669,8 @@ final class BrowserViewModel {
         }
 
         // Write cleared CRS fields to XMP in the image files
-        Task {
+        exifToolBatchTask?.cancel()
+        exifToolBatchTask = Task {
             var clearFields: [String: String] = [:]
             clearFields[ExifToolWriteTag.crsVersion] = ""
             clearFields[ExifToolWriteTag.crsProcessVersion] = ""
@@ -2742,7 +2751,8 @@ final class BrowserViewModel {
         guard let folderURL = currentFolderURL else { return }
         let urls = removeIPTCSelectedURLs
 
-        Task {
+        exifToolBatchTask?.cancel()
+        exifToolBatchTask = Task {
             do {
                 try await exifToolService.stripIPTCAndXMP(from: urls)
             } catch {
