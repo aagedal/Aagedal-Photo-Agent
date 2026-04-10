@@ -89,6 +89,9 @@ final class MetadataViewModel {
     private let perfLog = Logger(subsystem: "com.aagedal.photo-agent", category: "MetadataPerf")
     private var previousEditingMetadata: IPTCMetadata?
     @ObservationIgnored private var metadataLoadTask: Task<Void, Never>?
+    @ObservationIgnored private var writeTask: Task<Void, Never>?
+    @ObservationIgnored private var batchProcessTask: Task<Void, Never>?
+    @ObservationIgnored private var geocodingTask: Task<Void, Never>?
 
     init(exifToolService: ExifToolService) {
         self.exifToolService = exifToolService
@@ -96,6 +99,9 @@ final class MetadataViewModel {
 
     deinit {
         metadataLoadTask?.cancel()
+        writeTask?.cancel()
+        batchProcessTask?.cancel()
+        geocodingTask?.cancel()
     }
 
     var isBatchEdit: Bool { selectedCount > 1 }
@@ -583,7 +589,8 @@ final class MetadataViewModel {
         isSaving = true
         saveError = nil
 
-        Task {
+        writeTask?.cancel()
+        writeTask = Task {
             do {
                 var fields: [String: String] = [:]
 
@@ -777,7 +784,8 @@ final class MetadataViewModel {
                 return
             }
 
-            Task {
+            writeTask?.cancel()
+            writeTask = Task {
                 do {
                     guard let choice = try await resolveStrictNonRawChoice(for: [imageURL]) else {
                         onComplete?()
@@ -792,7 +800,8 @@ final class MetadataViewModel {
                         writeMetadataAndClearSidecarForCurrentSelection(onComplete: onComplete)
                     case .syncRawJpegPair:
                         writeMetadataAndClearSidecarForCurrentSelection {
-                            Task {
+                            self.writeTask?.cancel()
+                            self.writeTask = Task {
                                 await self.syncRawPairForSingleNonRaw(
                                     nonRawURL: imageURL,
                                     metadata: self.editingMetadata
@@ -817,7 +826,8 @@ final class MetadataViewModel {
         let urls = selectedURLs
         let edited = editingMetadata
 
-        Task {
+        writeTask?.cancel()
+        writeTask = Task {
             do {
                 let nonRawChoice = try await resolveStrictNonRawChoice(for: urls)
                 var rawXmpTargets = Set<URL>()
@@ -1000,7 +1010,8 @@ final class MetadataViewModel {
         isSaving = true
         saveError = nil
 
-        Task {
+        writeTask?.cancel()
+        writeTask = Task {
             do {
                 try xmpSidecarService.saveSidecar(metadata: edited, for: imageURL)
 
@@ -1367,7 +1378,8 @@ final class MetadataViewModel {
         isSaving = true
         saveError = nil
 
-        Task {
+        writeTask?.cancel()
+        writeTask = Task {
             do {
                 let fields = overwriteFields(from: edited)
                 let maskArgs = maskWriteArgs(from: edited)
@@ -1423,7 +1435,8 @@ final class MetadataViewModel {
         isSaving = true
         saveError = nil
 
-        Task {
+        writeTask?.cancel()
+        writeTask = Task {
             do {
                 let fields = overwriteFields(from: edited)
                 let maskArgs = maskWriteArgs(from: edited)
@@ -1702,7 +1715,8 @@ final class MetadataViewModel {
         folderProcessProgress = "0/\(images.count)"
         saveError = nil
         variableProcessingStatus = nil
-        Task { await processVariablesBatch(images) }
+        batchProcessTask?.cancel()
+        batchProcessTask = Task { await processVariablesBatch(images) }
     }
 
     /// Process variables for all images in a folder: reads each image's metadata,
@@ -1713,7 +1727,8 @@ final class MetadataViewModel {
         folderProcessProgress = "0/\(images.count)"
         saveError = nil
         variableProcessingStatus = nil
-        Task { await processVariablesBatch(images) }
+        batchProcessTask?.cancel()
+        batchProcessTask = Task { await processVariablesBatch(images) }
     }
 
     /// Shared implementation for batch variable processing.
@@ -1944,7 +1959,8 @@ final class MetadataViewModel {
         isReverseGeocoding = true
         geocodingError = nil
 
-        Task { @MainActor in
+        geocodingTask?.cancel()
+        geocodingTask = Task { @MainActor in
             do {
                 let result = try await geocodingService.reverseGeocode(latitude: lat, longitude: lon)
                 if let city = result.city { editingMetadata.city = city }
@@ -1965,7 +1981,8 @@ final class MetadataViewModel {
         geocodingError = nil
         geocodingProgress = "0/\(selectedURLs.count)"
 
-        Task { @MainActor in
+        geocodingTask?.cancel()
+        geocodingTask = Task { @MainActor in
             var processed = 0
             var skipped = 0
             var geocoded = 0
@@ -2266,7 +2283,8 @@ final class MetadataViewModel {
         isSaving = true
         saveError = nil
 
-        Task {
+        writeTask?.cancel()
+        writeTask = Task {
             do {
                 let edited = editingMetadata
                 let fields = overwriteFields(from: edited)
@@ -2299,7 +2317,8 @@ final class MetadataViewModel {
         folderProcessProgress = "0/?"
         saveError = nil
 
-        Task {
+        batchProcessTask?.cancel()
+        batchProcessTask = Task {
             defer {
                 self.isProcessingFolder = false
                 self.folderProcessProgress = ""

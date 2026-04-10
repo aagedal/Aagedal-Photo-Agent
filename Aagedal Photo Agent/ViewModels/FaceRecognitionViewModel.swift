@@ -143,6 +143,7 @@ final class FaceRecognitionViewModel {
     }
 
     @ObservationIgnored private var activeScanTask: Task<Void, Never>?
+    @ObservationIgnored private var metadataWriteTask: Task<Void, Never>?
     private let detectionService = FaceDetectionService()
     private let storageService = FaceDataStorageService()
     private let exifToolService: ExifToolService
@@ -156,6 +157,7 @@ final class FaceRecognitionViewModel {
 
     deinit {
         activeScanTask?.cancel()
+        metadataWriteTask?.cancel()
     }
 
     // MARK: - Cache Management
@@ -1046,7 +1048,8 @@ final class FaceRecognitionViewModel {
 
         guard !uniqueURLs.isEmpty else { return }
 
-        Task {
+        metadataWriteTask?.cancel()
+        metadataWriteTask = Task {
             let c2paLookup = await loadC2PALookup(urls: uniqueURLs)
             let folderURL = data.folderURL
             let strictPM = PMXMPPolicy.mode == .strictPhotoMechanic
@@ -1192,7 +1195,8 @@ final class FaceRecognitionViewModel {
 
         let c2paLookup = Dictionary(uniqueKeysWithValues: images.map { ($0.url, $0.hasC2PA) })
 
-        Task {
+        metadataWriteTask?.cancel()
+        metadataWriteTask = Task {
             let strictPM = PMXMPPolicy.mode == .strictPhotoMechanic
             var strictNonRawChoice: PMNonRAWXMPSidecarChoice?
             var missingPairs = 0

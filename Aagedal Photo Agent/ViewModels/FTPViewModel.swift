@@ -29,9 +29,11 @@ final class FTPViewModel {
     private let ftpService = FTPService()
     private let connectionsKey = UserDefaultsKeys.ftpConnections
     @ObservationIgnored private var uploadTask: Task<Void, Never>?
+    @ObservationIgnored private var completionTask: Task<Void, Never>?
 
     deinit {
         uploadTask?.cancel()
+        completionTask?.cancel()
     }
 
     func loadConnections() {
@@ -95,6 +97,8 @@ final class FTPViewModel {
     func cancelUpload() {
         uploadTask?.cancel()
         uploadTask = nil
+        completionTask?.cancel()
+        completionTask = nil
         isUploading = false
         isRendering = false
         uploadCompleted = false
@@ -335,7 +339,8 @@ final class FTPViewModel {
         uploadCompleted = true
         overallProgress = 1.0
 
-        Task {
+        completionTask?.cancel()
+        completionTask = Task {
             try? await Task.sleep(for: .seconds(3))
             guard !isUploading, !isRendering else { return }
             uploadCompleted = false
