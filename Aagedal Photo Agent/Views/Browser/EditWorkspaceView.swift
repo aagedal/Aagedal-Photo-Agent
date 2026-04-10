@@ -889,10 +889,10 @@ struct EditWorkspaceView: View {
                                 browserViewModel.selectedImageIDs.insert(image.url)
                             }
                         } else if modifiers.contains(.shift), let anchor = browserViewModel.lastClickedImageURL {
-                            // Shift-click: range select
-                            let images = browserViewModel.visibleImages
-                            if let anchorIdx = images.firstIndex(where: { $0.url == anchor }),
-                               let clickIdx = images.firstIndex(where: { $0.url == image.url }) {
+                            // Shift-click: range select (O(1) lookup via urlToVisibleIndex)
+                            if let anchorIdx = browserViewModel.urlToVisibleIndex[anchor],
+                               let clickIdx = browserViewModel.urlToVisibleIndex[image.url] {
+                                let images = browserViewModel.visibleImages
                                 let range = min(anchorIdx, clickIdx)...max(anchorIdx, clickIdx)
                                 for i in range {
                                     browserViewModel.selectedImageIDs.insert(images[i].url)
