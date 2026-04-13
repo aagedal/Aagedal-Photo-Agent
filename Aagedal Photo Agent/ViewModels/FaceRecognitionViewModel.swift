@@ -706,6 +706,9 @@ final class FaceRecognitionViewModel {
                 return (groupID: group.id, faceEmbeddings: embeddings)
             }
 
+        // Build lookup for sampled face counts per group (avoids O(N) scan in the loop below)
+        let sampledCountByGroup = Dictionary(uniqueKeysWithValues: groupInputs.map { ($0.groupID, $0.faceEmbeddings.count) })
+
         // Batch match all groups
         let allMatches = KnownPeopleService.shared.matchGroupsForSuggestions(groups: groupInputs)
 
@@ -739,7 +742,7 @@ final class FaceRecognitionViewModel {
                 lastAutoMatchedGroupID = group.id
                 autoMatchCount += 1
             } else if best.match.confidence >= suggestionMinConfidence {
-                let sampledCount = groupInputs.first(where: { $0.groupID == group.id })?.faceEmbeddings.count ?? 1
+                let sampledCount = sampledCountByGroup[group.id] ?? 1
                 newSuggestions.append(KnownPersonSuggestion(
                     groupID: group.id,
                     personID: best.match.person.id,
@@ -1172,6 +1175,7 @@ final class FaceRecognitionViewModel {
 
         let availableURLs = Set(images.map(\.url))
         var namesByURL: [URL: [String]] = [:]
+        var seenNamesByURL: [URL: Set<String>] = [:]
 
         for face in data.faces {
             guard availableURLs.contains(face.imageURL),
@@ -1184,10 +1188,15 @@ final class FaceRecognitionViewModel {
             guard !names.isEmpty else { continue }
 
             var existing = namesByURL[face.imageURL] ?? []
-            for name in names where !existing.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) {
-                existing.append(name)
+            var seen = seenNamesByURL[face.imageURL] ?? Set(existing.map { $0.lowercased() })
+            for name in names {
+                let key = name.lowercased()
+                if seen.insert(key).inserted {
+                    existing.append(name)
+                }
             }
             namesByURL[face.imageURL] = existing
+            seenNamesByURL[face.imageURL] = seen
         }
 
         guard !namesByURL.isEmpty else {
@@ -1315,8 +1324,11 @@ final class FaceRecognitionViewModel {
 
     private func mergePersons(existing: [String], adding: [String]) -> [String] {
         var merged = existing
-        for name in adding where !merged.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) {
-            merged.append(name)
+        var seen = Set(existing.map { $0.lowercased() })
+        for name in adding {
+            if seen.insert(name.lowercased()).inserted {
+                merged.append(name)
+            }
         }
         return merged
     }
