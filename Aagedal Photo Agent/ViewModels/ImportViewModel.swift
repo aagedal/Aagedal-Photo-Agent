@@ -40,13 +40,15 @@ final class ImportViewModel {
     var isScanningDates: Bool = false
 
     private let exifToolService: ExifToolService
+    private let writeEngine: any MetadataWriteEngine
     private let interpolator = PresetVariableInterpolator()
     @ObservationIgnored private var scanTask: Task<Void, Never>?
     @ObservationIgnored private var dateScanTask: Task<Void, Never>?
     private let importLog = Logger(subsystem: "com.aagedal.photo-agent", category: "Import")
 
-    init(exifToolService: ExifToolService) {
+    init(exifToolService: ExifToolService, writeEngine: any MetadataWriteEngine) {
         self.exifToolService = exifToolService
+        self.writeEngine = writeEngine
     }
 
     deinit {
@@ -317,7 +319,7 @@ final class ImportViewModel {
                             sequenceNumber += 1
                             let fields = await Self.buildMetadataFields(from: resolved)
                             if !fields.isEmpty {
-                                try await exifToolService.writeFields(fields, to: [url])
+                                try await self.writeEngine.writeFields(fields, to: [url])
                             }
                         }
                     } else {
@@ -327,7 +329,7 @@ final class ImportViewModel {
                             for batchStart in stride(from: 0, to: copiedURLs.count, by: batchSize) {
                                 let batchEnd = min(batchStart + batchSize, copiedURLs.count)
                                 let batch = Array(copiedURLs[batchStart..<batchEnd])
-                                try await exifToolService.writeFields(fields, to: batch)
+                                try await self.writeEngine.writeFields(fields, to: batch)
                             }
                         }
                     }
@@ -430,23 +432,23 @@ final class ImportViewModel {
         return resolved.isEmpty ? nil : resolved
     }
 
-    static func buildMetadataFields(from meta: IPTCMetadata) -> [String: String] {
-        var fields: [String: String] = [:]
+    static func buildMetadataFields(from meta: IPTCMetadata) -> [MetadataFieldKey: String] {
+        var fields: [MetadataFieldKey: String] = [:]
 
-        if let v = meta.title, !v.isEmpty { fields[ExifToolWriteTag.headline] = v }
-        if let v = meta.description, !v.isEmpty { fields[ExifToolWriteTag.description] = v }
-        if let v = meta.extendedDescription, !v.isEmpty { fields[ExifToolWriteTag.extendedDescription] = v }
-        if !meta.keywords.isEmpty { fields[ExifToolWriteTag.subject] = meta.keywords.joined(separator: ", ") }
-        if !meta.personShown.isEmpty { fields[ExifToolWriteTag.personInImage] = meta.personShown.joined(separator: ", ") }
-        if let v = meta.digitalSourceType { fields[ExifToolWriteTag.digitalSourceType] = v.rawValue }
-        if let v = meta.creator, !v.isEmpty { fields[ExifToolWriteTag.creator] = v }
-        if let v = meta.credit, !v.isEmpty { fields[ExifToolWriteTag.credit] = v }
-        if let v = meta.copyright, !v.isEmpty { fields[ExifToolWriteTag.rights] = v }
-        if let v = meta.jobId, !v.isEmpty { fields[ExifToolWriteTag.transmissionReference] = v }
-        if let v = meta.dateCreated, !v.isEmpty { fields[ExifToolWriteTag.dateCreated] = v }
-        if let v = meta.city, !v.isEmpty { fields[ExifToolWriteTag.city] = v }
-        if let v = meta.country, !v.isEmpty { fields[ExifToolWriteTag.country] = v }
-        if let v = meta.event, !v.isEmpty { fields[ExifToolWriteTag.event] = v }
+        if let v = meta.title, !v.isEmpty { fields[.headline] = v }
+        if let v = meta.description, !v.isEmpty { fields[.description] = v }
+        if let v = meta.extendedDescription, !v.isEmpty { fields[.extendedDescription] = v }
+        if !meta.keywords.isEmpty { fields[.subject] = meta.keywords.joined(separator: ", ") }
+        if !meta.personShown.isEmpty { fields[.personInImage] = meta.personShown.joined(separator: ", ") }
+        if let v = meta.digitalSourceType { fields[.digitalSourceType] = v.rawValue }
+        if let v = meta.creator, !v.isEmpty { fields[.creator] = v }
+        if let v = meta.credit, !v.isEmpty { fields[.credit] = v }
+        if let v = meta.copyright, !v.isEmpty { fields[.rights] = v }
+        if let v = meta.jobId, !v.isEmpty { fields[.transmissionReference] = v }
+        if let v = meta.dateCreated, !v.isEmpty { fields[.dateCreated] = v }
+        if let v = meta.city, !v.isEmpty { fields[.city] = v }
+        if let v = meta.country, !v.isEmpty { fields[.country] = v }
+        if let v = meta.event, !v.isEmpty { fields[.event] = v }
 
         return fields
     }

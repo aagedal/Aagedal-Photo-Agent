@@ -5,6 +5,7 @@ struct FTPUploadView: View {
     @Bindable var viewModel: FTPViewModel
     let files: [URL]
     let exifToolService: ExifToolService
+    let writeEngine: any MetadataWriteEngine
     var onStartUpload: (() -> Void)?
 
     @State private var activeFiles: [URL]
@@ -26,10 +27,11 @@ struct FTPUploadView: View {
     @State private var iptcCheckResults: [IPTCCheckResult] = []
     @State private var pendingUploadRenderFirst = false
 
-    init(viewModel: FTPViewModel, files: [URL], exifToolService: ExifToolService, onStartUpload: (() -> Void)? = nil) {
+    init(viewModel: FTPViewModel, files: [URL], exifToolService: ExifToolService, writeEngine: any MetadataWriteEngine, onStartUpload: (() -> Void)? = nil) {
         self.viewModel = viewModel
         self.files = files
         self.exifToolService = exifToolService
+        self.writeEngine = writeEngine
         self.onStartUpload = onStartUpload
         self._activeFiles = State(initialValue: files)
 
@@ -485,7 +487,7 @@ struct FTPUploadView: View {
 
     private func beginUpload(files: [URL], connection: FTPConnection, renderFirst: Bool) {
         if renderFirst {
-            viewModel.renderAndUploadFiles(files, to: connection, exifToolService: exifToolService)
+            viewModel.renderAndUploadFiles(files, to: connection, exifToolService: exifToolService, writeEngine: writeEngine)
         } else {
             viewModel.uploadFiles(files, to: connection)
         }
@@ -519,25 +521,25 @@ struct FTPUploadView: View {
                 resolved.event = resolveIfChanged(meta.event, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
 
                 if changed {
-                    var fields: [String: String] = [:]
-                    if resolved.title != meta.title { fields[ExifToolWriteTag.headline] = resolved.title ?? "" }
-                    if resolved.description != meta.description { fields[ExifToolWriteTag.description] = resolved.description ?? "" }
+                    var fields: [MetadataFieldKey: String] = [:]
+                    if resolved.title != meta.title { fields[.headline] = resolved.title ?? "" }
+                    if resolved.description != meta.description { fields[.description] = resolved.description ?? "" }
                     if resolved.extendedDescription != meta.extendedDescription {
-                        fields[ExifToolWriteTag.extendedDescription] = resolved.extendedDescription ?? ""
+                        fields[.extendedDescription] = resolved.extendedDescription ?? ""
                     }
-                    if resolved.creator != meta.creator { fields[ExifToolWriteTag.creator] = resolved.creator ?? "" }
-                    if resolved.credit != meta.credit { fields[ExifToolWriteTag.credit] = resolved.credit ?? "" }
-                    if resolved.copyright != meta.copyright { fields[ExifToolWriteTag.rights] = resolved.copyright ?? "" }
+                    if resolved.creator != meta.creator { fields[.creator] = resolved.creator ?? "" }
+                    if resolved.credit != meta.credit { fields[.credit] = resolved.credit ?? "" }
+                    if resolved.copyright != meta.copyright { fields[.rights] = resolved.copyright ?? "" }
                     if resolved.jobId != meta.jobId {
-                        fields[ExifToolWriteTag.transmissionReference] = resolved.jobId ?? ""
+                        fields[.transmissionReference] = resolved.jobId ?? ""
                     }
-                    if resolved.dateCreated != meta.dateCreated { fields[ExifToolWriteTag.dateCreated] = resolved.dateCreated ?? "" }
-                    if resolved.city != meta.city { fields[ExifToolWriteTag.city] = resolved.city ?? "" }
-                    if resolved.country != meta.country { fields[ExifToolWriteTag.country] = resolved.country ?? "" }
-                    if resolved.event != meta.event { fields[ExifToolWriteTag.event] = resolved.event ?? "" }
+                    if resolved.dateCreated != meta.dateCreated { fields[.dateCreated] = resolved.dateCreated ?? "" }
+                    if resolved.city != meta.city { fields[.city] = resolved.city ?? "" }
+                    if resolved.country != meta.country { fields[.country] = resolved.country ?? "" }
+                    if resolved.event != meta.event { fields[.event] = resolved.event ?? "" }
 
                     if !fields.isEmpty {
-                        try await exifToolService.writeFields(fields, to: [url])
+                        try await writeEngine.writeFields(fields, to: [url])
                     }
                 }
             } catch {

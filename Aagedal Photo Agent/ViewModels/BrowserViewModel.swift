@@ -127,6 +127,7 @@ final class BrowserViewModel {
     let fileSystemService = FileSystemService()
     let thumbnailService = ThumbnailService()
     let exifToolService = ExifToolService()
+    @ObservationIgnored private(set) var writeEngine: any MetadataWriteEngine
     @ObservationIgnored let fullScreenImageCache = FullScreenImageCache()
     private let sidecarService = MetadataSidecarService()
     private let xmpSidecarService = XMPSidecarService()
@@ -134,6 +135,7 @@ final class BrowserViewModel {
     private let logger = Logger(subsystem: "com.aagedal.photo-agent", category: "BrowserViewModel")
     private let perfLog = Logger(subsystem: "com.aagedal.photo-agent", category: "MetadataPerf")
     @ObservationIgnored var onImagesDeleted: ((Set<URL>) -> Void)?
+
     @ObservationIgnored private var searchDebounceTask: Task<Void, Never>?
     @ObservationIgnored private var needsSortRebuild = false
     @ObservationIgnored private var needsVisibleRebuild = false
@@ -177,6 +179,16 @@ final class BrowserViewModel {
     @ObservationIgnored private(set) var selectedImagesCache: [ImageFile] = []
 
     init() {
+        let engineChoice = MetadataWriteEngineChoice(
+            rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.metadataWriteEngine) ?? ""
+        ) ?? .swiftExif
+        switch engineChoice {
+        case .swiftExif:
+            writeEngine = SwiftExifWriteEngine(exifToolService: exifToolService)
+        case .exifTool:
+            writeEngine = ExifToolWriteEngine(exifToolService: exifToolService)
+        }
+
         if let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.thumbnailSortOrder),
            let stored = SortOrder(rawValue: raw) {
             sortOrder = stored
@@ -188,6 +200,19 @@ final class BrowserViewModel {
         }
         self.showOriginalThumbnails = UserDefaults.standard.bool(forKey: UserDefaultsKeys.showOriginalThumbnails)
         self.showAllFiles = UserDefaults.standard.bool(forKey: UserDefaultsKeys.showAllFiles)
+
+        NotificationCenter.default.addObserver(forName: .metadataWriteEngineChanged, object: nil, queue: .main) { [weak self] _ in
+            guard let self else { return }
+            let choice = MetadataWriteEngineChoice(
+                rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.metadataWriteEngine) ?? ""
+            ) ?? .swiftExif
+            switch choice {
+            case .swiftExif:
+                self.writeEngine = SwiftExifWriteEngine(exifToolService: self.exifToolService)
+            case .exifTool:
+                self.writeEngine = ExifToolWriteEngine(exifToolService: self.exifToolService)
+            }
+        }
     }
 
     deinit {
@@ -1256,7 +1281,7 @@ final class BrowserViewModel {
                     }
                 )
             },
-            writeToExifTool: { try await self.exifToolService.writeRating(rating, to: $0) },
+            writeToExifTool: { try await self.writeEngine.writeRating(rating, to: $0) },
             fieldDescription: "rating"
         )
     }
@@ -1277,7 +1302,7 @@ final class BrowserViewModel {
                     }
                 )
             },
-            writeToExifTool: { try await self.exifToolService.writeLabel(label, to: $0) },
+            writeToExifTool: { try await self.writeEngine.writeLabel(label, to: $0) },
             fieldDescription: "label"
         )
     }
@@ -1312,7 +1337,7 @@ final class BrowserViewModel {
                     byOrientation[orientation, default: []].append(url)
                 }
                 for (orientation, batchURLs) in byOrientation {
-                    try await self.exifToolService.writeOrientation(orientation, to: batchURLs)
+                    try await self.writeEngine.writeOrientation(orientation, to: batchURLs)
                 }
             },
             fieldDescription: "orientation"
@@ -1352,7 +1377,7 @@ final class BrowserViewModel {
                     byOrientation[orientation, default: []].append(url)
                 }
                 for (orientation, batchURLs) in byOrientation {
-                    try await self.exifToolService.writeOrientation(orientation, to: batchURLs)
+                    try await self.writeEngine.writeOrientation(orientation, to: batchURLs)
                 }
             },
             fieldDescription: "orientation"
@@ -2671,46 +2696,46 @@ final class BrowserViewModel {
         // Write cleared CRS fields to XMP in the image files
         exifToolBatchTask?.cancel()
         exifToolBatchTask = Task {
-            var clearFields: [String: String] = [:]
-            clearFields[ExifToolWriteTag.crsVersion] = ""
-            clearFields[ExifToolWriteTag.crsProcessVersion] = ""
-            clearFields[ExifToolWriteTag.crsWhiteBalance] = ""
-            clearFields[ExifToolWriteTag.crsTemperature] = ""
-            clearFields[ExifToolWriteTag.crsTint] = ""
-            clearFields[ExifToolWriteTag.crsIncrementalTemperature] = ""
-            clearFields[ExifToolWriteTag.crsIncrementalTint] = ""
-            clearFields[ExifToolWriteTag.crsExposure2012] = ""
-            clearFields[ExifToolWriteTag.crsContrast2012] = ""
-            clearFields[ExifToolWriteTag.crsHighlights2012] = ""
-            clearFields[ExifToolWriteTag.crsShadows2012] = ""
-            clearFields[ExifToolWriteTag.crsWhites2012] = ""
-            clearFields[ExifToolWriteTag.crsBlacks2012] = ""
-            clearFields[ExifToolWriteTag.crsSaturation] = ""
-            clearFields[ExifToolWriteTag.crsVibrance] = ""
-            clearFields[ExifToolWriteTag.crsHasSettings] = "False"
-            clearFields[ExifToolWriteTag.crsCropTop] = ""
-            clearFields[ExifToolWriteTag.crsCropLeft] = ""
-            clearFields[ExifToolWriteTag.crsCropBottom] = ""
-            clearFields[ExifToolWriteTag.crsCropRight] = ""
-            clearFields[ExifToolWriteTag.crsCropAngle] = ""
-            clearFields[ExifToolWriteTag.crsHasCrop] = ""
-            clearFields[ExifToolWriteTag.crsCropConstrainToWarp] = ""
-            clearFields[ExifToolWriteTag.crsCropConstrainToUnitSquare] = ""
-            clearFields[ExifToolWriteTag.crsHDREditMode] = ""
-            clearFields[ExifToolWriteTag.crsHDRMaxValue] = ""
-            clearFields[ExifToolWriteTag.crsSDRBrightness] = ""
-            clearFields[ExifToolWriteTag.crsSDRContrast] = ""
-            clearFields[ExifToolWriteTag.crsSDRClarity] = ""
-            clearFields[ExifToolWriteTag.crsSDRHighlights] = ""
-            clearFields[ExifToolWriteTag.crsSDRShadows] = ""
-            clearFields[ExifToolWriteTag.crsSDRWhites] = ""
-            clearFields[ExifToolWriteTag.crsSDRBlend] = ""
+            var clearFields: [MetadataFieldKey: String] = [:]
+            clearFields[.crsVersion] = ""
+            clearFields[.crsProcessVersion] = ""
+            clearFields[.crsWhiteBalance] = ""
+            clearFields[.crsTemperature] = ""
+            clearFields[.crsTint] = ""
+            clearFields[.crsIncrementalTemperature] = ""
+            clearFields[.crsIncrementalTint] = ""
+            clearFields[.crsExposure2012] = ""
+            clearFields[.crsContrast2012] = ""
+            clearFields[.crsHighlights2012] = ""
+            clearFields[.crsShadows2012] = ""
+            clearFields[.crsWhites2012] = ""
+            clearFields[.crsBlacks2012] = ""
+            clearFields[.crsSaturation] = ""
+            clearFields[.crsVibrance] = ""
+            clearFields[.crsHasSettings] = "False"
+            clearFields[.crsCropTop] = ""
+            clearFields[.crsCropLeft] = ""
+            clearFields[.crsCropBottom] = ""
+            clearFields[.crsCropRight] = ""
+            clearFields[.crsCropAngle] = ""
+            clearFields[.crsHasCrop] = ""
+            clearFields[.crsCropConstrainToWarp] = ""
+            clearFields[.crsCropConstrainToUnitSquare] = ""
+            clearFields[.crsHDREditMode] = ""
+            clearFields[.crsHDRMaxValue] = ""
+            clearFields[.crsSDRBrightness] = ""
+            clearFields[.crsSDRContrast] = ""
+            clearFields[.crsSDRClarity] = ""
+            clearFields[.crsSDRHighlights] = ""
+            clearFields[.crsSDRShadows] = ""
+            clearFields[.crsSDRWhites] = ""
+            clearFields[.crsSDRBlend] = ""
 
-            // Clear masks via structured XMP arg
-            let maskClearArgs = ["-struct", "-\(ExifToolWriteTag.crsMaskGroupBasedCorrections)="]
+            // Clear masks via empty masks array in structured data
+            let structuredData = StructuredWriteData(masks: [])
 
             do {
-                try await exifToolService.writeFields(clearFields, to: urls, extraArgs: maskClearArgs)
+                try await writeEngine.writeFields(clearFields, to: urls, structuredData: structuredData)
             } catch {
                 logger.error("Failed to clear camera raw XMP fields: \(error.localizedDescription)")
             }
@@ -2754,7 +2779,7 @@ final class BrowserViewModel {
         exifToolBatchTask?.cancel()
         exifToolBatchTask = Task {
             do {
-                try await exifToolService.stripIPTCAndXMP(from: urls)
+                try await writeEngine.stripIPTCAndXMP(from: urls)
             } catch {
                 self.errorMessage = "Failed to remove IPTC metadata: \(error.localizedDescription)"
                 return

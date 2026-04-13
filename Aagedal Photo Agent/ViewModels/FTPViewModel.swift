@@ -1,4 +1,7 @@
 import Foundation
+import os
+
+nonisolated private let ftpLog = Logger(subsystem: "com.aagedal.photo-agent", category: "FTPViewModel")
 
 @Observable
 final class FTPViewModel {
@@ -79,7 +82,12 @@ final class FTPViewModel {
 
     func saveEditingConnection() {
         // Save password to keychain
-        try? KeychainService.save(password: editingPassword, forKey: editingConnection.keychainKey)
+        do {
+            try KeychainService.save(password: editingPassword, forKey: editingConnection.keychainKey)
+        } catch {
+            ftpLog.error("Keychain save failed for \(self.editingConnection.name, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            errorMessages = ["Failed to save password: \(error.localizedDescription)"]
+        }
 
         if let index = connections.firstIndex(where: { $0.id == editingConnection.id }) {
             connections[index] = editingConnection
@@ -212,7 +220,7 @@ final class FTPViewModel {
         }
     }
 
-    func renderAndUploadFiles(_ urls: [URL], to connection: FTPConnection, exifToolService: ExifToolService) {
+    func renderAndUploadFiles(_ urls: [URL], to connection: FTPConnection, exifToolService: ExifToolService, writeEngine: any MetadataWriteEngine) {
         guard let password = KeychainService.load(forKey: connection.keychainKey) else {
             errorMessages = ["No password found for \(connection.name). Edit the connection to set a password."]
             return
@@ -267,13 +275,18 @@ final class FTPViewModel {
             }
 
             // Render phase (0–50% of overall progress)
+            let failureTracker = MetadataFailureTracker()
             var renderedURLs: [URL] = []
             for url in urls {
                 guard !Task.isCancelled else { break }
                 do {
                     let cameraRaw = metadataMap[url]?.cameraRaw
                     let copier: EditedImageRenderer.MetadataCopier = { src, dst in
-                        try? await exifToolService.copyMetadataToRenderedFile(from: src, to: dst)
+                        do {
+                            try await writeEngine.copyMetadataToRenderedFile(from: src, to: dst)
+                        } catch {
+                            await failureTracker.recordCopyFailure(src.lastPathComponent)
+                        }
                     }
                     try await EditedImageRenderer.renderJPEG(from: url, cameraRaw: cameraRaw, outputFolder: tempDir, metadataCopier: copier)
                     let outputURL = EditedImageRenderer.outputURL(for: url, in: tempDir, extension: "jpg")
@@ -283,6 +296,11 @@ final class FTPViewModel {
                 }
                 self.renderCompletedCount += 1
                 self.overallProgress = Double(self.renderCompletedCount) / Double(self.renderTotalCount) * 0.5
+            }
+
+            let copyFailures = await failureTracker.metadataCopyFailures
+            if !copyFailures.isEmpty {
+                self.errorMessages.append("Metadata copy failed for \(copyFailures.count) \(copyFailures.count == 1 ? "image" : "images") — uploaded without IPTC data")
             }
 
             guard !Task.isCancelled else {

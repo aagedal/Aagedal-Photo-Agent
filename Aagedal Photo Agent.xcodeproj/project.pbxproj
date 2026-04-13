@@ -10,6 +10,7 @@
 		0A05BF3BF20F46F2A6736C66 /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 9B9D2A9AC78186B52BFC36D2 /* Cocoa.framework */; };
 		1C7A6B9BA3F2E2C3F90503C1 /* IPTCMetadataTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38D2DABC30701F41BE3F6B54 /* IPTCMetadataTests.swift */; };
 		8E0557702F49A00000BCFB49 /* ExifTool in Resources */ = {isa = PBXBuildFile; fileRef = 8E0557712F49A00000BCFB49 /* ExifTool */; };
+		8ED369F42F8CF02C00FB9A33 /* SwiftExif in Frameworks */ = {isa = PBXBuildFile; productRef = 8ED369F32F8CF02C00FB9A33 /* SwiftExif */; };
 		E957DC81E4AA200C4CD87043 /* MetadataSidecarServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CB424FD4CEB2C23AEFF5DB0 /* MetadataSidecarServiceTests.swift */; };
 /* End PBXBuildFile section */
 
@@ -27,7 +28,7 @@
 		0F23FE232CC64C60490D92B3 /* Aagedal Photo Agent Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Aagedal Photo Agent Tests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		38D2DABC30701F41BE3F6B54 /* IPTCMetadataTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = IPTCMetadataTests.swift; sourceTree = "<group>"; };
 		8E0556B32F28C3F600BCFB49 /* Aagedal Photo Agent.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Aagedal Photo Agent.app"; sourceTree = BUILT_PRODUCTS_DIR; };
-		8E0557412F29098D00BCFB49 /* readme.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = readme.md; sourceTree = "<group>"; };
+		8E0557412F29098D00BCFB49 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		8E05576D2F2A149800BCFB49 /* TODO.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = TODO.md; sourceTree = "<group>"; };
 		8E0557712F49A00000BCFB49 /* ExifTool */ = {isa = PBXFileReference; lastKnownFileType = folder; path = ExifTool; sourceTree = "<group>"; };
 		9B9D2A9AC78186B52BFC36D2 /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.0.sdk/System/Library/Frameworks/Cocoa.framework; sourceTree = DEVELOPER_DIR; };
@@ -47,6 +48,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				8ED369F42F8CF02C00FB9A33 /* SwiftExif in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -81,7 +83,7 @@
 		8E0556AA2F28C3F600BCFB49 = {
 			isa = PBXGroup;
 			children = (
-				8E0557412F29098D00BCFB49 /* readme.md */,
+				8E0557412F29098D00BCFB49 /* README.md */,
 				8E05576D2F2A149800BCFB49 /* TODO.md */,
 				8E0556B52F28C3F600BCFB49 /* Aagedal Photo Agent */,
 				8E0557712F49A00000BCFB49 /* ExifTool */,
@@ -174,6 +176,9 @@
 			);
 			mainGroup = 8E0556AA2F28C3F600BCFB49;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				8ED369F22F8CF02C00FB9A33 /* XCRemoteSwiftPackageReference "SwiftExif" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 8E0556B42F28C3F600BCFB49 /* Products */;
 			projectDirPath = "";
@@ -533,6 +538,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		8ED369F22F8CF02C00FB9A33 /* XCRemoteSwiftPackageReference "SwiftExif" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/aagedal/SwiftExif.git";
+			requirement = {
+				branch = main;
+				kind = branch;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		8ED369F32F8CF02C00FB9A33 /* SwiftExif */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 8ED369F22F8CF02C00FB9A33 /* XCRemoteSwiftPackageReference "SwiftExif" */;
+			productName = SwiftExif;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 8E0556AB2F28C3F600BCFB49 /* Project object */;
 }

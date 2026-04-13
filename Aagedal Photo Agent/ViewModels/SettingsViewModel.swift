@@ -275,6 +275,13 @@ final class SettingsViewModel {
         didSet { UserDefaults.standard.set(faceCleanupPolicy.rawValue, forKey: UserDefaultsKeys.faceCleanupPolicy) }
     }
 
+    var metadataWriteEngine: MetadataWriteEngineChoice {
+        didSet {
+            UserDefaults.standard.set(metadataWriteEngine.rawValue, forKey: UserDefaultsKeys.metadataWriteEngine)
+            NotificationCenter.default.post(name: .metadataWriteEngineChanged, object: nil)
+        }
+    }
+
     var metadataWriteModeNonC2PA: MetadataWriteMode {
         didSet { UserDefaults.standard.set(metadataWriteModeNonC2PA.rawValue, forKey: UserDefaultsKeys.metadataWriteModeNonC2PA) }
     }
@@ -738,6 +745,9 @@ final class SettingsViewModel {
         self.updateCheckFrequency = UpdateCheckFrequency(rawValue: updateRaw) ?? .weekly
         let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.faceCleanupPolicy) ?? "never"
         self.faceCleanupPolicy = FaceCleanupPolicy(rawValue: raw) ?? .never
+        let engineRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.metadataWriteEngine) ?? MetadataWriteEngineChoice.swiftExif.rawValue
+        self.metadataWriteEngine = MetadataWriteEngineChoice(rawValue: engineRaw) ?? .swiftExif
+
         let legacyWriteModeRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.metadataWriteMode)
         let nonC2PARaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.metadataWriteModeNonC2PA)
             ?? legacyWriteModeRaw

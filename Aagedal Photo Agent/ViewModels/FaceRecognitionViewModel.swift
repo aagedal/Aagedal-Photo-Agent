@@ -147,12 +147,14 @@ final class FaceRecognitionViewModel {
     private let detectionService = FaceDetectionService()
     private let storageService = FaceDataStorageService()
     private let exifToolService: ExifToolService
+    private let writeEngine: any MetadataWriteEngine
     private let sidecarService = MetadataSidecarService()
     private let xmpSidecarService = XMPSidecarService()
     private let logger = Logger(subsystem: "com.aagedal.photo-agent", category: "FaceRecognitionViewModel")
 
-    init(exifToolService: ExifToolService) {
+    init(exifToolService: ExifToolService, writeEngine: any MetadataWriteEngine) {
         self.exifToolService = exifToolService
+        self.writeEngine = writeEngine
     }
 
     deinit {
@@ -1326,7 +1328,7 @@ final class FaceRecognitionViewModel {
             let merged = mergePersons(existing: existing.personShown, adding: names)
             guard merged != existing.personShown else { return true }
             let value = merged.joined(separator: ", ")
-            try await exifToolService.writeFields([ExifToolWriteTag.personInImage: value], to: [url])
+            try await writeEngine.writeFields([.personInImage: value], to: [url])
             return true
         } catch {
             // Continue with next image

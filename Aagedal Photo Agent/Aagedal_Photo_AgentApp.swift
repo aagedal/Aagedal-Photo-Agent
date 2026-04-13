@@ -323,4 +323,5 @@ extension Notification.Name {
     static let showVariableReference = Notification.Name("showVariableReference")
     static let copyIPTCMetadata = Notification.Name("copyIPTCMetadata")
     static let pasteIPTCMetadata = Notification.Name("pasteIPTCMetadata")
+    static let metadataWriteEngineChanged = Notification.Name("metadataWriteEngineChanged")
 }

@@ -82,6 +82,7 @@ final class MetadataViewModel {
     var geocodingProgress = ""
 
     private let exifToolService: ExifToolService
+    private let writeEngine: any MetadataWriteEngine
     private let sidecarService = MetadataSidecarService()
     private let xmpSidecarService = XMPSidecarService()
     private let geocodingService = GeocodingService()
@@ -93,8 +94,9 @@ final class MetadataViewModel {
     @ObservationIgnored private var batchProcessTask: Task<Void, Never>?
     @ObservationIgnored private var geocodingTask: Task<Void, Never>?
 
-    init(exifToolService: ExifToolService) {
+    init(exifToolService: ExifToolService, writeEngine: any MetadataWriteEngine) {
         self.exifToolService = exifToolService
+        self.writeEngine = writeEngine
     }
 
     deinit {
@@ -592,19 +594,19 @@ final class MetadataViewModel {
         writeTask?.cancel()
         writeTask = Task {
             do {
-                var fields: [String: String] = [:]
+                var fields: [MetadataFieldKey: String] = [:]
 
                 if isBatch {
                     // Batch: only write non-empty fields
-                    if let v = edited.title, !v.isEmpty { fields[ExifToolWriteTag.headline] = v }
-                    if let v = edited.description, !v.isEmpty { fields[ExifToolWriteTag.description] = v }
-                    if let v = edited.extendedDescription, !v.isEmpty { fields[ExifToolWriteTag.extendedDescription] = v }
+                    if let v = edited.title, !v.isEmpty { fields[.headline] = v }
+                    if let v = edited.description, !v.isEmpty { fields[.description] = v }
+                    if let v = edited.extendedDescription, !v.isEmpty { fields[.extendedDescription] = v }
 
                     // Keywords — check add vs overwrite mode
                     let keywordsMode = self.multiSelectMode(for: "keywords")
                     if keywordsMode == .overwrite {
                         if !edited.keywords.isEmpty {
-                            fields[ExifToolWriteTag.subject] = edited.keywords.joined(separator: ", ")
+                            fields[.subject] = edited.keywords.joined(separator: ", ")
                         }
                     }
                     // Add mode keywords handled below via addRemoveListValues
@@ -613,77 +615,77 @@ final class MetadataViewModel {
                     let personMode = self.multiSelectMode(for: "personShown")
                     if personMode == .overwrite {
                         if !edited.personShown.isEmpty {
-                            fields[ExifToolWriteTag.personInImage] = edited.personShown.joined(separator: ", ")
+                            fields[.personInImage] = edited.personShown.joined(separator: ", ")
                         }
                     }
                     // Add mode personShown handled below via addRemoveListValues
 
-                    if let v = edited.digitalSourceType { fields[ExifToolWriteTag.digitalSourceType] = v.rawValue }
+                    if let v = edited.digitalSourceType { fields[.digitalSourceType] = v.rawValue }
                     if let lat = edited.latitude, let lon = edited.longitude {
-                        fields[ExifToolWriteTag.gpsLatitude] = String(abs(lat))
-                        fields[ExifToolWriteTag.gpsLatitudeRef] = lat >= 0 ? "N" : "S"
-                        fields[ExifToolWriteTag.gpsLongitude] = String(abs(lon))
-                        fields[ExifToolWriteTag.gpsLongitudeRef] = lon >= 0 ? "E" : "W"
+                        fields[.gpsLatitude] = String(abs(lat))
+                        fields[.gpsLatitudeRef] = lat >= 0 ? "N" : "S"
+                        fields[.gpsLongitude] = String(abs(lon))
+                        fields[.gpsLongitudeRef] = lon >= 0 ? "E" : "W"
                     }
-                    if let v = edited.creator, !v.isEmpty { fields[ExifToolWriteTag.creator] = v }
-                    if let v = edited.credit, !v.isEmpty { fields[ExifToolWriteTag.credit] = v }
-                    if let v = edited.copyright, !v.isEmpty { fields[ExifToolWriteTag.rights] = v }
-                    if let v = edited.jobId, !v.isEmpty { fields[ExifToolWriteTag.transmissionReference] = v }
-                    if let v = edited.dateCreated, !v.isEmpty { fields[ExifToolWriteTag.dateCreated] = v }
-                    if let v = edited.city, !v.isEmpty { fields[ExifToolWriteTag.city] = v }
-                    if let v = edited.country, !v.isEmpty { fields[ExifToolWriteTag.country] = v }
-                    if let v = edited.event, !v.isEmpty { fields[ExifToolWriteTag.event] = v }
+                    if let v = edited.creator, !v.isEmpty { fields[.creator] = v }
+                    if let v = edited.credit, !v.isEmpty { fields[.credit] = v }
+                    if let v = edited.copyright, !v.isEmpty { fields[.rights] = v }
+                    if let v = edited.jobId, !v.isEmpty { fields[.transmissionReference] = v }
+                    if let v = edited.dateCreated, !v.isEmpty { fields[.dateCreated] = v }
+                    if let v = edited.city, !v.isEmpty { fields[.city] = v }
+                    if let v = edited.country, !v.isEmpty { fields[.country] = v }
+                    if let v = edited.event, !v.isEmpty { fields[.event] = v }
                 } else {
                     // Single: write all changed fields
-                    if edited.title != original?.title { fields[ExifToolWriteTag.headline] = edited.title ?? "" }
-                    if edited.description != original?.description { fields[ExifToolWriteTag.description] = edited.description ?? "" }
+                    if edited.title != original?.title { fields[.headline] = edited.title ?? "" }
+                    if edited.description != original?.description { fields[.description] = edited.description ?? "" }
                     if edited.extendedDescription != original?.extendedDescription {
-                        fields[ExifToolWriteTag.extendedDescription] = edited.extendedDescription ?? ""
+                        fields[.extendedDescription] = edited.extendedDescription ?? ""
                     }
                     if edited.keywords != original?.keywords {
                         // Clear then set keywords
-                        fields[ExifToolWriteTag.subject] = edited.keywords.uniqued().joined(separator: ", ")
+                        fields[.subject] = edited.keywords.uniqued().joined(separator: ", ")
                     }
                     if edited.personShown != original?.personShown {
-                        fields[ExifToolWriteTag.personInImage] = edited.personShown.uniqued().joined(separator: ", ")
+                        fields[.personInImage] = edited.personShown.uniqued().joined(separator: ", ")
                     }
                     if edited.digitalSourceType != original?.digitalSourceType {
-                        fields[ExifToolWriteTag.digitalSourceType] = edited.digitalSourceType?.rawValue ?? ""
+                        fields[.digitalSourceType] = edited.digitalSourceType?.rawValue ?? ""
                     }
                     if edited.latitude != original?.latitude || edited.longitude != original?.longitude {
                         if let lat = edited.latitude, let lon = edited.longitude {
-                            fields[ExifToolWriteTag.gpsLatitude] = String(abs(lat))
-                            fields[ExifToolWriteTag.gpsLatitudeRef] = lat >= 0 ? "N" : "S"
-                            fields[ExifToolWriteTag.gpsLongitude] = String(abs(lon))
-                            fields[ExifToolWriteTag.gpsLongitudeRef] = lon >= 0 ? "E" : "W"
+                            fields[.gpsLatitude] = String(abs(lat))
+                            fields[.gpsLatitudeRef] = lat >= 0 ? "N" : "S"
+                            fields[.gpsLongitude] = String(abs(lon))
+                            fields[.gpsLongitudeRef] = lon >= 0 ? "E" : "W"
                         } else {
-                            fields[ExifToolWriteTag.gpsLatitude] = ""
-                            fields[ExifToolWriteTag.gpsLatitudeRef] = ""
-                            fields[ExifToolWriteTag.gpsLongitude] = ""
-                            fields[ExifToolWriteTag.gpsLongitudeRef] = ""
+                            fields[.gpsLatitude] = ""
+                            fields[.gpsLatitudeRef] = ""
+                            fields[.gpsLongitude] = ""
+                            fields[.gpsLongitudeRef] = ""
                         }
                     }
-                    if edited.creator != original?.creator { fields[ExifToolWriteTag.creator] = edited.creator ?? "" }
-                    if edited.credit != original?.credit { fields[ExifToolWriteTag.credit] = edited.credit ?? "" }
-                    if edited.copyright != original?.copyright { fields[ExifToolWriteTag.rights] = edited.copyright ?? "" }
+                    if edited.creator != original?.creator { fields[.creator] = edited.creator ?? "" }
+                    if edited.credit != original?.credit { fields[.credit] = edited.credit ?? "" }
+                    if edited.copyright != original?.copyright { fields[.rights] = edited.copyright ?? "" }
                     if edited.jobId != original?.jobId {
-                        fields[ExifToolWriteTag.transmissionReference] = edited.jobId ?? ""
+                        fields[.transmissionReference] = edited.jobId ?? ""
                     }
-                    if edited.dateCreated != original?.dateCreated { fields[ExifToolWriteTag.dateCreated] = edited.dateCreated ?? "" }
-                    if edited.city != original?.city { fields[ExifToolWriteTag.city] = edited.city ?? "" }
-                    if edited.country != original?.country { fields[ExifToolWriteTag.country] = edited.country ?? "" }
-                    if edited.event != original?.event { fields[ExifToolWriteTag.event] = edited.event ?? "" }
+                    if edited.dateCreated != original?.dateCreated { fields[.dateCreated] = edited.dateCreated ?? "" }
+                    if edited.city != original?.city { fields[.city] = edited.city ?? "" }
+                    if edited.country != original?.country { fields[.country] = edited.country ?? "" }
+                    if edited.event != original?.event { fields[.event] = edited.event ?? "" }
                 }
 
                 if !fields.isEmpty {
-                    try await exifToolService.writeFields(fields, to: urls)
+                    try await writeEngine.writeFields(fields, to: urls)
                 }
 
                 // Handle additive list fields via += / -=
                 if isBatch, let prev = prevEditing {
                     let diffs = additiveListDiffs(from: edited, previous: prev)
                     if !diffs.add.isEmpty || !diffs.remove.isEmpty {
-                        try await exifToolService.addRemoveListValues(
+                        try await writeEngine.addRemoveListValues(
                             add: diffs.add,
                             remove: diffs.remove,
                             to: urls
@@ -712,31 +714,31 @@ final class MetadataViewModel {
         return choice
     }
 
-    private func batchWriteFields(from metadata: IPTCMetadata) -> [String: String] {
-        var fields: [String: String] = [:]
-        if let v = metadata.title, !v.isEmpty { fields[ExifToolWriteTag.headline] = v }
-        if let v = metadata.description, !v.isEmpty { fields[ExifToolWriteTag.description] = v }
-        if let v = metadata.extendedDescription, !v.isEmpty { fields[ExifToolWriteTag.extendedDescription] = v }
+    private func batchWriteFields(from metadata: IPTCMetadata) -> [MetadataFieldKey: String] {
+        var fields: [MetadataFieldKey: String] = [:]
+        if let v = metadata.title, !v.isEmpty { fields[.headline] = v }
+        if let v = metadata.description, !v.isEmpty { fields[.description] = v }
+        if let v = metadata.extendedDescription, !v.isEmpty { fields[.extendedDescription] = v }
         if multiSelectMode(for: "keywords") == .overwrite, !metadata.keywords.isEmpty {
-            fields[ExifToolWriteTag.subject] = metadata.keywords.joined(separator: ", ")
+            fields[.subject] = metadata.keywords.joined(separator: ", ")
         }
         if multiSelectMode(for: "personShown") == .overwrite, !metadata.personShown.isEmpty {
-            fields[ExifToolWriteTag.personInImage] = metadata.personShown.joined(separator: ", ")
+            fields[.personInImage] = metadata.personShown.joined(separator: ", ")
         }
-        if let v = metadata.digitalSourceType { fields[ExifToolWriteTag.digitalSourceType] = v.rawValue }
-        if let v = metadata.creator, !v.isEmpty { fields[ExifToolWriteTag.creator] = v }
-        if let v = metadata.credit, !v.isEmpty { fields[ExifToolWriteTag.credit] = v }
-        if let v = metadata.copyright, !v.isEmpty { fields[ExifToolWriteTag.rights] = v }
-        if let v = metadata.jobId, !v.isEmpty { fields[ExifToolWriteTag.transmissionReference] = v }
-        if let v = metadata.dateCreated, !v.isEmpty { fields[ExifToolWriteTag.dateCreated] = v }
-        if let v = metadata.city, !v.isEmpty { fields[ExifToolWriteTag.city] = v }
-        if let v = metadata.country, !v.isEmpty { fields[ExifToolWriteTag.country] = v }
-        if let v = metadata.event, !v.isEmpty { fields[ExifToolWriteTag.event] = v }
+        if let v = metadata.digitalSourceType { fields[.digitalSourceType] = v.rawValue }
+        if let v = metadata.creator, !v.isEmpty { fields[.creator] = v }
+        if let v = metadata.credit, !v.isEmpty { fields[.credit] = v }
+        if let v = metadata.copyright, !v.isEmpty { fields[.rights] = v }
+        if let v = metadata.jobId, !v.isEmpty { fields[.transmissionReference] = v }
+        if let v = metadata.dateCreated, !v.isEmpty { fields[.dateCreated] = v }
+        if let v = metadata.city, !v.isEmpty { fields[.city] = v }
+        if let v = metadata.country, !v.isEmpty { fields[.country] = v }
+        if let v = metadata.event, !v.isEmpty { fields[.event] = v }
         if let lat = metadata.latitude, let lon = metadata.longitude {
-            fields[ExifToolWriteTag.gpsLatitude] = String(abs(lat))
-            fields[ExifToolWriteTag.gpsLatitudeRef] = lat >= 0 ? "N" : "S"
-            fields[ExifToolWriteTag.gpsLongitude] = String(abs(lon))
-            fields[ExifToolWriteTag.gpsLongitudeRef] = lon >= 0 ? "E" : "W"
+            fields[.gpsLatitude] = String(abs(lat))
+            fields[.gpsLatitudeRef] = lat >= 0 ? "N" : "S"
+            fields[.gpsLongitude] = String(abs(lon))
+            fields[.gpsLongitudeRef] = lon >= 0 ? "E" : "W"
         }
         appendCameraRawFields(from: metadata, into: &fields)
         return fields
@@ -746,22 +748,22 @@ final class MetadataViewModel {
     private func additiveListDiffs(
         from edited: IPTCMetadata,
         previous: IPTCMetadata
-    ) -> (add: [String: [String]], remove: [String: [String]]) {
-        var addTags: [String: [String]] = [:]
-        var removeTags: [String: [String]] = [:]
+    ) -> (add: [MetadataFieldKey: [String]], remove: [MetadataFieldKey: [String]]) {
+        var addTags: [MetadataFieldKey: [String]] = [:]
+        var removeTags: [MetadataFieldKey: [String]] = [:]
 
         if multiSelectMode(for: "keywords") == .add {
             let added = Array(Set(edited.keywords).subtracting(previous.keywords))
             let removed = Array(Set(previous.keywords).subtracting(edited.keywords))
-            if !added.isEmpty { addTags[ExifToolWriteTag.subject] = added }
-            if !removed.isEmpty { removeTags[ExifToolWriteTag.subject] = removed }
+            if !added.isEmpty { addTags[.subject] = added }
+            if !removed.isEmpty { removeTags[.subject] = removed }
         }
 
         if multiSelectMode(for: "personShown") == .add {
             let added = Array(Set(edited.personShown).subtracting(previous.personShown))
             let removed = Array(Set(previous.personShown).subtracting(edited.personShown))
-            if !added.isEmpty { addTags[ExifToolWriteTag.personInImage] = added }
-            if !removed.isEmpty { removeTags[ExifToolWriteTag.personInImage] = removed }
+            if !added.isEmpty { addTags[.personInImage] = added }
+            if !removed.isEmpty { removeTags[.personInImage] = removed }
         }
 
         return (addTags, removeTags)
@@ -874,16 +876,18 @@ final class MetadataViewModel {
 
                 let fields = batchWriteFields(from: edited)
                 if !nonRawEmbeddedTargets.isEmpty, !fields.isEmpty {
-                    let maskArgs = maskWriteArgs(from: edited)
-                    let tcArgs = toneCurveWriteArgs(from: edited)
-                    try await exifToolService.writeFields(fields, to: Array(nonRawEmbeddedTargets), extraArgs: maskArgs + tcArgs)
+                    let structuredData = StructuredWriteData(
+                        toneCurve: edited.cameraRaw?.toneCurve,
+                        masks: edited.cameraRaw?.localAdjustments
+                    )
+                    try await writeEngine.writeFields(fields, to: Array(nonRawEmbeddedTargets), structuredData: structuredData)
                 }
 
                 // Handle additive list fields for non-RAW embedded targets
                 if !nonRawEmbeddedTargets.isEmpty, let prev = prevCommon {
                     let diffs = additiveListDiffs(from: edited, previous: prev)
                     if !diffs.add.isEmpty || !diffs.remove.isEmpty {
-                        try await exifToolService.addRemoveListValues(
+                        try await writeEngine.addRemoveListValues(
                             add: diffs.add,
                             remove: diffs.remove,
                             to: Array(nonRawEmbeddedTargets)
@@ -1058,33 +1062,33 @@ final class MetadataViewModel {
         }
     }
 
-    private func overwriteFields(from metadata: IPTCMetadata) -> [String: String] {
-        var fields: [String: String] = [:]
-        fields[ExifToolWriteTag.headline] = metadata.title ?? ""
-        fields[ExifToolWriteTag.description] = metadata.description ?? ""
-        fields[ExifToolWriteTag.extendedDescription] = metadata.extendedDescription ?? ""
-        fields[ExifToolWriteTag.subject] = metadata.keywords.uniqued().joined(separator: ", ")
-        fields[ExifToolWriteTag.personInImage] = metadata.personShown.uniqued().joined(separator: ", ")
-        fields[ExifToolWriteTag.digitalSourceType] = metadata.digitalSourceType?.rawValue ?? ""
-        fields[ExifToolWriteTag.creator] = metadata.creator ?? ""
-        fields[ExifToolWriteTag.credit] = metadata.credit ?? ""
-        fields[ExifToolWriteTag.rights] = metadata.copyright ?? ""
-        fields[ExifToolWriteTag.transmissionReference] = metadata.jobId ?? ""
-        fields[ExifToolWriteTag.dateCreated] = metadata.dateCreated ?? ""
-        fields[ExifToolWriteTag.city] = metadata.city ?? ""
-        fields[ExifToolWriteTag.country] = metadata.country ?? ""
-        fields[ExifToolWriteTag.event] = metadata.event ?? ""
+    private func overwriteFields(from metadata: IPTCMetadata) -> [MetadataFieldKey: String] {
+        var fields: [MetadataFieldKey: String] = [:]
+        fields[.headline] = metadata.title ?? ""
+        fields[.description] = metadata.description ?? ""
+        fields[.extendedDescription] = metadata.extendedDescription ?? ""
+        fields[.subject] = metadata.keywords.uniqued().joined(separator: ", ")
+        fields[.personInImage] = metadata.personShown.uniqued().joined(separator: ", ")
+        fields[.digitalSourceType] = metadata.digitalSourceType?.rawValue ?? ""
+        fields[.creator] = metadata.creator ?? ""
+        fields[.credit] = metadata.credit ?? ""
+        fields[.rights] = metadata.copyright ?? ""
+        fields[.transmissionReference] = metadata.jobId ?? ""
+        fields[.dateCreated] = metadata.dateCreated ?? ""
+        fields[.city] = metadata.city ?? ""
+        fields[.country] = metadata.country ?? ""
+        fields[.event] = metadata.event ?? ""
 
         if let lat = metadata.latitude, let lon = metadata.longitude {
-            fields[ExifToolWriteTag.gpsLatitude] = String(abs(lat))
-            fields[ExifToolWriteTag.gpsLatitudeRef] = lat >= 0 ? "N" : "S"
-            fields[ExifToolWriteTag.gpsLongitude] = String(abs(lon))
-            fields[ExifToolWriteTag.gpsLongitudeRef] = lon >= 0 ? "E" : "W"
+            fields[.gpsLatitude] = String(abs(lat))
+            fields[.gpsLatitudeRef] = lat >= 0 ? "N" : "S"
+            fields[.gpsLongitude] = String(abs(lon))
+            fields[.gpsLongitudeRef] = lon >= 0 ? "E" : "W"
         } else {
-            fields[ExifToolWriteTag.gpsLatitude] = ""
-            fields[ExifToolWriteTag.gpsLatitudeRef] = ""
-            fields[ExifToolWriteTag.gpsLongitude] = ""
-            fields[ExifToolWriteTag.gpsLongitudeRef] = ""
+            fields[.gpsLatitude] = ""
+            fields[.gpsLatitudeRef] = ""
+            fields[.gpsLongitude] = ""
+            fields[.gpsLongitudeRef] = ""
         }
 
         appendCameraRawFields(from: metadata, into: &fields)
@@ -1100,7 +1104,7 @@ final class MetadataViewModel {
         )
     }
 
-    private func appendCameraRawFields(from metadata: IPTCMetadata, into fields: inout [String: String]) {
+    private func appendCameraRawFields(from metadata: IPTCMetadata, into fields: inout [MetadataFieldKey: String]) {
         // When cameraRaw is nil (edits fully reset), check if the original image had CRS
         // fields and clear them. Writing "" tells ExifTool to remove the field.
         guard let cameraRaw = metadata.cameraRaw else {
@@ -1112,242 +1116,95 @@ final class MetadataViewModel {
 
         // ACR requires Version and ProcessVersion to recognize settings.
         // ProcessVersion 15.4 corresponds to the 2012-era tags we write.
-        fields[ExifToolWriteTag.crsVersion] = cameraRaw.version ?? "15.4"
-        fields[ExifToolWriteTag.crsProcessVersion] = cameraRaw.processVersion ?? "15.4"
+        fields[.crsVersion] = cameraRaw.version ?? "15.4"
+        fields[.crsProcessVersion] = cameraRaw.processVersion ?? "15.4"
 
         // Write values when set, clear (empty string) when nil so old values
         // don't persist in the image after a partial reset.
-        fields[ExifToolWriteTag.crsWhiteBalance] = cameraRaw.whiteBalance ?? ""
-        fields[ExifToolWriteTag.crsTemperature] = cameraRaw.temperature.map(String.init) ?? ""
-        fields[ExifToolWriteTag.crsTint] = cameraRaw.tint.map(formatSignedInt) ?? ""
-        fields[ExifToolWriteTag.crsIncrementalTemperature] = cameraRaw.incrementalTemperature.map(formatSignedInt) ?? ""
-        fields[ExifToolWriteTag.crsIncrementalTint] = cameraRaw.incrementalTint.map(formatSignedInt) ?? ""
-        fields[ExifToolWriteTag.crsExposure2012] = cameraRaw.exposure2012.map { formatSignedDouble($0, precision: 2) } ?? ""
-        fields[ExifToolWriteTag.crsContrast2012] = cameraRaw.contrast2012.map(formatSignedInt) ?? ""
-        fields[ExifToolWriteTag.crsHighlights2012] = cameraRaw.highlights2012.map(formatSignedInt) ?? ""
-        fields[ExifToolWriteTag.crsShadows2012] = cameraRaw.shadows2012.map(formatSignedInt) ?? ""
-        fields[ExifToolWriteTag.crsWhites2012] = cameraRaw.whites2012.map(formatSignedInt) ?? ""
-        fields[ExifToolWriteTag.crsBlacks2012] = cameraRaw.blacks2012.map(formatSignedInt) ?? ""
-        fields[ExifToolWriteTag.crsSaturation] = cameraRaw.saturation.map(formatSignedInt) ?? ""
-        fields[ExifToolWriteTag.crsVibrance] = cameraRaw.vibrance.map(formatSignedInt) ?? ""
+        fields[.crsWhiteBalance] = cameraRaw.whiteBalance ?? ""
+        fields[.crsTemperature] = cameraRaw.temperature.map(String.init) ?? ""
+        fields[.crsTint] = cameraRaw.tint.map(formatSignedInt) ?? ""
+        fields[.crsIncrementalTemperature] = cameraRaw.incrementalTemperature.map(formatSignedInt) ?? ""
+        fields[.crsIncrementalTint] = cameraRaw.incrementalTint.map(formatSignedInt) ?? ""
+        fields[.crsExposure2012] = cameraRaw.exposure2012.map { formatSignedDouble($0, precision: 2) } ?? ""
+        fields[.crsContrast2012] = cameraRaw.contrast2012.map(formatSignedInt) ?? ""
+        fields[.crsHighlights2012] = cameraRaw.highlights2012.map(formatSignedInt) ?? ""
+        fields[.crsShadows2012] = cameraRaw.shadows2012.map(formatSignedInt) ?? ""
+        fields[.crsWhites2012] = cameraRaw.whites2012.map(formatSignedInt) ?? ""
+        fields[.crsBlacks2012] = cameraRaw.blacks2012.map(formatSignedInt) ?? ""
+        fields[.crsSaturation] = cameraRaw.saturation.map(formatSignedInt) ?? ""
+        fields[.crsVibrance] = cameraRaw.vibrance.map(formatSignedInt) ?? ""
 
         let hasSettings = cameraRaw.hasSettings ?? !cameraRaw.isEmpty
-        fields[ExifToolWriteTag.crsHasSettings] = hasSettings ? "True" : "False"
+        fields[.crsHasSettings] = hasSettings ? "True" : "False"
 
         if let crop = cameraRaw.crop {
-            fields[ExifToolWriteTag.crsCropTop] = crop.top.map { String(format: "%.6f", $0) } ?? ""
-            fields[ExifToolWriteTag.crsCropLeft] = crop.left.map { String(format: "%.6f", $0) } ?? ""
-            fields[ExifToolWriteTag.crsCropBottom] = crop.bottom.map { String(format: "%.6f", $0) } ?? ""
-            fields[ExifToolWriteTag.crsCropRight] = crop.right.map { String(format: "%.6f", $0) } ?? ""
-            fields[ExifToolWriteTag.crsCropAngle] = crop.angle.map { String(format: "%.6f", $0) } ?? ""
+            fields[.crsCropTop] = crop.top.map { String(format: "%.6f", $0) } ?? ""
+            fields[.crsCropLeft] = crop.left.map { String(format: "%.6f", $0) } ?? ""
+            fields[.crsCropBottom] = crop.bottom.map { String(format: "%.6f", $0) } ?? ""
+            fields[.crsCropRight] = crop.right.map { String(format: "%.6f", $0) } ?? ""
+            fields[.crsCropAngle] = crop.angle.map { String(format: "%.6f", $0) } ?? ""
             let hasCrop = crop.hasCrop ?? !crop.isEmpty
-            fields[ExifToolWriteTag.crsHasCrop] = hasCrop ? "True" : "False"
-            fields[ExifToolWriteTag.crsCropConstrainToWarp] = "0"
-            fields[ExifToolWriteTag.crsCropConstrainToUnitSquare] = "1"
+            fields[.crsHasCrop] = hasCrop ? "True" : "False"
+            fields[.crsCropConstrainToWarp] = "0"
+            fields[.crsCropConstrainToUnitSquare] = "1"
         } else {
-            fields[ExifToolWriteTag.crsCropTop] = ""
-            fields[ExifToolWriteTag.crsCropLeft] = ""
-            fields[ExifToolWriteTag.crsCropBottom] = ""
-            fields[ExifToolWriteTag.crsCropRight] = ""
-            fields[ExifToolWriteTag.crsCropAngle] = ""
-            fields[ExifToolWriteTag.crsHasCrop] = "False"
-            fields[ExifToolWriteTag.crsCropConstrainToWarp] = ""
-            fields[ExifToolWriteTag.crsCropConstrainToUnitSquare] = ""
+            fields[.crsCropTop] = ""
+            fields[.crsCropLeft] = ""
+            fields[.crsCropBottom] = ""
+            fields[.crsCropRight] = ""
+            fields[.crsCropAngle] = ""
+            fields[.crsHasCrop] = "False"
+            fields[.crsCropConstrainToWarp] = ""
+            fields[.crsCropConstrainToUnitSquare] = ""
         }
 
-        fields[ExifToolWriteTag.crsHDREditMode] = cameraRaw.hdrEditMode.map(String.init) ?? ""
-        fields[ExifToolWriteTag.crsHDRMaxValue] = cameraRaw.hdrMaxValue ?? ""
-        fields[ExifToolWriteTag.crsSDRBrightness] = cameraRaw.sdrBrightness.map(formatSignedInt) ?? ""
-        fields[ExifToolWriteTag.crsSDRContrast] = cameraRaw.sdrContrast.map(formatSignedInt) ?? ""
-        fields[ExifToolWriteTag.crsSDRClarity] = cameraRaw.sdrClarity.map(formatSignedInt) ?? ""
-        fields[ExifToolWriteTag.crsSDRHighlights] = cameraRaw.sdrHighlights.map(formatSignedInt) ?? ""
-        fields[ExifToolWriteTag.crsSDRShadows] = cameraRaw.sdrShadows.map(formatSignedInt) ?? ""
-        fields[ExifToolWriteTag.crsSDRWhites] = cameraRaw.sdrWhites.map(formatSignedInt) ?? ""
-        fields[ExifToolWriteTag.crsSDRBlend] = cameraRaw.sdrBlend.map(formatSignedInt) ?? ""
+        fields[.crsHDREditMode] = cameraRaw.hdrEditMode.map(String.init) ?? ""
+        fields[.crsHDRMaxValue] = cameraRaw.hdrMaxValue ?? ""
+        fields[.crsSDRBrightness] = cameraRaw.sdrBrightness.map(formatSignedInt) ?? ""
+        fields[.crsSDRContrast] = cameraRaw.sdrContrast.map(formatSignedInt) ?? ""
+        fields[.crsSDRClarity] = cameraRaw.sdrClarity.map(formatSignedInt) ?? ""
+        fields[.crsSDRHighlights] = cameraRaw.sdrHighlights.map(formatSignedInt) ?? ""
+        fields[.crsSDRShadows] = cameraRaw.sdrShadows.map(formatSignedInt) ?? ""
+        fields[.crsSDRWhites] = cameraRaw.sdrWhites.map(formatSignedInt) ?? ""
+        fields[.crsSDRBlend] = cameraRaw.sdrBlend.map(formatSignedInt) ?? ""
     }
 
-    private func clearAllCameraRawFields(into fields: inout [String: String]) {
-        fields[ExifToolWriteTag.crsVersion] = ""
-        fields[ExifToolWriteTag.crsProcessVersion] = ""
-        fields[ExifToolWriteTag.crsWhiteBalance] = ""
-        fields[ExifToolWriteTag.crsTemperature] = ""
-        fields[ExifToolWriteTag.crsTint] = ""
-        fields[ExifToolWriteTag.crsIncrementalTemperature] = ""
-        fields[ExifToolWriteTag.crsIncrementalTint] = ""
-        fields[ExifToolWriteTag.crsExposure2012] = ""
-        fields[ExifToolWriteTag.crsContrast2012] = ""
-        fields[ExifToolWriteTag.crsHighlights2012] = ""
-        fields[ExifToolWriteTag.crsShadows2012] = ""
-        fields[ExifToolWriteTag.crsWhites2012] = ""
-        fields[ExifToolWriteTag.crsBlacks2012] = ""
-        fields[ExifToolWriteTag.crsSaturation] = ""
-        fields[ExifToolWriteTag.crsVibrance] = ""
-        fields[ExifToolWriteTag.crsHasSettings] = "False"
-        fields[ExifToolWriteTag.crsCropTop] = ""
-        fields[ExifToolWriteTag.crsCropLeft] = ""
-        fields[ExifToolWriteTag.crsCropBottom] = ""
-        fields[ExifToolWriteTag.crsCropRight] = ""
-        fields[ExifToolWriteTag.crsCropAngle] = ""
-        fields[ExifToolWriteTag.crsHasCrop] = ""
-        fields[ExifToolWriteTag.crsCropConstrainToWarp] = ""
-        fields[ExifToolWriteTag.crsCropConstrainToUnitSquare] = ""
-        fields[ExifToolWriteTag.crsHDREditMode] = ""
-        fields[ExifToolWriteTag.crsHDRMaxValue] = ""
-        fields[ExifToolWriteTag.crsSDRBrightness] = ""
-        fields[ExifToolWriteTag.crsSDRContrast] = ""
-        fields[ExifToolWriteTag.crsSDRClarity] = ""
-        fields[ExifToolWriteTag.crsSDRHighlights] = ""
-        fields[ExifToolWriteTag.crsSDRShadows] = ""
-        fields[ExifToolWriteTag.crsSDRWhites] = ""
-        fields[ExifToolWriteTag.crsSDRBlend] = ""
-        fields[ExifToolWriteTag.crsToneCurveName2012] = ""
-    }
-
-    /// Generate ExifTool args for writing mask data as ACR-compatible MaskGroupBasedCorrections.
-    /// Uses ExifTool's `-struct` flag and `{key=value}` syntax for structured XMP.
-    /// Includes all fields ACR expects: SyncIDs, legacy fields, and zero-value defaults.
-    /// Number formatting matches ACR's style: integers for whole numbers, minimal decimals otherwise.
-    private func maskWriteArgs(from metadata: IPTCMetadata) -> [String] {
-        let masks = metadata.cameraRaw?.localAdjustments?.filter(\.enabled) ?? []
-
-        // Always clear existing masks first (empty value removes the tag)
-        var args = ["-struct", "-\(ExifToolWriteTag.crsMaskGroupBasedCorrections)="]
-
-        guard !masks.isEmpty else { return args }
-
-        for (index, mask) in masks.enumerated() {
-            let geo = mask.geometry
-            let top = geo.centerY - geo.radiusY
-            let left = geo.centerX - geo.radiusX
-            let bottom = geo.centerY + geo.radiusY
-            let right = geo.centerX + geo.radiusX
-
-            // ACR uses uppercase hex UUIDs without dashes for SyncIDs
-            let corrSyncID = mask.id.uuidString.replacingOccurrences(of: "-", with: "")
-            let maskSyncID = UUID().uuidString.replacingOccurrences(of: "-", with: "")
-
-            // Build the CorrectionMasks sub-struct (ellipse geometry)
-            let maskStruct = [
-                "What=Mask/CircularGradient",
-                "Top=\(acrNum(top))",
-                "Left=\(acrNum(left))",
-                "Bottom=\(acrNum(bottom))",
-                "Right=\(acrNum(right))",
-                "Angle=\(acrNum(geo.rotation))",
-                "Feather=\(acrNum(geo.feather))",
-                "Midpoint=50",
-                "Roundness=0",
-                "Flipped=\(!mask.inverted ? "true" : "false")",
-                "MaskActive=true",
-                "MaskBlendMode=0",
-                "MaskInverted=false",
-                "MaskName=Radial Gradient \(index + 1)",
-                "MaskSyncID=\(maskSyncID)",
-                "MaskValue=1",
-                "Version=2",
-            ].joined(separator: ",")
-
-            // ACR stores all local adjustments as fractions of their full range (-1..+1).
-            // Exposure: -4..+4 EV → XMP -1..+1 (divide by 4).
-            // Others: -100..+100 → XMP -1..+1 (divide by 100).
-            let exp = (mask.exposure ?? 0) / 4.0
-            let con = Double(mask.contrast ?? 0) / 100.0
-            let hi = Double(mask.highlights ?? 0) / 100.0
-            let sh = Double(mask.shadows ?? 0) / 100.0
-            let wh = Double(mask.whites ?? 0) / 100.0
-            let bl = Double(mask.blacks ?? 0) / 100.0
-            let sat = Double(mask.saturation ?? 0) / 100.0
-            let vib = Double(mask.vibrance ?? 0) / 100.0
-            let temp = (mask.temperature ?? 0) / 100.0
-            let tint = (mask.tint ?? 0) / 100.0
-
-            // Build the correction-level struct — include ALL fields ACR expects
-            let corrParts = [
-                "CorrectionActive=true",
-                "CorrectionAmount=\(acrNum(mask.amount))",
-                "CorrectionName=\(mask.name)",
-                "CorrectionSyncID=\(corrSyncID)",
-                "What=Correction",
-                "CorrectionMasks={\(maskStruct)}",
-                // 2012-era adjustments (primary)
-                "LocalExposure2012=\(acrNum(exp))",
-                "LocalContrast2012=\(acrNum(con))",
-                "LocalHighlights2012=\(acrNum(hi))",
-                "LocalShadows2012=\(acrNum(sh))",
-                "LocalWhites2012=\(acrNum(wh))",
-                "LocalBlacks2012=\(acrNum(bl))",
-                "LocalSaturation=\(acrNum(sat))",
-                "LocalVibrance=\(acrNum(vib))",
-                "LocalTemperature=\(acrNum(temp))",
-                "LocalTint=\(acrNum(tint))",
-                // Legacy fields (required by ACR, always 0)
-                "LocalExposure=0",
-                "LocalContrast=0",
-                "LocalBrightness=0",
-                "LocalClarity=0",
-                "LocalClarity2012=0",
-                "LocalSharpness=0",
-                "LocalLuminanceNoise=0",
-                "LocalMoire=0",
-                "LocalDefringe=0",
-                "LocalDehaze=0",
-                "LocalTexture=0",
-                "LocalHue=0",
-                "LocalToningHue=0",
-                "LocalToningSaturation=0",
-            ]
-
-            args.append("-\(ExifToolWriteTag.crsMaskGroupBasedCorrections)={\(corrParts.joined(separator: ","))}")
-        }
-
-        return args
-    }
-
-    /// Format a number in ACR's style: integers for whole numbers, minimal trailing decimals otherwise.
-    /// ACR writes `0`, `1`, `-1`, `100` for integers and `0.075`, `-0.8125` for fractional values.
-    private func acrNum(_ value: Double) -> String {
-        if value == value.rounded(.toNearestOrEven) && abs(value) < 1_000_000 {
-            return String(Int(value))
-        }
-        // Use enough precision to preserve the value, strip trailing zeros
-        var s = String(format: "%.6f", value)
-        while s.hasSuffix("0") { s.removeLast() }
-        if s.hasSuffix(".") { s.removeLast() }
-        return s
-    }
-
-    /// Generate ExifTool args for writing tone curve data as ACR-compatible ToneCurvePV2012 lists.
-    /// Overrides `-sep` to semicolon so commas inside "x, y" point strings aren't split.
-    private func toneCurveWriteArgs(from metadata: IPTCMetadata) -> [String] {
-        let tc = metadata.cameraRaw?.toneCurve
-
-        // Always clear existing tone curve tags first
-        var args = [
-            "-\(ExifToolWriteTag.crsToneCurvePV2012)=",
-            "-\(ExifToolWriteTag.crsToneCurvePV2012Red)=",
-            "-\(ExifToolWriteTag.crsToneCurvePV2012Green)=",
-            "-\(ExifToolWriteTag.crsToneCurvePV2012Blue)=",
-            "-\(ExifToolWriteTag.crsToneCurveName2012)=",
-        ]
-
-        guard let tc, !(tc.isEmpty) else { return args }
-
-        // Override separator so commas in "x, y" point strings aren't treated as list delimiters
-        args.append(contentsOf: ["-sep", ";"])
-
-        func formatChannel(_ tag: String, _ points: [ToneCurvePoint]?) {
-            guard let points, points.count > 2 else { return }
-            let joined = points.map { "\(Int(round($0.x * 255))), \(Int(round($0.y * 255)))" }.joined(separator: ";")
-            args.append("-\(tag)=\(joined)")
-        }
-
-        formatChannel(ExifToolWriteTag.crsToneCurvePV2012, tc.master)
-        formatChannel(ExifToolWriteTag.crsToneCurvePV2012Red, tc.red)
-        formatChannel(ExifToolWriteTag.crsToneCurvePV2012Green, tc.green)
-        formatChannel(ExifToolWriteTag.crsToneCurvePV2012Blue, tc.blue)
-        args.append("-\(ExifToolWriteTag.crsToneCurveName2012)=Custom")
-
-        return args
+    private func clearAllCameraRawFields(into fields: inout [MetadataFieldKey: String]) {
+        fields[.crsVersion] = ""
+        fields[.crsProcessVersion] = ""
+        fields[.crsWhiteBalance] = ""
+        fields[.crsTemperature] = ""
+        fields[.crsTint] = ""
+        fields[.crsIncrementalTemperature] = ""
+        fields[.crsIncrementalTint] = ""
+        fields[.crsExposure2012] = ""
+        fields[.crsContrast2012] = ""
+        fields[.crsHighlights2012] = ""
+        fields[.crsShadows2012] = ""
+        fields[.crsWhites2012] = ""
+        fields[.crsBlacks2012] = ""
+        fields[.crsSaturation] = ""
+        fields[.crsVibrance] = ""
+        fields[.crsHasSettings] = "False"
+        fields[.crsCropTop] = ""
+        fields[.crsCropLeft] = ""
+        fields[.crsCropBottom] = ""
+        fields[.crsCropRight] = ""
+        fields[.crsCropAngle] = ""
+        fields[.crsHasCrop] = ""
+        fields[.crsCropConstrainToWarp] = ""
+        fields[.crsCropConstrainToUnitSquare] = ""
+        fields[.crsHDREditMode] = ""
+        fields[.crsHDRMaxValue] = ""
+        fields[.crsSDRBrightness] = ""
+        fields[.crsSDRContrast] = ""
+        fields[.crsSDRClarity] = ""
+        fields[.crsSDRHighlights] = ""
+        fields[.crsSDRShadows] = ""
+        fields[.crsSDRWhites] = ""
+        fields[.crsSDRBlend] = ""
+        fields[.crsToneCurveName2012] = ""
     }
 
     private func formatSignedInt(_ value: Int) -> String {
@@ -1382,9 +1239,11 @@ final class MetadataViewModel {
         writeTask = Task {
             do {
                 let fields = overwriteFields(from: edited)
-                let maskArgs = maskWriteArgs(from: edited)
-                let tcArgs = toneCurveWriteArgs(from: edited)
-                try await exifToolService.writeFields(fields, to: [imageURL], extraArgs: maskArgs + tcArgs)
+                let structuredData = StructuredWriteData(
+                    toneCurve: edited.cameraRaw?.toneCurve,
+                    masks: edited.cameraRaw?.localAdjustments
+                )
+                try await writeEngine.writeFields(fields, to: [imageURL], structuredData: structuredData)
                 self.syncCameraRawToXMPSidecar(for: imageURL, metadata: edited)
 
                 let now = Date()
@@ -1439,9 +1298,11 @@ final class MetadataViewModel {
         writeTask = Task {
             do {
                 let fields = overwriteFields(from: edited)
-                let maskArgs = maskWriteArgs(from: edited)
-                let tcArgs = toneCurveWriteArgs(from: edited)
-                try await exifToolService.writeFields(fields, to: [imageURL], extraArgs: maskArgs + tcArgs)
+                let structuredData = StructuredWriteData(
+                    toneCurve: edited.cameraRaw?.toneCurve,
+                    masks: edited.cameraRaw?.localAdjustments
+                )
+                try await writeEngine.writeFields(fields, to: [imageURL], structuredData: structuredData)
                 self.syncCameraRawToXMPSidecar(for: imageURL, metadata: edited)
 
                 try? sidecarService.deleteSidecar(for: imageURL, in: folderURL)
@@ -1603,22 +1464,22 @@ final class MetadataViewModel {
         }
 
         // Build changed-fields dictionary for file write paths
-        var fields: [String: String] = [:]
-        if resolved.title != original.title { fields[ExifToolWriteTag.headline] = resolved.title ?? "" }
-        if resolved.description != original.description { fields[ExifToolWriteTag.description] = resolved.description ?? "" }
+        var fields: [MetadataFieldKey: String] = [:]
+        if resolved.title != original.title { fields[.headline] = resolved.title ?? "" }
+        if resolved.description != original.description { fields[.description] = resolved.description ?? "" }
         if resolved.extendedDescription != original.extendedDescription {
-            fields[ExifToolWriteTag.extendedDescription] = resolved.extendedDescription ?? ""
+            fields[.extendedDescription] = resolved.extendedDescription ?? ""
         }
-        if resolved.creator != original.creator { fields[ExifToolWriteTag.creator] = resolved.creator ?? "" }
-        if resolved.credit != original.credit { fields[ExifToolWriteTag.credit] = resolved.credit ?? "" }
-        if resolved.copyright != original.copyright { fields[ExifToolWriteTag.rights] = resolved.copyright ?? "" }
+        if resolved.creator != original.creator { fields[.creator] = resolved.creator ?? "" }
+        if resolved.credit != original.credit { fields[.credit] = resolved.credit ?? "" }
+        if resolved.copyright != original.copyright { fields[.rights] = resolved.copyright ?? "" }
         if resolved.jobId != original.jobId {
-            fields[ExifToolWriteTag.transmissionReference] = resolved.jobId ?? ""
+            fields[.transmissionReference] = resolved.jobId ?? ""
         }
-        if resolved.dateCreated != original.dateCreated { fields[ExifToolWriteTag.dateCreated] = resolved.dateCreated ?? "" }
-        if resolved.city != original.city { fields[ExifToolWriteTag.city] = resolved.city ?? "" }
-        if resolved.country != original.country { fields[ExifToolWriteTag.country] = resolved.country ?? "" }
-        if resolved.event != original.event { fields[ExifToolWriteTag.event] = resolved.event ?? "" }
+        if resolved.dateCreated != original.dateCreated { fields[.dateCreated] = resolved.dateCreated ?? "" }
+        if resolved.city != original.city { fields[.city] = resolved.city ?? "" }
+        if resolved.country != original.country { fields[.country] = resolved.country ?? "" }
+        if resolved.event != original.event { fields[.event] = resolved.event ?? "" }
 
         // Build JSON sidecar with history entry
         func buildSidecar(pendingChanges: Bool, historyNote: String) -> MetadataSidecar {
@@ -1663,14 +1524,14 @@ final class MetadataViewModel {
                     return .savedToHistory
                 case .embeddedWrite:
                     if !fields.isEmpty {
-                        try await exifToolService.writeFields(fields, to: [url])
+                        try await writeEngine.writeFields(fields, to: [url])
                     }
                     let sidecar = buildSidecar(pendingChanges: false, historyNote: "Written to image file (PM strict embedded)")
                     try sidecarService.saveSidecar(sidecar, for: url, in: folder)
                     return .writtenToFile
                 case .syncRawJpegPair:
                     if !fields.isEmpty {
-                        try await exifToolService.writeFields(fields, to: [url])
+                        try await writeEngine.writeFields(fields, to: [url])
                     }
                     // Write XMP sidecar for RAW sibling if found
                     if let pair = SupportedImageFormats.preferredRawSibling(for: url) {
@@ -1699,7 +1560,7 @@ final class MetadataViewModel {
             }
 
             if !fields.isEmpty {
-                try await exifToolService.writeFields(fields, to: [url])
+                try await writeEngine.writeFields(fields, to: [url])
             }
             let sidecar = buildSidecar(pendingChanges: false, historyNote: "Written to image file")
             try sidecarService.saveSidecar(sidecar, for: url, in: folder)
@@ -2000,12 +1861,12 @@ final class MetadataViewModel {
 
                     let result = try await geocodingService.reverseGeocode(latitude: lat, longitude: lon)
 
-                    var fields: [String: String] = [:]
-                    if let city = result.city { fields[ExifToolWriteTag.city] = city }
-                    if let country = result.country { fields[ExifToolWriteTag.country] = country }
+                    var fields: [MetadataFieldKey: String] = [:]
+                    if let city = result.city { fields[.city] = city }
+                    if let country = result.country { fields[.country] = country }
 
                     if !fields.isEmpty {
-                        try await exifToolService.writeFields(fields, to: [url])
+                        try await writeEngine.writeFields(fields, to: [url])
                         geocoded += 1
                     }
 
@@ -2288,9 +2149,11 @@ final class MetadataViewModel {
             do {
                 let edited = editingMetadata
                 let fields = overwriteFields(from: edited)
-                let maskArgs = maskWriteArgs(from: edited)
-                let tcArgs = toneCurveWriteArgs(from: edited)
-                try await exifToolService.writeFields(fields, to: [imageURL], extraArgs: maskArgs + tcArgs)
+                let structuredData = StructuredWriteData(
+                    toneCurve: edited.cameraRaw?.toneCurve,
+                    masks: edited.cameraRaw?.localAdjustments
+                )
+                try await writeEngine.writeFields(fields, to: [imageURL], structuredData: structuredData)
 
                 do {
                     try sidecarService.deleteSidecar(for: imageURL, in: folderURL)
@@ -2348,11 +2211,13 @@ final class MetadataViewModel {
 
                 let edited = sidecar.metadata
                 let fields = overwriteFields(from: edited)
-                let maskArgs = maskWriteArgs(from: edited)
-                let tcArgs = toneCurveWriteArgs(from: edited)
+                let structuredData = StructuredWriteData(
+                    toneCurve: edited.cameraRaw?.toneCurve,
+                    masks: edited.cameraRaw?.localAdjustments
+                )
 
                 do {
-                    try await exifToolService.writeFields(fields, to: [imageURL], extraArgs: maskArgs + tcArgs)
+                    try await writeEngine.writeFields(fields, to: [imageURL], structuredData: structuredData)
                     do {
                         try sidecarService.deleteSidecar(for: imageURL, in: folderURL)
                     } catch {

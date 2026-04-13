@@ -13,7 +13,7 @@ enum MainViewMode {
     case peopleDatabase    // Known People database view
 }
 
-private actor MetadataFailureTracker: Sendable {
+actor MetadataFailureTracker: Sendable {
     private(set) var metadataCopyFailures: [String] = []
     private(set) var sidecarOverlayFailures: [String] = []
     func recordCopyFailure(_ filename: String) { metadataCopyFailures.append(filename) }
@@ -63,14 +63,14 @@ struct ContentView: View {
 
     init() {
         let browser = BrowserViewModel()
-        let faceRecognition = FaceRecognitionViewModel(exifToolService: browser.exifToolService)
+        let faceRecognition = FaceRecognitionViewModel(exifToolService: browser.exifToolService, writeEngine: browser.writeEngine)
         browser.onImagesDeleted = { [weak faceRecognition] urls in
             faceRecognition?.deleteFaces(forImageURLs: urls)
         }
         _browserViewModel = State(initialValue: browser)
-        _metadataViewModel = State(initialValue: MetadataViewModel(exifToolService: browser.exifToolService))
+        _metadataViewModel = State(initialValue: MetadataViewModel(exifToolService: browser.exifToolService, writeEngine: browser.writeEngine))
         _faceRecognitionViewModel = State(initialValue: faceRecognition)
-        _importViewModel = State(initialValue: ImportViewModel(exifToolService: browser.exifToolService))
+        _importViewModel = State(initialValue: ImportViewModel(exifToolService: browser.exifToolService, writeEngine: browser.writeEngine))
     }
 
     var body: some View {
@@ -102,6 +102,7 @@ struct ContentView: View {
                     viewModel: ftpViewModel,
                     files: item.urls,
                     exifToolService: browserViewModel.exifToolService,
+                    writeEngine: browserViewModel.writeEngine,
                     onStartUpload: { ftpUploadItem = nil }
                 )
             }
@@ -1232,19 +1233,19 @@ struct ContentView: View {
         // Prefer XMP sidecar IPTC (default write mode for C2PA files)
         let xmpService = XMPSidecarService()
         if let xmpMeta = xmpService.loadSidecar(for: sourceURL) {
-            var fields = xmpMeta.toExifToolFields()
-            // Rating and label are excluded from toExifToolFields() (managed separately
+            var fields = xmpMeta.toWriteFields()
+            // Rating and label are excluded from toWriteFields() (managed separately
             // in normal flow). For rendered output we must include them because the source
             // file may be C2PA-protected and hold stale values.
             if let rating = xmpMeta.rating {
-                fields[ExifToolWriteTag.rating] = String(rating)
+                fields[.rating] = String(rating)
             }
             if let label = xmpMeta.label, !label.isEmpty {
-                fields[ExifToolWriteTag.label] = label
+                fields[.label] = label
             }
             if !fields.isEmpty {
                 do {
-                    try await browserViewModel.exifToolService.writeFields(fields, to: [renderedURL])
+                    try await browserViewModel.writeEngine.writeFields(fields, to: [renderedURL])
                     return true
                 } catch {
                     return false
@@ -1257,17 +1258,17 @@ struct ContentView: View {
         guard let sidecar = sidecarService.loadSidecar(for: sourceURL, in: folderURL),
               sidecar.pendingChanges else { return true }
 
-        var fields = sidecar.metadata.toExifToolFields()
+        var fields = sidecar.metadata.toWriteFields()
         if let rating = sidecar.metadata.rating {
-            fields[ExifToolWriteTag.rating] = String(rating)
+            fields[.rating] = String(rating)
         }
         if let label = sidecar.metadata.label, !label.isEmpty {
-            fields[ExifToolWriteTag.label] = label
+            fields[.label] = label
         }
         guard !fields.isEmpty else { return true }
 
         do {
-            try await browserViewModel.exifToolService.writeFields(fields, to: [renderedURL])
+            try await browserViewModel.writeEngine.writeFields(fields, to: [renderedURL])
             return true
         } catch {
             return false
@@ -1317,7 +1318,7 @@ struct ContentView: View {
 
         guard let folderURL = browserViewModel.currentFolderURL else { return }
 
-        let fields = copied.toExifToolFields()
+        let fields = copied.toWriteFields()
         guard !fields.isEmpty else { return }
 
         let c2paImages = selected.filter { $0.hasC2PA }
@@ -1328,7 +1329,7 @@ struct ContentView: View {
             if !normalImages.isEmpty {
                 let normalURLs = normalImages.map(\.url)
                 do {
-                    try await browserViewModel.exifToolService.writeFields(fields, to: normalURLs)
+                    try await browserViewModel.writeEngine.writeFields(fields, to: normalURLs)
                 } catch {
                     browserViewModel.errorMessage = "Failed to paste IPTC: \(error.localizedDescription)"
                 }

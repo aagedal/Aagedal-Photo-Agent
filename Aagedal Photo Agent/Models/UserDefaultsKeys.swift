@@ -15,7 +15,8 @@ nonisolated enum UserDefaultsKeys {
     static let updateLatestVersion = "updateLatestVersion"
     static let updateAvailable = "updateAvailable"
 
-    // MARK: - Metadata Write Mode
+    // MARK: - Metadata Write Engine & Mode
+    static let metadataWriteEngine = "metadataWriteEngine"
     static let metadataWriteMode = "metadataWriteMode"
     static let metadataWriteModeNonC2PA = "metadataWriteModeNonC2PA"
     static let metadataWriteModeC2PA = "metadataWriteModeC2PA"

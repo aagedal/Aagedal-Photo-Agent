@@ -561,6 +561,19 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("Write Engine") {
+                Picker("Engine", selection: $settingsViewModel.metadataWriteEngine) {
+                    ForEach(MetadataWriteEngineChoice.allCases, id: \.self) { engine in
+                        Text(engine.displayName).tag(engine)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Text(settingsViewModel.metadataWriteEngine.description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Write Behavior") {
                 Picker("Non-C2PA Images", selection: $settingsViewModel.metadataWriteModeNonC2PA) {
                     ForEach(MetadataWriteMode.allCases) { mode in

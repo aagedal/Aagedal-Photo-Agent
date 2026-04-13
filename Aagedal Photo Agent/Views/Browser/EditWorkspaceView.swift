@@ -2881,14 +2881,22 @@ struct EditWorkspaceView: View {
             do {
                 let outputFolder = selectedImageURL.deletingLastPathComponent().appendingPathComponent("Edited", isDirectory: true)
                 try FileManager.default.createDirectory(at: outputFolder, withIntermediateDirectories: true)
-                let exifTool = browserViewModel.exifToolService
+                let engine = browserViewModel.writeEngine
+                let failureTracker = MetadataFailureTracker()
                 let copier: EditedImageRenderer.MetadataCopier = { src, dst in
-                    try? await exifTool.copyMetadataToRenderedFile(from: src, to: dst)
+                    do {
+                        try await engine.copyMetadataToRenderedFile(from: src, to: dst)
+                    } catch {
+                        await failureTracker.recordCopyFailure(src.lastPathComponent)
+                    }
                 }
                 let outputURL = try await Task.detached(priority: .userInitiated) {
                     try await EditedImageRenderer.render(from: selectedImageURL, cameraRaw: settings, isHDR: hdr, outputFolder: outputFolder, metadataCopier: copier)
                 }.value
                 browserViewModel.thumbnailService.invalidateThumbnail(for: outputURL)
+                if await !failureTracker.metadataCopyFailures.isEmpty {
+                    saveError = "Image saved but metadata copy failed — IPTC data may be missing"
+                }
             } catch {
                 saveError = "Failed to save image: \(error.localizedDescription)"
             }
@@ -2955,34 +2963,34 @@ struct EditWorkspaceView: View {
         // Write camera raw settings to XMP in the image files
         let targetURLs = Array(urls)
         Task {
-            var fields: [String: String] = [:]
-            fields[ExifToolWriteTag.crsVersion] = cameraRaw.version ?? "15.4"
-            fields[ExifToolWriteTag.crsProcessVersion] = cameraRaw.processVersion ?? "15.4"
-            fields[ExifToolWriteTag.crsWhiteBalance] = cameraRaw.whiteBalance ?? ""
-            fields[ExifToolWriteTag.crsTemperature] = cameraRaw.temperature.map(String.init) ?? ""
-            fields[ExifToolWriteTag.crsTint] = cameraRaw.tint.map(String.init) ?? ""
-            fields[ExifToolWriteTag.crsIncrementalTemperature] = cameraRaw.incrementalTemperature.map(String.init) ?? ""
-            fields[ExifToolWriteTag.crsIncrementalTint] = cameraRaw.incrementalTint.map(String.init) ?? ""
-            fields[ExifToolWriteTag.crsExposure2012] = cameraRaw.exposure2012.map { String(format: "%.2f", $0) } ?? ""
-            fields[ExifToolWriteTag.crsContrast2012] = cameraRaw.contrast2012.map(String.init) ?? ""
-            fields[ExifToolWriteTag.crsHighlights2012] = cameraRaw.highlights2012.map(String.init) ?? ""
-            fields[ExifToolWriteTag.crsShadows2012] = cameraRaw.shadows2012.map(String.init) ?? ""
-            fields[ExifToolWriteTag.crsWhites2012] = cameraRaw.whites2012.map(String.init) ?? ""
-            fields[ExifToolWriteTag.crsBlacks2012] = cameraRaw.blacks2012.map(String.init) ?? ""
-            fields[ExifToolWriteTag.crsSaturation] = cameraRaw.saturation.map(String.init) ?? ""
-            fields[ExifToolWriteTag.crsHasSettings] = "True"
+            var fields: [MetadataFieldKey: String] = [:]
+            fields[.crsVersion] = cameraRaw.version ?? "15.4"
+            fields[.crsProcessVersion] = cameraRaw.processVersion ?? "15.4"
+            fields[.crsWhiteBalance] = cameraRaw.whiteBalance ?? ""
+            fields[.crsTemperature] = cameraRaw.temperature.map(String.init) ?? ""
+            fields[.crsTint] = cameraRaw.tint.map(String.init) ?? ""
+            fields[.crsIncrementalTemperature] = cameraRaw.incrementalTemperature.map(String.init) ?? ""
+            fields[.crsIncrementalTint] = cameraRaw.incrementalTint.map(String.init) ?? ""
+            fields[.crsExposure2012] = cameraRaw.exposure2012.map { String(format: "%.2f", $0) } ?? ""
+            fields[.crsContrast2012] = cameraRaw.contrast2012.map(String.init) ?? ""
+            fields[.crsHighlights2012] = cameraRaw.highlights2012.map(String.init) ?? ""
+            fields[.crsShadows2012] = cameraRaw.shadows2012.map(String.init) ?? ""
+            fields[.crsWhites2012] = cameraRaw.whites2012.map(String.init) ?? ""
+            fields[.crsBlacks2012] = cameraRaw.blacks2012.map(String.init) ?? ""
+            fields[.crsSaturation] = cameraRaw.saturation.map(String.init) ?? ""
+            fields[.crsHasSettings] = "True"
 
             if let crop = cameraRaw.crop, !crop.isEmpty {
-                fields[ExifToolWriteTag.crsCropTop] = crop.top.map { String(format: "%.6f", $0) } ?? ""
-                fields[ExifToolWriteTag.crsCropLeft] = crop.left.map { String(format: "%.6f", $0) } ?? ""
-                fields[ExifToolWriteTag.crsCropBottom] = crop.bottom.map { String(format: "%.6f", $0) } ?? ""
-                fields[ExifToolWriteTag.crsCropRight] = crop.right.map { String(format: "%.6f", $0) } ?? ""
-                fields[ExifToolWriteTag.crsCropAngle] = crop.angle.map { String(format: "%.6f", $0) } ?? ""
-                fields[ExifToolWriteTag.crsHasCrop] = "True"
+                fields[.crsCropTop] = crop.top.map { String(format: "%.6f", $0) } ?? ""
+                fields[.crsCropLeft] = crop.left.map { String(format: "%.6f", $0) } ?? ""
+                fields[.crsCropBottom] = crop.bottom.map { String(format: "%.6f", $0) } ?? ""
+                fields[.crsCropRight] = crop.right.map { String(format: "%.6f", $0) } ?? ""
+                fields[.crsCropAngle] = crop.angle.map { String(format: "%.6f", $0) } ?? ""
+                fields[.crsHasCrop] = "True"
             }
 
             do {
-                try await browserViewModel.exifToolService.writeFields(fields, to: targetURLs)
+                try await browserViewModel.writeEngine.writeFields(fields, to: targetURLs)
             } catch {
                 Logger(subsystem: "com.aagedal.photo-agent", category: "EditWorkspaceView")
                     .error("Failed to paste camera raw to multiple images: \(error.localizedDescription)")
