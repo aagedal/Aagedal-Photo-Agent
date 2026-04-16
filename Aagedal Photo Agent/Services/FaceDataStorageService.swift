@@ -44,15 +44,24 @@ nonisolated struct FaceDataStorageService: Sendable {
                 .replacingOccurrences(of: ":", with: "-")
             let backupURL = fileURL.deletingLastPathComponent()
                 .appendingPathComponent("\(Self.dataFileName).corrupt.\(timestamp)")
-            try? FileManager.default.moveItem(at: fileURL, to: backupURL)
-            faceDataLog.error("Moved corrupt face data to \(backupURL.lastPathComponent, privacy: .public)")
+            do {
+                try FileManager.default.moveItem(at: fileURL, to: backupURL)
+                faceDataLog.error("Moved corrupt face data to \(backupURL.lastPathComponent, privacy: .public)")
+            } catch {
+                faceDataLog.error("Failed to move corrupt face data aside: \(error.localizedDescription, privacy: .public)")
+            }
             return nil
         }
     }
 
     func loadThumbnail(for faceID: UUID, folderURL: URL) -> Data? {
         let url = thumbnailURL(for: faceID, folderURL: folderURL)
-        return try? Data(contentsOf: url)
+        do {
+            return try Data(contentsOf: url)
+        } catch {
+            faceDataLog.warning("Failed to load thumbnail for face \(faceID.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
     }
 
     // MARK: - Save
@@ -80,7 +89,13 @@ nonisolated struct FaceDataStorageService: Sendable {
 
     func deleteThumbnail(for faceID: UUID, folderURL: URL) {
         let url = thumbnailURL(for: faceID, folderURL: folderURL)
-        try? FileManager.default.removeItem(at: url)
+        do {
+            try FileManager.default.removeItem(at: url)
+        } catch let error as NSError where error.domain == NSCocoaErrorDomain && error.code == NSFileNoSuchFileError {
+            // File already gone — not an error
+        } catch {
+            faceDataLog.warning("Failed to delete thumbnail for face \(faceID.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     func deleteFaceData(for folderURL: URL) throws {

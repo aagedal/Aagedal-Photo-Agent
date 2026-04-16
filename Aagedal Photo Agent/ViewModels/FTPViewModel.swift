@@ -40,11 +40,13 @@ final class FTPViewModel {
     }
 
     func loadConnections() {
-        guard let data = UserDefaults.standard.data(forKey: connectionsKey),
-              let decoded = try? JSONDecoder().decode([FTPConnection].self, from: data) else {
+        guard let data = UserDefaults.standard.data(forKey: connectionsKey) else { return }
+        do {
+            connections = try JSONDecoder().decode([FTPConnection].self, from: data)
+        } catch {
+            ftpLog.error("Failed to decode FTP connections: \(error.localizedDescription, privacy: .public)")
             return
         }
-        connections = decoded
 
         // Verify the selected connection still exists after reload
         if let id = selectedConnectionID, !connections.contains(where: { $0.id == id }) {
@@ -55,8 +57,11 @@ final class FTPViewModel {
     }
 
     func saveConnections() {
-        if let data = try? JSONEncoder().encode(connections) {
+        do {
+            let data = try JSONEncoder().encode(connections)
             UserDefaults.standard.set(data, forKey: connectionsKey)
+        } catch {
+            ftpLog.error("Failed to encode FTP connections: \(error.localizedDescription, privacy: .public)")
         }
     }
 
