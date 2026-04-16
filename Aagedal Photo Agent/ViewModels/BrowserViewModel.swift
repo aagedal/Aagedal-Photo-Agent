@@ -158,6 +158,7 @@ final class BrowserViewModel {
     @ObservationIgnored private var autoRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var metadataWriteTask: Task<Void, Never>?
     @ObservationIgnored private var exifToolBatchTask: Task<Void, Never>?
+    @ObservationIgnored nonisolated(unsafe) private var writeEngineObserver: (any NSObjectProtocol)?
 
     private let favoritesKey = UserDefaultsKeys.favoriteFolders
     private let recentFoldersKey = UserDefaultsKeys.recentFolders
@@ -201,7 +202,7 @@ final class BrowserViewModel {
         self.showOriginalThumbnails = UserDefaults.standard.bool(forKey: UserDefaultsKeys.showOriginalThumbnails)
         self.showAllFiles = UserDefaults.standard.bool(forKey: UserDefaultsKeys.showAllFiles)
 
-        NotificationCenter.default.addObserver(forName: .metadataWriteEngineChanged, object: nil, queue: .main) { [weak self] _ in
+        writeEngineObserver = NotificationCenter.default.addObserver(forName: .metadataWriteEngineChanged, object: nil, queue: .main) { [weak self] _ in
             guard let self else { return }
             let choice = MetadataWriteEngineChoice(
                 rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.metadataWriteEngine) ?? ""
@@ -216,12 +217,18 @@ final class BrowserViewModel {
     }
 
     deinit {
+        if let writeEngineObserver {
+            NotificationCenter.default.removeObserver(writeEngineObserver)
+        }
         sortFeedbackTask?.cancel()
         searchDebounceTask?.cancel()
         rebuildCoalesceTask?.cancel()
         retinaPreCacheTask?.cancel()
         loadFolderTask?.cancel()
         pendingMetadataDrainTask?.cancel()
+        autoRefreshTask?.cancel()
+        metadataWriteTask?.cancel()
+        exifToolBatchTask?.cancel()
     }
 
     var selectedImages: [ImageFile] { selectedImagesCache }
