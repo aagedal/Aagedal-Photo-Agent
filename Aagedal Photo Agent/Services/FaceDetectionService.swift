@@ -1267,13 +1267,15 @@ nonisolated struct FaceDetectionService: Sendable {
         guard !leftPoints.isEmpty, !rightPoints.isEmpty else { return nil }
 
         // Compute centroids of each eye's point cloud (in face-bbox-relative coords, bottom-left origin)
+        let leftSum = leftPoints.reduce(.zero) { CGPoint(x: $0.x + $1.x, y: $0.y + $1.y) }
         let leftCenter = CGPoint(
-            x: leftPoints.map(\.x).reduce(0, +) / CGFloat(leftPoints.count),
-            y: leftPoints.map(\.y).reduce(0, +) / CGFloat(leftPoints.count)
+            x: leftSum.x / CGFloat(leftPoints.count),
+            y: leftSum.y / CGFloat(leftPoints.count)
         )
+        let rightSum = rightPoints.reduce(.zero) { CGPoint(x: $0.x + $1.x, y: $0.y + $1.y) }
         let rightCenter = CGPoint(
-            x: rightPoints.map(\.x).reduce(0, +) / CGFloat(rightPoints.count),
-            y: rightPoints.map(\.y).reduce(0, +) / CGFloat(rightPoints.count)
+            x: rightSum.x / CGFloat(rightPoints.count),
+            y: rightSum.y / CGFloat(rightPoints.count)
         )
 
         // Convert from face-bbox-relative to full-image normalized coords
