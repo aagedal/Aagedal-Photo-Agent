@@ -97,8 +97,8 @@ final class ThumbnailItemView: NSView {
         // Draw white symbol centered
         let symbolConfig = NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold)
         if let symbol = NSImage(systemSymbolName: systemName, accessibilityDescription: nil)?
-            .withSymbolConfiguration(symbolConfig) {
-            let tinted = symbol.copy() as! NSImage
+            .withSymbolConfiguration(symbolConfig),
+           let tinted = symbol.copy() as? NSImage {
             tinted.lockFocus()
             NSColor.white.set()
             NSRect(origin: .zero, size: tinted.size).fill(using: .sourceAtop)
@@ -140,8 +140,8 @@ final class ThumbnailItemView: NSView {
 
         let config = NSImage.SymbolConfiguration(pointSize: 32, weight: .regular)
         if let symbol = NSImage(systemSymbolName: "photo", accessibilityDescription: nil)?
-            .withSymbolConfiguration(config) {
-            let tinted = symbol.copy() as! NSImage
+            .withSymbolConfiguration(config),
+           let tinted = symbol.copy() as? NSImage {
             tinted.lockFocus()
             NSColor.secondaryLabelColor.set()
             NSRect(origin: .zero, size: tinted.size).fill(using: .sourceAtop)

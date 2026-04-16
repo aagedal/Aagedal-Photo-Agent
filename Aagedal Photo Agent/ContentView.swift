@@ -947,6 +947,7 @@ struct ContentView: View {
                 .padding(.vertical, 8)
                 .onReceive(NotificationCenter.default.publisher(for: .scopeSourceImageDidChange)) { notification in
                     if let info = notification.userInfo, let image = info["cgImage"] {
+                        // Force cast is safe: internal notification always sends CGImage
                         scopeViewModel.updateImage((image as! CGImage))
                     } else {
                         scopeViewModel.updateImage(nil)

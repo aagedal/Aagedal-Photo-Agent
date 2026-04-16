@@ -577,6 +577,7 @@ final class SettingsViewModel {
         // Extract certificate
         if let identity = first[kSecImportItemIdentity as String] {
             var certRef: SecCertificate?
+            // swiftlint:disable:next force_cast — SecPKCS12Import guarantees SecIdentity type
             SecIdentityCopyCertificate(identity as! SecIdentity, &certRef)
             if let cert = certRef {
                 let certData = SecCertificateCopyData(cert) as Data
@@ -606,6 +607,7 @@ final class SettingsViewModel {
 
             // Extract and store private key in Keychain
             var keyRef: SecKey?
+            // swiftlint:disable:next force_cast — SecPKCS12Import guarantees SecIdentity type
             SecIdentityCopyPrivateKey(identity as! SecIdentity, &keyRef)
             if let key = keyRef, let keyData = SecKeyCopyExternalRepresentation(key, nil) as Data? {
                 let keyPEM = "-----BEGIN PRIVATE KEY-----\n" +

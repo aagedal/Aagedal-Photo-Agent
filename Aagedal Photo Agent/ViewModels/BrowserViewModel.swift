@@ -545,7 +545,7 @@ final class BrowserViewModel {
 
                 // Phase 3: Load sidecars and apply pending overrides
                 let allSidecars = sidecarService.loadAllSidecars(in: url)
-                var updated = files
+                var updated = self.images
                 for i in updated.indices {
                     if let sidecar = allSidecars[updated[i].url], sidecar.pendingChanges {
                         updated[i].hasPendingMetadataChanges = true
@@ -1510,7 +1510,8 @@ final class BrowserViewModel {
                 }
             }
 
-            for rawURL in syncPairRawURLs where !writeToXmp.contains(rawURL) {
+            let writeToXmpSet = Set(writeToXmp)
+            for rawURL in syncPairRawURLs where !writeToXmpSet.contains(rawURL) {
                 writeToXmp.append(rawURL)
             }
 
