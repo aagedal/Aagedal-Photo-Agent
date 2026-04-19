@@ -109,57 +109,18 @@ final class ExifToolService {
         }
     }
 
-    var exifToolPath: String? {
-        let sourceRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.exifToolSource) ?? "bundled"
-
-        switch sourceRaw {
-        case "bundled":
-            return bundledExifToolPath
-        case "homebrew":
-            return homebrewExifToolPath
-        case "custom":
-            if let customPath = UserDefaults.standard.string(forKey: UserDefaultsKeys.exifToolCustomPath),
-               FileManager.default.isExecutableFile(atPath: customPath) {
-                return customPath
-            }
-            return nil
-        default:
-            return bundledExifToolPath
-        }
-    }
-
-    private var bundledExifToolPath: String? {
-        // Try ExifTool folder first, then direct resource
-        if let bundledDir = Bundle.main.path(forResource: "ExifTool", ofType: nil) {
-            let path = (bundledDir as NSString).appendingPathComponent("exiftool")
-            exifToolLog.info("Found bundled ExifTool folder at: \(bundledDir, privacy: .public)")
-            return path
-        }
-        if let path = Bundle.main.path(forResource: "exiftool", ofType: nil) {
-            exifToolLog.info("Found bundled exiftool directly at: \(path, privacy: .public)")
-            return path
-        }
-        exifToolLog.warning("No bundled ExifTool found")
-        return nil
-    }
-
-    private var homebrewExifToolPath: String? {
-        let paths = ["/opt/homebrew/bin/exiftool", "/usr/local/bin/exiftool"]
-        return paths.first { FileManager.default.isExecutableFile(atPath: $0) }
-    }
+    var exifToolPath: String? { ExifToolPathResolver.resolve() }
 
     var isAvailable: Bool { exifToolPath != nil }
 
     func start() throws {
         guard !isRunning else { return }
-        guard let path = exifToolPath else {
+        guard let path = ExifToolPathResolver.resolveAndLog() else {
             throw NSError(
                 domain: "ExifToolService", code: 4,
                 userInfo: [NSLocalizedDescriptionKey: "ExifTool not found. Install via Homebrew (`brew install exiftool`) or configure the path in Settings."]
             )
         }
-
-        exifToolLog.info("Starting ExifTool at: \(path, privacy: .public)")
 
         generation += 1
         let currentGeneration = generation

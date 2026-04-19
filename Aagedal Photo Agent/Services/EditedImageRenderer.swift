@@ -364,40 +364,10 @@ nonisolated enum EditedImageRenderer {
 
     // MARK: - Metadata Copy
 
-    /// Resolve ExifTool path respecting user settings (bundled / homebrew / custom).
-    private static var exifToolPath: String? {
-        let sourceRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.exifToolSource) ?? "bundled"
-
-        switch sourceRaw {
-        case "homebrew":
-            for path in ["/opt/homebrew/bin/exiftool", "/usr/local/bin/exiftool"] {
-                if FileManager.default.isExecutableFile(atPath: path) { return path }
-            }
-            return nil
-        case "custom":
-            if let customPath = UserDefaults.standard.string(forKey: UserDefaultsKeys.exifToolCustomPath),
-               FileManager.default.isExecutableFile(atPath: customPath) {
-                return customPath
-            }
-            return nil
-        default: // "bundled"
-            if let bundledDir = Bundle.main.path(forResource: "ExifTool", ofType: nil) {
-                let path = (bundledDir as NSString).appendingPathComponent("exiftool")
-                if FileManager.default.isExecutableFile(atPath: path) { return path }
-            }
-            if let path = Bundle.main.path(forResource: "exiftool", ofType: nil) { return path }
-            // Fallback to Homebrew if bundled not found
-            for path in ["/opt/homebrew/bin/exiftool", "/usr/local/bin/exiftool"] {
-                if FileManager.default.isExecutableFile(atPath: path) { return path }
-            }
-            return nil
-        }
-    }
-
     /// Copy all metadata from source to rendered destination by spawning a one-off ExifTool process.
     /// Prefer `ExifToolService.copyMetadataToRenderedFile(from:to:)` when a persistent process is available.
     private static func copyMetadata(from source: URL, to destination: URL) async {
-        guard let exiftool = exifToolPath else { return }
+        guard let exiftool = ExifToolPathResolver.resolve() else { return }
 
         do {
             _ = try await Process.run(

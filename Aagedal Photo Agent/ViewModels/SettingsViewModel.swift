@@ -142,20 +142,6 @@ final class UpdateChecker {
     }
 }
 
-enum ExifToolSource: String, CaseIterable {
-    case bundled = "bundled"
-    case homebrew = "homebrew"
-    case custom = "custom"
-
-    var displayName: String {
-        switch self {
-        case .bundled: return "Bundled"
-        case .homebrew: return "Homebrew"
-        case .custom: return "Custom"
-        }
-    }
-}
-
 enum UpdateCheckFrequency: String, CaseIterable, Identifiable {
     case daily
     case weekly
@@ -702,33 +688,11 @@ final class SettingsViewModel {
 
     var detectedEditors: [DetectedEditor] = []
 
-    var bundledExifToolPath: String? {
-        // Try ExifTool folder first, then direct resource
-        if let bundledDir = Bundle.main.path(forResource: "ExifTool", ofType: nil) {
-            return (bundledDir as NSString).appendingPathComponent("exiftool")
-        }
-        return Bundle.main.path(forResource: "exiftool", ofType: nil)
-    }
+    var bundledExifToolPath: String? { ExifToolPathResolver.bundledPath }
 
-    var homebrewExifToolPath: String? {
-        let paths = [
-            "/opt/homebrew/bin/exiftool",
-            "/usr/local/bin/exiftool",
-        ]
-        return paths.first { FileManager.default.isExecutableFile(atPath: $0) }
-    }
+    var homebrewExifToolPath: String? { ExifToolPathResolver.homebrewPath }
 
-    var selectedExifToolPath: String? {
-        switch exifToolSource {
-        case .bundled:
-            return bundledExifToolPath
-        case .homebrew:
-            return homebrewExifToolPath
-        case .custom:
-            let path = exifToolCustomPath
-            return FileManager.default.isExecutableFile(atPath: path) ? path : nil
-        }
-    }
+    var selectedExifToolPath: String? { ExifToolPathResolver.path(for: exifToolSource) }
 
     init() {
         self.rawRenderAsHDR = UserDefaults.standard.bool(forKey: UserDefaultsKeys.rawRenderAsHDR)
