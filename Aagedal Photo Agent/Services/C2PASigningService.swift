@@ -229,7 +229,13 @@ nonisolated enum C2PASigningService {
         let creationDate = attrs?[.creationDate] as? Date
 
         try FileManager.default.moveItem(at: imageURL, to: backupURL)
-        try FileManager.default.moveItem(at: outputFile, to: imageURL)
+        do {
+            try FileManager.default.moveItem(at: outputFile, to: imageURL)
+        } catch {
+            // Restore the original to prevent data loss if the second move fails.
+            try? FileManager.default.moveItem(at: backupURL, to: imageURL)
+            throw error
+        }
 
         if let creationDate {
             try? FileManager.default.setAttributes(
@@ -349,7 +355,12 @@ nonisolated enum C2PASigningService {
         let creationDate = attrs?[.creationDate] as? Date
 
         try FileManager.default.moveItem(at: imageURL, to: backupURL)
-        try FileManager.default.moveItem(at: outputFile, to: imageURL)
+        do {
+            try FileManager.default.moveItem(at: outputFile, to: imageURL)
+        } catch {
+            try? FileManager.default.moveItem(at: backupURL, to: imageURL)
+            throw error
+        }
 
         if let creationDate {
             try? FileManager.default.setAttributes(
@@ -468,7 +479,12 @@ nonisolated enum C2PASigningService {
         let creationDate = attrs?[.creationDate] as? Date
 
         try FileManager.default.moveItem(at: imageURL, to: backupURL)
-        try FileManager.default.moveItem(at: outputFile, to: imageURL)
+        do {
+            try FileManager.default.moveItem(at: outputFile, to: imageURL)
+        } catch {
+            try? FileManager.default.moveItem(at: backupURL, to: imageURL)
+            throw error
+        }
 
         if let creationDate {
             try? FileManager.default.setAttributes(
