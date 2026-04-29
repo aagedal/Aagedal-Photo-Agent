@@ -63,14 +63,14 @@ struct ContentView: View {
 
     init() {
         let browser = BrowserViewModel()
-        let faceRecognition = FaceRecognitionViewModel(exifToolService: browser.exifToolService, writeEngine: browser.writeEngine)
+        let faceRecognition = FaceRecognitionViewModel(readService: browser.metadataReadService, writeEngine: browser.writeEngine)
         browser.onImagesDeleted = { [weak faceRecognition] urls in
             faceRecognition?.deleteFaces(forImageURLs: urls)
         }
         _browserViewModel = State(initialValue: browser)
-        _metadataViewModel = State(initialValue: MetadataViewModel(exifToolService: browser.exifToolService, writeEngine: browser.writeEngine))
+        _metadataViewModel = State(initialValue: MetadataViewModel(readService: browser.metadataReadService, writeEngine: browser.writeEngine))
         _faceRecognitionViewModel = State(initialValue: faceRecognition)
-        _importViewModel = State(initialValue: ImportViewModel(exifToolService: browser.exifToolService, writeEngine: browser.writeEngine))
+        _importViewModel = State(initialValue: ImportViewModel(readService: browser.metadataReadService, writeEngine: browser.writeEngine))
     }
 
     var body: some View {
@@ -101,7 +101,7 @@ struct ContentView: View {
                 FTPUploadView(
                     viewModel: ftpViewModel,
                     files: item.urls,
-                    exifToolService: browserViewModel.exifToolService,
+                    readService: browserViewModel.metadataReadService,
                     writeEngine: browserViewModel.writeEngine,
                     onStartUpload: { ftpUploadItem = nil }
                 )
@@ -856,15 +856,6 @@ struct ContentView: View {
                     }
                 }
 
-                if !browserViewModel.exifToolService.isAvailable {
-                    Section {
-                        Label("ExifTool not found", systemImage: "exclamationmark.triangle")
-                            .foregroundStyle(.orange)
-                        Text("Install ExifTool via Homebrew:\nbrew install exiftool")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
             }
             .listStyle(.sidebar)
 
@@ -1121,7 +1112,7 @@ struct ContentView: View {
             // Read metadata and overlay CameraRawSettings
             var metadataByURL: [URL: IPTCMetadata]
             do {
-                metadataByURL = try await browserViewModel.exifToolService.readBatchFullMetadata(urls: urls)
+                metadataByURL = try await browserViewModel.metadataReadService.readBatchFullMetadata(urls: urls)
             } catch {
                 isRenderingEditedFolder = false
                 browserViewModel.errorMessage = "Failed to read metadata: \(error.localizedDescription)"
@@ -1157,11 +1148,11 @@ struct ContentView: View {
                 }
 
                 do {
-                    // Step 1: Render the image (metadata copy via persistent ExifTool process)
-                    let exifTool = browserViewModel.exifToolService
+                    // Step 1: Render the image (metadata copy via the active write engine)
+                    let writeEngine = browserViewModel.writeEngine
                     let copier: EditedImageRenderer.MetadataCopier = { src, dst in
                         do {
-                            try await exifTool.copyMetadataToRenderedFile(from: src, to: dst)
+                            try await writeEngine.copyMetadataToRenderedFile(from: src, to: dst)
                         } catch {
                             await failureTracker.recordCopyFailure(src.lastPathComponent)
                         }
@@ -1454,7 +1445,7 @@ struct ContentView: View {
 
     private func loadC2PADetail() {
         guard let image = browserViewModel.selectedImages.first else { return }
-        let service = browserViewModel.exifToolService
+        let service = browserViewModel.metadataReadService
         Task {
             do {
                 var result = try await service.readC2PAMetadata(url: image.url)
@@ -1472,8 +1463,8 @@ struct ContentView: View {
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
-    /// Overlay in-memory and XMP sidecar CameraRaw settings onto ExifTool-read metadata.
-    /// ExifTool reads the image file directly but does not read the adjacent `.xmp` sidecar
+    /// Overlay in-memory and XMP sidecar CameraRaw settings onto embedded metadata.
+    /// SwiftExif reads the image file directly but does not read the adjacent `.xmp` sidecar
     /// where CameraRaw edits are stored for RAW files. This merges the correct settings back in.
     private func overlayCameraRawSettings(onto metadataByURL: inout [URL: IPTCMetadata], urls: [URL]) {
         let xmpService = XMPSidecarService()
@@ -1507,7 +1498,7 @@ struct ContentView: View {
 
             var metadataByURL: [URL: IPTCMetadata]
             do {
-                metadataByURL = try await browserViewModel.exifToolService.readBatchFullMetadata(urls: urls)
+                metadataByURL = try await browserViewModel.metadataReadService.readBatchFullMetadata(urls: urls)
             } catch {
                 isRenderingEditedFolder = false
                 browserViewModel.errorMessage = "Failed to read metadata: \(error.localizedDescription)"
@@ -1521,10 +1512,10 @@ struct ContentView: View {
                 renderExportCurrent = index + 1
                 let cameraRaw = metadataByURL[url]?.cameraRaw
                 do {
-                    let exifTool = browserViewModel.exifToolService
+                    let writeEngine = browserViewModel.writeEngine
                     let copier: EditedImageRenderer.MetadataCopier = { src, dst in
                         do {
-                            try await exifTool.copyMetadataToRenderedFile(from: src, to: dst)
+                            try await writeEngine.copyMetadataToRenderedFile(from: src, to: dst)
                         } catch {
                             await failureTracker.recordCopyFailure(src.lastPathComponent)
                         }
@@ -1587,7 +1578,7 @@ struct ContentView: View {
 
             var metadataByURL: [URL: IPTCMetadata]
             do {
-                metadataByURL = try await browserViewModel.exifToolService.readBatchFullMetadata(urls: urls)
+                metadataByURL = try await browserViewModel.metadataReadService.readBatchFullMetadata(urls: urls)
             } catch {
                 isRenderingEditedFolder = false
                 browserViewModel.errorMessage = "Failed to read metadata for export: \(error.localizedDescription)"
@@ -1624,10 +1615,10 @@ struct ContentView: View {
                 }
 
                 do {
-                    let exifTool = browserViewModel.exifToolService
+                    let writeEngine = browserViewModel.writeEngine
                     let copier: EditedImageRenderer.MetadataCopier = { src, dst in
                         do {
-                            try await exifTool.copyMetadataToRenderedFile(from: src, to: dst)
+                            try await writeEngine.copyMetadataToRenderedFile(from: src, to: dst)
                         } catch {
                             await failureTracker.recordCopyFailure(src.lastPathComponent)
                         }
@@ -1718,8 +1709,7 @@ struct ContentViewModifiers: ViewModifier {
                     perfLog.info("[Selection] onChange — \(selected.count) image(s)")
                     try? await Task.sleep(nanoseconds: selectionDebounceNanoseconds)
                     guard !Task.isCancelled else { return }
-                    let debounceMs = Int(selectionStart.duration(to: .now).components.seconds * 1000)
-                        + Int(selectionStart.duration(to: .now).components.attoseconds / 1_000_000_000_000_000)
+                    let debounceMs = selectionStart.elapsedMilliseconds()
                     perfLog.info("[Selection] debounce done — \(debounceMs)ms, dispatching loadMetadata")
                     metadataViewModel.loadMetadata(for: selected, folderURL: browserViewModel.currentFolderURL)
                     loadTechnicalMetadata()

@@ -4,7 +4,7 @@ struct FTPUploadView: View {
     @Environment(\.dismiss) private var dismiss
     @Bindable var viewModel: FTPViewModel
     let files: [URL]
-    let exifToolService: ExifToolService
+    let readService: SwiftExifReadService
     let writeEngine: any MetadataWriteEngine
     var onStartUpload: (() -> Void)?
 
@@ -27,10 +27,10 @@ struct FTPUploadView: View {
     @State private var iptcCheckResults: [IPTCCheckResult] = []
     @State private var pendingUploadRenderFirst = false
 
-    init(viewModel: FTPViewModel, files: [URL], exifToolService: ExifToolService, writeEngine: any MetadataWriteEngine, onStartUpload: (() -> Void)? = nil) {
+    init(viewModel: FTPViewModel, files: [URL], readService: SwiftExifReadService, writeEngine: any MetadataWriteEngine, onStartUpload: (() -> Void)? = nil) {
         self.viewModel = viewModel
         self.files = files
-        self.exifToolService = exifToolService
+        self.readService = readService
         self.writeEngine = writeEngine
         self.onStartUpload = onStartUpload
         self._activeFiles = State(initialValue: files)
@@ -413,7 +413,7 @@ struct FTPUploadView: View {
 
         do {
             iptcCheckProgress = "Reading metadata..."
-            let metadataMap = try await exifToolService.readBatchFullMetadata(urls: files)
+            let metadataMap = try await readService.readBatchFullMetadata(urls: files)
 
             var results: [IPTCCheckResult] = []
             for url in files {
@@ -487,7 +487,7 @@ struct FTPUploadView: View {
 
     private func beginUpload(files: [URL], connection: FTPConnection, renderFirst: Bool) {
         if renderFirst {
-            viewModel.renderAndUploadFiles(files, to: connection, exifToolService: exifToolService, writeEngine: writeEngine)
+            viewModel.renderAndUploadFiles(files, to: connection, readService: readService, writeEngine: writeEngine)
         } else {
             viewModel.uploadFiles(files, to: connection)
         }
@@ -501,7 +501,7 @@ struct FTPUploadView: View {
 
         for url in files {
             do {
-                let meta = try await exifToolService.readFullMetadata(url: url)
+                let meta = try await readService.readFullMetadata(url: url)
                 let snapshot = meta
                 let filename = url.lastPathComponent
 

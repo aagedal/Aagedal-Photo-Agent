@@ -81,7 +81,7 @@ final class MetadataViewModel {
     var geocodingError: String?
     var geocodingProgress = ""
 
-    private let exifToolService: ExifToolService
+    private let readService: SwiftExifReadService
     private let writeEngine: any MetadataWriteEngine
     private let sidecarService = MetadataSidecarService()
     private let xmpSidecarService = XMPSidecarService()
@@ -94,8 +94,8 @@ final class MetadataViewModel {
     @ObservationIgnored private var batchProcessTask: Task<Void, Never>?
     @ObservationIgnored private var geocodingTask: Task<Void, Never>?
 
-    init(exifToolService: ExifToolService, writeEngine: any MetadataWriteEngine) {
-        self.exifToolService = exifToolService
+    init(readService: SwiftExifReadService, writeEngine: any MetadataWriteEngine) {
+        self.readService = readService
         self.writeEngine = writeEngine
     }
 
@@ -170,7 +170,7 @@ final class MetadataViewModel {
                 if let url = imageURL, SupportedImageFormats.isRaw(url: url),
                    let xmpCRS = xmp.cameraRaw {
                     var finalCRS = xmpCRS
-                    // Preserve localAdjustments from embedded (written to image via ExifTool, not to XMP sidecar)
+                    // Preserve localAdjustments from embedded (written to image directly, not to XMP sidecar)
                     if (xmpCRS.localAdjustments?.isEmpty ?? true),
                        let masks = embedded.cameraRaw?.localAdjustments, !masks.isEmpty {
                         finalCRS.localAdjustments = masks
@@ -243,10 +243,9 @@ final class MetadataViewModel {
                 let loadStart = ContinuousClock.now
                 self.perfLog.info("[MetadataVM] loadMetadata START — \(imageURL.lastPathComponent, privacy: .public)")
                 do {
-                    let (embedded, conflict) = try await exifToolService.readFullMetadataWithConflictCheck(url: imageURL)
-                    let exifMs = Int(loadStart.duration(to: .now).components.seconds * 1000)
-                        + Int(loadStart.duration(to: .now).components.attoseconds / 1_000_000_000_000_000)
-                    self.perfLog.info("[MetadataVM] ExifTool returned — \(exifMs)ms for \(imageURL.lastPathComponent, privacy: .public)")
+                    let (embedded, conflict) = try await readService.readFullMetadataWithConflictCheck(url: imageURL)
+                    let exifMs = loadStart.elapsedMilliseconds()
+                    self.perfLog.info("[MetadataVM] metadata read returned — \(exifMs)ms for \(imageURL.lastPathComponent, privacy: .public)")
                     guard !Task.isCancelled else { return }
                     let xmpMeta = self.loadXMPMetadataIfAllowed(for: imageURL)
                     // Preserve the user's manual reference source selection when
@@ -306,8 +305,7 @@ final class MetadataViewModel {
                     }
                     self.previousEditingMetadata = self.editingMetadata
                     self.metadataLoadGeneration += 1
-                    let totalMs = Int(loadStart.duration(to: .now).components.seconds * 1000)
-                        + Int(loadStart.duration(to: .now).components.attoseconds / 1_000_000_000_000_000)
+                    let totalMs = loadStart.elapsedMilliseconds()
                     self.perfLog.info("[MetadataVM] loadMetadata DONE — \(imageURL.lastPathComponent, privacy: .public) total \(totalMs)ms")
                     if self.metadataReferenceSource == .xmp, self.xmpMetadata == nil {
                         self.metadataReferenceSource = .embedded
@@ -385,7 +383,7 @@ final class MetadataViewModel {
         var allMetadata: [IPTCMetadata] = []
 
         do {
-            let batchResults = try await exifToolService.readBatchFullMetadata(urls: urls)
+            let batchResults = try await readService.readBatchFullMetadata(urls: urls)
             if Task.isCancelled { return }
 
             for image in images {
@@ -1106,7 +1104,7 @@ final class MetadataViewModel {
 
     private func appendCameraRawFields(from metadata: IPTCMetadata, into fields: inout [MetadataFieldKey: String]) {
         // When cameraRaw is nil (edits fully reset), check if the original image had CRS
-        // fields and clear them. Writing "" tells ExifTool to remove the field.
+        // fields and clear them. Writing "" removes the field.
         guard let cameraRaw = metadata.cameraRaw else {
             if originalImageMetadata?.cameraRaw != nil {
                 clearAllCameraRawFields(into: &fields)
@@ -1593,7 +1591,7 @@ final class MetadataViewModel {
     }
 
     /// Shared implementation for batch variable processing.
-    /// Reads metadata in batches via readBatchFullMetadata (single ExifTool invocation per batch)
+    /// Reads metadata in batches via readBatchFullMetadata (single batch read)
     /// instead of one readFullMetadata call per image.
     private func processVariablesBatch(_ images: [ImageFile]) async {
         let interpolator = PresetVariableInterpolator()
@@ -1613,7 +1611,7 @@ final class MetadataViewModel {
             .filter { $0.url != currentlyDisplayedURL }
             .map(\.url)
 
-        // Batch-read embedded metadata in chunks of 50 to avoid ExifTool output buffer limits
+        // Batch-read embedded metadata in chunks of 50 to avoid memory pressure
         var batchMetadata: [URL: IPTCMetadata] = [:]
         batchMetadata.reserveCapacity(urlsToRead.count)
         let chunkSize = 50
@@ -1621,7 +1619,7 @@ final class MetadataViewModel {
             let chunkEnd = min(chunkStart + chunkSize, urlsToRead.count)
             let chunk = Array(urlsToRead[chunkStart..<chunkEnd])
             do {
-                let batch = try await exifToolService.readBatchFullMetadata(urls: chunk)
+                let batch = try await readService.readBatchFullMetadata(urls: chunk)
                 batchMetadata.merge(batch) { _, new in new }
             } catch {
                 // Count all images in this chunk as failed
@@ -1759,7 +1757,7 @@ final class MetadataViewModel {
               updatedURLs.contains(url) else { return }
 
         do {
-            let (embedded, conflict) = try await exifToolService.readFullMetadataWithConflictCheck(url: url)
+            let (embedded, conflict) = try await readService.readFullMetadataWithConflictCheck(url: url)
             let xmpMeta = loadXMPMetadataIfAllowed(for: url)
             // Preserve the user's current reference source selection after processing
             let refSource: MetadataReferenceSource
@@ -1851,7 +1849,7 @@ final class MetadataViewModel {
 
             for url in selectedURLs {
                 do {
-                    let meta = try await exifToolService.readFullMetadata(url: url)
+                    let meta = try await readService.readFullMetadata(url: url)
                     guard let lat = meta.latitude, let lon = meta.longitude else {
                         skipped += 1
                         processed += 1

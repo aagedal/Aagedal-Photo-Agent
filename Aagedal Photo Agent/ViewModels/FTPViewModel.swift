@@ -225,7 +225,7 @@ final class FTPViewModel {
         }
     }
 
-    func renderAndUploadFiles(_ urls: [URL], to connection: FTPConnection, exifToolService: ExifToolService, writeEngine: any MetadataWriteEngine) {
+    func renderAndUploadFiles(_ urls: [URL], to connection: FTPConnection, readService: SwiftExifReadService, writeEngine: any MetadataWriteEngine) {
         guard let password = KeychainService.load(forKey: connection.keychainKey) else {
             errorMessages = ["No password found for \(connection.name). Edit the connection to set a password."]
             return
@@ -263,12 +263,12 @@ final class FTPViewModel {
             // Read batch metadata for camera raw settings
             var metadataMap: [URL: IPTCMetadata] = [:]
             do {
-                metadataMap = try await exifToolService.readBatchFullMetadata(urls: urls)
+                metadataMap = try await readService.readBatchFullMetadata(urls: urls)
             } catch {
                 // Continue without camera raw — renders will use defaults
             }
 
-            // ExifTool reads the RAW file directly but not the adjacent .xmp sidecar
+            // SwiftExif reads the RAW file directly but not the adjacent .xmp sidecar
             // where CameraRaw edits are stored. Overlay XMP sidecar settings for RAW files.
             let xmpService = XMPSidecarService()
             for url in urls {

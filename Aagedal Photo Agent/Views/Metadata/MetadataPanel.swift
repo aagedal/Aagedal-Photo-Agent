@@ -521,7 +521,7 @@ struct MetadataPanel: View {
                         if let url = viewModel.selectedURLs.first {
                             RawMetadataView(
                                 filename: url.lastPathComponent,
-                                exifToolService: browserViewModel.exifToolService,
+                                readService: browserViewModel.metadataReadService,
                                 imageURL: url
                             )
                         }

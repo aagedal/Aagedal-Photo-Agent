@@ -1,5 +1,20 @@
 import Foundation
 
+/// Errors raised by the metadata write pipeline.
+enum MetadataWriteError: Error, LocalizedError {
+    /// Local mask adjustments cannot be persisted in the current build.
+    /// Needs nested-struct support inside `XMPValue.structuredArray` to
+    /// serialize ACR `MaskGroupBasedCorrections`.
+    case maskWritesUnavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .maskWritesUnavailable:
+            return "Local mask adjustments cannot be saved yet — waiting on nested structured-array support in SwiftExif."
+        }
+    }
+}
+
 /// Structured data for writes that go beyond simple key-value pairs (tone curves, masks).
 struct StructuredWriteData: Sendable {
     var toneCurve: ToneCurve?
@@ -12,7 +27,7 @@ struct StructuredWriteData: Sendable {
     static let empty = StructuredWriteData()
 }
 
-/// Abstraction over metadata write backends (SwiftExif, ExifTool).
+/// Abstraction over metadata write backends.
 /// Both implementations must handle XMP/IPTC mirroring and file creation date preservation internally.
 protocol MetadataWriteEngine: AnyObject, Sendable {
     /// Write key-value metadata fields to one or more files.
@@ -54,7 +69,7 @@ extension MetadataWriteEngine {
 // MARK: - Shared Helpers
 
 /// Capture file creation dates before a write operation so they can be restored after.
-/// ExifTool (and direct file writes) may reset the creation date.
+/// Direct file writes may reset the creation date.
 func captureCreationDates(for urls: [URL]) -> [URL: Date] {
     var result: [URL: Date] = [:]
     for url in urls {

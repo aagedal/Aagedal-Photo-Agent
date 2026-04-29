@@ -1,10 +1,6 @@
 import Foundation
 
 nonisolated enum UserDefaultsKeys {
-    // MARK: - ExifTool
-    static let exifToolSource = "exifToolSource"
-    static let exifToolCustomPath = "exifToolCustomPath"
-
     // MARK: - External Editor
     static let defaultExternalEditor = "defaultExternalEditor"
     static let defaultEditDestination = "defaultEditDestination"
@@ -15,8 +11,7 @@ nonisolated enum UserDefaultsKeys {
     static let updateLatestVersion = "updateLatestVersion"
     static let updateAvailable = "updateAvailable"
 
-    // MARK: - Metadata Write Engine & Mode
-    static let metadataWriteEngine = "metadataWriteEngine"
+    // MARK: - Metadata Write Mode
     static let metadataWriteMode = "metadataWriteMode"
     static let metadataWriteModeNonC2PA = "metadataWriteModeNonC2PA"
     static let metadataWriteModeC2PA = "metadataWriteModeC2PA"

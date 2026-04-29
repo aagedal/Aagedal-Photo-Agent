@@ -43,19 +43,16 @@ All tests on a **landscape 3:2** image (e.g., 6000×4000). Use Feather=0 for cla
 ## How to Read XMP Quickly
 
 ```bash
-# For embedded XMP (JPEG files):
-exiftool -j -struct -XMP-crs:MaskGroupBasedCorrections FILENAME.JPG | python3 -m json.tool
-
-# For sidecar XMP (RAW files):
+# Sidecar XMP (RAW files) is plain XML:
 cat FILENAME.xmp | grep -A5 "CircularGradient"
 
-# Or extract just the mask fields:
-exiftool -xmp -b FILENAME.JPG | grep -oP 'crs:(Top|Left|Bottom|Right|Angle)="[^"]*"'
+# For embedded XMP, install exiftool from Homebrew (not bundled with the app)
+# and run e.g. `exiftool -j -struct -XMP-crs:MaskGroupBasedCorrections FILENAME.JPG`.
 ```
 
 ## Known Issues to Fix
 
-- [ ] **Orientation transform for masks** — masks need `transformedForDisplay(orientation:)` like crop does (ExifToolService.swift:962-970)
+- [ ] **Orientation transform for masks** — masks need `transformedForDisplay(orientation:)` like crop does (`IPTCMetadataParsing.swift` → `parseMaskGroupBasedCorrections`)
 - [ ] **Rotated mask decoding** — current `radiusX = abs(right-left)/2` is wrong when Angle≠0
 - [ ] **Rotated mask rendering** — shader may need aspect-ratio-corrected rotation (not UV-space rotation)
 
@@ -63,6 +60,6 @@ exiftool -xmp -b FILENAME.JPG | grep -oP 'crs:(Top|Left|Bottom|Right|Angle)="[^"
 
 - Existing test images: `/Users/traag222/Downloads/ftpTV2Sync/` (SKY08481, SKY07575, SKY07577, SKY07588)
 - RAW test XMPs: `/Users/traag222/Downloads/20240404_SpellemannprisenRødLøper/` (TRA05888, TRA05897, TRA05910, TRA05915)
-- Parsing code: `ExifToolService.swift` → `parseMaskGroupBasedCorrections()`
+- Parsing code: `IPTCMetadataParsing.swift` → `parseMaskGroupBasedCorrections()`
 - Shader code: `EditAdjustments.metal` → `editAdjustments` kernel
 - Overlay code: `EllipseMaskOverlayView.swift`

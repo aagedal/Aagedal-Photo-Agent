@@ -7,15 +7,17 @@ private let swiftExifLog = Logger(subsystem: "com.aagedal.photo-agent", category
 /// XMP namespace URI for Adobe Camera Raw Settings.
 private let crsNamespace = "http://ns.adobe.com/camera-raw-settings/1.0/"
 
-/// MetadataWriteEngine implementation using native SwiftExif for fast metadata writes.
-/// Falls back to ExifToolService for operations SwiftExif cannot handle natively
-/// (structured XMP masks, cross-file metadata copy, EXIF IFD manipulation).
+/// Native, in-process metadata write engine. Reads and re-emits the image file
+/// via SwiftExif. There is no external process and no fallback path.
+///
+/// Note on local mask adjustments: writing Adobe Camera Raw
+/// `MaskGroupBasedCorrections` requires nested-struct support inside
+/// `XMPValue.structuredArray`. Until that lands upstream, this engine raises
+/// `MetadataWriteError.maskWritesUnavailable` when callers try to persist
+/// masks. All other write paths are fully native.
 final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Sendable {
-    private let exifToolService: ExifToolService
 
-    init(exifToolService: ExifToolService) {
-        self.exifToolService = exifToolService
-    }
+    init() {}
 
     func writeFields(
         _ fields: [MetadataFieldKey: String],
@@ -24,40 +26,17 @@ final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Sendable {
     ) async throws {
         guard !urls.isEmpty, !fields.isEmpty || !structuredData.isEmpty else { return }
 
-        // Separate fields into SwiftExif-native and ExifTool-delegated (EXIF IFD fields)
-        var nativeFields: [MetadataFieldKey: String] = [:]
-        var exifToolFields: [MetadataFieldKey: String] = [:]
-
-        for (key, value) in fields {
-            switch key {
-            case .orientation, .gpsLatitude, .gpsLatitudeRef, .gpsLongitude, .gpsLongitudeRef:
-                exifToolFields[key] = value
-            default:
-                nativeFields[key] = value
-            }
+        // Mask writes require SwiftExif 1.3.2 (Gap 2). Surface a clear error.
+        if let masks = structuredData.masks, !masks.isEmpty {
+            throw MetadataWriteError.maskWritesUnavailable
         }
 
-        // Write native fields via SwiftExif
-        if !nativeFields.isEmpty || !structuredData.isEmpty {
-            let creationDates = captureCreationDates(for: urls)
-            defer { restoreCreationDates(creationDates) }
+        let creationDates = captureCreationDates(for: urls)
+        defer { restoreCreationDates(creationDates) }
 
-            for url in urls {
-                try Task.checkCancellation()
-                try writeFieldsToFile(nativeFields, structuredData: structuredData, url: url)
-            }
-        }
-
-        // Delegate EXIF IFD fields to ExifTool
-        if !exifToolFields.isEmpty {
-            let tagFields = exifToolFields.reduce(into: [String: String]()) { $0[$1.key.exifToolTag] = $1.value }
-            try await exifToolService.writeFields(tagFields, to: urls)
-        }
-
-        // Delegate mask writes to ExifTool (structured XMP bags not supported natively)
-        if let masks = structuredData.masks {
-            let maskEngine = ExifToolWriteEngine(exifToolService: exifToolService)
-            try await maskEngine.writeFields([:], to: urls, structuredData: StructuredWriteData(masks: masks))
+        for url in urls {
+            try Task.checkCancellation()
+            try writeFieldsToFile(fields, structuredData: structuredData, url: url)
         }
     }
 
@@ -134,8 +113,16 @@ final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Sendable {
     }
 
     func writeOrientation(_ orientation: Int, to urls: [URL]) async throws {
-        // EXIF IFD manipulation — delegate to ExifTool
-        try await exifToolService.writeOrientation(orientation, to: urls)
+        guard !urls.isEmpty else { return }
+        let creationDates = captureCreationDates(for: urls)
+        defer { restoreCreationDates(creationDates) }
+
+        for url in urls {
+            try Task.checkCancellation()
+            var metadata = try readMetadata(from: url)
+            metadata.setOrientation(UInt16(clamping: orientation))
+            try metadata.write(to: url)
+        }
     }
 
     func stripIPTCAndXMP(from urls: [URL]) async throws {
@@ -153,8 +140,34 @@ final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Sendable {
     }
 
     func copyMetadataToRenderedFile(from source: URL, to destination: URL) async throws {
-        // Complex cross-file copy with targeted exclusions — delegate to ExifTool
-        try await exifToolService.copyMetadataToRenderedFile(from: source, to: destination)
+        let creationDates = captureCreationDates(for: [destination])
+        defer { restoreCreationDates(creationDates) }
+
+        let sourceMetadata = try readMetadata(from: source)
+        var destMetadata = try readMetadata(from: destination)
+
+        // Copy IPTC + XMP wholesale, then strip Camera Raw and supersize-to-Standard
+        // tags that would mislead viewers about the rendered output.
+        destMetadata.iptc = sourceMetadata.iptc
+        destMetadata.xmp = sourceMetadata.xmp
+
+        // Drop every Adobe Camera Raw property the source may have carried.
+        // The rendered file is the baked-in result, so leaving these around
+        // would let editors apply the adjustments a second time.
+        for property in cameraRawPropertyNames {
+            destMetadata.xmp?.removeValue(namespace: crsNamespace, property: property)
+        }
+
+        // Drop the IFD1 thumbnail and ICC profile from the source — the renderer
+        // is expected to set its own profile and produce a fresh thumbnail when
+        // emitting the new file.
+        destMetadata.exif?.ifd1 = nil
+        destMetadata.stripICCProfile()
+
+        // Force orientation to 1 — rendered pixels are already upright.
+        destMetadata.setOrientation(1)
+
+        try destMetadata.write(to: destination)
     }
 
     // MARK: - Private Helpers
@@ -166,17 +179,33 @@ final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Sendable {
     ) throws {
         var metadata = try readMetadata(from: url)
 
-        // Apply IPTC / XMP / CRS fields
-        for (key, value) in fields {
-            applyField(key: key, value: value, metadata: &metadata)
+        // GPS coordinates are paired: SwiftExif's setGPS takes both at once
+        // (refs are derived from sign). Pull them out before the per-field loop.
+        let latString = fields[.gpsLatitude]
+        let lonString = fields[.gpsLongitude]
+        let bothCleared = (latString?.isEmpty ?? false) && (lonString?.isEmpty ?? false)
+        if let latString, let lonString, !latString.isEmpty, !lonString.isEmpty,
+           let lat = Double(latString), let lon = Double(lonString) {
+            metadata.setGPS(latitude: lat, longitude: lon)
+        } else if bothCleared {
+            metadata.removeGPS()
         }
 
-        // Apply tone curves via XMP arrays
+        for (key, value) in fields {
+            // GPS handled above; refs are derived in setGPS.
+            switch key {
+            case .gpsLatitude, .gpsLongitude, .gpsLatitudeRef, .gpsLongitudeRef:
+                continue
+            default:
+                applyField(key: key, value: value, metadata: &metadata)
+            }
+        }
+
         if let tc = structuredData.toneCurve {
             applyToneCurves(tc, metadata: &metadata)
         }
 
-        // Sync IPTC → XMP to ensure both sides are consistent
+        // Sync IPTC → XMP to ensure both sides are consistent.
         metadata.syncIPTCToXMP()
 
         try metadata.write(to: url)
@@ -294,79 +323,55 @@ final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Sendable {
             setXMPField(&metadata, namespace: XMPNamespace.xmp, property: "Label",
                         value: isEmpty ? nil : .simple(value))
 
-        // Camera Raw simple fields
-        case .crsVersion:
-            setCRSField(&metadata, property: "Version", value: value)
-        case .crsProcessVersion:
-            setCRSField(&metadata, property: "ProcessVersion", value: value)
-        case .crsWhiteBalance:
-            setCRSField(&metadata, property: "WhiteBalance", value: value)
-        case .crsTemperature:
-            setCRSField(&metadata, property: "Temperature", value: value)
-        case .crsTint:
-            setCRSField(&metadata, property: "Tint", value: value)
-        case .crsIncrementalTemperature:
-            setCRSField(&metadata, property: "IncrementalTemperature", value: value)
-        case .crsIncrementalTint:
-            setCRSField(&metadata, property: "IncrementalTint", value: value)
-        case .crsExposure2012:
-            setCRSField(&metadata, property: "Exposure2012", value: value)
-        case .crsContrast2012:
-            setCRSField(&metadata, property: "Contrast2012", value: value)
-        case .crsHighlights2012:
-            setCRSField(&metadata, property: "Highlights2012", value: value)
-        case .crsShadows2012:
-            setCRSField(&metadata, property: "Shadows2012", value: value)
-        case .crsWhites2012:
-            setCRSField(&metadata, property: "Whites2012", value: value)
-        case .crsBlacks2012:
-            setCRSField(&metadata, property: "Blacks2012", value: value)
-        case .crsSaturation:
-            setCRSField(&metadata, property: "Saturation", value: value)
-        case .crsVibrance:
-            setCRSField(&metadata, property: "Vibrance", value: value)
-        case .crsHasSettings:
-            setCRSField(&metadata, property: "HasSettings", value: value)
-        case .crsCropTop:
-            setCRSField(&metadata, property: "CropTop", value: value)
-        case .crsCropLeft:
-            setCRSField(&metadata, property: "CropLeft", value: value)
-        case .crsCropBottom:
-            setCRSField(&metadata, property: "CropBottom", value: value)
-        case .crsCropRight:
-            setCRSField(&metadata, property: "CropRight", value: value)
-        case .crsCropAngle:
-            setCRSField(&metadata, property: "CropAngle", value: value)
-        case .crsHasCrop:
-            setCRSField(&metadata, property: "HasCrop", value: value)
-        case .crsCropConstrainToWarp:
-            setCRSField(&metadata, property: "CropConstrainToWarp", value: value)
-        case .crsCropConstrainToUnitSquare:
-            setCRSField(&metadata, property: "CropConstrainToUnitSquare", value: value)
-        case .crsHDREditMode:
-            setCRSField(&metadata, property: "HDREditMode", value: value)
-        case .crsHDRMaxValue:
-            setCRSField(&metadata, property: "HDRMaxValue", value: value)
-        case .crsSDRBrightness:
-            setCRSField(&metadata, property: "SDRBrightness", value: value)
-        case .crsSDRContrast:
-            setCRSField(&metadata, property: "SDRContrast", value: value)
-        case .crsSDRClarity:
-            setCRSField(&metadata, property: "SDRClarity", value: value)
-        case .crsSDRHighlights:
-            setCRSField(&metadata, property: "SDRHighlights", value: value)
-        case .crsSDRShadows:
-            setCRSField(&metadata, property: "SDRShadows", value: value)
-        case .crsSDRWhites:
-            setCRSField(&metadata, property: "SDRWhites", value: value)
-        case .crsSDRBlend:
-            setCRSField(&metadata, property: "SDRBlend", value: value)
-        case .crsToneCurveName2012:
-            setCRSField(&metadata, property: "ToneCurveName2012", value: value)
+        // EXIF IFD: orientation
+        case .orientation:
+            if isEmpty {
+                metadata.resetOrientation()
+            } else if let parsed = Int(value) {
+                metadata.setOrientation(UInt16(clamping: parsed))
+            }
 
-        // EXIF IFD fields — handled separately (delegated to ExifTool)
-        case .orientation, .gpsLatitude, .gpsLatitudeRef, .gpsLongitude, .gpsLongitudeRef:
+        // GPS coordinates are handled in `writeFieldsToFile` (paired write
+        // via `setGPS`); these cases should never be reached but are here
+        // to keep the switch exhaustive.
+        case .gpsLatitude, .gpsLongitude, .gpsLatitudeRef, .gpsLongitudeRef:
             break
+
+        // Camera Raw simple fields
+        case .crsVersion: setCRSField(&metadata, property: "Version", value: value)
+        case .crsProcessVersion: setCRSField(&metadata, property: "ProcessVersion", value: value)
+        case .crsWhiteBalance: setCRSField(&metadata, property: "WhiteBalance", value: value)
+        case .crsTemperature: setCRSField(&metadata, property: "Temperature", value: value)
+        case .crsTint: setCRSField(&metadata, property: "Tint", value: value)
+        case .crsIncrementalTemperature: setCRSField(&metadata, property: "IncrementalTemperature", value: value)
+        case .crsIncrementalTint: setCRSField(&metadata, property: "IncrementalTint", value: value)
+        case .crsExposure2012: setCRSField(&metadata, property: "Exposure2012", value: value)
+        case .crsContrast2012: setCRSField(&metadata, property: "Contrast2012", value: value)
+        case .crsHighlights2012: setCRSField(&metadata, property: "Highlights2012", value: value)
+        case .crsShadows2012: setCRSField(&metadata, property: "Shadows2012", value: value)
+        case .crsWhites2012: setCRSField(&metadata, property: "Whites2012", value: value)
+        case .crsBlacks2012: setCRSField(&metadata, property: "Blacks2012", value: value)
+        case .crsSaturation: setCRSField(&metadata, property: "Saturation", value: value)
+        case .crsVibrance: setCRSField(&metadata, property: "Vibrance", value: value)
+        case .crsHasSettings: setCRSField(&metadata, property: "HasSettings", value: value)
+        case .crsCropTop: setCRSField(&metadata, property: "CropTop", value: value)
+        case .crsCropLeft: setCRSField(&metadata, property: "CropLeft", value: value)
+        case .crsCropBottom: setCRSField(&metadata, property: "CropBottom", value: value)
+        case .crsCropRight: setCRSField(&metadata, property: "CropRight", value: value)
+        case .crsCropAngle: setCRSField(&metadata, property: "CropAngle", value: value)
+        case .crsHasCrop: setCRSField(&metadata, property: "HasCrop", value: value)
+        case .crsCropConstrainToWarp: setCRSField(&metadata, property: "CropConstrainToWarp", value: value)
+        case .crsCropConstrainToUnitSquare: setCRSField(&metadata, property: "CropConstrainToUnitSquare", value: value)
+        case .crsHDREditMode: setCRSField(&metadata, property: "HDREditMode", value: value)
+        case .crsHDRMaxValue: setCRSField(&metadata, property: "HDRMaxValue", value: value)
+        case .crsSDRBrightness: setCRSField(&metadata, property: "SDRBrightness", value: value)
+        case .crsSDRContrast: setCRSField(&metadata, property: "SDRContrast", value: value)
+        case .crsSDRClarity: setCRSField(&metadata, property: "SDRClarity", value: value)
+        case .crsSDRHighlights: setCRSField(&metadata, property: "SDRHighlights", value: value)
+        case .crsSDRShadows: setCRSField(&metadata, property: "SDRShadows", value: value)
+        case .crsSDRWhites: setCRSField(&metadata, property: "SDRWhites", value: value)
+        case .crsSDRBlend: setCRSField(&metadata, property: "SDRBlend", value: value)
+        case .crsToneCurveName2012: setCRSField(&metadata, property: "ToneCurveName2012", value: value)
         }
     }
 
@@ -466,3 +471,20 @@ final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Sendable {
         }
     }
 }
+
+/// XMP-crs property names that get stripped when copying metadata onto a rendered file.
+private let cameraRawPropertyNames: [String] = [
+    "Version", "ProcessVersion", "WhiteBalance",
+    "Temperature", "Tint", "IncrementalTemperature", "IncrementalTint",
+    "Exposure2012", "Contrast2012", "Highlights2012", "Shadows2012",
+    "Whites2012", "Blacks2012", "Saturation", "Vibrance",
+    "HasSettings", "HasCrop",
+    "CropTop", "CropLeft", "CropBottom", "CropRight", "CropAngle",
+    "CropConstrainToWarp", "CropConstrainToUnitSquare",
+    "HDREditMode", "HDRMaxValue",
+    "SDRBrightness", "SDRContrast", "SDRClarity",
+    "SDRHighlights", "SDRShadows", "SDRWhites", "SDRBlend",
+    "ToneCurvePV2012", "ToneCurvePV2012Red", "ToneCurvePV2012Green", "ToneCurvePV2012Blue",
+    "ToneCurveName2012",
+    "MaskGroupBasedCorrections"
+]

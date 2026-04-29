@@ -50,12 +50,12 @@ nonisolated enum EditedImageRenderer {
     // MARK: - Unified Render
 
     /// Closure type for copying metadata from a source image to a rendered destination.
-    /// Pass `ExifToolService.copyMetadataToRenderedFile` to use the persistent process.
-    typealias MetadataCopier = @Sendable (URL, URL) async -> Void
+    /// Callers pass `MetadataWriteEngine.copyMetadataToRenderedFile` so the
+    /// renderer stays decoupled from the active write engine.
+    typealias MetadataCopier = @Sendable (URL, URL) async throws -> Void
 
     /// Renders the image to the configured format. Returns the output URL.
-    /// When `metadataCopier` is provided (e.g. from ExifToolService), it uses the persistent
-    /// ExifTool process instead of spawning a fresh one — significantly faster for batch renders.
+    /// `metadataCopier` is required to populate IPTC/XMP/EXIF on the rendered file.
     @discardableResult
     static func render(from sourceURL: URL, cameraRaw: CameraRawSettings?, isHDR: Bool, outputFolder: URL, metadataCopier: MetadataCopier? = nil) async throws -> URL {
         let output = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw)
@@ -67,9 +67,7 @@ nonisolated enum EditedImageRenderer {
             destURL = try await renderSDRFormat(output, sourceURL: sourceURL, outputFolder: outputFolder)
         }
         if let metadataCopier {
-            await metadataCopier(sourceURL, destURL)
-        } else {
-            await copyMetadata(from: sourceURL, to: destURL)
+            try? await metadataCopier(sourceURL, destURL)
         }
         return destURL
     }
@@ -297,9 +295,7 @@ nonisolated enum EditedImageRenderer {
         let destinationURL = outputURL(for: sourceURL, in: outputFolder, extension: "jpg")
         try data.write(to: destinationURL, options: .atomic)
         if let metadataCopier {
-            await metadataCopier(sourceURL, destinationURL)
-        } else {
-            await copyMetadata(from: sourceURL, to: destinationURL)
+            try? await metadataCopier(sourceURL, destinationURL)
         }
     }
 
@@ -355,40 +351,9 @@ nonisolated enum EditedImageRenderer {
         }
 
         if let metadataCopier {
-            await metadataCopier(sourceURL, destURL)
-        } else {
-            await copyMetadata(from: sourceURL, to: destURL)
+            try? await metadataCopier(sourceURL, destURL)
         }
         return destURL
-    }
-
-    // MARK: - Metadata Copy
-
-    /// Copy all metadata from source to rendered destination by spawning a one-off ExifTool process.
-    /// Prefer `ExifToolService.copyMetadataToRenderedFile(from:to:)` when a persistent process is available.
-    private static func copyMetadata(from source: URL, to destination: URL) async {
-        guard let exiftool = ExifToolPathResolver.resolve() else { return }
-
-        do {
-            _ = try await Process.run(
-                executableURL: URL(fileURLWithPath: exiftool),
-                arguments: [
-                    "-m",
-                    "-charset", "iptc=UTF8",
-                    "-TagsFromFile", source.path,
-                    "-all:all",
-                    "-IPTC:CodedCharacterSet=UTF8",
-                    "--XMP-crs:all",
-                    "--IFD1:all",
-                    "--ICC_Profile:all",
-                    "-Orientation#=1",
-                    "-overwrite_original",
-                    destination.path
-                ]
-            )
-        } catch {
-            // Metadata copy is best-effort
-        }
     }
 
     enum RenderError: LocalizedError {

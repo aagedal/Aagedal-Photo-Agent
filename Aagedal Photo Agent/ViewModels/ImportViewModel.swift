@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import SwiftExif
 import os
 
 enum ImportPhase: Equatable {
@@ -39,15 +40,15 @@ final class ImportViewModel {
     /// Whether date scanning is in progress.
     var isScanningDates: Bool = false
 
-    private let exifToolService: ExifToolService
+    private let readService: SwiftExifReadService
     private let writeEngine: any MetadataWriteEngine
     private let interpolator = PresetVariableInterpolator()
     @ObservationIgnored private var scanTask: Task<Void, Never>?
     @ObservationIgnored private var dateScanTask: Task<Void, Never>?
     private let importLog = Logger(subsystem: "com.aagedal.photo-agent", category: "Import")
 
-    init(exifToolService: ExifToolService, writeEngine: any MetadataWriteEngine) {
-        self.exifToolService = exifToolService
+    init(readService: SwiftExifReadService, writeEngine: any MetadataWriteEngine) {
+        self.readService = readService
         self.writeEngine = writeEngine
     }
 
@@ -252,7 +253,8 @@ final class ImportViewModel {
         // Collect all unique destination folders to create.
         let allDestFolders = Set(fileTargetFolder.values)
 
-        Task.detached(priority: .userInitiated) { [exifToolService, interpolator, importLog] in
+        Task.detached(priority: .userInitiated) { [readService, interpolator, importLog] in
+            _ = readService // captured for the resolveMetadataForFile path; SwiftExif has no process to start
             do {
                 let fm = FileManager.default
 
@@ -309,8 +311,6 @@ final class ImportViewModel {
                 // 3. Apply metadata if configured
                 if applyMetadata {
                     await MainActor.run { self.importPhase = .applyingMetadata }
-
-                    try await exifToolService.start()
 
                     if processVariables {
                         var sequenceNumber = 1
@@ -406,7 +406,7 @@ final class ImportViewModel {
         let filename = url.lastPathComponent
         var reference = metadata
 
-        if let fileMetadata = try? await exifToolService.readFullMetadata(url: url) {
+        if let fileMetadata = try? await readService.readFullMetadata(url: url) {
             reference = fileMetadata.merged(preferring: metadata)
         }
 
@@ -465,49 +465,26 @@ final class ImportViewModel {
         dateScanTask?.cancel()
         isScanningDates = true
 
-        dateScanTask = Task.detached(priority: .userInitiated) { [exifToolService] in
-            // Read DateTimeOriginal for all files in one batch call
+        dateScanTask = Task.detached(priority: .userInitiated) {
+            // Read DateTimeOriginal for all files via SwiftExif. SwiftExif reads
+            // are in-process and fast; a serial scan is simpler and avoids
+            // shipping non-Sendable captures across a task group.
             var fileToDate: [URL: String] = [:]
-            let dateFormatter = DateFormatter()
-            dateFormatter.dateFormat = "yyyy:MM:dd"
+            let fm = FileManager.default
+            let mtimeFormat = "yyyy:MM:dd"
 
-            do {
-                try await exifToolService.start()
-
-                // Batch read using ExifTool JSON mode — process in chunks to avoid
-                // exceeding command-line length limits on large cards.
-                let chunkSize = 200
-                for chunkStart in stride(from: 0, to: files.count, by: chunkSize) {
-                    guard !Task.isCancelled else { return }
-                    let chunkEnd = min(chunkStart + chunkSize, files.count)
-                    let chunk = Array(files[chunkStart..<chunkEnd])
-                    let args = ["-json", "-n", "-EXIF:DateTimeOriginal"] + chunk.map(\.path)
-                    let output = try await exifToolService.execute(args)
-
-                    // Parse JSON ourselves since parseJSON is private
-                    let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard let data = trimmed.data(using: .utf8),
-                          let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
-                        continue
-                    }
-
-                    for dict in json {
-                        guard let sourceFile = dict["SourceFile"] as? String else { continue }
-                        let url = URL(fileURLWithPath: sourceFile)
-                        if let dateStr = dict["DateTimeOriginal"] as? String {
-                            let dateOnly = String(dateStr.prefix(10))
-                            fileToDate[url] = dateOnly
-                        }
-                    }
+            for file in files {
+                if Task.isCancelled { return }
+                if let metadata = try? ImageMetadata.read(from: file),
+                   let dateStr = metadata.exif?.dateTimeOriginal {
+                    fileToDate[file] = String(dateStr.prefix(10))
+                    continue
                 }
-            } catch {
-                // Fall back to file modification dates
-                let fm = FileManager.default
-                for file in files {
-                    if let attrs = try? fm.attributesOfItem(atPath: file.path),
-                       let modDate = attrs[.modificationDate] as? Date {
-                        fileToDate[file] = dateFormatter.string(from: modDate)
-                    }
+                if let attrs = try? fm.attributesOfItem(atPath: file.path),
+                   let modDate = attrs[.modificationDate] as? Date {
+                    let formatter = DateFormatter()
+                    formatter.dateFormat = mtimeFormat
+                    fileToDate[file] = formatter.string(from: modDate)
                 }
             }
 

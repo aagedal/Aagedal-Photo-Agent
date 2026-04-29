@@ -64,7 +64,7 @@ Non-destructive RAW development with real-time Metal GPU preview:
 - Template variables: `{date}`, `{date:FORMAT}`, `{dateCreated}`, `{dateCaptured}`, `{filename}`, `{persons}`, `{keywords}`, `{field:FIELDNAME}`
 - Template hotkeys (Ctrl+1-9) for rapid workflows
 - Metadata mirrored to both IPTC and XMP for cross-tool interoperability
-- Powered by bundled ExifTool (kept alive in `-stay_open` mode for performance)
+- Pure-Swift in-process metadata engine (SwiftExif) — no external binaries, no subprocess overhead
 
 ### Face Recognition
 
@@ -150,11 +150,11 @@ AVIF and JPEG XL encoding powered by bundled FFmpeg (arm64, `libaom-av1` and `li
 
 ## Architecture
 
-MVVM with a services layer, built entirely with Apple frameworks and bundled binaries — zero SPM or CocoaPods dependencies.
+MVVM with a services layer, built primarily on Apple frameworks plus a small set of bundled helper binaries.
 
 - **Swift 6** with strict concurrency (`@MainActor` default isolation, `Sendable` services)
 - **Metal GPU pipeline** for real-time image editing, scope rendering, and export
-- **ExifTool** (bundled) for metadata read/write
+- **SwiftExif** (SPM, pure Swift) for metadata read/write
 - **FFmpeg** (bundled, arm64) for AVIF and JPEG XL encoding
 - **c2patool** (bundled) for C2PA signing
 - **Apple Vision** framework for face detection and feature print similarity

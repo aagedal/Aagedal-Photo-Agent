@@ -2,7 +2,7 @@ import SwiftUI
 
 struct RawMetadataView: View {
     let filename: String
-    let exifToolService: ExifToolService
+    let readService: SwiftExifReadService
     let imageURL: URL
 
     private enum MetadataTab: String, CaseIterable {
@@ -134,7 +134,7 @@ struct RawMetadataView: View {
 
     private func loadRawMetadata() async {
         do {
-            jsonText = try await exifToolService.readRawJSON(url: imageURL)
+            jsonText = try await readService.readRawJSON(url: imageURL)
         } catch {
             errorMessage = error.localizedDescription
         }

@@ -146,14 +146,14 @@ final class FaceRecognitionViewModel {
     @ObservationIgnored private var metadataWriteTask: Task<Void, Never>?
     private let detectionService = FaceDetectionService()
     private let storageService = FaceDataStorageService()
-    private let exifToolService: ExifToolService
+    private let readService: SwiftExifReadService
     private let writeEngine: any MetadataWriteEngine
     private let sidecarService = MetadataSidecarService()
     private let xmpSidecarService = XMPSidecarService()
     private let logger = Logger(subsystem: "com.aagedal.photo-agent", category: "FaceRecognitionViewModel")
 
-    init(exifToolService: ExifToolService, writeEngine: any MetadataWriteEngine) {
-        self.exifToolService = exifToolService
+    init(readService: SwiftExifReadService, writeEngine: any MetadataWriteEngine) {
+        self.readService = readService
         self.writeEngine = writeEngine
     }
 
@@ -1336,7 +1336,7 @@ final class FaceRecognitionViewModel {
     @discardableResult
     private func applyNamesToFile(url: URL, names: [String]) async -> Bool {
         do {
-            let existing = try await exifToolService.readFullMetadata(url: url)
+            let existing = try await readService.readFullMetadata(url: url)
             let merged = mergePersons(existing: existing.personShown, adding: names)
             guard merged != existing.personShown else { return true }
             let value = merged.joined(separator: ", ")
@@ -1432,10 +1432,10 @@ final class FaceRecognitionViewModel {
     private func loadC2PALookup(urls: [URL]) async -> [URL: Bool] {
         guard !urls.isEmpty else { return [:] }
         do {
-            let results = try await exifToolService.readBatchBasicMetadata(urls: urls)
+            let results = try await readService.readBatchBasicMetadata(urls: urls)
             var lookup: [URL: Bool] = [:]
             for dict in results {
-                guard let sourcePath = dict[ExifToolReadKey.sourceFile] as? String else { continue }
+                guard let sourcePath = dict[MetadataDictKey.sourceFile] as? String else { continue }
                 let sourceURL = URL(fileURLWithPath: sourcePath)
                 let hasC2PA = TechnicalMetadata.dictHasC2PA(dict)
                 lookup[sourceURL] = hasC2PA
@@ -1448,7 +1448,7 @@ final class FaceRecognitionViewModel {
 
     private func loadBaseMetadata(url: URL, includeXmp: Bool) async -> IPTCMetadata? {
         do {
-            var metadata = try await exifToolService.readFullMetadata(url: url)
+            var metadata = try await readService.readFullMetadata(url: url)
             let preferXmp = UserDefaults.standard.bool(forKey: UserDefaultsKeys.metadataPreferXMPSidecar)
             if (includeXmp || preferXmp),
                PMXMPPolicy.shouldUseXMPReference(for: url),

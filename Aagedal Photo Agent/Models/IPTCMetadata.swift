@@ -19,7 +19,7 @@ nonisolated struct ToneCurve: Codable, Sendable, Equatable {
     }
 }
 
-struct CameraRawCrop: Codable, Sendable, Equatable {
+nonisolated struct CameraRawCrop: Codable, Sendable, Equatable {
     var top: Double?
     var left: Double?
     var bottom: Double?
@@ -37,7 +37,7 @@ struct CameraRawCrop: Codable, Sendable, Equatable {
     }
 }
 
-struct EllipseMaskGeometry: Codable, Sendable, Equatable {
+nonisolated struct EllipseMaskGeometry: Codable, Sendable, Equatable {
     var centerX: Double = 0.5
     var centerY: Double = 0.5
     var radiusX: Double = 0.15
@@ -46,7 +46,7 @@ struct EllipseMaskGeometry: Codable, Sendable, Equatable {
     var feather: Double = 50
 }
 
-struct MaskAdjustment: Codable, Sendable, Equatable, Identifiable {
+nonisolated struct MaskAdjustment: Codable, Sendable, Equatable, Identifiable {
     var id: UUID = UUID()
     var name: String = "Mask 1"
     var enabled: Bool = true
@@ -73,7 +73,7 @@ struct MaskAdjustment: Codable, Sendable, Equatable, Identifiable {
     }
 }
 
-struct HSLColorAdjustment: Codable, Sendable, Equatable {
+nonisolated struct HSLColorAdjustment: Codable, Sendable, Equatable {
     var saturation: Int?    // -100..+100
     var luminance: Int?     // -100..+100 ("Density" in UI)
     var hueShift: Int?      // -25..+25 (maps to ±7.5°)
@@ -83,7 +83,7 @@ struct HSLColorAdjustment: Codable, Sendable, Equatable {
     }
 }
 
-struct HSLAdjustments: Codable, Sendable, Equatable {
+nonisolated struct HSLAdjustments: Codable, Sendable, Equatable {
     var red: HSLColorAdjustment?
     var yellow: HSLColorAdjustment?
     var green: HSLColorAdjustment?
@@ -100,7 +100,7 @@ struct HSLAdjustments: Codable, Sendable, Equatable {
     }
 }
 
-struct CameraRawSettings: Codable, Sendable, Equatable {
+nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
     var version: String?
     var processVersion: String?
     var whiteBalance: String?
@@ -249,7 +249,7 @@ extension CameraRawCrop {
         return CameraRawCrop(top: st, left: sl, bottom: sb, right: sr, angle: angle, hasCrop: hasCrop)
     }
 
-    func merged(preferring override: CameraRawCrop) -> CameraRawCrop {
+    nonisolated func merged(preferring override: CameraRawCrop) -> CameraRawCrop {
         var result = self
         if let value = override.top { result.top = value }
         if let value = override.left { result.left = value }
@@ -261,12 +261,12 @@ extension CameraRawCrop {
     }
 }
 
-struct DescriptionConflict: Sendable {
+nonisolated struct DescriptionConflict: Sendable {
     let xmpDescription: String
     let iptcCaptionAbstract: String
 }
 
-struct IPTCMetadata: Codable, Sendable, Equatable {
+nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
     // Priority fields (always visible)
     var title: String?
     var description: String?
@@ -439,7 +439,7 @@ extension IPTCMetadata {
 }
 
 extension IPTCMetadata {
-    /// Convert editable IPTC fields to an ExifTool write-tag dictionary.
+    /// Convert editable IPTC fields to a metadata write-key dictionary.
     /// Excludes rating, label, cameraRaw, and orientation (managed separately).
     func toWriteFields() -> [MetadataFieldKey: String] {
         var fields: [MetadataFieldKey: String] = [:]
@@ -467,7 +467,7 @@ extension IPTCMetadata {
     }
 }
 
-enum DigitalSourceType: String, Codable, CaseIterable, Sendable {
+nonisolated enum DigitalSourceType: String, Codable, CaseIterable, Sendable {
     case trainedAlgorithmicMedia = "trainedAlgorithmicMedia"
     case digitalCapture = "digitalCapture"
     case negativeFilm = "negativeFilm"
@@ -538,7 +538,7 @@ extension IPTCMetadata {
     }
 }
 
-extension Array where Element: Hashable {
+nonisolated extension Array where Element: Hashable {
     /// Returns the array with duplicates removed, preserving the order of first occurrences.
     func uniqued() -> [Element] {
         var seen = Set<Element>()

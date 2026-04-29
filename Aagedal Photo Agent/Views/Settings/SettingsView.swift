@@ -75,47 +75,6 @@ struct SettingsView: View {
     @ViewBuilder
     private var generalTab: some View {
         Form {
-            Section("ExifTool") {
-                Picker("Source", selection: $settingsViewModel.exifToolSource) {
-                    ForEach(ExifToolSource.allCases, id: \.self) { source in
-                        Text(source.displayName).tag(source)
-                    }
-                }
-                .pickerStyle(.segmented)
-
-                if settingsViewModel.exifToolSource == .custom {
-                    LabeledContent("Path") {
-                        HStack {
-                            TextField("Path to exiftool", text: $settingsViewModel.exifToolCustomPath)
-                                .textFieldStyle(.roundedBorder)
-                            Button("Browse...") {
-                                let panel = NSOpenPanel()
-                                panel.canChooseFiles = true
-                                panel.canChooseDirectories = false
-                                panel.allowsMultipleSelection = false
-                                if panel.runModal() == .OK, let url = panel.url {
-                                    settingsViewModel.exifToolCustomPath = url.path
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if let path = settingsViewModel.selectedExifToolPath {
-                    LabeledContent("Active") {
-                        Text(path)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                } else {
-                    LabeledContent("Status") {
-                        Text("Not found")
-                            .foregroundStyle(.orange)
-                    }
-                }
-            }
-
             Section("External Editor") {
                 Picker("Command+E", selection: $settingsViewModel.defaultEditDestination) {
                     ForEach(DefaultEditDestination.allCases) { destination in
@@ -557,19 +516,6 @@ struct SettingsView: View {
                 .pickerStyle(.segmented)
 
                 Text("Add: new items are merged into each image's existing values. Overwrite: all images get exactly the entered values.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("Write Engine") {
-                Picker("Engine", selection: $settingsViewModel.metadataWriteEngine) {
-                    ForEach(MetadataWriteEngineChoice.allCases, id: \.self) { engine in
-                        Text(engine.displayName).tag(engine)
-                    }
-                }
-                .pickerStyle(.segmented)
-
-                Text(settingsViewModel.metadataWriteEngine.description)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

@@ -126,8 +126,8 @@ final class BrowserViewModel {
 
     let fileSystemService = FileSystemService()
     let thumbnailService = ThumbnailService()
-    let exifToolService = ExifToolService()
-    @ObservationIgnored private(set) var writeEngine: any MetadataWriteEngine
+    let metadataReadService = SwiftExifReadService()
+    @ObservationIgnored private(set) var writeEngine: any MetadataWriteEngine = SwiftExifWriteEngine()
     @ObservationIgnored let fullScreenImageCache = FullScreenImageCache()
     private let sidecarService = MetadataSidecarService()
     private let xmpSidecarService = XMPSidecarService()
@@ -157,8 +157,7 @@ final class BrowserViewModel {
     @ObservationIgnored private var pendingMetadataDrainTask: Task<Void, Never>?
     @ObservationIgnored private var autoRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var metadataWriteTask: Task<Void, Never>?
-    @ObservationIgnored private var exifToolBatchTask: Task<Void, Never>?
-    @ObservationIgnored nonisolated(unsafe) private var writeEngineObserver: (any NSObjectProtocol)?
+    @ObservationIgnored private var batchReadTask: Task<Void, Never>?
 
     private let favoritesKey = UserDefaultsKeys.favoriteFolders
     private let recentFoldersKey = UserDefaultsKeys.recentFolders
@@ -180,16 +179,6 @@ final class BrowserViewModel {
     @ObservationIgnored private(set) var selectedImagesCache: [ImageFile] = []
 
     init() {
-        let engineChoice = MetadataWriteEngineChoice(
-            rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.metadataWriteEngine) ?? ""
-        ) ?? .swiftExif
-        switch engineChoice {
-        case .swiftExif:
-            writeEngine = SwiftExifWriteEngine(exifToolService: exifToolService)
-        case .exifTool:
-            writeEngine = ExifToolWriteEngine(exifToolService: exifToolService)
-        }
-
         if let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.thumbnailSortOrder),
            let stored = SortOrder(rawValue: raw) {
             sortOrder = stored
@@ -201,25 +190,9 @@ final class BrowserViewModel {
         }
         self.showOriginalThumbnails = UserDefaults.standard.bool(forKey: UserDefaultsKeys.showOriginalThumbnails)
         self.showAllFiles = UserDefaults.standard.bool(forKey: UserDefaultsKeys.showAllFiles)
-
-        writeEngineObserver = NotificationCenter.default.addObserver(forName: .metadataWriteEngineChanged, object: nil, queue: .main) { [weak self] _ in
-            guard let self else { return }
-            let choice = MetadataWriteEngineChoice(
-                rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.metadataWriteEngine) ?? ""
-            ) ?? .swiftExif
-            switch choice {
-            case .swiftExif:
-                self.writeEngine = SwiftExifWriteEngine(exifToolService: self.exifToolService)
-            case .exifTool:
-                self.writeEngine = ExifToolWriteEngine(exifToolService: self.exifToolService)
-            }
-        }
     }
 
     deinit {
-        if let writeEngineObserver {
-            NotificationCenter.default.removeObserver(writeEngineObserver)
-        }
         sortFeedbackTask?.cancel()
         searchDebounceTask?.cancel()
         rebuildCoalesceTask?.cancel()
@@ -228,7 +201,7 @@ final class BrowserViewModel {
         pendingMetadataDrainTask?.cancel()
         autoRefreshTask?.cancel()
         metadataWriteTask?.cancel()
-        exifToolBatchTask?.cancel()
+        batchReadTask?.cancel()
     }
 
     var selectedImages: [ImageFile] { selectedImagesCache }
@@ -491,7 +464,7 @@ final class BrowserViewModel {
         pendingMetadataDrainTask?.cancel()
         autoRefreshTask?.cancel()
         metadataWriteTask?.cancel()
-        exifToolBatchTask?.cancel()
+        batchReadTask?.cancel()
         // Reset in case the cancelled task's metadata loop left this true,
         // otherwise the images.didSet below won't rebuild urlToImageIndex.
         suppressImagesCascade = false
@@ -529,7 +502,7 @@ final class BrowserViewModel {
 
                 // Phase 1.5: Read EXIF orientations in background (deferred).
                 // Thumbnails don't need this (QL/CGImageSource apply transforms internally).
-                // Phase 5 (ExifTool) also sets it; this provides it sooner for full-screen entry.
+                // Phase 5 (metadata read) also sets it; this provides it sooner for full-screen entry.
                 var orientedFiles = files
                 await self.readOrientationsEagerly(for: &orientedFiles)
                 guard !Task.isCancelled, self.currentFolderURL == url else { return }
@@ -570,7 +543,7 @@ final class BrowserViewModel {
                     screenMaxPx: 960
                 )
 
-                // Phase 5: Load metadata from ExifTool
+                // Phase 5: Load metadata
                 await loadBasicMetadata(cachedSidecars: allSidecars)
             } catch {
                 guard !Task.isCancelled, self.currentFolderURL == url else { return }
@@ -684,7 +657,7 @@ final class BrowserViewModel {
 
     /// Read EXIF orientation via CGImageSource (metadata-only, ~0.1ms/file).
     /// Called eagerly after folder scan so exifOrientation is correct before
-    /// the full ExifTool batch read.
+    /// the full batch metadata read.
     private func readOrientationsEagerly(for images: inout [ImageFile]) async {
         let indexed = images.enumerated()
             .filter { $0.element.isImageFile }
@@ -713,7 +686,7 @@ final class BrowserViewModel {
     }
 
     private func loadBasicMetadata(cachedSidecars: [URL: MetadataSidecar] = [:]) async {
-        guard exifToolService.isAvailable else { return }
+        guard metadataReadService.isAvailable else { return }
         if isMetadataLoading {
             pendingMetadataURLs.formUnion(images.map(\.url))
             return
@@ -726,7 +699,7 @@ final class BrowserViewModel {
         }
 
         do {
-            try exifToolService.start()
+            try metadataReadService.start()
         } catch {
             return
         }
@@ -751,23 +724,21 @@ final class BrowserViewModel {
             let batchTimer = ContinuousClock.now
 
             do {
-                let results = try await exifToolService.readBatchBasicMetadata(urls: batchURLs)
-                let batchMs = Int(batchTimer.duration(to: .now).components.seconds * 1000)
-                    + Int(batchTimer.duration(to: .now).components.attoseconds / 1_000_000_000_000_000)
+                let results = try await metadataReadService.readBatchBasicMetadata(urls: batchURLs)
+                let batchMs = batchTimer.elapsedMilliseconds()
                 perfLog.info("[BrowserVM] batch \(batchIndex)/\(totalBatches) DONE — \(batchURLs.count) files in \(batchMs)ms")
                 applyBatchMetadataResults(results, to: &images, localIndex: urlToImageIndex, cachedSidecars: cachedSidecars)
             } catch {
                 logger.warning("Batch metadata load failed (batch at offset \(batchStart)): \(error.localizedDescription)")
             }
         }
-        let totalMs = Int(totalBatchStart.duration(to: .now).components.seconds * 1000)
-            + Int(totalBatchStart.duration(to: .now).components.attoseconds / 1_000_000_000_000_000)
+        let totalMs = totalBatchStart.elapsedMilliseconds()
         perfLog.info("[BrowserVM] loadBasicMetadata DONE — \(urls.count) images in \(totalMs)ms")
         rebuildSortedCache()
     }
 
     private func loadBasicMetadata(for urls: [URL]) async {
-        guard exifToolService.isAvailable else { return }
+        guard metadataReadService.isAvailable else { return }
         guard !urls.isEmpty else { return }
         if isMetadataLoading {
             pendingMetadataURLs.formUnion(urls)
@@ -781,7 +752,7 @@ final class BrowserViewModel {
         }
 
         do {
-            try exifToolService.start()
+            try metadataReadService.start()
         } catch {
             return
         }
@@ -796,7 +767,7 @@ final class BrowserViewModel {
             let batchURLs = Array(urls[batchStart..<batchEnd])
 
             do {
-                let results = try await exifToolService.readBatchBasicMetadata(urls: batchURLs)
+                let results = try await metadataReadService.readBatchBasicMetadata(urls: batchURLs)
                 applyBatchMetadataResults(results, to: &images, localIndex: urlToImageIndex)
             } catch {
                 logger.warning("Incremental metadata load failed: \(error.localizedDescription)")
@@ -816,7 +787,7 @@ final class BrowserViewModel {
         }
     }
 
-    /// Apply parsed ExifTool batch results to the local ImageFile array.
+    /// Apply parsed batch metadata results to the local ImageFile array.
     /// Shared by full-folder reload and incremental (pending URL) reload paths.
     private func applyBatchMetadataResults(
         _ results: [[String: Any]],
@@ -825,29 +796,29 @@ final class BrowserViewModel {
         cachedSidecars: [URL: MetadataSidecar] = [:]
     ) {
         for dict in results {
-            guard let sourcePath = dict[ExifToolReadKey.sourceFile] as? String else { continue }
+            guard let sourcePath = dict[MetadataDictKey.sourceFile] as? String else { continue }
             let sourceURL = URL(fileURLWithPath: sourcePath)
 
             // Bounds-check: localIndex can become stale when images are modified during
-            // an async ExifTool await (e.g. user switches folder while batch is in-flight).
+            // an async metadata await (e.g. user switches folder while batch is in-flight).
             if let index = localIndex[sourceURL], index < updated.count {
-                if let rating = dict[ExifToolReadKey.rating] as? Int,
+                if let rating = dict[MetadataDictKey.rating] as? Int,
                    let starRating = StarRating(rawValue: rating) {
                     updated[index].starRating = starRating
                 }
-                updated[index].colorLabel = ColorLabel.fromMetadataLabel(dict[ExifToolReadKey.label] as? String)
-                updated[index].personShown = parseStringOrArray(dict[ExifToolReadKey.personInImage])
+                updated[index].colorLabel = ColorLabel.fromMetadataLabel(dict[MetadataDictKey.label] as? String)
+                updated[index].personShown = parseStringOrArray(dict[MetadataDictKey.personInImage])
                 updated[index].keywords = mergedKeywords(from: dict)
                 updated[index].hasC2PA = TechnicalMetadata.dictHasC2PA(dict)
                 updated[index].hasDevelopEdits = hasDevelopEdits(in: dict)
                 updated[index].hasCropEdits = hasCropEdits(in: dict)
-                updated[index].exifOrientation = parseIntValue(dict[ExifToolReadKey.orientation]) ?? 1
+                updated[index].exifOrientation = parseIntValue(dict[MetadataDictKey.orientation]) ?? 1
                 updated[index].isNativeHDR = SupportedImageFormats.isHDR(url: sourceURL)
                     || (UserDefaults.standard.bool(forKey: UserDefaultsKeys.rawRenderAsHDR) && SupportedImageFormats.isRaw(url: sourceURL))
                 updated[index].cropRegion = cropRegion(in: dict, exifOrientation: updated[index].exifOrientation)
                 // Preserve in-memory localAdjustments — these are set by the edit
-                // workspace and written to the image via ExifTool, not parsed from
-                // batch ExifTool XMP output.
+                // workspace and written to the image directly, not parsed from
+                // batch XMP output.
                 let existingLocalAdjustments = updated[index].cameraRawSettings?.localAdjustments
                 var newSettings = cameraRawSettings(in: dict)
                 if (existingLocalAdjustments?.isEmpty == false) && newSettings == nil {
@@ -861,7 +832,7 @@ final class BrowserViewModel {
                 // Load XMP sidecar once — fast fileExists check for non-existent files.
                 let xmpMeta = xmpSidecarService.loadSidecar(for: sourceURL)
 
-                // ExifTool reads CRS from the image file itself but NOT from the
+                // metadata reads CRS from the image file itself but NOT from the
                 // adjacent .xmp sidecar where edited CameraRaw settings are stored.
                 // For RAW files, the XMP sidecar is the authoritative CRS source —
                 // replace rather than merge to avoid stale embedded values leaking
@@ -880,7 +851,7 @@ final class BrowserViewModel {
 
                 // XMP sidecar rating/label/orientation overrides — written by
                 // writeToXMPSidecar mode for C2PA images (and any other images
-                // using that mode).  ExifTool only reads from the image file,
+                // using that mode).  Metadata only reads from the image file,
                 // not adjacent .xmp files.
                 if let xmpMeta {
                     if let xmpRating = xmpMeta.rating,
@@ -918,8 +889,8 @@ final class BrowserViewModel {
 
     /// Merge IPTC:Keywords and XMP:Subject into a single deduplicated keyword list.
     private func mergedKeywords(from dict: [String: Any]) -> [String] {
-        let iptc = parseStringOrArray(dict[ExifToolReadKey.keywords])
-        let xmp = parseStringOrArray(dict[ExifToolReadKey.subject])
+        let iptc = parseStringOrArray(dict[MetadataDictKey.keywords])
+        let xmp = parseStringOrArray(dict[MetadataDictKey.subject])
         guard !xmp.isEmpty else { return iptc }
         guard !iptc.isEmpty else { return xmp }
         // Merge, preserving IPTC order, then append any XMP-only entries
@@ -933,27 +904,27 @@ final class BrowserViewModel {
     }
 
     private func hasDevelopEdits(in dict: [String: Any]) -> Bool {
-        if parseBoolValue(dict[ExifToolReadKey.crsHasSettings]) == true {
+        if parseBoolValue(dict[MetadataDictKey.crsHasSettings]) == true {
             return true
         }
-        if parseBoolValue(dict[ExifToolReadKey.crsHasCrop]) == true {
+        if parseBoolValue(dict[MetadataDictKey.crsHasCrop]) == true {
             return true
         }
         let numericKeys: [String] = [
-            ExifToolReadKey.crsExposure2012,
-            ExifToolReadKey.crsContrast2012,
-            ExifToolReadKey.crsHighlights2012,
-            ExifToolReadKey.crsShadows2012,
-            ExifToolReadKey.crsWhites2012,
-            ExifToolReadKey.crsBlacks2012,
-            ExifToolReadKey.crsTemperature,
-            ExifToolReadKey.crsTint,
-            ExifToolReadKey.crsIncrementalTemperature,
-            ExifToolReadKey.crsIncrementalTint,
-            ExifToolReadKey.crsCropTop,
-            ExifToolReadKey.crsCropLeft,
-            ExifToolReadKey.crsCropBottom,
-            ExifToolReadKey.crsCropRight,
+            MetadataDictKey.crsExposure2012,
+            MetadataDictKey.crsContrast2012,
+            MetadataDictKey.crsHighlights2012,
+            MetadataDictKey.crsShadows2012,
+            MetadataDictKey.crsWhites2012,
+            MetadataDictKey.crsBlacks2012,
+            MetadataDictKey.crsTemperature,
+            MetadataDictKey.crsTint,
+            MetadataDictKey.crsIncrementalTemperature,
+            MetadataDictKey.crsIncrementalTint,
+            MetadataDictKey.crsCropTop,
+            MetadataDictKey.crsCropLeft,
+            MetadataDictKey.crsCropBottom,
+            MetadataDictKey.crsCropRight,
         ]
         for key in numericKeys {
             if let value = parseDoubleValue(dict[key]), abs(value) > 0.0001 {
@@ -964,15 +935,15 @@ final class BrowserViewModel {
     }
 
     private func hasCropEdits(in dict: [String: Any]) -> Bool {
-        if parseBoolValue(dict[ExifToolReadKey.crsHasCrop]) == true {
+        if parseBoolValue(dict[MetadataDictKey.crsHasCrop]) == true {
             return true
         }
 
-        let top = parseDoubleValue(dict[ExifToolReadKey.crsCropTop]) ?? 0
-        let left = parseDoubleValue(dict[ExifToolReadKey.crsCropLeft]) ?? 0
-        let bottom = parseDoubleValue(dict[ExifToolReadKey.crsCropBottom]) ?? 1
-        let right = parseDoubleValue(dict[ExifToolReadKey.crsCropRight]) ?? 1
-        let angle = parseDoubleValue(dict[ExifToolReadKey.crsCropAngle]) ?? 0
+        let top = parseDoubleValue(dict[MetadataDictKey.crsCropTop]) ?? 0
+        let left = parseDoubleValue(dict[MetadataDictKey.crsCropLeft]) ?? 0
+        let bottom = parseDoubleValue(dict[MetadataDictKey.crsCropBottom]) ?? 1
+        let right = parseDoubleValue(dict[MetadataDictKey.crsCropRight]) ?? 1
+        let angle = parseDoubleValue(dict[MetadataDictKey.crsCropAngle]) ?? 0
         let epsilon = 0.0001
 
         return abs(top) > epsilon
@@ -985,12 +956,12 @@ final class BrowserViewModel {
     private func cropRegion(in dict: [String: Any], exifOrientation: Int = 1) -> ThumbnailCropRegion? {
         guard hasCropEdits(in: dict) else { return nil }
         let sensorCrop = CameraRawCrop(
-            top: parseDoubleValue(dict[ExifToolReadKey.crsCropTop]),
-            left: parseDoubleValue(dict[ExifToolReadKey.crsCropLeft]),
-            bottom: parseDoubleValue(dict[ExifToolReadKey.crsCropBottom]),
-            right: parseDoubleValue(dict[ExifToolReadKey.crsCropRight]),
-            angle: parseDoubleValue(dict[ExifToolReadKey.crsCropAngle]),
-            hasCrop: parseBoolValue(dict[ExifToolReadKey.crsHasCrop])
+            top: parseDoubleValue(dict[MetadataDictKey.crsCropTop]),
+            left: parseDoubleValue(dict[MetadataDictKey.crsCropLeft]),
+            bottom: parseDoubleValue(dict[MetadataDictKey.crsCropBottom]),
+            right: parseDoubleValue(dict[MetadataDictKey.crsCropRight]),
+            angle: parseDoubleValue(dict[MetadataDictKey.crsCropAngle]),
+            hasCrop: parseBoolValue(dict[MetadataDictKey.crsHasCrop])
         )
         let displayCrop = sensorCrop.transformedForDisplay(orientation: exifOrientation)
         let top = displayCrop.top ?? 0
@@ -1035,7 +1006,7 @@ final class BrowserViewModel {
         return nil
     }
 
-    private func parseToneCurveFromExifTool(_ value: Any?) -> [ToneCurvePoint]? {
+    private func parseToneCurve(_ value: Any?) -> [ToneCurvePoint]? {
         guard let array = value as? [String], array.count > 2 else { return nil }
         let points = array.compactMap { str -> ToneCurvePoint? in
             let parts = str.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
@@ -1049,51 +1020,51 @@ final class BrowserViewModel {
 
     private func cameraRawSettings(in dict: [String: Any]) -> CameraRawSettings? {
         let crop = CameraRawCrop(
-            top: parseDoubleValue(dict[ExifToolReadKey.crsCropTop]),
-            left: parseDoubleValue(dict[ExifToolReadKey.crsCropLeft]),
-            bottom: parseDoubleValue(dict[ExifToolReadKey.crsCropBottom]),
-            right: parseDoubleValue(dict[ExifToolReadKey.crsCropRight]),
-            angle: parseDoubleValue(dict[ExifToolReadKey.crsCropAngle]),
-            hasCrop: parseBoolValue(dict[ExifToolReadKey.crsHasCrop])
+            top: parseDoubleValue(dict[MetadataDictKey.crsCropTop]),
+            left: parseDoubleValue(dict[MetadataDictKey.crsCropLeft]),
+            bottom: parseDoubleValue(dict[MetadataDictKey.crsCropBottom]),
+            right: parseDoubleValue(dict[MetadataDictKey.crsCropRight]),
+            angle: parseDoubleValue(dict[MetadataDictKey.crsCropAngle]),
+            hasCrop: parseBoolValue(dict[MetadataDictKey.crsHasCrop])
         )
         let cropValue = crop.isEmpty ? nil : crop
 
-        let tcMaster = parseToneCurveFromExifTool(dict[ExifToolReadKey.crsToneCurvePV2012])
-        let tcRed = parseToneCurveFromExifTool(dict[ExifToolReadKey.crsToneCurvePV2012Red])
-        let tcGreen = parseToneCurveFromExifTool(dict[ExifToolReadKey.crsToneCurvePV2012Green])
-        let tcBlue = parseToneCurveFromExifTool(dict[ExifToolReadKey.crsToneCurvePV2012Blue])
+        let tcMaster = parseToneCurve(dict[MetadataDictKey.crsToneCurvePV2012])
+        let tcRed = parseToneCurve(dict[MetadataDictKey.crsToneCurvePV2012Red])
+        let tcGreen = parseToneCurve(dict[MetadataDictKey.crsToneCurvePV2012Green])
+        let tcBlue = parseToneCurve(dict[MetadataDictKey.crsToneCurvePV2012Blue])
         let toneCurve: ToneCurve? = {
             let tc = ToneCurve(master: tcMaster, red: tcRed, green: tcGreen, blue: tcBlue)
             return tc.isEmpty ? nil : tc
         }()
 
         let settings = CameraRawSettings(
-            version: dict[ExifToolReadKey.crsVersion] as? String,
-            processVersion: dict[ExifToolReadKey.crsProcessVersion] as? String,
-            whiteBalance: dict[ExifToolReadKey.crsWhiteBalance] as? String,
-            temperature: parseIntValue(dict[ExifToolReadKey.crsTemperature]),
-            tint: parseIntValue(dict[ExifToolReadKey.crsTint]),
-            incrementalTemperature: parseIntValue(dict[ExifToolReadKey.crsIncrementalTemperature]),
-            incrementalTint: parseIntValue(dict[ExifToolReadKey.crsIncrementalTint]),
-            exposure2012: parseDoubleValue(dict[ExifToolReadKey.crsExposure2012]),
-            contrast2012: parseIntValue(dict[ExifToolReadKey.crsContrast2012]),
-            highlights2012: parseIntValue(dict[ExifToolReadKey.crsHighlights2012]),
-            shadows2012: parseIntValue(dict[ExifToolReadKey.crsShadows2012]),
-            whites2012: parseIntValue(dict[ExifToolReadKey.crsWhites2012]),
-            blacks2012: parseIntValue(dict[ExifToolReadKey.crsBlacks2012]),
-            saturation: parseIntValue(dict[ExifToolReadKey.crsSaturation]),
-            vibrance: parseIntValue(dict[ExifToolReadKey.crsVibrance]),
-            hasSettings: parseBoolValue(dict[ExifToolReadKey.crsHasSettings]),
+            version: dict[MetadataDictKey.crsVersion] as? String,
+            processVersion: dict[MetadataDictKey.crsProcessVersion] as? String,
+            whiteBalance: dict[MetadataDictKey.crsWhiteBalance] as? String,
+            temperature: parseIntValue(dict[MetadataDictKey.crsTemperature]),
+            tint: parseIntValue(dict[MetadataDictKey.crsTint]),
+            incrementalTemperature: parseIntValue(dict[MetadataDictKey.crsIncrementalTemperature]),
+            incrementalTint: parseIntValue(dict[MetadataDictKey.crsIncrementalTint]),
+            exposure2012: parseDoubleValue(dict[MetadataDictKey.crsExposure2012]),
+            contrast2012: parseIntValue(dict[MetadataDictKey.crsContrast2012]),
+            highlights2012: parseIntValue(dict[MetadataDictKey.crsHighlights2012]),
+            shadows2012: parseIntValue(dict[MetadataDictKey.crsShadows2012]),
+            whites2012: parseIntValue(dict[MetadataDictKey.crsWhites2012]),
+            blacks2012: parseIntValue(dict[MetadataDictKey.crsBlacks2012]),
+            saturation: parseIntValue(dict[MetadataDictKey.crsSaturation]),
+            vibrance: parseIntValue(dict[MetadataDictKey.crsVibrance]),
+            hasSettings: parseBoolValue(dict[MetadataDictKey.crsHasSettings]),
             crop: cropValue,
-            hdrEditMode: parseIntValue(dict[ExifToolReadKey.crsHDREditMode]),
-            hdrMaxValue: dict[ExifToolReadKey.crsHDRMaxValue] as? String,
-            sdrBrightness: parseIntValue(dict[ExifToolReadKey.crsSDRBrightness]),
-            sdrContrast: parseIntValue(dict[ExifToolReadKey.crsSDRContrast]),
-            sdrClarity: parseIntValue(dict[ExifToolReadKey.crsSDRClarity]),
-            sdrHighlights: parseIntValue(dict[ExifToolReadKey.crsSDRHighlights]),
-            sdrShadows: parseIntValue(dict[ExifToolReadKey.crsSDRShadows]),
-            sdrWhites: parseIntValue(dict[ExifToolReadKey.crsSDRWhites]),
-            sdrBlend: parseIntValue(dict[ExifToolReadKey.crsSDRBlend]),
+            hdrEditMode: parseIntValue(dict[MetadataDictKey.crsHDREditMode]),
+            hdrMaxValue: dict[MetadataDictKey.crsHDRMaxValue] as? String,
+            sdrBrightness: parseIntValue(dict[MetadataDictKey.crsSDRBrightness]),
+            sdrContrast: parseIntValue(dict[MetadataDictKey.crsSDRContrast]),
+            sdrClarity: parseIntValue(dict[MetadataDictKey.crsSDRClarity]),
+            sdrHighlights: parseIntValue(dict[MetadataDictKey.crsSDRHighlights]),
+            sdrShadows: parseIntValue(dict[MetadataDictKey.crsSDRShadows]),
+            sdrWhites: parseIntValue(dict[MetadataDictKey.crsSDRWhites]),
+            sdrBlend: parseIntValue(dict[MetadataDictKey.crsSDRBlend]),
             toneCurve: toneCurve
         )
         return settings.isEmpty ? nil : settings
@@ -1288,7 +1259,7 @@ final class BrowserViewModel {
                     }
                 )
             },
-            writeToExifTool: { try await self.writeEngine.writeRating(rating, to: $0) },
+            writeToFile: { try await self.writeEngine.writeRating(rating, to: $0) },
             fieldDescription: "rating"
         )
     }
@@ -1309,7 +1280,7 @@ final class BrowserViewModel {
                     }
                 )
             },
-            writeToExifTool: { try await self.writeEngine.writeLabel(label, to: $0) },
+            writeToFile: { try await self.writeEngine.writeLabel(label, to: $0) },
             fieldDescription: "label"
         )
     }
@@ -1337,7 +1308,7 @@ final class BrowserViewModel {
                     }
                 )
             },
-            writeToExifTool: { urls in
+            writeToFile: { urls in
                 var byOrientation: [Int: [URL]] = [:]
                 for url in urls {
                     let orientation = newOrientations[url] ?? 1
@@ -1377,7 +1348,7 @@ final class BrowserViewModel {
                     }
                 )
             },
-            writeToExifTool: { urls in
+            writeToFile: { urls in
                 var byOrientation: [Int: [URL]] = [:]
                 for url in urls {
                     let orientation = newOrientations[url] ?? 1
@@ -1399,7 +1370,7 @@ final class BrowserViewModel {
         affectsSortKey: Bool,
         affectsFilterKey: Bool,
         applySidecar: @escaping (URL, Bool, Bool) async -> Void,
-        writeToExifTool: @escaping ([URL]) async throws -> Void,
+        writeToFile: @escaping ([URL]) async throws -> Void,
         fieldDescription: String
     ) {
         guard !selectedImageIDs.isEmpty else { return }
@@ -1533,9 +1504,9 @@ final class BrowserViewModel {
             }
 
             let fileWriteTargets = writeToFileWithSidecar + writeToFileWithoutSidecar
-            if exifToolService.isAvailable, !fileWriteTargets.isEmpty {
+            if metadataReadService.isAvailable, !fileWriteTargets.isEmpty {
                 do {
-                    try await writeToExifTool(fileWriteTargets)
+                    try await writeToFile(fileWriteTargets)
                     clearMetadataSidecars(for: writeToFileWithoutSidecar)
                 } catch {
                     self.errorMessage = "Failed to write \(fieldDescription): \(error.localizedDescription)"
@@ -1602,10 +1573,10 @@ final class BrowserViewModel {
 
     /// Apply cameraRaw and crop state from XMP during initial folder load.
     /// Camera raw is no longer stored in JSON sidecars — this is now a no-op
-    /// until ExifTool metadata is read (which populates cameraRaw from XMP).
+    /// until metadata is read (which populates cameraRaw from XMP).
     private func applySidecarCropAndDevelopState(to imageFile: inout ImageFile, sidecar: MetadataSidecar) {
         // Camera raw data is sourced from XMP only, not from JSON sidecar.
-        // Crop/develop state will be applied when ExifTool metadata loads.
+        // Crop/develop state will be applied when metadata loads.
     }
 
     private func applySidecarCropState(to imageFile: inout ImageFile, cameraRaw: CameraRawSettings?) {
@@ -1701,7 +1672,7 @@ final class BrowserViewModel {
 
     private func loadMetadataSnapshot(for url: URL, includeXmp: Bool) async -> IPTCMetadata? {
         do {
-            var metadata = try await exifToolService.readFullMetadata(url: url)
+            var metadata = try await metadataReadService.readFullMetadata(url: url)
             let preferXmp = UserDefaults.standard.bool(forKey: UserDefaultsKeys.metadataPreferXMPSidecar)
             if (includeXmp || preferXmp),
                PMXMPPolicy.shouldUseXMPReference(for: url),
@@ -2702,8 +2673,8 @@ final class BrowserViewModel {
         }
 
         // Write cleared CRS fields to XMP in the image files
-        exifToolBatchTask?.cancel()
-        exifToolBatchTask = Task {
+        batchReadTask?.cancel()
+        batchReadTask = Task {
             var clearFields: [MetadataFieldKey: String] = [:]
             clearFields[.crsVersion] = ""
             clearFields[.crsProcessVersion] = ""
@@ -2784,8 +2755,8 @@ final class BrowserViewModel {
         guard let folderURL = currentFolderURL else { return }
         let urls = removeIPTCSelectedURLs
 
-        exifToolBatchTask?.cancel()
-        exifToolBatchTask = Task {
+        batchReadTask?.cancel()
+        batchReadTask = Task {
             do {
                 try await writeEngine.stripIPTCAndXMP(from: urls)
             } catch {

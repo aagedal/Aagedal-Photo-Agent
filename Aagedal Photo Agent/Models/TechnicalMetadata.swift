@@ -58,7 +58,7 @@ struct TechnicalMetadata {
         return "\(w) x \(h)"
     }
 
-    /// Check whether a dict (from ExifTool JSON output with `-JUMBF:All`) contains C2PA data.
+    /// Check whether a metadata dict contains C2PA data.
     static func dictHasC2PA(_ dict: [String: Any]) -> Bool {
         dict.keys.contains { $0.hasPrefix("JUMD") || $0.hasPrefix("C2PA") || $0 == ExifKey.claimGenerator }
     }
@@ -139,7 +139,7 @@ struct TechnicalMetadata {
 
         // Bit depth and color space — prefer native Apple APIs (CGImageSource),
         // which correctly read CICP/NCLX, JXL codestream headers, ICC profiles etc.
-        // Fall back to ExifTool tags when native detection isn't available.
+        // Fall back to embedded EXIF tags when native detection isn't available.
         let nativeInfo = fileURL.flatMap { Self.nativeImageInfo(for: $0) }
 
         // Bit depth
@@ -170,7 +170,7 @@ struct TechnicalMetadata {
         // C2PA — detect from JUMD/C2PA keys returned by -JUMBF:All
         hasC2PA = Self.dictHasC2PA(dict)
 
-        // Claim generator — ExifTool flattens multi-manifest C2PA data.
+        // Claim generator — flattened multi-manifest C2PA data.
         // When a file has been edited (has "Relationship" = "parentOf"),
         // the flat "Claim_generator" is from the ingredient/original manifest.
         // The active manifest's generator info is in Claim_Generator_InfoVersion etc.
@@ -188,8 +188,8 @@ struct TechnicalMetadata {
     // MARK: - ImageIO fast path
 
     /// Read technical metadata directly from the image file using CGImageSource.
-    /// Much faster than ExifTool since it avoids subprocess overhead.
-    /// C2PA detail fields are not populated — use ExifToolService.readC2PAMetadata for those.
+    /// Much faster than parsing the whole file with the metadata engine.
+    /// C2PA detail fields are not populated — use SwiftExifReadService.readC2PAMetadata for those.
     static func fromImageIO(url: URL, hasC2PA: Bool = false) -> TechnicalMetadata {
         var dict: [String: Any] = [:]
 

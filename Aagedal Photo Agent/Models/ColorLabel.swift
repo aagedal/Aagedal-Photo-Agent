@@ -2,7 +2,7 @@ import Foundation
 import SwiftUI
 import AppKit
 
-enum ColorLabel: String, Codable, CaseIterable, Sendable {
+nonisolated enum ColorLabel: String, Codable, CaseIterable, Sendable {
     case none = ""
     case red = "Red"
     case yellow = "Yellow"

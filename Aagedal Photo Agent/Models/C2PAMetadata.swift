@@ -29,6 +29,12 @@ struct C2PAMetadata: Identifiable {
     var thumbnails: C2PAThumbnails?
     var activeManifest: C2PAManifest? { manifests.last }
 
+    /// Direct memberwise initializer used by the SwiftExif bridge.
+    init(manifests: [C2PAManifest], thumbnails: C2PAThumbnails? = nil) {
+        self.manifests = manifests
+        self.thumbnails = thumbnails
+    }
+
     private enum C2PAKey {
         static let jumdType = "JUMDType"
         static let jumdLabel = "JUMDLabel"

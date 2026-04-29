@@ -2,155 +2,155 @@ import Testing
 import Foundation
 @testable import Aagedal_Photo_Agent
 
-// MARK: - toExifToolFields
 
-@Suite("IPTCMetadata.toExifToolFields")
-struct ToExifToolFieldsTests {
+
+@Suite("IPTCMetadata.toWriteFields")
+struct ToWriteFieldsTests {
 
     @Test("empty metadata produces empty dict")
     func emptyMetadataProducesEmptyDict() {
         let metadata = IPTCMetadata()
-        #expect(metadata.toExifToolFields().isEmpty)
+        #expect(metadata.toWriteFields().isEmpty)
     }
 
     @Test("title maps to headline tag")
     func titleMapsToHeadline() {
         let metadata = IPTCMetadata(title: "My Photo")
-        let fields = metadata.toExifToolFields()
-        #expect(fields[ExifToolWriteTag.headline] == "My Photo")
+        let fields = metadata.toWriteFields()
+        #expect(fields[MetadataFieldKey.headline] == "My Photo")
     }
 
     @Test("description maps to XMP description tag")
     func descriptionMapsToDescription() {
         let metadata = IPTCMetadata(description: "A beautiful sunset")
-        let fields = metadata.toExifToolFields()
-        #expect(fields[ExifToolWriteTag.description] == "A beautiful sunset")
+        let fields = metadata.toWriteFields()
+        #expect(fields[MetadataFieldKey.description] == "A beautiful sunset")
     }
 
     @Test("keywords joined with comma-space")
     func keywordsJoinedWithCommaSpace() {
         let metadata = IPTCMetadata(keywords: ["nature", "landscape", "sunset"])
-        let fields = metadata.toExifToolFields()
-        #expect(fields[ExifToolWriteTag.subject] == "nature, landscape, sunset")
+        let fields = metadata.toWriteFields()
+        #expect(fields[MetadataFieldKey.subject] == "nature, landscape, sunset")
     }
 
     @Test("single keyword not joined")
     func singleKeywordNotJoined() {
         let metadata = IPTCMetadata(keywords: ["nature"])
-        let fields = metadata.toExifToolFields()
-        #expect(fields[ExifToolWriteTag.subject] == "nature")
+        let fields = metadata.toWriteFields()
+        #expect(fields[MetadataFieldKey.subject] == "nature")
     }
 
     @Test("empty keywords not included")
     func emptyKeywordsNotIncluded() {
         let metadata = IPTCMetadata(keywords: [])
-        let fields = metadata.toExifToolFields()
-        #expect(fields[ExifToolWriteTag.subject] == nil)
+        let fields = metadata.toWriteFields()
+        #expect(fields[MetadataFieldKey.subject] == nil)
     }
 
     @Test("personShown maps to PersonInImage tag")
     func personShownMapsToPersonInImage() {
         let metadata = IPTCMetadata(personShown: ["Alice", "Bob"])
-        let fields = metadata.toExifToolFields()
-        #expect(fields[ExifToolWriteTag.personInImage] == "Alice, Bob")
+        let fields = metadata.toWriteFields()
+        #expect(fields[MetadataFieldKey.personInImage] == "Alice, Bob")
     }
 
     @Test("copyright maps to XMP rights tag")
     func copyrightMapsToRights() {
         let metadata = IPTCMetadata(copyright: "© 2026 Photographer")
-        let fields = metadata.toExifToolFields()
-        #expect(fields[ExifToolWriteTag.rights] == "© 2026 Photographer")
+        let fields = metadata.toWriteFields()
+        #expect(fields[MetadataFieldKey.rights] == "© 2026 Photographer")
     }
 
     @Test("creator maps to XMP creator tag")
     func creatorMapsToCreator() {
         let metadata = IPTCMetadata(creator: "Jane Doe")
-        let fields = metadata.toExifToolFields()
-        #expect(fields[ExifToolWriteTag.creator] == "Jane Doe")
+        let fields = metadata.toWriteFields()
+        #expect(fields[MetadataFieldKey.creator] == "Jane Doe")
     }
 
     @Test("credit maps to credit tag")
     func creditMapsToCredit() {
         let metadata = IPTCMetadata(credit: "Wire Service")
-        let fields = metadata.toExifToolFields()
-        #expect(fields[ExifToolWriteTag.credit] == "Wire Service")
+        let fields = metadata.toWriteFields()
+        #expect(fields[MetadataFieldKey.credit] == "Wire Service")
     }
 
     @Test("jobId maps to transmission reference tag")
     func jobIdMapsToTransmissionReference() {
         let metadata = IPTCMetadata(jobId: "JOB-001")
-        let fields = metadata.toExifToolFields()
-        #expect(fields[ExifToolWriteTag.transmissionReference] == "JOB-001")
+        let fields = metadata.toWriteFields()
+        #expect(fields[MetadataFieldKey.transmissionReference] == "JOB-001")
     }
 
     @Test("city maps to city tag")
     func cityMapsToCity() {
         let metadata = IPTCMetadata(city: "Oslo")
-        let fields = metadata.toExifToolFields()
-        #expect(fields[ExifToolWriteTag.city] == "Oslo")
+        let fields = metadata.toWriteFields()
+        #expect(fields[MetadataFieldKey.city] == "Oslo")
     }
 
     @Test("country maps to country tag")
     func countryMapsToCountry() {
         let metadata = IPTCMetadata(country: "Norway")
-        let fields = metadata.toExifToolFields()
-        #expect(fields[ExifToolWriteTag.country] == "Norway")
+        let fields = metadata.toWriteFields()
+        #expect(fields[MetadataFieldKey.country] == "Norway")
     }
 
     @Test("event maps to event tag")
     func eventMapsToEvent() {
         let metadata = IPTCMetadata(event: "World Cup 2026")
-        let fields = metadata.toExifToolFields()
-        #expect(fields[ExifToolWriteTag.event] == "World Cup 2026")
+        let fields = metadata.toWriteFields()
+        #expect(fields[MetadataFieldKey.event] == "World Cup 2026")
     }
 
     @Test("digitalSourceType maps to raw value")
     func digitalSourceTypeMapsToRawValue() {
         let metadata = IPTCMetadata(digitalSourceType: .digitalCapture)
-        let fields = metadata.toExifToolFields()
-        #expect(fields[ExifToolWriteTag.digitalSourceType] == "digitalCapture")
+        let fields = metadata.toWriteFields()
+        #expect(fields[MetadataFieldKey.digitalSourceType] == "digitalCapture")
     }
 
     @Test("northern GPS coordinates use N/E refs")
     func northernGPSCoordinatesUseNE() {
         let metadata = IPTCMetadata(latitude: 59.913, longitude: 10.752)
-        let fields = metadata.toExifToolFields()
-        #expect(fields[ExifToolWriteTag.gpsLatitudeRef] == "N")
-        #expect(fields[ExifToolWriteTag.gpsLongitudeRef] == "E")
-        #expect(fields[ExifToolWriteTag.gpsLatitude] == "59.913")
-        #expect(fields[ExifToolWriteTag.gpsLongitude] == "10.752")
+        let fields = metadata.toWriteFields()
+        #expect(fields[MetadataFieldKey.gpsLatitudeRef] == "N")
+        #expect(fields[MetadataFieldKey.gpsLongitudeRef] == "E")
+        #expect(fields[MetadataFieldKey.gpsLatitude] == "59.913")
+        #expect(fields[MetadataFieldKey.gpsLongitude] == "10.752")
     }
 
     @Test("southern GPS coordinates use S/W refs with positive absolute value")
     func southernGPSCoordinatesUseSW() {
         let metadata = IPTCMetadata(latitude: -33.865, longitude: -70.649)
-        let fields = metadata.toExifToolFields()
-        #expect(fields[ExifToolWriteTag.gpsLatitudeRef] == "S")
-        #expect(fields[ExifToolWriteTag.gpsLongitudeRef] == "W")
-        #expect(fields[ExifToolWriteTag.gpsLatitude] == "33.865")
-        #expect(fields[ExifToolWriteTag.gpsLongitude] == "70.649")
+        let fields = metadata.toWriteFields()
+        #expect(fields[MetadataFieldKey.gpsLatitudeRef] == "S")
+        #expect(fields[MetadataFieldKey.gpsLongitudeRef] == "W")
+        #expect(fields[MetadataFieldKey.gpsLatitude] == "33.865")
+        #expect(fields[MetadataFieldKey.gpsLongitude] == "70.649")
     }
 
     @Test("GPS only included when both lat and lon are set")
     func gpsRequiresBothCoordinates() {
         let onlyLat = IPTCMetadata(latitude: 59.913, longitude: nil)
         let onlyLon = IPTCMetadata(latitude: nil, longitude: 10.752)
-        #expect(onlyLat.toExifToolFields()[ExifToolWriteTag.gpsLatitude] == nil)
-        #expect(onlyLon.toExifToolFields()[ExifToolWriteTag.gpsLongitude] == nil)
+        #expect(onlyLat.toWriteFields()[MetadataFieldKey.gpsLatitude] == nil)
+        #expect(onlyLon.toWriteFields()[MetadataFieldKey.gpsLongitude] == nil)
     }
 
-    @Test("rating not included in exiftool fields (managed separately)")
+    @Test("rating not included in write fields (managed separately)")
     func ratingNotIncluded() {
         let metadata = IPTCMetadata(rating: 5)
-        let fields = metadata.toExifToolFields()
-        #expect(fields[ExifToolWriteTag.rating] == nil)
+        let fields = metadata.toWriteFields()
+        #expect(fields[MetadataFieldKey.rating] == nil)
     }
 
-    @Test("label not included in exiftool fields (managed separately)")
+    @Test("label not included in write fields (managed separately)")
     func labelNotIncluded() {
         let metadata = IPTCMetadata(label: "Red")
-        let fields = metadata.toExifToolFields()
-        #expect(fields[ExifToolWriteTag.label] == nil)
+        let fields = metadata.toWriteFields()
+        #expect(fields[MetadataFieldKey.label] == nil)
     }
 }
 

@@ -232,14 +232,6 @@ final class SettingsViewModel {
         didSet { UserDefaults.standard.set(showOriginalThumbnails, forKey: UserDefaultsKeys.showOriginalThumbnails) }
     }
 
-    var exifToolSource: ExifToolSource {
-        didSet { UserDefaults.standard.set(exifToolSource.rawValue, forKey: UserDefaultsKeys.exifToolSource) }
-    }
-
-    var exifToolCustomPath: String {
-        didSet { UserDefaults.standard.set(exifToolCustomPath.isEmpty ? nil : exifToolCustomPath, forKey: UserDefaultsKeys.exifToolCustomPath) }
-    }
-
     var defaultExternalEditor: String {
         didSet { UserDefaults.standard.set(defaultExternalEditor.isEmpty ? nil : defaultExternalEditor, forKey: UserDefaultsKeys.defaultExternalEditor) }
     }
@@ -259,13 +251,6 @@ final class SettingsViewModel {
 
     var faceCleanupPolicy: FaceCleanupPolicy {
         didSet { UserDefaults.standard.set(faceCleanupPolicy.rawValue, forKey: UserDefaultsKeys.faceCleanupPolicy) }
-    }
-
-    var metadataWriteEngine: MetadataWriteEngineChoice {
-        didSet {
-            UserDefaults.standard.set(metadataWriteEngine.rawValue, forKey: UserDefaultsKeys.metadataWriteEngine)
-            NotificationCenter.default.post(name: .metadataWriteEngineChanged, object: nil)
-        }
     }
 
     var metadataWriteModeNonC2PA: MetadataWriteMode {
@@ -688,21 +673,12 @@ final class SettingsViewModel {
 
     var detectedEditors: [DetectedEditor] = []
 
-    var bundledExifToolPath: String? { ExifToolPathResolver.bundledPath }
-
-    var homebrewExifToolPath: String? { ExifToolPathResolver.homebrewPath }
-
-    var selectedExifToolPath: String? { ExifToolPathResolver.path(for: exifToolSource) }
-
     init() {
         self.rawRenderAsHDR = UserDefaults.standard.bool(forKey: UserDefaultsKeys.rawRenderAsHDR)
         self.showAllFiles = UserDefaults.standard.bool(forKey: UserDefaultsKeys.showAllFiles)
 
         self.showOriginalThumbnails = UserDefaults.standard.bool(forKey: UserDefaultsKeys.showOriginalThumbnails)
 
-        let sourceRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.exifToolSource) ?? "bundled"
-        self.exifToolSource = ExifToolSource(rawValue: sourceRaw) ?? .bundled
-        self.exifToolCustomPath = UserDefaults.standard.string(forKey: UserDefaultsKeys.exifToolCustomPath) ?? ""
         self.defaultExternalEditor = UserDefaults.standard.string(forKey: UserDefaultsKeys.defaultExternalEditor) ?? ""
         let editDestinationRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.defaultEditDestination)
             ?? DefaultEditDestination.internalEditor.rawValue
@@ -711,8 +687,6 @@ final class SettingsViewModel {
         self.updateCheckFrequency = UpdateCheckFrequency(rawValue: updateRaw) ?? .weekly
         let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.faceCleanupPolicy) ?? "never"
         self.faceCleanupPolicy = FaceCleanupPolicy(rawValue: raw) ?? .never
-        let engineRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.metadataWriteEngine) ?? MetadataWriteEngineChoice.swiftExif.rawValue
-        self.metadataWriteEngine = MetadataWriteEngineChoice(rawValue: engineRaw) ?? .swiftExif
 
         let legacyWriteModeRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.metadataWriteMode)
         let nonC2PARaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.metadataWriteModeNonC2PA)
