@@ -147,17 +147,31 @@ final class SwiftExifReadService {
 
     /// Read many files concurrently, returning their dicts (failures omitted).
     /// Each result carries `SourceFile` so callers can re-key by URL when needed.
-    /// Uses an async sequence rather than `withTaskGroup` to avoid sending
-    /// `[String: Any]` (non-Sendable) across task-group boundaries.
+    /// Result order is not guaranteed to match input order.
     nonisolated private func readDicts(for urls: [URL]) async -> [[String: Any]] {
         var collected: [[String: Any]] = []
         collected.reserveCapacity(urls.count)
-        for url in urls {
-            if Task.isCancelled { break }
-            if let dict = readDict(for: url) {
-                collected.append(dict)
+
+        await withTaskGroup(of: DictBox?.self) { group in
+            for url in urls {
+                group.addTask { [weak self] in
+                    guard let self else { return nil }
+                    if Task.isCancelled { return nil }
+                    return self.readDict(for: url).map(DictBox.init)
+                }
+            }
+            for await result in group {
+                if let result { collected.append(result.value) }
             }
         }
         return collected
     }
+}
+
+/// `[String: Any]` is not Sendable because `Any` isn't, but the dict instances
+/// produced by `readDict` are constructed inside the task and never mutated
+/// after they cross the task-group boundary — handing them off is safe in
+/// practice. This box exists solely to satisfy strict concurrency.
+nonisolated private struct DictBox: @unchecked Sendable {
+    let value: [String: Any]
 }
