@@ -104,8 +104,9 @@ private class FullScreenWindow: NSWindow {
             return
         }
 
-        // S key (keyCode 1) → toggle scaling filter
-        if keyCode == 1 && !hasCmd && !hasOption && !event.isARepeat {
+        // Option+S (keyCode 1) → toggle scaling filter.
+        // Bare S is reserved for "select" cull shortcut below.
+        if keyCode == 1 && !hasCmd && hasOption && !event.isARepeat {
             onToggleScaling?()
             return
         }
@@ -149,11 +150,13 @@ private class FullScreenWindow: NSWindow {
                     return
                 }
             }
-            // X (keyCode 7) → trash label.
-            // (S is reserved for scaling-filter toggle in full-screen, so the
-            // bare-key "select" shortcut is grid-only.)
+            // X (keyCode 7) → trash label, S (keyCode 1) → red/select.
             if keyCode == 7 && !event.isARepeat {
                 onSetLabel?(8) // ColorLabel.trash → shortcutIndex 8
+                return
+            }
+            if keyCode == 1 && !event.isARepeat {
+                onSetLabel?(1) // ColorLabel.red → shortcutIndex 1
                 return
             }
         }
