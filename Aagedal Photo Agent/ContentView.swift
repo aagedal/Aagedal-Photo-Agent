@@ -58,6 +58,8 @@ struct ContentView: View {
     @State private var renderEditedFolderFailureCount = 0
     @State private var renderedOutputFolderURL: URL?
     @State private var renderExportTask: Task<Void, Never>?
+    @State private var lastBatchResult: BatchOperationResult?
+    @State private var isBatchResultExpanded = false
     @State private var scopeViewModel = ScopeViewModel()
     @State private var scopeImageTask: Task<Void, Never>?
 
@@ -907,6 +909,13 @@ struct ContentView: View {
                 .padding(.vertical, 4)
             }
 
+            if let result = lastBatchResult {
+                Divider()
+                batchResultBanner(result)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+            }
+
             if browserViewModel.selectedImageIDs.count == 1,
                let selectedImage = browserViewModel.selectedImages.first {
                 Divider()
@@ -1122,6 +1131,7 @@ struct ContentView: View {
 
             var successCount = 0
             var failureCount = 0
+            var signFailedNames: [String] = []
             var createdFolders: Set<String> = []
             var lastOutputFolder: URL?
 
@@ -1143,6 +1153,7 @@ struct ContentView: View {
                         lastOutputFolder = outputFolder
                     } catch {
                         failureCount += 1
+                        signFailedNames.append(image.url.lastPathComponent)
                         continue
                     }
                 }
@@ -1193,6 +1204,7 @@ struct ContentView: View {
                     successCount += 1
                 } catch {
                     failureCount += 1
+                    signFailedNames.append(image.url.lastPathComponent)
                 }
             }
 
@@ -1203,15 +1215,25 @@ struct ContentView: View {
 
             let copyFailures = await failureTracker.metadataCopyFailures
             let overlayFailures = await failureTracker.sidecarOverlayFailures
+            let outcome: BatchOperationResult.Outcome
             if Task.isCancelled {
-                browserViewModel.errorMessage = "Export cancelled. \(successCount) of \(selected.count) images signed."
+                outcome = .cancelled
             } else if failureCount > 0 || !copyFailures.isEmpty || !overlayFailures.isEmpty {
-                var parts: [String] = []
-                if failureCount > 0 { parts.append("\(failureCount) render/sign \(failureCount == 1 ? "failure" : "failures")") }
-                if !copyFailures.isEmpty { parts.append("metadata copy failed for \(copyFailures.count) \(copyFailures.count == 1 ? "image" : "images")") }
-                if !overlayFailures.isEmpty { parts.append("IPTC overlay failed for \(overlayFailures.count) \(overlayFailures.count == 1 ? "image" : "images")") }
-                browserViewModel.errorMessage = "Signed \(successCount) of \(selected.count): \(parts.joined(separator: "; "))."
+                outcome = .partial
+            } else {
+                outcome = .success
             }
+            isBatchResultExpanded = false
+            lastBatchResult = BatchOperationResult(
+                title: "Sign",
+                outcome: outcome,
+                successCount: successCount,
+                totalCount: selected.count,
+                failedFilenames: signFailedNames,
+                copyFailureFilenames: copyFailures,
+                overlayFailureFilenames: overlayFailures,
+                sourceFolderURL: folderURL
+            )
         }
     }
 
@@ -1463,6 +1485,98 @@ struct ContentView: View {
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
+    @ViewBuilder
+    private func batchResultBanner(_ result: BatchOperationResult) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .top, spacing: 6) {
+                Image(systemName: bannerIcon(for: result.outcome, hasFailures: result.hasFailures))
+                    .foregroundStyle(bannerColor(for: result.outcome, hasFailures: result.hasFailures))
+                Text(result.summaryLine)
+                    .font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                Button {
+                    lastBatchResult = nil
+                    isBatchResultExpanded = false
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Dismiss")
+            }
+
+            if result.hasFailures {
+                DisclosureGroup(isExpanded: $isBatchResultExpanded) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        bannerFailureSection(label: "Failed", names: result.failedFilenames, folder: result.sourceFolderURL)
+                        bannerFailureSection(label: "Metadata copy failed", names: result.copyFailureFilenames, folder: result.sourceFolderURL)
+                        bannerFailureSection(label: "IPTC overlay failed", names: result.overlayFailureFilenames, folder: result.sourceFolderURL)
+                    }
+                    .padding(.top, 4)
+                } label: {
+                    Text("Show details")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .task(id: result.id) {
+            // Auto-dismiss success-without-failures after 4 seconds
+            guard !result.hasFailures, result.outcome == .success else { return }
+            try? await Task.sleep(for: .seconds(4))
+            if lastBatchResult?.id == result.id {
+                lastBatchResult = nil
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func bannerFailureSection(label: String, names: [String], folder: URL?) -> some View {
+        if !names.isEmpty {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("\(label) (\(names.count))")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                ForEach(names, id: \.self) { name in
+                    HStack(spacing: 4) {
+                        Text(name)
+                            .font(.caption2)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 0)
+                        if let folder {
+                            Button {
+                                revealInFinder(folder.appendingPathComponent(name))
+                            } label: {
+                                Image(systemName: "folder")
+                                    .font(.caption2)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Reveal in Finder")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func bannerIcon(for outcome: BatchOperationResult.Outcome, hasFailures: Bool) -> String {
+        switch outcome {
+        case .cancelled: return "xmark.circle"
+        case .partial: return "exclamationmark.triangle.fill"
+        case .success: return hasFailures ? "exclamationmark.triangle" : "checkmark.circle.fill"
+        }
+    }
+
+    private func bannerColor(for outcome: BatchOperationResult.Outcome, hasFailures: Bool) -> Color {
+        switch outcome {
+        case .cancelled: return .secondary
+        case .partial: return .orange
+        case .success: return hasFailures ? .orange : .green
+        }
+    }
+
     /// Overlay in-memory and XMP sidecar CameraRaw settings onto embedded metadata.
     /// SwiftExif reads the image file directly but does not read the adjacent `.xmp` sidecar
     /// where CameraRaw edits are stored for RAW files. This merges the correct settings back in.
@@ -1507,6 +1621,7 @@ struct ContentView: View {
             overlayCameraRawSettings(onto: &metadataByURL, urls: urls)
 
             var savedURLs: [URL] = []
+            var saveFailedNames: [String] = []
             for (index, url) in urls.enumerated() {
                 guard !Task.isCancelled else { break }
                 renderExportCurrent = index + 1
@@ -1532,7 +1647,7 @@ struct ContentView: View {
                     }
                     savedURLs.append(outputURL)
                 } catch {
-                    browserViewModel.errorMessage = "Save As failed for \(url.lastPathComponent): \(error.localizedDescription)"
+                    saveFailedNames.append(url.lastPathComponent)
                 }
             }
 
@@ -1548,14 +1663,25 @@ struct ContentView: View {
 
             let copyFailures = await failureTracker.metadataCopyFailures
             let overlayFailures = await failureTracker.sidecarOverlayFailures
+            let outcome: BatchOperationResult.Outcome
             if Task.isCancelled {
-                browserViewModel.errorMessage = "Save As cancelled. \(savedURLs.count) of \(urls.count) images saved."
-            } else if !copyFailures.isEmpty || !overlayFailures.isEmpty {
-                var parts: [String] = []
-                if !copyFailures.isEmpty { parts.append("metadata copy failed for \(copyFailures.count) \(copyFailures.count == 1 ? "image" : "images")") }
-                if !overlayFailures.isEmpty { parts.append("IPTC overlay failed for \(overlayFailures.count) \(overlayFailures.count == 1 ? "image" : "images")") }
-                browserViewModel.errorMessage = "Saved \(savedURLs.count) images. Warning: \(parts.joined(separator: "; "))."
+                outcome = .cancelled
+            } else if !saveFailedNames.isEmpty || !copyFailures.isEmpty || !overlayFailures.isEmpty {
+                outcome = .partial
+            } else {
+                outcome = .success
             }
+            isBatchResultExpanded = false
+            lastBatchResult = BatchOperationResult(
+                title: "Save As",
+                outcome: outcome,
+                successCount: savedURLs.count,
+                totalCount: urls.count,
+                failedFilenames: saveFailedNames,
+                copyFailureFilenames: copyFailures,
+                overlayFailureFilenames: overlayFailures,
+                sourceFolderURL: browserViewModel.currentFolderURL
+            )
         }
     }
 
@@ -1610,6 +1736,7 @@ struct ContentView: View {
                     } catch {
                         browserViewModel.errorMessage = "Failed to create \(folderName) folder: \(error.localizedDescription)"
                         failureCount += 1
+                        renderFailedNames.append(url.lastPathComponent)
                         continue
                     }
                 }
@@ -1645,19 +1772,25 @@ struct ContentView: View {
 
             let copyFailures = await failureTracker.metadataCopyFailures
             let overlayFailures = await failureTracker.sidecarOverlayFailures
+            let outcome: BatchOperationResult.Outcome
             if Task.isCancelled {
-                browserViewModel.errorMessage = "Export cancelled. \(successCount) of \(urls.count) images exported."
+                outcome = .cancelled
             } else if failureCount > 0 || !copyFailures.isEmpty || !overlayFailures.isEmpty {
-                var parts: [String] = []
-                if failureCount > 0 {
-                    let names = renderFailedNames.prefix(5).joined(separator: ", ")
-                    let suffix = renderFailedNames.count > 5 ? " and \(renderFailedNames.count - 5) more" : ""
-                    parts.append("\(failureCount) render \(failureCount == 1 ? "failure" : "failures") (\(names)\(suffix))")
-                }
-                if !copyFailures.isEmpty { parts.append("metadata copy failed for \(copyFailures.count) \(copyFailures.count == 1 ? "image" : "images")") }
-                if !overlayFailures.isEmpty { parts.append("IPTC overlay failed for \(overlayFailures.count) \(overlayFailures.count == 1 ? "image" : "images")") }
-                browserViewModel.errorMessage = "Exported \(successCount) of \(urls.count): \(parts.joined(separator: "; "))."
+                outcome = .partial
+            } else {
+                outcome = .success
             }
+            isBatchResultExpanded = false
+            lastBatchResult = BatchOperationResult(
+                title: "Export",
+                outcome: outcome,
+                successCount: successCount,
+                totalCount: urls.count,
+                failedFilenames: renderFailedNames,
+                copyFailureFilenames: copyFailures,
+                overlayFailureFilenames: overlayFailures,
+                sourceFolderURL: folderURL
+            )
         }
     }
 
