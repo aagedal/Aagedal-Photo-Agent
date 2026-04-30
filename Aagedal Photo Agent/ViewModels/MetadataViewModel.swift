@@ -2185,7 +2185,7 @@ final class MetadataViewModel {
                 self.folderProcessProgress = ""
             }
 
-            let sidecars = sidecarService.loadAllSidecars(in: folderURL)
+            let sidecars = await sidecarService.loadAllSidecars(in: folderURL)
             let pendingSidecars = sidecars.filter { $0.value.pendingChanges }
 
             var processed = 0
@@ -2231,7 +2231,7 @@ final class MetadataViewModel {
                 self.folderProcessProgress = "\(processed)/\(total)"
             }
 
-            let remainingPending = sidecarService.imagesWithPendingChanges(in: folderURL)
+            let remainingPending = await sidecarService.imagesWithPendingChanges(in: folderURL)
             self.selectedHavePendingSidecars = !remainingPending.isEmpty
             if failedCount > 0 || skippedCount > 0 {
                 self.saveError = "Wrote \(writtenCount), skipped \(skippedCount), failed \(failedCount)."

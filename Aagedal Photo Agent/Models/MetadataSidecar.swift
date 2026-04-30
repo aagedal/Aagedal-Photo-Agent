@@ -1,6 +1,6 @@
 import Foundation
 
-struct MetadataHistoryEntry: Codable, Sendable, Identifiable {
+nonisolated struct MetadataHistoryEntry: Codable, Sendable, Identifiable {
     var id: Date { timestamp }
     let timestamp: Date
     let fieldName: String
@@ -8,7 +8,7 @@ struct MetadataHistoryEntry: Codable, Sendable, Identifiable {
     let newValue: String?
 }
 
-struct MetadataSidecar: Codable, Sendable {
+nonisolated struct MetadataSidecar: Codable, Sendable {
     static let currentVersion = 1
     static let historyLimit = 20
 

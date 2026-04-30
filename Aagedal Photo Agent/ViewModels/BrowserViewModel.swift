@@ -524,7 +524,7 @@ final class BrowserViewModel {
                 }
 
                 // Phase 3: Load sidecars and apply pending overrides
-                let allSidecars = sidecarService.loadAllSidecars(in: url)
+                let allSidecars = await sidecarService.loadAllSidecars(in: url)
                 var updated = self.images
                 for i in updated.indices {
                     if let sidecar = allSidecars[updated[i].url], sidecar.pendingChanges {
@@ -627,7 +627,7 @@ final class BrowserViewModel {
             }
             guard self.currentFolderURL == folderURL else { return }
 
-            let allSidecars = sidecarService.loadAllSidecars(in: folderURL)
+            let allSidecars = await sidecarService.loadAllSidecars(in: folderURL)
             for index in merged.indices {
                 let url = merged[index].url
                 if let sidecar = allSidecars[url], sidecar.pendingChanges {
@@ -2074,19 +2074,22 @@ final class BrowserViewModel {
 
     func refreshPendingStatus() {
         guard let folderURL = currentFolderURL else { return }
-        let allSidecars = sidecarService.loadAllSidecars(in: folderURL)
-        var updated = images
-        for i in updated.indices {
-            if let sidecar = allSidecars[updated[i].url], sidecar.pendingChanges {
-                updated[i].hasPendingMetadataChanges = true
-                updated[i].pendingFieldNames = extractPendingFieldNames(from: sidecar)
-                applyPendingSidecarOverrides(to: &updated, for: updated[i].url, index: i, cachedSidecar: sidecar)
-            } else {
-                updated[i].hasPendingMetadataChanges = false
-                updated[i].pendingFieldNames = []
+        Task {
+            let allSidecars = await sidecarService.loadAllSidecars(in: folderURL)
+            guard self.currentFolderURL == folderURL else { return }
+            var updated = self.images
+            for i in updated.indices {
+                if let sidecar = allSidecars[updated[i].url], sidecar.pendingChanges {
+                    updated[i].hasPendingMetadataChanges = true
+                    updated[i].pendingFieldNames = extractPendingFieldNames(from: sidecar)
+                    applyPendingSidecarOverrides(to: &updated, for: updated[i].url, index: i, cachedSidecar: sidecar)
+                } else {
+                    updated[i].hasPendingMetadataChanges = false
+                    updated[i].pendingFieldNames = []
+                }
             }
+            self.images = updated
         }
-        images = updated
     }
 
     func refreshPendingStatusBatch(for urls: [URL]) {

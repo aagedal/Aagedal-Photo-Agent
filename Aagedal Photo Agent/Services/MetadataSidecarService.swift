@@ -1,29 +1,29 @@
 import Foundation
 import os
 
-private let sidecarLogger = Logger(subsystem: "com.aagedal.photo-agent", category: "MetadataSidecarService")
+private nonisolated let sidecarLogger = Logger(subsystem: "com.aagedal.photo-agent", category: "MetadataSidecarService")
 
 struct MetadataSidecarService: Sendable {
 
-    private static let sidecarDirectoryName = ".photo_metadata"
+    private nonisolated static let sidecarDirectoryName = ".photo_metadata"
 
     // MARK: - Directory Helpers
 
-    private func sidecarDirectory(for folderURL: URL) -> URL {
+    private nonisolated func sidecarDirectory(for folderURL: URL) -> URL {
         folderURL.appendingPathComponent(Self.sidecarDirectoryName)
     }
 
-    private func sidecarFileURL(for imageURL: URL, in folderURL: URL) -> URL {
+    private nonisolated func sidecarFileURL(for imageURL: URL, in folderURL: URL) -> URL {
         let filename = imageURL.lastPathComponent
         return sidecarDirectory(for: folderURL).appendingPathComponent("\(filename).meta.json")
     }
 
-    private func legacySidecarFileURL(for imageURL: URL, in folderURL: URL) -> URL {
+    private nonisolated func legacySidecarFileURL(for imageURL: URL, in folderURL: URL) -> URL {
         let basename = imageURL.deletingPathExtension().lastPathComponent
         return sidecarDirectory(for: folderURL).appendingPathComponent("\(basename).meta.json")
     }
 
-    private func sidecarCandidateURLs(for imageURL: URL, in folderURL: URL) -> [URL] {
+    private nonisolated func sidecarCandidateURLs(for imageURL: URL, in folderURL: URL) -> [URL] {
         let current = sidecarFileURL(for: imageURL, in: folderURL)
         let legacy = legacySidecarFileURL(for: imageURL, in: folderURL)
         if current == legacy { return [current] }
@@ -65,13 +65,9 @@ struct MetadataSidecarService: Sendable {
         return nil
     }
 
-    func loadAllSidecars(in folderURL: URL) -> [URL: MetadataSidecar] {
+    nonisolated func loadAllSidecars(in folderURL: URL) async -> [URL: MetadataSidecar] {
         let dir = sidecarDirectory(for: folderURL)
         guard FileManager.default.fileExists(atPath: dir.path) else { return [:] }
-
-        var result: [URL: MetadataSidecar] = [:]
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
 
         guard let files = try? FileManager.default.contentsOfDirectory(
             at: dir,
@@ -81,38 +77,64 @@ struct MetadataSidecarService: Sendable {
             return [:]
         }
 
-        for file in files where file.pathExtension == "json" {
-            do {
-                let data = try Data(contentsOf: file)
-                let sidecar = try decoder.decode(MetadataSidecar.self, from: data)
-                guard !sidecar.sourceFile.contains("/"), !sidecar.sourceFile.contains("\\"), !sidecar.sourceFile.contains("..") else {
-                    continue
-                }
-                let imageURL = folderURL.appendingPathComponent(sidecar.sourceFile)
-                result[imageURL] = sidecar
-            } catch {
-                sidecarLogger.error("Failed to decode sidecar \(file.lastPathComponent): \(error.localizedDescription)")
-                // Move corrupt file aside so it doesn't block future loads
-                let timestamp = ISO8601DateFormatter().string(from: Date())
-                    .replacingOccurrences(of: ":", with: "-")
-                let backupURL = file.deletingLastPathComponent()
-                    .appendingPathComponent("\(file.lastPathComponent).corrupt.\(timestamp)")
-                do {
-                    try FileManager.default.moveItem(at: file, to: backupURL)
-                    sidecarLogger.warning("Moved corrupt sidecar to \(backupURL.lastPathComponent, privacy: .public)")
-                } catch {
-                    sidecarLogger.error("Failed to move corrupt sidecar \(file.lastPathComponent): \(error.localizedDescription, privacy: .public)")
-                }
-                continue
-            }
-        }
+        let jsonFiles = files.filter { $0.pathExtension == "json" }
 
-        return result
+        return await withTaskGroup(of: (URL, MetadataSidecar)?.self) { group in
+            for file in jsonFiles {
+                group.addTask {
+                    Self.decodeSidecar(at: file, folderURL: folderURL)
+                }
+            }
+            var result: [URL: MetadataSidecar] = [:]
+            result.reserveCapacity(jsonFiles.count)
+            for await item in group {
+                if let (imageURL, sidecar) = item {
+                    result[imageURL] = sidecar
+                }
+            }
+            return result
+        }
     }
 
-    func imagesWithPendingChanges(in folderURL: URL) -> Set<URL> {
-        let sidecars = loadAllSidecars(in: folderURL)
+    nonisolated func imagesWithPendingChanges(in folderURL: URL) async -> Set<URL> {
+        let sidecars = await loadAllSidecars(in: folderURL)
         return Set(sidecars.filter { $0.value.pendingChanges }.keys)
+    }
+
+    private nonisolated static func decodeSidecar(
+        at file: URL,
+        folderURL: URL
+    ) -> (URL, MetadataSidecar)? {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        do {
+            let data = try Data(contentsOf: file)
+            let sidecar = try decoder.decode(MetadataSidecar.self, from: data)
+            guard !sidecar.sourceFile.contains("/"),
+                  !sidecar.sourceFile.contains("\\"),
+                  !sidecar.sourceFile.contains("..") else {
+                return nil
+            }
+            let imageURL = folderURL.appendingPathComponent(sidecar.sourceFile)
+            return (imageURL, sidecar)
+        } catch {
+            sidecarLogger.error("Failed to decode sidecar \(file.lastPathComponent): \(error.localizedDescription)")
+            moveCorruptSidecarAside(file: file)
+            return nil
+        }
+    }
+
+    private nonisolated static func moveCorruptSidecarAside(file: URL) {
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+            .replacingOccurrences(of: ":", with: "-")
+        let backupURL = file.deletingLastPathComponent()
+            .appendingPathComponent("\(file.lastPathComponent).corrupt.\(timestamp)")
+        do {
+            try FileManager.default.moveItem(at: file, to: backupURL)
+            sidecarLogger.warning("Moved corrupt sidecar to \(backupURL.lastPathComponent, privacy: .public)")
+        } catch {
+            sidecarLogger.error("Failed to move corrupt sidecar \(file.lastPathComponent): \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     func pendingFieldNames(for imageURL: URL, in folderURL: URL) -> [String] {
