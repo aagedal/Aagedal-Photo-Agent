@@ -5,7 +5,7 @@ nonisolated private let faceDataLog = Logger(subsystem: Bundle.main.bundleIdenti
 
 nonisolated struct FaceDataStorageService: Sendable {
 
-    private static let faceDataDirectoryName = ".face_data"
+    static let faceDataDirectoryName = ".face_data"
     private static let dataFileName = "face_data.json"
     private static let thumbnailsDirectoryName = "thumbnails"
 

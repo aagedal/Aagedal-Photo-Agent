@@ -136,6 +136,26 @@ private class FullScreenWindow: NSWindow {
                 onSetRating?(rating)
                 return
             }
+        } else if !hasOption {
+            // Bare-digit shortcuts (PhotoMechanic muscle memory).
+            // 0-5 → rating, 6-9 → color label slot 1-4.
+            if let n = numberKeyCodes[keyCode] {
+                if n <= 5 {
+                    onSetRating?(n)
+                    return
+                }
+                if (6...9).contains(n) {
+                    onSetLabel?(n - 5)
+                    return
+                }
+            }
+            // X (keyCode 7) → trash label.
+            // (S is reserved for scaling-filter toggle in full-screen, so the
+            // bare-key "select" shortcut is grid-only.)
+            if keyCode == 7 && !event.isARepeat {
+                onSetLabel?(8) // ColorLabel.trash → shortcutIndex 8
+                return
+            }
         }
 
         super.keyDown(with: event)

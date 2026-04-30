@@ -12,7 +12,7 @@ struct ImportView: View {
             switch viewModel.importPhase {
             case .copying, .applyingMetadata:
                 progressContent
-            case .complete:
+            case .complete, .cancelled:
                 completionContent
             default:
                 formContent
@@ -35,6 +35,8 @@ struct ImportView: View {
                 dateSortingSection
                 fileTypeSection
                 conflictSection
+                verificationSection
+                backupSection
                 metadataSection
 
                 if let error = viewModel.errorMessage {
@@ -223,6 +225,82 @@ struct ImportView: View {
                 Text(viewModel.configuration.conflictPolicy.description)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    // MARK: - Verification Section
+
+    @ViewBuilder
+    private var verificationSection: some View {
+        GroupBox("Copy Verification") {
+            VStack(alignment: .leading, spacing: 8) {
+                Picker("Verify each file after copy", selection: $viewModel.configuration.verificationMode) {
+                    ForEach(CopyVerificationMode.allCases, id: \.self) { mode in
+                        Text(mode.displayName).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Text(viewModel.configuration.verificationMode.description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    // MARK: - Backup Section
+
+    @ViewBuilder
+    private var backupSection: some View {
+        GroupBox("Backup Destination (Optional)") {
+            VStack(alignment: .leading, spacing: 8) {
+                if let backup = viewModel.configuration.backupDestination {
+                    HStack {
+                        Image(systemName: "externaldrive.fill")
+                            .foregroundStyle(.secondary)
+                        Text(backup.url.path)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .foregroundStyle(.primary)
+                        Spacer()
+                        Button("Change…") {
+                            viewModel.selectBackupDestination()
+                        }
+                        Button {
+                            viewModel.clearBackupDestination()
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Remove backup destination")
+                    }
+
+                    Toggle("Verify backup copies", isOn: Binding(
+                        get: { viewModel.configuration.backupDestination?.verifyAfterWrite ?? true },
+                        set: { viewModel.configuration.backupDestination?.verifyAfterWrite = $0 }
+                    ))
+                    .disabled(viewModel.configuration.verificationMode == .off)
+
+                    Text("Each file will copy to both the primary and backup destinations. If the backup fails, the primary import still completes.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    HStack {
+                        Text("No backup destination configured.")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Choose…") {
+                            viewModel.selectBackupDestination()
+                        }
+                    }
+                    Text("Optional: copy each file to a second location during import (e.g., a NAS or external drive). Backup failures don't fail the import.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -426,65 +504,53 @@ struct ImportView: View {
 
     @ViewBuilder
     private var progressContent: some View {
-        VStack(spacing: 16) {
-            Spacer()
-
-            if viewModel.importPhase == .copying {
-                Text("Copying files...")
-                    .font(.headline)
-                ProgressView(value: Double(viewModel.copiedFiles), total: Double(viewModel.totalFiles))
-                    .frame(maxWidth: 300)
-                Text("\(viewModel.copiedFiles) of \(viewModel.totalFiles)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else if viewModel.importPhase == .applyingMetadata {
-                Text("Applying metadata...")
-                    .font(.headline)
-                ProgressView()
-                    .controlSize(.large)
-                Text("Writing IPTC metadata to imported files")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+        let backupEnabled = viewModel.configuration.backupDestination != nil
+        CopyProgressView(
+            title: "Copying files…",
+            primaryCopied: viewModel.copiedFiles,
+            totalFiles: viewModel.totalFiles,
+            backupCopied: backupEnabled ? viewModel.backupCopiedFiles : nil,
+            backupTotal: backupEnabled ? viewModel.totalFiles : nil,
+            backupFailed: viewModel.backupFailedFiles,
+            verifiedCount: viewModel.verifiedFiles,
+            mismatchedCount: viewModel.mismatchedFiles,
+            currentFile: viewModel.currentFile,
+            isApplyingMetadata: viewModel.importPhase == .applyingMetadata,
+            onCancel: {
+                viewModel.cancelImport()
             }
-
-            Spacer()
-        }
-        .frame(maxWidth: .infinity)
-        .padding()
+        )
     }
 
     // MARK: - Completion Content
 
     @ViewBuilder
     private var completionContent: some View {
-        VStack(spacing: 16) {
-            Spacer()
-
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 48))
-                .foregroundStyle(.green)
-
-            Text("Import Complete")
-                .font(.title2.bold())
-
-            Text("\(viewModel.copiedFiles) files imported to")
-                .foregroundStyle(.secondary)
-            Text(viewModel.configuration.destinationFolderName)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            if !viewModel.importSummary.isEmpty {
-                Text(viewModel.importSummary)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer()
+        let cancelled = viewModel.importPhase == .cancelled
+        let backupEnabled = viewModel.configuration.backupDestination != nil
+        VStack(spacing: 12) {
+            VerificationSummaryView(
+                title: "Import Complete",
+                succeededLabel: "imported",
+                copiedFiles: viewModel.copiedFiles,
+                totalFiles: viewModel.totalFiles,
+                renamedFiles: viewModel.renamedFiles,
+                skippedFiles: viewModel.skippedFiles,
+                failedFiles: viewModel.failedFiles,
+                verifiedFiles: viewModel.verifiedFiles,
+                mismatchedFiles: viewModel.mismatchedFiles,
+                backupCopiedFiles: viewModel.backupCopiedFiles,
+                backupFailedFiles: viewModel.backupFailedFiles,
+                backupEnabled: backupEnabled,
+                failureRecords: viewModel.failureRecords,
+                summaryLine: viewModel.importSummary,
+                cancelled: cancelled
+            )
 
             HStack(spacing: 12) {
                 Button("Import More") {
                     viewModel.reset()
                 }
-
                 Button("Done") {
                     onDismiss()
                 }
@@ -493,7 +559,5 @@ struct ImportView: View {
             }
             .padding(.bottom)
         }
-        .frame(maxWidth: .infinity)
-        .padding()
     }
 }

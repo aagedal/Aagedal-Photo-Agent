@@ -9,7 +9,22 @@ enum ImportPhase: Equatable {
     case copying
     case applyingMetadata
     case complete
+    case cancelled
     case failed(String)
+}
+
+/// Surfaced to the UI to render mismatch and backup-failure rows in the summary.
+struct ImportFailureRecord: Identifiable, Sendable, Hashable {
+    let id = UUID()
+    let source: URL
+    let kind: Kind
+    let detail: String
+
+    enum Kind: String, Sendable {
+        case copyFailed
+        case verificationMismatch
+        case backupFailed
+    }
 }
 
 /// Per-date group for sorting source files into separate destination folders.
@@ -30,8 +45,14 @@ final class ImportViewModel {
     var skippedFiles: Int = 0
     var renamedFiles: Int = 0
     var failedFiles: Int = 0
+    var verifiedFiles: Int = 0
+    var mismatchedFiles: Int = 0
+    var backupCopiedFiles: Int = 0
+    var backupFailedFiles: Int = 0
+    var currentFile: String = ""
     var importSummary: String = ""
     var errorMessage: String?
+    var failureRecords: [ImportFailureRecord] = []
 
     /// Capture-date groups detected from source files.
     var dateGroups: [ImportDateGroup] = []
@@ -45,16 +66,25 @@ final class ImportViewModel {
     private let interpolator = PresetVariableInterpolator()
     @ObservationIgnored private var scanTask: Task<Void, Never>?
     @ObservationIgnored private var dateScanTask: Task<Void, Never>?
+    @ObservationIgnored private var importTask: Task<Void, Never>?
+    @ObservationIgnored private let copyService = ImportCopyService()
     private let importLog = Logger(subsystem: "com.aagedal.photo-agent", category: "Import")
 
     init(readService: SwiftExifReadService, writeEngine: any MetadataWriteEngine) {
         self.readService = readService
         self.writeEngine = writeEngine
+
+        // Restore last-used verification mode (default = .on).
+        if let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.importVerificationMode),
+           let mode = CopyVerificationMode(rawValue: raw) {
+            self.configuration.verificationMode = mode
+        }
     }
 
     deinit {
         scanTask?.cancel()
         dateScanTask?.cancel()
+        importTask?.cancel()
     }
 
     var isImporting: Bool {
@@ -181,8 +211,17 @@ final class ImportViewModel {
         skippedFiles = 0
         renamedFiles = 0
         failedFiles = 0
+        verifiedFiles = 0
+        mismatchedFiles = 0
+        backupCopiedFiles = 0
+        backupFailedFiles = 0
+        currentFile = ""
         importSummary = ""
         errorMessage = nil
+        failureRecords = []
+
+        // Persist verification mode for next run.
+        UserDefaults.standard.set(configuration.verificationMode.rawValue, forKey: UserDefaultsKeys.importVerificationMode)
 
         // Determine the primary destination folder (first date group or single folder).
         let primaryDestURL: URL
@@ -199,6 +238,8 @@ final class ImportViewModel {
         // Capture configuration values for the background copy.
         let createSubFolders = configuration.createSubFolders
         let conflictPolicy = configuration.conflictPolicy
+        let verificationMode = configuration.verificationMode
+        let backupDestination = configuration.backupDestination
         let applyMetadata = configuration.applyMetadata
         let processVariables = configuration.processVariables
         let sortByDate = self.sortByDate
@@ -213,7 +254,7 @@ final class ImportViewModel {
         }
         let metadata = configuration.metadata
 
-        // Pre-compute file→date-group folder name for O(1) lookup (avoids O(N×M) linear scan).
+        // Pre-compute file→date-group folder name for O(1) lookup.
         var fileDateFolder: [URL: String] = [:]
         if sortByDate {
             for group in dateGroups {
@@ -224,7 +265,10 @@ final class ImportViewModel {
         }
 
         // Pre-compute file→target folder on main actor (SupportedImageFormats is MainActor).
-        var fileTargetFolder: [URL: URL] = [:]
+        // Returns: (primaryFolder, backupFolder?). Backup mirrors the primary folder structure
+        // under the chosen backup root.
+        var jobs: [ImportCopyService.CopyJob] = []
+        var allDestFolders: Set<URL> = []
         for file in filesToCopy {
             let baseFolder: URL
             if sortByDate {
@@ -237,67 +281,74 @@ final class ImportViewModel {
                 baseFolder = destURL
             }
 
+            let primaryFolder: URL
             if configuration.fileTypeFilter == .both && createSubFolders {
                 if SupportedImageFormats.isRaw(url: file) {
-                    fileTargetFolder[file] = baseFolder.appendingPathComponent("RAW")
+                    primaryFolder = baseFolder.appendingPathComponent("RAW")
                 } else if SupportedImageFormats.isJPEG(url: file) {
-                    fileTargetFolder[file] = baseFolder.appendingPathComponent("JPEG")
+                    primaryFolder = baseFolder.appendingPathComponent("JPEG")
                 } else {
-                    fileTargetFolder[file] = baseFolder
+                    primaryFolder = baseFolder
                 }
             } else {
-                fileTargetFolder[file] = baseFolder
+                primaryFolder = baseFolder
             }
+            allDestFolders.insert(primaryFolder)
+
+            let primaryURL = primaryFolder.appendingPathComponent(file.lastPathComponent)
+
+            // Mirror the relative path (under destinationBaseURL) into the backup destination.
+            var backupURL: URL?
+            if let backupRoot = backupDestination?.url {
+                if let relative = Self.relativePath(of: primaryURL, under: baseURL) {
+                    let backupTarget = backupRoot.appendingPathComponent(relative)
+                    backupURL = backupTarget
+                    allDestFolders.insert(backupTarget.deletingLastPathComponent())
+                }
+            }
+
+            jobs.append(ImportCopyService.CopyJob(
+                source: file,
+                desiredPrimaryDest: primaryURL,
+                desiredBackupDest: backupURL
+            ))
         }
 
-        // Collect all unique destination folders to create.
-        let allDestFolders = Set(fileTargetFolder.values)
+        let allFolders = allDestFolders
+        let verifyBackup = backupDestination?.verifyAfterWrite ?? true
+        let copyService = self.copyService
 
-        Task.detached(priority: .userInitiated) { [readService, interpolator, importLog] in
-            _ = readService // captured for the resolveMetadataForFile path; SwiftExif has no process to start
+        importTask = Task.detached(priority: .userInitiated) { [readService, interpolator, importLog, weak self] in
+            guard let self else { return }
+            _ = readService
+
             do {
                 let fm = FileManager.default
-
-                // 1. Create all destination folders
-                for folder in allDestFolders {
+                for folder in allFolders {
                     try fm.createDirectory(at: folder, withIntermediateDirectories: true)
                 }
 
-                // 2. Copy files
-                var copiedURLs: [URL] = []
-                for file in filesToCopy {
-                    let targetFolder = fileTargetFolder[file] ?? destURL
-                    let desiredTargetURL = targetFolder.appendingPathComponent(file.lastPathComponent)
-
-                    do {
-                        let resolution = try Self.resolveDestinationURL(
-                            desiredURL: desiredTargetURL,
-                            policy: conflictPolicy,
-                            fileManager: fm
-                        )
-
-                        switch resolution {
-                        case .skipped:
-                            await MainActor.run { self.skippedFiles += 1 }
-                            continue
-                        case .resolved(let targetURL, let wasRenamed):
-                            try fm.copyItem(at: file, to: targetURL)
-                            copiedURLs.append(targetURL)
-                            await MainActor.run {
-                                self.copiedFiles += 1
-                                if wasRenamed { self.renamedFiles += 1 }
-                            }
+                let results = try await copyService.run(
+                    jobs: jobs,
+                    conflictPolicy: conflictPolicy,
+                    verificationMode: verificationMode,
+                    verifyBackup: verifyBackup,
+                    progress: { [weak self] result in
+                        await MainActor.run {
+                            self?.applyProgress(result)
                         }
-                    } catch {
-                        importLog.error("Failed to copy \(file.lastPathComponent): \(error.localizedDescription)")
-                        await MainActor.run { self.failedFiles += 1 }
-                        continue
                     }
-                }
+                )
+
+                // Pull successful primary URLs (verified or verification disabled) for metadata pass.
+                let copiedURLs = results.compactMap { $0.primaryURL }
 
                 if copiedURLs.isEmpty {
                     await MainActor.run {
                         if self.skippedFiles > 0 {
+                            self.importPhase = .complete
+                            self.importSummary = self.buildImportSummary()
+                        } else if self.failedFiles > 0 || self.mismatchedFiles > 0 {
                             self.importPhase = .complete
                             self.importSummary = self.buildImportSummary()
                         } else {
@@ -308,13 +359,14 @@ final class ImportViewModel {
                     return
                 }
 
-                // 3. Apply metadata if configured
+                // Apply metadata if configured
                 if applyMetadata {
                     await MainActor.run { self.importPhase = .applyingMetadata }
 
                     if processVariables {
                         var sequenceNumber = 1
                         for url in copiedURLs {
+                            try Task.checkCancellation()
                             let resolved = await self.resolveMetadataForFile(url, metadata: metadata, interpolator: interpolator, sequenceIndex: sequenceNumber)
                             sequenceNumber += 1
                             let fields = await Self.buildMetadataFields(from: resolved)
@@ -327,6 +379,7 @@ final class ImportViewModel {
                         if !fields.isEmpty {
                             let batchSize = 20
                             for batchStart in stride(from: 0, to: copiedURLs.count, by: batchSize) {
+                                try Task.checkCancellation()
                                 let batchEnd = min(batchStart + batchSize, copiedURLs.count)
                                 let batch = Array(copiedURLs[batchStart..<batchEnd])
                                 try await self.writeEngine.writeFields(fields, to: batch)
@@ -335,17 +388,19 @@ final class ImportViewModel {
                     }
                 }
 
-                // 4. Complete
                 await MainActor.run {
                     self.importPhase = .complete
                     self.importSummary = self.buildImportSummary()
                     importLog.info("Import complete: \(self.importSummary)")
-                }
-
-                await MainActor.run {
                     NotificationCenter.default.post(name: .importCompleted, object: destURL)
                 }
-
+            } catch is CancellationError {
+                await MainActor.run {
+                    self.importPhase = .cancelled
+                    self.importSummary = self.buildImportSummary()
+                    importLog.info("Import cancelled: \(self.importSummary)")
+                    NotificationCenter.default.post(name: .importCompleted, object: destURL)
+                }
             } catch {
                 await MainActor.run {
                     self.importPhase = .failed(error.localizedDescription)
@@ -356,50 +411,76 @@ final class ImportViewModel {
         }
     }
 
-    private enum DestinationResolution {
-        case skipped
-        case resolved(URL, wasRenamed: Bool)
+    /// Cancel a running import. The actor sees the cancellation between files
+    /// (and inside the chunk loop) and tears down any partial files before
+    /// the result is returned.
+    func cancelImport() {
+        importTask?.cancel()
     }
 
-    nonisolated private static func resolveDestinationURL(
-        desiredURL: URL,
-        policy: ImportConflictPolicy,
-        fileManager: FileManager
-    ) throws -> DestinationResolution {
-        guard fileManager.fileExists(atPath: desiredURL.path) else {
-            return .resolved(desiredURL, wasRenamed: false)
+    @MainActor
+    private func applyProgress(_ result: ImportCopyService.CopyResult) {
+        currentFile = result.source.lastPathComponent
+
+        switch result.primary {
+        case .copied(_, let renamed, _):
+            copiedFiles += 1
+            if renamed { renamedFiles += 1 }
+        case .skipped:
+            skippedFiles += 1
+        case .failed(let detail):
+            failedFiles += 1
+            failureRecords.append(ImportFailureRecord(source: result.source, kind: .copyFailed, detail: detail))
         }
 
-        switch policy {
-        case .skipExisting:
-            return .skipped
-        case .overwrite:
-            try fileManager.removeItem(at: desiredURL)
-            return .resolved(desiredURL, wasRenamed: false)
-        case .renameWithSuffix:
-            let directory = desiredURL.deletingLastPathComponent()
-            let basename = desiredURL.deletingPathExtension().lastPathComponent
-            let ext = desiredURL.pathExtension
-            let maxAttempts = 10_000
+        switch result.primaryVerification {
+        case .verified:
+            verifiedFiles += 1
+        case .mismatch(let expected, let got):
+            mismatchedFiles += 1
+            failureRecords.append(ImportFailureRecord(
+                source: result.source,
+                kind: .verificationMismatch,
+                detail: "expected \(expected.shortHex), got \(got.shortHex)"
+            ))
+        case .skipped, .failed:
+            break
+        }
 
-            for index in 1...maxAttempts {
-                let candidateName = ext.isEmpty
-                    ? "\(basename)-\(index)"
-                    : "\(basename)-\(index).\(ext)"
-                let candidate = directory.appendingPathComponent(candidateName)
-                if !fileManager.fileExists(atPath: candidate.path) {
-                    return .resolved(candidate, wasRenamed: true)
-                }
+        if let backup = result.backup {
+            switch backup {
+            case .copied:
+                backupCopiedFiles += 1
+            case .failed(let detail):
+                backupFailedFiles += 1
+                failureRecords.append(ImportFailureRecord(source: result.source, kind: .backupFailed, detail: detail))
+            case .skipped:
+                break
             }
-            throw NSError(
-                domain: "ImportViewModel", code: 2,
-                userInfo: [NSLocalizedDescriptionKey: "Could not resolve filename conflict for \(desiredURL.lastPathComponent) after \(maxAttempts) attempts"]
-            )
         }
+    }
+
+    nonisolated static func relativePath(of url: URL, under root: URL) -> String? {
+        let urlComponents = url.standardizedFileURL.pathComponents
+        let rootComponents = root.standardizedFileURL.pathComponents
+        guard urlComponents.count > rootComponents.count else { return nil }
+        for (i, c) in rootComponents.enumerated() where urlComponents[i] != c {
+            return nil
+        }
+        return urlComponents[rootComponents.count..<urlComponents.count].joined(separator: "/")
     }
 
     private func buildImportSummary() -> String {
-        "Imported \(copiedFiles), renamed \(renamedFiles), skipped \(skippedFiles), failed \(failedFiles)."
+        var parts: [String] = []
+        parts.append("Imported \(copiedFiles)")
+        if renamedFiles > 0 { parts.append("renamed \(renamedFiles)") }
+        if skippedFiles > 0 { parts.append("skipped \(skippedFiles)") }
+        if failedFiles > 0 { parts.append("failed \(failedFiles)") }
+        if mismatchedFiles > 0 { parts.append("verification failures \(mismatchedFiles)") }
+        if backupCopiedFiles > 0 || backupFailedFiles > 0 {
+            parts.append("backup \(backupCopiedFiles) of \(backupCopiedFiles + backupFailedFiles)")
+        }
+        return parts.joined(separator: ", ") + "."
     }
 
     private func resolveMetadataForFile(_ url: URL, metadata: IPTCMetadata, interpolator: PresetVariableInterpolator, sequenceIndex: Int = 1) async -> IPTCMetadata {
@@ -525,7 +606,12 @@ final class ImportViewModel {
     // MARK: - Reset
 
     func reset() {
+        let preservedVerificationMode = configuration.verificationMode
+        let preservedBackup = configuration.backupDestination
         configuration = ImportConfiguration()
+        // Preserve the user's verification + backup choices across "Import More".
+        configuration.verificationMode = preservedVerificationMode
+        configuration.backupDestination = preservedBackup
         sourceFiles = []
         importPhase = .idle
         copiedFiles = 0
@@ -533,11 +619,39 @@ final class ImportViewModel {
         skippedFiles = 0
         renamedFiles = 0
         failedFiles = 0
+        verifiedFiles = 0
+        mismatchedFiles = 0
+        backupCopiedFiles = 0
+        backupFailedFiles = 0
+        currentFile = ""
         importSummary = ""
         errorMessage = nil
+        failureRecords = []
         dateGroups = []
         sortByDate = false
         isScanningDates = false
         dateScanTask?.cancel()
+        importTask?.cancel()
+    }
+
+    // MARK: - Backup Destination
+
+    func selectBackupDestination() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Select a secondary backup folder for this import"
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        if configuration.backupDestination == nil {
+            configuration.backupDestination = BackupDestination(url: url)
+        } else {
+            configuration.backupDestination?.url = url
+        }
+    }
+
+    func clearBackupDestination() {
+        configuration.backupDestination = nil
     }
 }

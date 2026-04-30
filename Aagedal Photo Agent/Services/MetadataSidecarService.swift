@@ -5,7 +5,7 @@ private nonisolated let sidecarLogger = Logger(subsystem: "com.aagedal.photo-age
 
 struct MetadataSidecarService: Sendable {
 
-    private nonisolated static let sidecarDirectoryName = ".photo_metadata"
+    nonisolated static let sidecarDirectoryName = ".photo_metadata"
 
     // MARK: - Directory Helpers
 

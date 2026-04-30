@@ -311,9 +311,44 @@ final class ThumbnailCollectionView: NSCollectionView {
                let slot = Int(String(digit)),
                (1...9).contains(slot) {
                 NotificationCenter.default.post(name: .applyTemplateShortcut, object: slot)
-            } else {
-                super.keyDown(with: event)
+                return
             }
+
+            // Bare-digit culling shortcuts (PhotoMechanic muscle memory).
+            // Only when the grid has key focus and no modifier is held.
+            // The collection view only receives keyDown when nothing else owns first
+            // responder, so an active text field will absorb digits before we see them.
+            let modifierMask: NSEvent.ModifierFlags = [.command, .option, .control, .shift]
+            let bareKey = event.modifierFlags.intersection(modifierMask).isEmpty
+            if bareKey, viewModel.firstSelectedImage != nil,
+               let chars = event.charactersIgnoringModifiers, let ch = chars.first {
+                if let digit = ch.wholeNumberValue {
+                    if (0...5).contains(digit), let rating = StarRating(rawValue: digit) {
+                        NotificationCenter.default.post(name: .setRating, object: rating)
+                        return
+                    }
+                    if (6...9).contains(digit) {
+                        // Map 6→1 (Red), 7→2 (Yellow), 8→3 (Green), 9→4 (Blue).
+                        let labelIndex = digit - 5
+                        if let label = ColorLabel.fromShortcutIndex(labelIndex) {
+                            NotificationCenter.default.post(name: .setLabel, object: label)
+                            return
+                        }
+                    }
+                }
+                let lower = ch.lowercased()
+                if lower == "x" {
+                    NotificationCenter.default.post(name: .setLabel, object: ColorLabel.trash)
+                    return
+                }
+                if lower == "s" {
+                    // S for "select" — same hand as X, one-handed cull workflow.
+                    NotificationCenter.default.post(name: .setLabel, object: ColorLabel.red)
+                    return
+                }
+            }
+
+            super.keyDown(with: event)
         }
     }
 

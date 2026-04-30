@@ -25,6 +25,10 @@ struct Aagedal_Photo_AgentApp: App {
                     NotificationCenter.default.post(name: .showImport, object: nil)
                 }
                 .keyboardShortcut("i", modifiers: [.command, .shift])
+
+                Button("Back Up Edited Files...") {
+                    NotificationCenter.default.post(name: .backupEditedFiles, object: nil)
+                }
             }
 
             CommandGroup(replacing: .printItem) { }
@@ -83,6 +87,10 @@ struct Aagedal_Photo_AgentApp: App {
                     NotificationCenter.default.post(name: .deleteSelected, object: nil)
                 }
                 .keyboardShortcut(.delete, modifiers: .command)
+
+                Button("Move Rejected to Folder…") {
+                    NotificationCenter.default.post(name: .moveRejectedToFolder, object: nil)
+                }
             }
 
 
@@ -323,4 +331,7 @@ extension Notification.Name {
     static let showVariableReference = Notification.Name("showVariableReference")
     static let copyIPTCMetadata = Notification.Name("copyIPTCMetadata")
     static let pasteIPTCMetadata = Notification.Name("pasteIPTCMetadata")
+    static let backupEditedFiles = Notification.Name("backupEditedFiles")
+    static let backupEditedFilesForFolder = Notification.Name("backupEditedFilesForFolder")
+    static let moveRejectedToFolder = Notification.Name("moveRejectedToFolder")
 }

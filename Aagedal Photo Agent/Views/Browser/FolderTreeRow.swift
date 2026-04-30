@@ -171,6 +171,10 @@ struct FolderTreeRow: View {
                 viewModel.promptNewSubfolder(url)
             }
             Divider()
+            Button("Back Up Edited Files...") {
+                NotificationCenter.default.post(name: .backupEditedFilesForFolder, object: url)
+            }
+            Divider()
             Button("Remove from Favorites", role: .destructive) {
                 if let fav = viewModel.favoriteFolders.first(where: { $0.url == url }) {
                     viewModel.removeFavorite(fav)
@@ -201,6 +205,10 @@ struct FolderTreeRow: View {
             }
             Button("New Subfolder...") {
                 viewModel.promptNewSubfolder(url)
+            }
+            Divider()
+            Button("Back Up Edited Files...") {
+                NotificationCenter.default.post(name: .backupEditedFilesForFolder, object: url)
             }
             Divider()
             Button {

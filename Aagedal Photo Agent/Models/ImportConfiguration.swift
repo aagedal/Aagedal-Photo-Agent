@@ -34,6 +34,32 @@ enum ImportConflictPolicy: String, CaseIterable, Sendable {
     }
 }
 
+enum CopyVerificationMode: String, CaseIterable, Sendable {
+    case off
+    case on
+
+    var displayName: String {
+        switch self {
+        case .off: return "Off"
+        case .on: return "On"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .off:
+            return "Skip verification. Faster, but silent corruption can go undetected."
+        case .on:
+            return "Hash each file with SHA-256 during copy and re-read the destination to confirm. Recommended for memory-card ingest."
+        }
+    }
+}
+
+struct BackupDestination: Sendable, Equatable {
+    var url: URL
+    var verifyAfterWrite: Bool = true
+}
+
 struct ImportConfiguration {
     var sourceURL: URL?
     var destinationBaseURL: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Photos")
@@ -45,6 +71,8 @@ struct ImportConfiguration {
     var processVariables: Bool = false
     var metadata: IPTCMetadata = IPTCMetadata()
     var openFolderAfterImport: Bool = true
+    var verificationMode: CopyVerificationMode = .on
+    var backupDestination: BackupDestination?
 
     var destinationFolderName: String {
         let formatter = DateFormatter()

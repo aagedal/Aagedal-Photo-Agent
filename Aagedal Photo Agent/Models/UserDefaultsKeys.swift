@@ -79,6 +79,12 @@ nonisolated enum UserDefaultsKeys {
     // MARK: - Variable Processing
     static let addJobIdToKeywords = "addJobIdToKeywords"
 
+    // MARK: - Import Verification & Backup
+    static let importVerificationMode = "importVerificationMode"
+    static let importBackupBookmark = "importBackupBookmark"
+    static let importBackupVerifyAfterWrite = "importBackupVerifyAfterWrite"
+    static let editedFolderBackupBookmark = "editedFolderBackupBookmark"
+
     // MARK: - Quick List Bookmarks
     static let keywordsListBookmark = "keywordsListBookmark"
     static let personShownListBookmark = "personShownListBookmark"

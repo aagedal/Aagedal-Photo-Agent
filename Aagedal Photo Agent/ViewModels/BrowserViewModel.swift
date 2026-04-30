@@ -1259,6 +1259,25 @@ final class BrowserViewModel {
         )
     }
 
+    /// Move all images currently labeled `.trash` to a sibling `.Rejected/`
+    /// subfolder, along with their JSON and XMP sidecars. Reloads the folder
+    /// when finished so the grid reflects the move. Returns the count moved.
+    @discardableResult
+    func moveRejectedToFolder() -> Int {
+        guard let folderURL = currentFolderURL else { return 0 }
+        let rejectedURLs = visibleImages.filter { $0.colorLabel == .trash }.map(\.url)
+        guard !rejectedURLs.isEmpty else { return 0 }
+
+        let result = RejectMoveService.moveRejected(urls: rejectedURLs, in: folderURL)
+        if !result.failedFiles.isEmpty {
+            errorMessage = "Failed to move \(result.failedFiles.count) rejected file(s) to \(RejectMoveService.rejectedFolderName)/."
+        }
+
+        // Reload current folder so the grid drops the moved files.
+        loadFolder(url: folderURL, addToOpenFolders: false)
+        return result.movedFiles.count
+    }
+
     func rotateClockwise() {
         guard !selectedImageIDs.isEmpty else { return }
         var newOrientations: [URL: Int] = [:]

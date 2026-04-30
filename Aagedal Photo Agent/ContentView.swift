@@ -25,6 +25,36 @@ struct FTPUploadItem: Identifiable {
     let urls: [URL]
 }
 
+private struct BackupEditedItem: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
+/// Pulls the new safety and culling notification handlers out of the main
+/// `contentWithNotificationHandlers` chain so the type-checker can finish
+/// inside its time budget.
+private struct SafetyAndCullingHandlers: ViewModifier {
+    let browserViewModel: BrowserViewModel
+    @Binding var backupEditedFolderItem: BackupEditedItem?
+
+    func body(content: Content) -> some View {
+        content
+            .onReceive(NotificationCenter.default.publisher(for: .backupEditedFiles)) { _ in
+                if let folder = browserViewModel.currentFolderURL {
+                    backupEditedFolderItem = BackupEditedItem(url: folder)
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .backupEditedFilesForFolder)) { notification in
+                if let url = notification.object as? URL {
+                    backupEditedFolderItem = BackupEditedItem(url: url)
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .moveRejectedToFolder)) { _ in
+                browserViewModel.moveRejectedToFolder()
+            }
+    }
+}
+
 struct ContentView: View {
     @State private var browserViewModel: BrowserViewModel
     @State private var metadataViewModel: MetadataViewModel
@@ -40,6 +70,7 @@ struct ContentView: View {
     @State private var ftpUploadItem: FTPUploadItem?
     @State private var isShowingSaveTemplateName = false
     @State private var isShowingImport = false
+    @State private var backupEditedFolderItem: BackupEditedItem?
     @State private var isShowingWriteAllC2PAWarning = false
     @State private var c2paMetadata: C2PAMetadata?
     @State private var pendingWriteAllC2PACount = 0
@@ -109,6 +140,12 @@ struct ContentView: View {
                 )
             }
             .sheet(isPresented: $isShowingImport) { importSheet }
+            .sheet(item: $backupEditedFolderItem) { item in
+                BackupEditedFilesSheet(
+                    sourceFolder: item.url,
+                    onDismiss: { backupEditedFolderItem = nil }
+                )
+            }
             .sheet(item: $c2paMetadata) { metadata in
                 C2PADetailSheet(metadata: metadata)
             }
@@ -288,6 +325,10 @@ struct ContentView: View {
 
     private var contentWithNotificationHandlers: some View {
         contentWithFileOperationHandlers
+            .modifier(SafetyAndCullingHandlers(
+                browserViewModel: browserViewModel,
+                backupEditedFolderItem: $backupEditedFolderItem
+            ))
             .onReceive(NotificationCenter.default.publisher(for: .showImport)) { _ in
                 isShowingImport = true
             }
