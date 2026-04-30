@@ -544,7 +544,8 @@ final class BrowserViewModel {
                 )
 
                 // Phase 5: Load metadata
-                await loadBasicMetadata(cachedSidecars: allSidecars)
+                let metadataURLs = self.images.filter(\.isImageFile).map(\.url)
+                await loadBasicMetadata(for: metadataURLs, cachedSidecars: allSidecars)
             } catch {
                 guard !Task.isCancelled, self.currentFolderURL == url else { return }
                 self.errorMessage = error.localizedDescription
@@ -685,10 +686,18 @@ final class BrowserViewModel {
         }
     }
 
-    private func loadBasicMetadata(cachedSidecars: [URL: MetadataSidecar] = [:]) async {
+    /// Reads IPTC/XMP basic metadata for the given URLs in batches of 50 and merges
+    /// each batch into `self.images`. Pass `cachedSidecars` when the caller has already
+    /// loaded all sidecars for the folder (initial-load path); the incremental path
+    /// leaves it empty and relies on `applyPendingSidecarOverrides`'s per-file fallback.
+    private func loadBasicMetadata(
+        for urls: [URL],
+        cachedSidecars: [URL: MetadataSidecar] = [:]
+    ) async {
         guard metadataReadService.isAvailable else { return }
+        guard !urls.isEmpty else { return }
         if isMetadataLoading {
-            pendingMetadataURLs.formUnion(images.map(\.url))
+            pendingMetadataURLs.formUnion(urls)
             return
         }
         isMetadataLoading = true
@@ -709,9 +718,8 @@ final class BrowserViewModel {
         // Suppress the images didSet cascade during the loop to avoid N/batchSize
         // redundant sort + filter + UI rebuild cycles; do a single rebuild at the end.
         let batchSize = 50
-        let urls = images.filter(\.isImageFile).map(\.url)
-        let totalBatchStart = ContinuousClock.now
         let totalBatches = (urls.count + batchSize - 1) / batchSize
+        let totalBatchStart = ContinuousClock.now
         perfLog.info("[BrowserVM] loadBasicMetadata START — \(urls.count) images, \(totalBatches) batches")
 
         suppressImagesCascade = true
@@ -727,52 +735,18 @@ final class BrowserViewModel {
                 let results = try await metadataReadService.readBatchBasicMetadata(urls: batchURLs)
                 let batchMs = batchTimer.elapsedMilliseconds()
                 perfLog.info("[BrowserVM] batch \(batchIndex)/\(totalBatches) DONE — \(batchURLs.count) files in \(batchMs)ms")
-                applyBatchMetadataResults(results, to: &images, localIndex: urlToImageIndex, cachedSidecars: cachedSidecars)
+                applyBatchMetadataResults(
+                    results,
+                    to: &images,
+                    localIndex: urlToImageIndex,
+                    cachedSidecars: cachedSidecars
+                )
             } catch {
                 logger.warning("Batch metadata load failed (batch at offset \(batchStart)): \(error.localizedDescription)")
             }
         }
         let totalMs = totalBatchStart.elapsedMilliseconds()
         perfLog.info("[BrowserVM] loadBasicMetadata DONE — \(urls.count) images in \(totalMs)ms")
-        rebuildSortedCache()
-    }
-
-    private func loadBasicMetadata(for urls: [URL]) async {
-        guard metadataReadService.isAvailable else { return }
-        guard !urls.isEmpty else { return }
-        if isMetadataLoading {
-            pendingMetadataURLs.formUnion(urls)
-            return
-        }
-        isMetadataLoading = true
-        let folderURL = currentFolderURL
-        defer {
-            isMetadataLoading = false
-            drainPendingMetadataIfNeeded()
-        }
-
-        do {
-            try metadataReadService.start()
-        } catch {
-            return
-        }
-
-        let batchSize = 50
-
-        suppressImagesCascade = true
-        defer { suppressImagesCascade = false }
-        for batchStart in stride(from: 0, to: urls.count, by: batchSize) {
-            guard !Task.isCancelled, currentFolderURL == folderURL else { return }
-            let batchEnd = min(batchStart + batchSize, urls.count)
-            let batchURLs = Array(urls[batchStart..<batchEnd])
-
-            do {
-                let results = try await metadataReadService.readBatchBasicMetadata(urls: batchURLs)
-                applyBatchMetadataResults(results, to: &images, localIndex: urlToImageIndex)
-            } catch {
-                logger.warning("Incremental metadata load failed: \(error.localizedDescription)")
-            }
-        }
         rebuildSortedCache()
     }
 
