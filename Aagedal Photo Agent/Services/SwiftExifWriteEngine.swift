@@ -9,12 +9,6 @@ private let crsNamespace = "http://ns.adobe.com/camera-raw-settings/1.0/"
 
 /// Native, in-process metadata write engine. Reads and re-emits the image file
 /// via SwiftExif. There is no external process and no fallback path.
-///
-/// Note on local mask adjustments: writing Adobe Camera Raw
-/// `MaskGroupBasedCorrections` requires nested-struct support inside
-/// `XMPValue.structuredArray`. Until that lands upstream, this engine raises
-/// `MetadataWriteError.maskWritesUnavailable` when callers try to persist
-/// masks. All other write paths are fully native.
 final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Sendable {
 
     init() {}
@@ -25,11 +19,6 @@ final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Sendable {
         structuredData: StructuredWriteData
     ) async throws {
         guard !urls.isEmpty, !fields.isEmpty || !structuredData.isEmpty else { return }
-
-        // Mask writes require SwiftExif 1.3.2 (Gap 2). Surface a clear error.
-        if let masks = structuredData.masks, !masks.isEmpty {
-            throw MetadataWriteError.maskWritesUnavailable
-        }
 
         let creationDates = captureCreationDates(for: urls)
         defer { restoreCreationDates(creationDates) }
@@ -203,6 +192,10 @@ final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Sendable {
 
         if let tc = structuredData.toneCurve {
             applyToneCurves(tc, metadata: &metadata)
+        }
+
+        if let masks = structuredData.masks {
+            applyMasks(masks, metadata: &metadata)
         }
 
         // Sync IPTC → XMP to ensure both sides are consistent.
@@ -398,6 +391,106 @@ final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Sendable {
         } else {
             metadata.xmp?.removeValue(namespace: crsNamespace, property: "ToneCurveName2012")
         }
+    }
+
+    /// Serialize local mask adjustments to ACR's `MaskGroupBasedCorrections`
+    /// schema as a recursive XMP structured array. Each correction is a
+    /// `[String: XMPValue]` dict whose `CorrectionMasks` field is itself a
+    /// nested `XMPValue.structuredArray`.
+    private func applyMasks(_ masks: [MaskAdjustment], metadata: inout ImageMetadata) {
+        let enabled = masks.filter(\.enabled)
+        if enabled.isEmpty {
+            metadata.xmp?.removeValue(namespace: crsNamespace, property: "MaskGroupBasedCorrections")
+            return
+        }
+
+        if metadata.xmp == nil { metadata.xmp = XMPData() }
+
+        let corrections: [[String: XMPValue]] = enabled.enumerated().map { index, mask in
+            let geo = mask.geometry
+            let top = geo.centerY - geo.radiusY
+            let left = geo.centerX - geo.radiusX
+            let bottom = geo.centerY + geo.radiusY
+            let right = geo.centerX + geo.radiusX
+
+            let corrSyncID = mask.id.uuidString.replacingOccurrences(of: "-", with: "")
+            let maskSyncID = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+
+            let maskStruct: [String: XMPValue] = [
+                "What": .simple("Mask/CircularGradient"),
+                "Top": .simple(acrNum(top)),
+                "Left": .simple(acrNum(left)),
+                "Bottom": .simple(acrNum(bottom)),
+                "Right": .simple(acrNum(right)),
+                "Angle": .simple(acrNum(geo.rotation)),
+                "Feather": .simple(acrNum(geo.feather)),
+                "Midpoint": .simple("50"),
+                "Roundness": .simple("0"),
+                // ACR Flipped=true means effect applies inside the ellipse;
+                // our `inverted=true` means effect applies outside. Negate.
+                "Flipped": .simple(mask.inverted ? "false" : "true"),
+                "MaskActive": .simple("true"),
+                "MaskBlendMode": .simple("0"),
+                "MaskInverted": .simple("false"),
+                "MaskName": .simple("Radial Gradient \(index + 1)"),
+                "MaskSyncID": .simple(maskSyncID),
+                "MaskValue": .simple("1"),
+                "Version": .simple("2")
+            ]
+
+            // ACR stores all local adjustments as fractions of their full range
+            // (-1..+1). Exposure is on a -4..+4 EV range, so divide by 4.
+            let exp = (mask.exposure ?? 0) / 4.0
+            let con = Double(mask.contrast ?? 0) / 100.0
+            let hi = Double(mask.highlights ?? 0) / 100.0
+            let sh = Double(mask.shadows ?? 0) / 100.0
+            let wh = Double(mask.whites ?? 0) / 100.0
+            let bl = Double(mask.blacks ?? 0) / 100.0
+            let sat = Double(mask.saturation ?? 0) / 100.0
+            let vib = Double(mask.vibrance ?? 0) / 100.0
+            let temp = (mask.temperature ?? 0) / 100.0
+            let tint = (mask.tint ?? 0) / 100.0
+
+            return [
+                "CorrectionActive": .simple("true"),
+                "CorrectionAmount": .simple(acrNum(mask.amount)),
+                "CorrectionName": .simple(mask.name),
+                "CorrectionSyncID": .simple(corrSyncID),
+                "What": .simple("Correction"),
+                "CorrectionMasks": .structuredArray([maskStruct]),
+                "LocalExposure2012": .simple(acrNum(exp)),
+                "LocalContrast2012": .simple(acrNum(con)),
+                "LocalHighlights2012": .simple(acrNum(hi)),
+                "LocalShadows2012": .simple(acrNum(sh)),
+                "LocalWhites2012": .simple(acrNum(wh)),
+                "LocalBlacks2012": .simple(acrNum(bl)),
+                "LocalSaturation": .simple(acrNum(sat)),
+                "LocalVibrance": .simple(acrNum(vib)),
+                "LocalTemperature": .simple(acrNum(temp)),
+                "LocalTint": .simple(acrNum(tint)),
+                // Legacy fields ACR still expects, all zero.
+                "LocalExposure": .simple("0"),
+                "LocalContrast": .simple("0"),
+                "LocalBrightness": .simple("0"),
+                "LocalClarity": .simple("0"),
+                "LocalClarity2012": .simple("0"),
+                "LocalSharpness": .simple("0"),
+                "LocalLuminanceNoise": .simple("0"),
+                "LocalMoire": .simple("0"),
+                "LocalDefringe": .simple("0"),
+                "LocalDehaze": .simple("0"),
+                "LocalTexture": .simple("0"),
+                "LocalHue": .simple("0"),
+                "LocalToningHue": .simple("0"),
+                "LocalToningSaturation": .simple("0")
+            ]
+        }
+
+        metadata.xmp?.setValue(
+            .structuredArray(corrections),
+            namespace: crsNamespace,
+            property: "MaskGroupBasedCorrections"
+        )
     }
 
     /// Set an XMP field, creating XMPData if needed. Pass nil value to remove.

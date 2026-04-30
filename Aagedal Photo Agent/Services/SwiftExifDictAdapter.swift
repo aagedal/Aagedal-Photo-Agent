@@ -4,6 +4,28 @@ import SwiftExif
 /// XMP namespace URI for Adobe Camera Raw Settings.
 nonisolated private let crsNamespaceURI = "http://ns.adobe.com/camera-raw-settings/1.0/"
 
+/// Recursively unwrap `XMPValue` to plain Swift / Foundation types so the
+/// dict-based parsers (`parseMaskGroupBasedCorrections` etc.) can consume
+/// SwiftExif's recursive structured XMP without per-cast knowledge of the enum.
+nonisolated private func unwrapXMPValue(_ value: XMPValue) -> Any {
+    switch value {
+    case .simple(let s):              return s
+    case .array(let items):           return items
+    case .langAlternative(let s):     return s
+    case .structure(let fields):      return unwrapXMPStruct(fields)
+    case .structuredArray(let items): return items.map(unwrapXMPStruct)
+    }
+}
+
+nonisolated private func unwrapXMPStruct(_ fields: [String: XMPValue]) -> [String: Any] {
+    var out: [String: Any] = [:]
+    out.reserveCapacity(fields.count)
+    for (key, value) in fields {
+        out[key] = unwrapXMPValue(value)
+    }
+    return out
+}
+
 /// Bridges SwiftExif's typed `ImageMetadata` to the flat tag-name dictionary
 /// shape used by `iptcMetadataFromDict` and `TechnicalMetadata.init(from:)`.
 ///
@@ -102,15 +124,14 @@ extension ImageMetadata {
                 if !arr.isEmpty { dict[property] = arr }
             }
 
-            // Local mask corrections — structured array. SwiftExif's current
-            // structuredArray type is flat ([String: String]); nested
-            // CorrectionMasks aren't serialized yet, so the parser emits no
-            // masks until the upstream recursive-struct support ships.
+            // Local mask corrections — recursive structured array. The parser
+            // expects plain `[[String: Any]]` with a nested `CorrectionMasks`
+            // array, so we unwrap the recursive `XMPValue` shape here.
             if let masks = xmp.structuredArrayValue(
                 namespace: crsNamespaceURI,
                 property: MetadataDictKey.maskGroupBasedCorrections
             ) {
-                dict[MetadataDictKey.maskGroupBasedCorrections] = masks
+                dict[MetadataDictKey.maskGroupBasedCorrections] = masks.map(unwrapXMPStruct)
             }
         }
 

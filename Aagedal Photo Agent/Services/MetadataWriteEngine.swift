@@ -1,20 +1,5 @@
 import Foundation
 
-/// Errors raised by the metadata write pipeline.
-enum MetadataWriteError: Error, LocalizedError {
-    /// Local mask adjustments cannot be persisted in the current build.
-    /// Needs nested-struct support inside `XMPValue.structuredArray` to
-    /// serialize ACR `MaskGroupBasedCorrections`.
-    case maskWritesUnavailable
-
-    var errorDescription: String? {
-        switch self {
-        case .maskWritesUnavailable:
-            return "Local mask adjustments cannot be saved yet — waiting on nested structured-array support in SwiftExif."
-        }
-    }
-}
-
 /// Structured data for writes that go beyond simple key-value pairs (tone curves, masks).
 struct StructuredWriteData: Sendable {
     var toneCurve: ToneCurve?
