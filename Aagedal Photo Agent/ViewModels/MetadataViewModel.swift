@@ -811,6 +811,7 @@ final class MetadataViewModel {
                         }
                     }
                 } catch is CancellationError {
+                    saveError = PMXMPPolicy.cancelMessage
                     onComplete?()
                 } catch {
                     saveError = error.localizedDescription
@@ -928,7 +929,7 @@ final class MetadataViewModel {
                     saveError = notes.joined(separator: " ")
                 }
             } catch is CancellationError {
-                // User cancelled prompt.
+                saveError = PMXMPPolicy.cancelMessage
             } catch {
                 saveError = "Failed to write metadata: \(error.localizedDescription)"
             }

@@ -1072,7 +1072,10 @@ final class FaceRecognitionViewModel {
                     strictNonRawChoice = await MainActor.run {
                         PMXMPPolicy.resolveNonRawChoiceWithPromptIfNeeded()
                     }
-                    guard strictNonRawChoice != nil else { return }
+                    guard strictNonRawChoice != nil else {
+                        errorMessage = PMXMPPolicy.cancelMessage
+                        return
+                    }
                 }
             }
 
@@ -1223,7 +1226,10 @@ final class FaceRecognitionViewModel {
                     strictNonRawChoice = await MainActor.run {
                         PMXMPPolicy.resolveNonRawChoiceWithPromptIfNeeded()
                     }
-                    guard strictNonRawChoice != nil else { return }
+                    guard strictNonRawChoice != nil else {
+                        errorMessage = PMXMPPolicy.cancelMessage
+                        return
+                    }
                 }
             }
 

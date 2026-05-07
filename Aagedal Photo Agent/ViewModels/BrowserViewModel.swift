@@ -1444,7 +1444,10 @@ final class BrowserViewModel {
                     strictNonRawChoice = await MainActor.run {
                         PMXMPPolicy.resolveNonRawChoiceWithPromptIfNeeded()
                     }
-                    guard strictNonRawChoice != nil else { return }
+                    guard strictNonRawChoice != nil else {
+                        errorMessage = PMXMPPolicy.cancelMessage
+                        return
+                    }
                 }
             }
 

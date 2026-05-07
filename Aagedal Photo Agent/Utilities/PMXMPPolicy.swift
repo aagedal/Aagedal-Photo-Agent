@@ -81,6 +81,8 @@ enum PMNonRAWXMPSidecarChoice: String, CaseIterable, Identifiable, Sendable {
 }
 
 struct PMXMPPolicy: Sendable {
+    static let cancelMessage = "Save cancelled — no metadata was written."
+
     static var mode: PMXMPCompatibilityMode {
         let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.pmXmpCompatibilityMode) ?? PMXMPCompatibilityMode.off.rawValue
         return PMXMPCompatibilityMode(rawValue: raw) ?? .off
