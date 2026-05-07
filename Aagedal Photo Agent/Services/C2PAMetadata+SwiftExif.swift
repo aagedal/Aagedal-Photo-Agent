@@ -34,7 +34,10 @@ extension C2PAMetadata {
                             author = name
                         }
                     }
-                case .thumbnail, .hashData, .cbor, .binary:
+                case .thumbnail, .hashData, .cbor, .binary,
+                     .hashBoxes, .hashBMFFv2, .hashCollection,
+                     .iptc, .exif, .schemaOrgCreativeWork,
+                     .trainingMining, .redactions, .identityAssertion:
                     break
                 }
             }
