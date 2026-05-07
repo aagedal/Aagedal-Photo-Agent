@@ -96,6 +96,32 @@ struct MetadataSidecarService: Sendable {
         }
     }
 
+    nonisolated func loadSidecars(for imageURLs: [URL], in folderURL: URL) async -> [URL: MetadataSidecar] {
+        guard !imageURLs.isEmpty else { return [:] }
+        return await withTaskGroup(of: (URL, MetadataSidecar)?.self) { group in
+            for imageURL in imageURLs {
+                let candidates = sidecarCandidateURLs(for: imageURL, in: folderURL)
+                group.addTask {
+                    for fileURL in candidates {
+                        guard FileManager.default.fileExists(atPath: fileURL.path) else { continue }
+                        if let (_, sidecar) = Self.decodeSidecar(at: fileURL, folderURL: folderURL) {
+                            return (imageURL, sidecar)
+                        }
+                    }
+                    return nil
+                }
+            }
+            var result: [URL: MetadataSidecar] = [:]
+            result.reserveCapacity(imageURLs.count)
+            for await item in group {
+                if let (imageURL, sidecar) = item {
+                    result[imageURL] = sidecar
+                }
+            }
+            return result
+        }
+    }
+
     nonisolated func imagesWithPendingChanges(in folderURL: URL) async -> Set<URL> {
         let sidecars = await loadAllSidecars(in: folderURL)
         return Set(sidecars.filter { $0.value.pendingChanges }.keys)
