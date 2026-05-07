@@ -75,7 +75,7 @@ struct ContentView: View {
     @State private var c2paMetadata: C2PAMetadata?
     @State private var pendingWriteAllC2PACount = 0
     @State private var saveTemplateName = ""
-    @State private var metadataPanelWidth: CGFloat = 320
+    @AppStorage(UserDefaultsKeys.metadataPanelWidth) private var metadataPanelWidth: Double = 320
     @State private var mainViewMode: MainViewMode = .browser
     @State private var lastNonPeopleViewMode: MainViewMode = .browser
     @State private var faceSelectionState = FaceSelectionState()
@@ -621,7 +621,7 @@ struct ContentView: View {
                     }
                 )
             }
-            .frame(width: metadataPanelWidth)
+            .frame(width: CGFloat(metadataPanelWidth))
         }
     }
 
@@ -2055,9 +2055,9 @@ struct AutoRefreshModifier: ViewModifier {
 }
 
 struct MetadataPanelDivider: View {
-    @Binding var panelWidth: CGFloat
+    @Binding var panelWidth: Double
     @State private var isDragging = false
-    @State private var dragStartWidth: CGFloat = 0
+    @State private var dragStartWidth: Double = 0
 
     var body: some View {
         Rectangle()
@@ -2079,7 +2079,7 @@ struct MetadataPanelDivider: View {
                             isDragging = true
                             dragStartWidth = panelWidth
                         }
-                        let newWidth = dragStartWidth - value.translation.width
+                        let newWidth = dragStartWidth - Double(value.translation.width)
                         panelWidth = min(max(newWidth, 280), 500)
                     }
                     .onEnded { _ in

@@ -56,6 +56,7 @@ nonisolated enum UserDefaultsKeys {
     static let previewMode = "previewMode"
     static let showOriginalThumbnails = "showOriginalThumbnails"
     static let lastScopeMode = "lastScopeMode"
+    static let metadataPanelWidth = "metadataPanelWidth"
 
     // MARK: - Multi-Select Behavior
     static let multiSelectKeywordsMode = "multiSelectKeywordsMode"
