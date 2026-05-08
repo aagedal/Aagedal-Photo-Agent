@@ -887,11 +887,128 @@ struct SettingsView: View {
     @ViewBuilder
     private var templatesTab: some View {
         VStack(alignment: .leading, spacing: 12) {
+            GroupBox("Storage") {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text(settingsViewModel.templatesFolderPath.isEmpty
+                             ? "Default (Application Support)"
+                             : settingsViewModel.templatesFolderPath)
+                            .font(.callout)
+                            .foregroundStyle(settingsViewModel.templatesFolderPath.isEmpty ? .secondary : .primary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Button("Choose…") {
+                            chooseTemplatesFolder()
+                        }
+                        if !settingsViewModel.templatesFolderPath.isEmpty {
+                            Button("Reset") {
+                                settingsViewModel.clearTemplatesFolder()
+                                templateViewModel.loadTemplates()
+                            }
+                        }
+                    }
+                    HStack {
+                        Button("Export All…") {
+                            exportTemplates()
+                        }
+                        .disabled(templateViewModel.templates.isEmpty)
+                        Button("Import…") {
+                            importTemplates()
+                        }
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+
             TemplateListView(viewModel: templateViewModel)
         }
         .padding()
         .sheet(isPresented: $templateViewModel.isEditing) {
             TemplateEditorView(viewModel: templateViewModel)
         }
+        .sheet(item: $templateViewModel.pendingImportPreview) { preview in
+            TemplateImportConfirmationView(
+                preview: preview,
+                onConfirm: {
+                    templateViewModel.commitPendingImport()
+                },
+                onCancel: {
+                    templateViewModel.cancelPendingImport()
+                }
+            )
+        }
+    }
+
+    private func chooseTemplatesFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose a folder to store templates. Pick a folder inside iCloud Drive to sync between Macs."
+        panel.prompt = "Choose"
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        settingsViewModel.setTemplatesFolderURL(url)
+        templateViewModel.loadTemplates()
+    }
+
+    private func exportTemplates() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "AagedalTemplates.json"
+        panel.message = "Export all templates as a JSON bundle"
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        templateViewModel.exportAll(to: url)
+    }
+
+    private func importTemplates() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.json]
+        panel.message = "Select a templates bundle (.json)"
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        templateViewModel.preparePreview(from: url)
+    }
+}
+
+private struct TemplateImportConfirmationView: View {
+    let preview: TemplateImportPreview
+    let onConfirm: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Import Templates")
+                .font(.headline)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("From: \(preview.source.lastPathComponent)")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Text("\(preview.bundle.templates.count) templates in bundle")
+                    .font(.callout)
+                Text("\(preview.newCount) new")
+                    .font(.callout)
+                    .foregroundStyle(.green)
+                Text("\(preview.overwriteCount) will overwrite existing templates")
+                    .font(.callout)
+                    .foregroundStyle(preview.overwriteCount > 0 ? .orange : .secondary)
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) { onCancel() }
+                Button("Import") { onConfirm() }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
     }
 }

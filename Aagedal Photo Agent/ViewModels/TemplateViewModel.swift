@@ -101,4 +101,39 @@ final class TemplateViewModel {
         }
         return result
     }
+
+    // MARK: - Export / Import
+
+    var pendingImportPreview: TemplateImportPreview?
+
+    func exportAll(to destination: URL) {
+        do {
+            try storage.exportAll(to: destination)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func preparePreview(from source: URL) {
+        do {
+            pendingImportPreview = try storage.previewImport(from: source)
+        } catch {
+            errorMessage = "Could not read bundle: \(error.localizedDescription)"
+        }
+    }
+
+    func commitPendingImport() {
+        guard let preview = pendingImportPreview else { return }
+        do {
+            _ = try storage.importBundle(preview.bundle, overwriteByID: true)
+            loadTemplates()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        pendingImportPreview = nil
+    }
+
+    func cancelPendingImport() {
+        pendingImportPreview = nil
+    }
 }

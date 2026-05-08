@@ -292,6 +292,7 @@ final class SettingsViewModel {
     var cityListPath: String = ""
     var countryListPath: String = ""
     var eventListPath: String = ""
+    var templatesFolderPath: String = ""
 
     func setKeywordsListURL(_ url: URL) {
         saveBookmark(for: url, key: UserDefaultsKeys.keywordsListBookmark)
@@ -339,6 +340,16 @@ final class SettingsViewModel {
         saveBookmark(for: url, key: UserDefaultsKeys.eventListBookmark)
         eventListPath = url.path
         quickListVersion += 1
+    }
+
+    func setTemplatesFolderURL(_ url: URL) {
+        saveBookmark(for: url, key: UserDefaultsKeys.templatesFolderBookmark)
+        templatesFolderPath = url.path
+    }
+
+    func clearTemplatesFolder() {
+        UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.templatesFolderBookmark)
+        templatesFolderPath = ""
     }
 
     private func saveBookmark(for url: URL, key: String) {
@@ -809,6 +820,9 @@ final class SettingsViewModel {
         }
         if let url = resolveBookmark(key: UserDefaultsKeys.eventListBookmark) {
             self.eventListPath = url.path
+        }
+        if let url = resolveBookmark(key: UserDefaultsKeys.templatesFolderBookmark) {
+            self.templatesFolderPath = url.path
         }
     }
 

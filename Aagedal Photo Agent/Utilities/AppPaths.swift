@@ -17,10 +17,30 @@ nonisolated enum AppPaths {
         return url
     }
 
-    static var templatesDirectory: URL {
+    static var defaultTemplatesDirectory: URL {
         let url = applicationSupport.appendingPathComponent("Templates", isDirectory: true)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
+    }
+
+    /// Resolves the user's chosen templates folder if a bookmark is set, otherwise the default.
+    /// The returned `release` closure MUST be invoked once the caller is done with the URL,
+    /// so security-scoped access is balanced.
+    static func templatesDirectory() -> (url: URL, release: () -> Void) {
+        if let data = UserDefaults.standard.data(forKey: UserDefaultsKeys.templatesFolderBookmark) {
+            var stale = false
+            if let url = try? URL(
+                resolvingBookmarkData: data,
+                options: .withSecurityScope,
+                relativeTo: nil,
+                bookmarkDataIsStale: &stale
+            ) {
+                let started = url.startAccessingSecurityScopedResource()
+                try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+                return (url, { if started { url.stopAccessingSecurityScopedResource() } })
+            }
+        }
+        return (defaultTemplatesDirectory, {})
     }
 
     static var certificatesDirectory: URL {
