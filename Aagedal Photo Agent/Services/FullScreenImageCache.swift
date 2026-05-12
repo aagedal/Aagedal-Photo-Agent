@@ -72,6 +72,10 @@ final class FullScreenImageCache: @unchecked Sendable {
         displayPreviewCache.removeObject(forKey: url as NSURL)
         editedCache.removeObject(forKey: url as NSURL)
         editedDisplayPreviewCache.removeObject(forKey: url as NSURL)
+        // Cancel any in-flight prefetch for this URL — otherwise after a move/delete
+        // it'll resume against a missing path and log a flood of IIOImageSource errors.
+        let prefetch = lock.withLock { prefetchTasks.removeValue(forKey: url) }
+        prefetch?.cancel()
     }
 
     /// Clear edited caches only (e.g. when edit parameters change globally).

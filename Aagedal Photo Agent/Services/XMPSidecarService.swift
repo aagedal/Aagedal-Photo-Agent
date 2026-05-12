@@ -22,22 +22,30 @@ struct XMPSidecarService: Sendable {
         static let bom = "\u{FEFF}"
     }
 
-    func sidecarURL(for imageURL: URL) -> URL {
+    nonisolated func sidecarURL(for imageURL: URL) -> URL {
         imageURL.deletingPathExtension().appendingPathExtension("xmp")
     }
 
     func loadSidecar(for imageURL: URL) -> IPTCMetadata? {
+        guard let data = sidecarDataIfExists(for: imageURL) else { return nil }
+        return loadSidecar(fromData: data)
+    }
+
+    /// Reads the sidecar file's bytes if it exists. Pure file I/O — safe to call
+    /// off the main actor (and intended to be, since `Data(contentsOf:)` can stall
+    /// on iCloud-not-downloaded files).
+    nonisolated func sidecarDataIfExists(for imageURL: URL) -> Data? {
         let url = sidecarURL(for: imageURL)
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return try? Data(contentsOf: url)
+    }
 
-        do {
-            let data = try Data(contentsOf: url)
-            guard let document = parseXMLDocument(from: data) else { return nil }
-            guard let description = findDescription(in: document) else { return nil }
-            return parseMetadata(from: description)
-        } catch {
-            return nil
-        }
+    /// Parses already-read XMP bytes into IPTCMetadata. Cheap — call on the main
+    /// actor after preloading bytes off-main via `sidecarDataIfExists`.
+    func loadSidecar(fromData data: Data) -> IPTCMetadata? {
+        guard let document = parseXMLDocument(from: data) else { return nil }
+        guard let description = findDescription(in: document) else { return nil }
+        return parseMetadata(from: description)
     }
 
     /// Removes all IPTC/descriptive metadata from the sidecar while preserving

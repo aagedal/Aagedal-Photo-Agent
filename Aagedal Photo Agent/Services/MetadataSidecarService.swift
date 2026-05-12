@@ -260,7 +260,7 @@ struct MetadataSidecarService: Sendable {
         }
     }
 
-    func moveSidecar(for imageURL: URL, from sourceFolderURL: URL, to destinationFolderURL: URL) throws {
+    nonisolated func moveSidecar(for imageURL: URL, from sourceFolderURL: URL, to destinationFolderURL: URL) throws {
         let fm = FileManager.default
         let sourceURLs = sidecarCandidateURLs(for: imageURL, in: sourceFolderURL).filter {
             fm.fileExists(atPath: $0.path)

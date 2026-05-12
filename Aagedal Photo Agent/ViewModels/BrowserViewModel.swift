@@ -739,14 +739,17 @@ final class BrowserViewModel {
             let batchTimer = ContinuousClock.now
 
             do {
+                async let xmpDataLoad = loadXMPSidecarDataBatch(for: batchURLs)
                 let results = try await metadataReadService.readBatchBasicMetadata(urls: batchURLs)
+                let xmpDataMap = await xmpDataLoad
                 let batchMs = batchTimer.elapsedMilliseconds()
                 perfLog.info("[BrowserVM] batch \(batchIndex)/\(totalBatches) DONE — \(batchURLs.count) files in \(batchMs)ms")
                 applyBatchMetadataResults(
                     results,
                     to: &images,
                     localIndex: urlToImageIndex,
-                    cachedSidecars: cachedSidecars
+                    cachedSidecars: cachedSidecars,
+                    xmpDataMap: xmpDataMap
                 )
             } catch {
                 logger.warning("Batch metadata load failed (batch at offset \(batchStart)): \(error.localizedDescription)")
@@ -755,6 +758,27 @@ final class BrowserViewModel {
         let totalMs = totalBatchStart.elapsedMilliseconds()
         perfLog.info("[BrowserVM] loadBasicMetadata DONE — \(urls.count) images in \(totalMs)ms")
         rebuildSortedCache()
+    }
+
+    /// Reads each batch's XMP sidecar bytes off the main actor in parallel.
+    /// `Data(contentsOf:)` can stall on iCloud-not-downloaded sidecars; serializing
+    /// these reads on MainActor inside `applyBatchMetadataResults` was producing
+    /// 30+s freezes on first folder open. Parallelize the I/O so the slowest
+    /// single sidecar bounds the batch instead of the sum.
+    private func loadXMPSidecarDataBatch(for urls: [URL]) async -> [URL: Data] {
+        let svc = xmpSidecarService
+        return await withTaskGroup(of: (URL, Data?).self) { group in
+            for url in urls {
+                group.addTask {
+                    (url, svc.sidecarDataIfExists(for: url))
+                }
+            }
+            var map: [URL: Data] = [:]
+            for await (url, data) in group {
+                if let data { map[url] = data }
+            }
+            return map
+        }
     }
 
     private func drainPendingMetadataIfNeeded() {
@@ -774,7 +798,8 @@ final class BrowserViewModel {
         _ results: [[String: Any]],
         to updated: inout [ImageFile],
         localIndex: [URL: Int],
-        cachedSidecars: [URL: MetadataSidecar] = [:]
+        cachedSidecars: [URL: MetadataSidecar] = [:],
+        xmpDataMap: [URL: Data] = [:]
     ) {
         for dict in results {
             guard let sourcePath = dict[MetadataDictKey.sourceFile] as? String else { continue }
@@ -810,8 +835,15 @@ final class BrowserViewModel {
                 }
                 updated[index].cameraRawSettings = newSettings
 
-                // Load XMP sidecar once — fast fileExists check for non-existent files.
-                let xmpMeta = xmpSidecarService.loadSidecar(for: sourceURL)
+                // Load XMP sidecar. Bytes were preloaded in parallel off-main when
+                // a `xmpDataMap` is supplied (the loadBasicMetadata path); fall back
+                // to the synchronous read for other callers.
+                let xmpMeta: IPTCMetadata?
+                if let data = xmpDataMap[sourceURL] {
+                    xmpMeta = xmpSidecarService.loadSidecar(fromData: data)
+                } else {
+                    xmpMeta = xmpSidecarService.loadSidecar(for: sourceURL)
+                }
 
                 // metadata reads CRS from the image file itself but NOT from the
                 // adjacent .xmp sidecar where edited CameraRaw settings are stored.
@@ -1989,13 +2021,26 @@ final class BrowserViewModel {
             return
         }
 
-        do {
-            try FileManager.default.moveItem(at: sourceURL, to: newURL)
-        } catch {
-            errorMessage = "Failed to move folder: \(error.localizedDescription)"
-            return
-        }
+        Task {
+            let moveError: String? = await Task.detached(priority: .userInitiated) {
+                do {
+                    try FileManager.default.moveItem(at: sourceURL, to: newURL)
+                    return nil
+                } catch {
+                    return "Failed to move folder: \(error.localizedDescription)"
+                }
+            }.value
 
+            if let moveError {
+                errorMessage = moveError
+                return
+            }
+
+            applyFolderMoveSideEffects(sourceURL: sourceURL, destinationURL: destinationURL, newURL: newURL, sourcePath: sourcePath)
+        }
+    }
+
+    private func applyFolderMoveSideEffects(sourceURL: URL, destinationURL: URL, newURL: URL, sourcePath: String) {
         // Remove source from its old parent's cache
         for (parentURL, children) in subfoldersByOpenFolder {
             if children.contains(sourceURL) {
@@ -2350,6 +2395,49 @@ final class BrowserViewModel {
         }
         guard !urlsToMove.isEmpty else { return }
 
+        // Cancel any in-flight thumbnail/prefetch work for these URLs before the
+        // move so it doesn't resume against the moved-away path and log a flood
+        // of IIOImageSource fileExists==false errors.
+        for url in urlsToMove {
+            thumbnailService.invalidateThumbnail(for: url)
+            fullScreenImageCache.invalidateImage(for: url)
+        }
+
+        let xmpService = xmpSidecarService
+        let metaService = sidecarService
+
+        Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                Self.performImageMoves(
+                    urlsToMove: urlsToMove,
+                    destinationFolder: destinationFolder,
+                    xmpSidecarService: xmpService,
+                    sidecarService: metaService
+                )
+            }.value
+
+            if !result.moved.isEmpty {
+                images.removeAll { result.moved.contains($0.url) }
+                manualOrder.removeAll { result.moved.contains($0) }
+                selectedImageIDs.subtract(result.moved)
+                if let last = lastClickedImageURL, result.moved.contains(last) {
+                    lastClickedImageURL = nil
+                }
+                onImagesDeleted?(result.moved)
+            }
+
+            if !result.failures.isEmpty {
+                presentMoveErrorAlert(message: "Failed to move \(result.failures.count) item(s):\n" + result.failures.prefix(5).joined(separator: "\n"))
+            }
+        }
+    }
+
+    private nonisolated static func performImageMoves(
+        urlsToMove: [URL],
+        destinationFolder: URL,
+        xmpSidecarService: XMPSidecarService,
+        sidecarService: MetadataSidecarService
+    ) -> (moved: Set<URL>, failures: [String]) {
         var moved: Set<URL> = []
         var failures: [String] = []
         let fileManager = FileManager.default
@@ -2388,19 +2476,7 @@ final class BrowserViewModel {
             }
         }
 
-        if !moved.isEmpty {
-            images.removeAll { moved.contains($0.url) }
-            manualOrder.removeAll { moved.contains($0) }
-            selectedImageIDs.subtract(moved)
-            if let last = lastClickedImageURL, moved.contains(last) {
-                lastClickedImageURL = nil
-            }
-            onImagesDeleted?(moved)
-        }
-
-        if !failures.isEmpty {
-            presentMoveErrorAlert(message: "Failed to move \(failures.count) item(s):\n" + failures.prefix(5).joined(separator: "\n"))
-        }
+        return (moved, failures)
     }
 
     private func presentMoveErrorAlert(message: String) {

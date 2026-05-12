@@ -3,7 +3,7 @@ import QuickLookThumbnailing
 import CoreImage
 import os
 
-private let thumbnailLogger = Logger(subsystem: "com.aagedal.photo-agent", category: "ThumbnailService")
+nonisolated private let thumbnailLogger = Logger(subsystem: "com.aagedal.photo-agent", category: "ThumbnailService")
 
 @Observable
 final class ThumbnailService {
@@ -116,20 +116,36 @@ final class ThumbnailService {
         return result
     }
 
-    private func generateQLThumbnail(for url: URL) async -> NSImage? {
-        let request = QLThumbnailGenerator.Request(
-            fileAt: url,
-            size: thumbnailSize,
-            scale: 2.0,
-            representationTypes: .thumbnail
-        )
-
-        do {
-            let thumbnail = try await QLThumbnailGenerator.shared.generateBestRepresentation(for: request)
-            return thumbnail.nsImage
-        } catch {
-            thumbnailLogger.debug("QLThumbnail failed for \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
-            return nil
+    nonisolated private func generateQLThumbnail(for url: URL) async -> NSImage? {
+        // QL talks to thumbnailsd; that daemon can wedge after a flood of failed
+        // requests (e.g. iCloud-evicted or moved files). Race the call against a
+        // bounded deadline so background pre-generation can't get held hostage —
+        // on timeout we fall through to the CGImageSource fallback.
+        let size = thumbnailSize
+        return await withTaskGroup(of: NSImage?.self) { group in
+            group.addTask {
+                let request = QLThumbnailGenerator.Request(
+                    fileAt: url,
+                    size: size,
+                    scale: 2.0,
+                    representationTypes: .thumbnail
+                )
+                do {
+                    let thumbnail = try await QLThumbnailGenerator.shared.generateBestRepresentation(for: request)
+                    return thumbnail.nsImage
+                } catch {
+                    thumbnailLogger.debug("QLThumbnail failed for \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                    return nil
+                }
+            }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(2))
+                thumbnailLogger.warning("QLThumbnail timed out for \(url.lastPathComponent, privacy: .public)")
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
         }
     }
 
@@ -187,9 +203,13 @@ final class ThumbnailService {
     }
 
     /// Invalidates both original and edited thumbnails for a URL.
+    /// Also cancels any in-flight load tasks so a stuck loader on a moved/deleted file
+    /// can't keep the URL's slot in the coalesce map forever.
     func invalidateThumbnail(for url: URL) {
         cache.removeObject(forKey: url as NSURL)
         editedCache.removeObject(forKey: url as NSURL)
+        inFlightTasks.removeValue(forKey: url)?.cancel()
+        editedInFlightTasks.removeValue(forKey: url)?.cancel()
     }
 
     /// Rotates the cached thumbnail in-place for instant visual feedback during rotation.
