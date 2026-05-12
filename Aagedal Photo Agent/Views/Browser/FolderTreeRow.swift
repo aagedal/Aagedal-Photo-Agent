@@ -27,10 +27,8 @@ struct FolderTreeRow: View {
     }
 
     private var hasOrMayHaveChildren: Bool {
-        if let cached = viewModel.subfoldersByOpenFolder[url] {
-            return !cached.isEmpty
-        }
-        return true // Optimistic — show chevron until loaded
+        guard let cached = viewModel.subfoldersByOpenFolder[url] else { return false }
+        return !cached.isEmpty
     }
 
     private var isFavoriteSection: Bool {

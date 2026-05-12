@@ -14,7 +14,7 @@ struct FileSystemService: Sendable {
         return filtered.map { ImageFile(url: $0) }
     }
 
-    func listSubfolders(at url: URL) throws -> [URL] {
+    nonisolated func listSubfolders(at url: URL) throws -> [URL] {
         let contents = try FileManager.default.contentsOfDirectory(
             at: url,
             includingPropertiesForKeys: [.isDirectoryKey, .isPackageKey],

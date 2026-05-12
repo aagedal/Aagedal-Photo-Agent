@@ -529,6 +529,7 @@ final class BrowserViewModel {
                 if !discoveredSubfolders.isEmpty {
                     self.expandedOpenFolders.insert(url)
                 }
+                self.prefetchGrandchildren(of: url)
 
                 // Phase 3: Load sidecars and apply pending overrides
                 let allSidecars = await sidecarService.loadAllSidecars(in: url)
@@ -1735,11 +1736,28 @@ final class BrowserViewModel {
     }
 
     func loadFavoriteTopLevelSubfolders() {
-        for favorite in favoriteFolders {
-            let url = favorite.url
-            guard subfoldersByOpenFolder[url] == nil else { continue }
-            let subfolders = (try? fileSystemService.listSubfolders(at: url)) ?? []
-            subfoldersByOpenFolder[url] = subfolders
+        let toLoad = favoriteFolders.map(\.url).filter { subfoldersByOpenFolder[$0] == nil }
+        guard !toLoad.isEmpty else { return }
+        let service = fileSystemService
+        Task.detached(priority: .utility) {
+            let results: [(URL, [URL])] = await withTaskGroup(of: (URL, [URL]).self) { group in
+                for url in toLoad {
+                    group.addTask {
+                        let subs = (try? service.listSubfolders(at: url)) ?? []
+                        return (url, subs)
+                    }
+                }
+                var out: [(URL, [URL])] = []
+                for await pair in group { out.append(pair) }
+                return out
+            }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                for (url, subs) in results where self.subfoldersByOpenFolder[url] == nil {
+                    self.subfoldersByOpenFolder[url] = subs
+                    self.prefetchGrandchildren(of: url)
+                }
+            }
         }
     }
 
@@ -1748,6 +1766,36 @@ final class BrowserViewModel {
         guard subfoldersByOpenFolder[url] == nil else { return }
         let discovered = (try? fileSystemService.listSubfolders(at: url)) ?? []
         subfoldersByOpenFolder[url] = discovered
+        prefetchGrandchildren(of: url)
+    }
+
+    /// For each child of `parentURL` not yet cached, scan its direct subfolders off
+    /// MainActor and write the result back, so sidebar chevrons reflect reality at
+    /// first render instead of optimistically showing for empty folders.
+    private func prefetchGrandchildren(of parentURL: URL) {
+        guard let children = subfoldersByOpenFolder[parentURL] else { return }
+        let toScan = children.filter { subfoldersByOpenFolder[$0] == nil }
+        guard !toScan.isEmpty else { return }
+        let service = fileSystemService
+        Task.detached(priority: .utility) {
+            let results: [(URL, [URL])] = await withTaskGroup(of: (URL, [URL]).self) { group in
+                for url in toScan {
+                    group.addTask {
+                        let subs = (try? service.listSubfolders(at: url)) ?? []
+                        return (url, subs)
+                    }
+                }
+                var out: [(URL, [URL])] = []
+                for await pair in group { out.append(pair) }
+                return out
+            }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                for (url, subs) in results where self.subfoldersByOpenFolder[url] == nil {
+                    self.subfoldersByOpenFolder[url] = subs
+                }
+            }
+        }
     }
 
     func isExpanded(_ url: URL, in tree: SidebarTree) -> Bool {
