@@ -11,7 +11,7 @@ struct TemplatePaletteView: View {
 
     private var calculatedHeight: CGFloat {
         if templates.isEmpty {
-            return 180
+            return 260
         }
         return min(CGFloat(templates.count * 52 + 100), 400)
     }
