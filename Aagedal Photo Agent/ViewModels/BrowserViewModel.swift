@@ -3,6 +3,11 @@ import AppKit
 import ImageIO
 import os
 
+enum SidebarTree {
+    case favorites
+    case open
+}
+
 @Observable
 final class BrowserViewModel {
     var images: [ImageFile] = [] {
@@ -64,7 +69,8 @@ final class BrowserViewModel {
     var recentFolders: [RecentFolder] = []
     var openFolders: [URL] = []
     var subfoldersByOpenFolder: [URL: [URL]] = [:]
-    var expandedFolders: Set<URL> = []
+    var expandedFavoriteFolders: Set<URL> = []
+    var expandedOpenFolders: Set<URL> = []
     var manualOrder: [URL] = [] {
         didSet {
             guard !isBatchUpdating else { return }
@@ -521,7 +527,7 @@ final class BrowserViewModel {
                 guard !Task.isCancelled, self.currentFolderURL == url else { return }
                 self.subfoldersByOpenFolder[url] = discoveredSubfolders
                 if !discoveredSubfolders.isEmpty {
-                    self.expandedFolders.insert(url)
+                    self.expandedOpenFolders.insert(url)
                 }
 
                 // Phase 3: Load sidecars and apply pending overrides
@@ -1712,20 +1718,38 @@ final class BrowserViewModel {
         subfoldersByOpenFolder[url] = discovered
     }
 
+    func isExpanded(_ url: URL, in tree: SidebarTree) -> Bool {
+        switch tree {
+        case .favorites: return expandedFavoriteFolders.contains(url)
+        case .open: return expandedOpenFolders.contains(url)
+        }
+    }
+
     /// Toggles expansion of a folder in the sidebar, triggering lazy load on first expand.
-    func toggleFolderExpansion(_ url: URL) {
-        if expandedFolders.contains(url) {
-            expandedFolders.remove(url)
-        } else {
-            expandedFolders.insert(url)
-            ensureSubfoldersLoaded(for: url)
+    func toggleFolderExpansion(_ url: URL, in tree: SidebarTree) {
+        switch tree {
+        case .favorites:
+            if expandedFavoriteFolders.contains(url) {
+                expandedFavoriteFolders.remove(url)
+            } else {
+                expandedFavoriteFolders.insert(url)
+                ensureSubfoldersLoaded(for: url)
+            }
+        case .open:
+            if expandedOpenFolders.contains(url) {
+                expandedOpenFolders.remove(url)
+            } else {
+                expandedOpenFolders.insert(url)
+                ensureSubfoldersLoaded(for: url)
+            }
         }
     }
 
     /// Recursively removes all cached subfolder entries rooted at a URL.
     private func removeSubfolderCacheRecursively(for url: URL) {
         guard let children = subfoldersByOpenFolder.removeValue(forKey: url) else { return }
-        expandedFolders.remove(url)
+        expandedFavoriteFolders.remove(url)
+        expandedOpenFolders.remove(url)
         for child in children {
             removeSubfolderCacheRecursively(for: child)
         }
@@ -1875,8 +1899,16 @@ final class BrowserViewModel {
         removeSubfolderCacheRecursively(for: oldURL)
 
         // Update expansion state and re-discover children of renamed folder
-        if expandedFolders.remove(oldURL) != nil {
-            expandedFolders.insert(newURL)
+        var migrated = false
+        if expandedFavoriteFolders.remove(oldURL) != nil {
+            expandedFavoriteFolders.insert(newURL)
+            migrated = true
+        }
+        if expandedOpenFolders.remove(oldURL) != nil {
+            expandedOpenFolders.insert(newURL)
+            migrated = true
+        }
+        if migrated {
             ensureSubfoldersLoaded(for: newURL)
         }
 
@@ -1931,7 +1963,8 @@ final class BrowserViewModel {
         } else {
             ensureSubfoldersLoaded(for: parentURL)
         }
-        expandedFolders.insert(parentURL)
+        expandedFavoriteFolders.insert(parentURL)
+        expandedOpenFolders.insert(parentURL)
     }
 
     // MARK: - Move Folder
@@ -1981,7 +2014,8 @@ final class BrowserViewModel {
 
         // Purge stale descendant caches
         removeSubfolderCacheRecursively(for: sourceURL)
-        expandedFolders.insert(destinationURL)
+        expandedFavoriteFolders.insert(destinationURL)
+        expandedOpenFolders.insert(destinationURL)
 
         // Update favorites if the moved folder was a favorite root
         if let favIndex = favoriteFolders.firstIndex(where: { $0.url == sourceURL }) {
@@ -2278,7 +2312,8 @@ final class BrowserViewModel {
             subfolders.sort { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
             subfoldersByOpenFolder[folderURL] = subfolders
         }
-        expandedFolders.insert(folderURL)
+        expandedFavoriteFolders.insert(folderURL)
+        expandedOpenFolders.insert(folderURL)
     }
 
     func promptMoveSelectedImagesToFolder() {
@@ -2301,7 +2336,20 @@ final class BrowserViewModel {
             return
         }
 
-        let urlsToMove = selectedImageIDs
+        moveImages(Array(selectedImageIDs), into: destinationFolder)
+    }
+
+    /// Moves image files to a destination folder along with their XMP and metadata sidecars.
+    /// Silently skips files already in the destination (drag-drop onto own folder is a no-op).
+    func moveImages(_ urls: [URL], into destinationFolder: URL) {
+        guard !urls.isEmpty else { return }
+
+        let destStd = destinationFolder.standardizedFileURL
+        let urlsToMove = urls.filter {
+            $0.deletingLastPathComponent().standardizedFileURL != destStd
+        }
+        guard !urlsToMove.isEmpty else { return }
+
         var moved: Set<URL> = []
         var failures: [String] = []
         let fileManager = FileManager.default
@@ -2326,9 +2374,10 @@ final class BrowserViewModel {
                     }
                 }
 
-                // Move metadata sidecar
+                // Move metadata sidecar (source folder is derived per-URL so this works
+                // even when the dragged set spans multiple parent folders).
                 do {
-                    try sidecarService.moveSidecar(for: url, from: folderURL, to: destinationFolder)
+                    try sidecarService.moveSidecar(for: url, from: url.deletingLastPathComponent(), to: destinationFolder)
                 } catch {
                     failures.append("\(url.lastPathComponent) metadata sidecar: \(error.localizedDescription)")
                 }

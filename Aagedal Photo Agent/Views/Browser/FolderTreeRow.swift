@@ -23,7 +23,7 @@ struct FolderTreeRow: View {
     }
 
     private var isExpanded: Bool {
-        viewModel.expandedFolders.contains(url)
+        viewModel.isExpanded(url, in: tree)
     }
 
     private var hasOrMayHaveChildren: Bool {
@@ -35,6 +35,10 @@ struct FolderTreeRow: View {
 
     private var isFavoriteSection: Bool {
         section == .favoriteRoot || section == .favoriteChild
+    }
+
+    private var tree: SidebarTree {
+        isFavoriteSection ? .favorites : .open
     }
 
     private var childSection: SidebarFolderSection {
@@ -84,7 +88,7 @@ struct FolderTreeRow: View {
         HStack(spacing: 4) {
             if hasOrMayHaveChildren {
                 Button {
-                    viewModel.toggleFolderExpansion(url)
+                    viewModel.toggleFolderExpansion(url, in: tree)
                 } label: {
                     Image(systemName: "chevron.right")
                         .font(.caption2)
@@ -137,7 +141,7 @@ struct FolderTreeRow: View {
                     viewModel.loadFolder(url: url, addToOpenFolders: isRootOfSection)
                 }
                 .onTapGesture(count: 1) {
-                    viewModel.toggleFolderExpansion(url)
+                    viewModel.toggleFolderExpansion(url, in: tree)
                 }
         }
         .applyIf(!isFavoriteSection) { view in
@@ -269,23 +273,66 @@ struct FolderDropDelegate: DropDelegate {
 
     func performDrop(info: DropInfo) -> Bool {
         isHighlighted = false
-        guard let provider = info.itemProviders(for: [.fileURL]).first else { return false }
+        let providers = info.itemProviders(for: [.fileURL])
+        guard !providers.isEmpty else { return false }
 
-        provider.loadItem(forTypeIdentifier: "public.file-url", options: nil) { item, _ in
-            guard let data = item as? Data,
-                  let sourceURL = URL(dataRepresentation: data, relativeTo: nil) else { return }
-            Task { @MainActor in
-                // Both are favorite roots → reorder instead of filesystem move
-                let sourceIsFavoriteRoot = viewModel.favoriteFolders.contains { $0.url == sourceURL }
-                let targetIsFavoriteRoot = section == .favoriteRoot
-                if sourceIsFavoriteRoot && targetIsFavoriteRoot {
-                    viewModel.reorderFavorite(from: sourceURL, relativeTo: targetURL)
-                } else {
-                    viewModel.moveFolder(sourceURL, into: targetURL)
+        let target = targetURL
+        let dropSection = section
+        let viewModel = viewModel
+
+        Task { @MainActor in
+            let sourceURLs = await Self.loadFileURLs(from: providers)
+            guard !sourceURLs.isEmpty else { return }
+
+            var photoURLs: [URL] = []
+            let fileManager = FileManager.default
+
+            for sourceURL in sourceURLs {
+                var isDirectory: ObjCBool = false
+                let exists = fileManager.fileExists(atPath: sourceURL.path, isDirectory: &isDirectory)
+                if exists && isDirectory.boolValue {
+                    let sourceIsFavoriteRoot = viewModel.favoriteFolders.contains { $0.url == sourceURL }
+                    let targetIsFavoriteRoot = dropSection == .favoriteRoot
+                    if sourceIsFavoriteRoot && targetIsFavoriteRoot {
+                        viewModel.reorderFavorite(from: sourceURL, relativeTo: target)
+                    } else {
+                        viewModel.moveFolder(sourceURL, into: target)
+                    }
+                } else if exists {
+                    photoURLs.append(sourceURL)
                 }
+            }
+
+            if !photoURLs.isEmpty {
+                viewModel.moveImages(photoURLs, into: target)
             }
         }
         return true
+    }
+
+    nonisolated private static func loadFileURLs(from providers: [NSItemProvider]) async -> [URL] {
+        var urls: [URL] = []
+        for provider in providers {
+            if let url = await loadFileURL(from: provider) {
+                urls.append(url)
+            }
+        }
+        return urls
+    }
+
+    nonisolated private static func loadFileURL(from provider: NSItemProvider) async -> URL? {
+        await withCheckedContinuation { (cont: CheckedContinuation<URL?, Never>) in
+            provider.loadItem(forTypeIdentifier: "public.file-url", options: nil) { item, _ in
+                if let data = item as? Data,
+                   let url = URL(dataRepresentation: data, relativeTo: nil) {
+                    cont.resume(returning: url)
+                } else if let url = item as? URL {
+                    cont.resume(returning: url)
+                } else {
+                    cont.resume(returning: nil)
+                }
+            }
+        }
     }
 }
 
