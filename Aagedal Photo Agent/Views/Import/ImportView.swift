@@ -108,7 +108,8 @@ struct ImportView: View {
                 TextField("Import Title", text: $viewModel.configuration.importTitle)
                     .textFieldStyle(.roundedBorder)
 
-                if !viewModel.configuration.importTitle.trimmingCharacters(in: .whitespaces).isEmpty {
+                if !viewModel.configuration.importTitle.trimmingCharacters(in: .whitespaces).isEmpty
+                    && !viewModel.sortByDate {
                     HStack(spacing: 4) {
                         Image(systemName: "folder")
                             .font(.caption)
@@ -117,6 +118,13 @@ struct ImportView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                }
+
+                if viewModel.sortByDate
+                    && !viewModel.configuration.importTitle.trimmingCharacters(in: .whitespaces).isEmpty {
+                    Text("Appended to each per-date folder. Re-scan dates to apply changes.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -144,6 +152,9 @@ struct ImportView: View {
                 }
 
                 if viewModel.sortByDate {
+                    Toggle("Group date folders by year", isOn: $viewModel.groupByYear)
+                        .controlSize(.small)
+
                     if viewModel.dateGroups.isEmpty && !viewModel.isScanningDates {
                         Text("Click \"Scan Dates\" to detect capture dates from source files.")
                             .font(.caption)
@@ -161,13 +172,20 @@ struct ImportView: View {
                                 }
                                 .frame(width: 100, alignment: .leading)
 
+                                if viewModel.groupByYear, let year = group.yearFolder {
+                                    Text("\(year)/")
+                                        .font(.callout)
+                                        .foregroundStyle(.secondary)
+                                }
                                 TextField("Folder name", text: $group.folderName)
                                     .textFieldStyle(.roundedBorder)
                                     .font(.callout)
                             }
                         }
 
-                        Text("Each date group will be imported into a separate folder under the destination base.")
+                        Text(viewModel.groupByYear
+                             ? "Each date group will be imported into <year>/<date>/ under the destination base."
+                             : "Each date group will be imported into a separate folder under the destination base.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

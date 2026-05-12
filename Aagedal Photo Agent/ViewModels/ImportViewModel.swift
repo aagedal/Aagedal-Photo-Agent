@@ -32,6 +32,10 @@ struct ImportDateGroup: Identifiable {
     let id = UUID()
     let dateString: String
     var folderName: String
+    /// 4-digit year derived from the parsed capture date. `nil` when the date could
+    /// not be parsed; such groups stay flat under the destination base even when
+    /// "Group by year" is enabled, to avoid creating a bogus year folder.
+    var yearFolder: String?
     var files: [URL]
 }
 
@@ -58,6 +62,12 @@ final class ImportViewModel {
     var dateGroups: [ImportDateGroup] = []
     /// Whether the user wants to sort files into per-date folders.
     var sortByDate: Bool = false
+    /// When `sortByDate` is on, wrap each date folder in a `yyyy/` parent.
+    var groupByYear: Bool = false {
+        didSet {
+            UserDefaults.standard.set(groupByYear, forKey: UserDefaultsKeys.importGroupByYear)
+        }
+    }
     /// Whether date scanning is in progress.
     var isScanningDates: Bool = false
 
@@ -79,6 +89,9 @@ final class ImportViewModel {
            let mode = CopyVerificationMode(rawValue: raw) {
             self.configuration.verificationMode = mode
         }
+
+        // Restore last-used year-grouping preference (default = false).
+        self.groupByYear = UserDefaults.standard.bool(forKey: UserDefaultsKeys.importGroupByYear)
     }
 
     deinit {
@@ -243,6 +256,7 @@ final class ImportViewModel {
         let applyMetadata = configuration.applyMetadata
         let processVariables = configuration.processVariables
         let sortByDate = self.sortByDate
+        let groupByYear = self.groupByYear
         let dateGroups = self.dateGroups
         let destURL = configuration.destinationFolderURL
         let baseURL = configuration.destinationBaseURL
@@ -254,12 +268,16 @@ final class ImportViewModel {
         }
         let metadata = configuration.metadata
 
-        // Pre-compute file→date-group folder name for O(1) lookup.
+        // Pre-compute file→date-group folder name (and optional year prefix) for O(1) lookup.
         var fileDateFolder: [URL: String] = [:]
+        var fileDateYear: [URL: String] = [:]
         if sortByDate {
             for group in dateGroups {
                 for file in group.files {
                     fileDateFolder[file] = group.folderName
+                    if let year = group.yearFolder {
+                        fileDateYear[file] = year
+                    }
                 }
             }
         }
@@ -273,7 +291,13 @@ final class ImportViewModel {
             let baseFolder: URL
             if sortByDate {
                 if let folderName = fileDateFolder[file] {
-                    baseFolder = baseURL.appendingPathComponent(folderName)
+                    if groupByYear, let year = fileDateYear[file] {
+                        baseFolder = baseURL
+                            .appendingPathComponent(year)
+                            .appendingPathComponent(folderName)
+                    } else {
+                        baseFolder = baseURL.appendingPathComponent(folderName)
+                    }
                 } else {
                     baseFolder = destURL
                 }
@@ -546,6 +570,11 @@ final class ImportViewModel {
         dateScanTask?.cancel()
         isScanningDates = true
 
+        // Snapshot the trimmed Import Title so the per-date leaf folder name can
+        // include it (e.g. "2026-05-12 – Vacation"). Title changes after scanning
+        // are not propagated to existing groups — the user can re-scan or edit.
+        let trimmedTitle = configuration.importTitle.trimmingCharacters(in: .whitespaces)
+
         dateScanTask = Task.detached(priority: .userInitiated) {
             // Read DateTimeOriginal for all files via SwiftExif. SwiftExif reads
             // are in-process and fast; a serial scan is simpler and avoids
@@ -579,19 +608,28 @@ final class ImportViewModel {
             // Build groups sorted by date
             let folderDateFormatter = DateFormatter()
             folderDateFormatter.dateFormat = "yyyy-MM-dd"
+            let yearFormatter = DateFormatter()
+            yearFormatter.dateFormat = "yyyy"
             let parseDateFormatter = DateFormatter()
             parseDateFormatter.dateFormat = "yyyy:MM:dd"
 
             let groups = grouped.keys.sorted().map { dateKey -> ImportDateGroup in
                 let folderDate: String
+                let yearFolder: String?
                 if let parsed = parseDateFormatter.date(from: dateKey) {
                     folderDate = folderDateFormatter.string(from: parsed)
+                    yearFolder = yearFormatter.string(from: parsed)
                 } else {
                     folderDate = dateKey
+                    yearFolder = nil
                 }
+                let leaf = trimmedTitle.isEmpty
+                    ? folderDate
+                    : "\(folderDate) \u{2013} \(trimmedTitle)"
                 return ImportDateGroup(
                     dateString: dateKey,
-                    folderName: folderDate,
+                    folderName: leaf,
+                    yearFolder: yearFolder,
                     files: grouped[dateKey] ?? []
                 )
             }
