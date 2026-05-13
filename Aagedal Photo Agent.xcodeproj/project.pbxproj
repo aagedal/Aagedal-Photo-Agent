@@ -11,6 +11,7 @@
 		1C7A6B9BA3F2E2C3F90503C1 /* IPTCMetadataTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38D2DABC30701F41BE3F6B54 /* IPTCMetadataTests.swift */; };
 		8ED369F42F8CF02C00FB9A33 /* SwiftExif in Frameworks */ = {isa = PBXBuildFile; productRef = 8ED369F32F8CF02C00FB9A33 /* SwiftExif */; };
 		E957DC81E4AA200C4CD87043 /* MetadataSidecarServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CB424FD4CEB2C23AEFF5DB0 /* MetadataSidecarServiceTests.swift */; };
+		B71AFE10A1B0E2510C12C200 /* ApprovedListServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A71AFE10A1B0E2510C12C100 /* ApprovedListServiceTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -31,6 +32,7 @@
 		8E05576D2F2A149800BCFB49 /* TODO.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = TODO.md; sourceTree = "<group>"; };
 		9B9D2A9AC78186B52BFC36D2 /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.0.sdk/System/Library/Frameworks/Cocoa.framework; sourceTree = DEVELOPER_DIR; };
 		9CB424FD4CEB2C23AEFF5DB0 /* MetadataSidecarServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataSidecarServiceTests.swift; sourceTree = "<group>"; };
+		A71AFE10A1B0E2510C12C100 /* ApprovedListServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ApprovedListServiceTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -66,6 +68,7 @@
 			children = (
 				38D2DABC30701F41BE3F6B54 /* IPTCMetadataTests.swift */,
 				9CB424FD4CEB2C23AEFF5DB0 /* MetadataSidecarServiceTests.swift */,
+				A71AFE10A1B0E2510C12C100 /* ApprovedListServiceTests.swift */,
 			);
 			path = "Aagedal Photo Agent Tests";
 			sourceTree = "<group>";
@@ -232,6 +235,7 @@
 			files = (
 				1C7A6B9BA3F2E2C3F90503C1 /* IPTCMetadataTests.swift in Sources */,
 				E957DC81E4AA200C4CD87043 /* MetadataSidecarServiceTests.swift in Sources */,
+				B71AFE10A1B0E2510C12C200 /* ApprovedListServiceTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

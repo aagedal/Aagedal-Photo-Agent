@@ -54,4 +54,6 @@ nonisolated enum AppPaths {
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
     }
+
+    // v2: applicationSupport/ApprovedLists/ — reserved for URL-refreshed cached vocabulary files.
 }

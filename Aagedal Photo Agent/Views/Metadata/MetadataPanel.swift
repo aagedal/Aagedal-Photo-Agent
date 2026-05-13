@@ -73,6 +73,66 @@ struct MetadataPanel: View {
         }
     }
 
+    @ViewBuilder
+    private var keywordsEditor: some View {
+        let approved = settingsViewModel.approvedLists
+        let approvedActive = approved.isActive(for: .keywords)
+        let approvedMode = approved.mode(for: .keywords)
+        let quickList = settingsViewModel.loadKeywordsList()
+
+        let suggestionProvider: ((String) -> [ApprovedListSuggestion])? = {
+            if approvedActive {
+                return { prefix in approved.suggestions(prefix: prefix, in: .keywords) }
+            }
+            guard !quickList.isEmpty else { return nil }
+            return { prefix in ApprovedListService.suggestions(prefix: prefix, in: quickList) }
+        }()
+
+        let validator: ((String) -> KeywordValidation)? = approvedActive ? { value in
+            if let canonical = approved.canonicalCasing(of: value, in: .keywords) {
+                return .acceptCanonical(canonical)
+            }
+            return approvedMode == .strict
+                ? .reject(reason: "Not in approved list")
+                : .accept
+        } : nil
+
+        let flagged: Set<String> = {
+            guard approvedActive, approvedMode != .suggest else { return [] }
+            return Set(viewModel.editingMetadata.keywords.filter { !approved.contains($0, in: .keywords) })
+        }()
+
+        KeywordsEditorWithDiff(
+            label: "Keywords",
+            keywords: $viewModel.editingMetadata.keywords,
+            differs: viewModel.keywordsDiffer(),
+            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("keywords"),
+            partialKeywords: viewModel.isBatchEdit ? viewModel.batchPartialKeywords : [],
+            selectedCount: viewModel.selectedCount,
+            onPromotePartial: { keyword in
+                viewModel.promotePartialKeyword(keyword)
+            },
+            onChange: { viewModel.markChanged() },
+            onCommit: { commitEdits() },
+            showPresetSelectionIndicator: true,
+            onAddCurrentToQuickList: {
+                addCurrentToQuickList(type: .keywords, values: viewModel.editingMetadata.keywords)
+            },
+            presetList: quickList,
+            onChooseListFile: {
+                listFilePickerTarget = .keywords
+                showingListFilePicker = true
+            },
+            focusKey: "keywords",
+            focusedField: $focusedField,
+            suggestionProvider: suggestionProvider,
+            validator: validator,
+            flaggedKeywords: flagged,
+            hideQuickListMenu: approvedActive,
+            autoHighlightFirstSuggestion: approvedActive && approvedMode != .suggest
+        )
+    }
+
     private func addCurrentToQuickList(type: QuickListType, values: [String]) {
         let sanitized = sanitizeQuickListValues(values)
         guard !sanitized.isEmpty else { return }
@@ -674,31 +734,8 @@ struct MetadataPanel: View {
         }
         .id("extendedDescription")
 
-        KeywordsEditorWithDiff(
-            label: "Keywords",
-            keywords: $viewModel.editingMetadata.keywords,
-            differs: viewModel.keywordsDiffer(),
-            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("keywords"),
-            partialKeywords: viewModel.isBatchEdit ? viewModel.batchPartialKeywords : [],
-            selectedCount: viewModel.selectedCount,
-            onPromotePartial: { keyword in
-                viewModel.promotePartialKeyword(keyword)
-            },
-            onChange: { viewModel.markChanged() },
-            onCommit: { commitEdits() },
-            showPresetSelectionIndicator: true,
-            onAddCurrentToQuickList: {
-                addCurrentToQuickList(type: .keywords, values: viewModel.editingMetadata.keywords)
-            },
-            presetList: settingsViewModel.loadKeywordsList(),
-            onChooseListFile: {
-                listFilePickerTarget = .keywords
-                showingListFilePicker = true
-            },
-            focusKey: "keywords",
-            focusedField: $focusedField
-        )
-        .id("keywords")
+        keywordsEditor
+            .id("keywords")
 
         KeywordsEditorWithDiff(
             label: "Person Shown",
@@ -776,7 +813,7 @@ struct MetadataPanel: View {
                         .foregroundStyle(settingsViewModel.addJobIdToKeywords ? Color.accentColor : Color.secondary)
                 }
                 .buttonStyle(.plain)
-                .help(settingsViewModel.addJobIdToKeywords ? "Job ID will be added to keywords during variable processing (click to disable)" : "Add Job ID to keywords during variable processing")
+                .help(settingsViewModel.addJobIdToKeywords ? "Job ID will be added to keywords during variable processing (click to disable). Job IDs are not validated against the approved keywords list." : "Add Job ID to keywords during variable processing")
             ),
             focusKey: "jobId",
             focusedField: $focusedField
@@ -1404,8 +1441,28 @@ struct KeywordsEditorWithDiff: View {
     var focusKey: String? = nil
     var focusedField: FocusState<String?>.Binding? = nil
 
+    // Approved-keywords integration. All optional — other callers keep current behavior.
+    var suggestionProvider: ((String) -> [ApprovedListSuggestion])? = nil
+    var validator: ((String) -> KeywordValidation)? = nil
+    var flaggedKeywords: Set<String> = []
+    var hideQuickListMenu: Bool = false
+    /// When true, the first suggestion is highlighted as soon as the popover opens,
+    /// so Enter commits it. Used in Warn/Strict modes.
+    var autoHighlightFirstSuggestion: Bool = false
+
     @State private var inputText = ""
     @State private var promotingKeyword: String?
+    @State private var visibleSuggestions: [ApprovedListSuggestion] = []
+    @State private var highlightedIndex: Int? = nil
+    @State private var rejectErrorMessage: String?
+    @State private var isRejectFlashing: Bool = false
+    @State private var rejectClearTask: Task<Void, Never>?
+    @State private var rejectFlashTask: Task<Void, Never>?
+    @State private var inputIsFocused: Bool = false
+
+    private var typeaheadEnabled: Bool { suggestionProvider != nil }
+    private var quickListMenuVisible: Bool { onChooseListFile != nil && !hideQuickListMenu }
+    private var popoverIsActive: Bool { typeaheadEnabled && inputIsFocused && !visibleSuggestions.isEmpty }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -1418,7 +1475,7 @@ struct KeywordsEditorWithDiff: View {
                     MultipleValuesIndicator()
                 }
                 Spacer()
-                if onChooseListFile != nil {
+                if quickListMenuVisible {
                     Menu {
                         if let onAddCurrentToQuickList {
                             Button("Add Current to Quick List") {
@@ -1472,9 +1529,11 @@ struct KeywordsEditorWithDiff: View {
 
             FlowLayout(spacing: 4) {
                 ForEach(keywords, id: \.self) { keyword in
+                    let isFlagged = flaggedKeywords.contains(keyword)
                     HStack(spacing: 2) {
                         Text(keyword)
                             .font(.caption)
+                            .foregroundStyle(isFlagged ? Color.orange : Color.primary)
                         Button {
                             keywords.removeAll { $0 == keyword }
                             onChange?()
@@ -1487,7 +1546,16 @@ struct KeywordsEditorWithDiff: View {
                     }
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
-                    .background(.secondary.opacity(0.2), in: Capsule())
+                    .background(
+                        isFlagged ? AnyShapeStyle(.orange.opacity(0.12)) : AnyShapeStyle(.secondary.opacity(0.2)),
+                        in: Capsule()
+                    )
+                    .overlay {
+                        if isFlagged {
+                            Capsule().strokeBorder(.orange.opacity(0.4), lineWidth: 0.5)
+                        }
+                    }
+                    .help(isFlagged ? "Not in approved list" : "")
                 }
 
                 ForEach(partialKeywords, id: \.self) { keyword in
@@ -1529,53 +1597,300 @@ struct KeywordsEditorWithDiff: View {
                 }
             }
 
-            if let focusedField, let focusKey {
-                TextField(placeholder, text: $inputText)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.body)
-                    .focused(focusedField, equals: focusKey)
-                    .onSubmit {
-                        addKeywords()
+            inputField
+                .overlay {
+                    if isRejectFlashing {
+                        RoundedRectangle(cornerRadius: 5)
+                            .strokeBorder(Color.red, lineWidth: 1.5)
+                            .allowsHitTesting(false)
                     }
-                    .onChange(of: inputText) { _, newValue in
-                        if newValue.contains(",") || newValue.contains(";") {
-                            addKeywords()
-                        }
-                    }
-            } else {
-                TextField(placeholder, text: $inputText)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.body)
-                    .onSubmit {
-                        addKeywords()
-                    }
-                    .onChange(of: inputText) { _, newValue in
-                        if newValue.contains(",") || newValue.contains(";") {
-                            addKeywords()
-                        }
-                    }
+                }
+                .popover(isPresented: Binding(
+                    get: { popoverIsActive },
+                    set: { _ in }
+                ), attachmentAnchor: .rect(.bounds), arrowEdge: .bottom) {
+                    suggestionsPopover
+                }
+
+            if let rejectErrorMessage {
+                Text(rejectErrorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .transition(.opacity)
             }
         }
         .onChange(of: keywords) { _, _ in
             inputText = ""
+            updateSuggestions(for: "")
+        }
+        .onChange(of: inputText) { _, newValue in
+            // Comma/semicolon trigger immediate commit (existing behavior). The popover
+            // is deliberately bypassed so paste of "berlin, paris" doesn't expand.
+            if newValue.contains(",") || newValue.contains(";") {
+                addKeywords(useHighlightedSuggestion: false)
+                return
+            }
+            updateSuggestions(for: newValue)
         }
     }
 
-    private func addKeywords() {
-        let parts = inputText
-            .components(separatedBy: CharacterSet(charactersIn: ",;"))
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty && !keywords.contains($0) }
-        guard !parts.isEmpty else {
-            inputText = ""
+    @ViewBuilder
+    private var inputField: some View {
+        if typeaheadEnabled {
+            TypeaheadTextField(
+                text: $inputText,
+                placeholder: placeholder,
+                isFocused: $inputIsFocused,
+                onSubmit: { addKeywords(useHighlightedSuggestion: true) },
+                onArrowDown: { moveHighlight(by: 1) },
+                onArrowUp: { moveHighlight(by: -1) },
+                onEscape: { dismissPopover() }
+            )
+            .frame(height: 22)
+        } else if let focusedField, let focusKey {
+            TextField(placeholder, text: $inputText)
+                .textFieldStyle(.roundedBorder)
+                .font(.body)
+                .focused(focusedField, equals: focusKey)
+                .onSubmit { addKeywords(useHighlightedSuggestion: false) }
+        } else {
+            TextField(placeholder, text: $inputText)
+                .textFieldStyle(.roundedBorder)
+                .font(.body)
+                .onSubmit { addKeywords(useHighlightedSuggestion: false) }
+        }
+    }
+
+    @ViewBuilder
+    private var suggestionsPopover: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(visibleSuggestions.enumerated()), id: \.element.canonical) { idx, sug in
+                HStack(spacing: 6) {
+                    Text(sug.canonical)
+                        .font(.body)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer()
+                    if sug.matchKind == .substring {
+                        Image(systemName: "text.magnifyingglass")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(highlightedIndex == idx ? Color.accentColor.opacity(0.2) : Color.clear)
+                .contentShape(Rectangle())
+                .onTapGesture { commitSuggestion(sug) }
+                .onHover { hovering in if hovering { highlightedIndex = idx } }
+            }
+        }
+        .frame(minWidth: 220, idealWidth: 280, maxWidth: 320)
+        .padding(.vertical, 2)
+    }
+
+    // MARK: Typeahead helpers
+
+    private func updateSuggestions(for prefix: String) {
+        guard let suggestionProvider else {
+            visibleSuggestions = []
+            highlightedIndex = nil
             return
         }
-        keywords.append(contentsOf: parts)
-        inputText = ""
-        onChange?()
-        onCommit?()
+        let trimmed = prefix.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else {
+            visibleSuggestions = []
+            highlightedIndex = nil
+            return
+        }
+        visibleSuggestions = suggestionProvider(trimmed)
+        if visibleSuggestions.isEmpty {
+            highlightedIndex = nil
+        } else if autoHighlightFirstSuggestion {
+            highlightedIndex = 0
+        } else if let idx = highlightedIndex, idx >= visibleSuggestions.count {
+            highlightedIndex = nil
+        }
+    }
+
+    private func moveHighlight(by delta: Int) {
+        guard !visibleSuggestions.isEmpty else { return }
+        let count = visibleSuggestions.count
+        switch highlightedIndex {
+        case nil:
+            highlightedIndex = delta > 0 ? 0 : count - 1
+        case let current?:
+            let next = current + delta
+            if next < 0 {
+                highlightedIndex = nil
+            } else if next >= count {
+                highlightedIndex = 0
+            } else {
+                highlightedIndex = next
+            }
+        }
+    }
+
+    private func dismissPopover() {
+        visibleSuggestions = []
+        highlightedIndex = nil
+    }
+
+    private func commitSuggestion(_ suggestion: ApprovedListSuggestion) {
+        inputText = suggestion.canonical
+        addKeywords(useHighlightedSuggestion: false)
+    }
+
+    // MARK: addKeywords with validation
+
+    private func addKeywords(useHighlightedSuggestion: Bool) {
+        if useHighlightedSuggestion,
+           let idx = highlightedIndex,
+           idx < visibleSuggestions.count {
+            commitSuggestion(visibleSuggestions[idx])
+            return
+        }
+
+        let rawParts = inputText
+            .components(separatedBy: CharacterSet(charactersIn: ",;"))
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+
+        var accepted: [String] = []
+        var rejected: [String] = []
+        for part in rawParts where !keywords.contains(part) {
+            switch validator?(part) ?? .accept {
+            case .accept:
+                accepted.append(part)
+            case .acceptCanonical(let canonical):
+                if !keywords.contains(canonical) {
+                    accepted.append(canonical)
+                }
+            case .reject:
+                rejected.append(part)
+            }
+        }
+
+        if !accepted.isEmpty {
+            keywords.append(contentsOf: accepted)
+            onChange?()
+            onCommit?()
+        }
+
+        if rejected.isEmpty {
+            inputText = ""
+        } else if accepted.isEmpty {
+            // Keep typed text so user can edit and retry.
+            flashRejectState(rejected: rejected)
+        } else {
+            inputText = ""
+            flashRejectState(rejected: rejected)
+        }
+
+        updateSuggestions(for: inputText)
+    }
+
+    private func flashRejectState(rejected: [String]) {
+        guard let first = rejected.first else { return }
+        let suffix = rejected.count > 1 ? " (+\(rejected.count - 1) more)" : ""
+        rejectErrorMessage = "Not in approved list: \"\(first)\"\(suffix)"
+        isRejectFlashing = true
+
+        rejectFlashTask?.cancel()
+        rejectFlashTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            isRejectFlashing = false
+        }
+
+        rejectClearTask?.cancel()
+        rejectClearTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            rejectErrorMessage = nil
+        }
     }
 }
+
+// MARK: - Typeahead Text Field (NSTextField wrapper for arrow-key support)
+
+struct TypeaheadTextField: NSViewRepresentable {
+    @Binding var text: String
+    let placeholder: String
+    @Binding var isFocused: Bool
+    let onSubmit: () -> Void
+    let onArrowDown: () -> Void
+    let onArrowUp: () -> Void
+    let onEscape: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    func makeNSView(context: Context) -> NSTextField {
+        let field = NSTextField()
+        field.delegate = context.coordinator
+        field.placeholderString = placeholder
+        field.font = NSFont.systemFont(ofSize: NSFont.systemFontSize)
+        field.bezelStyle = .roundedBezel
+        field.isBordered = true
+        field.isBezeled = true
+        field.focusRingType = .default
+        field.cell?.wraps = false
+        field.cell?.isScrollable = true
+        field.cell?.usesSingleLineMode = true
+        return field
+    }
+
+    func updateNSView(_ nsView: NSTextField, context: Context) {
+        // Keep the Coordinator's `parent` snapshot fresh so its closures see the latest state.
+        context.coordinator.parent = self
+        if nsView.stringValue != text {
+            nsView.stringValue = text
+        }
+        nsView.placeholderString = placeholder
+    }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var parent: TypeaheadTextField
+
+        init(_ parent: TypeaheadTextField) {
+            self.parent = parent
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            guard let field = notification.object as? NSTextField else { return }
+            parent.text = field.stringValue
+        }
+
+        func controlTextDidBeginEditing(_ notification: Notification) {
+            parent.isFocused = true
+        }
+
+        func controlTextDidEndEditing(_ notification: Notification) {
+            parent.isFocused = false
+        }
+
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            switch commandSelector {
+            case #selector(NSResponder.insertNewline(_:)):
+                parent.onSubmit()
+                return true
+            case #selector(NSResponder.moveDown(_:)):
+                parent.onArrowDown()
+                return true
+            case #selector(NSResponder.moveUp(_:)):
+                parent.onArrowUp()
+                return true
+            case #selector(NSResponder.cancelOperation(_:)):
+                parent.onEscape()
+                return true
+            default:
+                return false
+            }
+        }
+    }
+}
+
 
 // MARK: - Reusable Field Components
 

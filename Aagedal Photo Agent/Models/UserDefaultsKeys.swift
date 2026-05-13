@@ -99,4 +99,12 @@ nonisolated enum UserDefaultsKeys {
     static let cityListBookmark = "cityListBookmark"
     static let countryListBookmark = "countryListBookmark"
     static let eventListBookmark = "eventListBookmark"
+
+    // MARK: - Approved Lists
+    // Per-field keys are also derived by ApprovedListField. The constants below
+    // exist for grep-ability against the codebase. v2 keys (remoteURL,
+    // refreshInterval, lastRefreshed) are declared via ApprovedListField only.
+    static let approvedKeywordsEnabled  = "approvedList.keywords.enabled"
+    static let approvedKeywordsBookmark = "approvedList.keywords.bookmark"
+    static let approvedKeywordsMode     = "approvedList.keywords.mode"
 }

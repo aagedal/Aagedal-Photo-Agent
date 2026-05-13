@@ -284,6 +284,8 @@ final class SettingsViewModel {
     var quickListVersion: Int = 0
     @ObservationIgnored private var quickListCache: [String: [String]] = [:]
     @ObservationIgnored private var cachedQuickListVersion: Int = -1
+
+    var approvedLists: ApprovedListService { .shared }
     var keywordsListPath: String = ""
     var personShownListPath: String = ""
     var copyrightListPath: String = ""

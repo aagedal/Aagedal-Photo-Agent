@@ -16,6 +16,9 @@ struct SettingsView: View {
     @State private var showClearConfirmation = false
     @State private var knownPeopleMessage: String?
 
+    // Approved Keywords state
+    @State private var approvedKeywordsErrorMessage: String?
+
     var body: some View {
         TabView {
             generalTab
@@ -500,6 +503,8 @@ struct SettingsView: View {
     @ViewBuilder
     private var metadataTab: some View {
         Form {
+            approvedKeywordsSection
+
             Section("Multi-Select Behavior") {
                 Picker("Keywords", selection: $settingsViewModel.multiSelectKeywordsMode) {
                     ForEach(MultiSelectFieldMode.allCases, id: \.self) { mode in
@@ -563,6 +568,110 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
+    }
+
+    // MARK: - Approved Keywords Section
+
+    @ViewBuilder
+    private var approvedKeywordsSection: some View {
+        let field = ApprovedListField.keywords
+        let service = settingsViewModel.approvedLists
+        let enabled = service.isEnabled(field)
+        let listConfigured = service.hasListConfigured(for: field)
+        let displayPath = service.displayPath(for: field)
+        let count = service.entryCount(for: field)
+
+        Section("Approved Keywords") {
+            Toggle("Use approved keywords list", isOn: Binding(
+                get: { service.isEnabled(field) },
+                set: { service.setEnabled($0, for: field) }
+            ))
+
+            HStack {
+                if let displayPath {
+                    Text((displayPath as NSString).lastPathComponent)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .foregroundStyle(.secondary)
+                        .help(displayPath)
+                } else {
+                    Text("No file chosen").foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button(listConfigured ? "Change…" : "Choose List File…") {
+                    chooseApprovedKeywordsFile()
+                }
+                if listConfigured {
+                    Button(role: .destructive) {
+                        service.clearList(for: field)
+                        approvedKeywordsErrorMessage = nil
+                    } label: {
+                        Image(systemName: "xmark.circle")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Clear approved list")
+                }
+            }
+            .disabled(!enabled)
+
+            if listConfigured, count > 0 {
+                Text("\(count.formatted()) entries")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let loadError = service.loadError {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text(loadError)
+                        .foregroundStyle(.orange)
+                }
+                .font(.caption)
+            }
+
+            if let approvedKeywordsErrorMessage {
+                Text(approvedKeywordsErrorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+            Picker("When typing a non-approved keyword", selection: Binding(
+                get: { service.mode(for: field) },
+                set: { service.setMode($0, for: field) }
+            )) {
+                ForEach(ApprovedListMode.allCases) { mode in
+                    Text(mode.displayName).tag(mode)
+                }
+            }
+            .pickerStyle(.radioGroup)
+            .disabled(!enabled)
+
+            Text(service.mode(for: field).description)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Text("Accepts .txt (one keyword per line) and .csv (first column only). Lines starting with # are treated as comments.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func chooseApprovedKeywordsFile() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.plainText, .commaSeparatedText]
+        panel.message = "Choose an approved keywords list (.txt or .csv)"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try settingsViewModel.approvedLists.setListURL(url, for: .keywords)
+            approvedKeywordsErrorMessage = nil
+        } catch {
+            let description = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            approvedKeywordsErrorMessage = description
+        }
     }
 
     // MARK: - Known People Actions
