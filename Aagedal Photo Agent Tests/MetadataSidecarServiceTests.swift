@@ -76,7 +76,9 @@ struct MetadataSidecarServiceTests {
         let after = Date()
 
         let loaded = try #require(service.loadSidecar(for: imageURL, in: folder))
-        #expect(loaded.lastModified >= before)
+        // Sidecar JSON uses .iso8601 encoding (whole-second precision), so floor `before` to seconds before comparing.
+        let beforeFloor = Date(timeIntervalSince1970: before.timeIntervalSince1970.rounded(.down))
+        #expect(loaded.lastModified >= beforeFloor)
         #expect(loaded.lastModified <= after)
     }
 
@@ -191,7 +193,7 @@ struct MetadataSidecarServiceTests {
     }
 
     @Test("imagesWithPendingChanges returns only pending image URLs")
-    func imagesWithPendingChangesReturnsOnlyPending() throws {
+    func imagesWithPendingChangesReturnsOnlyPending() async throws {
         let folder = try makeTempFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
 
@@ -216,7 +218,7 @@ struct MetadataSidecarServiceTests {
             imageMetadataSnapshot: originalMeta
         ), for: cleanURL, in: folder)
 
-        let pending = service.imagesWithPendingChanges(in: folder)
+        let pending = await service.imagesWithPendingChanges(in: folder)
         #expect(pending.contains(pendingURL))
         #expect(!pending.contains(cleanURL))
     }
@@ -328,7 +330,7 @@ struct MetadataSidecarServiceTests {
     // MARK: - loadAllSidecars
 
     @Test("loadAllSidecars returns all saved sidecars")
-    func loadAllSidecarsReturnsAll() throws {
+    func loadAllSidecarsReturnsAll() async throws {
         let folder = try makeTempFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
 
@@ -339,19 +341,19 @@ struct MetadataSidecarServiceTests {
         try service.saveSidecar(makeSidecar(filename: "photo1.jpg", metadata: IPTCMetadata(title: "Photo 1")), for: url1, in: folder)
         try service.saveSidecar(makeSidecar(filename: "photo2.CR3", metadata: IPTCMetadata(title: "Photo 2")), for: url2, in: folder)
 
-        let all = service.loadAllSidecars(in: folder)
+        let all = await service.loadAllSidecars(in: folder)
         #expect(all.count == 2)
         #expect(all[url1]?.metadata.title == "Photo 1")
         #expect(all[url2]?.metadata.title == "Photo 2")
     }
 
     @Test("loadAllSidecars returns empty dict when no metadata directory")
-    func loadAllSidecarsEmptyWhenNoDirectory() throws {
+    func loadAllSidecarsEmptyWhenNoDirectory() async throws {
         let folder = try makeTempFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
 
         let service = MetadataSidecarService()
-        let all = service.loadAllSidecars(in: folder)
+        let all = await service.loadAllSidecars(in: folder)
         #expect(all.isEmpty)
     }
 
