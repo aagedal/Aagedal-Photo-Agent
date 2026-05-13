@@ -4,6 +4,11 @@ import os.log
 import SwiftUI
 import UniformTypeIdentifiers
 
+private let exportPipelineLog = Logger(
+    subsystem: "com.aagedal.photo-agent",
+    category: "ExportPipeline"
+)
+
 // MARK: - Main View Mode
 
 enum MainViewMode {
@@ -1303,6 +1308,9 @@ struct ContentView: View {
                     try await browserViewModel.writeEngine.writeFields(fields, to: [renderedURL])
                     return true
                 } catch {
+                    exportPipelineLog.error(
+                        "overlaySidecarIPTC XMP writeFields failed for \(sourceURL.lastPathComponent, privacy: .public) → \(renderedURL.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                    )
                     return false
                 }
             }
@@ -1326,6 +1334,9 @@ struct ContentView: View {
             try await browserViewModel.writeEngine.writeFields(fields, to: [renderedURL])
             return true
         } catch {
+            exportPipelineLog.error(
+                "overlaySidecarIPTC JSON writeFields failed for \(sourceURL.lastPathComponent, privacy: .public) → \(renderedURL.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)"
+            )
             return false
         }
     }

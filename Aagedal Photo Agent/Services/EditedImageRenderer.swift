@@ -2,6 +2,12 @@ import AppKit
 import CoreImage
 import ImageIO
 import UniformTypeIdentifiers
+import os
+
+nonisolated private let editedRendererLog = Logger(
+    subsystem: "com.aagedal.photo-agent",
+    category: "EditedImageRenderer"
+)
 
 nonisolated enum EditedImageRenderer {
 
@@ -67,7 +73,13 @@ nonisolated enum EditedImageRenderer {
             destURL = try await renderSDRFormat(output, sourceURL: sourceURL, outputFolder: outputFolder)
         }
         if let metadataCopier {
-            try? await metadataCopier(sourceURL, destURL)
+            do {
+                try await metadataCopier(sourceURL, destURL)
+            } catch {
+                editedRendererLog.error(
+                    "metadataCopier failed for \(sourceURL.lastPathComponent, privacy: .public) → \(destURL.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
+            }
         }
         return destURL
     }
@@ -84,10 +96,14 @@ nonisolated enum EditedImageRenderer {
 
         switch format {
         case .jpeg:
-            guard let data = ctx.jpegRepresentation(of: ciImage, colorSpace: colorSpace, options: [:]) else {
-                throw RenderError.encodeFailed
-            }
-            try data.write(to: destURL, options: .atomic)
+            try writeJPEGWithSourceProperties(
+                ciImage: ciImage,
+                sourceURL: sourceURL,
+                destURL: destURL,
+                colorSpace: colorSpace,
+                quality: quality,
+                ctx: ctx
+            )
 
         case .png:
             guard let data = ctx.pngRepresentation(of: ciImage, format: .RGBA8, colorSpace: colorSpace, options: [:]) else {
@@ -117,6 +133,58 @@ nonisolated enum EditedImageRenderer {
         }
 
         return destURL
+    }
+
+    /// Write the rendered CIImage as a JPEG with EXIF/TIFF/IPTC/GPS segments copied from
+    /// the source. `CIContext.jpegRepresentation` produces a JPEG with no APP1 segment, so
+    /// downstream metadata libraries (SwiftExif) fail with `segmentNotFound` when they try
+    /// to read it. Routing through `CGImageDestination` and seeding it with the source's
+    /// ImageIO properties gives the JPEG a parseable metadata structure. The `metadataCopier`
+    /// step (SwiftExif) then merges in the source's full IPTC/XMP and strips CRS / IFD1 /
+    /// orientation. XMP is intentionally left to the copier; ImageIO doesn't expose XMP via
+    /// the property dict (it lives behind a separate `CGImageMetadata` API) and SwiftExif
+    /// is the authoritative writer for XMP namespaces we care about.
+    private static func writeJPEGWithSourceProperties(
+        ciImage: CIImage,
+        sourceURL: URL,
+        destURL: URL,
+        colorSpace: CGColorSpace,
+        quality: Double,
+        ctx: CIContext
+    ) throws {
+        guard let cgImage = ctx.createCGImage(ciImage, from: ciImage.extent, format: .RGBA8, colorSpace: colorSpace) else {
+            throw RenderError.encodeFailed
+        }
+
+        var properties: [CFString: Any] = [
+            kCGImageDestinationLossyCompressionQuality: quality,
+            // Pixels are already upright after CIRAWFilter + applyOrientationProperty.
+            kCGImagePropertyOrientation: 1
+        ]
+        if let source = CGImageSourceCreateWithURL(sourceURL as CFURL, nil),
+           let sourceProps = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] {
+            let metadataKeys: [CFString] = [
+                kCGImagePropertyExifDictionary,
+                kCGImagePropertyTIFFDictionary,
+                kCGImagePropertyIPTCDictionary,
+                kCGImagePropertyGPSDictionary,
+                kCGImagePropertyExifAuxDictionary,
+                kCGImagePropertyMakerAppleDictionary
+            ]
+            for key in metadataKeys {
+                if let value = sourceProps[key] {
+                    properties[key] = value
+                }
+            }
+        }
+
+        guard let dest = CGImageDestinationCreateWithURL(destURL as CFURL, "public.jpeg" as CFString, 1, nil) else {
+            throw RenderError.encodeFailed
+        }
+        CGImageDestinationAddImage(dest, cgImage, properties as CFDictionary)
+        guard CGImageDestinationFinalize(dest) else {
+            throw RenderError.encodeFailed
+        }
     }
 
     // MARK: - HDR Encoding
@@ -289,13 +357,24 @@ nonisolated enum EditedImageRenderer {
     static func renderJPEG(from sourceURL: URL, cameraRaw: CameraRawSettings?, outputFolder: URL, metadataCopier: MetadataCopier? = nil) async throws {
         let output = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw)
         let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
-        guard let data = CameraRawApproximation.ciContext.jpegRepresentation(of: output, colorSpace: colorSpace, options: [:]) else {
-            throw RenderError.encodeFailed
-        }
+        let quality = UserDefaults.standard.object(forKey: UserDefaultsKeys.exportQualitySDR) as? Double ?? 0.92
         let destinationURL = outputURL(for: sourceURL, in: outputFolder, extension: "jpg")
-        try data.write(to: destinationURL, options: .atomic)
+        try writeJPEGWithSourceProperties(
+            ciImage: output,
+            sourceURL: sourceURL,
+            destURL: destinationURL,
+            colorSpace: colorSpace,
+            quality: quality,
+            ctx: CameraRawApproximation.ciContext
+        )
         if let metadataCopier {
-            try? await metadataCopier(sourceURL, destinationURL)
+            do {
+                try await metadataCopier(sourceURL, destinationURL)
+            } catch {
+                editedRendererLog.error(
+                    "metadataCopier failed for \(sourceURL.lastPathComponent, privacy: .public) → \(destinationURL.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
+            }
         }
     }
 
@@ -338,10 +417,15 @@ nonisolated enum EditedImageRenderer {
 
         switch format {
         case .jpeg:
-            guard let data = ctx.jpegRepresentation(of: output, colorSpace: colorSpace, options: [:]) else {
-                throw RenderError.encodeFailed
-            }
-            try data.write(to: destURL, options: .atomic)
+            let quality = UserDefaults.standard.object(forKey: UserDefaultsKeys.exportQualitySDR) as? Double ?? 0.92
+            try writeJPEGWithSourceProperties(
+                ciImage: output,
+                sourceURL: sourceURL,
+                destURL: destURL,
+                colorSpace: colorSpace,
+                quality: quality,
+                ctx: ctx
+            )
 
         case .png:
             guard let data = ctx.pngRepresentation(of: output, format: .RGBA8, colorSpace: colorSpace, options: [:]) else {
@@ -351,7 +435,13 @@ nonisolated enum EditedImageRenderer {
         }
 
         if let metadataCopier {
-            try? await metadataCopier(sourceURL, destURL)
+            do {
+                try await metadataCopier(sourceURL, destURL)
+            } catch {
+                editedRendererLog.error(
+                    "metadataCopier failed for \(sourceURL.lastPathComponent, privacy: .public) → \(destURL.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
+            }
         }
         return destURL
     }

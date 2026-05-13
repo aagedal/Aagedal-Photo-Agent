@@ -132,8 +132,24 @@ final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Sendable {
         let creationDates = captureCreationDates(for: [destination])
         defer { restoreCreationDates(creationDates) }
 
-        let sourceMetadata = try readMetadata(from: source)
-        var destMetadata = try readMetadata(from: destination)
+        let sourceMetadata: ImageMetadata
+        do {
+            sourceMetadata = try readMetadata(from: source)
+        } catch {
+            swiftExifLog.error(
+                "copyMetadataToRenderedFile: read source failed for \(source.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)"
+            )
+            throw error
+        }
+        var destMetadata: ImageMetadata
+        do {
+            destMetadata = try readMetadata(from: destination)
+        } catch {
+            swiftExifLog.error(
+                "copyMetadataToRenderedFile: read destination failed for \(destination.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)"
+            )
+            throw error
+        }
 
         // Copy IPTC + XMP wholesale, then strip Camera Raw and supersize-to-Standard
         // tags that would mislead viewers about the rendered output.
@@ -156,7 +172,14 @@ final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Sendable {
         // Force orientation to 1 — rendered pixels are already upright.
         destMetadata.setOrientation(1)
 
-        try destMetadata.write(to: destination)
+        do {
+            try destMetadata.write(to: destination)
+        } catch {
+            swiftExifLog.error(
+                "copyMetadataToRenderedFile: write failed for \(destination.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)"
+            )
+            throw error
+        }
     }
 
     // MARK: - Private Helpers
