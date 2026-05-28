@@ -169,6 +169,36 @@ MVVM with a services layer, built primarily on Apple frameworks plus a small set
 | `~/Library/Application Support/Aagedal Photo Agent/KnownPeople/` | Known People database |
 | `~/Library/Application Support/Aagedal Photo Agent/Templates/` | Metadata presets |
 
+## Releasing
+
+The app uses [Sparkle](https://sparkle-project.org) for in-app auto-updates. Releases are signed with an EdDSA key and advertised through an `appcast.xml` hosted on Codeberg.
+
+### One-time setup
+
+1. Resolve Swift packages so Sparkle's command-line tools are downloaded:
+   ```bash
+   xcodebuild -resolvePackageDependencies -project "Aagedal Photo Agent.xcodeproj"
+   ```
+2. Generate an EdDSA key pair. The private key is stored in your login keychain; the public key is printed to stdout:
+   ```bash
+   "$(find ~/Library/Developer/Xcode/DerivedData -name generate_keys -path '*/Sparkle*' | head -n 1)"
+   ```
+3. Paste the public key into `Aagedal Photo Agent/Info.plist` under `SUPublicEDKey`, replacing `REPLACE_WITH_PUBLIC_KEY_FROM_GENERATE_KEYS`. Commit the plist; never commit the private key.
+
+### Per release
+
+1. Bump `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` in the Xcode project.
+2. In Xcode: Product → Archive → Distribute App → Developer ID → upload for notarization → Export Notarized App.
+3. Build the DMG with the existing process.
+4. Sign the DMG (produces `sparkle:edSignature` and `length`):
+   ```bash
+   "$(find ~/Library/Developer/Xcode/DerivedData -name sign_update -path '*/Sparkle*' | head -n 1)" \
+     "Aagedal-Photo-Agent-X.Y.Z.dmg"
+   ```
+5. Add a new `<item>` entry to `appcast.xml` with the version, build number, pubDate, enclosure URL on Codeberg, signed length, signature, and release notes. Sparkle's docs cover the schema: <https://sparkle-project.org/documentation/publishing/>.
+6. Create a new Codeberg release with the DMG; re-upload `appcast.xml` to the persistent `appcast` release tag so `SUFeedURL` stays stable.
+7. Bump the cask in the `aagedal/homebrew-casks` repo.
+
 ## License
 
 GPL-3.0 - see [LICENSE](Aagedal%20Photo%20Agent/LICENSE) for details.

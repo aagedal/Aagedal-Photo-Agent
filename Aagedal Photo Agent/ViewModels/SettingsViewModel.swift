@@ -24,155 +24,6 @@ enum DefaultEditDestination: String, CaseIterable, Identifiable {
     }
 }
 
-@MainActor
-final class UpdateChecker {
-    static let shared = UpdateChecker()
-    static let releasesURL = URL(string: "https://github.com/aagedal/aagedal-photo-agent/releases")!
-
-    private let caskURL = URL(string: "https://raw.githubusercontent.com/aagedal/homebrew-casks/main/Casks/aagedal-photo-agent.rb")!
-    private var isChecking = false
-
-    private typealias Keys = UserDefaultsKeys
-
-    func checkIfNeeded() async {
-        guard let interval = currentFrequency.interval else { return }
-        if let lastChecked = lastCheckedDate,
-           Date().timeIntervalSince(lastChecked) < interval {
-            return
-        }
-        await checkNow()
-    }
-
-    func checkNow() async {
-        guard !isChecking else { return }
-        isChecking = true
-        defer { isChecking = false }
-
-        let now = Date()
-        defer { setLastChecked(now) }
-
-        do {
-            let (data, response) = try await URLSession.shared.data(from: caskURL)
-            guard let httpResponse = response as? HTTPURLResponse,
-                  (200..<300).contains(httpResponse.statusCode) else {
-                return
-            }
-            let text = String(decoding: data, as: UTF8.self)
-            guard let latestVersion = parseVersion(from: text) else { return }
-            setLatestVersion(latestVersion)
-            setUpdateAvailable(Self.isNewerVersion(latestVersion, than: currentVersion))
-        } catch {
-            return
-        }
-    }
-
-    func openReleasesPage() {
-        NSWorkspace.shared.open(Self.releasesURL)
-    }
-
-    private var currentFrequency: UpdateCheckFrequency {
-        let raw = UserDefaults.standard.string(forKey: Keys.updateCheckFrequency) ?? UpdateCheckFrequency.weekly.rawValue
-        return UpdateCheckFrequency(rawValue: raw) ?? .weekly
-    }
-
-    private var currentVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
-    }
-
-    private var lastCheckedDate: Date? {
-        let timestamp = UserDefaults.standard.double(forKey: Keys.updateLastChecked)
-        guard timestamp > 0 else { return nil }
-        return Date(timeIntervalSince1970: timestamp)
-    }
-
-    var latestVersion: String {
-        UserDefaults.standard.string(forKey: Keys.updateLatestVersion) ?? ""
-    }
-
-    var isUpdateAvailable: Bool {
-        UserDefaults.standard.bool(forKey: Keys.updateAvailable)
-    }
-
-    private func setLastChecked(_ date: Date) {
-        UserDefaults.standard.set(date.timeIntervalSince1970, forKey: Keys.updateLastChecked)
-    }
-
-    private func setLatestVersion(_ version: String) {
-        UserDefaults.standard.set(version, forKey: Keys.updateLatestVersion)
-    }
-
-    private func setUpdateAvailable(_ available: Bool) {
-        UserDefaults.standard.set(available, forKey: Keys.updateAvailable)
-    }
-
-    private func parseVersion(from text: String) -> String? {
-        let pattern = #"(?m)^\s*version\s+"([^"]+)""#
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else { return nil }
-        let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        guard let match = regex.firstMatch(in: text, options: [], range: range),
-              let versionRange = Range(match.range(at: 1), in: text) else {
-            return nil
-        }
-        let version = String(text[versionRange]).trimmingCharacters(in: .whitespacesAndNewlines)
-        if version == ":latest" || version == "latest" {
-            return nil
-        }
-        return version
-    }
-
-    static func isNewerVersion(_ remote: String, than current: String) -> Bool {
-        let remoteParts = parseVersionParts(remote)
-        let currentParts = parseVersionParts(current)
-        let maxCount = max(remoteParts.count, currentParts.count)
-        for index in 0..<maxCount {
-            let r = index < remoteParts.count ? remoteParts[index] : 0
-            let c = index < currentParts.count ? currentParts[index] : 0
-            if r != c { return r > c }
-        }
-        return false
-    }
-
-    private static func parseVersionParts(_ version: String) -> [Int] {
-        version
-            .split { $0 == "." || $0 == "-" || $0 == "_" }
-            .map { part in
-                let digits = part.prefix { $0.isNumber }
-                return Int(digits) ?? 0
-            }
-    }
-}
-
-enum UpdateCheckFrequency: String, CaseIterable, Identifiable {
-    case daily
-    case weekly
-    case monthly
-    case never
-
-    var id: String { rawValue }
-
-    var displayName: String {
-        switch self {
-        case .never: return "Never"
-        case .daily: return "Daily"
-        case .weekly: return "Weekly"
-        case .monthly: return "Monthly"
-        }
-    }
-
-    var interval: TimeInterval? {
-        switch self {
-        case .never:
-            return nil
-        case .daily:
-            return 24 * 60 * 60
-        case .weekly:
-            return 7 * 24 * 60 * 60
-        case .monthly:
-            return 30 * 24 * 60 * 60
-        }
-    }
-}
-
 enum QuickListType: String, CaseIterable {
     case keywords
     case personShown
@@ -243,10 +94,6 @@ final class SettingsViewModel {
     var defaultExternalEditorName: String {
         guard !defaultExternalEditor.isEmpty else { return "Not set" }
         return URL(fileURLWithPath: defaultExternalEditor).deletingPathExtension().lastPathComponent
-    }
-
-    var updateCheckFrequency: UpdateCheckFrequency {
-        didSet { UserDefaults.standard.set(updateCheckFrequency.rawValue, forKey: UserDefaultsKeys.updateCheckFrequency) }
     }
 
     var faceCleanupPolicy: FaceCleanupPolicy {
@@ -696,8 +543,6 @@ final class SettingsViewModel {
         let editDestinationRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.defaultEditDestination)
             ?? DefaultEditDestination.internalEditor.rawValue
         self.defaultEditDestination = DefaultEditDestination(rawValue: editDestinationRaw) ?? .internalEditor
-        let updateRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.updateCheckFrequency) ?? UpdateCheckFrequency.weekly.rawValue
-        self.updateCheckFrequency = UpdateCheckFrequency(rawValue: updateRaw) ?? .weekly
         let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.faceCleanupPolicy) ?? "never"
         self.faceCleanupPolicy = FaceCleanupPolicy(rawValue: raw) ?? .never
 

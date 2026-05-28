@@ -2,6 +2,8 @@ import SwiftUI
 
 @main
 struct Aagedal_Photo_AgentApp: App {
+    @StateObject private var updater = SparkleUpdaterService.shared
+
     init() {
         // Pre-generate the CIE chromaticity background on a background thread
         // so it's ready before the user opens the Gamut scope
@@ -15,6 +17,13 @@ struct Aagedal_Photo_AgentApp: App {
             ContentView()
         }
         .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") {
+                    updater.checkForUpdates()
+                }
+                .disabled(!updater.canCheckForUpdates)
+            }
+
             CommandGroup(after: .newItem) {
                 Button("Open Folder...") {
                     NotificationCenter.default.post(name: .openFolder, object: nil)

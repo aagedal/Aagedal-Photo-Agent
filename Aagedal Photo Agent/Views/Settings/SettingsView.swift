@@ -6,8 +6,7 @@ struct SettingsView: View {
     @State private var settingsViewModel = SettingsViewModel()
     @State private var ftpViewModel = FTPViewModel()
     @State private var templateViewModel = TemplateViewModel()
-    @State private var isCheckingForUpdates = false
-    @State private var updateStatusMessage: String?
+    @StateObject private var sparkle = SparkleUpdaterService.shared
 
     // Known People state
     @State private var knownPeopleStats: (peopleCount: Int, embeddingCount: Int) = (0, 0)
@@ -879,67 +878,50 @@ struct SettingsView: View {
 
     @ViewBuilder
     private var updatesTab: some View {
-        Form {
-            Section("Current Version") {
-                LabeledContent("Installed") {
-                    Text(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown")
-                        .foregroundStyle(.secondary)
+        if SparkleUpdaterService.isHomebrewInstall {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Installed via Homebrew")
+                    .font(.headline)
+                Text("This copy was installed with Homebrew, which is the source of truth for updates. In-app updating is disabled.")
+                    .foregroundStyle(.secondary)
+                Text("Run `brew upgrade --cask aagedal-photo-agent` in Terminal to update.")
+                    .font(.system(.body, design: .monospaced))
+                    .textSelection(.enabled)
+                Spacer()
+            }
+            .padding()
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        } else {
+            Form {
+                Section("Current Version") {
+                    LabeledContent("Installed") {
+                        Text(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown")
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
-                if UpdateChecker.shared.isUpdateAvailable, !UpdateChecker.shared.latestVersion.isEmpty {
-                    LabeledContent("Latest") {
-                        Text(UpdateChecker.shared.latestVersion)
-                            .foregroundStyle(.green)
+                Section("Automatic Updates") {
+                    Toggle("Automatically check for updates", isOn: $sparkle.automaticallyChecksForUpdates)
+
+                    Picker("Check frequency", selection: $sparkle.updateCheckInterval) {
+                        Text("Daily").tag(TimeInterval(24 * 60 * 60))
+                        Text("Weekly").tag(TimeInterval(7 * 24 * 60 * 60))
+                        Text("Monthly").tag(TimeInterval(30 * 24 * 60 * 60))
                     }
+                    .pickerStyle(.segmented)
+                    .disabled(!sparkle.automaticallyChecksForUpdates)
+                }
+
+                Section {
+                    Button("Check Now") {
+                        sparkle.checkForUpdates()
+                    }
+                    .disabled(!sparkle.canCheckForUpdates)
                 }
             }
-
-            Section("Check Frequency") {
-                Picker("Check for updates", selection: $settingsViewModel.updateCheckFrequency) {
-                    ForEach(UpdateCheckFrequency.allCases) { frequency in
-                        Text(frequency.displayName).tag(frequency)
-                    }
-                }
-                .pickerStyle(.segmented)
-            }
-
-            Section {
-                Button("Check Now") {
-                    guard !isCheckingForUpdates else { return }
-                    isCheckingForUpdates = true
-                    updateStatusMessage = "Checking..."
-                    Task {
-                        await UpdateChecker.shared.checkNow()
-                        let latestVersion = UpdateChecker.shared.latestVersion
-                        if UpdateChecker.shared.isUpdateAvailable {
-                            if latestVersion.isEmpty {
-                                updateStatusMessage = "Update available"
-                            } else {
-                                updateStatusMessage = "Update available — version \(latestVersion)"
-                            }
-                        } else {
-                            updateStatusMessage = "You're up to date"
-                        }
-                        isCheckingForUpdates = false
-                    }
-                }
-                .disabled(isCheckingForUpdates)
-
-                if let updateStatusMessage {
-                    Text(updateStatusMessage)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                if UpdateChecker.shared.isUpdateAvailable {
-                    Button("Download Latest Release") {
-                        UpdateChecker.shared.openReleasesPage()
-                    }
-                }
-            }
+            .formStyle(.grouped)
+            .padding()
         }
-        .formStyle(.grouped)
-        .padding()
     }
 
     // MARK: - FTP Tab

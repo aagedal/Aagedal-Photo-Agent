@@ -5,12 +5,6 @@ nonisolated enum UserDefaultsKeys {
     static let defaultExternalEditor = "defaultExternalEditor"
     static let defaultEditDestination = "defaultEditDestination"
 
-    // MARK: - Update Checker
-    static let updateCheckFrequency = "updateCheckFrequency"
-    static let updateLastChecked = "updateLastChecked"
-    static let updateLatestVersion = "updateLatestVersion"
-    static let updateAvailable = "updateAvailable"
-
     // MARK: - Metadata Write Mode
     static let metadataWriteMode = "metadataWriteMode"
     static let metadataWriteModeNonC2PA = "metadataWriteModeNonC2PA"

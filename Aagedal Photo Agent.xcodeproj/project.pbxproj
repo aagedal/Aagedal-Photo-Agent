@@ -10,8 +10,9 @@
 		0A05BF3BF20F46F2A6736C66 /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 9B9D2A9AC78186B52BFC36D2 /* Cocoa.framework */; };
 		1C7A6B9BA3F2E2C3F90503C1 /* IPTCMetadataTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38D2DABC30701F41BE3F6B54 /* IPTCMetadataTests.swift */; };
 		8ED369F42F8CF02C00FB9A33 /* SwiftExif in Frameworks */ = {isa = PBXBuildFile; productRef = 8ED369F32F8CF02C00FB9A33 /* SwiftExif */; };
-		E957DC81E4AA200C4CD87043 /* MetadataSidecarServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CB424FD4CEB2C23AEFF5DB0 /* MetadataSidecarServiceTests.swift */; };
+		8ED36A042F8CF03000FB9A33 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 8ED36A032F8CF03000FB9A33 /* Sparkle */; };
 		B71AFE10A1B0E2510C12C200 /* ApprovedListServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A71AFE10A1B0E2510C12C100 /* ApprovedListServiceTests.swift */; };
+		E957DC81E4AA200C4CD87043 /* MetadataSidecarServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CB424FD4CEB2C23AEFF5DB0 /* MetadataSidecarServiceTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -35,9 +36,22 @@
 		A71AFE10A1B0E2510C12C100 /* ApprovedListServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ApprovedListServiceTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		8E0557F02F8CF03100FB9A33 /* Exceptions for "Aagedal Photo Agent" folder in "Aagedal Photo Agent" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 8E0556B22F28C3F600BCFB49 /* Aagedal Photo Agent */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		8E0556B52F28C3F600BCFB49 /* Aagedal Photo Agent */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				8E0557F02F8CF03100FB9A33 /* Exceptions for "Aagedal Photo Agent" folder in "Aagedal Photo Agent" target */,
+			);
 			path = "Aagedal Photo Agent";
 			sourceTree = "<group>";
 		};
@@ -49,6 +63,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				8ED369F42F8CF02C00FB9A33 /* SwiftExif in Frameworks */,
+				8ED36A042F8CF03000FB9A33 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -178,6 +193,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				8ED369F22F8CF02C00FB9A33 /* XCRemoteSwiftPackageReference "SwiftExif" */,
+				8ED36A022F8CF03000FB9A33 /* XCRemoteSwiftPackageReference "Sparkle" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 8E0556B42F28C3F600BCFB49 /* Products */;
@@ -424,10 +440,8 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "Aagedal Photo Agent";
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.photography";
-				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "Aagedal Photo Agent/Info.plist";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -459,10 +473,8 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "Aagedal Photo Agent";
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.photography";
-				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "Aagedal Photo Agent/Info.plist";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -548,6 +560,14 @@
 				minimumVersion = 1.7.0;
 			};
 		};
+		8ED36A022F8CF03000FB9A33 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.6.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -555,6 +575,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 8ED369F22F8CF02C00FB9A33 /* XCRemoteSwiftPackageReference "SwiftExif" */;
 			productName = SwiftExif;
+		};
+		8ED36A032F8CF03000FB9A33 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 8ED36A022F8CF03000FB9A33 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

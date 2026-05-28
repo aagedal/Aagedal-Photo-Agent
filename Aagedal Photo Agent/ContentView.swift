@@ -433,7 +433,6 @@ struct ContentView: View {
                 browserViewModel.loadRecentFolders()
                 templateViewModel.loadTemplates()
                 ftpViewModel.loadConnections()
-                Task { await UpdateChecker.shared.checkIfNeeded() }
             }
     }
 
@@ -966,7 +965,6 @@ struct ContentView: View {
                let selectedImage = browserViewModel.selectedImages.first {
                 Divider()
                 VStack(alignment: .leading, spacing: 8) {
-                    UpdatePillButton()
                     ScopeDisplayView(scopeViewModel: scopeViewModel)
                     Divider()
                     if let meta = technicalMetadata, meta.hasC2PA {
