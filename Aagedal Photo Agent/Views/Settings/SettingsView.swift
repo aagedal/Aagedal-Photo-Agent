@@ -26,6 +26,15 @@ struct SettingsView: View {
     // Quick Lists state
     @State private var editingQuickList: QuickListType?
     @State private var quickListsArchiveMessage: String?
+    @State private var showingExportSheet = false
+    @State private var importSource: ImportSource?
+
+    /// Wrapper so we can drive `.sheet(item:)` from a URL, which is not
+    /// Identifiable on its own.
+    private struct ImportSource: Identifiable {
+        let url: URL
+        var id: String { url.path }
+    }
 
     // iCloud sync state
     @State private var iCloudSyncMessage: String?
@@ -847,11 +856,11 @@ struct SettingsView: View {
 
             Section("Import / Export") {
                 HStack {
-                    Button("Export All Lists…") {
-                        exportAllKeywordLists()
+                    Button("Export Lists…") {
+                        showingExportSheet = true
                     }
-                    Button("Import All Lists…") {
-                        importAllKeywordLists()
+                    Button("Import Lists…") {
+                        chooseImportSource()
                     }
                     if let quickListsArchiveMessage {
                         Text(quickListsArchiveMessage)
@@ -862,7 +871,7 @@ struct SettingsView: View {
                     }
                     Spacer()
                 }
-                Text("Bundles every quick, approved, and structured list into a single .zip with a manifest. Useful for moving lists to a new Mac or sharing them with collaborators.")
+                Text("Bundles selected quick, approved, and structured lists into a single .zip with a manifest. On import you can replace or append per list — useful for merging collaborators' lists or restoring just one list from a backup.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -875,23 +884,29 @@ struct SettingsView: View {
                 storeKey: .quick(type)
             )
         }
-    }
-
-    private func exportAllKeywordLists() {
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.zip]
-        panel.nameFieldStringValue = "Keyword Lists.zip"
-        panel.message = "Export every keyword list as a single bundle"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            try KeywordListsArchive.exportAll(to: url)
-            quickListsArchiveMessage = "Exported to \(url.lastPathComponent)"
-        } catch {
-            quickListsArchiveMessage = "Export failed: \(error.localizedDescription)"
+        .sheet(isPresented: $showingExportSheet) {
+            KeywordListsExportSheet { result in
+                switch result {
+                case .success(let count):
+                    quickListsArchiveMessage = "Exported \(count) \(count == 1 ? "list" : "lists")"
+                case .failure(let error):
+                    quickListsArchiveMessage = "Export failed: \(error.localizedDescription)"
+                }
+            }
+        }
+        .sheet(item: $importSource) { source in
+            KeywordListsImportSheet(source: source.url) { result in
+                switch result {
+                case .success(let count):
+                    quickListsArchiveMessage = "Imported \(count) \(count == 1 ? "list" : "lists")"
+                case .failure(let error):
+                    quickListsArchiveMessage = "Import failed: \(error.localizedDescription)"
+                }
+            }
         }
     }
 
-    private func importAllKeywordLists() {
+    private func chooseImportSource() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
@@ -899,12 +914,7 @@ struct SettingsView: View {
         panel.allowedContentTypes = [.zip]
         panel.message = "Choose a keyword list bundle (.zip) to import"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            let imported = try KeywordListsArchive.importAll(from: url, mode: .replace)
-            quickListsArchiveMessage = "Imported \(imported) lists"
-        } catch {
-            quickListsArchiveMessage = "Import failed: \(error.localizedDescription)"
-        }
+        importSource = ImportSource(url: url)
     }
 
     // MARK: - Known People Actions

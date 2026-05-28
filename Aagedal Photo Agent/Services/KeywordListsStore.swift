@@ -35,6 +35,19 @@ enum KeywordListKey: Hashable, CustomStringConvertible {
     }
 
     var description: String { relativePath }
+
+    /// Human-readable label for the list this key identifies. Used by the
+    /// import/export sheets and any other settings UI that lists keys.
+    var displayName: String {
+        switch self {
+        case .quick(let type):
+            return "\(type.displayName) Quick List"
+        case .approved(let field):
+            return "Approved \(field.displayName)"
+        case .structured:
+            return "Structured Keywords"
+        }
+    }
 }
 
 extension Notification.Name {

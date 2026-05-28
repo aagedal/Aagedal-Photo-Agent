@@ -16,13 +16,33 @@ private let logger = Logger(subsystem: "com.aagedal.photo-agent", category: "Key
 /// `manifest.json` records the schema version, the list of files, and an entry
 /// count per file so import can pre-flight the contents.
 enum KeywordListsArchive {
-    enum ImportMode {
-        /// Replace each existing list with the imported one (deletes the local
-        /// copy of any list missing from the archive? No — leaves untouched.)
+    /// Per-list policy when importing.
+    enum ImportMode: Equatable {
+        /// Replace the existing list with the imported one.
         case replace
-        /// Merge imported entries into existing lists, preserving local order
-        /// and appending new entries at the end.
-        case merge
+        /// Append imported entries to the existing list, preserving local order
+        /// and adding only entries not already present (case-insensitive).
+        case append
+        /// Leave the existing list untouched. Used to opt a specific list out of
+        /// the import even when it's present in the archive.
+        case skip
+
+        /// Legacy alias retained for the original "merge" naming used in tests
+        /// and any external callers. `.merge` behaves identically to `.append`.
+        static let merge: ImportMode = .append
+    }
+
+    /// What's inside an archive, surfaced ahead of import so the UI can render a
+    /// per-list picker and the user can decide what to do with each entry.
+    struct ManifestPreview {
+        struct Entry: Identifiable {
+            let key: KeywordListKey
+            let entryCount: Int
+            var id: String { key.relativePath }
+        }
+        let entries: [Entry]
+        let schemaVersion: Int
+        let exportedAt: Date
     }
 
     struct Manifest: Codable {
@@ -66,6 +86,14 @@ enum KeywordListsArchive {
     /// Returns the number of files included in the archive.
     @discardableResult
     static func exportAll(to destination: URL) throws -> Int {
+        try exportSelected(Set(enumerateKeys()), to: destination)
+    }
+
+    /// Writes only the requested lists to `destination`. Keys not present in
+    /// the store (or not in `keys`) are skipped. Returns the number of files
+    /// actually written.
+    @discardableResult
+    static func exportSelected(_ keys: Set<KeywordListKey>, to destination: URL) throws -> Int {
         let stagingRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("klists-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: stagingRoot) }
@@ -74,8 +102,10 @@ enum KeywordListsArchive {
         var files: [Manifest.File] = []
         let store = KeywordListsStore.shared
 
+        // Iterate the canonical ordering so the archive is stable across runs
+        // (helps with diffs and snapshot-testing of export bundles).
         for key in enumerateKeys() {
-            guard store.exists(key) else { continue }
+            guard keys.contains(key), store.exists(key) else { continue }
             let source = store.url(for: key)
             let relPath = key.relativePath
             let stagedURL = stagingRoot.appendingPathComponent(relPath)
@@ -104,48 +134,59 @@ enum KeywordListsArchive {
         return files.count
     }
 
-    /// Reads `source`, validates the manifest, and writes the contained files
-    /// into the managed store. Returns the number of lists imported.
+    /// Reads `source`'s manifest without importing anything, so the UI can
+    /// render a per-list picker before the user commits.
+    static func inspect(_ source: URL) throws -> ManifestPreview {
+        let stagingRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("klists-inspect-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: stagingRoot) }
+        try FileManager.default.createDirectory(at: stagingRoot, withIntermediateDirectories: true)
+        try ditto(unzip: source, into: stagingRoot)
+        let payloadRoot = resolvePayloadRoot(in: stagingRoot)
+
+        let manifest = try readManifest(in: payloadRoot)
+        var previewEntries: [ManifestPreview.Entry] = []
+        for entry in manifest.files {
+            guard let key = resolveKey(forKind: entry.kind, path: entry.path) else { continue }
+            previewEntries.append(ManifestPreview.Entry(key: key, entryCount: entry.entryCount))
+        }
+        return ManifestPreview(
+            entries: previewEntries,
+            schemaVersion: manifest.schemaVersion,
+            exportedAt: manifest.exportedAt
+        )
+    }
+
+    /// Reads `source` and applies a per-list policy. Lists with `.skip` (or
+    /// missing from `choices`) are left untouched. Returns the number of lists
+    /// actually written.
     @discardableResult
-    static func importAll(from source: URL, mode: ImportMode = .replace) throws -> Int {
+    static func importSelected(from source: URL, choices: [KeywordListKey: ImportMode]) throws -> Int {
         let stagingRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("klists-import-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: stagingRoot) }
         try FileManager.default.createDirectory(at: stagingRoot, withIntermediateDirectories: true)
-
         try ditto(unzip: source, into: stagingRoot)
-
-        // ditto -c -k --keepParent wraps everything in a top-level folder named
-        // after the staging root. After unzip we find a single child directory.
         let payloadRoot = resolvePayloadRoot(in: stagingRoot)
 
-        let manifestURL = payloadRoot.appendingPathComponent("manifest.json")
-        guard FileManager.default.fileExists(atPath: manifestURL.path) else {
-            throw ArchiveError.manifestMissing
-        }
-        let manifestData = try Data(contentsOf: manifestURL)
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        let manifest: Manifest
-        do {
-            manifest = try decoder.decode(Manifest.self, from: manifestData)
-        } catch {
-            throw ArchiveError.manifestDecodeFailed(error.localizedDescription)
-        }
-        guard manifest.schemaVersion <= currentSchemaVersion else {
-            throw ArchiveError.unsupportedSchemaVersion(manifest.schemaVersion)
-        }
-
+        let manifest = try readManifest(in: payloadRoot)
         var imported = 0
         for entry in manifest.files {
             guard let key = resolveKey(forKind: entry.kind, path: entry.path) else { continue }
+            let mode = choices[key] ?? .skip
+            if mode == .skip { continue }
+
             let fileURL = payloadRoot.appendingPathComponent(entry.path)
             guard FileManager.default.fileExists(atPath: fileURL.path) else { continue }
             let text = (try? String(contentsOf: fileURL, encoding: .utf8)) ?? ""
 
             switch key {
             case .structured:
-                // Preserve verbatim — only the structured file uses leading tabs.
+                // Append-mode on a tab-indented tree isn't meaningfully defined
+                // (two trees may collide on the same parent), so for the
+                // structured file `.append` falls through to `.replace`. The
+                // surfaced UI choice therefore reads as Replace / Skip only for
+                // structured. Documented in the import sheet caption.
                 try KeywordListsStore.shared.writeText(text, to: key)
             case .quick, .approved:
                 let newEntries = text
@@ -155,7 +196,7 @@ enum KeywordListsArchive {
                 switch mode {
                 case .replace:
                     try KeywordListsStore.shared.writeEntries(newEntries, to: key)
-                case .merge:
+                case .append:
                     let existing = KeywordListsStore.shared.readEntries(key)
                     var seen = Set(existing.map { $0.lowercased() })
                     var combined = existing
@@ -163,11 +204,46 @@ enum KeywordListsArchive {
                         combined.append(entry)
                     }
                     try KeywordListsStore.shared.writeEntries(combined, to: key)
+                case .skip:
+                    continue
                 }
             }
             imported += 1
         }
         return imported
+    }
+
+    /// Convenience for the old "import every list in the archive with the same
+    /// mode" entry point. Retained so existing callers and tests keep working.
+    @discardableResult
+    static func importAll(from source: URL, mode: ImportMode = .replace) throws -> Int {
+        let preview = try inspect(source)
+        var choices: [KeywordListKey: ImportMode] = [:]
+        for entry in preview.entries {
+            choices[entry.key] = mode
+        }
+        return try importSelected(from: source, choices: choices)
+    }
+
+    private static func readManifest(in payloadRoot: URL) throws -> Manifest {
+        let manifestURL = payloadRoot.appendingPathComponent("manifest.json")
+        guard FileManager.default.fileExists(atPath: manifestURL.path) else {
+            throw ArchiveError.manifestMissing
+        }
+        let manifestData = try Data(contentsOf: manifestURL)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        do {
+            let manifest = try decoder.decode(Manifest.self, from: manifestData)
+            guard manifest.schemaVersion <= currentSchemaVersion else {
+                throw ArchiveError.unsupportedSchemaVersion(manifest.schemaVersion)
+            }
+            return manifest
+        } catch let archiveError as ArchiveError {
+            throw archiveError
+        } catch {
+            throw ArchiveError.manifestDecodeFailed(error.localizedDescription)
+        }
     }
 
     // MARK: - Internals
