@@ -54,6 +54,13 @@ struct FTPService: Sendable {
         password: String,
         progressHandler: @Sendable @escaping (FTPUploadProgress) -> Void
     ) async throws {
+        // Reject credentials containing characters that would break netrc parsing
+        // (whitespace / newlines split tokens, so e.g. a password "my pass" would
+        // authenticate as "my", and a newline could inject extra machine entries).
+        try Self.validateNetrcField(connection.host, name: "host")
+        try Self.validateNetrcField(connection.username, name: "username")
+        try Self.validateNetrcField(password, name: "password")
+
         let scheme = connection.useSFTP ? "sftp" : "ftp"
         let remotePath = connection.remotePath.hasSuffix("/")
             ? connection.remotePath
@@ -71,7 +78,7 @@ struct FTPService: Sendable {
         guard let netrcData = netrcContent.data(using: .utf8) else {
             throw FTPError.encodingFailed
         }
-        FileManager.default.createFile(atPath: netrcURL.path, contents: netrcData, attributes: [.posixPermissions: 0o600])
+        try Self.writeNetrcAtomically(netrcData, to: netrcURL)
         defer { try? FileManager.default.removeItem(at: netrcURL) }
 
         var arguments = [
@@ -169,9 +176,43 @@ struct FTPService: Sendable {
         progressHandler(finalProgress)
     }
 
+    /// Reject characters that would corrupt netrc parsing — whitespace splits tokens
+    /// and `#` starts a comment, so e.g. a password "my pass" silently authenticates
+    /// as "my", and a newline would inject extra `machine`/`login`/`password` entries.
+    nonisolated private static func validateNetrcField(_ value: String, name: String) throws {
+        if value.isEmpty {
+            throw FTPError.invalidCredential(name, reason: "is empty")
+        }
+        let invalid = CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "#"))
+        if value.rangeOfCharacter(from: invalid) != nil {
+            throw FTPError.invalidCredential(name, reason: "contains whitespace or '#'")
+        }
+    }
+
+    /// Create the .netrc with mode 0o600 in a single open(2) call so the file
+    /// never exists with default umask permissions (closes the chmod TOCTOU
+    /// against other processes running as the same user).
+    nonisolated private static func writeNetrcAtomically(_ data: Data, to url: URL) throws {
+        let fd = open(url.path, O_WRONLY | O_CREAT | O_EXCL, mode_t(0o600))
+        guard fd >= 0 else {
+            throw FTPError.netrcCreationFailed(errno)
+        }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        do {
+            try handle.write(contentsOf: data)
+            try handle.close()
+        } catch {
+            try? handle.close()
+            try? FileManager.default.removeItem(at: url)
+            throw error
+        }
+    }
+
     enum FTPError: LocalizedError {
         case uploadFailed(Int32, String)
         case encodingFailed
+        case invalidCredential(String, reason: String)
+        case netrcCreationFailed(Int32)
 
         var errorDescription: String? {
             switch self {
@@ -183,6 +224,10 @@ struct FTPService: Sendable {
                 return description
             case .encodingFailed:
                 return "Failed to encode FTP credentials as UTF-8"
+            case .invalidCredential(let field, let reason):
+                return "FTP \(field) \(reason); whitespace and '#' are not allowed"
+            case .netrcCreationFailed(let errno):
+                return "Failed to create temporary credential file (errno \(errno))"
             }
         }
 
