@@ -18,6 +18,9 @@ struct SettingsView: View {
     // Approved Keywords state
     @State private var approvedKeywordsErrorMessage: String?
 
+    // Structured Keywords state
+    @State private var structuredKeywordsErrorMessage: String?
+
     var body: some View {
         TabView {
             generalTab
@@ -504,6 +507,8 @@ struct SettingsView: View {
         Form {
             approvedKeywordsSection
 
+            structuredKeywordsSection
+
             Section("Multi-Select Behavior") {
                 Picker("Keywords", selection: $settingsViewModel.multiSelectKeywordsMode) {
                     ForEach(MultiSelectFieldMode.allCases, id: \.self) { mode in
@@ -670,6 +675,87 @@ struct SettingsView: View {
         } catch {
             let description = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             approvedKeywordsErrorMessage = description
+        }
+    }
+
+    // MARK: - Structured Keywords Section
+
+    @ViewBuilder
+    private var structuredKeywordsSection: some View {
+        let service = settingsViewModel.structuredKeywords
+        let displayPath = service.sourcePath
+        let isLoaded = service.isLoaded
+        let keywordCount = service.keywordCount
+
+        Section("Structured Keywords") {
+            HStack {
+                if let displayPath {
+                    Text((displayPath as NSString).lastPathComponent)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .foregroundStyle(.secondary)
+                        .help(displayPath)
+                } else {
+                    Text("No file chosen").foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button(isLoaded ? "Change…" : "Choose Structured Keywords File…") {
+                    chooseStructuredKeywordsFile()
+                }
+                if isLoaded {
+                    Button(role: .destructive) {
+                        service.clearList()
+                        structuredKeywordsErrorMessage = nil
+                    } label: {
+                        Image(systemName: "xmark.circle")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Clear structured keywords")
+                }
+            }
+
+            if isLoaded, keywordCount > 0 {
+                Text("\(keywordCount.formatted()) keywords")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let loadError = service.loadError {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text(loadError)
+                        .foregroundStyle(.orange)
+                }
+                .font(.caption)
+            }
+
+            if let structuredKeywordsErrorMessage {
+                Text(structuredKeywordsErrorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+            Text("PhotoMechanic-style tree file. Use tabs to indent children, {braces} for synonyms, and [brackets] for non-keyword category headers. Open the picker via the tree icon next to the Keywords field or via Metadata → Structured Keywords.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func chooseStructuredKeywordsFile() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.plainText]
+        panel.message = "Choose a structured keywords file (.txt)"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try settingsViewModel.structuredKeywords.setListURL(url)
+            structuredKeywordsErrorMessage = nil
+        } catch {
+            let description = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            structuredKeywordsErrorMessage = description
         }
     }
 

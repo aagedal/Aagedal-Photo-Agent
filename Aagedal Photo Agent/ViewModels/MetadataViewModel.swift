@@ -601,6 +601,29 @@ final class MetadataViewModel {
         hasChanges = true
     }
 
+    /// Append `incoming` to `editingMetadata.keywords`, skipping empties and entries
+    /// already present (case-sensitive). Returns the count actually added.
+    /// Calls `markChanged()` when at least one keyword was added.
+    @discardableResult
+    func appendKeywords(_ incoming: [String]) -> Int {
+        var current = editingMetadata.keywords
+        var seen = Set(current)
+        var addedCount = 0
+        for keyword in incoming {
+            let trimmed = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            if !seen.contains(trimmed) {
+                seen.insert(trimmed)
+                current.append(trimmed)
+                addedCount += 1
+            }
+        }
+        guard addedCount > 0 else { return 0 }
+        editingMetadata.keywords = current
+        markChanged()
+        return addedCount
+    }
+
     func resolveDescriptionConflict(keepXMP: Bool) {
         guard let conflict = descriptionConflict else { return }
         editingMetadata.description = keepXMP ? conflict.xmpDescription : conflict.iptcCaptionAbstract

@@ -101,4 +101,7 @@ nonisolated enum UserDefaultsKeys {
     static let approvedKeywordsEnabled  = "approvedList.keywords.enabled"
     static let approvedKeywordsBookmark = "approvedList.keywords.bookmark"
     static let approvedKeywordsMode     = "approvedList.keywords.mode"
+
+    // MARK: - Structured Keywords (PhotoMechanic-style tree)
+    static let structuredKeywordsBookmark = "structuredKeywords.bookmark"
 }

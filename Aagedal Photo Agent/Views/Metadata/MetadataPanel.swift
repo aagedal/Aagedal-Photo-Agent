@@ -26,6 +26,7 @@ struct MetadataPanel: View {
     @State private var pendingC2PASelection: [URL] = []
     @State private var commitDebounceTask: Task<Void, Never>?
     @State private var showingRawMetadata = false
+    @State private var showingStructuredKeywords = false
 
     enum ListFileTarget {
         case keywords
@@ -133,8 +134,27 @@ struct MetadataPanel: View {
                     detail: rejected,
                     severity: .warning
                 )
+            },
+            onShowStructuredKeywords: {
+                showingStructuredKeywords = true
             }
         )
+        .sheet(isPresented: $showingStructuredKeywords) {
+            StructuredKeywordsPicker(
+                onAddKeywords: { expanded in
+                    addStructuredKeywords(expanded)
+                },
+                onClose: {
+                    showingStructuredKeywords = false
+                }
+            )
+        }
+    }
+
+    private func addStructuredKeywords(_ expanded: [String]) {
+        let added = viewModel.appendKeywords(expanded)
+        guard added > 0 else { return }
+        commitEdits()
     }
 
     private func addCurrentToQuickList(type: QuickListType, values: [String]) {
@@ -410,6 +430,14 @@ struct MetadataPanel: View {
         .onReceive(NotificationCenter.default.publisher(for: .showRawMetadata)) { _ in
             guard !viewModel.isBatchEdit, viewModel.selectedCount == 1 else { return }
             showingRawMetadata = true
+        }
+        .onAppear {
+            StructuredKeywordsCoordinator.shared.register(owner: viewModel) { expanded in
+                addStructuredKeywords(expanded)
+            }
+        }
+        .onDisappear {
+            StructuredKeywordsCoordinator.shared.unregister(owner: viewModel)
         }
         .onReceive(NotificationCenter.default.publisher(for: .showVariableReference)) { _ in
             openVariableReferenceFromShortcut()
@@ -1565,6 +1593,9 @@ struct KeywordsEditorWithDiff: View {
     /// Invoked when a Quick List menu pick is rejected by the validator. If nil,
     /// rejection falls back to the inline flash used by the typing path.
     var onValidationReject: (([String]) -> Void)? = nil
+    /// When set, a tree icon appears in the toolbar that invokes this callback,
+    /// typically to open the structured-keywords picker as a sheet.
+    var onShowStructuredKeywords: (() -> Void)? = nil
 
     @State private var inputText = ""
     @State private var promotingKeyword: String?
@@ -1591,6 +1622,16 @@ struct KeywordsEditorWithDiff: View {
                     MultipleValuesIndicator()
                 }
                 Spacer()
+                if let onShowStructuredKeywords {
+                    Button {
+                        onShowStructuredKeywords()
+                    } label: {
+                        Image(systemName: "list.bullet.indent")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Open Structured Keywords picker")
+                }
                 if quickListMenuVisible {
                     Menu {
                         if let onAddCurrentToQuickList {

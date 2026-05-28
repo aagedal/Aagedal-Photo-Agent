@@ -151,6 +151,11 @@ struct Aagedal_Photo_AgentApp: App {
                 }
                 .keyboardShortcut("i", modifiers: .command)
 
+                Button("Structured Keywords") {
+                    NotificationCenter.default.post(name: .showStructuredKeywords, object: nil)
+                }
+                .keyboardShortcut("k", modifiers: [.command, .shift])
+
                 Divider()
 
                 Button("Render and Sign Selected") {
@@ -290,6 +295,11 @@ struct Aagedal_Photo_AgentApp: App {
             }
         }
 
+        Window("Structured Keywords", id: "structuredKeywords") {
+            StructuredKeywordsWindowContent()
+        }
+        .defaultSize(width: 420, height: 560)
+
         Settings {
             SettingsView()
         }
@@ -343,4 +353,5 @@ extension Notification.Name {
     static let backupEditedFiles = Notification.Name("backupEditedFiles")
     static let backupEditedFilesForFolder = Notification.Name("backupEditedFilesForFolder")
     static let moveRejectedToFolder = Notification.Name("moveRejectedToFolder")
+    static let showStructuredKeywords = Notification.Name("showStructuredKeywords")
 }

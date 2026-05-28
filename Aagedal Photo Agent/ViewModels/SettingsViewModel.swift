@@ -133,6 +133,7 @@ final class SettingsViewModel {
     @ObservationIgnored private var cachedQuickListVersion: Int = -1
 
     var approvedLists: ApprovedListService { .shared }
+    var structuredKeywords: StructuredKeywordService { .shared }
     var keywordsListPath: String = ""
     var personShownListPath: String = ""
     var copyrightListPath: String = ""

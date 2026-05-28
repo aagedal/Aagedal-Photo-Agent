@@ -111,8 +111,13 @@ struct ContentView: View {
         _importViewModel = State(initialValue: ImportViewModel(readService: browser.metadataReadService, writeEngine: browser.writeEngine))
     }
 
+    @Environment(\.openWindow) private var openWindow
+
     var body: some View {
         contentWithStateHandlers
+            .onReceive(NotificationCenter.default.publisher(for: .showStructuredKeywords)) { _ in
+                openWindow(id: "structuredKeywords")
+            }
     }
 
     private var contentBase: some View {
