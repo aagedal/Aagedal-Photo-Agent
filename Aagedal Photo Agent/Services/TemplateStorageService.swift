@@ -1,4 +1,7 @@
 import Foundation
+import os
+
+nonisolated private let templateStorageLog = Logger(subsystem: "com.aagedal.photo-agent", category: "TemplateStorageService")
 
 struct TemplateStorageService: Sendable {
     func loadAll() throws -> [MetadataTemplate] {
@@ -11,8 +14,13 @@ struct TemplateStorageService: Sendable {
         ).filter { $0.pathExtension == "json" }
 
         return files.compactMap { url in
-            guard let data = try? Data(contentsOf: url) else { return nil }
-            return try? JSONDecoder().decode(MetadataTemplate.self, from: data)
+            do {
+                let data = try Data(contentsOf: url)
+                return try JSONDecoder().decode(MetadataTemplate.self, from: data)
+            } catch {
+                templateStorageLog.warning("Skipping template at \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                return nil
+            }
         }
         .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }

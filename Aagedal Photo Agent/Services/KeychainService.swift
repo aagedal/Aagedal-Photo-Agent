@@ -20,6 +20,7 @@ struct KeychainService: Sendable {
             kSecAttrService as String: serviceName,
             kSecAttrAccount as String: key,
             kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
         ]
 
         let status = SecItemAdd(addQuery as CFDictionary, nil)

@@ -17,6 +17,7 @@ struct RawMetadataView: View {
     @State private var isLoading = true
     @State private var errorMessage: String?
     @State private var searchText = ""
+    @State private var displayedText = ""
     @FocusState private var isSearchFocused: Bool
 
     private var sidecarURL: URL {
@@ -41,7 +42,7 @@ struct RawMetadataView: View {
             } else {
                 searchBar
                 ScrollView(.vertical) {
-                    Text(filteredText(selectedTab == .embedded ? jsonText : xmpText))
+                    Text(displayedText)
                         .font(.system(.body, design: .monospaced))
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -66,9 +67,18 @@ struct RawMetadataView: View {
         )
         .task {
             await loadRawMetadata()
-            loadXMPSidecar()
+            await loadXMPSidecar()
             isSearchFocused = true
         }
+        .onChange(of: searchText) { _, _ in refreshDisplayedText() }
+        .onChange(of: jsonText) { _, _ in refreshDisplayedText() }
+        .onChange(of: xmpText) { _, _ in refreshDisplayedText() }
+        .onChange(of: selectedTab) { _, _ in refreshDisplayedText() }
+    }
+
+    private func refreshDisplayedText() {
+        let source = selectedTab == .embedded ? jsonText : xmpText
+        displayedText = filteredText(source)
     }
 
     private var header: some View {
@@ -175,22 +185,26 @@ struct RawMetadataView: View {
         isLoading = false
     }
 
-    private func loadXMPSidecar() {
+    private func loadXMPSidecar() async {
         let url = sidecarURL
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            hasXMPSidecar = false
-            return
-        }
-        hasXMPSidecar = true
-        do {
-            let data = try Data(contentsOf: url)
-            if let xmlDoc = try? XMLDocument(data: data, options: [.nodePrettyPrint]) {
-                xmpText = xmlDoc.xmlString(options: [.nodePrettyPrint])
-            } else {
-                xmpText = String(data: data, encoding: .utf8) ?? "Unable to read XMP sidecar"
+        let result: (exists: Bool, text: String) = await Task.detached(priority: .utility) {
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                return (false, "")
             }
-        } catch {
-            xmpText = "Error reading XMP sidecar: \(error.localizedDescription)"
-        }
+            do {
+                let data = try Data(contentsOf: url)
+                let text: String
+                if let xmlDoc = try? XMLDocument(data: data, options: [.nodePrettyPrint]) {
+                    text = xmlDoc.xmlString(options: [.nodePrettyPrint])
+                } else {
+                    text = String(data: data, encoding: .utf8) ?? "Unable to read XMP sidecar"
+                }
+                return (true, text)
+            } catch {
+                return (true, "Error reading XMP sidecar: \(error.localizedDescription)")
+            }
+        }.value
+        hasXMPSidecar = result.exists
+        xmpText = result.text
     }
 }

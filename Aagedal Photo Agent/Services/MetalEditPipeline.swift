@@ -117,7 +117,16 @@ final class MetalEditPipeline: @unchecked Sendable {
     private let commandQueue: MTLCommandQueue
     private let pipelineState: MTLComputePipelineState
 
-    nonisolated(unsafe) private(set) var sourceTexture: MTLTexture?
+    private let sourceTextureLock = NSLock()
+    nonisolated(unsafe) private var _sourceTexture: MTLTexture?
+
+    nonisolated var sourceTexture: MTLTexture? {
+        sourceTextureLock.withLock { _sourceTexture }
+    }
+
+    nonisolated private func setSourceTexture(_ value: MTLTexture?) {
+        sourceTextureLock.withLock { _sourceTexture = value }
+    }
     /// Pre-cached Metal textures for adjacent images (prev/next), keyed by URL.
     /// Limited to 2 entries to bound GPU memory. At full sensor resolution (e.g. 45MP),
     /// each texture is ~363MB rgba16Float, so this cache can use ~726MB.
@@ -317,7 +326,7 @@ final class MetalEditPipeline: @unchecked Sendable {
 
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
-        sourceTexture = texture
+        setSourceTexture(texture)
     }
 
     // MARK: - LUT Upload
@@ -715,7 +724,7 @@ final class MetalEditPipeline: @unchecked Sendable {
     }
 
     nonisolated func clearSourceTexture() {
-        sourceTexture = nil
+        setSourceTexture(nil)
     }
 
     // MARK: - Viewport
@@ -827,7 +836,7 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// Promote a pre-cached texture to sourceTexture. Returns as-shot WB on hit, nil on miss.
     nonisolated func applyCachedTexture(for url: URL) -> (neutralTemperature: Float, neutralTint: Float)? {
         guard let wrapper = textureCache.object(forKey: url as NSURL) else { return nil }
-        sourceTexture = wrapper.texture
+        setSourceTexture(wrapper.texture)
         textureCache.removeObject(forKey: url as NSURL)
         return (neutralTemperature: wrapper.neutralTemperature, neutralTint: wrapper.neutralTint)
     }
