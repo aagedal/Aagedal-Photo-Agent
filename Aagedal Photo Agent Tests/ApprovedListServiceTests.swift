@@ -118,7 +118,6 @@ struct ApprovedListSuggestionTests {
 
 // MARK: - Service end-to-end
 
-@MainActor
 @Suite("ApprovedListService end-to-end")
 struct ApprovedListServiceTests {
 
@@ -135,6 +134,8 @@ struct ApprovedListServiceTests {
         UserDefaults.standard.removeObject(forKey: field.bookmarkKey)
         UserDefaults.standard.removeObject(forKey: field.enabledKey)
         UserDefaults.standard.removeObject(forKey: field.modeKey)
+        UserDefaults.standard.removeObject(forKey: field.allowStructuredBypassKey)
+        KeywordListsStore.shared.delete(.approved(field))
     }
 
     @Test("contains uses NFC + case-insensitive normalization")
@@ -142,7 +143,7 @@ struct ApprovedListServiceTests {
         clearDefaults()
         let url = try tempCSV("Berlin,DE\nMünchen,DE\nParis,FR\n")
         let service = ApprovedListService()
-        try service.setListURL(url, for: .keywords)
+        try service.importListURL(url, for: .keywords)
 
         #expect(service.contains("berlin", in: .keywords))
         #expect(service.contains("BERLIN", in: .keywords))
@@ -160,7 +161,7 @@ struct ApprovedListServiceTests {
         clearDefaults()
         let url = try tempCSV("Berlin\nParis\nNew York\n")
         let service = ApprovedListService()
-        try service.setListURL(url, for: .keywords)
+        try service.importListURL(url, for: .keywords)
 
         #expect(service.canonicalCasing(of: "berlin", in: .keywords) == "Berlin")
         #expect(service.canonicalCasing(of: "NEW YORK", in: .keywords) == "New York")
@@ -174,7 +175,7 @@ struct ApprovedListServiceTests {
         clearDefaults()
         let url = try tempCSV("Berlin\nParis\n")
         let service = ApprovedListService()
-        try service.setListURL(url, for: .keywords)
+        try service.importListURL(url, for: .keywords)
 
         #expect(service.hasListConfigured(for: .keywords))
         #expect(!service.isActive(for: .keywords))
@@ -200,7 +201,7 @@ struct ApprovedListServiceTests {
         clearDefaults()
         let url = try tempCSV("Berlin\nParis\nLondon\n")
         let service = ApprovedListService()
-        try service.setListURL(url, for: .keywords)
+        try service.importListURL(url, for: .keywords)
         #expect(service.entryCount(for: .keywords) == 3)
         try? FileManager.default.removeItem(at: url)
     }
@@ -208,7 +209,6 @@ struct ApprovedListServiceTests {
 
 // MARK: - Service validation surface
 
-@MainActor
 @Suite("ApprovedListService.validate / validateBulk")
 struct ApprovedListValidationTests {
 
@@ -225,13 +225,15 @@ struct ApprovedListValidationTests {
         UserDefaults.standard.removeObject(forKey: field.bookmarkKey)
         UserDefaults.standard.removeObject(forKey: field.enabledKey)
         UserDefaults.standard.removeObject(forKey: field.modeKey)
+        UserDefaults.standard.removeObject(forKey: field.allowStructuredBypassKey)
+        KeywordListsStore.shared.delete(.approved(field))
     }
 
     private func makeService(mode: ApprovedListMode, enabled: Bool = true) throws -> (ApprovedListService, URL) {
         clearDefaults()
         let url = try tempList("Berlin\nMunich\nParis\n")
         let service = ApprovedListService()
-        try service.setListURL(url, for: .keywords)
+        try service.importListURL(url, for: .keywords)
         service.setMode(mode, for: .keywords)
         service.setEnabled(enabled, for: .keywords)
         return (service, url)

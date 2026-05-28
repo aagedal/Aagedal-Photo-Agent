@@ -24,7 +24,7 @@ enum DefaultEditDestination: String, CaseIterable, Identifiable {
     }
 }
 
-enum QuickListType: String, CaseIterable {
+enum QuickListType: String, CaseIterable, Identifiable {
     case keywords
     case personShown
     case copyright
@@ -33,6 +33,8 @@ enum QuickListType: String, CaseIterable {
     case city
     case country
     case event
+
+    var id: String { rawValue }
 
     var bookmarkKey: String {
         switch self {
@@ -129,67 +131,74 @@ final class SettingsViewModel {
     }
 
     var quickListVersion: Int = 0
-    @ObservationIgnored private var quickListCache: [String: [String]] = [:]
+    @ObservationIgnored private var quickListCache: [QuickListType: [String]] = [:]
     @ObservationIgnored private var cachedQuickListVersion: Int = -1
+    @ObservationIgnored nonisolated(unsafe) private var quickListChangeObserver: NSObjectProtocol?
 
     var approvedLists: ApprovedListService { .shared }
     var structuredKeywords: StructuredKeywordService { .shared }
-    var keywordsListPath: String = ""
-    var personShownListPath: String = ""
-    var copyrightListPath: String = ""
-    var creatorListPath: String = ""
-    var creditListPath: String = ""
-    var cityListPath: String = ""
-    var countryListPath: String = ""
-    var eventListPath: String = ""
+    var keywordLists: KeywordListsStore { .shared }
+
+    /// Path of the store-backed file when the quick list has any entries. Empty
+    /// string when the list is empty — matches the existing UI's "No file chosen"
+    /// vs "<filename>" rendering for cheap reuse.
+    var keywordsListPath: String { quickListPathIfPresent(.keywords) }
+    var personShownListPath: String { quickListPathIfPresent(.personShown) }
+    var copyrightListPath: String { quickListPathIfPresent(.copyright) }
+    var creatorListPath: String { quickListPathIfPresent(.creator) }
+    var creditListPath: String { quickListPathIfPresent(.credit) }
+    var cityListPath: String { quickListPathIfPresent(.city) }
+    var countryListPath: String { quickListPathIfPresent(.country) }
+    var eventListPath: String { quickListPathIfPresent(.event) }
     var templatesFolderPath: String = ""
 
+    private func quickListPathIfPresent(_ type: QuickListType) -> String {
+        _ = quickListVersion
+        let key = KeywordListKey.quick(type)
+        guard KeywordListsStore.shared.exists(key) else { return "" }
+        return KeywordListsStore.shared.url(for: key).path
+    }
+
     func setKeywordsListURL(_ url: URL) {
-        saveBookmark(for: url, key: UserDefaultsKeys.keywordsListBookmark)
-        keywordsListPath = url.path
-        quickListVersion += 1
+        importQuickList(from: url, type: .keywords)
     }
 
     func setPersonShownListURL(_ url: URL) {
-        saveBookmark(for: url, key: UserDefaultsKeys.personShownListBookmark)
-        personShownListPath = url.path
-        quickListVersion += 1
+        importQuickList(from: url, type: .personShown)
     }
 
     func setCopyrightListURL(_ url: URL) {
-        saveBookmark(for: url, key: UserDefaultsKeys.copyrightListBookmark)
-        copyrightListPath = url.path
-        quickListVersion += 1
+        importQuickList(from: url, type: .copyright)
     }
 
     func setCreatorListURL(_ url: URL) {
-        saveBookmark(for: url, key: UserDefaultsKeys.creatorListBookmark)
-        creatorListPath = url.path
-        quickListVersion += 1
+        importQuickList(from: url, type: .creator)
     }
 
     func setCreditListURL(_ url: URL) {
-        saveBookmark(for: url, key: UserDefaultsKeys.creditListBookmark)
-        creditListPath = url.path
-        quickListVersion += 1
+        importQuickList(from: url, type: .credit)
     }
 
     func setCityListURL(_ url: URL) {
-        saveBookmark(for: url, key: UserDefaultsKeys.cityListBookmark)
-        cityListPath = url.path
-        quickListVersion += 1
+        importQuickList(from: url, type: .city)
     }
 
     func setCountryListURL(_ url: URL) {
-        saveBookmark(for: url, key: UserDefaultsKeys.countryListBookmark)
-        countryListPath = url.path
-        quickListVersion += 1
+        importQuickList(from: url, type: .country)
     }
 
     func setEventListURL(_ url: URL) {
-        saveBookmark(for: url, key: UserDefaultsKeys.eventListBookmark)
-        eventListPath = url.path
-        quickListVersion += 1
+        importQuickList(from: url, type: .event)
+    }
+
+    private func importQuickList(from url: URL, type: QuickListType) {
+        do {
+            try KeywordListsStore.shared.importEntries(from: url, into: .quick(type))
+            quickListVersion += 1
+        } catch {
+            // Best-effort import: log via the standard channel and leave any
+            // previously-loaded list intact so the user can retry.
+        }
     }
 
     func setTemplatesFolderURL(_ url: URL) {
@@ -644,101 +653,92 @@ final class SettingsViewModel {
 
         self.detectedEditors = Self.detectEditors()
 
-        // Restore paths from bookmarks (must be after all properties are initialized)
-        if let url = resolveBookmark(key: UserDefaultsKeys.keywordsListBookmark) {
-            self.keywordsListPath = url.path
-        }
-        if let url = resolveBookmark(key: UserDefaultsKeys.personShownListBookmark) {
-            self.personShownListPath = url.path
-        }
-        if let url = resolveBookmark(key: UserDefaultsKeys.copyrightListBookmark) {
-            self.copyrightListPath = url.path
-        }
-        if let url = resolveBookmark(key: UserDefaultsKeys.creatorListBookmark) {
-            self.creatorListPath = url.path
-        }
-        if let url = resolveBookmark(key: UserDefaultsKeys.creditListBookmark) {
-            self.creditListPath = url.path
-        }
-        if let url = resolveBookmark(key: UserDefaultsKeys.cityListBookmark) {
-            self.cityListPath = url.path
-        }
-        if let url = resolveBookmark(key: UserDefaultsKeys.countryListBookmark) {
-            self.countryListPath = url.path
-        }
-        if let url = resolveBookmark(key: UserDefaultsKeys.eventListBookmark) {
-            self.eventListPath = url.path
-        }
+        // Templates folder still uses a bookmark (user-selected location).
         if let url = resolveBookmark(key: UserDefaultsKeys.templatesFolderBookmark) {
             self.templatesFolderPath = url.path
         }
+
+        // Bump quickListVersion whenever the store reports a per-list change so
+        // SwiftUI views observing this ViewModel re-fetch entries.
+        quickListChangeObserver = NotificationCenter.default.addObserver(
+            forName: .keywordListChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            guard
+                let key = note.userInfo?[KeywordListsStore.changedKeyUserInfo] as? KeywordListKey,
+                case .quick = key
+            else { return }
+            Task { @MainActor [weak self] in
+                self?.quickListVersion += 1
+            }
+        }
     }
 
-    func loadKeywordsList() -> [String] {
-        loadListFromBookmark(key: UserDefaultsKeys.keywordsListBookmark)
+    nonisolated deinit {
+        if let quickListChangeObserver {
+            NotificationCenter.default.removeObserver(quickListChangeObserver)
+        }
     }
 
-    func loadPersonShownList() -> [String] {
-        loadListFromBookmark(key: UserDefaultsKeys.personShownListBookmark)
+    func loadKeywordsList() -> [String] { entries(for: .keywords) }
+    func loadPersonShownList() -> [String] { entries(for: .personShown) }
+    func loadCopyrightList() -> [String] { entries(for: .copyright) }
+    func loadCreatorList() -> [String] { entries(for: .creator) }
+    func loadCreditList() -> [String] { entries(for: .credit) }
+    func loadCityList() -> [String] { entries(for: .city) }
+    func loadCountryList() -> [String] { entries(for: .country) }
+    func loadEventList() -> [String] { entries(for: .event) }
+
+    /// Returns the entries of a quick list, reading from `KeywordListsStore` and
+    /// caching until the next `quickListVersion` bump (file write or import).
+    func entries(for type: QuickListType) -> [String] {
+        if cachedQuickListVersion == quickListVersion, let cached = quickListCache[type] {
+            return cached
+        }
+        if cachedQuickListVersion != quickListVersion {
+            quickListCache.removeAll()
+            cachedQuickListVersion = quickListVersion
+        }
+        let list = KeywordListsStore.shared.readEntries(.quick(type))
+        quickListCache[type] = list
+        return list
     }
 
+    /// Returns the on-disk URL for a quick list when the file exists, else nil.
+    /// Callers used to invoke this to decide whether to prompt the user for a
+    /// file; with the managed store the file is always present after first save,
+    /// so this returns nil when the list is empty.
     func quickListURL(for type: QuickListType) -> URL? {
-        resolveBookmark(key: type.bookmarkKey)
+        let key = KeywordListKey.quick(type)
+        return KeywordListsStore.shared.exists(key)
+            ? KeywordListsStore.shared.url(for: key)
+            : nil
     }
 
     func setQuickListURL(_ url: URL, for type: QuickListType) {
-        switch type {
-        case .keywords:
-            setKeywordsListURL(url)
-        case .personShown:
-            setPersonShownListURL(url)
-        case .copyright:
-            setCopyrightListURL(url)
-        case .creator:
-            setCreatorListURL(url)
-        case .credit:
-            setCreditListURL(url)
-        case .city:
-            setCityListURL(url)
-        case .country:
-            setCountryListURL(url)
-        case .event:
-            setEventListURL(url)
-        }
+        importQuickList(from: url, type: type)
     }
 
+    /// Appends `values` to a quick list, deduplicated, and persists through the
+    /// store. Returns true on success (false only on a write error). If the list
+    /// did not previously exist it is created on-the-fly inside the store.
+    @discardableResult
     func appendToQuickList(for type: QuickListType, values: [String]) -> Bool {
         let sanitized = sanitizeQuickListValues(values)
         guard !sanitized.isEmpty else { return false }
-        guard let url = resolveBookmark(key: type.bookmarkKey) else { return false }
-        guard url.startAccessingSecurityScopedResource() else { return false }
-        defer { url.stopAccessingSecurityScopedResource() }
-
-        let existing = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
-        let existingLines = existing
-            .components(separatedBy: .newlines)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-
-        var seen = Set(existingLines)
-        var newLines: [String] = []
-        for value in sanitized {
-            if !seen.contains(value) {
-                seen.insert(value)
-                newLines.append(value)
-            }
+        let existing = KeywordListsStore.shared.readEntries(.quick(type))
+        var seen = Set(existing)
+        var combined = existing
+        for value in sanitized where seen.insert(value).inserted {
+            combined.append(value)
         }
-
-        guard !newLines.isEmpty else { return true }
-
-        var updated = existing
-        if !updated.isEmpty && !updated.hasSuffix("\n") {
-            updated += "\n"
+        guard combined.count != existing.count else {
+            // Nothing new — still report success so callers don't show errors.
+            return true
         }
-        updated += newLines.joined(separator: "\n")
-
         do {
-            try updated.write(to: url, atomically: true, encoding: .utf8)
+            try KeywordListsStore.shared.writeEntries(combined, to: .quick(type))
             quickListVersion += 1
             return true
         } catch {
@@ -746,59 +746,21 @@ final class SettingsViewModel {
         }
     }
 
-    func loadCopyrightList() -> [String] {
-        loadListFromBookmark(key: UserDefaultsKeys.copyrightListBookmark)
-    }
-
-    func loadCreatorList() -> [String] {
-        loadListFromBookmark(key: UserDefaultsKeys.creatorListBookmark)
-    }
-
-    func loadCreditList() -> [String] {
-        loadListFromBookmark(key: UserDefaultsKeys.creditListBookmark)
-    }
-
-    func loadCityList() -> [String] {
-        loadListFromBookmark(key: UserDefaultsKeys.cityListBookmark)
-    }
-
-    func loadCountryList() -> [String] {
-        loadListFromBookmark(key: UserDefaultsKeys.countryListBookmark)
-    }
-
-    func loadEventList() -> [String] {
-        loadListFromBookmark(key: UserDefaultsKeys.eventListBookmark)
-    }
-
-    private func loadListFromBookmark(key: String) -> [String] {
-        if cachedQuickListVersion == quickListVersion, let cached = quickListCache[key] {
-            return cached
-        }
-        if cachedQuickListVersion != quickListVersion {
-            quickListCache.removeAll()
-            cachedQuickListVersion = quickListVersion
-        }
-        guard let url = resolveBookmark(key: key) else {
-            quickListCache[key] = []
-            return []
-        }
-        guard url.startAccessingSecurityScopedResource() else {
-            quickListCache[key] = []
-            return []
-        }
-        defer { url.stopAccessingSecurityScopedResource() }
+    /// Replaces the quick list with the given entries. Used by the in-app editor.
+    @discardableResult
+    func replaceQuickList(_ entries: [String], for type: QuickListType) -> Bool {
         do {
-            let content = try String(contentsOf: url, encoding: .utf8)
-            let list = content
-                .components(separatedBy: .newlines)
-                .map { $0.trimmingCharacters(in: .whitespaces) }
-                .filter { !$0.isEmpty }
-            quickListCache[key] = list
-            return list
+            try KeywordListsStore.shared.writeEntries(entries, to: .quick(type))
+            quickListVersion += 1
+            return true
         } catch {
-            quickListCache[key] = []
-            return []
+            return false
         }
+    }
+
+    func clearQuickList(_ type: QuickListType) {
+        KeywordListsStore.shared.delete(.quick(type))
+        quickListVersion += 1
     }
 
     private func sanitizeQuickListValues(_ values: [String]) -> [String] {

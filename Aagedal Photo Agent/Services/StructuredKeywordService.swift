@@ -27,10 +27,30 @@ final class StructuredKeywordService {
     private(set) var roots: [StructuredKeyword] = []
     private(set) var sourcePath: String?
 
-    private let bookmarkKey = "structuredKeywords.bookmark"
+    @ObservationIgnored nonisolated(unsafe) private var changeObserver: NSObjectProtocol?
 
     init() {
-        loadFromBookmark()
+        loadFromStore()
+        changeObserver = NotificationCenter.default.addObserver(
+            forName: .keywordListChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            // Extract the key on the notification queue (synchronously); only
+            // transmit a Sendable Bool flag to the main-actor Task to avoid
+            // shipping NSDictionary/Sendable issues across actors.
+            guard
+                let key = note.userInfo?[KeywordListsStore.changedKeyUserInfo] as? KeywordListKey,
+                case .structured = key
+            else { return }
+            Task { @MainActor [weak self] in
+                self?.loadFromStore()
+            }
+        }
+    }
+
+    nonisolated deinit {
+        if let changeObserver { NotificationCenter.default.removeObserver(changeObserver) }
     }
 
     // MARK: - Public API
@@ -53,31 +73,34 @@ final class StructuredKeywordService {
         return count
     }
 
-    func setListURL(_ url: URL) throws {
-        let parsed = try parseEntries(at: url)
-
-        let didStart = url.startAccessingSecurityScopedResource()
-        defer { if didStart { url.stopAccessingSecurityScopedResource() } }
-        do {
-            let bookmark = try url.bookmarkData(
-                options: .withSecurityScope,
-                includingResourceValuesForKeys: nil,
-                relativeTo: nil
-            )
-            UserDefaults.standard.set(bookmark, forKey: bookmarkKey)
-        } catch {
-            logger.error("Failed to create bookmark for structured keywords: \(String(describing: error))")
-            throw error
+    /// Imports a user-picked tab-indented file into the managed store. The
+    /// file's bytes are copied into the store and parsed; the source URL is no
+    /// longer referenced.
+    func importListURL(_ url: URL) throws {
+        let text = try KeywordListsStore.shared.importText(from: url, into: .structured)
+        let parsed = StructuredKeywordParser.parseString(text)
+        if parsed.isEmpty {
+            throw StructuredKeywordParserError.empty
         }
-
         roots = parsed
-        sourcePath = url.path
+        sourcePath = KeywordListsStore.shared.url(for: .structured).path
+        loadError = nil
+        bumpVersion()
+    }
+
+    /// Saves an edited tree back to the managed store. Re-serialises through
+    /// `StructuredKeywordSerializer` so the on-disk format remains PhotoMechanic-compatible.
+    func saveTree(_ tree: [StructuredKeyword]) throws {
+        let text = StructuredKeywordSerializer.serialize(tree)
+        try KeywordListsStore.shared.writeText(text, to: .structured)
+        roots = tree
+        sourcePath = KeywordListsStore.shared.url(for: .structured).path
         loadError = nil
         bumpVersion()
     }
 
     func clearList() {
-        UserDefaults.standard.removeObject(forKey: bookmarkKey)
+        KeywordListsStore.shared.delete(.structured)
         roots = []
         sourcePath = nil
         loadError = nil
@@ -124,63 +147,49 @@ final class StructuredKeywordService {
         return results
     }
 
+    /// Flattens the tree into a list of (node, ancestors) pairs whose nodes are
+    /// keyword-kind only. Used by the bypass-toggle flow to enumerate every
+    /// keyword the user could pick via the structured tree.
+    func allKeywordNames() -> [String] {
+        _ = version
+        var names: [String] = []
+        for root in roots {
+            walk(root, ancestors: []) { node, _ in
+                if node.isKeyword {
+                    names.append(node.name)
+                    names.append(contentsOf: node.synonyms)
+                }
+                return true
+            }
+        }
+        return names
+    }
+
     // MARK: - Internals
 
     private func bumpVersion() { version &+= 1 }
 
-    private func loadFromBookmark() {
-        guard let data = UserDefaults.standard.data(forKey: bookmarkKey) else {
+    private func loadFromStore() {
+        let store = KeywordListsStore.shared
+        guard store.exists(.structured) else {
             roots = []
             sourcePath = nil
-            return
-        }
-        var isStale = false
-        let resolved: URL
-        do {
-            resolved = try URL(
-                resolvingBookmarkData: data,
-                options: .withSecurityScope,
-                relativeTo: nil,
-                bookmarkDataIsStale: &isStale
-            )
-        } catch {
-            logger.error("Failed to resolve structured keywords bookmark: \(String(describing: error))")
-            roots = []
-            sourcePath = nil
-            loadError = "Structured keywords file could not be located."
-            return
-        }
-
-        let didStart = resolved.startAccessingSecurityScopedResource()
-        defer { if didStart { resolved.stopAccessingSecurityScopedResource() } }
-
-        if isStale {
-            if let refreshed = try? resolved.bookmarkData(
-                options: .withSecurityScope,
-                includingResourceValuesForKeys: nil,
-                relativeTo: nil
-            ) {
-                UserDefaults.standard.set(refreshed, forKey: bookmarkKey)
-            }
-        }
-
-        do {
-            let parsed = try StructuredKeywordParser.parse(resolved)
-            roots = parsed
-            sourcePath = resolved.path
             loadError = nil
-        } catch {
-            logger.error("Failed to parse structured keywords: \(String(describing: error))")
+            bumpVersion()
+            return
+        }
+        guard let text = store.readText(.structured) else {
             roots = []
             sourcePath = nil
-            loadError = (error as? LocalizedError)?.errorDescription ?? "Could not load structured keywords file."
+            loadError = "Could not read structured keywords file."
+            bumpVersion()
+            return
         }
-    }
-
-    private func parseEntries(at url: URL) throws -> [StructuredKeyword] {
-        let didStart = url.startAccessingSecurityScopedResource()
-        defer { if didStart { url.stopAccessingSecurityScopedResource() } }
-        return try StructuredKeywordParser.parse(url)
+        let parsed = StructuredKeywordParser.parseString(text)
+        roots = parsed
+        sourcePath = store.url(for: .structured).path
+        loadError = parsed.isEmpty ? "File contained no keywords." : nil
+        bumpVersion()
     }
 
     private func countKeywords(in node: StructuredKeyword) -> Int {

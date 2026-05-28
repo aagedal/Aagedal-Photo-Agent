@@ -2,11 +2,19 @@ import SwiftUI
 
 /// Tree picker for the PhotoMechanic-style structured keywords file.
 ///
-/// On double-click of a keyword node the picker invokes `onAddKeywords` with the
-/// expanded list (ancestors + clicked keyword + its synonyms). Container nodes
-/// (`[Bracketed]`) are shown in muted style and ignored on double-click.
+/// Mouse: double-click a keyword to add it (with ancestors + synonyms). Click
+/// the disclosure triangle on a container to expand/collapse.
+///
+/// Keyboard:
+/// - Up / Down — move focus between visible rows
+/// - Right — expand the focused container (or jump to first child if expanded)
+/// - Left — collapse the focused container (or jump to parent)
+/// - Space / Return — activate the focused keyword (= double-click)
+/// - Cmd-Return — activate and close the picker
+/// - Cmd-F — focus the search field
+/// - Esc — clear search if active; otherwise close
 struct StructuredKeywordsPicker: View {
-    /// Called when the user double-clicks a keyword. The receiver is responsible for
+    /// Called when the user activates a keyword. The receiver is responsible for
     /// deduping against existing keywords and appending in whatever order it prefers.
     let onAddKeywords: ([String]) -> Void
 
@@ -18,11 +26,23 @@ struct StructuredKeywordsPicker: View {
     @State private var searchText: String = ""
     @State private var feedback: Feedback?
     @State private var expandedIDs: Set<UUID> = []
+    @State private var focusedIndex: Int? = 0
+    @FocusState private var searchFieldFocused: Bool
+    @FocusState private var rowsFocused: Bool
 
     private struct Feedback: Equatable {
         let message: String
         let kind: Kind
         enum Kind { case added, noAction }
+    }
+
+    /// A single visible row in tree mode. Captures the node, its ancestors
+    /// (used for the activation payload), and the indentation depth.
+    private struct VisibleRow: Identifiable {
+        let id: UUID
+        let node: StructuredKeyword
+        let ancestors: [StructuredKeyword]
+        let depth: Int
     }
 
     var body: some View {
@@ -38,6 +58,20 @@ struct StructuredKeywordsPicker: View {
             footer
         }
         .frame(minWidth: 360, idealWidth: 420, minHeight: 420, idealHeight: 560)
+        .onKeyPress(keys: ["f"]) { press in
+            // Cmd-F: jump to search field.
+            guard press.modifiers.contains(.command) else { return .ignored }
+            searchFieldFocused = true
+            return .handled
+        }
+        .onKeyPress(.escape) {
+            if !searchText.isEmpty {
+                searchText = ""
+                return .handled
+            }
+            onClose?()
+            return .handled
+        }
     }
 
     // MARK: - Sections
@@ -48,9 +82,14 @@ struct StructuredKeywordsPicker: View {
                 .foregroundStyle(.secondary)
             TextField("Search keywords or synonyms…", text: $searchText)
                 .textFieldStyle(.plain)
+                .focused($searchFieldFocused)
+                .onSubmit {
+                    activateFocused()
+                }
             if !searchText.isEmpty {
                 Button {
                     searchText = ""
+                    focusedIndex = 0
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(.secondary)
@@ -60,6 +99,9 @@ struct StructuredKeywordsPicker: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+        .onChange(of: searchText) { _, _ in
+            focusedIndex = visibleRowCount() > 0 ? 0 : nil
+        }
     }
 
     @ViewBuilder
@@ -92,17 +134,96 @@ struct StructuredKeywordsPicker: View {
     }
 
     private var treeView: some View {
-        List {
-            ForEach(service.roots) { node in
-                StructuredKeywordTreeRow(
-                    node: node,
-                    ancestors: [],
-                    expandedIDs: $expandedIDs,
-                    onActivate: activate
-                )
+        let rows = flattenedRows()
+        return ScrollViewReader { proxy in
+            List {
+                ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                    treeRow(row, index: index)
+                        .id(index)
+                }
+            }
+            .listStyle(.sidebar)
+            .focusable()
+            .focused($rowsFocused)
+            .focusEffectDisabled()
+            .onAppear {
+                if focusedIndex == nil { focusedIndex = rows.isEmpty ? nil : 0 }
+                rowsFocused = true
+            }
+            .onChange(of: focusedIndex) { _, newValue in
+                if let newValue {
+                    withAnimation(.linear(duration: 0.1)) {
+                        proxy.scrollTo(newValue, anchor: .center)
+                    }
+                }
+            }
+            .onKeyPress(.upArrow) { moveFocus(by: -1, in: rows) }
+            .onKeyPress(.downArrow) { moveFocus(by: +1, in: rows) }
+            .onKeyPress(.rightArrow) { expandOrDescend(in: rows) }
+            .onKeyPress(.leftArrow) { collapseOrAscend(in: rows) }
+            .onKeyPress(.return) { activateFocused() }
+            .onKeyPress(.space) { activateFocused() }
+        }
+    }
+
+    @ViewBuilder
+    private func treeRow(_ row: VisibleRow, index: Int) -> some View {
+        let isFocused = (focusedIndex == index)
+        HStack(spacing: 4) {
+            // Indent
+            if row.depth > 0 {
+                Spacer().frame(width: CGFloat(row.depth) * 12)
+            }
+            // Disclosure triangle for containers
+            if row.node.hasChildren {
+                Button {
+                    toggleExpanded(row.node.id)
+                } label: {
+                    Image(systemName: expandedIDs.contains(row.node.id) ? "chevron.down" : "chevron.right")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 12)
+                }
+                .buttonStyle(.plain)
+            } else {
+                Spacer().frame(width: 12)
+            }
+            if row.node.isContainer {
+                Text(row.node.name).italic().foregroundStyle(.secondary)
+            } else {
+                Text(row.node.name)
+            }
+            if !row.node.synonyms.isEmpty, !row.node.isContainer {
+                Text(row.node.synonyms.joined(separator: ", "))
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            Spacer()
+        }
+        .padding(.vertical, 1)
+        .contentShape(Rectangle())
+        .background(isFocused ? Color.accentColor.opacity(0.18) : Color.clear)
+        .onTapGesture(count: 2) {
+            focusedIndex = index
+            activate(row.node, ancestors: row.ancestors)
+        }
+        .onTapGesture(count: 1) {
+            focusedIndex = index
+        }
+        .contextMenu {
+            if !row.node.isContainer {
+                Button("Add Keyword + Ancestors + Synonyms") {
+                    activate(row.node, ancestors: row.ancestors)
+                }
+            }
+            if row.node.hasChildren {
+                Button(expandedIDs.contains(row.node.id) ? "Collapse" : "Expand") {
+                    toggleExpanded(row.node.id)
+                }
             }
         }
-        .listStyle(.sidebar)
     }
 
     private var searchResultsView: some View {
@@ -118,16 +239,50 @@ struct StructuredKeywordsPicker: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                List(results, id: \.self) { hit in
-                    searchRow(hit)
+                ScrollViewReader { proxy in
+                    List {
+                        ForEach(Array(results.enumerated()), id: \.offset) { index, hit in
+                            searchRow(hit, index: index)
+                                .id(index)
+                        }
+                    }
+                    .listStyle(.inset)
+                    .focusable()
+                    .focused($rowsFocused)
+                    .focusEffectDisabled()
+                    .onChange(of: focusedIndex) { _, newValue in
+                        if let newValue {
+                            withAnimation(.linear(duration: 0.1)) {
+                                proxy.scrollTo(newValue, anchor: .center)
+                            }
+                        }
+                    }
+                    .onKeyPress(.upArrow) {
+                        focusedIndex = max(0, (focusedIndex ?? 0) - 1)
+                        return .handled
+                    }
+                    .onKeyPress(.downArrow) {
+                        focusedIndex = min(results.count - 1, (focusedIndex ?? -1) + 1)
+                        return .handled
+                    }
+                    .onKeyPress(.return) {
+                        guard let i = focusedIndex, results.indices.contains(i) else { return .ignored }
+                        activate(results[i].node, ancestors: results[i].ancestors)
+                        return .handled
+                    }
+                    .onKeyPress(.space) {
+                        guard let i = focusedIndex, results.indices.contains(i) else { return .ignored }
+                        activate(results[i].node, ancestors: results[i].ancestors)
+                        return .handled
+                    }
                 }
-                .listStyle(.inset)
             }
         }
     }
 
-    private func searchRow(_ hit: StructuredKeywordPath) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+    private func searchRow(_ hit: StructuredKeywordPath, index: Int) -> some View {
+        let isFocused = (focusedIndex == index)
+        return VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 6) {
                 Text(hit.node.name)
                 Spacer()
@@ -148,7 +303,10 @@ struct StructuredKeywordsPicker: View {
             }
         }
         .padding(.vertical, 2)
+        .padding(.horizontal, 4)
         .contentShape(Rectangle())
+        .background(isFocused ? Color.accentColor.opacity(0.18) : Color.clear)
+        .onTapGesture(count: 1) { focusedIndex = index }
         .onTapGesture(count: 2) {
             activate(hit.node, ancestors: hit.ancestors)
         }
@@ -193,6 +351,101 @@ struct StructuredKeywordsPicker: View {
         .padding(.vertical, 8)
     }
 
+    // MARK: - Tree flatten + focus helpers
+
+    private func flattenedRows() -> [VisibleRow] {
+        var rows: [VisibleRow] = []
+        for root in service.roots {
+            appendRow(root, ancestors: [], depth: 0, into: &rows)
+        }
+        return rows
+    }
+
+    private func appendRow(
+        _ node: StructuredKeyword,
+        ancestors: [StructuredKeyword],
+        depth: Int,
+        into rows: inout [VisibleRow]
+    ) {
+        rows.append(VisibleRow(id: node.id, node: node, ancestors: ancestors, depth: depth))
+        guard expandedIDs.contains(node.id) else { return }
+        let childAncestors = ancestors + [node]
+        for child in node.children {
+            appendRow(child, ancestors: childAncestors, depth: depth + 1, into: &rows)
+        }
+    }
+
+    private func visibleRowCount() -> Int {
+        if !searchText.trimmingCharacters(in: .whitespaces).isEmpty {
+            return service.search(searchText).count
+        }
+        return flattenedRows().count
+    }
+
+    private func toggleExpanded(_ id: UUID) {
+        if expandedIDs.contains(id) {
+            expandedIDs.remove(id)
+        } else {
+            expandedIDs.insert(id)
+        }
+    }
+
+    private func moveFocus(by delta: Int, in rows: [VisibleRow]) -> KeyPress.Result {
+        guard !rows.isEmpty else { return .ignored }
+        let current = focusedIndex ?? -1
+        let next = (current + delta).clamped(to: 0...(rows.count - 1))
+        focusedIndex = next
+        return .handled
+    }
+
+    private func expandOrDescend(in rows: [VisibleRow]) -> KeyPress.Result {
+        guard let i = focusedIndex, rows.indices.contains(i) else { return .ignored }
+        let row = rows[i]
+        if row.node.hasChildren {
+            if !expandedIDs.contains(row.node.id) {
+                expandedIDs.insert(row.node.id)
+            } else if i + 1 < rows.count {
+                focusedIndex = i + 1
+            }
+            return .handled
+        }
+        return .ignored
+    }
+
+    private func collapseOrAscend(in rows: [VisibleRow]) -> KeyPress.Result {
+        guard let i = focusedIndex, rows.indices.contains(i) else { return .ignored }
+        let row = rows[i]
+        if row.node.hasChildren && expandedIDs.contains(row.node.id) {
+            expandedIDs.remove(row.node.id)
+            return .handled
+        }
+        // Jump to parent: scan backwards for the row whose node matches our last ancestor.
+        if let parent = row.ancestors.last,
+           let parentIndex = rows.firstIndex(where: { $0.node.id == parent.id }) {
+            focusedIndex = parentIndex
+            return .handled
+        }
+        return .ignored
+    }
+
+    private func activateFocused() -> KeyPress.Result {
+        if !searchText.trimmingCharacters(in: .whitespaces).isEmpty {
+            let results = service.search(searchText)
+            guard let i = focusedIndex, results.indices.contains(i) else { return .ignored }
+            activate(results[i].node, ancestors: results[i].ancestors)
+            return .handled
+        }
+        let rows = flattenedRows()
+        guard let i = focusedIndex, rows.indices.contains(i) else { return .ignored }
+        let row = rows[i]
+        if row.node.isContainer {
+            toggleExpanded(row.node.id)
+            return .handled
+        }
+        activate(row.node, ancestors: row.ancestors)
+        return .handled
+    }
+
     // MARK: - Actions
 
     private func activate(_ node: StructuredKeyword, ancestors: [StructuredKeyword]) {
@@ -206,77 +459,8 @@ struct StructuredKeywordsPicker: View {
     }
 }
 
-/// Recursive row used by the tree view. Defined as a struct so the recursion is
-/// expressed via the type system rather than an opaque-return inference loop.
-private struct StructuredKeywordTreeRow: View {
-    let node: StructuredKeyword
-    let ancestors: [StructuredKeyword]
-    @Binding var expandedIDs: Set<UUID>
-    let onActivate: (StructuredKeyword, [StructuredKeyword]) -> Void
-
-    var body: some View {
-        if node.hasChildren {
-            DisclosureGroup(
-                isExpanded: Binding(
-                    get: { expandedIDs.contains(node.id) },
-                    set: { isOpen in
-                        if isOpen { expandedIDs.insert(node.id) }
-                        else { expandedIDs.remove(node.id) }
-                    }
-                )
-            ) {
-                ForEach(node.children) { child in
-                    StructuredKeywordTreeRow(
-                        node: child,
-                        ancestors: ancestors + [node],
-                        expandedIDs: $expandedIDs,
-                        onActivate: onActivate
-                    )
-                }
-            } label: {
-                label
-            }
-        } else {
-            label
-        }
-    }
-
-    private var label: some View {
-        HStack(spacing: 6) {
-            if node.isContainer {
-                Text(node.name)
-                    .italic()
-                    .foregroundStyle(.secondary)
-            } else {
-                Text(node.name)
-            }
-            if !node.synonyms.isEmpty, !node.isContainer {
-                Text(node.synonyms.joined(separator: ", "))
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-            }
-        }
-        .contentShape(Rectangle())
-        .onTapGesture(count: 2) {
-            onActivate(node, ancestors)
-        }
-        .contextMenu {
-            if !node.isContainer {
-                Button("Add Keyword + Ancestors + Synonyms") {
-                    onActivate(node, ancestors)
-                }
-            }
-            if node.hasChildren {
-                Button(expandedIDs.contains(node.id) ? "Collapse" : "Expand") {
-                    if expandedIDs.contains(node.id) {
-                        expandedIDs.remove(node.id)
-                    } else {
-                        expandedIDs.insert(node.id)
-                    }
-                }
-            }
-        }
+private extension Comparable {
+    func clamped(to range: ClosedRange<Self>) -> Self {
+        min(max(self, range.lowerBound), range.upperBound)
     }
 }

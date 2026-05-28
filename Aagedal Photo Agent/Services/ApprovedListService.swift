@@ -18,6 +18,7 @@ enum ApprovedListField: String, CaseIterable {
     var bookmarkKey: String { "approvedList.\(rawValue).bookmark" }
     var enabledKey: String  { "approvedList.\(rawValue).enabled" }
     var modeKey: String     { "approvedList.\(rawValue).mode" }
+    var allowStructuredBypassKey: String { "approvedList.\(rawValue).allowStructuredBypass" }
 
     // v2 slots — declared but not read in v1.
     var remoteURLKey: String       { "approvedList.\(rawValue).remoteURL" }
@@ -69,15 +70,16 @@ enum KeywordValidation {
 final class ApprovedListService {
     /// Shared instance so SwiftUI views referenced from different `SettingsViewModel`
     /// instances (Settings window, ContentView) see the same parsed list + state.
-    /// UserDefaults stays the source of truth; the in-memory cache is what views observe.
+    /// `KeywordListsStore` is the source of truth on disk; the in-memory cache
+    /// is what views observe.
     static let shared = ApprovedListService()
 
     /// Bumped on any state change (file change, mode change, enable toggle).
     /// Views that need to react read this once to register a dependency.
     private(set) var version: Int = 0
 
-    /// Surfaced to Settings UI when the bookmark resolved but the file could not be parsed
-    /// or is no longer accessible. nil = no error.
+    /// Surfaced to Settings UI when the file backing a list could not be read
+    /// or parsed. nil = no error.
     private(set) var loadError: String?
 
     private struct ParsedList {
@@ -88,11 +90,31 @@ final class ApprovedListService {
     }
 
     @ObservationIgnored private var cache: [ApprovedListField: ParsedList] = [:]
+    @ObservationIgnored nonisolated(unsafe) private var changeObserver: NSObjectProtocol?
 
     init() {
         for field in ApprovedListField.allCases {
-            loadFromBookmark(for: field)
+            loadFromStore(for: field)
         }
+        changeObserver = NotificationCenter.default.addObserver(
+            forName: .keywordListChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            guard
+                let key = note.userInfo?[KeywordListsStore.changedKeyUserInfo] as? KeywordListKey,
+                case .approved(let field) = key
+            else { return }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.loadFromStore(for: field)
+                self.bumpVersion()
+            }
+        }
+    }
+
+    nonisolated deinit {
+        if let changeObserver { NotificationCenter.default.removeObserver(changeObserver) }
     }
 
     // MARK: - Public surface
@@ -109,6 +131,15 @@ final class ApprovedListService {
         return .warn
     }
 
+    /// Whether the structured-tree picker's contributions should bypass approved-list
+    /// validation. Default true (matches pre-toggle behaviour).
+    func allowStructuredBypass(_ field: ApprovedListField) -> Bool {
+        if UserDefaults.standard.object(forKey: field.allowStructuredBypassKey) == nil {
+            return true
+        }
+        return UserDefaults.standard.bool(forKey: field.allowStructuredBypassKey)
+    }
+
     func displayPath(for field: ApprovedListField) -> String? {
         _ = version  // observation dependency
         return cache[field]?.sourcePath
@@ -117,6 +148,12 @@ final class ApprovedListService {
     func entryCount(for field: ApprovedListField) -> Int {
         _ = version
         return cache[field]?.ordered.count ?? 0
+    }
+
+    /// Entries in stored order — used by the in-app editor and by export bundles.
+    func orderedEntries(for field: ApprovedListField) -> [String] {
+        _ = version
+        return cache[field]?.ordered ?? []
     }
 
     func setEnabled(_ enabled: Bool, for field: ApprovedListField) {
@@ -129,27 +166,31 @@ final class ApprovedListService {
         bumpVersion()
     }
 
-    func setListURL(_ url: URL, for field: ApprovedListField) throws {
-        // Parse first so we don't persist a bookmark for a file we can't read.
-        let entries = try parseEntries(at: url)
+    func setAllowStructuredBypass(_ enabled: Bool, for field: ApprovedListField) {
+        UserDefaults.standard.set(enabled, forKey: field.allowStructuredBypassKey)
+        bumpVersion()
+    }
 
-        let didStart = url.startAccessingSecurityScopedResource()
-        defer { if didStart { url.stopAccessingSecurityScopedResource() } }
-        do {
-            let bookmark = try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
-            UserDefaults.standard.set(bookmark, forKey: field.bookmarkKey)
-        } catch {
-            logger.error("Failed to create bookmark for approved list: \(String(describing: error))")
-            throw error
-        }
-
-        installParsed(entries, sourcePath: url.path, for: field)
+    /// Imports a user-picked file into the managed store. After this the file
+    /// content lives in the store; the source URL is no longer referenced.
+    func importListURL(_ url: URL, for field: ApprovedListField) throws {
+        let entries = try KeywordListsStore.shared.importEntries(from: url, into: .approved(field))
+        installParsed(entries, sourcePath: KeywordListsStore.shared.url(for: .approved(field)).path, for: field)
         loadError = nil
         bumpVersion()
     }
 
+    /// Writes the given entries to the managed store. Used by the editor UI.
+    func saveEntries(_ entries: [String], for field: ApprovedListField) throws {
+        try KeywordListsStore.shared.writeEntries(entries, to: .approved(field))
+        // Reload our cache from the canonical store so casing/dedup matches what
+        // future reads will return.
+        loadFromStore(for: field)
+        bumpVersion()
+    }
+
     func clearList(for field: ApprovedListField) {
-        UserDefaults.standard.removeObject(forKey: field.bookmarkKey)
+        KeywordListsStore.shared.delete(.approved(field))
         cache.removeValue(forKey: field)
         loadError = nil
         bumpVersion()
@@ -188,8 +229,15 @@ final class ApprovedListService {
     /// Validate a single value against the configured policy for `field`.
     /// Returns `.accept` when the list is inactive, `.acceptCanonical(canonical)` when
     /// the value is in the list (any mode), or `.reject` in Strict mode for non-approved.
-    func validate(_ value: String, in field: ApprovedListField) -> KeywordValidation {
+    ///
+    /// `source` lets callers declare where the value originated; when it is
+    /// `.structuredTree` and the per-field "allow structured bypass" toggle is
+    /// on, the result is forced to `.accept`.
+    func validate(_ value: String, in field: ApprovedListField, source: KeywordSource = .user) -> KeywordValidation {
         guard isActive(for: field) else { return .accept }
+        if source == .structuredTree, allowStructuredBypass(field) {
+            return .accept
+        }
         if let canonical = canonicalCasing(of: value, in: field) {
             return .acceptCanonical(canonical)
         }
@@ -201,12 +249,12 @@ final class ApprovedListService {
     /// Validate many values in one pass. `accepted` is canonicalised and deduped
     /// (case-/diacritic-insensitive); `rejected` preserves the input casing for
     /// user-facing messages. Both arrays follow input order.
-    func validateBulk(_ values: [String], in field: ApprovedListField) -> (accepted: [String], rejected: [String]) {
+    func validateBulk(_ values: [String], in field: ApprovedListField, source: KeywordSource = .user) -> (accepted: [String], rejected: [String]) {
         var accepted: [String] = []
         var rejected: [String] = []
         var seenAccepted = Set<String>()
         for value in values {
-            switch validate(value, in: field) {
+            switch validate(value, in: field, source: source) {
             case .accept:
                 if seenAccepted.insert(Self.normalize(value)).inserted {
                     accepted.append(value)
@@ -257,51 +305,22 @@ final class ApprovedListService {
 
     private func bumpVersion() { version &+= 1 }
 
-    private func loadFromBookmark(for field: ApprovedListField) {
-        guard let data = UserDefaults.standard.data(forKey: field.bookmarkKey) else {
+    private func loadFromStore(for field: ApprovedListField) {
+        let store = KeywordListsStore.shared
+        let key = KeywordListKey.approved(field)
+        guard store.exists(key) else {
             cache.removeValue(forKey: field)
             return
         }
-        var isStale = false
-        let resolved: URL
-        do {
-            resolved = try URL(
-                resolvingBookmarkData: data,
-                options: .withSecurityScope,
-                relativeTo: nil,
-                bookmarkDataIsStale: &isStale
-            )
-        } catch {
-            logger.error("Failed to resolve approved-list bookmark for \(field.rawValue): \(String(describing: error))")
-            cache.removeValue(forKey: field)
-            loadError = "Approved list file could not be located."
+        let entries = store.readEntries(key)
+        if entries.isEmpty {
+            // The file exists but parsed to nothing — surface a hint but keep
+            // the entry-less cache so `hasListConfigured` returns true.
+            installParsed([], sourcePath: store.url(for: key).path, for: field)
             return
         }
-
-        let didStart = resolved.startAccessingSecurityScopedResource()
-        defer { if didStart { resolved.stopAccessingSecurityScopedResource() } }
-
-        if isStale {
-            if let refreshed = try? resolved.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil) {
-                UserDefaults.standard.set(refreshed, forKey: field.bookmarkKey)
-            }
-        }
-
-        do {
-            let entries = try ApprovedListParser.parse(resolved)
-            installParsed(entries, sourcePath: resolved.path, for: field)
-            loadError = nil
-        } catch {
-            logger.error("Failed to parse approved list for \(field.rawValue): \(String(describing: error))")
-            cache.removeValue(forKey: field)
-            loadError = (error as? LocalizedError)?.errorDescription ?? "Could not load approved list file."
-        }
-    }
-
-    private func parseEntries(at url: URL) throws -> [String] {
-        let didStart = url.startAccessingSecurityScopedResource()
-        defer { if didStart { url.stopAccessingSecurityScopedResource() } }
-        return try ApprovedListParser.parse(url)
+        installParsed(entries, sourcePath: store.url(for: key).path, for: field)
+        loadError = nil
     }
 
     private func installParsed(_ entries: [String], sourcePath: String, for field: ApprovedListField) {

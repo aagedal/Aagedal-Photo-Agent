@@ -101,7 +101,15 @@ nonisolated enum UserDefaultsKeys {
     static let approvedKeywordsEnabled  = "approvedList.keywords.enabled"
     static let approvedKeywordsBookmark = "approvedList.keywords.bookmark"
     static let approvedKeywordsMode     = "approvedList.keywords.mode"
+    static let approvedKeywordsAllowStructuredBypass = "approvedList.keywords.allowStructuredBypass"
 
     // MARK: - Structured Keywords (PhotoMechanic-style tree)
     static let structuredKeywordsBookmark = "structuredKeywords.bookmark"
+
+    // MARK: - Keyword Lists Sync & Migration
+    /// True when the user has opted in to syncing keyword lists via iCloud.
+    static let keywordListsICloudEnabled = "keywordLists.iCloudEnabled"
+    /// One-shot marker: bumped after the first launch that migrated the legacy
+    /// bookmark-based quick/approved/structured files into the managed store.
+    static let keywordListsMigratedVersion = "keywordLists.migratedVersion"
 }

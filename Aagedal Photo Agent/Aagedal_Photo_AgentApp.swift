@@ -5,6 +5,17 @@ struct Aagedal_Photo_AgentApp: App {
     @StateObject private var updater = SparkleUpdaterService.shared
 
     init() {
+        // One-shot migration from the legacy bookmark-pointed list files into the
+        // managed `KeywordListsStore`. Must run before any service that reads from
+        // the store touches its shared instance.
+        KeywordListsStore.shared.migrateLegacyBookmarksIfNeeded()
+
+        // Start the iCloud metadata-query watcher (no-op until the user opts in
+        // and the ubiquity container is reachable).
+        Task { @MainActor in
+            KeywordListsCloudCoordinator.shared.refresh()
+        }
+
         // Pre-generate the CIE chromaticity background on a background thread
         // so it's ready before the user opens the Gamut scope
         Task.detached(priority: .utility) {

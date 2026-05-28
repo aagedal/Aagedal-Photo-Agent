@@ -27,6 +27,7 @@ struct MetadataPanel: View {
     @State private var commitDebounceTask: Task<Void, Never>?
     @State private var showingRawMetadata = false
     @State private var showingStructuredKeywords = false
+    @State private var editingQuickList: QuickListType?
 
     enum ListFileTarget {
         case keywords
@@ -137,6 +138,9 @@ struct MetadataPanel: View {
             },
             onShowStructuredKeywords: {
                 showingStructuredKeywords = true
+            },
+            onEditQuickList: {
+                editingQuickList = .keywords
             }
         )
         .sheet(isPresented: $showingStructuredKeywords) {
@@ -149,10 +153,30 @@ struct MetadataPanel: View {
                 }
             )
         }
+        .sheet(item: $editingQuickList) { type in
+            KeywordListEditor(
+                title: "\(type.displayName) Quick List",
+                storeKey: .quick(type)
+            )
+        }
     }
 
     private func addStructuredKeywords(_ expanded: [String]) {
-        let added = viewModel.appendKeywords(expanded)
+        // Routes through approved-list validation with `.structuredTree` source
+        // so the "Always allow keywords from structured list" toggle can short-
+        // circuit when on (the default). When the toggle is off, structured
+        // keywords get validated against the approved list like any other source.
+        let validated = ApprovedListService.shared.validateBulk(expanded, in: .keywords, source: .structuredTree)
+        let added = viewModel.appendKeywords(validated.accepted)
+        if !validated.rejected.isEmpty {
+            let count = validated.rejected.count
+            let word = count == 1 ? "keyword" : "keywords"
+            viewModel.notice = MetadataPanelNotice(
+                title: "\(count) \(word) not added — Not in approved list",
+                detail: validated.rejected,
+                severity: .warning
+            )
+        }
         guard added > 0 else { return }
         commitEdits()
     }
@@ -1596,6 +1620,9 @@ struct KeywordsEditorWithDiff: View {
     /// When set, a tree icon appears in the toolbar that invokes this callback,
     /// typically to open the structured-keywords picker as a sheet.
     var onShowStructuredKeywords: (() -> Void)? = nil
+    /// When set, the overflow menu inside the quick-list popover gains an
+    /// "Edit Quick List…" item. Caller is expected to present `KeywordListEditor`.
+    var onEditQuickList: (() -> Void)? = nil
 
     @State private var inputText = ""
     @State private var promotingKeyword: String?
@@ -1606,6 +1633,7 @@ struct KeywordsEditorWithDiff: View {
     @State private var rejectClearTask: Task<Void, Never>?
     @State private var rejectFlashTask: Task<Void, Never>?
     @State private var inputIsFocused: Bool = false
+    @State private var quickListPopoverShown: Bool = false
 
     private var typeaheadEnabled: Bool { suggestionProvider != nil }
     private var quickListMenuVisible: Bool { onChooseListFile != nil && !hideQuickListMenu }
@@ -1633,52 +1661,36 @@ struct KeywordsEditorWithDiff: View {
                     .help("Open Structured Keywords picker")
                 }
                 if quickListMenuVisible {
-                    Menu {
-                        if let onAddCurrentToQuickList {
-                            Button("Add Current to Quick List") {
-                                onAddCurrentToQuickList()
-                            }
-                            .disabled(keywords.isEmpty)
-                            Divider()
-                        }
-                        if let onChooseListFile {
-                            Button("Choose Quick List File...") {
-                                onChooseListFile()
-                            }
-                        }
-                        if !presetList.isEmpty {
-                            Divider()
-                            ForEach(presetList, id: \.self) { item in
-                                let isSelected = keywords.contains(item)
-                                Button {
-                                    if isSelected {
-                                        if allowsPresetToggleRemoval {
-                                            keywords.removeAll { $0 == item }
-                                            onChange?()
-                                            onCommit?()
-                                        }
-                                    } else {
-                                        addPresetItem(item)
-                                    }
-                                } label: {
-                                    HStack(spacing: 6) {
-                                        if showPresetSelectionIndicator, isSelected {
-                                            Image(systemName: "checkmark")
-                                        }
-                                        Text(item)
-                                    }
-                                }
-                                .disabled(isSelected && !allowsPresetToggleRemoval)
-                            }
-                        }
+                    Button {
+                        quickListPopoverShown.toggle()
                     } label: {
                         Image(systemName: "list.bullet")
                             .font(.caption)
                             .foregroundStyle(presetList.isEmpty ? .secondary : .primary)
                     }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
+                    .buttonStyle(.borderless)
                     .help(presetList.isEmpty ? "Choose a Quick List file" : "Choose from Quick List")
+                    .popover(isPresented: $quickListPopoverShown, arrowEdge: .bottom) {
+                        QuickKeywordPicker(
+                            presetList: presetList,
+                            currentKeywords: Set(keywords),
+                            allowsToggleRemoval: allowsPresetToggleRemoval,
+                            onAddSelected: { picks in
+                                for item in picks {
+                                    addPresetItem(item)
+                                }
+                            },
+                            onRemoveItem: { item in
+                                keywords.removeAll { $0 == item }
+                                onChange?()
+                                onCommit?()
+                            },
+                            onAddCurrentToQuickList: onAddCurrentToQuickList,
+                            onChooseListFile: onChooseListFile,
+                            onEditQuickList: onEditQuickList,
+                            onClose: { quickListPopoverShown = false }
+                        )
+                    }
                 }
             }
 

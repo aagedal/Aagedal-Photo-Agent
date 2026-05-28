@@ -17,9 +17,18 @@ struct SettingsView: View {
 
     // Approved Keywords state
     @State private var approvedKeywordsErrorMessage: String?
+    @State private var editingApprovedKeywords = false
 
     // Structured Keywords state
     @State private var structuredKeywordsErrorMessage: String?
+    @State private var editingStructuredKeywords = false
+
+    // Quick Lists state
+    @State private var editingQuickList: QuickListType?
+    @State private var quickListsArchiveMessage: String?
+
+    // iCloud sync state
+    @State private var iCloudSyncMessage: String?
 
     var body: some View {
         TabView {
@@ -36,6 +45,11 @@ struct SettingsView: View {
             metadataTab
                 .tabItem {
                     Label("Metadata", systemImage: "tag")
+                }
+
+            quickListsTab
+                .tabItem {
+                    Label("Quick Lists", systemImage: "list.bullet.rectangle")
                 }
 
             facesTab
@@ -572,6 +586,15 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
+        .sheet(isPresented: $editingApprovedKeywords) {
+            KeywordListEditor(
+                title: "Approved Keywords",
+                storeKey: .approved(.keywords)
+            )
+        }
+        .sheet(isPresented: $editingStructuredKeywords) {
+            StructuredKeywordEditor()
+        }
     }
 
     // MARK: - Approved Keywords Section
@@ -602,7 +625,11 @@ struct SettingsView: View {
                     Text("No file chosen").foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button(listConfigured ? "Change…" : "Choose List File…") {
+                Button("Edit…") {
+                    editingApprovedKeywords = true
+                }
+                .help("Edit the approved keywords list in-app")
+                Button(listConfigured ? "Import…" : "Import File…") {
                     chooseApprovedKeywordsFile()
                 }
                 if listConfigured {
@@ -623,6 +650,15 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            Toggle("Always allow keywords from a structured list", isOn: Binding(
+                get: { service.allowStructuredBypass(field) },
+                set: { service.setAllowStructuredBypass($0, for: field) }
+            ))
+            .disabled(!enabled)
+            Text("When on, keywords picked from the structured-keywords tree bypass approved-list validation. When off, they are validated like any other source.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             if let loadError = service.loadError {
                 HStack(spacing: 6) {
@@ -670,7 +706,7 @@ struct SettingsView: View {
         panel.message = "Choose an approved keywords list (.txt or .csv)"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
-            try settingsViewModel.approvedLists.setListURL(url, for: .keywords)
+            try settingsViewModel.approvedLists.importListURL(url, for: .keywords)
             approvedKeywordsErrorMessage = nil
         } catch {
             let description = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
@@ -699,7 +735,11 @@ struct SettingsView: View {
                     Text("No file chosen").foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button(isLoaded ? "Change…" : "Choose Structured Keywords File…") {
+                Button("Edit…") {
+                    editingStructuredKeywords = true
+                }
+                .help("Edit the structured keywords tree in-app")
+                Button(isLoaded ? "Import…" : "Import File…") {
                     chooseStructuredKeywordsFile()
                 }
                 if isLoaded {
@@ -751,11 +791,119 @@ struct SettingsView: View {
         panel.message = "Choose a structured keywords file (.txt)"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
-            try settingsViewModel.structuredKeywords.setListURL(url)
+            try settingsViewModel.structuredKeywords.importListURL(url)
             structuredKeywordsErrorMessage = nil
         } catch {
             let description = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             structuredKeywordsErrorMessage = description
+        }
+    }
+
+    // MARK: - Quick Lists Tab
+
+    @ViewBuilder
+    private var quickListsTab: some View {
+        Form {
+            Section("iCloud Sync") {
+                Toggle("Sync keyword lists via iCloud", isOn: Binding(
+                    get: { settingsViewModel.keywordLists.iCloudEnabled },
+                    set: { newValue in
+                        let ok = settingsViewModel.keywordLists.setICloudEnabled(newValue)
+                        iCloudSyncMessage = ok
+                            ? (newValue ? "iCloud sync enabled — lists will sync between Macs." : "iCloud sync disabled — lists are local.")
+                            : (settingsViewModel.keywordLists.lastSyncError ?? "Could not change iCloud setting.")
+                        KeywordListsCloudCoordinator.shared.refresh()
+                    }
+                ))
+                if let lastSyncError = settingsViewModel.keywordLists.lastSyncError {
+                    Text(lastSyncError)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                } else if let iCloudSyncMessage {
+                    Text(iCloudSyncMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Stores the approved, structured, and all quick lists in your iCloud Drive container so edits propagate to your other Macs.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Section("Quick Lists") {
+                ForEach(QuickListType.allCases, id: \.self) { type in
+                    HStack {
+                        Text(type.displayName)
+                        Spacer()
+                        Text("\(settingsViewModel.entries(for: type).count) entries")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Button("Edit…") {
+                            editingQuickList = type
+                        }
+                    }
+                }
+            }
+
+            Section("Import / Export") {
+                HStack {
+                    Button("Export All Lists…") {
+                        exportAllKeywordLists()
+                    }
+                    Button("Import All Lists…") {
+                        importAllKeywordLists()
+                    }
+                    if let quickListsArchiveMessage {
+                        Text(quickListsArchiveMessage)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    Spacer()
+                }
+                Text("Bundles every quick, approved, and structured list into a single .zip with a manifest. Useful for moving lists to a new Mac or sharing them with collaborators.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
+        .sheet(item: $editingQuickList) { type in
+            KeywordListEditor(
+                title: "\(type.displayName) Quick List",
+                storeKey: .quick(type)
+            )
+        }
+    }
+
+    private func exportAllKeywordLists() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.zip]
+        panel.nameFieldStringValue = "Keyword Lists.zip"
+        panel.message = "Export every keyword list as a single bundle"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try KeywordListsArchive.exportAll(to: url)
+            quickListsArchiveMessage = "Exported to \(url.lastPathComponent)"
+        } catch {
+            quickListsArchiveMessage = "Export failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func importAllKeywordLists() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.zip]
+        panel.message = "Choose a keyword list bundle (.zip) to import"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let imported = try KeywordListsArchive.importAll(from: url, mode: .replace)
+            quickListsArchiveMessage = "Imported \(imported) lists"
+        } catch {
+            quickListsArchiveMessage = "Import failed: \(error.localizedDescription)"
         }
     }
 

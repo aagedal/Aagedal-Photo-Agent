@@ -1433,7 +1433,7 @@ final class MetadataViewModel {
                 let parsed = value.split(separator: ",")
                     .map { $0.trimmingCharacters(in: .whitespaces) }
                     .filter { !$0.isEmpty }
-                let validated = ApprovedListService.shared.validateBulk(parsed, in: .keywords)
+                let validated = ApprovedListService.shared.validateBulk(parsed, in: .keywords, source: .template)
                 if append {
                     let existing = Set(editingMetadata.keywords)
                     editingMetadata.keywords += validated.accepted.filter { !existing.contains($0) }
