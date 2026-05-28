@@ -205,3 +205,124 @@ struct ApprovedListServiceTests {
         try? FileManager.default.removeItem(at: url)
     }
 }
+
+// MARK: - Service validation surface
+
+@MainActor
+@Suite("ApprovedListService.validate / validateBulk")
+struct ApprovedListValidationTests {
+
+    private func tempList(_ contents: String) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("approved-validate-\(UUID().uuidString)")
+            .appendingPathExtension("txt")
+        try contents.write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+
+    private func clearDefaults() {
+        let field = ApprovedListField.keywords
+        UserDefaults.standard.removeObject(forKey: field.bookmarkKey)
+        UserDefaults.standard.removeObject(forKey: field.enabledKey)
+        UserDefaults.standard.removeObject(forKey: field.modeKey)
+    }
+
+    private func makeService(mode: ApprovedListMode, enabled: Bool = true) throws -> (ApprovedListService, URL) {
+        clearDefaults()
+        let url = try tempList("Berlin\nMunich\nParis\n")
+        let service = ApprovedListService()
+        try service.setListURL(url, for: .keywords)
+        service.setMode(mode, for: .keywords)
+        service.setEnabled(enabled, for: .keywords)
+        return (service, url)
+    }
+
+    @Test("validate returns .accept when list is inactive (no enforcement)")
+    func validateInactive() throws {
+        let (service, url) = try makeService(mode: .strict, enabled: false)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        if case .accept = service.validate("anything", in: .keywords) {} else {
+            Issue.record("Expected .accept when list is disabled")
+        }
+    }
+
+    @Test("validate canonicalises approved values regardless of mode")
+    func validateCanonicalAllModes() throws {
+        for mode in [ApprovedListMode.suggest, .warn, .strict] {
+            let (service, url) = try makeService(mode: mode)
+            defer { try? FileManager.default.removeItem(at: url) }
+            if case .acceptCanonical(let canonical) = service.validate("berlin", in: .keywords) {
+                #expect(canonical == "Berlin")
+            } else {
+                Issue.record("Expected .acceptCanonical(\"Berlin\") in mode \(mode)")
+            }
+        }
+    }
+
+    @Test("validate accepts non-approved values in Suggest and Warn modes")
+    func validateNonApprovedSuggestWarn() throws {
+        for mode in [ApprovedListMode.suggest, .warn] {
+            let (service, url) = try makeService(mode: mode)
+            defer { try? FileManager.default.removeItem(at: url) }
+            if case .accept = service.validate("Tokyo", in: .keywords) {} else {
+                Issue.record("Expected .accept for non-approved in mode \(mode)")
+            }
+        }
+    }
+
+    @Test("validate rejects non-approved values in Strict mode")
+    func validateNonApprovedStrict() throws {
+        let (service, url) = try makeService(mode: .strict)
+        defer { try? FileManager.default.removeItem(at: url) }
+        if case .reject = service.validate("Tokyo", in: .keywords) {} else {
+            Issue.record("Expected .reject for non-approved in Strict mode")
+        }
+    }
+
+    @Test("validateBulk canonicalises accepted entries and preserves input order")
+    func validateBulkCanonicalAndOrder() throws {
+        let (service, url) = try makeService(mode: .warn)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let result = service.validateBulk(["paris", "BERLIN", "Munich"], in: .keywords)
+        #expect(result.accepted == ["Paris", "Berlin", "Munich"])
+        #expect(result.rejected.isEmpty)
+    }
+
+    @Test("validateBulk dedupes case-insensitively across accepted entries")
+    func validateBulkDedupe() throws {
+        let (service, url) = try makeService(mode: .warn)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let result = service.validateBulk(["berlin", "BERLIN", "Berlin"], in: .keywords)
+        #expect(result.accepted == ["Berlin"])
+        #expect(result.rejected.isEmpty)
+    }
+
+    @Test("validateBulk splits accepted vs rejected in Strict mode, preserves input casing of rejects")
+    func validateBulkStrictSplit() throws {
+        let (service, url) = try makeService(mode: .strict)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let result = service.validateBulk(["berlin", "Belin", "munich", "tokyo"], in: .keywords)
+        #expect(result.accepted == ["Berlin", "Munich"])
+        #expect(result.rejected == ["Belin", "tokyo"])
+    }
+
+    @Test("validateBulk in Warn mode accepts non-approved without canonicalising")
+    func validateBulkWarnPassthrough() throws {
+        let (service, url) = try makeService(mode: .warn)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let result = service.validateBulk(["berlin", "Belin"], in: .keywords)
+        // "berlin" canonicalises to "Berlin"; "Belin" is non-approved but accepted in Warn.
+        #expect(result.accepted == ["Berlin", "Belin"])
+        #expect(result.rejected.isEmpty)
+    }
+
+    @Test("validateBulk on inactive list accepts everything verbatim")
+    func validateBulkInactive() throws {
+        let (service, url) = try makeService(mode: .strict, enabled: false)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let result = service.validateBulk(["foo", "Bar", "baz"], in: .keywords)
+        #expect(result.accepted == ["foo", "Bar", "baz"])
+        #expect(result.rejected.isEmpty)
+    }
+}

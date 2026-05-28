@@ -40,6 +40,10 @@ final class MetadataViewModel {
     var selectedHasC2PA = false
     var descriptionConflict: DescriptionConflict?
     var showMetadataSourceChoice = false
+    /// Non-blocking notice rendered as a dismissible banner in the metadata panel.
+    /// Set by bulk-add paths (template apply, partial promotion, Quick List pick)
+    /// when entries are rejected or canonicalised against the approved list.
+    var notice: MetadataPanelNotice?
 
     var originalImageMetadata: IPTCMetadata?
     var embeddedMetadata: IPTCMetadata?
@@ -538,8 +542,22 @@ final class MetadataViewModel {
     }
 
     func promotePartialKeyword(_ keyword: String) {
-        if !editingMetadata.keywords.contains(keyword) {
-            editingMetadata.keywords.append(keyword)
+        switch ApprovedListService.shared.validate(keyword, in: .keywords) {
+        case .reject(let reason):
+            notice = MetadataPanelNotice(
+                title: "Keyword not added — \(reason)",
+                detail: [keyword],
+                severity: .warning
+            )
+            return
+        case .accept:
+            if !editingMetadata.keywords.contains(keyword) {
+                editingMetadata.keywords.append(keyword)
+            }
+        case .acceptCanonical(let canonical):
+            if !editingMetadata.keywords.contains(canonical) {
+                editingMetadata.keywords.append(canonical)
+            }
         }
         batchPartialKeywords.removeAll { $0 == keyword }
         hasChanges = true
@@ -1389,12 +1407,26 @@ final class MetadataViewModel {
             case "extendedDescription":
                 editingMetadata.extendedDescription = append ? appendString(editingMetadata.extendedDescription, value) : value
             case "keywords":
-                let newKeywords = value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+                let parsed = value.split(separator: ",")
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
+                let validated = ApprovedListService.shared.validateBulk(parsed, in: .keywords)
                 if append {
                     let existing = Set(editingMetadata.keywords)
-                    editingMetadata.keywords += newKeywords.filter { !existing.contains($0) }
+                    editingMetadata.keywords += validated.accepted.filter { !existing.contains($0) }
                 } else {
-                    editingMetadata.keywords = newKeywords
+                    var seen = Set<String>()
+                    editingMetadata.keywords = validated.accepted.filter { seen.insert($0).inserted }
+                }
+                if !validated.rejected.isEmpty {
+                    let acceptedCount = validated.accepted.count
+                    let rejCount = validated.rejected.count
+                    let acceptedWord = acceptedCount == 1 ? "keyword" : "keywords"
+                    notice = MetadataPanelNotice(
+                        title: "Template: \(acceptedCount) \(acceptedWord) added, \(rejCount) rejected",
+                        detail: validated.rejected,
+                        severity: .warning
+                    )
                 }
             case "personShown":
                 let newPersons = value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }

@@ -88,14 +88,9 @@ struct MetadataPanel: View {
             return { prefix in ApprovedListService.suggestions(prefix: prefix, in: quickList) }
         }()
 
-        let validator: ((String) -> KeywordValidation)? = approvedActive ? { value in
-            if let canonical = approved.canonicalCasing(of: value, in: .keywords) {
-                return .acceptCanonical(canonical)
-            }
-            return approvedMode == .strict
-                ? .reject(reason: "Not in approved list")
-                : .accept
-        } : nil
+        let validator: ((String) -> KeywordValidation)? = approvedActive
+            ? { value in approved.validate(value, in: .keywords) }
+            : nil
 
         let flagged: Set<String> = {
             guard approvedActive, approvedMode != .suggest else { return [] }
@@ -129,7 +124,16 @@ struct MetadataPanel: View {
             validator: validator,
             flaggedKeywords: flagged,
             hideQuickListMenu: approvedActive,
-            autoHighlightFirstSuggestion: approvedActive && approvedMode != .suggest
+            autoHighlightFirstSuggestion: approvedActive && approvedMode != .suggest,
+            onValidationReject: { rejected in
+                let count = rejected.count
+                let word = count == 1 ? "keyword" : "keywords"
+                viewModel.notice = MetadataPanelNotice(
+                    title: "\(count) \(word) not added — Not in approved list",
+                    detail: rejected,
+                    severity: .warning
+                )
+            }
         )
     }
 
@@ -349,6 +353,8 @@ struct MetadataPanel: View {
                                         isLoading: viewModel.isLoadingBatchMetadata
                                     )
                                 }
+
+                                noticeBanner
 
                                 metadataSourceBand
                                 ratingAndLabelSection
@@ -1311,6 +1317,60 @@ struct MetadataPanel: View {
     }
 
     @ViewBuilder
+    private var noticeBanner: some View {
+        if let notice = viewModel.notice {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: noticeIcon(for: notice.severity))
+                        .foregroundStyle(noticeColor(for: notice.severity))
+                    Text(notice.title)
+                        .font(.caption)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                    Button {
+                        viewModel.notice = nil
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Dismiss")
+                }
+                if !notice.detail.isEmpty {
+                    VStack(alignment: .leading, spacing: 1) {
+                        ForEach(notice.detail, id: \.self) { line in
+                            Text(line)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
+                    .padding(.leading, 22)
+                }
+            }
+            .padding(8)
+            .background(noticeColor(for: notice.severity).opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+        }
+    }
+
+    private func noticeIcon(for severity: MetadataPanelNotice.Severity) -> String {
+        switch severity {
+        case .info: return "info.circle"
+        case .warning: return "exclamationmark.triangle.fill"
+        case .error: return "xmark.octagon.fill"
+        }
+    }
+
+    private func noticeColor(for severity: MetadataPanelNotice.Severity) -> Color {
+        switch severity {
+        case .info: return .accentColor
+        case .warning: return .orange
+        case .error: return .red
+        }
+    }
+
+    @ViewBuilder
     private var metadataSourceBand: some View {
         if let destinations = viewModel.nextWriteDestination {
             let readingDest = viewModel.isBatchEdit
@@ -1502,6 +1562,9 @@ struct KeywordsEditorWithDiff: View {
     /// When true, the first suggestion is highlighted as soon as the popover opens,
     /// so Enter commits it. Used in Warn/Strict modes.
     var autoHighlightFirstSuggestion: Bool = false
+    /// Invoked when a Quick List menu pick is rejected by the validator. If nil,
+    /// rejection falls back to the inline flash used by the typing path.
+    var onValidationReject: (([String]) -> Void)? = nil
 
     @State private var inputText = ""
     @State private var promotingKeyword: String?
@@ -1554,9 +1617,7 @@ struct KeywordsEditorWithDiff: View {
                                             onCommit?()
                                         }
                                     } else {
-                                        keywords.append(item)
-                                        onChange?()
-                                        onCommit?()
+                                        addPresetItem(item)
                                     }
                                 } label: {
                                     HStack(spacing: 6) {
@@ -1842,6 +1903,33 @@ struct KeywordsEditorWithDiff: View {
         }
 
         updateSuggestions(for: inputText)
+    }
+
+    /// Quick List menu pick. Runs the validator (canonical-cases approved entries,
+    /// rejects non-approved in Strict mode). Rejections route through onValidationReject
+    /// when provided so the metadata panel can surface them in the banner; otherwise
+    /// they fall back to the inline flash used by the typing path.
+    private func addPresetItem(_ item: String) {
+        switch validator?(item) ?? .accept {
+        case .accept:
+            if !keywords.contains(item) {
+                keywords.append(item)
+                onChange?()
+                onCommit?()
+            }
+        case .acceptCanonical(let canonical):
+            if !keywords.contains(canonical) {
+                keywords.append(canonical)
+                onChange?()
+                onCommit?()
+            }
+        case .reject:
+            if let onValidationReject {
+                onValidationReject([item])
+            } else {
+                flashRejectState(rejected: [item])
+            }
+        }
     }
 
     private func flashRejectState(rejected: [String]) {

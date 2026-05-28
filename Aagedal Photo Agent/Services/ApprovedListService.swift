@@ -185,6 +185,43 @@ final class ApprovedListService {
         return Self.suggestions(prefix: prefix, in: parsed.ordered, limit: limit)
     }
 
+    /// Validate a single value against the configured policy for `field`.
+    /// Returns `.accept` when the list is inactive, `.acceptCanonical(canonical)` when
+    /// the value is in the list (any mode), or `.reject` in Strict mode for non-approved.
+    func validate(_ value: String, in field: ApprovedListField) -> KeywordValidation {
+        guard isActive(for: field) else { return .accept }
+        if let canonical = canonicalCasing(of: value, in: field) {
+            return .acceptCanonical(canonical)
+        }
+        return mode(for: field) == .strict
+            ? .reject(reason: "Not in approved list")
+            : .accept
+    }
+
+    /// Validate many values in one pass. `accepted` is canonicalised and deduped
+    /// (case-/diacritic-insensitive); `rejected` preserves the input casing for
+    /// user-facing messages. Both arrays follow input order.
+    func validateBulk(_ values: [String], in field: ApprovedListField) -> (accepted: [String], rejected: [String]) {
+        var accepted: [String] = []
+        var rejected: [String] = []
+        var seenAccepted = Set<String>()
+        for value in values {
+            switch validate(value, in: field) {
+            case .accept:
+                if seenAccepted.insert(Self.normalize(value)).inserted {
+                    accepted.append(value)
+                }
+            case .acceptCanonical(let canonical):
+                if seenAccepted.insert(Self.normalize(canonical)).inserted {
+                    accepted.append(canonical)
+                }
+            case .reject:
+                rejected.append(value)
+            }
+        }
+        return (accepted, rejected)
+    }
+
     /// Static helper so the same scoring is used for Quick List fallback (caller passes the array).
     static func suggestions(prefix: String, in entries: [String], limit: Int = 12) -> [ApprovedListSuggestion] {
         let p = normalize(prefix)
