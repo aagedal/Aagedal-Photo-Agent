@@ -17,6 +17,11 @@ enum MetadataReferenceSource: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+struct MetadataWriteDestinations: Equatable, Sendable {
+    let iptc: MetadataDestination
+    let develop: MetadataDestination
+}
+
 @Observable
 final class MetadataViewModel {
     var metadata: IPTCMetadata?
@@ -184,6 +189,50 @@ final class MetadataViewModel {
     }
 
     private(set) var selectedHavePendingSidecars = false
+
+    /// Where the next IPTC and Develop write will land for the current selection.
+    /// Returns nil when nothing is selected.
+    var nextWriteDestination: MetadataWriteDestinations? {
+        guard !selectedURLs.isEmpty else { return nil }
+        let perFile = selectedURLs.map(Self.writeDestinations(for:))
+        let iptc = Self.reduceDestinations(perFile.map(\.iptc))
+        let develop = Self.reduceDestinations(perFile.map(\.develop))
+        return MetadataWriteDestinations(iptc: iptc, develop: develop)
+    }
+
+    private static func writeDestinations(for url: URL) -> MetadataWriteDestinations {
+        let isRaw = SupportedImageFormats.isRaw(url: url)
+        let developDest: MetadataDestination = isRaw ? .sidecar : .embedded
+        if isRaw {
+            return MetadataWriteDestinations(iptc: .embedded, develop: developDest)
+        }
+        guard PMXMPPolicy.mode == .strictPhotoMechanic else {
+            return MetadataWriteDestinations(iptc: .embedded, develop: developDest)
+        }
+        let iptc: MetadataDestination
+        switch PMXMPPolicy.nonRawBehavior {
+        case .historyOnly:
+            iptc = .sidecar
+        case .embeddedWrite, .syncRawJpegPair:
+            iptc = .embedded
+        case .alwaysAsk:
+            iptc = remembered(from: PMXMPPolicy.rememberedChoice) ?? .askedAtSave
+        }
+        return MetadataWriteDestinations(iptc: iptc, develop: developDest)
+    }
+
+    private static func remembered(from choice: PMNonRAWXMPSidecarChoice?) -> MetadataDestination? {
+        switch choice {
+        case .historyOnly: return .sidecar
+        case .embeddedWrite, .syncRawJpegPair: return .embedded
+        case nil: return nil
+        }
+    }
+
+    private static func reduceDestinations(_ values: [MetadataDestination]) -> MetadataDestination {
+        guard let first = values.first else { return .embedded }
+        return values.allSatisfy { $0 == first } ? first : .mixed
+    }
 
     private func loadXMPMetadataIfAllowed(for imageURL: URL) -> IPTCMetadata? {
         guard PMXMPPolicy.shouldUseXMPReference(for: imageURL) else { return nil }

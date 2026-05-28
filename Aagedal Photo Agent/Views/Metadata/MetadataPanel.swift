@@ -350,6 +350,7 @@ struct MetadataPanel: View {
                                     )
                                 }
 
+                                metadataSourceBand
                                 ratingAndLabelSection
                                 actionButtons
                                 Divider()
@@ -1307,6 +1308,58 @@ struct MetadataPanel: View {
         .pickerStyle(.menu)
         .labelsHidden()
         .controlSize(.small)
+    }
+
+    @ViewBuilder
+    private var metadataSourceBand: some View {
+        if let destinations = viewModel.nextWriteDestination {
+            let readingDest = viewModel.isBatchEdit
+                ? MetadataDestination.mixed
+                : viewModel.metadataReferenceSource.asDestination
+            let sourcesDiffer = readingDest != destinations.iptc
+            let developSplits = destinations.develop != destinations.iptc
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    readingChip(destination: readingDest)
+                    MetadataSourceChip(role: .writing, destination: destinations.iptc)
+                    Spacer(minLength: 0)
+                }
+                if developSplits {
+                    HStack(spacing: 4) {
+                        Image(systemName: "slider.horizontal.3")
+                            .imageScale(.small)
+                            .foregroundStyle(.secondary)
+                        Text("Develop edits \u{2192} \(destinations.develop.shortLabel)")
+                            .font(.caption2)
+                            .foregroundStyle(destinations.develop.color)
+                    }
+                }
+                if sourcesDiffer {
+                    Label("Sources differ \u{2014} reading and writing target different surfaces.",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func readingChip(destination: MetadataDestination) -> some View {
+        if viewModel.hasXmpMetadata, !viewModel.isBatchEdit {
+            Menu {
+                Button("Embedded") { viewModel.applyReferenceSource(.embedded) }
+                Button("XMP Sidecar") { viewModel.applyReferenceSource(.xmp) }
+            } label: {
+                MetadataSourceChip(role: .reading, destination: destination)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+        } else {
+            MetadataSourceChip(role: .reading, destination: destination)
+        }
     }
 
     // MARK: - GPS
