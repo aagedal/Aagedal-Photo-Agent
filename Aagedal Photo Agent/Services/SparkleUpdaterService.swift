@@ -22,9 +22,23 @@ final class SparkleUpdaterService: NSObject, ObservableObject {
         return path.contains("/Caskroom/") || path.contains("/homebrew/")
     }
 
+    static var hasValidPublicKey: Bool {
+        guard let key = Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey") as? String,
+              !key.isEmpty,
+              key != "REPLACE_WITH_PUBLIC_KEY_FROM_GENERATE_KEYS",
+              let decoded = Data(base64Encoded: key),
+              decoded.count == 32
+        else { return false }
+        return true
+    }
+
+    static var shouldStartUpdater: Bool {
+        !isHomebrewInstall && hasValidPublicKey
+    }
+
     override init() {
         let updaterController = SPUStandardUpdaterController(
-            startingUpdater: !Self.isHomebrewInstall,
+            startingUpdater: Self.shouldStartUpdater,
             updaterDelegate: nil,
             userDriverDelegate: nil
         )

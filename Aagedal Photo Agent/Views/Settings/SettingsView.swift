@@ -891,6 +891,16 @@ struct SettingsView: View {
             }
             .padding()
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        } else if !SparkleUpdaterService.hasValidPublicKey {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Auto-updates not configured")
+                    .font(.headline)
+                Text("This build has no EdDSA public key embedded, so the updater is disabled. Run Sparkle's generate_keys tool and paste the public key into Info.plist before shipping.")
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding()
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         } else {
             Form {
                 Section("Current Version") {

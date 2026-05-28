@@ -29,7 +29,7 @@
 	<key>SUFeedURL</key>
 	<string>https://codeberg.org/taagedal/Aagedal-Photo-Agent/releases/download/appcast/appcast.xml</string>
 	<key>SUPublicEDKey</key>
-	<string>REPLACE_WITH_PUBLIC_KEY_FROM_GENERATE_KEYS</string>
+	<string>i3xudeqe+09I7n+FVFHmPxBa8cEWc3/ljLk3Y9bTEkY=</string>
 	<key>SUEnableAutomaticChecks</key>
 	<true/>
 	<key>SUEnableInstallerLauncherService</key>
