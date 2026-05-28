@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0"
+     xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"
+     xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <channel>
+        <title>Aagedal Photo Agent</title>
+        <link>https://codeberg.org/taagedal/Aagedal-Photo-Agent/releases/download/appcast/appcast.xml</link>
+        <description>Updates for Aagedal Photo Agent</description>
+        <language>en</language>
+
+        <!--
+            Append a new <item> to the top of this channel for every release.
+            Replace placeholders with values from `sign_update <dmg-path>`:
+
+        <item>
+            <title>Version X.Y.Z</title>
+            <pubDate>Mon, 01 Jan 2026 12:00:00 +0100</pubDate>
+            <sparkle:version>BUILD_NUMBER</sparkle:version>
+            <sparkle:shortVersionString>X.Y.Z</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <description><![CDATA[
+                <ul>
+                    <li>Release notes go here.</li>
+                </ul>
+            ]]></description>
+            <enclosure
+                url="https://codeberg.org/taagedal/Aagedal-Photo-Agent/releases/download/X.Y.Z/Aagedal-Photo-Agent-X.Y.Z.dmg"
+                sparkle:version="BUILD_NUMBER"
+                sparkle:shortVersionString="X.Y.Z"
+                sparkle:edSignature="ED_SIGNATURE_FROM_SIGN_UPDATE"
+                length="LENGTH_FROM_SIGN_UPDATE"
+                type="application/octet-stream" />
+        </item>
+        -->
+
+    </channel>
+</rss>
