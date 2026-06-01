@@ -55,7 +55,7 @@ extension MetadataWriteEngine {
 
 /// Capture file creation dates before a write operation so they can be restored after.
 /// Direct file writes may reset the creation date.
-func captureCreationDates(for urls: [URL]) -> [URL: Date] {
+nonisolated func captureCreationDates(for urls: [URL]) -> [URL: Date] {
     var result: [URL: Date] = [:]
     for url in urls {
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
@@ -68,14 +68,14 @@ func captureCreationDates(for urls: [URL]) -> [URL: Date] {
 }
 
 /// Restore file creation dates after a write operation.
-func restoreCreationDates(_ creationDates: [URL: Date]) {
+nonisolated func restoreCreationDates(_ creationDates: [URL: Date]) {
     for (url, creationDate) in creationDates {
         try? FileManager.default.setAttributes([.creationDate: creationDate], ofItemAtPath: url.path)
     }
 }
 
 /// Format a number in ACR's style: integers for whole numbers, minimal trailing decimals otherwise.
-func acrNum(_ value: Double) -> String {
+nonisolated func acrNum(_ value: Double) -> String {
     if value == value.rounded(.toNearestOrEven) && abs(value) < 1_000_000 {
         return String(Int(value))
     }

@@ -1,0 +1,123 @@
+import Testing
+import Foundation
+@testable import Aagedal_Photo_Agent
+
+@Suite("MetadataIOCoordinator")
+struct MetadataIOCoordinatorTests {
+
+    /// Observes critical-section behavior: a non-atomic read-modify-write split across a
+    /// suspension point (to detect lost updates) plus live concurrency tracking.
+    private actor Probe {
+        private(set) var counter = 0
+        private var current = 0
+        private(set) var maxConcurrent = 0
+
+        func read() -> Int { counter }
+        func write(_ value: Int) { counter = value }
+
+        func enter() { current += 1; maxConcurrent = max(maxConcurrent, current) }
+        func leave() { current -= 1 }
+    }
+
+    @Test("same key serializes read-modify-write — no lost updates")
+    func sameKeyNoLostUpdates() async {
+        let coordinator = MetadataIOCoordinator()
+        let probe = Probe()
+        let iterations = 200
+
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<iterations {
+                group.addTask {
+                    await coordinator.withLock("same-photo") {
+                        // Read, suspend (forcing interleaving if unserialized), then write back.
+                        // Without per-key serialization this loses the vast majority of updates.
+                        let value = await probe.read()
+                        await Task.yield()
+                        await probe.write(value + 1)
+                    }
+                }
+            }
+        }
+
+        #expect(await probe.counter == iterations)
+    }
+
+    @Test("same key never runs two operations at once")
+    func sameKeyNeverOverlaps() async {
+        let coordinator = MetadataIOCoordinator()
+        let probe = Probe()
+
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<12 {
+                group.addTask {
+                    await coordinator.withLock("solo") {
+                        await probe.enter()
+                        try? await Task.sleep(for: .milliseconds(5))
+                        await probe.leave()
+                    }
+                }
+            }
+        }
+
+        #expect(await probe.maxConcurrent == 1)
+    }
+
+    @Test("different keys run concurrently")
+    func differentKeysRunConcurrently() async {
+        let coordinator = MetadataIOCoordinator()
+        let probe = Probe()
+        let keys = 8
+
+        await withTaskGroup(of: Void.self) { group in
+            for index in 0..<keys {
+                group.addTask {
+                    await coordinator.withLock("photo-\(index)") {
+                        await probe.enter()
+                        try? await Task.sleep(for: .milliseconds(50))
+                        await probe.leave()
+                    }
+                }
+            }
+        }
+
+        // Distinct keys must be able to overlap; otherwise batch folder reads would serialize.
+        #expect(await probe.maxConcurrent > 1)
+    }
+
+    @Test("returns the body's value and propagates thrown errors")
+    func resultAndErrorPropagation() async {
+        let coordinator = MetadataIOCoordinator()
+
+        let value = await coordinator.withLock("k") { 42 }
+        #expect(value == 42)
+
+        struct Boom: Error {}
+        await #expect(throws: Boom.self) {
+            try await coordinator.withLock("k") { throw Boom() }
+        }
+    }
+
+    @Test("a failing operation does not break serialization for later ops on the same key")
+    func failureDoesNotPoisonChain() async {
+        let coordinator = MetadataIOCoordinator()
+        let probe = Probe()
+
+        struct Boom: Error {}
+        // This op throws; it must not leave the key's chain in a broken state.
+        try? await coordinator.withLock("same-photo") { throw Boom() }
+
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<50 {
+                group.addTask {
+                    await coordinator.withLock("same-photo") {
+                        let value = await probe.read()
+                        await Task.yield()
+                        await probe.write(value + 1)
+                    }
+                }
+            }
+        }
+
+        #expect(await probe.counter == 50)
+    }
+}

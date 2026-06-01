@@ -13,6 +13,7 @@
 		8ED36A042F8CF03000FB9A33 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 8ED36A032F8CF03000FB9A33 /* Sparkle */; };
 		B71AFE10A1B0E2510C12C200 /* ApprovedListServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A71AFE10A1B0E2510C12C100 /* ApprovedListServiceTests.swift */; };
 		E957DC81E4AA200C4CD87043 /* MetadataSidecarServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CB424FD4CEB2C23AEFF5DB0 /* MetadataSidecarServiceTests.swift */; };
+		D1C0023217A1B0E2510C12C2 /* MetadataIOCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -34,6 +35,7 @@
 		9B9D2A9AC78186B52BFC36D2 /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.0.sdk/System/Library/Frameworks/Cocoa.framework; sourceTree = DEVELOPER_DIR; };
 		9CB424FD4CEB2C23AEFF5DB0 /* MetadataSidecarServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataSidecarServiceTests.swift; sourceTree = "<group>"; };
 		A71AFE10A1B0E2510C12C100 /* ApprovedListServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ApprovedListServiceTests.swift; sourceTree = "<group>"; };
+		D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataIOCoordinatorTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -84,6 +86,7 @@
 				38D2DABC30701F41BE3F6B54 /* IPTCMetadataTests.swift */,
 				9CB424FD4CEB2C23AEFF5DB0 /* MetadataSidecarServiceTests.swift */,
 				A71AFE10A1B0E2510C12C100 /* ApprovedListServiceTests.swift */,
+				D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */,
 			);
 			path = "Aagedal Photo Agent Tests";
 			sourceTree = "<group>";
@@ -252,6 +255,7 @@
 				1C7A6B9BA3F2E2C3F90503C1 /* IPTCMetadataTests.swift in Sources */,
 				E957DC81E4AA200C4CD87043 /* MetadataSidecarServiceTests.swift in Sources */,
 				B71AFE10A1B0E2510C12C200 /* ApprovedListServiceTests.swift in Sources */,
+				D1C0023217A1B0E2510C12C2 /* MetadataIOCoordinatorTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -2,14 +2,14 @@ import Foundation
 import SwiftExif
 import os
 
-private let swiftExifLog = Logger(subsystem: "com.aagedal.photo-agent", category: "SwiftExifWriteEngine")
+nonisolated private let swiftExifLog = Logger(subsystem: "com.aagedal.photo-agent", category: "SwiftExifWriteEngine")
 
 /// XMP namespace URI for Adobe Camera Raw Settings.
-private let crsNamespace = "http://ns.adobe.com/camera-raw-settings/1.0/"
+nonisolated private let crsNamespace = "http://ns.adobe.com/camera-raw-settings/1.0/"
 
 /// Native, in-process metadata write engine. Reads and re-emits the image file
 /// via SwiftExif. There is no external process and no fallback path.
-final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Sendable {
+nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Sendable {
 
     init() {}
 
@@ -20,12 +20,13 @@ final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Sendable {
     ) async throws {
         guard !urls.isEmpty, !fields.isEmpty || !structuredData.isEmpty else { return }
 
-        let creationDates = captureCreationDates(for: urls)
-        defer { restoreCreationDates(creationDates) }
-
         for url in urls {
             try Task.checkCancellation()
-            try writeFieldsToFile(fields, structuredData: structuredData, url: url)
+            try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: url)) {
+                let creationDates = captureCreationDates(for: [url])
+                defer { restoreCreationDates(creationDates) }
+                try self.writeFieldsToFile(fields, structuredData: structuredData, url: url)
+            }
         }
     }
 
@@ -39,146 +40,163 @@ final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Sendable {
         let hasRemove = remove.values.contains { !$0.isEmpty }
         guard hasAdd || hasRemove else { return }
 
-        let creationDates = captureCreationDates(for: urls)
-        defer { restoreCreationDates(creationDates) }
-
         for url in urls {
             try Task.checkCancellation()
-            var metadata = try readMetadata(from: url)
+            try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: url)) {
+                let creationDates = captureCreationDates(for: [url])
+                defer { restoreCreationDates(creationDates) }
+                var metadata = try readMetadata(from: url)
 
-            for (key, valuesToRemove) in remove {
-                guard !valuesToRemove.isEmpty else { continue }
-                applyListRemove(key: key, values: valuesToRemove, metadata: &metadata)
+                for (key, valuesToRemove) in remove {
+                    guard !valuesToRemove.isEmpty else { continue }
+                    self.applyListRemove(key: key, values: valuesToRemove, metadata: &metadata)
+                }
+
+                for (key, valuesToAdd) in add {
+                    guard !valuesToAdd.isEmpty else { continue }
+                    self.applyListAdd(key: key, values: valuesToAdd, metadata: &metadata)
+                }
+
+                metadata.syncIPTCToXMP()
+                try metadata.write(to: url)
             }
-
-            for (key, valuesToAdd) in add {
-                guard !valuesToAdd.isEmpty else { continue }
-                applyListAdd(key: key, values: valuesToAdd, metadata: &metadata)
-            }
-
-            metadata.syncIPTCToXMP()
-            try metadata.write(to: url)
         }
     }
 
     func writeRating(_ rating: StarRating, to urls: [URL]) async throws {
         guard !urls.isEmpty else { return }
-        let creationDates = captureCreationDates(for: urls)
-        defer { restoreCreationDates(creationDates) }
 
         let value = rating == .none ? "" : String(rating.rawValue)
 
         for url in urls {
             try Task.checkCancellation()
-            var metadata = try readMetadata(from: url)
-            if value.isEmpty {
-                metadata.xmp?.removeValue(namespace: XMPNamespace.xmp, property: "Rating")
-            } else {
-                if metadata.xmp == nil { metadata.xmp = XMPData() }
-                metadata.xmp?.setValue(.simple(value), namespace: XMPNamespace.xmp, property: "Rating")
+            try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: url)) {
+                let creationDates = captureCreationDates(for: [url])
+                defer { restoreCreationDates(creationDates) }
+                var metadata = try readMetadata(from: url)
+                if value.isEmpty {
+                    metadata.xmp?.removeValue(namespace: XMPNamespace.xmp, property: "Rating")
+                } else {
+                    if metadata.xmp == nil { metadata.xmp = XMPData() }
+                    metadata.xmp?.setValue(.simple(value), namespace: XMPNamespace.xmp, property: "Rating")
+                }
+                try metadata.write(to: url)
             }
-            try metadata.write(to: url)
         }
     }
 
     func writeLabel(_ label: ColorLabel, to urls: [URL]) async throws {
         guard !urls.isEmpty else { return }
-        let creationDates = captureCreationDates(for: urls)
-        defer { restoreCreationDates(creationDates) }
 
         let value = label.xmpLabelValue ?? ""
 
         for url in urls {
             try Task.checkCancellation()
-            var metadata = try readMetadata(from: url)
-            if value.isEmpty {
-                metadata.xmp?.removeValue(namespace: XMPNamespace.xmp, property: "Label")
-            } else {
-                if metadata.xmp == nil { metadata.xmp = XMPData() }
-                metadata.xmp?.setValue(.simple(value), namespace: XMPNamespace.xmp, property: "Label")
+            try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: url)) {
+                let creationDates = captureCreationDates(for: [url])
+                defer { restoreCreationDates(creationDates) }
+                var metadata = try readMetadata(from: url)
+                if value.isEmpty {
+                    metadata.xmp?.removeValue(namespace: XMPNamespace.xmp, property: "Label")
+                } else {
+                    if metadata.xmp == nil { metadata.xmp = XMPData() }
+                    metadata.xmp?.setValue(.simple(value), namespace: XMPNamespace.xmp, property: "Label")
+                }
+                try metadata.write(to: url)
             }
-            try metadata.write(to: url)
         }
     }
 
     func writeOrientation(_ orientation: Int, to urls: [URL]) async throws {
         guard !urls.isEmpty else { return }
-        let creationDates = captureCreationDates(for: urls)
-        defer { restoreCreationDates(creationDates) }
 
         for url in urls {
             try Task.checkCancellation()
-            var metadata = try readMetadata(from: url)
-            metadata.setOrientation(UInt16(clamping: orientation))
-            try metadata.write(to: url)
+            try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: url)) {
+                let creationDates = captureCreationDates(for: [url])
+                defer { restoreCreationDates(creationDates) }
+                var metadata = try readMetadata(from: url)
+                metadata.setOrientation(UInt16(clamping: orientation))
+                try metadata.write(to: url)
+            }
         }
     }
 
     func stripIPTCAndXMP(from urls: [URL]) async throws {
         guard !urls.isEmpty else { return }
-        let creationDates = captureCreationDates(for: urls)
-        defer { restoreCreationDates(creationDates) }
 
         for url in urls {
             try Task.checkCancellation()
-            var metadata = try readMetadata(from: url)
-            metadata.iptc = IPTCData()
-            metadata.xmp = nil
-            try metadata.write(to: url)
+            try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: url)) {
+                let creationDates = captureCreationDates(for: [url])
+                defer { restoreCreationDates(creationDates) }
+                var metadata = try readMetadata(from: url)
+                metadata.iptc = IPTCData()
+                metadata.xmp = nil
+                try metadata.write(to: url)
+            }
         }
     }
 
     func copyMetadataToRenderedFile(from source: URL, to destination: URL) async throws {
-        let creationDates = captureCreationDates(for: [destination])
-        defer { restoreCreationDates(creationDates) }
-
+        // Read the source under its own lock so it can't be read mid-write while the user
+        // edits the original. Locks are released between the two phases (source and destination
+        // are distinct files / keys), which avoids any same-key re-entrancy.
         let sourceMetadata: ImageMetadata
         do {
-            sourceMetadata = try readMetadata(from: source)
+            sourceMetadata = try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: source)) {
+                try readMetadata(from: source)
+            }
         } catch {
             swiftExifLog.error(
                 "copyMetadataToRenderedFile: read source failed for \(source.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)"
             )
             throw error
         }
-        var destMetadata: ImageMetadata
-        do {
-            destMetadata = try readMetadata(from: destination)
-        } catch {
-            swiftExifLog.error(
-                "copyMetadataToRenderedFile: read destination failed for \(destination.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)"
-            )
-            throw error
-        }
 
-        // Copy IPTC + XMP wholesale, then strip Camera Raw and supersize-to-Standard
-        // tags that would mislead viewers about the rendered output.
-        destMetadata.iptc = sourceMetadata.iptc
-        destMetadata.xmp = sourceMetadata.xmp
+        try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: destination)) {
+            let creationDates = captureCreationDates(for: [destination])
+            defer { restoreCreationDates(creationDates) }
 
-        // Drop every Adobe Camera Raw property the source may have carried.
-        // The rendered file is the baked-in result, so leaving these around
-        // would let editors apply the adjustments a second time.
-        for property in cameraRawPropertyNames {
-            destMetadata.xmp?.removeValue(namespace: crsNamespace, property: property)
-        }
+            var destMetadata: ImageMetadata
+            do {
+                destMetadata = try readMetadata(from: destination)
+            } catch {
+                swiftExifLog.error(
+                    "copyMetadataToRenderedFile: read destination failed for \(destination.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
+                throw error
+            }
 
-        // Drop the IFD1 thumbnail and ICC profile from the source — the renderer
-        // is expected to set its own profile and produce a fresh thumbnail when
-        // emitting the new file.
-        destMetadata.exif?.ifd1 = nil
-        destMetadata.stripICCProfile()
+            // Copy IPTC + XMP wholesale, then strip Camera Raw and supersize-to-Standard
+            // tags that would mislead viewers about the rendered output.
+            destMetadata.iptc = sourceMetadata.iptc
+            destMetadata.xmp = sourceMetadata.xmp
 
-        // Force orientation to 1 — rendered pixels are already upright.
-        destMetadata.setOrientation(1)
+            // Drop every Adobe Camera Raw property the source may have carried.
+            // The rendered file is the baked-in result, so leaving these around
+            // would let editors apply the adjustments a second time.
+            for property in cameraRawPropertyNames {
+                destMetadata.xmp?.removeValue(namespace: crsNamespace, property: property)
+            }
 
-        do {
-            try destMetadata.write(to: destination)
-        } catch {
-            swiftExifLog.error(
-                "copyMetadataToRenderedFile: write failed for \(destination.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)"
-            )
-            throw error
+            // Drop the IFD1 thumbnail and ICC profile from the source — the renderer
+            // is expected to set its own profile and produce a fresh thumbnail when
+            // emitting the new file.
+            destMetadata.exif?.ifd1 = nil
+            destMetadata.stripICCProfile()
+
+            // Force orientation to 1 — rendered pixels are already upright.
+            destMetadata.setOrientation(1)
+
+            do {
+                try destMetadata.write(to: destination)
+            } catch {
+                swiftExifLog.error(
+                    "copyMetadataToRenderedFile: write failed for \(destination.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
+                throw error
+            }
         }
     }
 
@@ -589,7 +607,7 @@ final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Sendable {
 }
 
 /// XMP-crs property names that get stripped when copying metadata onto a rendered file.
-private let cameraRawPropertyNames: [String] = [
+nonisolated private let cameraRawPropertyNames: [String] = [
     "Version", "ProcessVersion", "WhiteBalance",
     "Temperature", "Tint", "IncrementalTemperature", "IncrementalTint",
     "Exposure2012", "Contrast2012", "Highlights2012", "Shadows2012",

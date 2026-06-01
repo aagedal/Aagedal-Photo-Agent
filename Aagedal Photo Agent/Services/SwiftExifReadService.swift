@@ -53,7 +53,7 @@ final class SwiftExifReadService {
             for url in urls {
                 group.addTask { [weak self] in
                     guard let self else { return (url, nil) }
-                    let dict = self.readDict(for: url)
+                    let dict = await self.lockedReadDict(for: url)?.value
                     return (url, dict.map(iptcMetadataFromDict))
                 }
             }
@@ -69,7 +69,7 @@ final class SwiftExifReadService {
     /// Read full IPTC + XMP + EXIF metadata for a single file.
     func readFullMetadata(url: URL) async throws -> IPTCMetadata {
         swiftExifReadLog.debug("readFullMetadata: \(url.lastPathComponent, privacy: .public)")
-        guard let dict = readDict(for: url) else { return IPTCMetadata() }
+        guard let dict = await lockedReadDict(for: url)?.value else { return IPTCMetadata() }
         return iptcMetadataFromDict(dict)
     }
 
@@ -81,7 +81,7 @@ final class SwiftExifReadService {
         swiftExifReadPerf.info(
             "[Single] readFullMetadataWithConflictCheck START — \(url.lastPathComponent, privacy: .public)"
         )
-        guard let dict = readDict(for: url) else {
+        guard let dict = await lockedReadDict(for: url)?.value else {
             return (IPTCMetadata(), nil)
         }
         let singleMs = singleStart.elapsedMilliseconds()
@@ -94,14 +94,14 @@ final class SwiftExifReadService {
     /// Read all metadata for a single file as a pretty-printed JSON string.
     /// The format is presentational only; callers display this verbatim.
     func readRawJSON(url: URL) async throws -> String {
-        let metadata = try ImageMetadata.read(from: url)
+        let metadata = try await lockedReadMetadata(for: url)
         let pretty = MetadataExporter.toJSONString(metadata)
         return pretty
     }
 
     /// Read camera / lens / dimension / ICC / C2PA-presence fields for the technical inspector.
     func readTechnicalMetadata(url: URL) async throws -> TechnicalMetadata {
-        guard let dict = readDict(for: url) else {
+        guard let dict = await lockedReadDict(for: url)?.value else {
             return TechnicalMetadata(from: [:], fileURL: url)
         }
         return TechnicalMetadata(from: dict, fileURL: url)
@@ -109,14 +109,14 @@ final class SwiftExifReadService {
 
     /// Read detailed C2PA manifest data.
     func readC2PAMetadata(url: URL) async throws -> C2PAMetadata {
-        let metadata = try ImageMetadata.read(from: url)
+        let metadata = try await lockedReadMetadata(for: url)
         guard let c2pa = metadata.c2pa else { return C2PAMetadata(manifests: []) }
         return C2PAMetadata(from: c2pa)
     }
 
     /// Read embedded C2PA assertion thumbnails (claim + ingredient).
     func readC2PAThumbnails(url: URL) async throws -> C2PAThumbnails {
-        let metadata = try ImageMetadata.read(from: url)
+        let metadata = try await lockedReadMetadata(for: url)
         guard let c2pa = metadata.c2pa else {
             return C2PAThumbnails(claimThumbnail: nil, ingredientThumbnail: nil)
         }
@@ -124,6 +124,22 @@ final class SwiftExifReadService {
     }
 
     // MARK: - Internal
+
+    /// `readDict`, but serialized against writes to the same photo via `MetadataIOCoordinator`,
+    /// so a read never observes a half-written file. Returns a `DictBox` because `[String: Any]`
+    /// isn't `Sendable` and must cross the coordinator's task boundary.
+    nonisolated private func lockedReadDict(for url: URL) async -> DictBox? {
+        await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: url)) {
+            self.readDict(for: url).map(DictBox.init)
+        }
+    }
+
+    /// `ImageMetadata.read`, serialized against writes to the same photo.
+    nonisolated private func lockedReadMetadata(for url: URL) async throws -> ImageMetadata {
+        try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: url)) {
+            try ImageMetadata.read(from: url)
+        }
+    }
 
     /// Read one file and return the canonical tag-name dict, or nil on parse error.
     /// `nonisolated` so background tasks can call it without bouncing onto the main actor.
@@ -157,7 +173,7 @@ final class SwiftExifReadService {
                 group.addTask { [weak self] in
                     guard let self else { return nil }
                     if Task.isCancelled { return nil }
-                    return self.readDict(for: url).map(DictBox.init)
+                    return await self.lockedReadDict(for: url)
                 }
             }
             for await result in group {
