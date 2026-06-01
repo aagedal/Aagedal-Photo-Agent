@@ -185,6 +185,35 @@ struct TechnicalMetadata {
         c2paEdited = (dict[ExifKey.relationship] as? String) == "parentOf"
     }
 
+    /// Whether any camera/exposure field was populated. Used to decide whether the
+    /// ImageIO fast path found EXIF, or a fallback reader is needed (Apple's ImageIO
+    /// doesn't expose EXIF for some containers, e.g. JPEG XL and AVIF).
+    var hasCameraInfo: Bool {
+        camera != nil || lens != nil || iso != nil || captureDate != nil
+            || focalLength != nil || aperture != nil || shutterSpeed != nil
+    }
+
+    /// Returns a copy with camera/exposure fields taken from `other`, while keeping our own
+    /// dimensions, bit depth, color space, and C2PA flags. The ImageIO fast path reads those
+    /// reliably for every format (including ones it can't read EXIF from), so when we enrich
+    /// with a fallback EXIF reader we only want its camera fields.
+    func mergingCameraFields(from other: TechnicalMetadata) -> TechnicalMetadata {
+        var copy = self
+        copy.camera = other.camera
+        copy.lens = other.lens
+        copy.captureDate = other.captureDate
+        copy.focalLength = other.focalLength
+        copy.aperture = other.aperture
+        copy.shutterSpeed = other.shutterSpeed
+        copy.iso = other.iso
+        copy.serialNumber = other.serialNumber
+        copy.software = other.software
+        copy.lensID = other.lensID
+        copy.whiteBalance = other.whiteBalance
+        if copy.modifiedDate == nil { copy.modifiedDate = other.modifiedDate }
+        return copy
+    }
+
     // MARK: - ImageIO fast path
 
     /// Read technical metadata directly from the image file using CGImageSource.

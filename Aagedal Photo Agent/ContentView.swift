@@ -1459,9 +1459,36 @@ struct ContentView: View {
             return
         }
 
-        let result = TechnicalMetadata.fromImageIO(url: image.url, hasC2PA: image.hasC2PA)
-        technicalMetadataCache[image.url] = result
-        technicalMetadata = result
+        // Fast path: ImageIO. Reads dimensions / bit depth / color profile correctly for all
+        // formats, but Apple's ImageIO does not surface EXIF for some containers (notably
+        // JPEG XL and AVIF), so camera/exposure fields come back empty for those.
+        let fast = TechnicalMetadata.fromImageIO(url: image.url, hasC2PA: image.hasC2PA)
+        technicalMetadata = fast
+
+        guard !fast.hasCameraInfo else {
+            // ImageIO already gave us camera data — done, cache it.
+            technicalMetadataCache[image.url] = fast
+            return
+        }
+
+        // Fall back to the SwiftExif reader, which parses EXIF from formats ImageIO can't
+        // (e.g. JPEG XL). Keep the fast path's reliable dimensions/bit depth/color space and
+        // overlay only the camera/exposure fields. Cache only the final (enriched) result.
+        let url = image.url
+        let readService = browserViewModel.metadataReadService
+        technicalMetadataTask = Task {
+            guard let exifMeta = try? await readService.readTechnicalMetadata(url: url),
+                  !Task.isCancelled else {
+                technicalMetadataCache[url] = fast
+                return
+            }
+            let merged = exifMeta.hasCameraInfo ? fast.mergingCameraFields(from: exifMeta) : fast
+            technicalMetadataCache[url] = merged
+            // Only apply if this is still the selected image.
+            if browserViewModel.selectedImages.first?.url == url {
+                technicalMetadata = merged
+            }
+        }
     }
 
     private func loadScopeImage(for url: URL?, isNativeHDR: Bool = false) {
