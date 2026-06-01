@@ -106,6 +106,7 @@ enum C2PASigningError: Error, LocalizedError {
     case processFailed(String)
     case outputMissing
     case manifestSerializationFailed
+    case keyFileCreationFailed(Int32)
 
     var errorDescription: String? {
         switch self {
@@ -121,6 +122,8 @@ enum C2PASigningError: Error, LocalizedError {
             return "c2patool produced no output file"
         case .manifestSerializationFailed:
             return "Failed to serialize C2PA manifest JSON"
+        case .keyFileCreationFailed(let code):
+            return "Failed to create temporary key file (errno \(code))"
         }
     }
 }
@@ -166,11 +169,7 @@ nonisolated enum C2PASigningService {
             try? FileManager.default.removeItem(at: outputFile)
         }
 
-        try Data(privateKeyPEM.utf8).write(to: keyFile)
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o600],
-            ofItemAtPath: keyFile.path(percentEncoded: false)
-        )
+        try Self.writeKeyAtomically(Data(privateKeyPEM.utf8), to: keyFile)
 
         // Build manifest JSON (signing credentials go inside the manifest)
         let claimGenerator = "Aagedal Photo Agent/\(appVersion)"
@@ -294,11 +293,7 @@ nonisolated enum C2PASigningService {
         }
 
         // Step 2: Write private key and build manifest
-        try Data(privateKeyPEM.utf8).write(to: keyFile)
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o600],
-            ofItemAtPath: keyFile.path(percentEncoded: false)
-        )
+        try Self.writeKeyAtomically(Data(privateKeyPEM.utf8), to: keyFile)
 
         let claimGenerator = "Aagedal Photo Agent/\(appVersion)"
         let effectiveActions = actions.map { a in
@@ -418,11 +413,7 @@ nonisolated enum C2PASigningService {
         }
 
         // Step 2: Write private key and build manifest
-        try Data(privateKeyPEM.utf8).write(to: keyFile)
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o600],
-            ofItemAtPath: keyFile.path(percentEncoded: false)
-        )
+        try Self.writeKeyAtomically(Data(privateKeyPEM.utf8), to: keyFile)
 
         let claimGenerator = "Aagedal Photo Agent/\(appVersion)"
         let effectiveActions = actions.map { a in
@@ -569,5 +560,24 @@ nonisolated enum C2PASigningService {
         }
 
         return try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
+    }
+
+    /// Write the private key PEM with mode 0o600 in a single open(2) call so the file
+    /// never exists with default umask permissions (closes the chmod TOCTOU against
+    /// other processes running as the same user). Mirrors FTPService.writeNetrcAtomically.
+    nonisolated private static func writeKeyAtomically(_ data: Data, to url: URL) throws {
+        let fd = open(url.path(percentEncoded: false), O_WRONLY | O_CREAT | O_EXCL, mode_t(0o600))
+        guard fd >= 0 else {
+            throw C2PASigningError.keyFileCreationFailed(errno)
+        }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        do {
+            try handle.write(contentsOf: data)
+            try handle.close()
+        } catch {
+            try? handle.close()
+            try? FileManager.default.removeItem(at: url)
+            throw error
+        }
     }
 }
