@@ -89,9 +89,10 @@ nonisolated enum EditedImageRenderer {
     private static func renderSDRFormat(_ ciImage: CIImage, sourceURL: URL, outputFolder: URL) async throws -> URL {
         let format = ExportFormatSDR(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportFormatSDR) ?? "") ?? .jpeg
         let quality = UserDefaults.standard.object(forKey: UserDefaultsKeys.exportQualitySDR) as? Double ?? 0.92
+        let gamut = TargetColorGamut(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportColorGamutSDR) ?? "") ?? .sRGB
 
         let destURL = outputURL(for: sourceURL, in: outputFolder, extension: format.fileExtension)
-        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        let colorSpace = gamut.sdrColorSpace
         let ctx = CameraRawApproximation.ciContext
 
         switch format {
@@ -126,10 +127,10 @@ nonisolated enum EditedImageRenderer {
             try data.write(to: destURL, options: .atomic)
 
         case .avif:
-            try await encodeViaFFmpeg(ciImage, to: destURL, quality: quality, isHDR: false, encoder: .avif)
+            try await encodeViaFFmpeg(ciImage, to: destURL, quality: quality, isHDR: false, encoder: .avif, gamut: gamut)
 
         case .jxl:
-            try await encodeViaFFmpeg(ciImage, to: destURL, quality: quality, isHDR: false, encoder: .jxl)
+            try await encodeViaFFmpeg(ciImage, to: destURL, quality: quality, isHDR: false, encoder: .jxl, gamut: gamut)
         }
 
         return destURL
@@ -192,9 +193,10 @@ nonisolated enum EditedImageRenderer {
     private static func renderHDRFormat(_ ciImage: CIImage, sourceURL: URL, outputFolder: URL) async throws -> URL {
         let format = ExportFormatHDR(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportFormatHDR) ?? "") ?? .jxl
         let quality = UserDefaults.standard.object(forKey: UserDefaultsKeys.exportQualityHDR) as? Double ?? 0.92
+        let gamut = TargetColorGamut(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportColorGamutHDR) ?? "") ?? .displayP3
 
         let destURL = outputURL(for: sourceURL, in: outputFolder, extension: format.fileExtension)
-        let hdrColorSpace = CGColorSpace(name: CGColorSpace.displayP3_HLG) ?? CGColorSpace(name: CGColorSpace.displayP3)!
+        let hdrColorSpace = gamut.hdrHLGColorSpace
         let ctx = CameraRawApproximation.ciContext
 
         switch format {
@@ -205,14 +207,14 @@ nonisolated enum EditedImageRenderer {
             try data.write(to: destURL, options: .atomic)
 
         case .avif10bit:
-            try await encodeViaFFmpeg(ciImage, to: destURL, quality: quality, isHDR: true, encoder: .avif)
+            try await encodeViaFFmpeg(ciImage, to: destURL, quality: quality, isHDR: true, encoder: .avif, gamut: gamut)
 
         case .jxl:
-            try await encodeViaFFmpeg(ciImage, to: destURL, quality: quality, isHDR: true, encoder: .jxl)
+            try await encodeViaFFmpeg(ciImage, to: destURL, quality: quality, isHDR: true, encoder: .jxl, gamut: gamut)
 
         case .tiff16bit:
             // Half-float linear preserves HDR values >1.0 without needing OETF application
-            let linearP3 = CGColorSpace(name: CGColorSpace.extendedLinearDisplayP3) ?? CGColorSpace(name: CGColorSpace.displayP3)!
+            let linearP3 = gamut.hdrLinearColorSpace
             guard let cgImage = ctx.createCGImage(ciImage, from: ciImage.extent, format: .RGBAh, colorSpace: linearP3) else {
                 throw RenderError.encodeFailed
             }
@@ -239,7 +241,7 @@ nonisolated enum EditedImageRenderer {
     /// Encode via FFmpeg: render to a temporary intermediate, then transcode to the target format.
     /// HDR uses a HEIC intermediate (heif10Representation correctly applies HLG OETF).
     /// SDR uses a TIFF intermediate.
-    private static func encodeViaFFmpeg(_ ciImage: CIImage, to destURL: URL, quality: Double, isHDR: Bool, encoder: FFmpegEncoder) async throws {
+    private static func encodeViaFFmpeg(_ ciImage: CIImage, to destURL: URL, quality: Double, isHDR: Bool, encoder: FFmpegEncoder, gamut: TargetColorGamut) async throws {
         let ctx = CameraRawApproximation.ciContext
         let tempDir = FileManager.default.temporaryDirectory
 
@@ -247,7 +249,7 @@ nonisolated enum EditedImageRenderer {
             let tempPNG = tempDir.appendingPathComponent(UUID().uuidString).appendingPathExtension("png")
             defer { try? FileManager.default.removeItem(at: tempPNG) }
 
-            let hdrColorSpace = CGColorSpace(name: CGColorSpace.displayP3_HLG) ?? CGColorSpace(name: CGColorSpace.displayP3)!
+            let hdrColorSpace = gamut.hdrHLGColorSpace
             guard let pngData = ctx.pngRepresentation(of: ciImage, format: .RGBA16, colorSpace: hdrColorSpace, options: [:]) else {
                 throw RenderError.encodeFailed
             }
@@ -263,7 +265,7 @@ nonisolated enum EditedImageRenderer {
             let tempTIFF = tempDir.appendingPathComponent(UUID().uuidString).appendingPathExtension("tiff")
             defer { try? FileManager.default.removeItem(at: tempTIFF) }
 
-            let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+            let colorSpace = gamut.sdrColorSpace
             guard let cgImage = ctx.createCGImage(ciImage, from: ciImage.extent, format: .RGBA8, colorSpace: colorSpace) else {
                 throw RenderError.encodeFailed
             }
@@ -356,7 +358,8 @@ nonisolated enum EditedImageRenderer {
 
     static func renderJPEG(from sourceURL: URL, cameraRaw: CameraRawSettings?, outputFolder: URL, metadataCopier: MetadataCopier? = nil) async throws {
         let output = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw)
-        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        let gamut = TargetColorGamut(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportColorGamutSDR) ?? "") ?? .sRGB
+        let colorSpace = gamut.sdrColorSpace
         let quality = UserDefaults.standard.object(forKey: UserDefaultsKeys.exportQualitySDR) as? Double ?? 0.92
         let destinationURL = outputURL(for: sourceURL, in: outputFolder, extension: "jpg")
         try writeJPEGWithSourceProperties(
@@ -401,7 +404,8 @@ nonisolated enum EditedImageRenderer {
     @discardableResult
     static func saveAs(from sourceURL: URL, cameraRaw: CameraRawSettings?, format: SaveAsFormat, metadataCopier: MetadataCopier? = nil) async throws -> URL {
         let output = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw)
-        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        let gamut = TargetColorGamut(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportColorGamutSDR) ?? "") ?? .sRGB
+        let colorSpace = gamut.sdrColorSpace
         let ctx = CameraRawApproximation.ciContext
 
         let parentFolder = sourceURL.deletingLastPathComponent()

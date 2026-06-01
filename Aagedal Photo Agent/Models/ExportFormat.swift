@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 
 /// Default output format for SDR images
 nonisolated enum ExportFormatSDR: String, CaseIterable, Identifiable {
@@ -135,6 +136,41 @@ nonisolated enum TargetColorGamut: String, CaseIterable, Identifiable, Sendable 
         case .rec2020: return 2
         case .adobeRGB: return 3
         }
+    }
+
+    /// Color space for integer SDR output (JPEG/PNG/TIFF/HEIC). The embedded ICC profile
+    /// lets viewers map the wider gamut instead of clipping to sRGB.
+    var sdrColorSpace: CGColorSpace {
+        let name: CFString = switch self {
+        case .sRGB: CGColorSpace.sRGB
+        case .displayP3: CGColorSpace.displayP3
+        case .rec2020: CGColorSpace.itur_2020
+        case .adobeRGB: CGColorSpace.adobeRGB1998
+        }
+        return CGColorSpace(name: name) ?? CGColorSpaceCreateDeviceRGB()
+    }
+
+    /// HLG-encoded HDR color space (HEIC 10-bit, PNG 16-bit, FFmpeg HDR intermediate).
+    /// HDR requires a transfer function, so gamuts without an HLG variant fall back to
+    /// Display P3 HLG (the prior hardcoded default).
+    var hdrHLGColorSpace: CGColorSpace {
+        let name: CFString = switch self {
+        case .rec2020: CGColorSpace.itur_2100_HLG
+        case .displayP3, .sRGB, .adobeRGB: CGColorSpace.displayP3_HLG
+        }
+        return CGColorSpace(name: name) ?? CGColorSpace(name: CGColorSpace.displayP3)!
+    }
+
+    /// Extended-linear (half-float) HDR color space for the TIFF 16-bit path, which stores
+    /// values >1.0 without applying an OETF. Adobe RGB has no extended-linear variant, so it
+    /// falls back to extended-linear Display P3.
+    var hdrLinearColorSpace: CGColorSpace {
+        let name: CFString = switch self {
+        case .sRGB: CGColorSpace.extendedLinearSRGB
+        case .displayP3, .adobeRGB: CGColorSpace.extendedLinearDisplayP3
+        case .rec2020: CGColorSpace.extendedLinearITUR_2020
+        }
+        return CGColorSpace(name: name) ?? CGColorSpace(name: CGColorSpace.displayP3)!
     }
 }
 
