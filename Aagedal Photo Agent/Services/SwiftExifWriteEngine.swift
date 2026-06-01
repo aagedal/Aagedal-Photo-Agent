@@ -168,8 +168,13 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
                 throw error
             }
 
-            // Copy IPTC + XMP wholesale, then strip Camera Raw and supersize-to-Standard
-            // tags that would mislead viewers about the rendered output.
+            // Copy EXIF (technical camera fields + GPS), IPTC, and XMP wholesale, then
+            // strip Camera Raw and supersize-to-Standard tags that would mislead viewers
+            // about the rendered output. EXIF must be copied here so non-JPEG outputs
+            // (JXL/HEIC/AVIF/PNG/TIFF) carry camera metadata — only the JPEG renderer path
+            // (writeJPEGWithSourceProperties) bakes EXIF in on its own. The source EXIF is
+            // post-processed below: its thumbnail IFD is dropped and orientation normalized.
+            destMetadata.exif = sourceMetadata.exif
             destMetadata.iptc = sourceMetadata.iptc
             destMetadata.xmp = sourceMetadata.xmp
 
