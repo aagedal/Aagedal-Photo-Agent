@@ -1,0 +1,184 @@
+import Foundation
+import os
+
+private let prefsSyncLog = Logger(subsystem: "com.aagedal.photo-agent", category: "PreferencesSyncService")
+
+/// Mirrors a curated set of portable app preferences between `UserDefaults` and
+/// `NSUbiquitousKeyValueStore` so they follow the user across Macs.
+///
+/// Only device-independent preferences are synced. Machine-specific values
+/// (file paths, security-scoped bookmarks, certificate locations, FTP details)
+/// are deliberately excluded — see `syncedKeys`.
+@MainActor
+final class PreferencesSyncService {
+    static let shared = PreferencesSyncService()
+
+    private let kvs = NSUbiquitousKeyValueStore.default
+    private var observersInstalled = false
+    /// Guards against the local→cloud mirror echoing a change we just pulled
+    /// from the cloud (which would otherwise re-write identical values).
+    private var isApplyingRemote = false
+    private var pushWorkItem: DispatchWorkItem?
+
+    /// Portable preference keys. Anything tied to a specific machine (paths,
+    /// bookmarks, certificates, FTP, window geometry) is intentionally absent.
+    static let syncedKeys: [String] = [
+        // Browser / preview
+        UserDefaultsKeys.rawRenderAsHDR,
+        UserDefaultsKeys.showAllFiles,
+        UserDefaultsKeys.showOriginalThumbnails,
+        UserDefaultsKeys.defaultEditDestination,
+        UserDefaultsKeys.thumbnailSortOrder,
+        UserDefaultsKeys.thumbnailSortReversed,
+        UserDefaultsKeys.previewMode,
+        // Metadata behavior
+        UserDefaultsKeys.metadataWriteModeNonC2PA,
+        UserDefaultsKeys.metadataWriteModeC2PA,
+        UserDefaultsKeys.metadataPreferXMPSidecar,
+        UserDefaultsKeys.metadataAskOnMultipleSources,
+        UserDefaultsKeys.pmXmpCompatibilityMode,
+        UserDefaultsKeys.pmNonRawXmpBehavior,
+        UserDefaultsKeys.multiSelectKeywordsMode,
+        UserDefaultsKeys.multiSelectPersonShownMode,
+        UserDefaultsKeys.addJobIdToKeywords,
+        // Face recognition
+        UserDefaultsKeys.faceCleanupPolicy,
+        UserDefaultsKeys.visionClusteringThreshold,
+        UserDefaultsKeys.faceClothingClusteringThreshold,
+        UserDefaultsKeys.faceMinConfidence,
+        UserDefaultsKeys.faceMinFaceSize,
+        UserDefaultsKeys.faceRecognitionMode,
+        UserDefaultsKeys.faceFaceWeight,
+        UserDefaultsKeys.faceClusteringAlgorithm,
+        UserDefaultsKeys.faceQualityGateThreshold,
+        UserDefaultsKeys.faceUseQualityWeightedEdges,
+        UserDefaultsKeys.faceClothingSecondPassAttachToExisting,
+        UserDefaultsKeys.knownPeopleMode,
+        UserDefaultsKeys.knownPeopleMinConfidence,
+        // Format & compression
+        UserDefaultsKeys.exportFormatSDR,
+        UserDefaultsKeys.exportFormatHDR,
+        UserDefaultsKeys.exportQualitySDR,
+        UserDefaultsKeys.exportQualityHDR,
+        UserDefaultsKeys.exportTIFFCompression,
+        UserDefaultsKeys.exportColorGamutSDR,
+        UserDefaultsKeys.exportColorGamutHDR,
+        // Import behavior (portable modes only, not backup folders)
+        UserDefaultsKeys.importVerificationMode,
+        UserDefaultsKeys.importBackupVerifyAfterWrite,
+        UserDefaultsKeys.importGroupByYear,
+        // Signing author name (portable; the certificate itself is not synced)
+        UserDefaultsKeys.c2paDefaultAuthor,
+    ]
+
+    var isEnabled: Bool {
+        UserDefaults.standard.bool(forKey: UserDefaultsKeys.preferencesICloudEnabled)
+    }
+
+    /// Posted after remote preference values are written into `UserDefaults` so
+    /// open views can re-read them if they choose to observe.
+    static let didChangeRemotely = Notification.Name("PreferencesSyncService.didChangeRemotely")
+
+    /// Call once at launch. Installs observers and pulls any newer cloud values
+    /// when sync is already enabled.
+    func start() {
+        guard isEnabled else { return }
+        installObservers()
+        kvs.synchronize()
+        applyRemoteToLocal(keys: Self.syncedKeys)
+    }
+
+    /// Turns preference sync on or off. On enable, seeds the cloud store with the
+    /// current local values so other devices converge on this Mac's settings.
+    @discardableResult
+    func setEnabled(_ enabled: Bool) -> Bool {
+        UserDefaults.standard.set(enabled, forKey: UserDefaultsKeys.preferencesICloudEnabled)
+        if enabled {
+            installObservers()
+            pushLocalToRemote(keys: Self.syncedKeys)
+            kvs.synchronize()
+        } else {
+            removeObservers()
+        }
+        return true
+    }
+
+    // MARK: - Observers
+
+    private func installObservers() {
+        guard !observersInstalled else { return }
+        observersInstalled = true
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(remoteStoreChanged(_:)),
+            name: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
+            object: kvs
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(localDefaultsChanged),
+            name: UserDefaults.didChangeNotification,
+            object: nil
+        )
+    }
+
+    private func removeObservers() {
+        guard observersInstalled else { return }
+        observersInstalled = false
+        NotificationCenter.default.removeObserver(
+            self,
+            name: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
+            object: kvs
+        )
+        NotificationCenter.default.removeObserver(
+            self,
+            name: UserDefaults.didChangeNotification,
+            object: nil
+        )
+    }
+
+    @objc private func remoteStoreChanged(_ note: Notification) {
+        let changed = note.userInfo?[NSUbiquitousKeyValueStoreChangedKeysKey] as? [String]
+        let keys = changed.map { $0.filter(Set(Self.syncedKeys).contains) } ?? Self.syncedKeys
+        guard !keys.isEmpty else { return }
+        applyRemoteToLocal(keys: keys)
+    }
+
+    @objc private func localDefaultsChanged() {
+        guard isEnabled, !isApplyingRemote else { return }
+        // Coalesce bursts of `didSet` writes into a single cloud push.
+        pushWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pushLocalToRemote(keys: Self.syncedKeys)
+            self.kvs.synchronize()
+        }
+        pushWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+    }
+
+    // MARK: - Mirroring
+
+    private func pushLocalToRemote(keys: [String]) {
+        let defaults = UserDefaults.standard
+        for key in keys {
+            if let value = defaults.object(forKey: key) {
+                kvs.set(value, forKey: key)
+            } else {
+                kvs.removeObject(forKey: key)
+            }
+        }
+    }
+
+    private func applyRemoteToLocal(keys: [String]) {
+        let defaults = UserDefaults.standard
+        isApplyingRemote = true
+        defer { isApplyingRemote = false }
+        for key in keys {
+            if let value = kvs.object(forKey: key) {
+                defaults.set(value, forKey: key)
+            }
+        }
+        NotificationCenter.default.post(name: Self.didChangeRemotely, object: nil)
+    }
+}

@@ -4,6 +4,30 @@ import os
 nonisolated private let logger = Logger(subsystem: "com.aagedal.photo-agent", category: "AppPaths")
 
 nonisolated enum AppPaths {
+    /// iCloud ubiquity container identifier. Must match the entitlements file and
+    /// `KeywordListsStore.iCloudContainerID`.
+    static let iCloudContainerID = "iCloud.aagedal.Aagedal-Photo-Agent"
+
+    /// `Documents` directory inside the ubiquity container, or nil when iCloud
+    /// Drive is unavailable (no account, not signed in, entitlement missing).
+    /// Apple notes the first call can block briefly, so avoid calling on a hot path.
+    static var iCloudDocuments: URL? {
+        guard let container = FileManager.default.url(forUbiquityContainerIdentifier: iCloudContainerID) else {
+            return nil
+        }
+        return container.appendingPathComponent("Documents", isDirectory: true)
+    }
+
+    /// Templates folder inside the ubiquity container.
+    static var iCloudTemplatesURL: URL? {
+        iCloudDocuments?.appendingPathComponent("Templates", isDirectory: true)
+    }
+
+    /// Known People folder inside the ubiquity container.
+    static var iCloudKnownPeopleURL: URL? {
+        iCloudDocuments?.appendingPathComponent("KnownPeople", isDirectory: true)
+    }
+
     static var applicationSupport: URL {
         guard let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
             logger.error("Application Support directory not found, falling back to home directory")
@@ -27,6 +51,13 @@ nonisolated enum AppPaths {
     /// The returned `release` closure MUST be invoked once the caller is done with the URL,
     /// so security-scoped access is balanced.
     static func templatesDirectory() -> (url: URL, release: () -> Void) {
+        // iCloud sync, when enabled and reachable, takes precedence over any
+        // user-chosen folder so templates land in the synced container.
+        if UserDefaults.standard.bool(forKey: UserDefaultsKeys.templatesICloudEnabled),
+           let cloud = iCloudTemplatesURL {
+            try? FileManager.default.createDirectory(at: cloud, withIntermediateDirectories: true)
+            return (cloud, {})
+        }
         if let data = UserDefaults.standard.data(forKey: UserDefaultsKeys.templatesFolderBookmark) {
             var stale = false
             if let url = try? URL(

@@ -36,65 +36,122 @@ struct SettingsView: View {
         var id: String { url.path }
     }
 
-    // iCloud sync state
-    @State private var iCloudSyncMessage: String?
+    // MARK: - Sidebar Sections
+
+    enum SettingsSection: String, CaseIterable, Identifiable {
+        case general
+        case metadata
+        case keywordLists
+        case faceRecognition
+        case knownPeople
+        case format
+        case templates
+        case ftp
+        case signing
+        case sync
+        case updates
+        case shortcuts
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .general: return "General"
+            case .metadata: return "Metadata"
+            case .keywordLists: return "Keyword Lists"
+            case .faceRecognition: return "Face Recognition"
+            case .knownPeople: return "Known People"
+            case .format: return "Format"
+            case .templates: return "Templates"
+            case .ftp: return "FTP"
+            case .signing: return "Signing"
+            case .sync: return "iCloud Sync"
+            case .updates: return "Updates"
+            case .shortcuts: return "Shortcuts"
+            }
+        }
+
+        var icon: String {
+            switch self {
+            case .general: return "gear"
+            case .metadata: return "tag"
+            case .keywordLists: return "list.bullet.rectangle"
+            case .faceRecognition: return "person.crop.rectangle.stack"
+            case .knownPeople: return "person.crop.square"
+            case .format: return "doc.richtext"
+            case .templates: return "doc.on.clipboard"
+            case .ftp: return "arrow.up.to.line"
+            case .signing: return "signature"
+            case .sync: return "icloud"
+            case .updates: return "arrow.triangle.2.circlepath"
+            case .shortcuts: return "keyboard"
+            }
+        }
+    }
+
+    @State private var selection: SettingsSection? = .general
 
     var body: some View {
-        TabView {
-            generalTab
-                .tabItem {
-                    Label("General", systemImage: "gear")
+        NavigationSplitView(columnVisibility: .constant(.all)) {
+            List(selection: $selection) {
+                Section("General") {
+                    row(.general)
                 }
-
-            formatTab
-                .tabItem {
-                    Label("Format", systemImage: "doc.richtext")
+                Section("Library & Metadata") {
+                    row(.metadata)
+                    row(.keywordLists)
                 }
-
-            metadataTab
-                .tabItem {
-                    Label("Metadata", systemImage: "tag")
+                Section("People") {
+                    row(.faceRecognition)
+                    row(.knownPeople)
                 }
-
-            quickListsTab
-                .tabItem {
-                    Label("Quick Lists", systemImage: "list.bullet.rectangle")
+                Section("Export & Publishing") {
+                    row(.format)
+                    row(.templates)
+                    row(.ftp)
+                    row(.signing)
                 }
-
-            facesTab
-                .tabItem {
-                    Label("Faces", systemImage: "person.crop.rectangle.stack")
+                Section("Application") {
+                    row(.sync)
+                    row(.updates)
+                    row(.shortcuts)
                 }
-
-            ftpTab
-                .tabItem {
-                    Label("FTP", systemImage: "arrow.up.to.line")
-                }
-
-            templatesTab
-                .tabItem {
-                    Label("Templates", systemImage: "doc.on.clipboard")
-                }
-
-            signingTab
-                .tabItem {
-                    Label("Signing", systemImage: "signature")
-                }
-
-            updatesTab
-                .tabItem {
-                    Label("Updates", systemImage: "arrow.triangle.2.circlepath")
-                }
-
-            KeyboardShortcutsSettingsView()
-                .tabItem {
-                    Label("Shortcuts", systemImage: "keyboard")
-                }
+            }
+            .navigationSplitViewColumnWidth(210)
+            .listStyle(.sidebar)
+            .toolbar(removing: .sidebarToggle)
+        } detail: {
+            detailView(for: selection ?? .general)
         }
-        .frame(width: 560, height: 580)
+        .navigationSplitViewStyle(.balanced)
+        .frame(minWidth: 720, idealWidth: 760, minHeight: 560, idealHeight: 620)
         .onAppear {
             ftpViewModel.loadConnections()
             templateViewModel.loadTemplates()
+        }
+    }
+
+    @ViewBuilder
+    private func row(_ section: SettingsSection) -> some View {
+        Label(section.title, systemImage: section.icon)
+            .tag(section)
+    }
+
+    @ViewBuilder
+    private func detailView(for section: SettingsSection) -> some View {
+        switch section {
+        case .general: generalTab
+        case .metadata: metadataTab
+        case .keywordLists: quickListsTab
+        case .faceRecognition: faceRecognitionTab
+        case .knownPeople: knownPeopleTab
+        case .format: formatTab
+        case .templates: templatesTab
+        case .ftp: ftpTab
+        case .signing: signingTab
+        case .sync: syncTab
+        case .updates: updatesTab
+        case .shortcuts: KeyboardShortcutsSettingsView()
         }
     }
 
@@ -165,10 +222,10 @@ struct SettingsView: View {
         .padding()
     }
 
-    // MARK: - Faces Tab
+    // MARK: - Face Recognition Tab
 
     @ViewBuilder
-    private var facesTab: some View {
+    private var faceRecognitionTab: some View {
         Form {
             Section("Recognition Mode") {
                 Picker("Mode", selection: $settingsViewModel.faceRecognitionMode) {
@@ -312,7 +369,16 @@ struct SettingsView: View {
                     }
                 }
             }
+        }
+        .formStyle(.grouped)
+        .padding()
+    }
 
+    // MARK: - Known People Tab
+
+    @ViewBuilder
+    private var knownPeopleTab: some View {
+        Form {
             Section("Known People Database") {
                 Picker("Mode", selection: $settingsViewModel.knownPeopleMode) {
                     ForEach(KnownPeopleMode.allCases, id: \.self) { mode in
@@ -528,10 +594,6 @@ struct SettingsView: View {
     @ViewBuilder
     private var metadataTab: some View {
         Form {
-            approvedKeywordsSection
-
-            structuredKeywordsSection
-
             Section("Multi-Select Behavior") {
                 Picker("Keywords", selection: $settingsViewModel.multiSelectKeywordsMode) {
                     ForEach(MultiSelectFieldMode.allCases, id: \.self) { mode in
@@ -595,15 +657,6 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
-        .sheet(isPresented: $editingApprovedKeywords) {
-            KeywordListEditor(
-                title: "Approved Keywords",
-                storeKey: .approved(.keywords)
-            )
-        }
-        .sheet(isPresented: $editingStructuredKeywords) {
-            StructuredKeywordEditor()
-        }
     }
 
     // MARK: - Approved Keywords Section
@@ -813,31 +866,9 @@ struct SettingsView: View {
     @ViewBuilder
     private var quickListsTab: some View {
         Form {
-            Section("iCloud Sync") {
-                Toggle("Sync keyword lists via iCloud", isOn: Binding(
-                    get: { settingsViewModel.keywordLists.iCloudEnabled },
-                    set: { newValue in
-                        let ok = settingsViewModel.keywordLists.setICloudEnabled(newValue)
-                        iCloudSyncMessage = ok
-                            ? (newValue ? "iCloud sync enabled — lists will sync between Macs." : "iCloud sync disabled — lists are local.")
-                            : (settingsViewModel.keywordLists.lastSyncError ?? "Could not change iCloud setting.")
-                        KeywordListsCloudCoordinator.shared.refresh()
-                    }
-                ))
-                if let lastSyncError = settingsViewModel.keywordLists.lastSyncError {
-                    Text(lastSyncError)
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                } else if let iCloudSyncMessage {
-                    Text(iCloudSyncMessage)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text("Stores the approved, structured, and all quick lists in your iCloud Drive container so edits propagate to your other Macs.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
+            approvedKeywordsSection
+
+            structuredKeywordsSection
 
             Section("Quick Lists") {
                 ForEach(QuickListType.allCases, id: \.self) { type in
@@ -878,6 +909,15 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
+        .sheet(isPresented: $editingApprovedKeywords) {
+            KeywordListEditor(
+                title: "Approved Keywords",
+                storeKey: .approved(.keywords)
+            )
+        }
+        .sheet(isPresented: $editingStructuredKeywords) {
+            StructuredKeywordEditor()
+        }
         .sheet(item: $editingQuickList) { type in
             KeywordListEditor(
                 title: "\(type.displayName) Quick List",
@@ -915,6 +955,72 @@ struct SettingsView: View {
         panel.message = "Choose a keyword list bundle (.zip) to import"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         importSource = ImportSource(url: url)
+    }
+
+    // MARK: - iCloud Sync Tab
+
+    @ViewBuilder
+    private var syncTab: some View {
+        let coordinator = ICloudSyncCoordinator.shared
+        Form {
+            Section {
+                Toggle("App preferences", isOn: Binding(
+                    get: { coordinator.preferencesEnabled },
+                    set: { coordinator.setPreferencesEnabled($0) }
+                ))
+                Text("Portable settings like browser, metadata, face-recognition, and export options. Machine-specific values (file paths, certificates, FTP servers) are never synced.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Toggle("Keyword lists", isOn: Binding(
+                    get: { coordinator.keywordListsEnabled },
+                    set: { coordinator.setKeywordListsEnabled($0) }
+                ))
+                Text("Approved, structured, and all quick lists.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Toggle("Templates", isOn: Binding(
+                    get: { coordinator.templatesEnabled },
+                    set: {
+                        coordinator.setTemplatesEnabled($0)
+                        templateViewModel.loadTemplates()
+                    }
+                ))
+                Text("Metadata templates. Overrides any custom templates folder while enabled.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Toggle("Known People database", isOn: Binding(
+                    get: { coordinator.knownPeopleEnabled },
+                    set: { coordinator.setKnownPeopleEnabled($0) }
+                ))
+                Text("Reference faces and clothing samples used for auto-matching.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("Sync with iCloud")
+            } footer: {
+                if let error = coordinator.lastError {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                } else if !coordinator.iCloudAvailable {
+                    Label(
+                        "iCloud Drive is not available. Sign in to iCloud in System Settings and enable iCloud Drive for this app.",
+                        systemImage: "icloud.slash"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                } else {
+                    Text("Each category is stored in this app's iCloud Drive container so it follows you to your other Macs. Passwords and signing keys stay on this device and are never synced.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
     }
 
     // MARK: - Known People Actions

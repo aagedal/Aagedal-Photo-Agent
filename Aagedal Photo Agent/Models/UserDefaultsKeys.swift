@@ -112,4 +112,12 @@ nonisolated enum UserDefaultsKeys {
     /// One-shot marker: bumped after the first launch that migrated the legacy
     /// bookmark-based quick/approved/structured files into the managed store.
     static let keywordListsMigratedVersion = "keywordLists.migratedVersion"
+
+    // MARK: - iCloud Sync (per-category opt-in; local-only, never synced)
+    /// True when app preferences are mirrored via NSUbiquitousKeyValueStore.
+    static let preferencesICloudEnabled = "preferences.iCloudEnabled"
+    /// True when metadata templates live in the iCloud ubiquity container.
+    static let templatesICloudEnabled = "templates.iCloudEnabled"
+    /// True when the Known People database lives in the iCloud ubiquity container.
+    static let knownPeopleICloudEnabled = "knownPeople.iCloudEnabled"
 }

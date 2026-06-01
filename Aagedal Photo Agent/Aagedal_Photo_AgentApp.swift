@@ -11,9 +11,11 @@ struct Aagedal_Photo_AgentApp: App {
         KeywordListsStore.shared.migrateLegacyBookmarksIfNeeded()
 
         // Start the iCloud metadata-query watcher (no-op until the user opts in
-        // and the ubiquity container is reachable).
+        // and the ubiquity container is reachable). Mirror portable preferences
+        // through the key-value store when that category is enabled.
         Task { @MainActor in
             KeywordListsCloudCoordinator.shared.refresh()
+            PreferencesSyncService.shared.start()
         }
 
         // Pre-generate the CIE chromaticity background on a background thread

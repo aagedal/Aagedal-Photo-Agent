@@ -17,10 +17,32 @@ final class KnownPeopleService {
 
     // MARK: - Storage Paths
 
+    /// Local fallback location: `<App Support>/Aagedal Photo Agent/KnownPeople`.
+    nonisolated static var localKnownPeopleDirectory: URL {
+        AppPaths.applicationSupport.appendingPathComponent("KnownPeople", isDirectory: true)
+    }
+
     private var knownPeopleDirectory: URL {
-        let url = AppPaths.applicationSupport.appendingPathComponent("KnownPeople", isDirectory: true)
+        let url: URL
+        if UserDefaults.standard.bool(forKey: UserDefaultsKeys.knownPeopleICloudEnabled),
+           let cloud = AppPaths.iCloudKnownPeopleURL {
+            url = cloud
+        } else {
+            url = Self.localKnownPeopleDirectory
+        }
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
+    }
+
+    /// Drops all in-memory state so the next access re-reads from disk. Called
+    /// after the backing directory changes (iCloud sync toggled on/off).
+    func reloadAfterStorageChange() {
+        database = nil
+        peopleIndex = [:]
+        featurePrintCache.removeAllObjects()
+        embeddingThumbnailCache.removeAllObjects()
+        _ = loadDatabase()
+        NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
     }
 
     private var databaseFileURL: URL {
