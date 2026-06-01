@@ -149,6 +149,9 @@ final class MetalEditPipeline: @unchecked Sendable {
     nonisolated(unsafe) var asShotTemperature: Double = 6500
     nonisolated(unsafe) var asShotTint: Double = 0
     nonisolated(unsafe) private var float16Buffer = [UInt16](repeating: 0, count: ToneCurveGenerator.lutSize * 4)
+    /// Reusable interleave scratch buffer for uploadLUT — avoids a per-frame heap allocation
+    /// while a white-balance/tone slider is being dragged.
+    nonisolated(unsafe) private var lutInterleaveBuffer = [Float](repeating: 0, count: ToneCurveGenerator.lutSize * 4)
 
     nonisolated private static let maxMasks = 8
 
@@ -157,6 +160,26 @@ final class MetalEditPipeline: @unchecked Sendable {
     nonisolated(unsafe) private let overlayParamsBuffer: MTLBuffer?
 
     nonisolated private static let colorSpace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
+
+    /// Shared pipeline for offscreen (export) renders. Built once and reused so we don't
+    /// rebuild the MTLDevice / CIContext / compute pipeline state (expensive — pipeline-state
+    /// compilation alone can take hundreds of ms) on every exported image. The pipeline carries
+    /// mutable per-render state (LUT, params buffer, cached WB matrix), so `renderOffscreen`
+    /// serializes on `offscreenLock`; that also bounds GPU memory during batch export by
+    /// preventing many full-resolution textures from being live at once.
+    nonisolated private static let sharedOffscreen: (device: MTLDevice, queue: MTLCommandQueue, pipeline: MetalEditPipeline)? = {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let queue = device.makeCommandQueue(),
+              let pipeline = MetalEditPipeline(device: device, commandQueue: queue) else {
+            return nil
+        }
+        return (device, queue, pipeline)
+    }()
+    nonisolated private static let offscreenLock = NSLock()
+
+    /// Max 2D texture dimension. Metal exposes no runtime query for this; every macOS GPU
+    /// family (Apple and Mac2) caps a 2D texture at 16384 px per side, so we use that.
+    nonisolated private static let maxTextureDimension = 16384
 
     private let ciContext: CIContext
     /// Separate lightweight CIContext for white balance 1×1 pixel renders.
@@ -335,16 +358,19 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// R/G/B channels carry independent per-channel tone curves.
     nonisolated private func uploadLUT(r: [Float], g: [Float], b: [Float]) {
         let count = r.count
-        // Interleave R, G, B, A(0) into a single float array, then convert to half
-        var interleaved = [Float](repeating: 0, count: count * 4)
+        // Interleave R, G, B, A(0) into the reusable scratch buffer, then convert to half.
+        // Fall back to a fresh allocation if the LUT size ever differs from the preallocation.
+        if lutInterleaveBuffer.count != count * 4 {
+            lutInterleaveBuffer = [Float](repeating: 0, count: count * 4)
+        }
         for i in 0..<count {
-            interleaved[i * 4 + 0] = r[i]
-            interleaved[i * 4 + 1] = g[i]
-            interleaved[i * 4 + 2] = b[i]
+            lutInterleaveBuffer[i * 4 + 0] = r[i]
+            lutInterleaveBuffer[i * 4 + 1] = g[i]
+            lutInterleaveBuffer[i * 4 + 2] = b[i]
             // A channel unused, stays 0
         }
-        let totalCount = interleaved.count
-        interleaved.withUnsafeMutableBufferPointer { srcPtr in
+        let totalCount = lutInterleaveBuffer.count
+        lutInterleaveBuffer.withUnsafeMutableBufferPointer { srcPtr in
             float16Buffer.withUnsafeMutableBufferPointer { dstPtr in
                 var src = vImage_Buffer(data: srcPtr.baseAddress!, height: 1,
                                         width: vImagePixelCount(totalCount),
@@ -634,7 +660,9 @@ final class MetalEditPipeline: @unchecked Sendable {
         if let absolute = settings.temperature {
             temperature = Double(absolute)
         } else if let incremental = settings.incrementalTemperature {
-            temperature = 6500 + (Double(incremental) * 50)
+            // Non-RAW relative WB. Slider range is -150...+100; the negative end maps to the
+            // 1500 K floor (6500 - 150*33.33 = 1500), so the slope is 5000/150 ≈ 33.33 K/step.
+            temperature = 6500 + (Double(incremental) * (5000.0 / 150.0))
         } else {
             temperature = nil
         }
@@ -653,7 +681,7 @@ final class MetalEditPipeline: @unchecked Sendable {
             cachedWBMatrix = nil
             return nil
         }
-        let finalTemp = min(max(temperature ?? 6500, 2000), 50000)
+        let finalTemp = min(max(temperature ?? 6500, 1500), 50000)
         let finalTint = min(max(tint ?? 0, -150), 150)
 
         // Return cached matrix if temperature/tint and as-shot reference haven't changed
@@ -857,17 +885,34 @@ final class MetalEditPipeline: @unchecked Sendable {
             metalPipelineLog.info("renderOffscreen: \(maskCount) mask(s) in settings")
         }
 
-        let extent = source.extent
-        guard extent.width > 0, extent.height > 0 else { return nil }
+        let originalExtent = source.extent
+        guard originalExtent.width > 0, originalExtent.height > 0 else { return nil }
+
+        // Reuse the shared offscreen pipeline (device/queue/CIContext/pipeline-state).
+        guard let shared = sharedOffscreen else { return nil }
+        let device = shared.device
+        let queue = shared.queue
+        let pipeline = shared.pipeline
+
+        // OOM / Metal-limit guard: cap to the device's max 2D texture dimension. Stitched
+        // panoramas and other oversized inputs would otherwise fail texture allocation or
+        // exhaust memory. Downscaling here keeps the export fully edited (masks/HSL included)
+        // rather than crashing or silently dropping to the CIFilter fallback.
+        let maxDim = CGFloat(maxTextureDimension)
+        var working = source
+        if originalExtent.width > maxDim || originalExtent.height > maxDim {
+            let scale = min(maxDim / originalExtent.width, maxDim / originalExtent.height)
+            metalPipelineLog.info("renderOffscreen: downscaling \(Int(originalExtent.width))x\(Int(originalExtent.height)) by \(scale, format: .fixed(precision: 4)) to fit max texture dim \(Int(maxDim))")
+            working = source.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        }
+        let extent = working.extent
         let width = Int(extent.width)
         let height = Int(extent.height)
+        guard width > 0, height > 0 else { return nil }
 
-        // Create ephemeral pipeline (isolated from preview pipeline)
-        guard let device = MTLCreateSystemDefaultDevice(),
-              let queue = device.makeCommandQueue(),
-              let pipeline = MetalEditPipeline(device: device, commandQueue: queue) else {
-            return nil
-        }
+        // Serialize use of the shared pipeline's mutable state (LUT, params, WB cache).
+        offscreenLock.lock()
+        defer { offscreenLock.unlock() }
 
         // 1. Upload source CIImage to Metal texture
         let srcDesc = MTLTextureDescriptor.texture2DDescriptor(
@@ -885,7 +930,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         dest.isFlipped = true
         dest.colorSpace = colorSpace
 
-        let translated = source.transformed(by: CGAffineTransform(
+        let translated = working.transformed(by: CGAffineTransform(
             translationX: -extent.origin.x, y: -extent.origin.y
         ))
         do {

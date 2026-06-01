@@ -9,7 +9,9 @@ enum CameraRawApproximation {
         .workingFormat: CIFormat.RGBAh,
         .workingColorSpace: workingColorSpace,
     ])
-    nonisolated private static let minKelvin = 2000.0
+    // RAW files support a 1500 K floor (matches Adobe Camera RAW); non-RAW files use a
+    // relative WB slider instead (see incrementalTemperature handling below).
+    nonisolated private static let minKelvin = 1500.0
     nonisolated private static let maxKelvin = 50000.0
 
     nonisolated static func apply(to input: CIImage, settings: CameraRawSettings?) -> CIImage {
@@ -173,7 +175,9 @@ enum CameraRawApproximation {
         if let absolute = settings.temperature {
             temperature = Double(absolute)
         } else if let incremental = settings.incrementalTemperature {
-            temperature = 6500 + (Double(incremental) * 50)
+            // Non-RAW relative WB. Slider range is -150...+100; the negative end maps to the
+            // 1500 K floor (6500 - 150*33.33 = 1500), so the slope is 5000/150 ≈ 33.33 K/step.
+            temperature = 6500 + (Double(incremental) * (5000.0 / 150.0))
         } else {
             temperature = nil
         }

@@ -65,8 +65,11 @@ struct EditWorkspaceView: View {
 
     private static let previewBackground = Color(red: 0.15, green: 0.15, blue: 0.15)
 
-    private static let minKelvin = 2000.0
+    // RAW: absolute Kelvin slider with a 1500 K floor (matches Adobe Camera RAW).
+    // Non-RAW: relative WB slider (see nonRawIncrementalTempRange).
+    private static let minKelvin = 1500.0
     private static let maxKelvin = 50000.0
+    private static let nonRawIncrementalTempRange: ClosedRange<Double> = -150...100
 
     private var previewWorkingMaxPixelSize: CGFloat {
         let screenSize = NSScreen.main?.frame.size ?? CGSize(width: 1920, height: 1080)
@@ -2238,7 +2241,7 @@ struct EditWorkspaceView: View {
             sliderRow(
                 "WB Temp",
                 value: whiteBalanceTemperatureBinding,
-                range: -100...100,
+                range: Self.nonRawIncrementalTempRange,
                 step: 1,
                 gradientColors: [.blue, .yellow],
                 formatter: signedIntString,
