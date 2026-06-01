@@ -338,6 +338,40 @@ nonisolated enum EditedImageRenderer {
         return "\(prefix)_\(formatName)"
     }
 
+    /// The user's configured export location mode, read live from `UserDefaults`.
+    /// Read directly (not via a `SettingsViewModel` instance) so changes take effect
+    /// without an app restart — matching the convention used by `formatFolderName`.
+    static var currentLocationMode: ExportLocationMode {
+        ExportLocationMode(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportLocationMode) ?? "") ?? .formatSubfolder
+    }
+
+    /// Resolves the destination folder for a single exported file based on the user's
+    /// configured `ExportLocationMode` (read live from `UserDefaults`).
+    /// - Parameters:
+    ///   - rootFolder: the source folder the export was initiated from.
+    ///   - formatPrefix: prefix used for `.formatSubfolder` naming (e.g. "Signed", "Edited").
+    ///   - askedFolder: the folder the user picked for `.askOnSave` (resolved once per batch).
+    static func resolveOutputFolder(
+        sourceURL: URL,
+        rootFolder: URL,
+        isHDR: Bool,
+        formatPrefix: String,
+        askedFolder: URL?
+    ) -> URL {
+        switch currentLocationMode {
+        case .sameAsOriginal:
+            return sourceURL.deletingLastPathComponent()
+        case .customSubfolder:
+            let customName = UserDefaults.standard.string(forKey: UserDefaultsKeys.exportCustomSubfolderName) ?? "Exports"
+            let trimmed = customName.trimmingCharacters(in: .whitespacesAndNewlines)
+            return rootFolder.appendingPathComponent(trimmed.isEmpty ? "Exports" : trimmed, isDirectory: true)
+        case .formatSubfolder:
+            return rootFolder.appendingPathComponent(formatFolderName(prefix: formatPrefix, isHDR: isHDR), isDirectory: true)
+        case .askOnSave:
+            return askedFolder ?? rootFolder
+        }
+    }
+
     // MARK: - Output URL
 
     static func outputURL(for sourceURL: URL, in outputFolder: URL, extension ext: String) -> URL {
@@ -402,13 +436,13 @@ nonisolated enum EditedImageRenderer {
     /// Render and save next to the original file in a specific format (JPEG or PNG).
     /// Returns the output URL. Handles name collisions by appending a number.
     @discardableResult
-    static func saveAs(from sourceURL: URL, cameraRaw: CameraRawSettings?, format: SaveAsFormat, metadataCopier: MetadataCopier? = nil) async throws -> URL {
+    static func saveAs(from sourceURL: URL, cameraRaw: CameraRawSettings?, format: SaveAsFormat, destinationFolder: URL? = nil, metadataCopier: MetadataCopier? = nil) async throws -> URL {
         let output = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw)
         let gamut = TargetColorGamut(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportColorGamutSDR) ?? "") ?? .sRGB
         let colorSpace = gamut.sdrColorSpace
         let ctx = CameraRawApproximation.ciContext
 
-        let parentFolder = sourceURL.deletingLastPathComponent()
+        let parentFolder = destinationFolder ?? sourceURL.deletingLastPathComponent()
         let baseName = sourceURL.deletingPathExtension().lastPathComponent
         var destURL = parentFolder.appendingPathComponent(baseName).appendingPathExtension(format.fileExtension)
 

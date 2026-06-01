@@ -353,6 +353,16 @@ final class SettingsViewModel {
         didSet { UserDefaults.standard.set(exportColorGamutHDR.rawValue, forKey: UserDefaultsKeys.exportColorGamutHDR) }
     }
 
+    /// Where exported files are written. Default: sub-folder named after the export format
+    var exportLocationMode: ExportLocationMode {
+        didSet { UserDefaults.standard.set(exportLocationMode.rawValue, forKey: UserDefaultsKeys.exportLocationMode) }
+    }
+
+    /// Custom sub-folder name used when `exportLocationMode == .customSubfolder`. Default: "Exports"
+    var exportCustomSubfolderName: String {
+        didSet { UserDefaults.standard.set(exportCustomSubfolderName, forKey: UserDefaultsKeys.exportCustomSubfolderName) }
+    }
+
     /// Known People database mode. Default: off
     var knownPeopleMode: KnownPeopleMode {
         didSet {
@@ -650,6 +660,11 @@ final class SettingsViewModel {
 
         let storedColorGamutHDR = UserDefaults.standard.string(forKey: UserDefaultsKeys.exportColorGamutHDR) ?? TargetColorGamut.displayP3.rawValue
         self.exportColorGamutHDR = TargetColorGamut(rawValue: storedColorGamutHDR) ?? .displayP3
+
+        let storedLocationMode = UserDefaults.standard.string(forKey: UserDefaultsKeys.exportLocationMode) ?? ExportLocationMode.formatSubfolder.rawValue
+        self.exportLocationMode = ExportLocationMode(rawValue: storedLocationMode) ?? .formatSubfolder
+
+        self.exportCustomSubfolderName = UserDefaults.standard.string(forKey: UserDefaultsKeys.exportCustomSubfolderName) ?? "Exports"
 
         self.detectedEditors = Self.detectEditors()
 

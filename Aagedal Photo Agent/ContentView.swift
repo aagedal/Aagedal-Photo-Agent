@@ -1127,6 +1127,21 @@ struct ContentView: View {
 
     // MARK: - Render and Sign
 
+    /// Prompts the user to pick a destination folder for `.askOnSave` exports.
+    /// Returns nil if the user cancels.
+    @MainActor
+    private func promptForExportDestination() -> URL? {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose"
+        panel.message = "Choose a destination folder for exported files"
+        panel.directoryURL = browserViewModel.currentFolderURL
+        return panel.runModal() == .OK ? panel.url : nil
+    }
+
     private func renderAndSignSelected() {
         guard C2PASigningService.isAvailable else {
             browserViewModel.errorMessage = "c2patool not found in app bundle"
@@ -1154,6 +1169,13 @@ struct ContentView: View {
         guard let folderURL = browserViewModel.currentFolderURL else { return }
 
         let author = settingsViewModel.c2paDefaultAuthor.isEmpty ? nil : settingsViewModel.c2paDefaultAuthor
+
+        let locationMode = EditedImageRenderer.currentLocationMode
+        var askedFolder: URL?
+        if locationMode == .askOnSave {
+            guard let chosen = promptForExportDestination() else { return }
+            askedFolder = chosen
+        }
 
         isRenderingEditedFolder = true
         renderExportCurrent = 0
@@ -1190,15 +1212,16 @@ struct ContentView: View {
                 let cameraRaw = metadataByURL[image.url]?.cameraRaw
                 let isHDR = cameraRaw?.hdrEditMode == 1
 
-                // Determine output folder per format
-                let folderName = EditedImageRenderer.formatFolderName(prefix: "Signed", isHDR: isHDR)
-                let outputFolder = folderURL.appendingPathComponent(folderName, isDirectory: true)
+                // Determine output folder per the configured export location mode
+                let outputFolder = EditedImageRenderer.resolveOutputFolder(
+                    sourceURL: image.url, rootFolder: folderURL,
+                    isHDR: isHDR, formatPrefix: "Signed", askedFolder: askedFolder)
 
                 // Create folder on first encounter
-                if !createdFolders.contains(folderName) {
+                if !createdFolders.contains(outputFolder.path) {
                     do {
                         try FileManager.default.createDirectory(at: outputFolder, withIntermediateDirectories: true)
-                        createdFolders.insert(folderName)
+                        createdFolders.insert(outputFolder.path)
                         lastOutputFolder = outputFolder
                     } catch {
                         failureCount += 1
@@ -1261,6 +1284,11 @@ struct ContentView: View {
             renderEditedFolderFailureCount = failureCount
             renderedOutputFolderURL = lastOutputFolder
             isRenderingEditedFolder = false
+
+            // Files written next to the originals land in the current folder — refresh to show them.
+            if locationMode == .sameAsOriginal {
+                browserViewModel.refreshCurrentFolderIfNeeded()
+            }
 
             let copyFailures = await failureTracker.metadataCopyFailures
             let overlayFailures = await failureTracker.sidecarOverlayFailures
@@ -1684,6 +1712,13 @@ struct ContentView: View {
         let urls = browserViewModel.selectedImages.map(\.url)
         guard !urls.isEmpty else { return }
 
+        let locationMode = EditedImageRenderer.currentLocationMode
+        var askedFolder: URL?
+        if locationMode == .askOnSave {
+            guard let chosen = promptForExportDestination() else { return }
+            askedFolder = chosen
+        }
+
         isRenderingEditedFolder = true
         renderExportCurrent = 0
         renderExportTotal = urls.count
@@ -1691,6 +1726,7 @@ struct ContentView: View {
         renderExportTask = Task {
             defer { renderExportTask = nil }
             let failureTracker = MetadataFailureTracker()
+            var createdFolders: Set<String> = []
 
             var metadataByURL: [URL: IPTCMetadata]
             do {
@@ -1709,6 +1745,17 @@ struct ContentView: View {
                 renderExportCurrent = index + 1
                 let cameraRaw = metadataByURL[url]?.cameraRaw
                 do {
+                    // Resolve destination folder per the configured export location mode.
+                    // Save As always renders SDR (JPEG/PNG), so use isHDR: false for naming.
+                    let rootFolder = browserViewModel.currentFolderURL ?? url.deletingLastPathComponent()
+                    let destinationFolder = EditedImageRenderer.resolveOutputFolder(
+                        sourceURL: url, rootFolder: rootFolder,
+                        isHDR: false, formatPrefix: "Edited", askedFolder: askedFolder)
+                    if !createdFolders.contains(destinationFolder.path) {
+                        try FileManager.default.createDirectory(at: destinationFolder, withIntermediateDirectories: true)
+                        createdFolders.insert(destinationFolder.path)
+                    }
+
                     let writeEngine = browserViewModel.writeEngine
                     let copier: EditedImageRenderer.MetadataCopier = { src, dst in
                         do {
@@ -1718,7 +1765,7 @@ struct ContentView: View {
                         }
                     }
                     let outputURL = try await Task.detached(priority: .userInitiated) {
-                        try await EditedImageRenderer.saveAs(from: url, cameraRaw: cameraRaw, format: format, metadataCopier: copier)
+                        try await EditedImageRenderer.saveAs(from: url, cameraRaw: cameraRaw, format: format, destinationFolder: destinationFolder, metadataCopier: copier)
                     }.value
                     // Apply pending sidecar IPTC edits to saved file
                     if let folderURL = browserViewModel.currentFolderURL {
@@ -1773,6 +1820,13 @@ struct ContentView: View {
         let urls = urls ?? browserViewModel.images.map(\.url)
         guard !urls.isEmpty else { return }
 
+        let locationMode = EditedImageRenderer.currentLocationMode
+        var askedFolder: URL?
+        if locationMode == .askOnSave {
+            guard let chosen = promptForExportDestination() else { return }
+            askedFolder = chosen
+        }
+
         isRenderingEditedFolder = true
         renderExportCurrent = 0
         renderExportTotal = urls.count
@@ -1806,17 +1860,18 @@ struct ContentView: View {
                 let cameraRaw = metadataByURL[url]?.cameraRaw
                 let isHDR = cameraRaw?.hdrEditMode == 1
 
-                // Format-aware folder naming
-                let folderName = EditedImageRenderer.formatFolderName(prefix: "Edited", isHDR: isHDR)
-                let outputFolder = folderURL.appendingPathComponent(folderName, isDirectory: true)
+                // Resolve output folder per the configured export location mode
+                let outputFolder = EditedImageRenderer.resolveOutputFolder(
+                    sourceURL: url, rootFolder: folderURL,
+                    isHDR: isHDR, formatPrefix: "Edited", askedFolder: askedFolder)
 
-                if !createdFolders.contains(folderName) {
+                if !createdFolders.contains(outputFolder.path) {
                     do {
                         try FileManager.default.createDirectory(at: outputFolder, withIntermediateDirectories: true)
-                        createdFolders.insert(folderName)
+                        createdFolders.insert(outputFolder.path)
                         lastOutputFolder = outputFolder
                     } catch {
-                        browserViewModel.errorMessage = "Failed to create \(folderName) folder: \(error.localizedDescription)"
+                        browserViewModel.errorMessage = "Failed to create \(outputFolder.lastPathComponent) folder: \(error.localizedDescription)"
                         failureCount += 1
                         renderFailedNames.append(url.lastPathComponent)
                         continue
@@ -1851,6 +1906,11 @@ struct ContentView: View {
             renderEditedFolderFailureCount = failureCount
             renderedOutputFolderURL = lastOutputFolder
             isRenderingEditedFolder = false
+
+            // Files written next to the originals land in the current folder — refresh to show them.
+            if locationMode == .sameAsOriginal {
+                browserViewModel.refreshCurrentFolderIfNeeded()
+            }
 
             let copyFailures = await failureTracker.metadataCopyFailures
             let overlayFailures = await failureTracker.sidecarOverlayFailures

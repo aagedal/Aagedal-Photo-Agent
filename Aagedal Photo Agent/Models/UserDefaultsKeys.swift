@@ -65,6 +65,10 @@ nonisolated enum UserDefaultsKeys {
     static let exportColorGamutSDR = "exportColorGamutSDR"
     static let exportColorGamutHDR = "exportColorGamutHDR"
 
+    // MARK: - Export Location
+    static let exportLocationMode = "exportLocationMode"
+    static let exportCustomSubfolderName = "exportCustomSubfolderName"
+
     // MARK: - C2PA Signing
     static let c2paCertificatePath = "c2paCertificatePath"
     static let c2paCertificateSubject = "c2paCertificateSubject"

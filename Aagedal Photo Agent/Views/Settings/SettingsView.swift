@@ -44,6 +44,7 @@ struct SettingsView: View {
         case keywordLists
         case faceRecognition
         case knownPeople
+        case locations
         case format
         case templates
         case ftp
@@ -61,6 +62,7 @@ struct SettingsView: View {
             case .keywordLists: return "Keyword Lists"
             case .faceRecognition: return "Face Recognition"
             case .knownPeople: return "Known People"
+            case .locations: return "Locations"
             case .format: return "Format"
             case .templates: return "Templates"
             case .ftp: return "FTP"
@@ -78,6 +80,7 @@ struct SettingsView: View {
             case .keywordLists: return "list.bullet.rectangle"
             case .faceRecognition: return "person.crop.rectangle.stack"
             case .knownPeople: return "person.crop.square"
+            case .locations: return "folder"
             case .format: return "doc.richtext"
             case .templates: return "doc.on.clipboard"
             case .ftp: return "arrow.up.to.line"
@@ -106,6 +109,7 @@ struct SettingsView: View {
                     row(.knownPeople)
                 }
                 Section("Export & Publishing") {
+                    row(.locations)
                     row(.format)
                     row(.templates)
                     row(.ftp)
@@ -145,6 +149,7 @@ struct SettingsView: View {
         case .keywordLists: quickListsTab
         case .faceRecognition: faceRecognitionTab
         case .knownPeople: knownPeopleTab
+        case .locations: locationsTab
         case .format: formatTab
         case .templates: templatesTab
         case .ftp: ftpTab
@@ -471,6 +476,32 @@ struct SettingsView: View {
         } message: {
             Text("This will permanently delete all \(knownPeopleStats.peopleCount) known people and their reference images. This cannot be undone.")
         }
+    }
+
+    // MARK: - Locations Tab
+
+    @ViewBuilder
+    private var locationsTab: some View {
+        Form {
+            Section("Export Location") {
+                Picker("Save Exported Files", selection: $settingsViewModel.exportLocationMode) {
+                    ForEach(ExportLocationMode.allCases) { mode in
+                        Text(mode.displayName).tag(mode)
+                    }
+                }
+
+                Text(settingsViewModel.exportLocationMode.description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if settingsViewModel.exportLocationMode == .customSubfolder {
+                    TextField("Sub-folder Name", text: $settingsViewModel.exportCustomSubfolderName)
+                        .textFieldStyle(.roundedBorder)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
     }
 
     // MARK: - Format Tab
