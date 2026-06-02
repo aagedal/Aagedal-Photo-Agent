@@ -15,6 +15,8 @@ final class PreferencesSyncService {
 
     private let kvs = NSUbiquitousKeyValueStore.default
     private var observersInstalled = false
+    /// Tokens for the block-based notification observers so they can be removed.
+    private var observerTokens: [NSObjectProtocol] = []
     /// Guards against the local→cloud mirror echoing a change we just pulled
     /// from the cloud (which would otherwise re-write identical values).
     private var isApplyingRemote = false
@@ -108,43 +110,48 @@ final class PreferencesSyncService {
     private func installObservers() {
         guard !observersInstalled else { return }
         observersInstalled = true
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(remoteStoreChanged(_:)),
-            name: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
-            object: kvs
-        )
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(localDefaultsChanged),
-            name: UserDefaults.didChangeNotification,
-            object: nil
-        )
+        let center = NotificationCenter.default
+        // Block-based observers pinned to the main queue. Both handlers touch
+        // `@MainActor` state, and `UserDefaults.didChangeNotification` (as well
+        // as the KVS notification) can be posted from a background thread — e.g.
+        // `registerDefaults:` invoked off-main. The old target/selector form ran
+        // the handler synchronously on the posting thread, which tripped the
+        // Swift MainActor executor check (SIGTRAP). Forcing main-queue delivery
+        // and asserting isolation keeps the handlers on the main actor.
+        observerTokens.append(center.addObserver(
+            forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
+            object: kvs,
+            queue: .main
+        ) { [weak self] note in
+            // Extract the Sendable key list before hopping — `Notification`
+            // itself is not Sendable and can't cross into the actor closure.
+            let changed = note.userInfo?[NSUbiquitousKeyValueStoreChangedKeysKey] as? [String]
+            MainActor.assumeIsolated { self?.remoteStoreChanged(changedKeys: changed) }
+        })
+        observerTokens.append(center.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.localDefaultsChanged() }
+        })
     }
 
     private func removeObservers() {
         guard observersInstalled else { return }
         observersInstalled = false
-        NotificationCenter.default.removeObserver(
-            self,
-            name: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
-            object: kvs
-        )
-        NotificationCenter.default.removeObserver(
-            self,
-            name: UserDefaults.didChangeNotification,
-            object: nil
-        )
+        let center = NotificationCenter.default
+        for token in observerTokens { center.removeObserver(token) }
+        observerTokens.removeAll()
     }
 
-    @objc private func remoteStoreChanged(_ note: Notification) {
-        let changed = note.userInfo?[NSUbiquitousKeyValueStoreChangedKeysKey] as? [String]
-        let keys = changed.map { $0.filter(Set(Self.syncedKeys).contains) } ?? Self.syncedKeys
+    private func remoteStoreChanged(changedKeys: [String]?) {
+        let keys = changedKeys.map { $0.filter(Set(Self.syncedKeys).contains) } ?? Self.syncedKeys
         guard !keys.isEmpty else { return }
         applyRemoteToLocal(keys: keys)
     }
 
-    @objc private func localDefaultsChanged() {
+    private func localDefaultsChanged() {
         guard isEnabled, !isApplyingRemote else { return }
         // Coalesce bursts of `didSet` writes into a single cloud push.
         pushWorkItem?.cancel()
