@@ -55,7 +55,9 @@ nonisolated enum AppPaths {
         // user-chosen folder so templates land in the synced container.
         if UserDefaults.standard.bool(forKey: UserDefaultsKeys.templatesICloudEnabled),
            let cloud = iCloudTemplatesURL {
-            try? FileManager.default.createDirectory(at: cloud, withIntermediateDirectories: true)
+            // Coordinated so the iCloud daemon doesn't fork this folder into
+            // "Templates 2" when it races our create with a remote pull.
+            try? CloudCoordinatedIO.ensureDirectory(cloud)
             return (cloud, {})
         }
         if let data = UserDefaults.standard.data(forKey: UserDefaultsKeys.templatesFolderBookmark) {

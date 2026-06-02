@@ -11,9 +11,6 @@
 		1C7A6B9BA3F2E2C3F90503C1 /* IPTCMetadataTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38D2DABC30701F41BE3F6B54 /* IPTCMetadataTests.swift */; };
 		8ED369F42F8CF02C00FB9A33 /* SwiftExif in Frameworks */ = {isa = PBXBuildFile; productRef = 8ED369F32F8CF02C00FB9A33 /* SwiftExif */; };
 		8ED36A042F8CF03000FB9A33 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 8ED36A032F8CF03000FB9A33 /* Sparkle */; };
-		B71AFE10A1B0E2510C12C200 /* ApprovedListServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A71AFE10A1B0E2510C12C100 /* ApprovedListServiceTests.swift */; };
-		E957DC81E4AA200C4CD87043 /* MetadataSidecarServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CB424FD4CEB2C23AEFF5DB0 /* MetadataSidecarServiceTests.swift */; };
-		D1C0023217A1B0E2510C12C2 /* MetadataIOCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */; };
 		AB0100000000000000000002 /* ApprovedListBypassTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0100000000000000000001 /* ApprovedListBypassTests.swift */; };
 		AB0200000000000000000002 /* KeywordListsStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0200000000000000000001 /* KeywordListsStoreTests.swift */; };
 		AB0300000000000000000002 /* StructuredKeywordParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0300000000000000000001 /* StructuredKeywordParserTests.swift */; };
@@ -21,6 +18,9 @@
 		AB0500000000000000000002 /* KeywordListsArchiveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0500000000000000000001 /* KeywordListsArchiveTests.swift */; };
 		AB0600000000000000000002 /* MetadataEngineConcurrencyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0600000000000000000001 /* MetadataEngineConcurrencyTests.swift */; };
 		AB0700000000000000000002 /* PresetVariableInterpolatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0700000000000000000001 /* PresetVariableInterpolatorTests.swift */; };
+		B71AFE10A1B0E2510C12C200 /* ApprovedListServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A71AFE10A1B0E2510C12C100 /* ApprovedListServiceTests.swift */; };
+		D1C0023217A1B0E2510C12C2 /* MetadataIOCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */; };
+		E957DC81E4AA200C4CD87043 /* MetadataSidecarServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CB424FD4CEB2C23AEFF5DB0 /* MetadataSidecarServiceTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -42,7 +42,6 @@
 		9B9D2A9AC78186B52BFC36D2 /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.0.sdk/System/Library/Frameworks/Cocoa.framework; sourceTree = DEVELOPER_DIR; };
 		9CB424FD4CEB2C23AEFF5DB0 /* MetadataSidecarServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataSidecarServiceTests.swift; sourceTree = "<group>"; };
 		A71AFE10A1B0E2510C12C100 /* ApprovedListServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ApprovedListServiceTests.swift; sourceTree = "<group>"; };
-		D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataIOCoordinatorTests.swift; sourceTree = "<group>"; };
 		AB0100000000000000000001 /* ApprovedListBypassTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ApprovedListBypassTests.swift; sourceTree = "<group>"; };
 		AB0200000000000000000001 /* KeywordListsStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KeywordListsStoreTests.swift; sourceTree = "<group>"; };
 		AB0300000000000000000001 /* StructuredKeywordParserTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = StructuredKeywordParserTests.swift; sourceTree = "<group>"; };
@@ -50,6 +49,7 @@
 		AB0500000000000000000001 /* KeywordListsArchiveTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KeywordListsArchiveTests.swift; sourceTree = "<group>"; };
 		AB0600000000000000000001 /* MetadataEngineConcurrencyTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataEngineConcurrencyTests.swift; sourceTree = "<group>"; };
 		AB0700000000000000000001 /* PresetVariableInterpolatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PresetVariableInterpolatorTests.swift; sourceTree = "<group>"; };
+		D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataIOCoordinatorTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -467,7 +467,7 @@
 				CODE_SIGN_ENTITLEMENTS = "Aagedal Photo Agent/Aagedal Photo Agent.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 292;
+				CURRENT_PROJECT_VERSION = 293;
 				DEVELOPMENT_TEAM = 3R5QGG9DW6;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -501,7 +501,7 @@
 				CODE_SIGN_ENTITLEMENTS = "Aagedal Photo Agent/Aagedal Photo Agent.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 292;
+				CURRENT_PROJECT_VERSION = 293;
 				DEVELOPMENT_TEAM = 3R5QGG9DW6;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;

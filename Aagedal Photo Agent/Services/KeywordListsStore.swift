@@ -128,14 +128,15 @@ final class KeywordListsStore: @unchecked Sendable {
     }
 
     func exists(_ key: KeywordListKey) -> Bool {
-        FileManager.default.fileExists(atPath: url(for: key).path)
+        CloudCoordinatedIO.itemExists(at: url(for: key))
     }
 
     func readText(_ key: KeywordListKey) -> String? {
         let target = url(for: key)
-        guard FileManager.default.fileExists(atPath: target.path) else { return nil }
+        guard CloudCoordinatedIO.itemExists(at: target) else { return nil }
         do {
-            return try String(contentsOf: target, encoding: .utf8)
+            let data = try CloudCoordinatedIO.readData(at: target)
+            return String(decoding: data, as: UTF8.self)
         } catch {
             logger.error("Failed to read \(key.relativePath, privacy: .public): \(String(describing: error))")
             return nil
@@ -152,8 +153,7 @@ final class KeywordListsStore: @unchecked Sendable {
     /// Writes `text` to the file atomically and posts `.keywordListChanged`.
     func writeText(_ text: String, to key: KeywordListKey) throws {
         let target = url(for: key)
-        try ensureDirectory(target.deletingLastPathComponent())
-        try text.write(to: target, atomically: true, encoding: .utf8)
+        try CloudCoordinatedIO.writeText(text, to: target)
         notifyChanged(key)
     }
 
@@ -174,10 +174,7 @@ final class KeywordListsStore: @unchecked Sendable {
     }
 
     func delete(_ key: KeywordListKey) {
-        let target = url(for: key)
-        if FileManager.default.fileExists(atPath: target.path) {
-            try? FileManager.default.removeItem(at: target)
-        }
+        try? CloudCoordinatedIO.removeItem(at: url(for: key))
         notifyChanged(key)
     }
 
@@ -316,12 +313,12 @@ final class KeywordListsStore: @unchecked Sendable {
     private func ensureDirectories(at root: URL) {
         for sub in ["quick", "approved", "structured"] {
             let dir = root.appendingPathComponent(sub, isDirectory: true)
-            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try? CloudCoordinatedIO.ensureDirectory(dir)
         }
     }
 
     private func ensureDirectory(_ url: URL) throws {
-        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        try CloudCoordinatedIO.ensureDirectory(url)
     }
 
     private func notifyChanged(_ key: KeywordListKey) {
@@ -357,19 +354,17 @@ final class KeywordListsStore: @unchecked Sendable {
     /// left in place (so iCloud → local toggle preserves a deletion done on
     /// another device).
     private func copyTree(from source: URL, to destination: URL) throws {
-        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        try CloudCoordinatedIO.ensureDirectory(destination)
         for sub in ["quick", "approved", "structured"] {
             let sourceDir = source.appendingPathComponent(sub, isDirectory: true)
             let destinationDir = destination.appendingPathComponent(sub, isDirectory: true)
-            try FileManager.default.createDirectory(at: destinationDir, withIntermediateDirectories: true)
+            try CloudCoordinatedIO.ensureDirectory(destinationDir)
             guard FileManager.default.fileExists(atPath: sourceDir.path) else { continue }
-            let children = (try? FileManager.default.contentsOfDirectory(at: sourceDir, includingPropertiesForKeys: nil)) ?? []
+            let children = (try? CloudCoordinatedIO.contentsOfDirectory(at: sourceDir)) ?? []
             for child in children where child.pathExtension.lowercased() == "txt" {
                 let dest = destinationDir.appendingPathComponent(child.lastPathComponent)
-                if FileManager.default.fileExists(atPath: dest.path) {
-                    try? FileManager.default.removeItem(at: dest)
-                }
-                try FileManager.default.copyItem(at: child, to: dest)
+                let data = try CloudCoordinatedIO.readData(at: child)
+                try CloudCoordinatedIO.writeData(data, to: dest)
             }
         }
     }

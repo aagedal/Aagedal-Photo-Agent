@@ -32,7 +32,8 @@ final class KeywordListsCloudCoordinator {
         guard query == nil else { return }
         guard let root = KeywordListsStore.shared.iCloudContainerListsURL else { return }
         // The ubiquity container must exist before the query can find anything.
-        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        // Coordinated so we don't fork a "Lists 2" conflict folder.
+        try? CloudCoordinatedIO.ensureDirectory(root)
 
         let q = NSMetadataQuery()
         q.searchScopes = [NSMetadataQueryUbiquitousDocumentsScope]

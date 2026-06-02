@@ -34,5 +34,17 @@
 	<true/>
 	<key>SUEnableInstallerLauncherService</key>
 	<false/>
+	<key>NSUbiquitousContainers</key>
+	<dict>
+		<key>iCloud.aagedal.Aagedal-Photo-Agent</key>
+		<dict>
+			<key>NSUbiquitousContainerIsDocumentScopePublic</key>
+			<true/>
+			<key>NSUbiquitousContainerName</key>
+			<string>Aagedal Photo Agent</string>
+			<key>NSUbiquitousContainerSupportedFolderLevels</key>
+			<string>Any</string>
+		</dict>
+	</dict>
 </dict>
 </plist>

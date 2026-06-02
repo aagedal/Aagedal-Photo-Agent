@@ -7,15 +7,12 @@ struct TemplateStorageService: Sendable {
     func loadAll() throws -> [MetadataTemplate] {
         let (directory, release) = AppPaths.templatesDirectory()
         defer { release() }
-        let files = try FileManager.default.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: nil,
-            options: .skipsHiddenFiles
-        ).filter { $0.pathExtension == "json" }
+        let files = try CloudCoordinatedIO.contentsOfDirectory(at: directory)
+            .filter { $0.pathExtension == "json" }
 
         return files.compactMap { url in
             do {
-                let data = try Data(contentsOf: url)
+                let data = try CloudCoordinatedIO.readData(at: url)
                 return try JSONDecoder().decode(MetadataTemplate.self, from: data)
             } catch {
                 templateStorageLog.warning("Skipping template at \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
@@ -30,14 +27,14 @@ struct TemplateStorageService: Sendable {
         defer { release() }
         let data = try JSONEncoder().encode(template)
         let url = directory.appendingPathComponent("\(template.id.uuidString).json")
-        try data.write(to: url, options: .atomic)
+        try CloudCoordinatedIO.writeData(data, to: url)
     }
 
     func delete(_ template: MetadataTemplate) throws {
         let (directory, release) = AppPaths.templatesDirectory()
         defer { release() }
         let url = directory.appendingPathComponent("\(template.id.uuidString).json")
-        try FileManager.default.removeItem(at: url)
+        try CloudCoordinatedIO.removeItem(at: url)
     }
 
     // MARK: - Export / Import

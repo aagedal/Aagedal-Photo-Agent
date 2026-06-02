@@ -136,27 +136,9 @@ final class ICloudSyncCoordinator {
 
     /// Recursively copies the contents of `src` into `dst`, overwriting files
     /// with the same name and preserving subdirectories. Missing source folders
-    /// are treated as empty (nothing to copy).
+    /// are treated as empty (nothing to copy). Coordinated via `NSFileCoordinator`
+    /// so moving data into the ubiquity container doesn't fork conflict folders.
     private func mergeCopy(from src: URL, to dst: URL) throws {
-        let fm = FileManager.default
-        try fm.createDirectory(at: dst, withIntermediateDirectories: true)
-        guard fm.fileExists(atPath: src.path) else { return }
-        let items = try fm.contentsOfDirectory(
-            at: src,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
-        )
-        for item in items {
-            let isDir = (try? item.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
-            let target = dst.appendingPathComponent(item.lastPathComponent)
-            if isDir {
-                try mergeCopy(from: item, to: target)
-            } else {
-                if fm.fileExists(atPath: target.path) {
-                    try? fm.removeItem(at: target)
-                }
-                try fm.copyItem(at: item, to: target)
-            }
-        }
+        try CloudCoordinatedIO.mergeCopy(from: src, to: dst)
     }
 }
