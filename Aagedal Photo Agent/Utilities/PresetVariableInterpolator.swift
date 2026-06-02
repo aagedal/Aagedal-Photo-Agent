@@ -10,6 +10,7 @@ struct PresetVariableInterpolator: Sendable {
     /// - `{dateCaptured}` — EXIF DateTimeOriginal, date only (e.g., "Mar 15, 2024")
     /// - `{dateCaptured:FORMAT}` — DateTimeOriginal with custom format (e.g., `{dateCaptured:yyyy-MM-dd}`)
     /// - `{filename}` — filename of the target image (without extension)
+    /// - `{initials}` — the user's initials from Settings (empty if unset)
     /// - `{persons}` — comma-separated list of Person Shown names
     /// - `{keywords}` — comma-separated list of keywords
     /// - `{seq}` — 1-based sequence number for batch processing
@@ -19,9 +20,13 @@ struct PresetVariableInterpolator: Sendable {
         _ template: String,
         filename: String = "",
         existingMetadata: IPTCMetadata? = nil,
-        sequenceIndex: Int = 1
+        sequenceIndex: Int = 1,
+        initials: String = ""
     ) -> String {
         var result = template
+
+        // {initials}
+        result = result.replacingOccurrences(of: "{initials}", with: initials)
 
         // {date} and {date:FORMAT}
         result = resolveDate(in: result)

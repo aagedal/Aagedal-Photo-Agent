@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 
 struct SettingsView: View {
     @State private var settingsViewModel = SettingsViewModel()
+    @AppStorage(UserDefaultsKeys.creatorInitials) private var creatorInitials = ""
     @State private var ftpViewModel = FTPViewModel()
     @State private var templateViewModel = TemplateViewModel()
     @StateObject private var sparkle = SparkleUpdaterService.shared
@@ -684,6 +685,13 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
+            }
+
+            Section("Variable Processing") {
+                TextField("Initials", text: $creatorInitials)
+                Text("Used by the {initials} variable in metadata fields and keywords (e.g. a keyword {initials}{date:yyMMdd}).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

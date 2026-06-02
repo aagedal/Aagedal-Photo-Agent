@@ -97,6 +97,12 @@ private let allVariables: [VariableDefinition] = [
         example: "IMG_4023"
     ),
     VariableDefinition(
+        variable: "{initials}",
+        category: "Shortcuts",
+        description: "Your initials, set in Settings → Metadata → Variable Processing. Empty if unset. Works in keywords too, e.g. {initials}{date:yyMMdd}.",
+        example: "TA"
+    ),
+    VariableDefinition(
         variable: "{seq}",
         category: "Shortcuts",
         description: "Sequence number when processing multiple images. Starts at 1 for each batch.",

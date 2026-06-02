@@ -80,6 +80,7 @@ nonisolated enum UserDefaultsKeys {
 
     // MARK: - Variable Processing
     static let addJobIdToKeywords = "addJobIdToKeywords"
+    static let creatorInitials = "creatorInitials"
 
     // MARK: - Import Verification & Backup
     static let importVerificationMode = "importVerificationMode"

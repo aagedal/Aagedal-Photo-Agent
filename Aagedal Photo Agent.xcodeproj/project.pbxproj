@@ -20,6 +20,7 @@
 		AB0400000000000000000002 /* StructuredKeywordSerializerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0400000000000000000001 /* StructuredKeywordSerializerTests.swift */; };
 		AB0500000000000000000002 /* KeywordListsArchiveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0500000000000000000001 /* KeywordListsArchiveTests.swift */; };
 		AB0600000000000000000002 /* MetadataEngineConcurrencyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0600000000000000000001 /* MetadataEngineConcurrencyTests.swift */; };
+		AB0700000000000000000002 /* PresetVariableInterpolatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0700000000000000000001 /* PresetVariableInterpolatorTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -48,6 +49,7 @@
 		AB0400000000000000000001 /* StructuredKeywordSerializerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = StructuredKeywordSerializerTests.swift; sourceTree = "<group>"; };
 		AB0500000000000000000001 /* KeywordListsArchiveTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KeywordListsArchiveTests.swift; sourceTree = "<group>"; };
 		AB0600000000000000000001 /* MetadataEngineConcurrencyTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataEngineConcurrencyTests.swift; sourceTree = "<group>"; };
+		AB0700000000000000000001 /* PresetVariableInterpolatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PresetVariableInterpolatorTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -105,6 +107,7 @@
 				AB0400000000000000000001 /* StructuredKeywordSerializerTests.swift */,
 				AB0500000000000000000001 /* KeywordListsArchiveTests.swift */,
 				AB0600000000000000000001 /* MetadataEngineConcurrencyTests.swift */,
+				AB0700000000000000000001 /* PresetVariableInterpolatorTests.swift */,
 			);
 			path = "Aagedal Photo Agent Tests";
 			sourceTree = "<group>";
@@ -280,6 +283,7 @@
 				AB0400000000000000000002 /* StructuredKeywordSerializerTests.swift in Sources */,
 				AB0500000000000000000002 /* KeywordListsArchiveTests.swift in Sources */,
 				AB0600000000000000000002 /* MetadataEngineConcurrencyTests.swift in Sources */,
+				AB0700000000000000000002 /* PresetVariableInterpolatorTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
