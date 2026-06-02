@@ -30,7 +30,7 @@ final class KnownPeopleService {
         } else {
             url = Self.localKnownPeopleDirectory
         }
-        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        try? CloudCoordinatedIO.ensureDirectory(url)
         return url
     }
 
@@ -51,7 +51,7 @@ final class KnownPeopleService {
 
     private var thumbnailsDirectory: URL {
         let url = knownPeopleDirectory.appendingPathComponent("thumbnails", isDirectory: true)
-        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        try? CloudCoordinatedIO.ensureDirectory(url)
         return url
     }
 
@@ -63,7 +63,7 @@ final class KnownPeopleService {
 
     private var embeddingThumbnailsDirectory: URL {
         let url = knownPeopleDirectory.appendingPathComponent("embedding_thumbnails", isDirectory: true)
-        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        try? CloudCoordinatedIO.ensureDirectory(url)
         return url
     }
 
@@ -103,14 +103,14 @@ final class KnownPeopleService {
             return cached
         }
 
-        guard FileManager.default.fileExists(atPath: databaseFileURL.path) else {
+        guard CloudCoordinatedIO.itemExists(at: databaseFileURL) else {
             let empty = KnownPeopleDatabase()
             database = empty
             return empty
         }
 
         do {
-            let data = try Data(contentsOf: databaseFileURL)
+            let data = try CloudCoordinatedIO.readData(at: databaseFileURL)
             let loaded = try JSONDecoder().decode(KnownPeopleDatabase.self, from: data)
             database = loaded
             return loaded
@@ -122,7 +122,9 @@ final class KnownPeopleService {
                 .replacingOccurrences(of: ":", with: "-")
             let backupURL = databaseFileURL.deletingLastPathComponent()
                 .appendingPathComponent("database.json.corrupt.\(timestamp)")
-            try? FileManager.default.copyItem(at: databaseFileURL, to: backupURL)
+            if let corrupt = try? CloudCoordinatedIO.readData(at: databaseFileURL) {
+                try? CloudCoordinatedIO.writeData(corrupt, to: backupURL)
+            }
             knownPeopleLog.warning("Backed up corrupted database to \(backupURL.lastPathComponent, privacy: .public)")
 
             let empty = KnownPeopleDatabase()
@@ -135,7 +137,7 @@ final class KnownPeopleService {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(db)
-        try data.write(to: databaseFileURL, options: .atomic)
+        try CloudCoordinatedIO.writeData(data, to: databaseFileURL)
         NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
     }
 
@@ -152,19 +154,19 @@ final class KnownPeopleService {
 
     func loadThumbnail(for personID: UUID) -> NSImage? {
         let url = thumbnailURL(for: personID)
-        guard let data = try? Data(contentsOf: url) else { return nil }
+        guard let data = try? CloudCoordinatedIO.readData(at: url) else { return nil }
         return NSImage(data: data)
     }
 
     func saveThumbnail(_ imageData: Data, for personID: UUID) throws {
         let url = thumbnailURL(for: personID)
-        try imageData.write(to: url)
+        try CloudCoordinatedIO.writeData(imageData, to: url)
     }
 
     private func deleteThumbnail(for personID: UUID) {
         let url = thumbnailURL(for: personID)
         do {
-            try FileManager.default.removeItem(at: url)
+            try CloudCoordinatedIO.removeItem(at: url)
         } catch {
             knownPeopleLog.warning("Failed to delete thumbnail for \(personID): \(error.localizedDescription, privacy: .public)")
         }
@@ -174,7 +176,7 @@ final class KnownPeopleService {
 
     func saveEmbeddingThumbnail(_ imageData: Data, for embeddingID: UUID) throws {
         let url = embeddingThumbnailURL(for: embeddingID)
-        try imageData.write(to: url)
+        try CloudCoordinatedIO.writeData(imageData, to: url)
     }
 
     func saveEmbeddingThumbnails(_ thumbnails: [UUID: Data]) throws {
@@ -190,7 +192,7 @@ final class KnownPeopleService {
         }
 
         let url = embeddingThumbnailURL(for: embeddingID)
-        guard let data = try? Data(contentsOf: url),
+        guard let data = try? CloudCoordinatedIO.readData(at: url),
               let image = NSImage(data: data) else { return nil }
 
         embeddingThumbnailCache.setObject(image, forKey: key, cost: data.count)
@@ -200,7 +202,7 @@ final class KnownPeopleService {
     func deleteEmbeddingThumbnail(for embeddingID: UUID) {
         embeddingThumbnailCache.removeObject(forKey: embeddingID as NSUUID)
         let url = embeddingThumbnailURL(for: embeddingID)
-        try? FileManager.default.removeItem(at: url)
+        try? CloudCoordinatedIO.removeItem(at: url)
     }
 
     private func deleteAllEmbeddingThumbnails(for person: KnownPerson) {
@@ -505,13 +507,11 @@ final class KnownPeopleService {
         embeddingThumbnailCache.removeAllObjects()
 
         // Remove all files
-        if FileManager.default.fileExists(atPath: knownPeopleDirectory.path) {
-            try FileManager.default.removeItem(at: knownPeopleDirectory)
-        }
+        try CloudCoordinatedIO.removeItem(at: knownPeopleDirectory)
 
         // Recreate empty directory structure
-        try FileManager.default.createDirectory(at: thumbnailsDirectory, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: embeddingThumbnailsDirectory, withIntermediateDirectories: true)
+        try CloudCoordinatedIO.ensureDirectory(thumbnailsDirectory)
+        try CloudCoordinatedIO.ensureDirectory(embeddingThumbnailsDirectory)
         try saveDatabase(emptyDB)
         database = emptyDB
     }
@@ -863,20 +863,23 @@ final class KnownPeopleService {
         let peopleData = try encoder.encode(db.people)
         try peopleData.write(to: tempDir.appendingPathComponent("people.json"))
 
-        // Copy thumbnails
+        // Copy thumbnails (reads come from the possibly-iCloud container, so they
+        // go through the coordinator; the temp destination is a plain local write).
         for person in db.people {
             let sourceURL = thumbnailURL(for: person.id)
-            if FileManager.default.fileExists(atPath: sourceURL.path) {
+            if CloudCoordinatedIO.itemExists(at: sourceURL),
+               let data = try? CloudCoordinatedIO.readData(at: sourceURL) {
                 let destURL = tempThumbnailsDir.appendingPathComponent("\(person.id.uuidString).jpg")
-                try FileManager.default.copyItem(at: sourceURL, to: destURL)
+                try data.write(to: destURL)
             }
 
             // Copy embedding thumbnails
             for embedding in person.embeddings {
                 let embSource = embeddingThumbnailURL(for: embedding.id)
-                if FileManager.default.fileExists(atPath: embSource.path) {
+                if CloudCoordinatedIO.itemExists(at: embSource),
+                   let data = try? CloudCoordinatedIO.readData(at: embSource) {
                     let embDest = tempEmbeddingThumbnailsDir.appendingPathComponent("\(embedding.id.uuidString).jpg")
-                    try FileManager.default.copyItem(at: embSource, to: embDest)
+                    try data.write(to: embDest)
                 }
             }
         }
@@ -974,17 +977,18 @@ final class KnownPeopleService {
         let importedEmbeddingThumbnailsDir = extractedDir.appendingPathComponent("embedding_thumbnails")
         for person in newPeople {
             let sourceThumb = importedThumbnailsDir.appendingPathComponent("\(person.id.uuidString).jpg")
-            if FileManager.default.fileExists(atPath: sourceThumb.path) {
-                let destThumb = thumbnailURL(for: person.id)
-                try? FileManager.default.copyItem(at: sourceThumb, to: destThumb)
+            if FileManager.default.fileExists(atPath: sourceThumb.path),
+               let data = try? Data(contentsOf: sourceThumb) {
+                // Destination is the possibly-iCloud container, so write coordinated.
+                try? CloudCoordinatedIO.writeData(data, to: thumbnailURL(for: person.id))
             }
 
             // Copy embedding thumbnails
             for embedding in person.embeddings {
                 let embSource = importedEmbeddingThumbnailsDir.appendingPathComponent("\(embedding.id.uuidString).jpg")
-                if FileManager.default.fileExists(atPath: embSource.path) {
-                    let embDest = embeddingThumbnailURL(for: embedding.id)
-                    try? FileManager.default.copyItem(at: embSource, to: embDest)
+                if FileManager.default.fileExists(atPath: embSource.path),
+                   let data = try? Data(contentsOf: embSource) {
+                    try? CloudCoordinatedIO.writeData(data, to: embeddingThumbnailURL(for: embedding.id))
                 }
             }
         }
