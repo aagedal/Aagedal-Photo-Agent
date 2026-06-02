@@ -71,20 +71,33 @@ struct KeywordListsStoreTests {
         clearAllStoreFiles()
         let key = KeywordListKey.quick(.credit)
 
+        // Tests run in parallel and the observer listens with `object: nil`, so it
+        // can receive `.keywordListChanged` posts triggered by *other* suites. Filter
+        // to our own key and resume exactly once — otherwise a second matching post
+        // resumes the continuation twice (SWIFT TASK CONTINUATION MISUSE → crash).
+        final class Box: @unchecked Sendable {
+            var token: NSObjectProtocol?
+            var resumed = false
+        }
+        let box = Box()
+
         // Set up a one-shot wait for the notification before triggering the write.
         let observed = await withCheckedContinuation { (continuation: CheckedContinuation<KeywordListKey?, Never>) in
-            let token = NotificationCenter.default.addObserver(
+            box.token = NotificationCenter.default.addObserver(
                 forName: .keywordListChanged,
                 object: nil,
-                queue: .main
+                queue: .main  // callbacks serialize here, so the `resumed` guard is race-free
             ) { note in
                 let observed = note.userInfo?[KeywordListsStore.changedKeyUserInfo] as? KeywordListKey
+                guard observed == key, !box.resumed else { return }
+                box.resumed = true
+                if let token = box.token {
+                    NotificationCenter.default.removeObserver(token)
+                }
                 continuation.resume(returning: observed)
             }
             DispatchQueue.main.async {
                 try? KeywordListsStore.shared.writeEntries(["Acme"], to: key)
-                _ = token  // keep observer alive until callback fires
-                NotificationCenter.default.removeObserver(token)
             }
         }
         #expect(observed == key)
