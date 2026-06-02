@@ -15,6 +15,9 @@ struct Aagedal_Photo_AgentApp: App {
         // through the key-value store when that category is enabled.
         Task { @MainActor in
             KeywordListsCloudCoordinator.shared.refresh()
+            // One-shot migration of the legacy single `database.json` into
+            // per-person files; must run before the watcher starts reacting.
+            KnownPeopleService.shared.migrateLegacyDatabaseIfNeeded()
             KnownPeopleCloudCoordinator.shared.refresh()
             PreferencesSyncService.shared.start()
         }

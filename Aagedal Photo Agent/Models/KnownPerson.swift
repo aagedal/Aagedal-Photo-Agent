@@ -122,6 +122,23 @@ nonisolated struct KnownPeopleDatabase: Codable, Sendable {
     }
 }
 
+// MARK: - Tombstone
+
+/// Marker left behind when a person is deleted, stored alongside the per-person
+/// files as `people/<uuid>.deleted`. It lets a delete propagate through iCloud:
+/// a peer that still holds the person's `<uuid>.json` would otherwise re-sync it
+/// and resurrect the person. While the tombstone is present (within the GC
+/// window) the matching person file is suppressed and cleaned up on load.
+nonisolated struct KnownPersonTombstone: Codable, Sendable {
+    let id: UUID
+    let deletedAt: Date
+
+    init(id: UUID, deletedAt: Date = Date()) {
+        self.id = id
+        self.deletedAt = deletedAt
+    }
+}
+
 // MARK: - Export Manifest
 
 nonisolated struct KnownPeopleManifest: Codable, Sendable {

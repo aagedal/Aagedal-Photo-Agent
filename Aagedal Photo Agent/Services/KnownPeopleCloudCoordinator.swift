@@ -4,32 +4,17 @@ import os
 private let logger = Logger(subsystem: "com.aagedal.photo-agent", category: "KnownPeopleCloudCoordinator")
 
 /// Watches the iCloud ubiquity container for changes to the Known People
-/// database/thumbnails made on *other* devices and refreshes
-/// `KnownPeopleService` so the UI reflects them. Mirrors
-/// `KeywordListsCloudCoordinator`. Active only while Known People iCloud sync is
-/// enabled AND the container is reachable.
+/// per-person files made on *other* devices and refreshes `KnownPeopleService`
+/// so the UI reflects them. Mirrors `KeywordListsCloudCoordinator`. Active only
+/// while Known People iCloud sync is enabled AND the container is reachable.
 ///
-/// DRAFT — known limitations to resolve before this is relied on:
-///
-///  1. **No self-write filtering.** The query also fires for this device's own
-///     writes (every `saveDatabase`, every thumbnail write, and especially a
-///     batch import). The 1s debounce coalesces a burst into a single reload,
-///     but that reload still runs after local edits settle. A cleaner version
-///     would suppress reacting while a local save is in flight, or stamp a
-///     generation counter in `database.json` and skip the reload when the
-///     incoming change is one this device just made.
-///
-///  2. **Reload is heavy.** `reloadAfterStorageChange()` drops the whole
-///     in-memory database, the feature-print cache, and the thumbnail cache,
-///     then re-reads `database.json`. For large libraries this is much heavier
-///     than the keyword-list refresh. Consider a lighter "reload database only"
-///     entry point that keeps the feature-print cache warm.
-///
-///  3. **Whole-file last-writer-wins.** Even with this watcher, two devices
-///     editing concurrently still race on a single `database.json`: the later
-///     writer overwrites the earlier one wholesale. True multi-device safety
-///     needs record-level merge (or per-person files), which is out of scope
-///     for a change-watcher and is the larger follow-up.
+/// Reacts at file granularity: it collects the changed `people/<uuid>.json` and
+/// `<uuid>.deleted` URLs from each query update and hands them to
+/// `KnownPeopleService.applyRemoteChanges(_:)`, which patches just those cache
+/// entries (resolving any conflict versions) instead of dropping the whole
+/// in-memory database. The service filters out echoes of this device's own
+/// writes via its self-write registry, so a local save no longer triggers a
+/// reload.
 @MainActor
 final class KnownPeopleCloudCoordinator {
     static let shared = KnownPeopleCloudCoordinator()
@@ -37,6 +22,9 @@ final class KnownPeopleCloudCoordinator {
     private var query: NSMetadataQuery?
     private var observers: [NSObjectProtocol] = []
     private var pendingRefresh: Task<Void, Never>?
+    /// Changed person-file URLs accumulated across query updates within one
+    /// debounce window, keyed by path so repeated notifications coalesce.
+    private var pendingChanges: [String: (url: URL, contentChangeDate: Date?)] = [:]
 
     private init() {}
 
@@ -65,9 +53,10 @@ final class KnownPeopleCloudCoordinator {
         // ubiquitous documents scope; `handleUpdate` narrows to the KnownPeople
         // folder by path prefix (the scope only contains this app's files).
         q.predicate = NSPredicate(
-            format: "%K ENDSWITH %@ OR %K ENDSWITH %@",
+            format: "%K ENDSWITH %@ OR %K ENDSWITH %@ OR %K ENDSWITH %@",
             NSMetadataItemFSNameKey, ".json",
-            NSMetadataItemFSNameKey, ".jpg"
+            NSMetadataItemFSNameKey, ".jpg",
+            NSMetadataItemFSNameKey, ".deleted"
         )
 
         let center = NotificationCenter.default
@@ -103,6 +92,7 @@ final class KnownPeopleCloudCoordinator {
         observers.removeAll()
         pendingRefresh?.cancel()
         pendingRefresh = nil
+        pendingChanges.removeAll()
         query = nil
         logger.info("Stopped iCloud metadata query")
     }
@@ -112,37 +102,44 @@ final class KnownPeopleCloudCoordinator {
         defer { query.enableUpdates() }
 
         guard let root = AppPaths.iCloudKnownPeopleURL else { return }
-        let rootPath = root.path
+        let peoplePath = root.appendingPathComponent("people", isDirectory: true).path
 
-        var touched = false
         for case let item as NSMetadataItem in query.results {
             guard let path = item.value(forAttribute: NSMetadataItemPathKey) as? String,
-                  path.hasPrefix(rootPath) else { continue }
-            touched = true
+                  let url = item.value(forAttribute: NSMetadataItemURLKey) as? URL else { continue }
+            // Only person files (people/<uuid>.json and <uuid>.deleted) drive a
+            // record-level refresh; thumbnails are read lazily on demand.
+            guard path.hasPrefix(peoplePath),
+                  url.pathExtension == "json" || url.pathExtension == "deleted" else { continue }
+
             // Pull down any item that is still a metadata-only stub locally — on
             // the first sync after a new device signs in, iCloud may hold only
             // the placeholder.
             if let status = item.value(forAttribute: NSMetadataUbiquitousItemDownloadingStatusKey) as? String,
-               status != NSMetadataUbiquitousItemDownloadingStatusCurrent,
-               let url = item.value(forAttribute: NSMetadataItemURLKey) as? URL {
+               status != NSMetadataUbiquitousItemDownloadingStatusCurrent {
                 try? FileManager.default.startDownloadingUbiquitousItem(at: url)
             }
+
+            let changeDate = item.value(forAttribute: NSMetadataItemFSContentChangeDateKey) as? Date
+            pendingChanges[path] = (url: url, contentChangeDate: changeDate)
         }
 
-        if touched { scheduleRefresh() }
+        if !pendingChanges.isEmpty { scheduleRefresh() }
     }
 
     /// Coalesce bursts of update notifications (one sync pulls many files) into a
-    /// single reload shortly after the last one settles. See limitation (1): this
-    /// still reloads after the device's own writes.
+    /// single per-file refresh shortly after the last one settles.
     private func scheduleRefresh() {
         pendingRefresh?.cancel()
         pendingRefresh = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(1))
-            guard !Task.isCancelled else { return }
-            self?.pendingRefresh = nil
-            logger.info("Remote Known People change detected — reloading database")
-            KnownPeopleService.shared.reloadAfterStorageChange()
+            guard !Task.isCancelled, let self else { return }
+            self.pendingRefresh = nil
+            let changes = Array(self.pendingChanges.values)
+            self.pendingChanges.removeAll()
+            guard !changes.isEmpty else { return }
+            logger.info("Remote Known People change detected — applying \(changes.count, privacy: .public) file change(s)")
+            KnownPeopleService.shared.applyRemoteChanges(changes)
         }
     }
 }

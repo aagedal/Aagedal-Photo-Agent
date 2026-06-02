@@ -22,26 +22,41 @@ final class KnownPeopleService {
         AppPaths.applicationSupport.appendingPathComponent("KnownPeople", isDirectory: true)
     }
 
+    /// Test-only seam: when set, overrides the resolved storage root so unit
+    /// tests can point the singleton at a temp directory without touching the
+    /// iCloud/local preference. Production code never sets this. After changing
+    /// it, call `reloadAfterStorageChange()` to drop the cache.
+    static var storageOverrideURL: URL?
+
+    /// How long a deletion tombstone is honored before it is garbage-collected.
+    /// While present, a person's file is suppressed so a peer that still holds
+    /// the person can't resurrect it; after the window a re-synced file could
+    /// reappear (accepted as rare — a peer offline longer than this).
+    private static let tombstoneRetention: TimeInterval = 30 * 24 * 60 * 60
+
     /// Resolved storage root, cached after first use. Resolving it does a
     /// ubiquity-container lookup plus coordinated `ensureDirectory` calls (root +
-    /// both thumbnail subfolders), all of which are wasted if repeated on every
-    /// access — and these accessors are hit per-cell in the face grids. Cleared
-    /// by `reloadAfterStorageChange()` when the backing store toggles.
+    /// people + both thumbnail subfolders), all of which are wasted if repeated
+    /// on every access — and these accessors are hit per-cell in the face grids.
+    /// Cleared by `reloadAfterStorageChange()` when the backing store toggles.
     private var cachedDirectory: URL?
 
     private var knownPeopleDirectory: URL {
         if let cached = cachedDirectory { return cached }
         let url: URL
-        if UserDefaults.standard.bool(forKey: UserDefaultsKeys.knownPeopleICloudEnabled),
-           let cloud = AppPaths.iCloudKnownPeopleURL {
+        if let override = Self.storageOverrideURL {
+            url = override
+        } else if UserDefaults.standard.bool(forKey: UserDefaultsKeys.knownPeopleICloudEnabled),
+                  let cloud = AppPaths.iCloudKnownPeopleURL {
             url = cloud
         } else {
             url = Self.localKnownPeopleDirectory
         }
-        // Ensure the root and both subfolders once, here, so the per-access
+        // Ensure the root and all subfolders once, here, so the per-access
         // accessors below can stay coordination-free. (Writes additionally
         // ensure their own parent via CloudCoordinatedIO.writeData.)
         try? CloudCoordinatedIO.ensureDirectory(url)
+        try? CloudCoordinatedIO.ensureDirectory(url.appendingPathComponent("people", isDirectory: true))
         try? CloudCoordinatedIO.ensureDirectory(url.appendingPathComponent("thumbnails", isDirectory: true))
         try? CloudCoordinatedIO.ensureDirectory(url.appendingPathComponent("embedding_thumbnails", isDirectory: true))
         cachedDirectory = url
@@ -60,8 +75,60 @@ final class KnownPeopleService {
         NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
     }
 
-    private var databaseFileURL: URL {
+    // MARK: - Per-person file layout
+
+    /// Directory holding one `<uuid>.json` per person (and `<uuid>.deleted`
+    /// tombstones). This is the source of truth; the "database" is its listing.
+    private var peopleDirectory: URL {
+        knownPeopleDirectory.appendingPathComponent("people", isDirectory: true)
+    }
+
+    private func personFileURL(for personID: UUID) -> URL {
+        peopleDirectory.appendingPathComponent("\(personID.uuidString).json")
+    }
+
+    private func tombstoneURL(for personID: UUID) -> URL {
+        peopleDirectory.appendingPathComponent("\(personID.uuidString).deleted")
+    }
+
+    /// Legacy single-file store, retired after the one-shot migration in
+    /// `migrateLegacyDatabaseIfNeeded()`.
+    private var legacyDatabaseFileURL: URL {
         knownPeopleDirectory.appendingPathComponent("database.json")
+    }
+
+    // MARK: - Self-write filtering
+
+    /// Paths this device wrote recently, mapped to the write time. The remote
+    /// watcher consults this so it doesn't react to our own saves. Entries are
+    /// pruned by age (`selfWriteWindow`); the map only ever holds a handful.
+    private var recentLocalWrites: [String: Date] = [:]
+    private static let selfWriteWindow: TimeInterval = 10
+    /// Tolerance between our recorded write time and the change date the
+    /// metadata query reports for the same write.
+    private static let selfWriteTolerance: TimeInterval = 3
+
+    private func stampLocalWrite(_ url: URL) {
+        let now = Date()
+        recentLocalWrites[url.standardizedFileURL.path] = now
+        // Opportunistic prune so the map can't grow unbounded.
+        recentLocalWrites = recentLocalWrites.filter { now.timeIntervalSince($0.value) < Self.selfWriteWindow }
+    }
+
+    /// Whether a remote-change notification for `path` (with the file's reported
+    /// `contentChangeDate`) is just an echo of a write this device made.
+    func shouldSkipRemoteReload(path: String, contentChangeDate: Date?) -> Bool {
+        let key = URL(fileURLWithPath: path).standardizedFileURL.path
+        guard let stamped = recentLocalWrites[key] else { return false }
+        let now = Date()
+        if now.timeIntervalSince(stamped) >= Self.selfWriteWindow {
+            recentLocalWrites[key] = nil
+            return false
+        }
+        // If the watcher reports a change time at/just-after our write, treat it
+        // as our echo. Without a change date, fall back to the recency window.
+        guard let changeDate = contentChangeDate else { return true }
+        return abs(changeDate.timeIntervalSince(stamped)) <= Self.selfWriteTolerance
     }
 
     private var thumbnailsDirectory: URL {
@@ -107,58 +174,327 @@ final class KnownPeopleService {
         peopleIndex = Dictionary(uniqueKeysWithValues: db.people.enumerated().map { ($1.id, $0) })
     }
 
-    // MARK: - Load / Save
+    // MARK: - Load
 
+    /// Assembles the in-memory database from the per-person files in `people/`.
+    /// The directory listing *is* the database — there is no single index file.
+    /// Different people live in different files, so two devices editing unrelated
+    /// people never clobber each other (the whole-file race this store had).
     func loadDatabase() -> KnownPeopleDatabase {
         if let cached = database {
             return cached
         }
 
-        guard CloudCoordinatedIO.itemExists(at: databaseFileURL) else {
-            let empty = KnownPeopleDatabase()
-            database = empty
-            return empty
+        migrateLegacyDatabaseIfNeeded()
+
+        let entries = (try? CloudCoordinatedIO.contentsOfDirectory(at: peopleDirectory)) ?? []
+
+        // Collect tombstones first so suppressed people are skipped on assembly.
+        // GC expired markers in the same pass.
+        let tombstoned = collectTombstones(in: entries)
+
+        var people: [KnownPerson] = []
+        for url in entries where url.pathExtension == "json" {
+            guard let person = loadPersonFile(at: url) else { continue }
+
+            if tombstoned.contains(person.id) {
+                // A peer re-synced a person we deleted. Honor the delete and
+                // clean up the stray file so it doesn't keep reappearing.
+                try? CloudCoordinatedIO.removeItem(at: url)
+                continue
+            }
+            people.append(person)
         }
 
+        let loaded = KnownPeopleDatabase(
+            people: people,
+            lastModified: people.map(\.updatedAt).max() ?? Date()
+        )
+        database = loaded
+        return loaded
+    }
+
+    /// Reads and decodes one person file, resolving any iCloud conflict versions
+    /// first. Corrupt files are backed up and skipped (rather than aborting the
+    /// whole load), mirroring `TemplateStorageService.loadAll`.
+    private func loadPersonFile(at url: URL) -> KnownPerson? {
+        if let resolved = resolveConflicts(at: url) {
+            return resolved
+        }
         do {
-            let data = try CloudCoordinatedIO.readData(at: databaseFileURL)
-            let loaded = try JSONDecoder().decode(KnownPeopleDatabase.self, from: data)
-            database = loaded
-            return loaded
+            let data = try CloudCoordinatedIO.readData(at: url)
+            return try JSONDecoder().decode(KnownPerson.self, from: data)
         } catch {
-            knownPeopleLog.error("Failed to load database: \(error.localizedDescription, privacy: .public)")
-
-            // Backup the corrupted file before allowing it to be overwritten
-            let timestamp = ISO8601DateFormatter().string(from: Date())
-                .replacingOccurrences(of: ":", with: "-")
-            let backupURL = databaseFileURL.deletingLastPathComponent()
-                .appendingPathComponent("database.json.corrupt.\(timestamp)")
-            if let corrupt = try? CloudCoordinatedIO.readData(at: databaseFileURL) {
-                try? CloudCoordinatedIO.writeData(corrupt, to: backupURL)
-            }
-            knownPeopleLog.warning("Backed up corrupted database to \(backupURL.lastPathComponent, privacy: .public)")
-
-            let empty = KnownPeopleDatabase()
-            database = empty
-            return empty
+            knownPeopleLog.error("Failed to load person file \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            backupCorruptFile(at: url)
+            return nil
         }
     }
 
-    private func saveDatabase(_ db: KnownPeopleDatabase) throws {
+    private func backupCorruptFile(at url: URL) {
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+            .replacingOccurrences(of: ":", with: "-")
+        let backupURL = url.deletingLastPathComponent()
+            .appendingPathComponent("\(url.lastPathComponent).corrupt.\(timestamp)")
+        if let corrupt = try? CloudCoordinatedIO.readData(at: url) {
+            try? CloudCoordinatedIO.writeData(corrupt, to: backupURL)
+            knownPeopleLog.warning("Backed up corrupted file to \(backupURL.lastPathComponent, privacy: .public)")
+        }
+    }
+
+    // MARK: - Write
+
+    /// Encodes one person to its own file. The single entry point for persisting
+    /// a person, so self-write stamping and change notification live here.
+    private func writePerson(_ person: KnownPerson) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = try encoder.encode(db)
-        try CloudCoordinatedIO.writeData(data, to: databaseFileURL)
+        let data = try encoder.encode(person)
+        let url = personFileURL(for: person.id)
+        try CloudCoordinatedIO.writeData(data, to: url)
+        stampLocalWrite(url)
         NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
     }
 
-    /// Load → mutate → save → update cache. Centralizes the repeated CRUD pattern.
-    private func mutateDatabase(_ transform: (inout KnownPeopleDatabase) throws -> Void) throws {
-        var db = loadDatabase()
-        try transform(&db)
-        db.lastModified = Date()
-        try saveDatabase(db)
+    /// Load → mutate one person → write that one file → update cache. Replaces
+    /// the old whole-file `mutateDatabase`. The transform may no-op (e.g. the
+    /// person vanished); in that case nothing is written.
+    /// - Returns: whether a write happened.
+    @discardableResult
+    private func mutatePerson(id personID: UUID, _ transform: (inout KnownPerson) throws -> Bool) throws -> Bool {
+        _ = loadDatabase()
+        guard let index = peopleIndex[personID],
+              var db = database,
+              db.people.indices.contains(index) else {
+            return false
+        }
+        var person = db.people[index]
+        let changed = try transform(&person)
+        guard changed else { return false }
+        person.updatedAt = Date()
+        try writePerson(person)
+        db.people[index] = person
+        db.lastModified = person.updatedAt
         database = db
+        return true
+    }
+
+    // MARK: - Conflict resolution
+
+    /// Deterministically merges several records of the *same* person (the local
+    /// copy plus iCloud conflict versions): scalar fields come from the record
+    /// with the highest `updatedAt`; `createdAt` keeps the earliest; embeddings
+    /// are unioned by `id` and then deduped by `featurePrintData`.
+    func mergePersonRecords(_ records: [KnownPerson]) -> KnownPerson {
+        precondition(!records.isEmpty, "mergePersonRecords requires at least one record")
+        let newest = records.max { $0.updatedAt < $1.updatedAt }!
+
+        // Union embeddings by id (later-seen wins on id collision is irrelevant —
+        // embeddings are immutable), preserving first-seen order, then dedup by
+        // feature-print bytes.
+        var byID: [UUID: PersonEmbedding] = [:]
+        var orderedIDs: [UUID] = []
+        for record in records {
+            for embedding in record.embeddings where byID[embedding.id] == nil {
+                byID[embedding.id] = embedding
+                orderedIDs.append(embedding.id)
+            }
+        }
+        let unioned = orderedIDs.compactMap { byID[$0] }
+        let merged = dedupeEmbeddings(unioned)
+
+        return KnownPerson(
+            id: newest.id,
+            name: newest.name,
+            role: newest.role,
+            notes: newest.notes,
+            embeddings: merged,
+            representativeThumbnailID: newest.representativeThumbnailID,
+            createdAt: records.map(\.createdAt).min() ?? newest.createdAt,
+            updatedAt: records.map(\.updatedAt).max() ?? newest.updatedAt
+        )
+    }
+
+    /// Drops embeddings whose `featurePrintData` duplicates an earlier one,
+    /// keeping first occurrence. Shared by merge and the dedup-add paths.
+    private func dedupeEmbeddings(_ embeddings: [PersonEmbedding]) -> [PersonEmbedding] {
+        var seenData = Set<Data>()
+        var result: [PersonEmbedding] = []
+        for embedding in embeddings where seenData.insert(embedding.featurePrintData).inserted {
+            result.append(embedding)
+        }
+        return result
+    }
+
+    /// If the file has unresolved iCloud conflict versions, merge them all into
+    /// one record, rewrite the file, and clear the conflict versions. Returns the
+    /// merged person, or nil if there were no conflicts (caller decodes normally).
+    /// No-op on local stores, which never have conflict versions.
+    private func resolveConflicts(at url: URL) -> KnownPerson? {
+        guard let conflicts = NSFileVersion.unresolvedConflictVersionsOfItem(at: url),
+              !conflicts.isEmpty else {
+            return nil
+        }
+
+        let decoder = JSONDecoder()
+        var records: [KnownPerson] = []
+        if let currentData = try? CloudCoordinatedIO.readData(at: url),
+           let current = try? decoder.decode(KnownPerson.self, from: currentData) {
+            records.append(current)
+        }
+        for version in conflicts {
+            if let data = try? Data(contentsOf: version.url),
+               let person = try? decoder.decode(KnownPerson.self, from: data) {
+                records.append(person)
+            }
+        }
+
+        guard !records.isEmpty else {
+            // Can't decode anything — give up but still clear versions so we
+            // don't loop on this file forever.
+            try? NSFileVersion.removeOtherVersionsOfItem(at: url)
+            return nil
+        }
+
+        let merged = mergePersonRecords(records)
+        do {
+            try writePerson(merged)
+            for version in conflicts { version.isResolved = true }
+            try NSFileVersion.removeOtherVersionsOfItem(at: url)
+            knownPeopleLog.info("Resolved \(conflicts.count, privacy: .public) conflict version(s) for \(url.lastPathComponent, privacy: .public)")
+        } catch {
+            knownPeopleLog.error("Failed to resolve conflicts for \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
+        return merged
+    }
+
+    // MARK: - Tombstones
+
+    /// Returns the set of tombstoned person IDs, garbage-collecting any markers
+    /// older than `tombstoneRetention` in the same pass.
+    private func collectTombstones(in entries: [URL]) -> Set<UUID> {
+        let decoder = JSONDecoder()
+        let now = Date()
+        var tombstoned = Set<UUID>()
+        for url in entries where url.pathExtension == "deleted" {
+            guard let data = try? CloudCoordinatedIO.readData(at: url),
+                  let tombstone = try? decoder.decode(KnownPersonTombstone.self, from: data) else {
+                // Unreadable marker — drop the id parsed from the filename if we
+                // can, else just remove the junk file.
+                if let id = UUID(uuidString: url.deletingPathExtension().lastPathComponent) {
+                    tombstoned.insert(id)
+                } else {
+                    try? CloudCoordinatedIO.removeItem(at: url)
+                }
+                continue
+            }
+            if now.timeIntervalSince(tombstone.deletedAt) >= Self.tombstoneRetention {
+                try? CloudCoordinatedIO.removeItem(at: url)
+            } else {
+                tombstoned.insert(tombstone.id)
+            }
+        }
+        return tombstoned
+    }
+
+    private func writeTombstone(for personID: UUID) {
+        let tombstone = KnownPersonTombstone(id: personID)
+        guard let data = try? JSONEncoder().encode(tombstone) else { return }
+        let url = tombstoneURL(for: personID)
+        try? CloudCoordinatedIO.writeData(data, to: url)
+        stampLocalWrite(url)
+    }
+
+    // MARK: - Migration
+
+    /// One-shot migration of the legacy single `database.json` into per-person
+    /// files. Idempotent by construction: it returns immediately when no legacy
+    /// file exists, writes each person only if its file isn't already present
+    /// (so it never clobbers newer per-person data synced from a peer), then
+    /// retires `database.json`. The file-existence guard is more robust than a
+    /// UserDefaults version stamp here, because the legacy file can live in
+    /// either the local or the iCloud root depending on the sync toggle.
+    func migrateLegacyDatabaseIfNeeded() {
+        let legacyURL = legacyDatabaseFileURL
+        guard CloudCoordinatedIO.itemExists(at: legacyURL) else { return }
+
+        do {
+            let data = try CloudCoordinatedIO.readData(at: legacyURL)
+            let legacy = try JSONDecoder().decode(KnownPeopleDatabase.self, from: data)
+            for person in legacy.people where !CloudCoordinatedIO.itemExists(at: personFileURL(for: person.id)) {
+                try writePerson(person)
+            }
+            try CloudCoordinatedIO.removeItem(at: legacyURL)
+            knownPeopleLog.info("Migrated \(legacy.people.count, privacy: .public) people from legacy database.json to per-person files")
+        } catch {
+            knownPeopleLog.error("Legacy database migration failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    // MARK: - Remote changes
+
+    /// Applies remote changes to individual person files (from the iCloud
+    /// metadata-query watcher) without dropping the whole in-memory database.
+    /// Each entry is the changed file's URL and the change date the query
+    /// reported (used to skip echoes of this device's own writes). For each file
+    /// we resolve conflicts, re-read it, and update just that cache entry — or
+    /// remove it for a tombstone / deleted file.
+    func applyRemoteChanges(_ changes: [(url: URL, contentChangeDate: Date?)]) {
+        // Nothing loaded yet → a full lazy load on next access is cheaper and
+        // correct; no per-file patching needed.
+        guard var db = database else { return }
+
+        var didChange = false
+        for change in changes {
+            let url = change.url
+            guard !shouldSkipRemoteReload(path: url.path, contentChangeDate: change.contentChangeDate) else { continue }
+            guard let personID = personID(fromFileURL: url) else { continue }
+
+            if url.pathExtension == "deleted" {
+                // A peer deleted this person — drop it and clean its file.
+                if db.people.contains(where: { $0.id == personID }) {
+                    db.people.removeAll { $0.id == personID }
+                    didChange = true
+                }
+                try? CloudCoordinatedIO.removeItem(at: personFileURL(for: personID))
+                featurePrintCache.removeAllObjects()
+                continue
+            }
+
+            guard url.pathExtension == "json" else { continue }
+
+            // Suppress a resurrected file if we hold a live tombstone for it.
+            if CloudCoordinatedIO.itemExists(at: tombstoneURL(for: personID)) {
+                try? CloudCoordinatedIO.removeItem(at: url)
+                continue
+            }
+
+            if let person = loadPersonFile(at: url) {
+                featurePrintCache.removeAllObjects()
+                if let index = db.people.firstIndex(where: { $0.id == person.id }) {
+                    db.people[index] = person
+                } else {
+                    db.people.append(person)
+                }
+                didChange = true
+            } else if !CloudCoordinatedIO.itemExists(at: url) {
+                // File vanished (deleted remotely without a tombstone reaching us yet).
+                if db.people.contains(where: { $0.id == personID }) {
+                    db.people.removeAll { $0.id == personID }
+                    didChange = true
+                }
+            }
+        }
+
+        if didChange {
+            db.lastModified = db.people.map(\.updatedAt).max() ?? Date()
+            database = db
+            NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
+        }
+    }
+
+    private func personID(fromFileURL url: URL) -> UUID? {
+        UUID(uuidString: url.deletingPathExtension().lastPathComponent)
     }
 
     // MARK: - Thumbnails
@@ -246,29 +582,34 @@ final class KnownPeopleService {
             try saveEmbeddingThumbnails(embeddingThumbnails)
         }
 
-        try mutateDatabase { db in
-            db.people.append(person)
-        }
+        try writePerson(person)
+        var db = loadDatabase()
+        db.people.append(person)
+        db.lastModified = person.updatedAt
+        database = db
 
         return person
     }
 
     func updatePerson(_ person: KnownPerson) throws {
-        guard let index = peopleIndex[person.id] else {
+        guard peopleIndex[person.id] != nil else {
             throw NSError(domain: "KnownPeopleService", code: 10,
                           userInfo: [NSLocalizedDescriptionKey: "Person not found: \(person.name)"])
         }
 
-        try mutateDatabase { db in
-            guard db.people.indices.contains(index) else { return }
-            var updated = person
-            updated.updatedAt = Date()
-            db.people[index] = updated
+        try mutatePerson(id: person.id) { existing in
+            // Carry over the caller's edited fields, preserving identity/createdAt.
+            existing.name = person.name
+            existing.role = person.role
+            existing.notes = person.notes
+            existing.embeddings = person.embeddings
+            existing.representativeThumbnailID = person.representativeThumbnailID
+            return true
         }
     }
 
     func removePerson(id: UUID) throws {
-        // Delete embedding thumbnails before removing from database
+        // Delete embedding thumbnails before removing from the store
         if let person = person(byID: id) {
             deleteAllEmbeddingThumbnails(for: person)
             for embedding in person.embeddings {
@@ -276,14 +617,20 @@ final class KnownPeopleService {
             }
         }
 
-        try mutateDatabase { db in
+        // Tombstone first so the delete propagates and can't be resurrected by a
+        // peer, then remove the person file and drop it from the cache.
+        writeTombstone(for: id)
+        try CloudCoordinatedIO.removeItem(at: personFileURL(for: id))
+        if var db = database {
             db.people.removeAll { $0.id == id }
+            database = db
         }
         deleteThumbnail(for: id)
+        NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
     }
 
     func addEmbedding(_ embedding: PersonEmbedding, toPersonID personID: UUID, thumbnailData: Data? = nil) throws {
-        guard let index = peopleIndex[personID] else {
+        guard peopleIndex[personID] != nil else {
             throw NSError(domain: "KnownPeopleService", code: 10,
                           userInfo: [NSLocalizedDescriptionKey: "Person not found with ID: \(personID)"])
         }
@@ -292,10 +639,9 @@ final class KnownPeopleService {
             try saveEmbeddingThumbnail(thumbData, for: embedding.id)
         }
 
-        try mutateDatabase { db in
-            guard db.people.indices.contains(index) else { return }
-            db.people[index].embeddings.append(embedding)
-            db.people[index].updatedAt = Date()
+        try mutatePerson(id: personID) { person in
+            person.embeddings.append(embedding)
+            return true
         }
     }
 
@@ -384,24 +730,21 @@ final class KnownPeopleService {
 
     /// Add embeddings to a person, skipping any that are duplicates (same featurePrintData).
     func addEmbeddingsDeduped(_ embeddings: [PersonEmbedding], toPersonID personID: UUID, embeddingThumbnails: [UUID: Data] = [:]) throws {
-        guard let index = peopleIndex[personID] else {
+        guard peopleIndex[personID] != nil else {
             throw NSError(domain: "KnownPeopleService", code: 10,
                           userInfo: [NSLocalizedDescriptionKey: "Person not found with ID: \(personID)"])
         }
 
         var addedEmbeddingIDs: Set<UUID> = []
 
-        try mutateDatabase { db in
-            guard db.people.indices.contains(index) else { return }
-
-            let existingData = Set(db.people[index].embeddings.map { $0.featurePrintData })
+        try mutatePerson(id: personID) { person in
+            let existingData = Set(person.embeddings.map { $0.featurePrintData })
             let newEmbeddings = embeddings.filter { !existingData.contains($0.featurePrintData) }
-
-            guard !newEmbeddings.isEmpty else { return }
+            guard !newEmbeddings.isEmpty else { return false }
 
             addedEmbeddingIDs = Set(newEmbeddings.map(\.id))
-            db.people[index].embeddings.append(contentsOf: newEmbeddings)
-            db.people[index].updatedAt = Date()
+            person.embeddings.append(contentsOf: newEmbeddings)
+            return true
         }
 
         // Save thumbnails only for embeddings that were actually added
@@ -424,34 +767,39 @@ final class KnownPeopleService {
 
     /// Merge people: combine embeddings from source into target, delete source.
     /// Deduplicates embeddings to avoid storing the same face data multiple times.
+    ///
+    /// Touches two person files (target update + source delete) with no
+    /// cross-file transaction. If interrupted between them the worst case is a
+    /// lingering source that a later merge or delete cleans up — persons are
+    /// independent, so there's no inconsistent shared state.
     func mergePeople(sourceID: UUID, intoTargetID: UUID) throws {
         guard sourceID != intoTargetID else { return }
 
-        guard let sourceIndex = peopleIndex[sourceID],
-              let targetIndex = peopleIndex[intoTargetID] else {
+        guard peopleIndex[sourceID] != nil, peopleIndex[intoTargetID] != nil,
+              let source = person(byID: sourceID) else {
             return
         }
 
-        let db = loadDatabase()
-        let sourceEmbeddings = db.people.indices.contains(sourceIndex)
-            ? db.people[sourceIndex].embeddings : []
-
+        let sourceEmbeddings = source.embeddings
         var keptEmbeddingIDs: Set<UUID> = []
 
-        try mutateDatabase { db in
-            guard db.people.indices.contains(sourceIndex),
-                  db.people.indices.contains(targetIndex) else { return }
-
-            let existingData = Set(db.people[targetIndex].embeddings.map { $0.featurePrintData })
-            let newEmbeddings = db.people[sourceIndex].embeddings.filter { embedding in
-                !existingData.contains(embedding.featurePrintData)
-            }
-
+        // 1. Fold source embeddings into the target (one file write).
+        try mutatePerson(id: intoTargetID) { target in
+            let existingData = Set(target.embeddings.map { $0.featurePrintData })
+            let newEmbeddings = sourceEmbeddings.filter { !existingData.contains($0.featurePrintData) }
             keptEmbeddingIDs = Set(newEmbeddings.map(\.id))
+            guard !newEmbeddings.isEmpty else { return false }
+            target.embeddings.append(contentsOf: newEmbeddings)
+            return true
+        }
 
-            db.people[targetIndex].embeddings.append(contentsOf: newEmbeddings)
-            db.people[targetIndex].updatedAt = Date()
+        // 2. Tombstone and remove the source (so the delete propagates) and drop
+        //    it from the cache.
+        writeTombstone(for: sourceID)
+        try CloudCoordinatedIO.removeItem(at: personFileURL(for: sourceID))
+        if var db = database {
             db.people.removeAll { $0.id == sourceID }
+            database = db
         }
         deleteThumbnail(for: sourceID)
 
@@ -459,35 +807,31 @@ final class KnownPeopleService {
             featurePrintCache.removeObject(forKey: embedding.id as NSUUID)
             deleteEmbeddingThumbnail(for: embedding.id)
         }
+        NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
     }
 
     /// Replace the thumbnail for a known person
     func replaceThumbnail(for personID: UUID, newThumbnailData: Data) throws {
         try saveThumbnail(newThumbnailData, for: personID)
 
-        guard let index = peopleIndex[personID] else { return }
-        try mutateDatabase { db in
-            guard db.people.indices.contains(index) else { return }
-            db.people[index].updatedAt = Date()
-        }
+        guard peopleIndex[personID] != nil else { return }
+        // Bump updatedAt (writes the file) so the change syncs and wins on merge.
+        try mutatePerson(id: personID) { _ in true }
     }
 
     /// Delete a single embedding from a person
     func removeEmbedding(_ embeddingID: UUID, fromPersonID personID: UUID) throws {
-        guard let index = peopleIndex[personID] else { return }
+        guard peopleIndex[personID] != nil else { return }
 
         var wasRepresentative = false
 
-        try mutateDatabase { db in
-            guard db.people.indices.contains(index) else { return }
-            wasRepresentative = db.people[index].representativeThumbnailID == embeddingID
-            db.people[index].embeddings.removeAll { $0.id == embeddingID }
-
+        try mutatePerson(id: personID) { person in
+            wasRepresentative = person.representativeThumbnailID == embeddingID
+            person.embeddings.removeAll { $0.id == embeddingID }
             if wasRepresentative {
-                db.people[index].representativeThumbnailID = db.people[index].embeddings.first?.id
+                person.representativeThumbnailID = person.embeddings.first?.id
             }
-
-            db.people[index].updatedAt = Date()
+            return true
         }
 
         featurePrintCache.removeObject(forKey: embeddingID as NSUUID)
@@ -516,15 +860,18 @@ final class KnownPeopleService {
         let emptyDB = KnownPeopleDatabase()
         featurePrintCache.removeAllObjects()
         embeddingThumbnailCache.removeAllObjects()
+        recentLocalWrites.removeAll()
 
-        // Remove all files
+        // Remove all files (people/, thumbnails, embedding thumbnails, any
+        // tombstones). This is a local nuke — tombstones go with it.
         try CloudCoordinatedIO.removeItem(at: knownPeopleDirectory)
 
         // Recreate empty directory structure
+        try CloudCoordinatedIO.ensureDirectory(peopleDirectory)
         try CloudCoordinatedIO.ensureDirectory(thumbnailsDirectory)
         try CloudCoordinatedIO.ensureDirectory(embeddingThumbnailsDirectory)
-        try saveDatabase(emptyDB)
         database = emptyDB
+        NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
     }
 
     // MARK: - Matching
@@ -980,9 +1327,6 @@ final class KnownPeopleService {
         let existingIDs = Set(db.people.map(\.id))
         let newPeople = importedPeople.filter { !existingIDs.contains($0.id) }
 
-        db.people.append(contentsOf: newPeople)
-        db.lastModified = Date()
-
         // Copy thumbnails only for newly imported people
         let importedThumbnailsDir = extractedDir.appendingPathComponent("thumbnails")
         let importedEmbeddingThumbnailsDir = extractedDir.appendingPathComponent("embedding_thumbnails")
@@ -1004,7 +1348,12 @@ final class KnownPeopleService {
             }
         }
 
-        try saveDatabase(db)
+        // Write each new person as its own file, then refresh the cache.
+        for person in newPeople {
+            try writePerson(person)
+        }
+        db.people.append(contentsOf: newPeople)
+        db.lastModified = newPeople.map(\.updatedAt).max() ?? db.lastModified
         database = db
         clearFeaturePrintCache()
 
