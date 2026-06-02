@@ -124,6 +124,8 @@ final class ICloudSyncCoordinator {
         } catch {
             lastError = "Could not move the Known People database into iCloud Drive: \(error.localizedDescription)"
         }
+        // Start/stop the remote-change watcher to match the new toggle state.
+        KnownPeopleCloudCoordinator.shared.refresh()
         bump()
     }
 

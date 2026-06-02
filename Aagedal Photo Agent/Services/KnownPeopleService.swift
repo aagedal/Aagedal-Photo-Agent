@@ -22,7 +22,15 @@ final class KnownPeopleService {
         AppPaths.applicationSupport.appendingPathComponent("KnownPeople", isDirectory: true)
     }
 
+    /// Resolved storage root, cached after first use. Resolving it does a
+    /// ubiquity-container lookup plus coordinated `ensureDirectory` calls (root +
+    /// both thumbnail subfolders), all of which are wasted if repeated on every
+    /// access — and these accessors are hit per-cell in the face grids. Cleared
+    /// by `reloadAfterStorageChange()` when the backing store toggles.
+    private var cachedDirectory: URL?
+
     private var knownPeopleDirectory: URL {
+        if let cached = cachedDirectory { return cached }
         let url: URL
         if UserDefaults.standard.bool(forKey: UserDefaultsKeys.knownPeopleICloudEnabled),
            let cloud = AppPaths.iCloudKnownPeopleURL {
@@ -30,13 +38,20 @@ final class KnownPeopleService {
         } else {
             url = Self.localKnownPeopleDirectory
         }
+        // Ensure the root and both subfolders once, here, so the per-access
+        // accessors below can stay coordination-free. (Writes additionally
+        // ensure their own parent via CloudCoordinatedIO.writeData.)
         try? CloudCoordinatedIO.ensureDirectory(url)
+        try? CloudCoordinatedIO.ensureDirectory(url.appendingPathComponent("thumbnails", isDirectory: true))
+        try? CloudCoordinatedIO.ensureDirectory(url.appendingPathComponent("embedding_thumbnails", isDirectory: true))
+        cachedDirectory = url
         return url
     }
 
     /// Drops all in-memory state so the next access re-reads from disk. Called
     /// after the backing directory changes (iCloud sync toggled on/off).
     func reloadAfterStorageChange() {
+        cachedDirectory = nil
         database = nil
         peopleIndex = [:]
         featurePrintCache.removeAllObjects()
@@ -50,9 +65,7 @@ final class KnownPeopleService {
     }
 
     private var thumbnailsDirectory: URL {
-        let url = knownPeopleDirectory.appendingPathComponent("thumbnails", isDirectory: true)
-        try? CloudCoordinatedIO.ensureDirectory(url)
-        return url
+        knownPeopleDirectory.appendingPathComponent("thumbnails", isDirectory: true)
     }
 
     private func thumbnailURL(for personID: UUID) -> URL {
@@ -62,9 +75,7 @@ final class KnownPeopleService {
     // MARK: - Embedding Thumbnail Storage
 
     private var embeddingThumbnailsDirectory: URL {
-        let url = knownPeopleDirectory.appendingPathComponent("embedding_thumbnails", isDirectory: true)
-        try? CloudCoordinatedIO.ensureDirectory(url)
-        return url
+        knownPeopleDirectory.appendingPathComponent("embedding_thumbnails", isDirectory: true)
     }
 
     private func embeddingThumbnailURL(for embeddingID: UUID) -> URL {

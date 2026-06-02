@@ -15,6 +15,7 @@ struct Aagedal_Photo_AgentApp: App {
         // through the key-value store when that category is enabled.
         Task { @MainActor in
             KeywordListsCloudCoordinator.shared.refresh()
+            KnownPeopleCloudCoordinator.shared.refresh()
             PreferencesSyncService.shared.start()
         }
 
