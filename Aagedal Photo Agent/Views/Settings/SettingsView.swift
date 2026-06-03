@@ -43,6 +43,7 @@ struct SettingsView: View {
         case general
         case metadata
         case keywordLists
+        case quickLists
         case faceRecognition
         case knownPeople
         case locations
@@ -61,6 +62,7 @@ struct SettingsView: View {
             case .general: return "General"
             case .metadata: return "Metadata"
             case .keywordLists: return "Keywords"
+            case .quickLists: return "Quick Lists"
             case .faceRecognition: return "Face Recognition"
             case .knownPeople: return "Known People"
             case .locations: return "Locations"
@@ -79,6 +81,7 @@ struct SettingsView: View {
             case .general: return "gear"
             case .metadata: return "tag"
             case .keywordLists: return "list.bullet.rectangle"
+            case .quickLists: return "bolt"
             case .faceRecognition: return "person.crop.rectangle.stack"
             case .knownPeople: return "person.crop.square"
             case .locations: return "folder"
@@ -104,6 +107,7 @@ struct SettingsView: View {
                 Section("Library & Metadata") {
                     row(.metadata)
                     row(.keywordLists)
+                    row(.quickLists)
                     row(.templates)
                 }
                 Section("People") {
@@ -147,7 +151,8 @@ struct SettingsView: View {
         switch section {
         case .general: generalTab
         case .metadata: metadataTab
-        case .keywordLists: quickListsTab
+        case .keywordLists: keywordsTab
+        case .quickLists: quickListsTab
         case .faceRecognition: faceRecognitionTab
         case .knownPeople: knownPeopleTab
         case .locations: locationsTab
@@ -900,29 +905,14 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - Quick Lists Tab
+    // MARK: - Keywords Tab
 
     @ViewBuilder
-    private var quickListsTab: some View {
+    private var keywordsTab: some View {
         Form {
             approvedKeywordsSection
 
             structuredKeywordsSection
-
-            Section("Quick Lists") {
-                ForEach(QuickListType.allCases, id: \.self) { type in
-                    HStack {
-                        Text(type.displayName)
-                        Spacer()
-                        Text("\(settingsViewModel.entries(for: type).count) entries")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Button("Edit…") {
-                            editingQuickList = type
-                        }
-                    }
-                }
-            }
 
             Section("Import / Export") {
                 HStack {
@@ -957,12 +947,6 @@ struct SettingsView: View {
         .sheet(isPresented: $editingStructuredKeywords) {
             StructuredKeywordEditor()
         }
-        .sheet(item: $editingQuickList) { type in
-            KeywordListEditor(
-                title: "\(type.displayName) Quick List",
-                storeKey: .quick(type)
-            )
-        }
         .sheet(isPresented: $showingExportSheet) {
             KeywordListsExportSheet { result in
                 switch result {
@@ -982,6 +966,36 @@ struct SettingsView: View {
                     quickListsArchiveMessage = "Import failed: \(error.localizedDescription)"
                 }
             }
+        }
+    }
+
+    // MARK: - Quick Lists Tab
+
+    @ViewBuilder
+    private var quickListsTab: some View {
+        Form {
+            Section("Quick Lists") {
+                ForEach(QuickListType.allCases, id: \.self) { type in
+                    HStack {
+                        Text(type.displayName)
+                        Spacer()
+                        Text("\(settingsViewModel.entries(for: type).count) entries")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Button("Edit…") {
+                            editingQuickList = type
+                        }
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
+        .sheet(item: $editingQuickList) { type in
+            KeywordListEditor(
+                title: "\(type.displayName) Quick List",
+                storeKey: .quick(type)
+            )
         }
     }
 
