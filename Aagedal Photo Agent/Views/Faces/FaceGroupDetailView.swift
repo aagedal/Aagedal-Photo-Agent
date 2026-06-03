@@ -14,6 +14,7 @@ struct FaceGroupDetailView: View {
     @State private var showingNameListFilePicker = false
     @State private var isAddingToKnownPeople = false
     @State private var knownPeopleMessage: String?
+    @State private var presetNameImportMessage: String?
     @AppStorage("knownPeopleMode") private var knownPeopleMode: String = "off"
     var isExpanded: Bool = false
     var onSelectImages: ((Set<URL>) -> Void)?
@@ -132,6 +133,12 @@ struct FaceGroupDetailView: View {
                 .menuStyle(.borderlessButton)
                 .fixedSize()
                 .help(presetNames.isEmpty ? "Choose a list file to load names" : "Choose from preset names")
+            }
+
+            if let presetNameImportMessage {
+                Text(presetNameImportMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
             }
 
             Text("\(faces.count) face\(faces.count == 1 ? "" : "s") in \(Set(faces.map(\.imageURL)).count) image\(Set(faces.map(\.imageURL)).count == 1 ? "" : "s")")
@@ -281,7 +288,13 @@ struct FaceGroupDetailView: View {
             allowsMultipleSelection: false
         ) { result in
             if case .success(let urls) = result, let url = urls.first {
-                settingsViewModel.setPersonShownListURL(url)
+                do {
+                    try settingsViewModel.setPersonShownListURL(url)
+                    presetNameImportMessage = nil
+                } catch {
+                    let description = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                    presetNameImportMessage = "Name list import failed: \(description)"
+                }
             }
         }
     }

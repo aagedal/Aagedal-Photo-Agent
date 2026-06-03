@@ -159,46 +159,41 @@ final class SettingsViewModel {
         return KeywordListsStore.shared.url(for: key).path
     }
 
-    func setKeywordsListURL(_ url: URL) {
-        importQuickList(from: url, type: .keywords)
+    func setKeywordsListURL(_ url: URL) throws {
+        try importQuickList(from: url, type: .keywords)
     }
 
-    func setPersonShownListURL(_ url: URL) {
-        importQuickList(from: url, type: .personShown)
+    func setPersonShownListURL(_ url: URL) throws {
+        try importQuickList(from: url, type: .personShown)
     }
 
-    func setCopyrightListURL(_ url: URL) {
-        importQuickList(from: url, type: .copyright)
+    func setCopyrightListURL(_ url: URL) throws {
+        try importQuickList(from: url, type: .copyright)
     }
 
-    func setCreatorListURL(_ url: URL) {
-        importQuickList(from: url, type: .creator)
+    func setCreatorListURL(_ url: URL) throws {
+        try importQuickList(from: url, type: .creator)
     }
 
-    func setCreditListURL(_ url: URL) {
-        importQuickList(from: url, type: .credit)
+    func setCreditListURL(_ url: URL) throws {
+        try importQuickList(from: url, type: .credit)
     }
 
-    func setCityListURL(_ url: URL) {
-        importQuickList(from: url, type: .city)
+    func setCityListURL(_ url: URL) throws {
+        try importQuickList(from: url, type: .city)
     }
 
-    func setCountryListURL(_ url: URL) {
-        importQuickList(from: url, type: .country)
+    func setCountryListURL(_ url: URL) throws {
+        try importQuickList(from: url, type: .country)
     }
 
-    func setEventListURL(_ url: URL) {
-        importQuickList(from: url, type: .event)
+    func setEventListURL(_ url: URL) throws {
+        try importQuickList(from: url, type: .event)
     }
 
-    private func importQuickList(from url: URL, type: QuickListType) {
-        do {
-            try KeywordListsStore.shared.importEntries(from: url, into: .quick(type))
-            quickListVersion += 1
-        } catch {
-            // Best-effort import: log via the standard channel and leave any
-            // previously-loaded list intact so the user can retry.
-        }
+    private func importQuickList(from url: URL, type: QuickListType) throws {
+        try KeywordListsStore.shared.importEntries(from: url, into: .quick(type))
+        quickListVersion += 1
     }
 
     func setTemplatesFolderURL(_ url: URL) {

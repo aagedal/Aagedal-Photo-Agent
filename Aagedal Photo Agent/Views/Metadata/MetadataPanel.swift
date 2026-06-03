@@ -526,23 +526,32 @@ struct MetadataPanel: View {
             allowsMultipleSelection: false
         ) { result in
             if case .success(let urls) = result, let url = urls.first {
-                switch listFilePickerTarget {
-                case .keywords:
-                    settingsViewModel.setKeywordsListURL(url)
-                case .personShown:
-                    settingsViewModel.setPersonShownListURL(url)
-                case .copyright:
-                    settingsViewModel.setCopyrightListURL(url)
-                case .creator:
-                    settingsViewModel.setCreatorListURL(url)
-                case .credit:
-                    settingsViewModel.setCreditListURL(url)
-                case .city:
-                    settingsViewModel.setCityListURL(url)
-                case .country:
-                    settingsViewModel.setCountryListURL(url)
-                case .event:
-                    settingsViewModel.setEventListURL(url)
+                do {
+                    switch listFilePickerTarget {
+                    case .keywords:
+                        try settingsViewModel.setKeywordsListURL(url)
+                    case .personShown:
+                        try settingsViewModel.setPersonShownListURL(url)
+                    case .copyright:
+                        try settingsViewModel.setCopyrightListURL(url)
+                    case .creator:
+                        try settingsViewModel.setCreatorListURL(url)
+                    case .credit:
+                        try settingsViewModel.setCreditListURL(url)
+                    case .city:
+                        try settingsViewModel.setCityListURL(url)
+                    case .country:
+                        try settingsViewModel.setCountryListURL(url)
+                    case .event:
+                        try settingsViewModel.setEventListURL(url)
+                    }
+                } catch {
+                    let description = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                    viewModel.notice = MetadataPanelNotice(
+                        title: "Quick list import failed",
+                        detail: [description],
+                        severity: .error
+                    )
                 }
             }
         }

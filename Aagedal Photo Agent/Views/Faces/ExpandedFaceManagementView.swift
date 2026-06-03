@@ -75,6 +75,7 @@ struct ExpandedFaceManagementView: View {
     @State private var groupToDelete: FaceGroup?
     @State private var showDeleteGroupAlert = false
     @State private var showingNameListFilePicker = false
+    @State private var nameListImportMessage: String?
     @State private var showSuggestionsPanel = true
 
     private let suggestionsPanelWidth: CGFloat = 320
@@ -84,6 +85,16 @@ struct ExpandedFaceManagementView: View {
             // Main face management area
             VStack(spacing: 0) {
                 toolbar
+                if let nameListImportMessage {
+                    HStack {
+                        Text(nameListImportMessage)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                }
                 Divider()
                 FaceGroupCollectionRepresentable(
                     viewModel: viewModel,
@@ -145,7 +156,13 @@ struct ExpandedFaceManagementView: View {
             allowsMultipleSelection: false
         ) { result in
             if case .success(let urls) = result, let url = urls.first {
-                settingsViewModel.setPersonShownListURL(url)
+                do {
+                    try settingsViewModel.setPersonShownListURL(url)
+                    nameListImportMessage = nil
+                } catch {
+                    let description = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                    nameListImportMessage = "Name list import failed: \(description)"
+                }
             }
         }
     }
