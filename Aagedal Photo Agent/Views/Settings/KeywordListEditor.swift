@@ -112,13 +112,13 @@ struct KeywordListEditor: View {
                     .truncationMode(.middle)
             }
             Spacer()
-            Button("Cancel") { dismiss() }
+            // Changes are saved instantly on every edit, so closing needs no
+            // separate save step. Esc (cancelAction) and the Done button both
+            // just dismiss. Plain Return stays reserved for the "Add entry"
+            // field's onCommit.
+            Button("Done") { dismiss() }
                 .keyboardShortcut(.cancelAction)
-            Button("Save") {
-                save()
-            }
-            .keyboardShortcut(.defaultAction)
-            .buttonStyle(.borderedProminent)
+                .buttonStyle(.borderedProminent)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -131,6 +131,7 @@ struct KeywordListEditor: View {
         guard !trimmed.isEmpty else { return }
         if !entries.contains(where: { $0.caseInsensitiveCompare(trimmed) == .orderedSame }) {
             entries.append(trimmed)
+            persist()
         }
         newEntry = ""
     }
@@ -138,6 +139,7 @@ struct KeywordListEditor: View {
     private func remove(at index: Int) {
         guard entries.indices.contains(index) else { return }
         entries.remove(at: index)
+        persist()
     }
 
     /// `move` operates on the filtered view's indices, so it only reorders within
@@ -152,9 +154,12 @@ struct KeywordListEditor: View {
         for (offset, originalIdx) in visible.enumerated() {
             entries[originalIdx] = visibleEntries[offset]
         }
+        persist()
     }
 
-    private func save() {
+    /// Persists the current entries to the store. Called after every mutation so
+    /// the editor saves instantly — there is no explicit Save step.
+    private func persist() {
         do {
             switch storeKey {
             case .approved(let field):
@@ -166,7 +171,6 @@ struct KeywordListEditor: View {
                 try KeywordListsStore.shared.writeEntries(entries, to: storeKey)
             }
             onSaved?(entries.count)
-            dismiss()
         } catch {
             feedback = "Save failed: \(error.localizedDescription)"
         }
@@ -189,6 +193,7 @@ struct KeywordListEditor: View {
                 added += 1
             }
             feedback = "Imported \(added) new \(added == 1 ? "entry" : "entries")"
+            if added > 0 { persist() }
         } catch {
             feedback = "Import failed: \(error.localizedDescription)"
         }
