@@ -218,7 +218,8 @@ struct FullScreenImageView: View {
     @State private var lastOffset: CGSize = .zero
     @State private var isZoomedTo100: Bool = false
     @State private var sourcePixelSize: CGSize?
-    @State private var useNearestNeighbor: Bool = false
+    /// Shared linear/nearest-neighbor scaling toggle (View menu + Option+S).
+    @ObservedObject private var scaling = ImageScalingController.shared
     @State private var lastOrientationURL: URL?
     @State private var lastLoadedOrientation: Int = 1
 
@@ -355,7 +356,7 @@ struct FullScreenImageView: View {
                 Color.black
 
                 if let currentImage {
-                    HDRImageView(cgImage: currentImage.cgImage, isHDR: isHDR, useNearestNeighbor: useNearestNeighbor)
+                    HDRImageView(cgImage: currentImage.cgImage, isHDR: isHDR, useNearestNeighbor: scaling.useNearestNeighbor)
                         .aspectRatio(
                             currentImage.size.width / currentImage.size.height,
                             contentMode: .fit
@@ -505,7 +506,7 @@ struct FullScreenImageView: View {
                                         .foregroundStyle(.white.opacity(0.7))
                                 }
 
-                                if useNearestNeighbor {
+                                if scaling.useNearestNeighbor {
                                     Text("NN")
                                         .font(.caption)
                                         .foregroundStyle(.white.opacity(0.7))
@@ -541,7 +542,7 @@ struct FullScreenImageView: View {
                 toggleUI()
             }
             zoomController?.toggleScalingAction = { [self] in
-                useNearestNeighbor.toggle()
+                scaling.toggle()
             }
             zoomController?.toggleFaceRectanglesAction = { [self] in
                 showFaceRectangles.toggle()

@@ -3,6 +3,7 @@ import SwiftUI
 @main
 struct Aagedal_Photo_AgentApp: App {
     @StateObject private var updater = SparkleUpdaterService.shared
+    @ObservedObject private var imageScaling = ImageScalingController.shared
 
     init() {
         // One-shot migration from the legacy bookmark-pointed list files into the
@@ -71,15 +72,51 @@ struct Aagedal_Photo_AgentApp: App {
                 Button("Back Up Edited Files...") {
                     NotificationCenter.default.post(name: .backupEditedFiles, object: nil)
                 }
+
+                Divider()
+
+                Button("Render Selected") {
+                    NotificationCenter.default.post(name: .renderSelected, object: nil)
+                }
+                .keyboardShortcut("s", modifiers: .command)
+
+                Button("Render All") {
+                    NotificationCenter.default.post(name: .renderAll, object: nil)
+                }
+                .keyboardShortcut("s", modifiers: [.command, .shift])
+
+                Divider()
+
+                Button("Save as JPEG") {
+                    NotificationCenter.default.post(name: .saveAsJPEG, object: nil)
+                }
+
+                Button("Save as PNG") {
+                    NotificationCenter.default.post(name: .saveAsPNG, object: nil)
+                }
+
+                Divider()
+
+                Button("Rename...") {
+                    NotificationCenter.default.post(name: .renameSelected, object: nil)
+                }
+
+                Button("Duplicate") {
+                    NotificationCenter.default.post(name: .duplicateSelected, object: nil)
+                }
+                .keyboardShortcut("d", modifiers: .command)
             }
 
             CommandGroup(replacing: .printItem) { }
 
             CommandMenu("Rating & Label") {
+                // Ratings carry no menu key equivalents: the bare 1–5 keys are
+                // handled in the grid / full-screen views (focus-aware, so they
+                // don't fire while a metadata field is being edited). CMD+digits
+                // are reserved for the color labels below.
                 Button("No Rating") {
                     NotificationCenter.default.post(name: .setRating, object: StarRating.none)
                 }
-                .keyboardShortcut("0", modifiers: .command)
 
                 ForEach(1...5, id: \.self) { rating in
                     Button("\(rating) Star\(rating > 1 ? "s" : "")") {
@@ -88,7 +125,6 @@ struct Aagedal_Photo_AgentApp: App {
                             object: StarRating(rawValue: rating)
                         )
                     }
-                    .keyboardShortcut(KeyEquivalent(Character(String(rating))), modifiers: .command)
                 }
 
                 Divider()
@@ -96,7 +132,7 @@ struct Aagedal_Photo_AgentApp: App {
                 Button("No Label") {
                     NotificationCenter.default.post(name: .setLabel, object: ColorLabel.none)
                 }
-                .keyboardShortcut("0", modifiers: .option)
+                .keyboardShortcut("0", modifiers: .command)
 
                 ForEach(Array(ColorLabel.allCases.dropFirst().enumerated()), id: \.element) { index, label in
                     Button(label.displayName) {
@@ -104,7 +140,7 @@ struct Aagedal_Photo_AgentApp: App {
                     }
                     .keyboardShortcut(
                         KeyEquivalent(Character(String(index + 1))),
-                        modifiers: .option
+                        modifiers: .command
                     )
                 }
             }
@@ -132,6 +168,33 @@ struct Aagedal_Photo_AgentApp: App {
 
                 Button("Move Rejected to Folder…") {
                     NotificationCenter.default.post(name: .moveRejectedToFolder, object: nil)
+                }
+
+                Divider()
+
+                Button("Rotate Right") {
+                    NotificationCenter.default.post(name: .rotateClockwise, object: nil)
+                }
+                .keyboardShortcut("r", modifiers: .command)
+
+                Button("Rotate Left") {
+                    NotificationCenter.default.post(name: .rotateCounterclockwise, object: nil)
+                }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+
+                Button("Add New Mask") {
+                    NotificationCenter.default.post(name: .addNewMask, object: nil)
+                }
+                .keyboardShortcut("j", modifiers: .command)
+
+                Divider()
+
+                Button("Reset All Edits") {
+                    NotificationCenter.default.post(name: .resetAllEdits, object: nil)
+                }
+
+                Button("Remove All IPTC Metadata") {
+                    NotificationCenter.default.post(name: .removeAllIPTC, object: nil)
                 }
             }
 
@@ -209,90 +272,36 @@ struct Aagedal_Photo_AgentApp: App {
                 .keyboardShortcut("v", modifiers: [.command, .option])
             }
 
-            CommandMenu("Image") {
-                Button("Previous Image") {
-                    NotificationCenter.default.post(name: .selectPreviousImage, object: nil)
-                }
-                .keyboardShortcut("b", modifiers: .command)
-
-                Button("Next Image") {
-                    NotificationCenter.default.post(name: .selectNextImage, object: nil)
-                }
-                .keyboardShortcut("n", modifiers: .command)
-
-                Divider()
-
-                Button("Rotate Right") {
-                    NotificationCenter.default.post(name: .rotateClockwise, object: nil)
-                }
-                .keyboardShortcut("r", modifiers: .command)
-
-                Button("Rotate Left") {
-                    NotificationCenter.default.post(name: .rotateCounterclockwise, object: nil)
-                }
-                .keyboardShortcut("r", modifiers: [.command, .shift])
-
-                Divider()
-
-                Button("Render Selected") {
-                    NotificationCenter.default.post(name: .renderSelected, object: nil)
-                }
-                .keyboardShortcut("s", modifiers: .command)
-
-                Button("Render All") {
-                    NotificationCenter.default.post(name: .renderAll, object: nil)
-                }
-                .keyboardShortcut("s", modifiers: [.command, .shift])
-
-                Divider()
-
-                Button("Save as JPEG") {
-                    NotificationCenter.default.post(name: .saveAsJPEG, object: nil)
-                }
-
-                Button("Save as PNG") {
-                    NotificationCenter.default.post(name: .saveAsPNG, object: nil)
-                }
-
-                Divider()
-
-                Button("Rename...") {
-                    NotificationCenter.default.post(name: .renameSelected, object: nil)
-                }
-
-                Button("Duplicate") {
-                    NotificationCenter.default.post(name: .duplicateSelected, object: nil)
-                }
-                .keyboardShortcut("d", modifiers: .command)
-
-                Divider()
-
-                Button("Add New Mask") {
-                    NotificationCenter.default.post(name: .addNewMask, object: nil)
-                }
-                .keyboardShortcut("j", modifiers: .command)
-
-                Button("Toggle HDR") {
-                    NotificationCenter.default.post(name: .toggleHDR, object: nil)
-                }
-                .keyboardShortcut("h", modifiers: [])
-
-                Button("Reset All Edits") {
-                    NotificationCenter.default.post(name: .resetAllEdits, object: nil)
-                }
-
-                Button("Remove All IPTC Metadata") {
-                    NotificationCenter.default.post(name: .removeAllIPTC, object: nil)
-                }
-            }
-
             // Grouped to stay within the @CommandsBuilder 10-child limit.
             Group {
             // Merge Scopes + Clean Feed into the system View menu (created by
             // NavigationSplitView's sidebar command) rather than adding extra
             // top-level menus.
             CommandGroup(after: .sidebar) {
-                Divider()
+                Group {
+                    Divider()
+
+                    Button("Previous Image") {
+                        NotificationCenter.default.post(name: .selectPreviousImage, object: nil)
+                    }
+                    .keyboardShortcut("b", modifiers: .command)
+
+                    Button("Next Image") {
+                        NotificationCenter.default.post(name: .selectNextImage, object: nil)
+                    }
+                    .keyboardShortcut("n", modifiers: .command)
+
+                    Divider()
+
+                    Button("Toggle HDR") {
+                        NotificationCenter.default.post(name: .toggleHDR, object: nil)
+                    }
+                    .keyboardShortcut("h", modifiers: [])
+
+                    Section("Image Scaling") {
+                        Toggle("Nearest-Neighbor Scaling", isOn: $imageScaling.useNearestNeighbor)
+                    }
+                }
 
                 Section("Scopes") {
                     Button("Waveform") {

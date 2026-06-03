@@ -51,6 +51,9 @@ nonisolated enum UserDefaultsKeys {
     static let showOriginalThumbnails = "showOriginalThumbnails"
     static let lastScopeMode = "lastScopeMode"
     static let metadataPanelWidth = "metadataPanelWidth"
+    /// True → full-screen viewer uses nearest-neighbor (pixel) magnification;
+    /// false (default) → linear/bilinear smoothing.
+    static let imageScalingNearestNeighbor = "imageScalingNearestNeighbor"
 
     // MARK: - Clean Feed (secondary-display output)
     /// CGDirectDisplayID of the screen the clean-feed window should occupy.
