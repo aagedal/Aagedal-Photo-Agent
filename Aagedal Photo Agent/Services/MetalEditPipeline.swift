@@ -92,6 +92,12 @@ struct EditParams {
 
     var lutDomainMin: Float = ToneCurveGenerator.domainMin
     var lutDomainMax: Float = ToneCurveGenerator.domainMax
+
+    // Crop viewport (clean-feed only): rotate sampling around the crop center so the
+    // feed shows the confirmed crop+straighten upright. (0.5,0.5)/0 = no rotation.
+    var viewportCenter: SIMD2<Float> = SIMD2<Float>(0.5, 0.5)
+    var viewportRotation: Float = 0
+    var _padViewport: Float = 0
 }
 
 /// Manages the Metal compute pipeline for real-time edit preview.
@@ -217,6 +223,10 @@ final class MetalEditPipeline: @unchecked Sendable {
     // Cached viewport — preserved across updateParams() calls
     nonisolated(unsafe) private var cachedViewportOrigin: SIMD2<Float> = .zero
     nonisolated(unsafe) private var cachedViewportSize: SIMD2<Float> = SIMD2<Float>(1, 1)
+    // Crop straighten rotation for the clean feed (0 = no rotation). Cached so it
+    // survives the full-struct rewrite in updateParams().
+    nonisolated(unsafe) private var cachedViewportCenter: SIMD2<Float> = SIMD2<Float>(0.5, 0.5)
+    nonisolated(unsafe) private var cachedViewportRotation: Float = 0
 
     nonisolated var hasSourceTexture: Bool { sourceTexture != nil }
 
@@ -433,6 +443,8 @@ final class MetalEditPipeline: @unchecked Sendable {
             ptr.pointee.gamutClipMode = gamutClipMode
             ptr.pointee.viewportOrigin = cachedViewportOrigin
             ptr.pointee.viewportSize = cachedViewportSize
+            ptr.pointee.viewportCenter = cachedViewportCenter
+            ptr.pointee.viewportRotation = cachedViewportRotation
             // Mirror to the clean-feed pipeline (its own viewport is preserved).
             mirror?.updateParams(nil)
             onParamsChanged?()
@@ -572,6 +584,8 @@ final class MetalEditPipeline: @unchecked Sendable {
         ptr.pointee.gamutClipMode = gamutClipMode
         ptr.pointee.viewportOrigin = cachedViewportOrigin
         ptr.pointee.viewportSize = cachedViewportSize
+        ptr.pointee.viewportCenter = cachedViewportCenter
+        ptr.pointee.viewportRotation = cachedViewportRotation
 
         // Mirror params to the clean-feed pipeline so the second display tracks the
         // edit live. The mirror computes against its OWN cached viewport, so its
@@ -848,10 +862,15 @@ final class MetalEditPipeline: @unchecked Sendable {
 
         cachedViewportOrigin = SIMD2<Float>(Float(originX), Float(originY))
         cachedViewportSize = SIMD2<Float>(Float(vpW), Float(vpH))
+        // Zoom/pan viewport is axis-aligned — clear any crop straighten rotation.
+        cachedViewportCenter = SIMD2<Float>(Float(originX + vpW / 2), Float(originY + vpH / 2))
+        cachedViewportRotation = 0
 
         let ptr = buffer.contents().bindMemory(to: EditParams.self, capacity: 1)
         ptr.pointee.viewportOrigin = cachedViewportOrigin
         ptr.pointee.viewportSize = cachedViewportSize
+        ptr.pointee.viewportCenter = cachedViewportCenter
+        ptr.pointee.viewportRotation = cachedViewportRotation
 
         // Also update overlay params
         if let overlayBuf = overlayParamsBuffer {
@@ -859,6 +878,65 @@ final class MetalEditPipeline: @unchecked Sendable {
             overlayPtr.pointee.viewportOrigin = cachedViewportOrigin
             overlayPtr.pointee.viewportSize = cachedViewportSize
         }
+    }
+
+    /// Clean-feed crop viewport. Renders only the confirmed crop region (with straighten
+    /// rotation), aspect-fit to the secondary display. Mirrors the editor's own crop
+    /// geometry (`EditWorkspaceView.cropFittedImageRect`): the AABB is forward-projected to
+    /// the actual rotated crop dimensions, those are fit to the container, and the shader
+    /// rotates sampling around the crop center. Crop edges are normalized [0,1] in
+    /// display-oriented source coords (top-left origin), matching the editor's `activeCrop`.
+    nonisolated func updateCropViewport(
+        containerSize: CGSize,
+        imageSize: CGSize,
+        cropLeft: Double,
+        cropTop: Double,
+        cropRight: Double,
+        cropBottom: Double,
+        angleDegrees: Double
+    ) {
+        guard let buffer = paramsBuffer else { return }
+        guard containerSize.width > 0, containerSize.height > 0,
+              imageSize.width > 0, imageSize.height > 0 else { return }
+
+        let imgW = Double(imageSize.width)
+        let imgH = Double(imageSize.height)
+
+        // Crop AABB dimensions and center in source pixels / normalized coords.
+        let aabbW = max((cropRight - cropLeft), 0.0001) * imgW
+        let aabbH = max((cropBottom - cropTop), 0.0001) * imgH
+        let centerX = (cropLeft + cropRight) / 2
+        let centerY = (cropTop + cropBottom) / 2
+
+        // Forward-project the AABB to the actual rotated crop dimensions, then fit those
+        // into the container (identical to cropFittedImageRect's baseScale).
+        let radians = angleDegrees * .pi / 180.0
+        let cosA = cos(radians)
+        let sinA = sin(radians)
+        let actualW = abs(aabbW * cosA + aabbH * sinA)
+        let actualH = abs(-aabbW * sinA + aabbH * cosA)
+
+        let fitScale = min(containerSize.width / max(actualW, 1),
+                           containerSize.height / max(actualH, 1))
+        guard fitScale > 0 else { return }
+
+        // The source region (in pixels) that maps to the full drawable — larger than the
+        // crop by the letterbox margin.
+        let visiblePxW = Double(containerSize.width) / fitScale
+        let visiblePxH = Double(containerSize.height) / fitScale
+        let vpW = visiblePxW / imgW
+        let vpH = visiblePxH / imgH
+
+        cachedViewportSize = SIMD2<Float>(Float(vpW), Float(vpH))
+        cachedViewportCenter = SIMD2<Float>(Float(centerX), Float(centerY))
+        cachedViewportOrigin = SIMD2<Float>(Float(centerX - vpW / 2), Float(centerY - vpH / 2))
+        cachedViewportRotation = Float(radians)
+
+        let ptr = buffer.contents().bindMemory(to: EditParams.self, capacity: 1)
+        ptr.pointee.viewportOrigin = cachedViewportOrigin
+        ptr.pointee.viewportSize = cachedViewportSize
+        ptr.pointee.viewportCenter = cachedViewportCenter
+        ptr.pointee.viewportRotation = cachedViewportRotation
     }
 
     // MARK: - Texture Pre-Caching

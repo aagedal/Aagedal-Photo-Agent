@@ -88,7 +88,9 @@ struct MetalPreviewView: NSViewRepresentable {
     /// Walk from the given view up to the window content view, enabling EDR on every
     /// ancestor layer. Without this, SwiftUI's intermediate hosting layers clip
     /// extended-range pixel values to [0, 1] during compositing.
-    private static func enableEDRAncestors(for view: NSView, isHDR: Bool) {
+    /// Shared with the clean-feed render view (`CleanFeedRenderView`) so both EDR paths
+    /// stay in lockstep.
+    static func enableEDRAncestors(for view: NSView, isHDR: Bool) {
         var current: NSView? = view.superview
         while let ancestor = current {
             ancestor.wantsLayer = true

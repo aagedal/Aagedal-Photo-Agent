@@ -17,7 +17,7 @@ final class CleanFeedHooks: @unchecked Sendable {
 
 /// Owns the state and GPU resources for the optional "clean feed" window shown on a
 /// secondary display: a chrome-free, aspect-fit view of the current image that tracks
-/// edits live. SDR for now — HDR output is a planned follow-up.
+/// edits live. Renders in EDR when `isHDR` is set (native-HDR files or HDR edit mode).
 ///
 /// Singleton so the `View` menu (built in the `App` scene) and `ContentView` share one
 /// instance without notification plumbing, matching the app's other shared services.
@@ -54,6 +54,28 @@ final class CleanFeedController {
     /// When true the feed renders via `feedPipeline` (shares the editor's source
     /// texture + params) instead of `feedImage`. Set by the edit workspace.
     var useEditPipeline = false
+
+    /// Confirmed crop applied to the live edit feed (normalized [0,1] display-oriented
+    /// edges + straighten angle), with the source image size for aspect math. `nil` means
+    /// no crop — the feed shows the full image. Pushed by the edit workspace only when the
+    /// crop is committed (frozen while the crop tool is active).
+    struct FeedCrop: Equatable {
+        var left: Double
+        var top: Double
+        var right: Double
+        var bottom: Double
+        var angle: Double
+        var imageSize: CGSize
+
+        /// Whether this differs from the full-frame, unrotated default.
+        var isActive: Bool {
+            let eps = 0.0001
+            return abs(left) > eps || abs(top) > eps
+                || abs(right - 1) > eps || abs(bottom - 1) > eps
+                || abs(angle) > eps
+        }
+    }
+    var feedCrop: FeedCrop?
 
     /// True while the edit workspace is on screen and owns the feed content. While
     /// true, the browse-mode loader stands down to avoid racing the editor's pushes.

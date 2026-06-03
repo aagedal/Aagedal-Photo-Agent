@@ -59,6 +59,10 @@ struct EditParams {
 
     float lutDomainMin;      // -0.5 (extended range for color matrix overshoot)
     float lutDomainMax;      // 4.0 (HDR headroom)
+
+    float2 viewportCenter;   // crop center in normalized source coords (rotation pivot)
+    float viewportRotation;  // radians; rotate sampling for clean-feed crop straighten
+    float _padViewport;
 };
 
 // ============================================================
@@ -117,7 +121,19 @@ kernel void editAdjustments(
 
     // Map drawable pixel through viewport to source UV
     float2 drawableNorm = float2(gid) / params.drawableSize;
-    float2 uv = params.viewportOrigin + drawableNorm * params.viewportSize;
+    float2 uv;
+    if (params.viewportRotation != 0.0) {
+        // Clean-feed crop straighten: rotate the centered offset around the crop center.
+        // Rotation must happen in pixel space (sourceSize) so it isn't skewed by the
+        // image's aspect ratio, then convert back to normalized UV.
+        float2 off = (drawableNorm - 0.5) * params.viewportSize * params.sourceSize;
+        float c = cos(params.viewportRotation);
+        float s = sin(params.viewportRotation);
+        float2 r = float2(off.x * c - off.y * s, off.x * s + off.y * c);
+        uv = params.viewportCenter + r / params.sourceSize;
+    } else {
+        uv = params.viewportOrigin + drawableNorm * params.viewportSize;
+    }
 
     // Letterbox: dark gray for pixels outside source bounds
     // 0.0197 linear ≈ sRGB 0.15, matching SwiftUI previewBackground

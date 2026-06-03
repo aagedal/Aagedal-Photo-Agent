@@ -23,7 +23,9 @@ struct CleanFeedContentView: View {
         CleanFeedRenderView(
             controller: controller,
             feedImage: controller.feedImage,
-            useEditPipeline: controller.useEditPipeline
+            useEditPipeline: controller.useEditPipeline,
+            isHDR: controller.isHDR,
+            feedCrop: controller.feedCrop
         )
         .background(Color.black)
         .ignoresSafeArea()
@@ -54,6 +56,7 @@ struct CleanFeedContentView: View {
         let settings = image.cameraRawSettings
         let exifOrientation = image.exifOrientation
         let maxPixelSize = Self.feedMaxPixelSize
+        let isHDR = image.isNativeHDR || settings?.hdrEditMode == 1
 
         loadTask = Task {
             let edited: CIImage? = await Task.detached(priority: .userInitiated) {
@@ -90,7 +93,9 @@ struct CleanFeedContentView: View {
 
             guard !Task.isCancelled else { return }
             controller.feedImage = edited
-            controller.isHDR = false
+            // HDR when the file is natively HDR or the user enabled HDR edit mode —
+            // matches FullScreenImageView's browse-mode rule.
+            controller.isHDR = isHDR
             controller.useEditPipeline = false
             controller.requestFeedRedraw()
         }
@@ -114,6 +119,8 @@ struct CleanFeedRenderView: NSViewRepresentable {
     let controller: CleanFeedController
     let feedImage: CIImage?
     let useEditPipeline: Bool
+    let isHDR: Bool
+    let feedCrop: CleanFeedController.FeedCrop?
 
     func makeCoordinator() -> Coordinator {
         Coordinator(feedPipeline: controller.feedPipeline)
@@ -129,7 +136,14 @@ struct CleanFeedRenderView: NSViewRepresentable {
         view.clearColor = MTLClearColorMake(0, 0, 0, 1)
         if let layer = view.layer as? CAMetalLayer {
             layer.colorspace = MetalPreviewView.Coordinator.colorSpace
+            // Configure EDR eagerly so the first draw can show HDR content on the feed.
+            layer.wantsExtendedDynamicRangeContent = isHDR
+            if #available(macOS 26.0, *) {
+                layer.preferredDynamicRange = isHDR ? .high : .standard
+            }
         }
+        // Opaque when HDR — non-opaque layer compositing can clip EDR values to SDR.
+        view.layer?.isOpaque = isHDR
         context.coordinator.mtkView = view
 
         // Register redraw / continuous hooks so the edit pipeline (via the controller)
@@ -146,6 +160,19 @@ struct CleanFeedRenderView: NSViewRepresentable {
     func updateNSView(_ view: MTKView, context: Context) {
         context.coordinator.feedImage = feedImage
         context.coordinator.useEditPipeline = useEditPipeline
+        context.coordinator.feedCrop = feedCrop
+        if let layer = view.layer as? CAMetalLayer {
+            // wantsExtendedDynamicRangeContent is the fundamental CAMetalLayer EDR enabler;
+            // preferredDynamicRange (macOS 26+) controls compositing but doesn't replace it.
+            layer.wantsExtendedDynamicRangeContent = isHDR
+            if #available(macOS 26.0, *) {
+                layer.preferredDynamicRange = isHDR ? .high : .standard
+            }
+        }
+        view.layer?.isOpaque = isHDR
+        // SwiftUI/NSHostingView insert intermediate layers that clip EDR unless every
+        // ancestor opts in — same walk the editor preview uses.
+        MetalPreviewView.enableEDRAncestors(for: view, isHDR: isHDR)
         view.setNeedsDisplay(view.bounds)
     }
 
@@ -163,6 +190,7 @@ struct CleanFeedRenderView: NSViewRepresentable {
         // Plain (non-isolated) copies set from `updateNSView` on the main thread.
         var feedImage: CIImage?
         var useEditPipeline: Bool = false
+        var feedCrop: CleanFeedController.FeedCrop?
 
         init(feedPipeline: MetalEditPipeline?) {
             self.feedPipeline = feedPipeline
@@ -202,12 +230,25 @@ struct CleanFeedRenderView: NSViewRepresentable {
                let pipeline = feedPipeline,
                pipeline.hasSourceTexture,
                let srcSize = pipeline.sourceTextureSize {
-                pipeline.updateViewport(
-                    zoomScale: 1.0,
-                    offset: .zero,
-                    containerSize: drawableSize,
-                    imageSize: srcSize
-                )
+                if let crop = feedCrop, crop.isActive {
+                    // Render only the confirmed crop region (with straighten), letterboxed.
+                    pipeline.updateCropViewport(
+                        containerSize: drawableSize,
+                        imageSize: srcSize,
+                        cropLeft: crop.left,
+                        cropTop: crop.top,
+                        cropRight: crop.right,
+                        cropBottom: crop.bottom,
+                        angleDegrees: crop.angle
+                    )
+                } else {
+                    pipeline.updateViewport(
+                        zoomScale: 1.0,
+                        offset: .zero,
+                        containerSize: drawableSize,
+                        imageSize: srcSize
+                    )
+                }
                 if pipeline.render(to: drawable, drawableSize: drawableSize) { return }
             }
 

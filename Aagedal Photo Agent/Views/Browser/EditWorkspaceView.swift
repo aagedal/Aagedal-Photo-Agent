@@ -1548,6 +1548,15 @@ struct EditWorkspaceView: View {
         cleanFeedController.isHDR = isHDREnabled
         cleanFeedController.useEditPipeline =
             (metalPipeline?.hasSourceTexture == true) && !isShowingBefore && !isMutingDevelop
+        // Reflect the committed crop on the feed, but freeze updates while the crop tool is
+        // active so the feed only reframes once the crop is confirmed and the tool closes.
+        if !showCropControls, let imageSize = currentImageSize {
+            let crop = activeCrop
+            cleanFeedController.feedCrop = CleanFeedController.FeedCrop(
+                left: crop.left, top: crop.top, right: crop.right, bottom: crop.bottom,
+                angle: activeCropAngle, imageSize: imageSize
+            )
+        }
         cleanFeedController.requestFeedRedraw()
     }
 
@@ -2178,6 +2187,8 @@ struct EditWorkspaceView: View {
             // Reset zoom and unlock image rect when hiding controls
             resetCropZoom()
             lockedCropImageRect = nil
+            // Crop tool deactivated — push the now-confirmed crop to the clean feed.
+            syncCleanFeed()
         }
     }
 
@@ -2196,6 +2207,8 @@ struct EditWorkspaceView: View {
             )
         }
         commitEditAdjustments()
+        // Crop cleared — refresh the clean feed back to the full frame.
+        syncCleanFeed()
     }
 
     private func applyAspectRatioToCrop(_ ratio: CropAspectRatio) {
