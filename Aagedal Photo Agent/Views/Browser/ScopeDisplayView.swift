@@ -4,6 +4,11 @@ struct ScopeDisplayView: View {
     let scopeViewModel: ScopeViewModel
     @State private var hoveredMode: ScopeViewModel.ScopeMode?
 
+    /// Fixed height of the scope area — independent of the sidebar width.
+    private let scopeHeight: CGFloat = 300
+    /// Gamut may stretch, but not without bound.
+    private let gamutMaxWidth: CGFloat = 520
+
     var body: some View {
         VStack(spacing: 4) {
             HStack(spacing: 8) {
@@ -25,41 +30,75 @@ struct ScopeDisplayView: View {
                 }
             }
 
-            ZStack {
-                Color(nsColor: NSColor(white: 0.1, alpha: 1))
+            // GeometryReader sizes from its parent (not its children), so the
+            // background tracks the sidebar width and shrinks back correctly
+            // when the sidebar narrows again.
+            GeometryReader { geo in
+                let content = scopeContentSize(forWidth: geo.size.width)
+                ZStack {
+                    // Background always fills the full available width. Black so
+                    // it's seamless with the scopes' own black backgrounds
+                    // (e.g. the centered vectorscope square).
+                    Color.black
 
-                if scopeViewModel.isMetalScopeActive,
-                   let scopePipeline = scopeViewModel.metalScopePipeline,
-                   let editPipeline = scopeViewModel.metalEditPipeline {
-                    MetalScopeView(
-                        scopePipeline: scopePipeline,
-                        editPipeline: editPipeline,
-                        mode: scopeViewModel.scopeMode,
-                        waveformScale: scopeViewModel.waveformScale,
-                        showClippedGamut: scopeViewModel.showClippedGamut,
-                        targetGamut: scopeViewModel.targetGamut.shaderIndex,
-                        displayGamut: scopeViewModel.displayGamut.shaderIndex,
-                        coordinator: scopeViewModel.metalScopeCoordinator
-                    )
-                } else if let image = scopeViewModel.scopeImage {
-                    Image(nsImage: image)
-                        .resizable()
-                        .interpolation(.high)
-                        .aspectRatio(contentMode: .fit)
-                } else if scopeViewModel.isComputing {
-                    ProgressView()
-                        .controlSize(.small)
+                    // The scope graphic, sized per-mode and centered.
+                    scopeGraphic
+                        .frame(width: content.width, height: content.height)
                 }
-
-                // Unified label overlay for both Metal and CPU scope paths
-                if scopeViewModel.scopeMode != .vectorscope && scopeViewModel.scopeMode != .chromaticity {
-                    ScopeLabelsOverlay(scale: scopeViewModel.waveformScale)
-                        .allowsHitTesting(false)
-                }
-
+                .frame(width: geo.size.width, height: scopeHeight)
             }
-            .aspectRatio(1, contentMode: .fit)
+            .frame(height: scopeHeight)
             .clipShape(RoundedRectangle(cornerRadius: 4))
+        }
+    }
+
+    @ViewBuilder
+    private var scopeGraphic: some View {
+        ZStack {
+            if scopeViewModel.isMetalScopeActive,
+               let scopePipeline = scopeViewModel.metalScopePipeline,
+               let editPipeline = scopeViewModel.metalEditPipeline {
+                MetalScopeView(
+                    scopePipeline: scopePipeline,
+                    editPipeline: editPipeline,
+                    mode: scopeViewModel.scopeMode,
+                    waveformScale: scopeViewModel.waveformScale,
+                    showClippedGamut: scopeViewModel.showClippedGamut,
+                    targetGamut: scopeViewModel.targetGamut.shaderIndex,
+                    displayGamut: scopeViewModel.displayGamut.shaderIndex,
+                    coordinator: scopeViewModel.metalScopeCoordinator
+                )
+            } else if let image = scopeViewModel.scopeImage {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.high)
+            } else if scopeViewModel.isComputing {
+                ProgressView()
+                    .controlSize(.small)
+            }
+
+            // Unified label overlay for both Metal and CPU scope paths
+            if scopeViewModel.scopeMode != .vectorscope && scopeViewModel.scopeMode != .chromaticity {
+                ScopeLabelsOverlay(scale: scopeViewModel.waveformScale)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+
+    /// Size the scope graphic occupies (centered on the background) for a given
+    /// available width. Height stays fixed; only the width adapts per-mode.
+    private func scopeContentSize(forWidth width: CGFloat) -> CGSize {
+        switch scopeViewModel.scopeMode {
+        case .waveform, .parade:
+            // Stretch to fill the full sidebar width.
+            return CGSize(width: width, height: scopeHeight)
+        case .vectorscope:
+            // Never stretch — keep it square, never wider than the sidebar.
+            let side = min(scopeHeight, width)
+            return CGSize(width: side, height: side)
+        case .chromaticity:
+            // Stretch, but cap the width so it doesn't get too wide.
+            return CGSize(width: min(width, gamutMaxWidth), height: scopeHeight)
         }
     }
 
