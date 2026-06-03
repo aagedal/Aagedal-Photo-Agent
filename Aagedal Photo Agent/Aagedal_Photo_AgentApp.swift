@@ -315,6 +315,8 @@ struct Aagedal_Photo_AgentApp: App {
                     }
                     .keyboardShortcut("4", modifiers: .shift)
 
+                    Divider()
+
                     Button("Toggle Gamut Clipping") {
                         NotificationCenter.default.post(name: .toggleGamutClipping, object: nil)
                     }
