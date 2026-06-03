@@ -5,6 +5,7 @@ import Foundation
 private final class CancellationState: @unchecked Sendable {
     nonisolated(unsafe) private var _resumed = false
     nonisolated(unsafe) private var _cancelled = false
+    nonisolated(unsafe) private var _launched = false
     private let lock = NSLock()
 
     nonisolated var isCancelled: Bool {
@@ -13,6 +14,25 @@ private final class CancellationState: @unchecked Sendable {
 
     nonisolated func markCancelled() {
         lock.withLock { _cancelled = true }
+    }
+
+    /// Records that `process.run()` succeeded. Returns `true` if a cancellation
+    /// already arrived before launch completed, in which case the caller must
+    /// terminate the now-running process itself (the cancel handler skipped it
+    /// because the process wasn't launched yet).
+    nonisolated func markLaunched() -> Bool {
+        lock.withLock {
+            _launched = true
+            return _cancelled
+        }
+    }
+
+    /// Whether it is safe to call `process.terminate()`. Calling terminate on a
+    /// process that was never launched raises `NSInvalidArgumentException`
+    /// ("task not launched"), an uncatchable Objective-C exception that crashes
+    /// the app — so the cancel handler must only terminate a launched process.
+    nonisolated var isLaunched: Bool {
+        lock.withLock { _launched }
     }
 
     /// Returns `true` if this is the first call (caller should resume the continuation).
@@ -71,6 +91,12 @@ extension Process {
                 }
                 do {
                     try process.run()
+                    // If cancellation arrived before the process finished launching,
+                    // the cancel handler couldn't terminate it (it wasn't running
+                    // yet). Honor the cancellation now that it's live.
+                    if state.markLaunched() {
+                        process.terminate()
+                    }
                 } catch {
                     // The child never launched, so Process won't close the pipes' write
                     // ends — close them ourselves so the background readers see EOF
@@ -84,7 +110,13 @@ extension Process {
             }
         } onCancel: {
             state.markCancelled()
-            process.terminate()
+            // Only terminate a process that actually launched. Calling terminate()
+            // before run() raises an uncatchable NSInvalidArgumentException and
+            // crashes the app; if the launch is still in flight, markLaunched()
+            // observes the cancellation above and terminates instead.
+            if state.isLaunched {
+                process.terminate()
+            }
         }
 
         let stdout = String(data: await stdoutData, encoding: .utf8) ?? ""
