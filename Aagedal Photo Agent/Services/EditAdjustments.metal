@@ -63,6 +63,9 @@ struct EditParams {
     float2 viewportCenter;   // crop center in normalized source coords (rotation pivot)
     float viewportRotation;  // radians; rotate sampling for clean-feed crop straighten
     float _padViewport;
+
+    float2 cropHalfExtent;   // crop rect half-size as fraction of drawable, centered.
+                             // (0.5,0.5) = no crop mask. Pixels beyond → background.
 };
 
 // ============================================================
@@ -121,6 +124,18 @@ kernel void editAdjustments(
 
     // Map drawable pixel through viewport to source UV
     float2 drawableNorm = float2(gid) / params.drawableSize;
+
+    // Crop mask: black out (background) outside the confirmed crop rectangle. The viewport
+    // letterbox-fits the crop, so the margin between the crop rect and the drawable edge
+    // still samples in-bounds image — this is what actually "cuts" the crop. (0.5,0.5) ⇒
+    // no mask (full-image render).
+    float2 cropCentered = drawableNorm - 0.5;
+    if (abs(cropCentered.x) > params.cropHalfExtent.x ||
+        abs(cropCentered.y) > params.cropHalfExtent.y) {
+        destination.write(half4(0.0197, 0.0197, 0.0197, 1), gid);
+        return;
+    }
+
     float2 uv;
     if (params.viewportRotation != 0.0) {
         // Clean-feed crop straighten: rotate the centered offset around the crop center.

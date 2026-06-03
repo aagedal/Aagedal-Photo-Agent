@@ -98,6 +98,12 @@ struct EditParams {
     var viewportCenter: SIMD2<Float> = SIMD2<Float>(0.5, 0.5)
     var viewportRotation: Float = 0
     var _padViewport: Float = 0
+
+    // Half-extent of the crop rectangle as a fraction of the drawable, centered. Pixels
+    // beyond this get the background color — the actual crop "cut" (the rest of the visible
+    // region samples in-bounds image, so without this the crop edges wouldn't show).
+    // (0.5, 0.5) = no crop mask (full drawable).
+    var cropHalfExtent: SIMD2<Float> = SIMD2<Float>(0.5, 0.5)
 }
 
 /// Manages the Metal compute pipeline for real-time edit preview.
@@ -227,6 +233,7 @@ final class MetalEditPipeline: @unchecked Sendable {
     // survives the full-struct rewrite in updateParams().
     nonisolated(unsafe) private var cachedViewportCenter: SIMD2<Float> = SIMD2<Float>(0.5, 0.5)
     nonisolated(unsafe) private var cachedViewportRotation: Float = 0
+    nonisolated(unsafe) private var cachedCropHalfExtent: SIMD2<Float> = SIMD2<Float>(0.5, 0.5)
 
     nonisolated var hasSourceTexture: Bool { sourceTexture != nil }
 
@@ -445,6 +452,7 @@ final class MetalEditPipeline: @unchecked Sendable {
             ptr.pointee.viewportSize = cachedViewportSize
             ptr.pointee.viewportCenter = cachedViewportCenter
             ptr.pointee.viewportRotation = cachedViewportRotation
+            ptr.pointee.cropHalfExtent = cachedCropHalfExtent
             // Mirror to the clean-feed pipeline (its own viewport is preserved).
             mirror?.updateParams(nil)
             onParamsChanged?()
@@ -586,6 +594,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         ptr.pointee.viewportSize = cachedViewportSize
         ptr.pointee.viewportCenter = cachedViewportCenter
         ptr.pointee.viewportRotation = cachedViewportRotation
+        ptr.pointee.cropHalfExtent = cachedCropHalfExtent
 
         // Mirror params to the clean-feed pipeline so the second display tracks the
         // edit live. The mirror computes against its OWN cached viewport, so its
@@ -862,15 +871,17 @@ final class MetalEditPipeline: @unchecked Sendable {
 
         cachedViewportOrigin = SIMD2<Float>(Float(originX), Float(originY))
         cachedViewportSize = SIMD2<Float>(Float(vpW), Float(vpH))
-        // Zoom/pan viewport is axis-aligned — clear any crop straighten rotation.
+        // Zoom/pan viewport is axis-aligned — clear any crop straighten rotation + mask.
         cachedViewportCenter = SIMD2<Float>(Float(originX + vpW / 2), Float(originY + vpH / 2))
         cachedViewportRotation = 0
+        cachedCropHalfExtent = SIMD2<Float>(0.5, 0.5)
 
         let ptr = buffer.contents().bindMemory(to: EditParams.self, capacity: 1)
         ptr.pointee.viewportOrigin = cachedViewportOrigin
         ptr.pointee.viewportSize = cachedViewportSize
         ptr.pointee.viewportCenter = cachedViewportCenter
         ptr.pointee.viewportRotation = cachedViewportRotation
+        ptr.pointee.cropHalfExtent = cachedCropHalfExtent
 
         // Also update overlay params
         if let overlayBuf = overlayParamsBuffer {
@@ -932,11 +943,18 @@ final class MetalEditPipeline: @unchecked Sendable {
         cachedViewportOrigin = SIMD2<Float>(Float(centerX - vpW / 2), Float(centerY - vpH / 2))
         cachedViewportRotation = Float(radians)
 
+        // The crop occupies the central (actual·fitScale / container) fraction of the
+        // drawable; the rest is letterbox margin that must be masked to the background.
+        let cropHalfX = (actualW * fitScale) / (2 * Double(containerSize.width))
+        let cropHalfY = (actualH * fitScale) / (2 * Double(containerSize.height))
+        cachedCropHalfExtent = SIMD2<Float>(Float(cropHalfX), Float(cropHalfY))
+
         let ptr = buffer.contents().bindMemory(to: EditParams.self, capacity: 1)
         ptr.pointee.viewportOrigin = cachedViewportOrigin
         ptr.pointee.viewportSize = cachedViewportSize
         ptr.pointee.viewportCenter = cachedViewportCenter
         ptr.pointee.viewportRotation = cachedViewportRotation
+        ptr.pointee.cropHalfExtent = cachedCropHalfExtent
     }
 
     // MARK: - Texture Pre-Caching
