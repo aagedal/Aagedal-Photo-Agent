@@ -60,7 +60,7 @@ struct SettingsView: View {
             switch self {
             case .general: return "General"
             case .metadata: return "Metadata"
-            case .keywordLists: return "Keyword Lists"
+            case .keywordLists: return "Keywords"
             case .faceRecognition: return "Face Recognition"
             case .knownPeople: return "Known People"
             case .locations: return "Locations"
