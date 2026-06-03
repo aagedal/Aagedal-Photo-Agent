@@ -329,16 +329,16 @@ struct Aagedal_Photo_AgentApp: App {
                 .keyboardShortcut("f", modifiers: [.command, .shift])
                 .disabled(!CleanFeedController.shared.hasExternalDisplay)
 
-                Section("Clean Feed Output") {
-                    Picker("Clean Feed Output", selection: cleanFeedSelection) {
-                        Text("Off").tag(CGDirectDisplayID?.none)
-                        ForEach(CleanFeedController.shared.feedDisplayOptions) { option in
-                            Text(option.name).tag(Optional(option.id))
-                        }
+                // The inline Picker's label is itself the section header — wrapping it
+                // in a Section too would render "Clean Feed Output" twice.
+                Picker("Clean Feed Output", selection: cleanFeedSelection) {
+                    Text("Off").tag(CGDirectDisplayID?.none)
+                    ForEach(CleanFeedController.shared.feedDisplayOptions) { option in
+                        Text(option.name).tag(Optional(option.id))
                     }
-                    .pickerStyle(.inline)
-                    .disabled(!CleanFeedController.shared.hasExternalDisplay)
                 }
+                .pickerStyle(.inline)
+                .disabled(!CleanFeedController.shared.hasExternalDisplay)
             }
 
             CommandMenu("Upload") {
