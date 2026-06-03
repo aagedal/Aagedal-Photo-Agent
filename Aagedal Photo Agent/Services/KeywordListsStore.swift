@@ -81,7 +81,13 @@ final class KeywordListsStore: @unchecked Sendable {
     @ObservationIgnored private var cachedRoot: URL?
 
     init() {
-        ensureDirectories(at: rootURL)
+        // Ensure the local directory skeleton exists. We intentionally do NOT
+        // touch `rootURL` here: resolving the iCloud container this early in
+        // launch can momentarily fail and (pre-fix) pinned the cached root to
+        // local for the whole session. iCloud directories are created lazily on
+        // first write (CloudCoordinatedIO ensures the parent) and by the cloud
+        // coordinator when it starts its metadata query.
+        ensureDirectories(at: localRootURL)
     }
 
     // MARK: - Root resolution
@@ -109,16 +115,26 @@ final class KeywordListsStore: @unchecked Sendable {
     }
 
     /// Effective root: iCloud container if opted-in and available, else local.
+    ///
+    /// The resolved root is cached only when it is *final*: local when iCloud is
+    /// off, or the ubiquity container once it actually resolves. When iCloud is
+    /// on but the container isn't ready yet (the daemon can still be provisioning
+    /// it right after launch) we return local **without caching**, so a later
+    /// access re-resolves and picks up the container as soon as it appears.
+    /// Caching local in that window would pin the store to local for the entire
+    /// session and silently stop syncing — the cause of lists reverting on launch.
     var rootURL: URL {
         if let cached = cachedRoot { return cached }
-        let resolved: URL
-        if iCloudEnabled, let cloud = iCloudContainerListsURL {
-            resolved = cloud
-        } else {
-            resolved = localRootURL
+        if iCloudEnabled {
+            if let cloud = iCloudContainerListsURL {
+                cachedRoot = cloud
+                return cloud
+            }
+            logger.warning("iCloud enabled but ubiquity container unavailable; using local root transiently (will re-resolve)")
+            return localRootURL
         }
-        cachedRoot = resolved
-        return resolved
+        cachedRoot = localRootURL
+        return localRootURL
     }
 
     // MARK: - Public read/write
@@ -221,7 +237,7 @@ final class KeywordListsStore: @unchecked Sendable {
                 return false
             }
             do {
-                try copyTree(from: localRootURL, to: cloud)
+                try mergeTree(from: localRootURL, to: cloud)
                 UserDefaults.standard.set(true, forKey: UserDefaultsKeys.keywordListsICloudEnabled)
                 resetRootCache()
                 bumpVersion()
@@ -236,8 +252,9 @@ final class KeywordListsStore: @unchecked Sendable {
             UserDefaults.standard.set(false, forKey: UserDefaultsKeys.keywordListsICloudEnabled)
             resetRootCache()
             let local = localRootURL
-            // Best-effort copy back so the user still has access locally after toggle off.
-            try? copyTree(from: current, to: local)
+            // Best-effort merge back so the user still has access locally after
+            // toggle off, without clobbering anything already present locally.
+            try? mergeTree(from: current, to: local)
             bumpVersion()
             return true
         }
@@ -349,23 +366,47 @@ final class KeywordListsStore: @unchecked Sendable {
         )
     }
 
-    /// Mirrors `source/*` into `destination/*` for our known subfolders. Files
-    /// at the destination get overwritten; files missing from the source are
-    /// left in place (so iCloud → local toggle preserves a deletion done on
-    /// another device).
-    private func copyTree(from source: URL, to destination: URL) throws {
+    /// Non-destructively brings `source`'s lists into `destination` when toggling
+    /// iCloud on or off.
+    ///
+    /// Keyword lists use *fixed* filenames (e.g. `quick/keywords.txt`), so a
+    /// straight copy overwrites by name — and because the destination may already
+    /// hold another device's synced content, that silently destroys it. Instead:
+    ///
+    /// - Flat lists (`quick`, `approved`) are merged by **union of entries**
+    ///   (destination order preserved, new source entries appended).
+    /// - The structured tree is free-form text we can't safely merge line-by-line,
+    ///   so it is **seeded only when the destination has none** — an existing
+    ///   destination tree is left untouched rather than clobbered.
+    private func mergeTree(from source: URL, to destination: URL) throws {
         try CloudCoordinatedIO.ensureDirectory(destination)
-        for sub in ["quick", "approved", "structured"] {
-            let sourceDir = source.appendingPathComponent(sub, isDirectory: true)
-            let destinationDir = destination.appendingPathComponent(sub, isDirectory: true)
-            try CloudCoordinatedIO.ensureDirectory(destinationDir)
-            guard FileManager.default.fileExists(atPath: sourceDir.path) else { continue }
-            let children = (try? CloudCoordinatedIO.contentsOfDirectory(at: sourceDir)) ?? []
-            for child in children where child.pathExtension.lowercased() == "txt" {
-                let dest = destinationDir.appendingPathComponent(child.lastPathComponent)
-                let data = try CloudCoordinatedIO.readData(at: child)
-                try CloudCoordinatedIO.writeData(data, to: dest)
+        for key in allKnownKeys() {
+            let sourceURL = source.appendingPathComponent(key.relativePath)
+            guard CloudCoordinatedIO.itemExists(at: sourceURL) else { continue }
+            let destURL = destination.appendingPathComponent(key.relativePath)
+            switch key {
+            case .quick, .approved:
+                let destEntries = entries(at: destURL)
+                var seen = Set(destEntries)
+                var merged = destEntries
+                for entry in entries(at: sourceURL) where seen.insert(entry).inserted {
+                    merged.append(entry)
+                }
+                let joined = merged.joined(separator: "\n") + (merged.isEmpty ? "" : "\n")
+                try CloudCoordinatedIO.writeText(joined, to: destURL)
+            case .structured:
+                guard !CloudCoordinatedIO.itemExists(at: destURL) else { continue }
+                let data = try CloudCoordinatedIO.readData(at: sourceURL)
+                try CloudCoordinatedIO.writeData(data, to: destURL)
             }
         }
+    }
+
+    /// Reads line entries from an explicit file URL (used by `mergeTree`, which
+    /// must read both roots regardless of which one is currently active).
+    private func entries(at url: URL) -> [String] {
+        guard CloudCoordinatedIO.itemExists(at: url),
+              let data = try? CloudCoordinatedIO.readData(at: url) else { return [] }
+        return ApprovedListParser.parseString(String(decoding: data, as: UTF8.self), csv: false)
     }
 }
