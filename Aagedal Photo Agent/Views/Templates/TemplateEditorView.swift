@@ -31,13 +31,19 @@ struct TemplateEditorView: View {
             TextField("Template Name", text: $viewModel.editingTemplate.name)
                 .textFieldStyle(.roundedBorder)
 
-            Picker("Keyboard Shortcut", selection: $viewModel.editingTemplate.shortcutSlot) {
-                Text("None").tag(nil as Int?)
-                ForEach(1...9, id: \.self) { slot in
-                    Text("Ctrl+\(slot)").tag(slot as Int?)
+            HStack(spacing: 20) {
+                Picker("Keyboard Shortcut", selection: $viewModel.editingTemplate.shortcutSlot) {
+                    Text("None").tag(nil as Int?)
+                    ForEach(1...9, id: \.self) { slot in
+                        Text("Ctrl+\(slot)").tag(slot as Int?)
+                    }
                 }
+                .frame(width: 240)
+
+                Toggle("Process variables instantly", isOn: $viewModel.editingTemplate.processInstantly)
+                    .toggleStyle(.switch)
+                    .help("After this template is applied, immediately resolve metadata variables (like {date}, {seq}, {filename}) for the images it was applied to, instead of waiting for a separate Process Variables pass.")
             }
-            .frame(width: 240)
 
             Divider()
 
@@ -65,10 +71,28 @@ struct TemplateEditorView: View {
                     .labelsHidden()
                     .frame(width: 120)
 
-                    TextField("Template value", text: $field.templateValue)
-                        .textFieldStyle(.roundedBorder)
+                    if field.fieldKey == "digitalSourceType" {
+                        // Digital Source Type is an enum — offer its cases as a
+                        // dropdown rather than free text. The template stores the
+                        // raw value, matching applyTemplateFields' DigitalSourceType(rawValue:).
+                        Picker("", selection: Binding(
+                            get: { DigitalSourceType(rawValue: $field.templateValue.wrappedValue) },
+                            set: { $field.templateValue.wrappedValue = $0?.rawValue ?? "" }
+                        )) {
+                            Text("None").tag(nil as DigitalSourceType?)
+                            ForEach(DigitalSourceType.allCases, id: \.self) { type in
+                                Text(type.displayName).tag(type as DigitalSourceType?)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .labelsHidden()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        TextField("Template value", text: $field.templateValue)
+                            .textFieldStyle(.roundedBorder)
 
-                    variableMenu(for: $field)
+                        variableMenu(for: $field)
+                    }
 
                     let fieldID = field.id
                     Button {

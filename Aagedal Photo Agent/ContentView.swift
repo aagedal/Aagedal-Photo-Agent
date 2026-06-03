@@ -1463,7 +1463,16 @@ struct ContentView: View {
         for field in template.fields {
             raw[field.fieldKey] = field.templateValue
         }
-        metadataViewModel.applyTemplateFields(raw, append: append)
+        if template.processInstantly {
+            // Snapshot the images the template is being applied to right now.
+            // The user may change the selection while the async variable
+            // resolution runs, so the resolved values must be written back to
+            // exactly these images, not whatever is selected later.
+            let appliedImages = browserViewModel.selectedImages
+            metadataViewModel.applyTemplateFieldsAndProcessVariables(raw, to: appliedImages, append: append)
+        } else {
+            metadataViewModel.applyTemplateFields(raw, append: append)
+        }
     }
 
     private func loadTechnicalMetadata() {

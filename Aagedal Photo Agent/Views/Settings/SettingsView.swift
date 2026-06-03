@@ -104,6 +104,7 @@ struct SettingsView: View {
                 Section("Library & Metadata") {
                     row(.metadata)
                     row(.keywordLists)
+                    row(.templates)
                 }
                 Section("People") {
                     row(.faceRecognition)
@@ -112,7 +113,6 @@ struct SettingsView: View {
                 Section("Export & Publishing") {
                     row(.locations)
                     row(.format)
-                    row(.templates)
                     row(.ftp)
                     row(.signing)
                 }

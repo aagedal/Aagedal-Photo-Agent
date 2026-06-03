@@ -1489,6 +1489,28 @@ final class MetadataViewModel {
         return existing + " " + new
     }
 
+    /// Applies template fields to the editing buffer and then immediately resolves
+    /// metadata variables for exactly the supplied images. Used by templates that
+    /// have "process instantly" enabled.
+    ///
+    /// `images` is captured by the caller at apply time so a selection change during
+    /// the async resolution doesn't redirect the writes to other images.
+    ///
+    /// Per-image variables ({filename}, {seq}, …) can only be resolved against each
+    /// image individually. For a multi-image selection the shared editing buffer
+    /// can't express that, so the just-applied template literals are flushed to each
+    /// image's sidecar first, then the batch resolver reads them back and resolves
+    /// per image. For a single displayed image the batch resolver works directly off
+    /// the editing buffer, so no pre-save is needed there.
+    func applyTemplateFieldsAndProcessVariables(_ template: [String: String], to images: [ImageFile], append: Bool = false) {
+        applyTemplateFields(template, append: append)
+        guard !images.isEmpty else { return }
+        if selectedCount > 1 {
+            saveToSidecar()
+        }
+        processVariablesForImages(images)
+    }
+
     private static let variablePattern = /\{(date|date:[^}]+|dateCreated|dateCreated:[^}]+|dateCaptured|dateCaptured:[^}]+|filename|initials|persons|keywords|field:[^}]+|seq|seq:\d+)\}/
 
     /// Checks whether any text field, keyword, or person in editingMetadata contains variable placeholders.

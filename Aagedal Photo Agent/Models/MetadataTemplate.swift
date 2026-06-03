@@ -6,13 +6,33 @@ struct MetadataTemplate: Codable, Identifiable, Sendable {
     var templateType: TemplateType
     var fields: [TemplateField]
     var shortcutSlot: Int?
+    /// When true, applying this template immediately resolves metadata variables
+    /// (e.g. {date}, {seq}, {filename}) for the images it was applied to, instead
+    /// of leaving them for a later "Process Variables" pass.
+    var processInstantly: Bool
 
-    init(id: UUID = UUID(), name: String = "", templateType: TemplateType = .full, fields: [TemplateField] = [], shortcutSlot: Int? = nil) {
+    init(id: UUID = UUID(), name: String = "", templateType: TemplateType = .full, fields: [TemplateField] = [], shortcutSlot: Int? = nil, processInstantly: Bool = false) {
         self.id = id
         self.name = name
         self.templateType = templateType
         self.fields = fields
         self.shortcutSlot = shortcutSlot
+        self.processInstantly = processInstantly
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, templateType, fields, shortcutSlot, processInstantly
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        templateType = try container.decode(TemplateType.self, forKey: .templateType)
+        fields = try container.decode([TemplateField].self, forKey: .fields)
+        shortcutSlot = try container.decodeIfPresent(Int.self, forKey: .shortcutSlot)
+        // Default to false for templates saved before this flag existed.
+        processInstantly = try container.decodeIfPresent(Bool.self, forKey: .processInstantly) ?? false
     }
 
     enum TemplateType: String, Codable, CaseIterable, Sendable {
