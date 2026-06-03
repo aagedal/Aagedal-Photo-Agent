@@ -49,37 +49,34 @@ extension Process {
 
         let state = CancellationState()
 
-        return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
+        // Drain both pipes concurrently with the child's execution. Reading only in the
+        // termination handler (after the process exits) deadlocks any child that writes
+        // more than the ~64 KB pipe buffer to stdout/stderr: it blocks on write(), so it
+        // never exits, so the handler never fires. ffmpeg's stderr and c2patool's JSON
+        // report can both exceed that. Each fd has exactly one reader (no readability/
+        // termination-handler race over the final bytes), and the reads run off the
+        // cooperative pool so a blocking read can't starve other tasks.
+        async let stdoutData = Self.readToEnd(stdoutPipe.fileHandleForReading)
+        async let stderrData = Self.readToEnd(stderrPipe.fileHandleForReading)
+
+        let status: Int32 = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Int32, any Error>) in
                 process.terminationHandler = { proc in
-                    let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-                    let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-                    let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
-                    let stderr = String(data: stderrData, encoding: .utf8) ?? ""
-
                     guard state.claimResume() else { return }
-
                     if state.isCancelled {
                         continuation.resume(throwing: CancellationError())
-                        return
+                    } else {
+                        continuation.resume(returning: proc.terminationStatus)
                     }
-
-                    if proc.terminationStatus != 0 {
-                        let message = stderr.isEmpty
-                            ? "Process exited with status \(proc.terminationStatus)"
-                            : "Process exited with status \(proc.terminationStatus): \(stderr.prefix(500))"
-                        continuation.resume(throwing: NSError(
-                            domain: "Process+Async", code: Int(proc.terminationStatus),
-                            userInfo: [NSLocalizedDescriptionKey: message]
-                        ))
-                        return
-                    }
-
-                    continuation.resume(returning: (stdout, stderr))
                 }
                 do {
                     try process.run()
                 } catch {
+                    // The child never launched, so Process won't close the pipes' write
+                    // ends — close them ourselves so the background readers see EOF
+                    // instead of blocking on readDataToEndOfFile forever.
+                    try? stdoutPipe.fileHandleForWriting.close()
+                    try? stderrPipe.fileHandleForWriting.close()
                     if state.claimResume() {
                         continuation.resume(throwing: error)
                     }
@@ -88,6 +85,31 @@ extension Process {
         } onCancel: {
             state.markCancelled()
             process.terminate()
+        }
+
+        let stdout = String(data: await stdoutData, encoding: .utf8) ?? ""
+        let stderr = String(data: await stderrData, encoding: .utf8) ?? ""
+
+        if status != 0 {
+            let message = stderr.isEmpty
+                ? "Process exited with status \(status)"
+                : "Process exited with status \(status): \(stderr.prefix(500))"
+            throw NSError(
+                domain: "Process+Async", code: Int(status),
+                userInfo: [NSLocalizedDescriptionKey: message]
+            )
+        }
+
+        return (stdout, stderr)
+    }
+
+    /// Reads a file handle to EOF on a background queue, off the Swift concurrency
+    /// cooperative pool so the blocking read can't tie up a pool thread.
+    private static func readToEnd(_ handle: FileHandle) async -> Data {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                continuation.resume(returning: handle.readDataToEndOfFile())
+            }
         }
     }
 }
