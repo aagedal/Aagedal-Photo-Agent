@@ -52,6 +52,11 @@ nonisolated enum UserDefaultsKeys {
     static let lastScopeMode = "lastScopeMode"
     static let metadataPanelWidth = "metadataPanelWidth"
 
+    // MARK: - Clean Feed (secondary-display output)
+    /// CGDirectDisplayID of the screen the clean-feed window should occupy.
+    /// Stored as an Int; 0 / absent means "first available external display".
+    static let cleanFeedDisplayID = "cleanFeedDisplayID"
+
     // MARK: - Multi-Select Behavior
     static let multiSelectKeywordsMode = "multiSelectKeywordsMode"
     static let multiSelectPersonShownMode = "multiSelectPersonShownMode"

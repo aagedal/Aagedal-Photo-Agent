@@ -432,6 +432,7 @@ struct ContentView: View {
                 )
             }
             .fullScreenImagePresenter(viewModel: browserViewModel, scopeViewModel: scopeViewModel)
+            .cleanFeedPresenter(controller: CleanFeedController.shared, browserViewModel: browserViewModel)
             .onAppear {
                 browserViewModel.loadFavorites()
                 browserViewModel.loadFavoriteTopLevelSubfolders()
@@ -667,6 +668,7 @@ struct ContentView: View {
             browserViewModel: browserViewModel,
             settingsViewModel: settingsViewModel,
             scopeViewModel: scopeViewModel,
+            cleanFeedController: CleanFeedController.shared,
             onExit: {
                 mainViewMode = .browser
                 browserViewModel.shouldRestoreGridFocus = true

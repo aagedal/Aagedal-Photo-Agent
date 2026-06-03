@@ -142,12 +142,36 @@ final class MetalEditPipeline: @unchecked Sendable {
     nonisolated(unsafe) private(set) var hslBuffer: MTLBuffer?
 
     /// Gamut clipping mode for soft proof preview. 0=off, 1=sRGB, 2=P3, 3=Rec.2020.
-    nonisolated(unsafe) var gamutClipMode: UInt32 = 0
+    nonisolated(unsafe) var gamutClipMode: UInt32 = 0 {
+        didSet { mirror?.gamutClipMode = gamutClipMode }
+    }
 
     /// As-shot white balance from the RAW decoder. Used as the reference point for WB
     /// adjustments so that "Custom at as-shot temperature" produces an identity matrix.
-    nonisolated(unsafe) var asShotTemperature: Double = 6500
-    nonisolated(unsafe) var asShotTint: Double = 0
+    nonisolated(unsafe) var asShotTemperature: Double = 6500 {
+        didSet { mirror?.asShotTemperature = asShotTemperature }
+    }
+    nonisolated(unsafe) var asShotTint: Double = 0 {
+        didSet { mirror?.asShotTint = asShotTint }
+    }
+
+    // MARK: - Clean-feed mirror
+
+    /// Optional secondary pipeline (the clean-feed window on a second display) that
+    /// mirrors this pipeline's **source texture** (shared by reference — no extra GPU
+    /// memory) and **edit parameters**, so the second screen tracks the live edit.
+    ///
+    /// Only source + params + white-balance reference + gamut-clip mode are forwarded.
+    /// Viewport and mask overlays are deliberately NOT forwarded: the mirror keeps its
+    /// own viewport (letterboxed for the secondary display's aspect ratio) and a clean
+    /// feed never shows mask-editing overlays. Setting/clearing happens on the main
+    /// thread from the edit workspace; the weak reference avoids a retain cycle.
+    nonisolated(unsafe) weak var mirror: MetalEditPipeline?
+
+    /// Invoked at the end of every `updateParams` so the mirror's view can request a
+    /// redraw. Called on whichever thread `updateParams` runs on — the live edit call
+    /// sites are all on the main thread, matching the existing coordinator-redraw model.
+    nonisolated(unsafe) var onParamsChanged: (() -> Void)?
     nonisolated(unsafe) private var float16Buffer = [UInt16](repeating: 0, count: ToneCurveGenerator.lutSize * 4)
     /// Reusable interleave scratch buffer for uploadLUT — avoids a per-frame heap allocation
     /// while a white-balance/tone slider is being dragged.
@@ -350,6 +374,8 @@ final class MetalEditPipeline: @unchecked Sendable {
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
         setSourceTexture(texture)
+        // Share the same texture object with the clean-feed mirror (zero-copy).
+        mirror?.setSourceTexture(texture)
     }
 
     // MARK: - LUT Upload
@@ -407,6 +433,9 @@ final class MetalEditPipeline: @unchecked Sendable {
             ptr.pointee.gamutClipMode = gamutClipMode
             ptr.pointee.viewportOrigin = cachedViewportOrigin
             ptr.pointee.viewportSize = cachedViewportSize
+            // Mirror to the clean-feed pipeline (its own viewport is preserved).
+            mirror?.updateParams(nil)
+            onParamsChanged?()
             return
         }
 
@@ -543,6 +572,12 @@ final class MetalEditPipeline: @unchecked Sendable {
         ptr.pointee.gamutClipMode = gamutClipMode
         ptr.pointee.viewportOrigin = cachedViewportOrigin
         ptr.pointee.viewportSize = cachedViewportSize
+
+        // Mirror params to the clean-feed pipeline so the second display tracks the
+        // edit live. The mirror computes against its OWN cached viewport, so its
+        // letterboxing for the secondary display is preserved.
+        mirror?.updateParams(settings)
+        onParamsChanged?()
 
         let elapsed = ContinuousClock.now - start
         if elapsed > .milliseconds(1) {
@@ -754,6 +789,14 @@ final class MetalEditPipeline: @unchecked Sendable {
 
     nonisolated func clearSourceTexture() {
         setSourceTexture(nil)
+        mirror?.clearSourceTexture()
+    }
+
+    /// Share this pipeline's current source texture with another pipeline (by
+    /// reference — no copy). Used to seed the clean-feed mirror when it is enabled
+    /// mid-edit, after the source texture has already been uploaded.
+    nonisolated func shareSourceTexture(with other: MetalEditPipeline) {
+        other.setSourceTexture(sourceTexture)
     }
 
     // MARK: - Viewport
@@ -866,6 +909,7 @@ final class MetalEditPipeline: @unchecked Sendable {
     nonisolated func applyCachedTexture(for url: URL) -> (neutralTemperature: Float, neutralTint: Float)? {
         guard let wrapper = textureCache.object(forKey: url as NSURL) else { return nil }
         setSourceTexture(wrapper.texture)
+        mirror?.setSourceTexture(wrapper.texture)
         textureCache.removeObject(forKey: url as NSURL)
         return (neutralTemperature: wrapper.neutralTemperature, neutralTint: wrapper.neutralTint)
     }

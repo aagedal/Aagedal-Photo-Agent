@@ -29,6 +29,22 @@ struct Aagedal_Photo_AgentApp: App {
         }
     }
 
+    /// Radio selection for the View-menu clean-feed display list: the active target
+    /// display when on, or `nil` (Off) when disabled. Selecting a display sends the
+    /// feed there and enables it; selecting Off disables it.
+    private var cleanFeedSelection: Binding<CGDirectDisplayID?> {
+        Binding(
+            get: { CleanFeedController.shared.activeDisplaySelection },
+            set: { newValue in
+                if let id = newValue {
+                    CleanFeedController.shared.selectDisplay(id: id)
+                } else {
+                    CleanFeedController.shared.isEnabled = false
+                }
+            }
+        )
+    }
+
     var body: some Scene {
         Window("Aagedal Photo Agent", id: "main") {
             ContentView()
@@ -270,6 +286,29 @@ struct Aagedal_Photo_AgentApp: App {
                 }
             }
 
+            // Grouped to stay within the @CommandsBuilder 10-child limit.
+            Group {
+            CommandMenu("View") {
+                Button(CleanFeedController.shared.isEnabled
+                       ? "Turn Off Clean Feed"
+                       : "Turn On Clean Feed") {
+                    CleanFeedController.shared.toggleEnabled()
+                }
+                .keyboardShortcut("f", modifiers: [.command, .shift])
+                .disabled(!CleanFeedController.shared.hasExternalDisplay)
+
+                Section("Clean Feed Output") {
+                    Picker("Clean Feed Output", selection: cleanFeedSelection) {
+                        Text("Off").tag(CGDirectDisplayID?.none)
+                        ForEach(CleanFeedController.shared.feedDisplayOptions) { option in
+                            Text(option.name).tag(Optional(option.id))
+                        }
+                    }
+                    .pickerStyle(.inline)
+                    .disabled(!CleanFeedController.shared.hasExternalDisplay)
+                }
+            }
+
             CommandMenu("Scopes") {
                 Button("Waveform") {
                     NotificationCenter.default.post(name: .setScopeMode, object: ScopeViewModel.ScopeMode.waveform)
@@ -310,6 +349,7 @@ struct Aagedal_Photo_AgentApp: App {
                 }
                 .keyboardShortcut("u", modifiers: [.command, .shift])
             }
+            } // end Group (View / Scopes / Upload)
         }
 
         Window("Structured Keywords", id: "structuredKeywords") {

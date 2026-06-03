@@ -12,6 +12,7 @@ struct EditWorkspaceView: View {
     @Bindable var browserViewModel: BrowserViewModel
     let settingsViewModel: SettingsViewModel
     let scopeViewModel: ScopeViewModel
+    let cleanFeedController: CleanFeedController
     let onExit: () -> Void
     var onPendingStatusChanged: (() -> Void)?
 
@@ -264,6 +265,7 @@ struct EditWorkspaceView: View {
             )
             if isDragging, !wasDragging {
                 metalCoordinator.startContinuousRendering()
+                cleanFeedController.setFeedContinuousRendering(true)
             }
             if wasDragging, !isDragging {
                 // Commit crop drag to ViewModel before clearing overlay state
@@ -273,6 +275,7 @@ struct EditWorkspaceView: View {
                 dragCropAngle = nil
                 dragCropRegion = nil
                 metalCoordinator.stopContinuousRendering()
+                cleanFeedController.setFeedContinuousRendering(false)
                 scopeThrottleTask?.cancel()
                 scopeThrottleTask = nil
                 renderPreview()
@@ -298,6 +301,10 @@ struct EditWorkspaceView: View {
             // during active mask drags for real-time feedback.
             metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
             metalCoordinator.requestRedraw()
+        }
+        .onChange(of: cleanFeedController.isEnabled) { _, enabled in
+            // Feed toggled while editing — connect/disconnect the live mirror.
+            updateCleanFeedMirror(enabled: enabled)
         }
         .onChange(of: scopeViewModel.showClippedGamut) { _, _ in
             updateGamutClipMode()
@@ -926,6 +933,14 @@ struct EditWorkspaceView: View {
         // Flush any unsaved edit adjustments (CRS) to disk before tearing down.
         commitEditAdjustments()
 
+        // Tear down the clean-feed mirror; browse mode resumes driving the feed.
+        metalPipeline?.mirror = nil
+        metalPipeline?.onParamsChanged = nil
+        cleanFeedController.editModeActive = false
+        cleanFeedController.useEditPipeline = false
+        cleanFeedController.feedPipeline?.clearSourceTexture()
+        cleanFeedController.requestFeedRedraw()
+
         metadataViewModel.isInEditView = false
         metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
         metalCoordinator.stopContinuousRendering()
@@ -984,6 +999,11 @@ struct EditWorkspaceView: View {
                 }
             }
         }
+        cleanFeedController.editModeActive = true
+        // Wire the clean-feed mirror only when the feed is actually enabled, so users
+        // who never use it pay no overhead on the core edit path.
+        updateCleanFeedMirror(enabled: cleanFeedController.isEnabled)
+
         updateGamutClipMode()
         metadataViewModel.isInEditView = true
         editLog.info("[\(selectedImageURL?.lastPathComponent ?? "nil")] loadSelectedImagePreview triggered by: onAppear")
@@ -1494,8 +1514,46 @@ struct EditWorkspaceView: View {
         return s
     }
 
+    /// Connect (or disconnect) the clean-feed mirror to this editor's Metal pipeline.
+    /// When connected, the feed pipeline shares the source texture and receives every
+    /// `updateParams` so the second display tracks edits live. Called on edit-view
+    /// appear and whenever the feed is toggled while editing.
+    private func updateCleanFeedMirror(enabled: Bool) {
+        guard let pipeline = metalPipeline else { return }
+        if enabled, let feed = cleanFeedController.feedPipeline {
+            pipeline.mirror = feed
+            feed.asShotTemperature = pipeline.asShotTemperature
+            feed.asShotTint = pipeline.asShotTint
+            feed.gamutClipMode = pipeline.gamutClipMode
+            pipeline.shareSourceTexture(with: feed)
+            pipeline.onParamsChanged = { [hooks = cleanFeedController.hooks] in hooks.redraw?() }
+            // Seed the feed with the current parameters + still, then redraw.
+            renderPreview()
+        } else {
+            pipeline.mirror = nil
+            pipeline.onParamsChanged = nil
+            cleanFeedController.useEditPipeline = false
+            cleanFeedController.feedPipeline?.clearSourceTexture()
+        }
+    }
+
+    /// Push the current editor display state to the clean-feed window. The compute
+    /// path (`useEditPipeline`) is used whenever the editor itself renders via Metal
+    /// — i.e. a source texture exists and we're not showing "before"/muted, where the
+    /// editor falls back to the CIImage. In those fallback cases the feed shows
+    /// `displayCIImage` (aspect-fit on black) instead.
+    private func syncCleanFeed() {
+        guard cleanFeedController.editModeActive else { return }
+        cleanFeedController.feedImage = displayCIImage
+        cleanFeedController.isHDR = isHDREnabled
+        cleanFeedController.useEditPipeline =
+            (metalPipeline?.hasSourceTexture == true) && !isShowingBefore && !isMutingDevelop
+        cleanFeedController.requestFeedRedraw()
+    }
+
     private func renderPreview() {
         updateDisplayGamut()
+        syncCleanFeed()
         let renderStart = ContinuousClock.now
         guard let sourceCIImage else {
             previewCIImage = nil
