@@ -63,7 +63,11 @@ struct CleanFeedPresenter: ViewModifier {
             backing: .buffered,
             defer: false
         )
-        window.level = .normal
+        // Above the menu bar so the feed fully covers the secondary display (the
+        // menu bar would otherwise show through on that screen). Safe because the
+        // window can't become key/main and ignores mouse events, and it only
+        // occupies the chosen external display — not the editor's screen.
+        window.level = .mainMenu + 1
         window.isOpaque = true
         window.backgroundColor = .black
         window.collectionBehavior = [.fullScreenPrimary, .ignoresCycle, .stationary]
