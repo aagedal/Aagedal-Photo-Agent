@@ -1003,6 +1003,20 @@ struct SettingsView: View {
         let coordinator = ICloudSyncCoordinator.shared
         Form {
             Section {
+                Toggle("Sync everything", isOn: Binding(
+                    get: { coordinator.allEnabled },
+                    set: {
+                        coordinator.setAllEnabled($0)
+                        templateViewModel.loadTemplates()
+                    }
+                ))
+                .toggleStyle(.switch)
+                Text("Turn every category below on or off at once.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
                 Toggle("App preferences", isOn: Binding(
                     get: { coordinator.preferencesEnabled },
                     set: { coordinator.setPreferencesEnabled($0) }

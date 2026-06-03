@@ -27,6 +27,26 @@ final class ICloudSyncCoordinator {
         AppPaths.iCloudDocuments != nil
     }
 
+    // MARK: - All categories
+
+    /// True only when every category is currently syncing. The master toggle in
+    /// Settings binds to this; a mixed state reads as off so flipping it on
+    /// brings everything up.
+    var allEnabled: Bool {
+        _ = version
+        return preferencesEnabled && keywordListsEnabled && templatesEnabled && knownPeopleEnabled
+    }
+
+    /// Enables or disables every category at once. Each per-category setter still
+    /// runs its own data movement and availability check, so the last failure (if
+    /// any) is surfaced in `lastError`.
+    func setAllEnabled(_ on: Bool) {
+        setPreferencesEnabled(on)
+        setKeywordListsEnabled(on)
+        setTemplatesEnabled(on)
+        setKnownPeopleEnabled(on)
+    }
+
     // MARK: - Preferences (key-value store)
 
     var preferencesEnabled: Bool {
