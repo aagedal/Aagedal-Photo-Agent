@@ -99,8 +99,8 @@ struct EditParams {
 /// NSCache-compatible wrapper for MTLTexture (value types can't be cached directly).
 final class MTLTextureWrapper: @unchecked Sendable {
     nonisolated(unsafe) let texture: MTLTexture
-    nonisolated(unsafe) let neutralTemperature: Float
-    nonisolated(unsafe) let neutralTint: Float
+    let neutralTemperature: Float
+    let neutralTint: Float
     nonisolated init(_ texture: MTLTexture, neutralTemperature: Float = 6500, neutralTint: Float = 0) {
         self.texture = texture
         self.neutralTemperature = neutralTemperature

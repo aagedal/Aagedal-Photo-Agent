@@ -64,7 +64,7 @@ extension Notification.Name {
 @Observable
 final class KeywordListsStore: @unchecked Sendable {
     static let shared = KeywordListsStore()
-    static let changedKeyUserInfo = "key"
+    nonisolated static let changedKeyUserInfo = "key"
 
     /// iCloud container identifier. Must match the entry in the entitlements file.
     static let iCloudContainerID = "iCloud.aagedal.Aagedal-Photo-Agent"
