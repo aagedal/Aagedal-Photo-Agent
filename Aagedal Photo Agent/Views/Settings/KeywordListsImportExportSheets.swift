@@ -2,12 +2,77 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
+// MARK: - Scope
+
+/// Restricts the import/export sheets to a subset of keyword lists so each
+/// settings tab only manages its own lists (the Quick Lists tab handles the
+/// quick lists; the Keywords tab handles approved + structured keywords).
+enum KeywordListScope {
+    /// All quick lists.
+    case quickLists
+    /// Approved keywords + the structured keyword tree.
+    case keywords
+    /// Everything (legacy / combined).
+    case all
+
+    func includes(_ key: KeywordListKey) -> Bool {
+        switch self {
+        case .all:
+            return true
+        case .quickLists:
+            if case .quick = key { return true }
+            return false
+        case .keywords:
+            switch key {
+            case .approved, .structured: return true
+            case .quick: return false
+            }
+        }
+    }
+
+    var exportTitle: String {
+        switch self {
+        case .quickLists: return "Export Quick Lists"
+        case .keywords: return "Export Keywords"
+        case .all: return "Export Keyword Lists"
+        }
+    }
+
+    var importTitle: String {
+        switch self {
+        case .quickLists: return "Import Quick Lists"
+        case .keywords: return "Import Keywords"
+        case .all: return "Import Keyword Lists"
+        }
+    }
+
+    var exportFileName: String {
+        switch self {
+        case .quickLists: return "Quick Lists.zip"
+        case .keywords: return "Keywords.zip"
+        case .all: return "Keyword Lists.zip"
+        }
+    }
+
+    /// Plural noun used in empty-state messages.
+    var noun: String {
+        switch self {
+        case .quickLists: return "quick lists"
+        case .keywords: return "keyword lists"
+        case .all: return "lists"
+        }
+    }
+}
+
 // MARK: - Export selection
 
 /// Sheet that lets the user pick which lists go into the export bundle, then
 /// writes the archive via `KeywordListsArchive.exportSelected`.
 struct KeywordListsExportSheet: View {
     @Environment(\.dismiss) private var dismiss
+
+    /// Restricts which lists this sheet offers (defaults to everything).
+    var scope: KeywordListScope = .all
 
     /// Reported to the parent once the export completes (or fails). The caller
     /// is expected to surface this in its own UI.
@@ -16,8 +81,9 @@ struct KeywordListsExportSheet: View {
     @State private var selection: Set<KeywordListKey> = []
     @State private var feedback: String?
 
-    /// Lists that actually have content in the store today. We never offer
-    /// empty lists for export — the bundle should describe meaningful data only.
+    /// Lists that actually have content in the store today and fall within
+    /// `scope`. We never offer empty lists for export — the bundle should
+    /// describe meaningful data only.
     private var availableEntries: [(key: KeywordListKey, count: Int)] {
         let store = KeywordListsStore.shared
         var rows: [(KeywordListKey, Int)] = []
@@ -33,7 +99,7 @@ struct KeywordListsExportSheet: View {
                 .reduce(0) { $0 + countKeywords(in: $1) }
             rows.append((.structured, count))
         }
-        return rows
+        return rows.filter { scope.includes($0.0) }
     }
 
     var body: some View {
@@ -53,7 +119,7 @@ struct KeywordListsExportSheet: View {
 
     private var header: some View {
         HStack {
-            Text("Export Keyword Lists").font(.headline)
+            Text(scope.exportTitle).font(.headline)
             Spacer()
             Text("\(selection.count) of \(availableEntries.count) selected")
                 .font(.caption)
@@ -143,7 +209,7 @@ struct KeywordListsExportSheet: View {
     private func runExport() {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.zip]
-        panel.nameFieldStringValue = "Keyword Lists.zip"
+        panel.nameFieldStringValue = scope.exportFileName
         panel.message = "Export the selected lists as a single bundle"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
@@ -171,6 +237,8 @@ struct KeywordListsImportSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     let source: URL
+    /// Restricts which lists from the archive this sheet will import.
+    var scope: KeywordListScope = .all
     var onCompletion: (Result<Int, Error>) -> Void
 
     @State private var preview: KeywordListsArchive.ManifestPreview?
@@ -191,13 +259,19 @@ struct KeywordListsImportSheet: View {
         .onAppear { loadPreview() }
     }
 
+    /// Archive entries that fall within this sheet's scope.
+    private func scopedEntries(_ preview: KeywordListsArchive.ManifestPreview) -> [KeywordListsArchive.ManifestPreview.Entry] {
+        preview.entries.filter { scope.includes($0.key) }
+    }
+
     private var header: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack {
-                Text("Import Keyword Lists").font(.headline)
+                Text(scope.importTitle).font(.headline)
                 Spacer()
                 if let preview {
-                    Text("\(preview.entries.count) \(preview.entries.count == 1 ? "list" : "lists") in archive")
+                    let count = scopedEntries(preview).count
+                    Text("\(count) \(count == 1 ? "list" : "lists") in archive")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -229,15 +303,16 @@ struct KeywordListsImportSheet: View {
                 Spacer()
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if let preview, preview.entries.isEmpty {
-            Text("Archive contains no recognized lists.")
+        } else if let preview, scopedEntries(preview).isEmpty {
+            Text("Archive contains no \(scope.noun) to import.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let preview {
             List {
                 Section {
-                    ForEach(preview.entries) { entry in
+                    ForEach(scopedEntries(preview)) { entry in
                         importRow(entry: entry)
                     }
                 } footer: {
@@ -309,8 +384,10 @@ struct KeywordListsImportSheet: View {
     }
 
     private var canImport: Bool {
-        guard let preview, !preview.entries.isEmpty else { return false }
-        return preview.entries.contains { (choices[$0.key] ?? defaultMode(for: $0.key)) != .skip }
+        guard let preview else { return false }
+        let entries = scopedEntries(preview)
+        guard !entries.isEmpty else { return false }
+        return entries.contains { (choices[$0.key] ?? defaultMode(for: $0.key)) != .skip }
     }
 
     // MARK: - Logic
@@ -319,7 +396,9 @@ struct KeywordListsImportSheet: View {
         do {
             let p = try KeywordListsArchive.inspect(source)
             preview = p
-            for entry in p.entries {
+            // Only stage choices for in-scope entries; anything else stays absent
+            // from `choices` and is treated as skip by `importSelected`.
+            for entry in scopedEntries(p) {
                 localCounts[entry.key] = localEntryCount(for: entry.key)
                 choices[entry.key] = defaultMode(for: entry.key)
             }
@@ -349,7 +428,7 @@ struct KeywordListsImportSheet: View {
 
     private func applyToAll(_ mode: KeywordListsArchive.ImportMode) {
         guard let preview else { return }
-        for entry in preview.entries {
+        for entry in scopedEntries(preview) {
             // `.append` doesn't apply to structured — fall back to Replace.
             if entry.key == .structured && mode == .append {
                 choices[entry.key] = .replace

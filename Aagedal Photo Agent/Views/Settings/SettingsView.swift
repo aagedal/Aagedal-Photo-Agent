@@ -931,7 +931,7 @@ struct SettingsView: View {
                     }
                     Spacer()
                 }
-                Text("Bundles selected quick, approved, and structured lists into a single .zip with a manifest. On import you can replace or append per list — useful for merging collaborators' lists or restoring just one list from a backup.")
+                Text("Bundles your approved and structured keyword lists into a single .zip with a manifest. On import you can replace or append per list — useful for merging collaborators' lists or restoring from a backup. Quick lists have their own Import / Export on the Quick Lists tab.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -948,7 +948,7 @@ struct SettingsView: View {
             StructuredKeywordEditor()
         }
         .sheet(isPresented: $showingExportSheet) {
-            KeywordListsExportSheet { result in
+            KeywordListsExportSheet(scope: .keywords) { result in
                 switch result {
                 case .success(let count):
                     quickListsArchiveMessage = "Exported \(count) \(count == 1 ? "list" : "lists")"
@@ -958,7 +958,7 @@ struct SettingsView: View {
             }
         }
         .sheet(item: $importSource) { source in
-            KeywordListsImportSheet(source: source.url) { result in
+            KeywordListsImportSheet(source: source.url, scope: .keywords) { result in
                 switch result {
                 case .success(let count):
                     quickListsArchiveMessage = "Imported \(count) \(count == 1 ? "list" : "lists")"
@@ -988,6 +988,28 @@ struct SettingsView: View {
                     }
                 }
             }
+
+            Section("Import / Export") {
+                HStack {
+                    Button("Export Lists…") {
+                        showingExportSheet = true
+                    }
+                    Button("Import Lists…") {
+                        chooseImportSource()
+                    }
+                    if let quickListsArchiveMessage {
+                        Text(quickListsArchiveMessage)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    Spacer()
+                }
+                Text("Bundles the selected quick lists into a single .zip with a manifest. On import you can replace or append per list — useful for merging collaborators' lists or restoring from a backup.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .padding()
@@ -996,6 +1018,26 @@ struct SettingsView: View {
                 title: "\(type.displayName) Quick List",
                 storeKey: .quick(type)
             )
+        }
+        .sheet(isPresented: $showingExportSheet) {
+            KeywordListsExportSheet(scope: .quickLists) { result in
+                switch result {
+                case .success(let count):
+                    quickListsArchiveMessage = "Exported \(count) \(count == 1 ? "list" : "lists")"
+                case .failure(let error):
+                    quickListsArchiveMessage = "Export failed: \(error.localizedDescription)"
+                }
+            }
+        }
+        .sheet(item: $importSource) { source in
+            KeywordListsImportSheet(source: source.url, scope: .quickLists) { result in
+                switch result {
+                case .success(let count):
+                    quickListsArchiveMessage = "Imported \(count) \(count == 1 ? "list" : "lists")"
+                case .failure(let error):
+                    quickListsArchiveMessage = "Import failed: \(error.localizedDescription)"
+                }
+            }
         }
     }
 
@@ -1426,6 +1468,14 @@ struct SettingsView: View {
                             }
                         }
                     }
+                }
+                .padding(.vertical, 4)
+            }
+
+            TemplateListView(viewModel: templateViewModel)
+
+            GroupBox("Import / Export") {
+                VStack(alignment: .leading, spacing: 8) {
                     HStack {
                         Button("Export All…") {
                             exportTemplates()
@@ -1434,12 +1484,14 @@ struct SettingsView: View {
                         Button("Import…") {
                             importTemplates()
                         }
+                        Spacer()
                     }
+                    Text("Exports all templates as a single .json bundle, or imports templates from one. Importing merges by template, with a confirmation showing how many are new or will be overwritten.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 .padding(.vertical, 4)
             }
-
-            TemplateListView(viewModel: templateViewModel)
         }
         .padding()
         .sheet(isPresented: $templateViewModel.isEditing) {
