@@ -321,14 +321,6 @@ struct Aagedal_Photo_AgentApp: App {
                     .keyboardShortcut("g", modifiers: [])
                 }
 
-                Button(CleanFeedController.shared.isEnabled
-                       ? "Turn Off Clean Feed"
-                       : "Turn On Clean Feed") {
-                    CleanFeedController.shared.toggleEnabled()
-                }
-                .keyboardShortcut("f", modifiers: [.command, .shift])
-                .disabled(!CleanFeedController.shared.hasExternalDisplay)
-
                 // The inline Picker's label is itself the section header — wrapping it
                 // in a Section too would render "Clean Feed Output" twice.
                 Picker("Clean Feed Output", selection: cleanFeedSelection) {
@@ -338,6 +330,16 @@ struct Aagedal_Photo_AgentApp: App {
                     }
                 }
                 .pickerStyle(.inline)
+                .disabled(!CleanFeedController.shared.hasExternalDisplay)
+
+                Divider()
+
+                Button(CleanFeedController.shared.isEnabled
+                       ? "Turn Off Clean Feed"
+                       : "Turn On Clean Feed") {
+                    CleanFeedController.shared.toggleEnabled()
+                }
+                .keyboardShortcut("f", modifiers: [.command, .shift])
                 .disabled(!CleanFeedController.shared.hasExternalDisplay)
             }
 
