@@ -660,8 +660,8 @@ final class MetalEditPipeline: @unchecked Sendable {
         if let absolute = settings.temperature {
             temperature = Double(absolute)
         } else if let incremental = settings.incrementalTemperature {
-            // Non-RAW relative WB. Slider range is -150...+100; the negative end maps to the
-            // 1500 K floor (6500 - 150*33.33 = 1500), so the slope is 5000/150 ≈ 33.33 K/step.
+            // Non-RAW relative WB. Slider range is -135...+100; the negative end maps to the
+            // 2000 K floor (6500 - 135*33.33 ≈ 2000), so the slope is 5000/150 ≈ 33.33 K/step.
             temperature = 6500 + (Double(incremental) * (5000.0 / 150.0))
         } else {
             temperature = nil
@@ -681,7 +681,8 @@ final class MetalEditPipeline: @unchecked Sendable {
             cachedWBMatrix = nil
             return nil
         }
-        let finalTemp = min(max(temperature ?? 6500, 1500), 50000)
+        // CITemperatureAndTint returns an identity transform below 2000 K, so clamp there.
+        let finalTemp = min(max(temperature ?? 6500, 2000), 50000)
         let finalTint = min(max(tint ?? 0, -150), 150)
 
         // Return cached matrix if temperature/tint and as-shot reference haven't changed

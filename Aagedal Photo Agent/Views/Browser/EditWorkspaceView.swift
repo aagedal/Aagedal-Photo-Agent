@@ -65,11 +65,16 @@ struct EditWorkspaceView: View {
 
     private static let previewBackground = Color(red: 0.15, green: 0.15, blue: 0.15)
 
-    // RAW: absolute Kelvin slider with a 1500 K floor (matches Adobe Camera RAW).
+    // RAW: absolute Kelvin slider. The 2000 K floor matches CITemperatureAndTint's neutral
+    // limit — it silently returns an identity (no-op) transform below 2000 K. Adobe Camera RAW
+    // goes down to 1500 K; we can't represent that, so colder imported values are clamped at
+    // render time and flagged via hasUnrepresentableWhiteBalance.
     // Non-RAW: relative WB slider (see nonRawIncrementalTempRange).
-    private static let minKelvin = 1500.0
+    private static let minKelvin = 2000.0
     private static let maxKelvin = 50000.0
-    private static let nonRawIncrementalTempRange: ClosedRange<Double> = -150...100
+    // -135 maps to the 2000 K floor (6500 - 135*33.33 ≈ 2000); going colder would hit
+    // CITemperatureAndTint's identity floor, so the slider stops there.
+    private static let nonRawIncrementalTempRange: ClosedRange<Double> = -135...100
 
     private var previewWorkingMaxPixelSize: CGFloat {
         let screenSize = NSScreen.main?.frame.size ?? CGSize(width: 1920, height: 1080)
@@ -1853,6 +1858,23 @@ struct EditWorkspaceView: View {
         return false
     }
 
+    /// True when the image carries an imported Camera Raw white balance colder than we can
+    /// represent. CITemperatureAndTint floors its neutral at 2000 K, but Adobe Camera RAW
+    /// allows down to 1500 K. Such values render clamped to 2000 K; this drives a notice so
+    /// the user knows the result differs from ACR.
+    private var hasUnrepresentableWhiteBalance: Bool {
+        guard let cameraRaw = metadataViewModel.editingMetadata.cameraRaw,
+              cameraRaw.whiteBalance != "As Shot" else { return false }
+        if usesIncrementalWhiteBalance {
+            if let incremental = cameraRaw.incrementalTemperature {
+                return Double(incremental) < Self.nonRawIncrementalTempRange.lowerBound
+            }
+        } else if let temperature = cameraRaw.temperature {
+            return Double(temperature) < Self.minKelvin
+        }
+        return false
+    }
+
     private var asShotTemperatureKelvin: Double {
         if let asShot = asShotWhiteBalance {
             return Double(asShot.temperature)
@@ -2255,6 +2277,16 @@ struct EditWorkspaceView: View {
             )
         } else {
             kelvinTemperatureSliderRow
+        }
+
+        if hasUnrepresentableWhiteBalance {
+            Label(
+                "This image's Adobe Camera Raw white balance is colder than 2000 K, which isn't supported here. It's shown clamped to 2000 K.",
+                systemImage: "exclamationmark.triangle"
+            )
+            .font(.caption)
+            .foregroundStyle(.orange)
+            .fixedSize(horizontal: false, vertical: true)
         }
 
         sliderRow(
