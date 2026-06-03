@@ -1250,7 +1250,7 @@ struct FullScreenImageView: View {
         return makeLoadedImage(from: cgImage)
     }
 
-    private static func rotateCGImage90(_ image: CGImage, clockwise: Bool) -> CGImage? {
+    nonisolated private static func rotateCGImage90(_ image: CGImage, clockwise: Bool) -> CGImage? {
         let width = image.width
         let height = image.height
         let colorSpace = CGColorSpaceCreateDeviceRGB()

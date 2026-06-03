@@ -84,7 +84,7 @@ struct StructuredKeywordsPicker: View {
                 .textFieldStyle(.plain)
                 .focused($searchFieldFocused)
                 .onSubmit {
-                    activateFocused()
+                    _ = activateFocused()
                 }
             if !searchText.isEmpty {
                 Button {

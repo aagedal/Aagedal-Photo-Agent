@@ -1169,7 +1169,7 @@ struct ContentView: View {
             return
         }
 
-        guard let folderURL = browserViewModel.currentFolderURL else { return }
+        guard browserViewModel.currentFolderURL != nil else { return }
 
         let author = settingsViewModel.c2paDefaultAuthor.isEmpty ? nil : settingsViewModel.c2paDefaultAuthor
 

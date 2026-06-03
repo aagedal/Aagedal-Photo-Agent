@@ -727,7 +727,7 @@ final class SettingsViewModel {
     }
 
     func setQuickListURL(_ url: URL, for type: QuickListType) {
-        importQuickList(from: url, type: type)
+        try? importQuickList(from: url, type: type)
     }
 
     /// Appends `values` to a quick list, deduplicated, and persists through the
