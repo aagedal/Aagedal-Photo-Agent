@@ -288,10 +288,39 @@ struct Aagedal_Photo_AgentApp: App {
 
             // Grouped to stay within the @CommandsBuilder 10-child limit.
             Group {
-            // Merge into the system View menu (created by NavigationSplitView's
-            // sidebar command) rather than adding a second "View" menu.
+            // Merge Scopes + Clean Feed into the system View menu (created by
+            // NavigationSplitView's sidebar command) rather than adding extra
+            // top-level menus.
             CommandGroup(after: .sidebar) {
                 Divider()
+
+                Section("Scopes") {
+                    Button("Waveform") {
+                        NotificationCenter.default.post(name: .setScopeMode, object: ScopeViewModel.ScopeMode.waveform)
+                    }
+                    .keyboardShortcut("1", modifiers: .shift)
+
+                    Button("Parade") {
+                        NotificationCenter.default.post(name: .setScopeMode, object: ScopeViewModel.ScopeMode.parade)
+                    }
+                    .keyboardShortcut("2", modifiers: .shift)
+
+                    Button("Vectorscope") {
+                        NotificationCenter.default.post(name: .setScopeMode, object: ScopeViewModel.ScopeMode.vectorscope)
+                    }
+                    .keyboardShortcut("3", modifiers: .shift)
+
+                    Button("Gamut") {
+                        NotificationCenter.default.post(name: .setScopeMode, object: ScopeViewModel.ScopeMode.chromaticity)
+                    }
+                    .keyboardShortcut("4", modifiers: .shift)
+
+                    Button("Toggle Gamut Clipping") {
+                        NotificationCenter.default.post(name: .toggleGamutClipping, object: nil)
+                    }
+                    .keyboardShortcut("g", modifiers: [])
+                }
+
                 Button(CleanFeedController.shared.isEnabled
                        ? "Turn Off Clean Feed"
                        : "Turn On Clean Feed") {
@@ -312,35 +341,6 @@ struct Aagedal_Photo_AgentApp: App {
                 }
             }
 
-            CommandMenu("Scopes") {
-                Button("Waveform") {
-                    NotificationCenter.default.post(name: .setScopeMode, object: ScopeViewModel.ScopeMode.waveform)
-                }
-                .keyboardShortcut("1", modifiers: .shift)
-
-                Button("Parade") {
-                    NotificationCenter.default.post(name: .setScopeMode, object: ScopeViewModel.ScopeMode.parade)
-                }
-                .keyboardShortcut("2", modifiers: .shift)
-
-                Button("Vectorscope") {
-                    NotificationCenter.default.post(name: .setScopeMode, object: ScopeViewModel.ScopeMode.vectorscope)
-                }
-                .keyboardShortcut("3", modifiers: .shift)
-
-                Button("Gamut") {
-                    NotificationCenter.default.post(name: .setScopeMode, object: ScopeViewModel.ScopeMode.chromaticity)
-                }
-                .keyboardShortcut("4", modifiers: .shift)
-
-                Divider()
-
-                Button("Toggle Gamut Clipping") {
-                    NotificationCenter.default.post(name: .toggleGamutClipping, object: nil)
-                }
-                .keyboardShortcut("g", modifiers: [])
-            }
-
             CommandMenu("Upload") {
                 Button("Upload Selected") {
                     NotificationCenter.default.post(name: .uploadSelected, object: nil)
@@ -352,7 +352,7 @@ struct Aagedal_Photo_AgentApp: App {
                 }
                 .keyboardShortcut("u", modifiers: [.command, .shift])
             }
-            } // end Group (View / Scopes / Upload)
+            } // end Group (View additions / Upload)
         }
 
         Window("Structured Keywords", id: "structuredKeywords") {
