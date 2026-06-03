@@ -288,7 +288,10 @@ struct Aagedal_Photo_AgentApp: App {
 
             // Grouped to stay within the @CommandsBuilder 10-child limit.
             Group {
-            CommandMenu("View") {
+            // Merge into the system View menu (created by NavigationSplitView's
+            // sidebar command) rather than adding a second "View" menu.
+            CommandGroup(after: .sidebar) {
+                Divider()
                 Button(CleanFeedController.shared.isEnabled
                        ? "Turn Off Clean Feed"
                        : "Turn On Clean Feed") {
