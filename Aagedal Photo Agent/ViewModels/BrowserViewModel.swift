@@ -513,10 +513,18 @@ final class BrowserViewModel {
                 var orientedFiles = files
                 await self.readOrientationsEagerly(for: &orientedFiles)
                 guard !Task.isCancelled, self.currentFolderURL == url else { return }
-                let nonDefault = orientedFiles.enumerated().filter { $0.element.exifOrientation != 1 }
+                let nonDefault = orientedFiles.filter { $0.exifOrientation != 1 }
                 if !nonDefault.isEmpty {
+                    // Resolve each file by URL via urlToImageIndex rather than by the
+                    // positional index from `orientedFiles`: `self.images` may have been
+                    // replaced or reordered (auto-refresh merge, delete, sort) during the
+                    // `await` above, so a stale positional index could write to the wrong
+                    // image or crash out-of-bounds. urlToImageIndex always matches the
+                    // current `self.images`. We only mutate a field (set unchanged), so the
+                    // index stays valid across the loop even with the cascade suppressed.
                     self.suppressImagesCascade = true
-                    for (index, file) in nonDefault {
+                    for file in nonDefault {
+                        guard let index = self.urlToImageIndex[file.url] else { continue }
                         self.images[index].exifOrientation = file.exifOrientation
                     }
                     self.suppressImagesCascade = false
