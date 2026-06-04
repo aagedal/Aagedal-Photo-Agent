@@ -340,6 +340,7 @@ struct ContentView: View {
                 backupEditedFolderItem: $backupEditedFolderItem
             ))
             .onReceive(NotificationCenter.default.publisher(for: .showImport)) { _ in
+                importViewModel.prepareForNewSession()
                 isShowingImport = true
             }
             .onReceive(NotificationCenter.default.publisher(for: .importStarted)) { notification in

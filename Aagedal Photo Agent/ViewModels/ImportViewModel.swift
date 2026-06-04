@@ -159,8 +159,13 @@ final class ImportViewModel {
 
     private func scanSource(url: URL) {
         scanTask?.cancel()
+        // A new source folder invalidates any previously detected date groups
+        // (and any manual shoot splits); clear them so the list never shows stale
+        // entries from the old folder.
+        dateScanTask?.cancel()
         importPhase = .scanning
         sourceFiles = []
+        dateGroups = []
 
         scanTask = Task.detached(priority: .userInitiated) {
             let allURLs = Self.enumerateFiles(at: url)
@@ -171,6 +176,10 @@ final class ImportViewModel {
                     .filter { SupportedImageFormats.isSupported(url: $0) }
                     .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
                 self.importPhase = .idle
+                // Re-detect capture dates for the new folder when date sorting is on.
+                if self.sortByDate {
+                    self.scanCaptureDates()
+                }
             }
         }
     }
@@ -889,6 +898,18 @@ final class ImportViewModel {
     }
 
     // MARK: - Reset
+
+    /// Prepares the view model for a freshly-opened import sheet. Resets to a clean
+    /// form unless a copy is currently in progress — in that case the sheet should
+    /// show the running import's progress rather than wipe it.
+    func prepareForNewSession() {
+        switch importPhase {
+        case .copying, .applyingMetadata:
+            return
+        default:
+            reset()
+        }
+    }
 
     func reset() {
         let preservedVerificationMode = configuration.verificationMode

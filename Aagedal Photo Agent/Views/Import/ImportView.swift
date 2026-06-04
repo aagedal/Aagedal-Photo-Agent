@@ -546,6 +546,7 @@ struct ImportView: View {
             Spacer()
 
             Button("Cancel") {
+                viewModel.reset()
                 onDismiss()
             }
             .keyboardShortcut(.cancelAction)
@@ -612,6 +613,7 @@ struct ImportView: View {
                     viewModel.reset()
                 }
                 Button("Done") {
+                    viewModel.reset()
                     onDismiss()
                 }
                 .buttonStyle(.borderedProminent)
