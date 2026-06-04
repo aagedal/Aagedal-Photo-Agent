@@ -37,6 +37,29 @@ struct ImportDateGroup: Identifiable {
     /// "Group by year" is enabled, to avoid creating a bogus year folder.
     var yearFolder: String?
     var files: [URL]
+    /// Full per-file capture timestamps (EXIF `DateTimeOriginal`, or file mtime as a
+    /// fallback). A file may be absent here when no timestamp could be read. Used for
+    /// chronological ordering, evenly-spread thumbnail sampling, and gap detection —
+    /// never persisted, so it is safe to anchor parsing to UTC.
+    var captureTimes: [URL: Date] = [:]
+
+    /// Files ordered by capture time. Files without a timestamp fall back to a stable
+    /// filename ordering and sort after timestamped files of equal standing.
+    var chronologicalFiles: [URL] {
+        files.sorted { a, b in
+            switch (captureTimes[a], captureTimes[b]) {
+            case let (ta?, tb?):
+                if ta != tb { return ta < tb }
+                return a.lastPathComponent.localizedStandardCompare(b.lastPathComponent) == .orderedAscending
+            case (.some, .none):
+                return true
+            case (.none, .some):
+                return false
+            case (.none, .none):
+                return a.lastPathComponent.localizedStandardCompare(b.lastPathComponent) == .orderedAscending
+            }
+        }
+    }
 }
 
 @Observable
@@ -216,6 +239,12 @@ final class ImportViewModel {
         guard !filesToCopy.isEmpty else {
             errorMessage = "No files to import."
             return
+        }
+
+        // Guard against two date groups (e.g. split sub-shoots, or a manual rename)
+        // resolving to the same destination folder, which would silently merge them.
+        if sortByDate {
+            ensureUniqueFolderNames()
         }
 
         importPhase = .copying
@@ -579,29 +608,48 @@ final class ImportViewModel {
             // Read DateTimeOriginal for all files via SwiftExif. SwiftExif reads
             // are in-process and fast; a serial scan is simpler and avoids
             // shipping non-Sendable captures across a task group.
-            var fileToDate: [URL: String] = [:]
+            //
+            // We keep the full timestamp (not just the date) so the UI can order
+            // files within a day, sample evenly-spread thumbnails, and detect
+            // shoot-boundary gaps. The date-only key still drives grouping.
+            var fileToDateKey: [URL: String] = [:]
+            var fileToTimestamp: [URL: Date] = [:]
             let fm = FileManager.default
-            let mtimeFormat = "yyyy:MM:dd"
+
+            // EXIF DateTimeOriginal is local wall-clock with no zone. Anchor parsing
+            // to UTC + POSIX locale so ordering and gap math are stable (no DST skew).
+            // These times are only used relatively and for HH:mm display, never stored.
+            let exifParser = DateFormatter()
+            exifParser.locale = Locale(identifier: "en_US_POSIX")
+            exifParser.timeZone = TimeZone(secondsFromGMT: 0)
+            exifParser.dateFormat = "yyyy:MM:dd HH:mm:ss"
+
+            let keyFromDate = DateFormatter()
+            keyFromDate.locale = Locale(identifier: "en_US_POSIX")
+            keyFromDate.timeZone = TimeZone(secondsFromGMT: 0)
+            keyFromDate.dateFormat = "yyyy:MM:dd"
 
             for file in files {
                 if Task.isCancelled { return }
                 if let metadata = try? ImageMetadata.read(from: file),
                    let dateStr = metadata.exif?.dateTimeOriginal {
-                    fileToDate[file] = String(dateStr.prefix(10))
+                    fileToDateKey[file] = String(dateStr.prefix(10))
+                    if let parsed = exifParser.date(from: dateStr) {
+                        fileToTimestamp[file] = parsed
+                    }
                     continue
                 }
                 if let attrs = try? fm.attributesOfItem(atPath: file.path),
                    let modDate = attrs[.modificationDate] as? Date {
-                    let formatter = DateFormatter()
-                    formatter.dateFormat = mtimeFormat
-                    fileToDate[file] = formatter.string(from: modDate)
+                    fileToDateKey[file] = keyFromDate.string(from: modDate)
+                    fileToTimestamp[file] = modDate
                 }
             }
 
             // Group files by date
             var grouped: [String: [URL]] = [:]
             for file in files {
-                let dateKey = fileToDate[file] ?? "Unknown Date"
+                let dateKey = fileToDateKey[file] ?? "Unknown Date"
                 grouped[dateKey, default: []].append(file)
             }
 
@@ -626,17 +674,216 @@ final class ImportViewModel {
                 let leaf = trimmedTitle.isEmpty
                     ? folderDate
                     : "\(folderDate) \u{2013} \(trimmedTitle)"
+                let groupFiles = grouped[dateKey] ?? []
+                var groupTimes: [URL: Date] = [:]
+                for file in groupFiles {
+                    if let t = fileToTimestamp[file] { groupTimes[file] = t }
+                }
                 return ImportDateGroup(
                     dateString: dateKey,
                     folderName: leaf,
                     yearFolder: yearFolder,
-                    files: grouped[dateKey] ?? []
+                    files: groupFiles,
+                    captureTimes: groupTimes
                 )
             }
 
             await MainActor.run {
                 self.dateGroups = groups
                 self.isScanningDates = false
+            }
+        }
+    }
+
+    // MARK: - Thumbnail Sampling & Gap Detection
+
+    /// Default minimum gap between consecutive shots that suggests a new shoot.
+    static let defaultShootGapThreshold: TimeInterval = 2 * 3600
+
+    /// Picks up to `max` files spread evenly across a group's shooting day
+    /// (chronologically), for a compact preview strip. Returns all files when the
+    /// group has `max` or fewer. Pure and synchronous.
+    static func representativeFiles(from group: ImportDateGroup, max n: Int = 8) -> [URL] {
+        let ordered = group.chronologicalFiles
+        guard ordered.count > n else { return ordered }
+        guard n > 1 else { return ordered.isEmpty ? [] : [ordered[0]] }
+        var picked: [URL] = []
+        var seen = Set<URL>()
+        for i in 0..<n {
+            let idx = Int((Double(i) * Double(ordered.count - 1) / Double(n - 1)).rounded())
+            let url = ordered[idx]
+            if seen.insert(url).inserted { picked.append(url) }
+        }
+        return picked
+    }
+
+    /// Indices into `group.chronologicalFiles` where the gap to the previous shot
+    /// exceeds `gapThreshold` — i.e. suggested start-of-new-shoot boundaries.
+    /// Files lacking a timestamp never trigger a boundary.
+    static func suggestedSplitBoundaries(
+        for group: ImportDateGroup,
+        gapThreshold: TimeInterval = ImportViewModel.defaultShootGapThreshold
+    ) -> [Int] {
+        let ordered = group.chronologicalFiles
+        guard ordered.count > 1 else { return [] }
+        var boundaries: [Int] = []
+        for i in 1..<ordered.count {
+            guard let prev = group.captureTimes[ordered[i - 1]],
+                  let cur = group.captureTimes[ordered[i]] else { continue }
+            if cur.timeIntervalSince(prev) > gapThreshold {
+                boundaries.append(i)
+            }
+        }
+        return boundaries
+    }
+
+    // MARK: - Shoot Splitting
+
+    /// Splits one date group into contiguous segments at the given boundary indices
+    /// (indices into the group's `chronologicalFiles`). The first segment keeps the
+    /// original folder name; later segments get a " – Shoot N" suffix (user-editable
+    /// afterward). No-op when there are fewer than two resulting segments.
+    func splitGroup(_ groupID: UUID, boundaries: [Int]) {
+        guard let gIdx = dateGroups.firstIndex(where: { $0.id == groupID }) else { return }
+        let group = dateGroups[gIdx]
+        let ordered = group.chronologicalFiles
+
+        // Sanitize + sort boundaries; drop out-of-range and duplicates.
+        let bounds = Set(boundaries.filter { $0 > 0 && $0 < ordered.count }).sorted()
+        guard !bounds.isEmpty else { return }
+
+        // Build contiguous segment ranges: [0, b0), [b0, b1), … [bn, count).
+        var starts = [0]
+        starts.append(contentsOf: bounds)
+        var newGroups: [ImportDateGroup] = []
+        for (segIndex, start) in starts.enumerated() {
+            let end = segIndex + 1 < starts.count ? starts[segIndex + 1] : ordered.count
+            let segFiles = Array(ordered[start..<end])
+            guard !segFiles.isEmpty else { continue }
+            var segTimes: [URL: Date] = [:]
+            for f in segFiles { if let t = group.captureTimes[f] { segTimes[f] = t } }
+            let name = newGroups.isEmpty
+                ? group.folderName
+                : "\(group.folderName) \u{2013} Shoot \(newGroups.count + 1)"
+            newGroups.append(ImportDateGroup(
+                dateString: group.dateString,
+                folderName: name,
+                yearFolder: group.yearFolder,
+                files: segFiles,
+                captureTimes: segTimes
+            ))
+        }
+
+        guard newGroups.count > 1 else { return }
+        dateGroups.replaceSubrange(gIdx...gIdx, with: newGroups)
+        ensureUniqueFolderNames()
+    }
+
+    /// Moves an arbitrary (possibly non-contiguous) selection of files out of a group
+    /// into a new sub-shoot inserted right after it. The source group keeps the rest.
+    func splitOff(_ groupID: UUID, fileURLs: Set<URL>, newSuffix: String? = nil) {
+        guard let gIdx = dateGroups.firstIndex(where: { $0.id == groupID }) else { return }
+        var source = dateGroups[gIdx]
+        let moved = source.files.filter { fileURLs.contains($0) }
+        guard !moved.isEmpty, moved.count < source.files.count else { return }
+
+        var movedTimes: [URL: Date] = [:]
+        for f in moved { if let t = source.captureTimes[f] { movedTimes[f] = t } }
+
+        source.files.removeAll { fileURLs.contains($0) }
+        for f in moved { source.captureTimes.removeValue(forKey: f) }
+
+        let suffix = (newSuffix?.trimmingCharacters(in: .whitespaces)).flatMap { $0.isEmpty ? nil : $0 }
+        let baseName = suffix.map { "\(source.folderName) \u{2013} \($0)" }
+            ?? "\(source.folderName) \u{2013} Shoot 2"
+        let newGroup = ImportDateGroup(
+            dateString: source.dateString,
+            folderName: baseName,
+            yearFolder: source.yearFolder,
+            files: moved,
+            captureTimes: movedTimes
+        )
+
+        dateGroups[gIdx] = source
+        dateGroups.insert(newGroup, at: gIdx + 1)
+        ensureUniqueFolderNames()
+    }
+
+    /// Merges the given groups (which should share a `dateString`) back into the
+    /// chronologically-earliest one, resetting its folder name to a clean base.
+    func mergeGroups(_ groupIDs: [UUID]) {
+        let idSet = Set(groupIDs)
+        let indices = dateGroups.indices.filter { idSet.contains(dateGroups[$0].id) }
+        guard indices.count > 1 else { return }
+
+        // Earliest by first capture time, falling back to current order.
+        let targetIdx = indices.min { lhs, rhs in
+            let l = dateGroups[lhs].captureTimes.values.min()
+            let r = dateGroups[rhs].captureTimes.values.min()
+            switch (l, r) {
+            case let (l?, r?): return l < r
+            case (.some, .none): return true
+            case (.none, .some): return false
+            case (.none, .none): return lhs < rhs
+            }
+        } ?? indices[0]
+
+        var merged = dateGroups[targetIdx]
+        for idx in indices where idx != targetIdx {
+            let other = dateGroups[idx]
+            merged.files.append(contentsOf: other.files)
+            for (url, t) in other.captureTimes { merged.captureTimes[url] = t }
+        }
+
+        // Reset folder name to a clean date-derived base (drop " – Shoot N").
+        let parse = DateFormatter()
+        parse.locale = Locale(identifier: "en_US_POSIX")
+        parse.dateFormat = "yyyy:MM:dd"
+        let display = DateFormatter()
+        display.dateFormat = "yyyy-MM-dd"
+        if let parsed = parse.date(from: merged.dateString) {
+            let title = configuration.importTitle.trimmingCharacters(in: .whitespaces)
+            merged.folderName = title.isEmpty
+                ? display.string(from: parsed)
+                : "\(display.string(from: parsed)) \u{2013} \(title)"
+        }
+
+        // Remove merged-away groups (highest index first) and write back the target.
+        dateGroups[targetIdx] = merged
+        for idx in indices.sorted(by: >) where idx != targetIdx {
+            dateGroups.remove(at: idx)
+        }
+        ensureUniqueFolderNames()
+    }
+
+    /// Whether other groups share this group's capture date (i.e. it has been split
+    /// into multiple shoots that could be merged back).
+    func hasSiblingGroups(_ group: ImportDateGroup) -> Bool {
+        dateGroups.contains { $0.id != group.id && $0.dateString == group.dateString }
+    }
+
+    /// Merges all groups sharing this group's capture date back into one.
+    func mergeSiblings(of group: ImportDateGroup) {
+        let ids = dateGroups.filter { $0.dateString == group.dateString }.map(\.id)
+        mergeGroups(ids)
+    }
+
+    /// Guarantees every group has a distinct `folderName` by auto-suffixing collisions
+    /// with " (2)", " (3)", … This protects the import copy step, which maps each file
+    /// to its destination by folder name. Call after any split/merge or name edit.
+    func ensureUniqueFolderNames() {
+        var used = Set<String>()
+        for i in dateGroups.indices {
+            var name = dateGroups[i].folderName
+            if name.isEmpty { name = dateGroups[i].dateString }
+            var candidate = name
+            var counter = 2
+            while !used.insert(candidate).inserted {
+                candidate = "\(name) (\(counter))"
+                counter += 1
+            }
+            if candidate != dateGroups[i].folderName {
+                dateGroups[i].folderName = candidate
             }
         }
     }

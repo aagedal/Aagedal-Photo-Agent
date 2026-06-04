@@ -833,6 +833,7 @@ struct ContentView: View {
         ImportView(
             viewModel: importViewModel,
             templates: templateViewModel.templates,
+            thumbnailService: browserViewModel.thumbnailService,
             onDismiss: { isShowingImport = false }
         )
     }

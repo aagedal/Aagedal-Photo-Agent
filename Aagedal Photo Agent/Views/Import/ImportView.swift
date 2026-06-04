@@ -3,9 +3,12 @@ import SwiftUI
 struct ImportView: View {
     @Bindable var viewModel: ImportViewModel
     var templates: [MetadataTemplate]
+    var thumbnailService: ThumbnailService
     var onDismiss: () -> Void
 
     @State private var showAdditionalFields = false
+    /// Date group currently being edited in the shoot-split sheet.
+    @State private var splitTarget: ImportDateGroup?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -180,8 +183,35 @@ struct ImportView: View {
                                 TextField("Folder name", text: $group.folderName)
                                     .textFieldStyle(.roundedBorder)
                                     .font(.callout)
+                                    .onSubmit { viewModel.ensureUniqueFolderNames() }
+
+                                ImportThumbnailStripView(group: group, thumbnailService: thumbnailService)
+
+                                if group.files.count > 1 {
+                                    Button {
+                                        splitTarget = group
+                                    } label: {
+                                        Image(systemName: "scissors")
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .help("Split this day into multiple shoots")
+                                }
+
+                                if viewModel.hasSiblingGroups(group) {
+                                    Button {
+                                        viewModel.mergeSiblings(of: group)
+                                    } label: {
+                                        Image(systemName: "arrow.triangle.merge")
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .help("Merge this day’s shoots back into one folder")
+                                }
                             }
                         }
+
+                        Text("Re-scanning dates rebuilds these groups and discards manual shoot splits.")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
 
                         Text(viewModel.groupByYear
                              ? "Each date group will be imported into <year>/<date>/ under the destination base."
@@ -197,6 +227,18 @@ struct ImportView: View {
             if newValue && viewModel.dateGroups.isEmpty && !viewModel.sourceFiles.isEmpty {
                 viewModel.scanCaptureDates()
             }
+        }
+        .sheet(item: $splitTarget) { group in
+            ImportSplitEditorView(
+                group: group,
+                thumbnailService: thumbnailService,
+                onSplit: { boundaries in
+                    viewModel.splitGroup(group.id, boundaries: boundaries)
+                },
+                onMove: { fileURLs in
+                    viewModel.splitOff(group.id, fileURLs: fileURLs)
+                }
+            )
         }
     }
 
