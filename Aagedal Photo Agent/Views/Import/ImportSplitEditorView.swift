@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Editor sheet for splitting one capture-date group into multiple shoots.
@@ -30,6 +31,8 @@ struct ImportSplitEditorView: View {
     @State private var boundaries: Set<Int>
     /// Chronological indices selected for "move to new shoot".
     @State private var selection: Set<Int> = []
+    /// Last index clicked without Shift — the pivot for Shift-click range selection.
+    @State private var selectionAnchor: Int?
 
     init(
         group: ImportDateGroup,
@@ -82,7 +85,7 @@ struct ImportSplitEditorView: View {
             .labelsHidden()
             Text(mode == .byTime
                  ? "Photos are in capture order. Click a photo to mark it as the start of a new shoot. Large time gaps are suggested for you."
-                 : "Click photos to select them, then move them into a new shoot.")
+                 : "Click photos to select them (Shift-click to select a range), then move them into a new shoot.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -143,7 +146,9 @@ struct ImportSplitEditorView: View {
                 .fill(mode == .byTime ? segmentTint(segment) : Color.clear)
         )
         .contentShape(Rectangle())
-        .onTapGesture { toggle(index: index) }
+        .onTapGesture {
+            handleTap(index: index, shiftHeld: NSEvent.modifierFlags.contains(.shift))
+        }
     }
 
     // MARK: - Footer
@@ -188,13 +193,22 @@ struct ImportSplitEditorView: View {
 
     // MARK: - Interaction
 
-    private func toggle(index: Int) {
+    private func handleTap(index: Int, shiftHeld: Bool) {
         switch mode {
         case .byTime:
             guard index > 0 else { return } // index 0 always starts the first shoot
             if boundaries.contains(index) { boundaries.remove(index) } else { boundaries.insert(index) }
         case .select:
-            if selection.contains(index) { selection.remove(index) } else { selection.insert(index) }
+            if shiftHeld, let anchor = selectionAnchor, anchor != index {
+                // Select the whole contiguous range between the anchor and this click.
+                // The anchor stays fixed so the range can be re-extended.
+                for i in min(anchor, index)...max(anchor, index) {
+                    selection.insert(i)
+                }
+            } else {
+                if selection.contains(index) { selection.remove(index) } else { selection.insert(index) }
+                selectionAnchor = index
+            }
         }
     }
 
@@ -217,7 +231,7 @@ struct ImportSplitEditorView: View {
 
     private var resultNames: [String] {
         (0..<(boundaries.count + 1)).map { i in
-            i == 0 ? group.folderName : "\(group.folderName) – Shoot \(i + 1)"
+            "\(group.folderName) – Shoot \(i + 1)"
         }
     }
 

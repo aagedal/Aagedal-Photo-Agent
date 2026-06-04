@@ -771,9 +771,9 @@ final class ImportViewModel {
             guard !segFiles.isEmpty else { continue }
             var segTimes: [URL: Date] = [:]
             for f in segFiles { if let t = group.captureTimes[f] { segTimes[f] = t } }
-            let name = newGroups.isEmpty
-                ? group.folderName
-                : "\(group.folderName) \u{2013} Shoot \(newGroups.count + 1)"
+            // Every segment — including the first — gets a "Shoot N" suffix so the
+            // resulting folders are named consistently (Shoot 1, Shoot 2, …).
+            let name = "\(group.folderName) \u{2013} Shoot \(newGroups.count + 1)"
             newGroups.append(ImportDateGroup(
                 dateString: group.dateString,
                 folderName: name,
