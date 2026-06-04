@@ -84,6 +84,17 @@ struct ImportView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+
+                // When not sorting into per-date folders, the date rows (and their
+                // strips) are hidden, so offer a single preview of the whole import.
+                if !viewModel.sortByDate && !viewModel.filteredSourceFiles.isEmpty {
+                    ImportThumbnailStripView(
+                        files: viewModel.filteredSourceFiles,
+                        captureTimes: [:],
+                        thumbnailService: thumbnailService
+                    )
+                    .padding(.top, 2)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -185,7 +196,11 @@ struct ImportView: View {
                                     .font(.callout)
                                     .onSubmit { viewModel.ensureUniqueFolderNames() }
 
-                                ImportThumbnailStripView(group: group, thumbnailService: thumbnailService)
+                                ImportThumbnailStripView(
+                                    files: group.files,
+                                    captureTimes: group.captureTimes,
+                                    thumbnailService: thumbnailService
+                                )
 
                                 if group.files.count > 1 {
                                     Button {

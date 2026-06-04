@@ -46,19 +46,7 @@ struct ImportDateGroup: Identifiable {
     /// Files ordered by capture time. Files without a timestamp fall back to a stable
     /// filename ordering and sort after timestamped files of equal standing.
     var chronologicalFiles: [URL] {
-        files.sorted { a, b in
-            switch (captureTimes[a], captureTimes[b]) {
-            case let (ta?, tb?):
-                if ta != tb { return ta < tb }
-                return a.lastPathComponent.localizedStandardCompare(b.lastPathComponent) == .orderedAscending
-            case (.some, .none):
-                return true
-            case (.none, .some):
-                return false
-            case (.none, .none):
-                return a.lastPathComponent.localizedStandardCompare(b.lastPathComponent) == .orderedAscending
-            }
-        }
+        ImportViewModel.chronologicalOrder(of: files, captureTimes: captureTimes)
     }
 }
 
@@ -709,11 +697,32 @@ final class ImportViewModel {
     /// Default minimum gap between consecutive shots that suggests a new shoot.
     static let defaultShootGapThreshold: TimeInterval = 2 * 3600
 
-    /// Picks up to `max` files spread evenly across a group's shooting day
-    /// (chronologically), for a compact preview strip. Returns all files when the
-    /// group has `max` or fewer. Pure and synchronous.
-    static func representativeFiles(from group: ImportDateGroup, max n: Int = 8) -> [URL] {
-        let ordered = group.chronologicalFiles
+    /// Orders files by capture time, falling back to a stable filename comparison for
+    /// files that share (or lack) a timestamp.
+    static func chronologicalOrder(of files: [URL], captureTimes: [URL: Date]) -> [URL] {
+        // With no timestamps at all, the caller's order (already filename-sorted in
+        // practice) is the chronological order — skip the expensive locale-aware sort,
+        // which matters for the flat whole-import preview over thousands of files.
+        guard !captureTimes.isEmpty else { return files }
+        return files.sorted { a, b in
+            switch (captureTimes[a], captureTimes[b]) {
+            case let (ta?, tb?):
+                if ta != tb { return ta < tb }
+                return a.lastPathComponent.localizedStandardCompare(b.lastPathComponent) == .orderedAscending
+            case (.some, .none):
+                return true
+            case (.none, .some):
+                return false
+            case (.none, .none):
+                return a.lastPathComponent.localizedStandardCompare(b.lastPathComponent) == .orderedAscending
+            }
+        }
+    }
+
+    /// Picks up to `max` files spread evenly across a chronological sequence, for a
+    /// compact preview strip. Returns all files when there are `max` or fewer. Pure.
+    static func representativeFiles(from files: [URL], captureTimes: [URL: Date], max n: Int = 8) -> [URL] {
+        let ordered = chronologicalOrder(of: files, captureTimes: captureTimes)
         guard ordered.count > n else { return ordered }
         guard n > 1 else { return ordered.isEmpty ? [] : [ordered[0]] }
         var picked: [URL] = []
@@ -724,6 +733,11 @@ final class ImportViewModel {
             if seen.insert(url).inserted { picked.append(url) }
         }
         return picked
+    }
+
+    /// Convenience overload for a date group.
+    static func representativeFiles(from group: ImportDateGroup, max n: Int = 8) -> [URL] {
+        representativeFiles(from: group.files, captureTimes: group.captureTimes, max: n)
     }
 
     /// Indices into `group.chronologicalFiles` where the gap to the previous shot
