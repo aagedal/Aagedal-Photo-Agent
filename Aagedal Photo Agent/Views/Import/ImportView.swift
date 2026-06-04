@@ -4,6 +4,9 @@ struct ImportView: View {
     @Bindable var viewModel: ImportViewModel
     var templates: [MetadataTemplate]
     var thumbnailService: ThumbnailService
+    /// Maximum height for the sheet (and the split-editor sub-sheet), so they don't
+    /// span the full window height. `nil` leaves the height unconstrained.
+    var maxSheetHeight: CGFloat?
     var onDismiss: () -> Void
 
     @State private var showAdditionalFields = false
@@ -22,6 +25,7 @@ struct ImportView: View {
             }
         }
         .frame(minWidth: 620, minHeight: 480)
+        .frame(maxHeight: maxSheetHeight)
     }
 
     // MARK: - Form Content
@@ -273,6 +277,7 @@ struct ImportView: View {
                     viewModel.splitOff(group.id, fileURLs: fileURLs)
                 }
             )
+            .frame(maxHeight: maxSheetHeight)
         }
     }
 

@@ -75,6 +75,8 @@ struct ContentView: View {
     @State private var ftpUploadItem: FTPUploadItem?
     @State private var isShowingSaveTemplateName = false
     @State private var isShowingImport = false
+    /// Height of the main window's content area, used to cap sheet heights.
+    @State private var windowContentHeight: CGFloat = 0
     @State private var backupEditedFolderItem: BackupEditedItem?
     @State private var isShowingWriteAllC2PAWarning = false
     @State private var c2paMetadata: C2PAMetadata?
@@ -120,8 +122,22 @@ struct ContentView: View {
             }
     }
 
+    /// Cap sheets at 90% of the window so they don't reach the window's bottom edge.
+    private var sheetMaxHeight: CGFloat? {
+        windowContentHeight > 0 ? windowContentHeight * 0.9 : nil
+    }
+
     private var contentBase: some View {
         mainContent
+            .background(
+                GeometryReader { proxy in
+                    Color.clear
+                        .onAppear { windowContentHeight = proxy.size.height }
+                        .onChange(of: proxy.size.height) { _, newValue in
+                            windowContentHeight = newValue
+                        }
+                }
+            )
             .toolbar { toolbarContent }
             .navigationTitle(browserViewModel.currentFolderName ?? "Aagedal Photo Agent")
             .modifier(ContentViewModifiers(
@@ -835,6 +851,7 @@ struct ContentView: View {
             viewModel: importViewModel,
             templates: templateViewModel.templates,
             thumbnailService: browserViewModel.thumbnailService,
+            maxSheetHeight: sheetMaxHeight,
             onDismiss: { isShowingImport = false }
         )
     }
