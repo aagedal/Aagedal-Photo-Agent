@@ -21,7 +21,7 @@ struct ImportView: View {
                 formContent
             }
         }
-        .frame(minWidth: 520, minHeight: 480)
+        .frame(minWidth: 620, minHeight: 480)
     }
 
     // MARK: - Form Content
@@ -136,7 +136,7 @@ struct ImportView: View {
 
                 if viewModel.sortByDate
                     && !viewModel.configuration.importTitle.trimmingCharacters(in: .whitespaces).isEmpty {
-                    Text("Appended to each per-date folder. Re-scan dates to apply changes.")
+                    Text("Appended to each per-date folder.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -175,53 +175,67 @@ struct ImportView: View {
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach($viewModel.dateGroups) { $group in
-                            HStack(spacing: 8) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(group.dateString)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                    Text("\(group.files.count) files")
-                                        .font(.caption2)
-                                        .foregroundStyle(.tertiary)
-                                }
-                                .frame(width: 100, alignment: .leading)
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack(spacing: 8) {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(group.dateString)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                        Text("\(group.files.count) files")
+                                            .font(.caption2)
+                                            .foregroundStyle(.tertiary)
+                                    }
+                                    .frame(width: 100, alignment: .leading)
 
-                                if viewModel.groupByYear, let year = group.yearFolder {
-                                    Text("\(year)/")
+                                    if viewModel.groupByYear, let year = group.yearFolder {
+                                        Text("\(year)/")
+                                            .font(.callout)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    TextField("Folder name", text: $group.folderName)
+                                        .textFieldStyle(.roundedBorder)
                                         .font(.callout)
-                                        .foregroundStyle(.secondary)
-                                }
-                                TextField("Folder name", text: $group.folderName)
-                                    .textFieldStyle(.roundedBorder)
-                                    .font(.callout)
-                                    .onSubmit { viewModel.ensureUniqueFolderNames() }
+                                        .onSubmit { viewModel.ensureUniqueFolderNames() }
 
-                                ImportThumbnailStripView(
-                                    files: group.files,
-                                    captureTimes: group.captureTimes,
-                                    thumbnailService: thumbnailService
-                                )
+                                    ImportThumbnailStripView(
+                                        files: group.files,
+                                        captureTimes: group.captureTimes,
+                                        thumbnailService: thumbnailService
+                                    )
 
-                                if group.files.count > 1 {
-                                    Button {
-                                        splitTarget = group
-                                    } label: {
-                                        Image(systemName: "scissors")
+                                    if group.files.count > 1 {
+                                        Button {
+                                            splitTarget = group
+                                        } label: {
+                                            Image(systemName: "scissors")
+                                        }
+                                        .buttonStyle(.borderless)
+                                        .help("Split this day into multiple shoots")
                                     }
-                                    .buttonStyle(.borderless)
-                                    .help("Split this day into multiple shoots")
+
+                                    if viewModel.hasSiblingGroups(group) {
+                                        Button {
+                                            viewModel.mergeSiblings(of: group)
+                                        } label: {
+                                            Image(systemName: "arrow.triangle.merge")
+                                        }
+                                        .buttonStyle(.borderless)
+                                        .help("Merge this day’s shoots back into one folder")
+                                    }
                                 }
 
-                                if viewModel.hasSiblingGroups(group) {
-                                    Button {
-                                        viewModel.mergeSiblings(of: group)
-                                    } label: {
-                                        Image(systemName: "arrow.triangle.merge")
-                                    }
-                                    .buttonStyle(.borderless)
-                                    .help("Merge this day’s shoots back into one folder")
+                                // Full destination preview for this group.
+                                HStack(spacing: 4) {
+                                    Image(systemName: "folder")
+                                    Text(viewModel.folderPathPreview(for: group))
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
                                 }
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .padding(.leading, 108)
                             }
+                            .padding(.vertical, 4)
                         }
 
                         Text("Re-scanning dates rebuilds these groups and discards manual shoot splits.")
@@ -242,6 +256,11 @@ struct ImportView: View {
             if newValue && viewModel.dateGroups.isEmpty && !viewModel.sourceFiles.isEmpty {
                 viewModel.scanCaptureDates()
             }
+        }
+        .onChange(of: viewModel.configuration.importTitle) { oldValue, newValue in
+            // Keep auto-named per-date folders in sync with the title as the user types,
+            // without forcing a re-scan. Manually-renamed groups are left untouched.
+            viewModel.updateGroupFolderTitles(from: oldValue, to: newValue)
         }
         .sheet(item: $splitTarget) { group in
             ImportSplitEditorView(

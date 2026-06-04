@@ -760,6 +760,44 @@ final class ImportViewModel {
         return boundaries
     }
 
+    // MARK: - Folder Name Preview & Title
+
+    /// "yyyy-MM-dd" display form derived from a group's "yyyy:MM:dd" capture-date key.
+    func displayDate(for group: ImportDateGroup) -> String {
+        let parse = DateFormatter()
+        parse.locale = Locale(identifier: "en_US_POSIX")
+        parse.dateFormat = "yyyy:MM:dd"
+        let display = DateFormatter()
+        display.dateFormat = "yyyy-MM-dd"
+        if let parsed = parse.date(from: group.dateString) { return display.string(from: parsed) }
+        return group.dateString
+    }
+
+    /// The auto-generated leaf folder name for a group given an import title.
+    private func autoLeafName(for group: ImportDateGroup, title: String) -> String {
+        let trimmed = title.trimmingCharacters(in: .whitespaces)
+        return trimmed.isEmpty ? displayDate(for: group) : "\(displayDate(for: group)) \u{2013} \(trimmed)"
+    }
+
+    /// Re-applies a changed import title to every group whose folder name still matches
+    /// the auto-generated pattern, so the title stays in sync without a re-scan. Groups
+    /// the user renamed by hand (and split sub-shoots) no longer match and are left as-is.
+    func updateGroupFolderTitles(from oldTitle: String, to newTitle: String) {
+        guard !dateGroups.isEmpty else { return }
+        for i in dateGroups.indices where dateGroups[i].folderName == autoLeafName(for: dateGroups[i], title: oldTitle) {
+            dateGroups[i].folderName = autoLeafName(for: dateGroups[i], title: newTitle)
+        }
+        ensureUniqueFolderNames()
+    }
+
+    /// Full destination path preview for a group, e.g. "Photos / 2026 / 2026-05-12 – Vacation".
+    func folderPathPreview(for group: ImportDateGroup) -> String {
+        var parts = [configuration.destinationBaseURL.lastPathComponent]
+        if groupByYear, let year = group.yearFolder { parts.append(year) }
+        parts.append(group.folderName)
+        return parts.joined(separator: " / ")
+    }
+
     // MARK: - Shoot Splitting
 
     /// Splits one date group into contiguous segments at the given boundary indices
