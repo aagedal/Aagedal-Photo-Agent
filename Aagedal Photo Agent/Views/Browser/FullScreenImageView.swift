@@ -948,7 +948,7 @@ struct FullScreenImageView: View {
                 if needsHDRLoad {
                     if isRAWFile {
                         // Use CIRAWFilter for flat/neutral decode — get as-shot WB for correct rendering
-                        if let rawResult = FullScreenImageCache.loadRAWImage(from: url, draftMode: false) {
+                        if let rawResult = FullScreenImageCache.loadRAWImage(from: url, draftMode: false, isHDR: cameraRaw?.hdrEditMode == 1 || isNativeHDR) {
                             guard !Task.isCancelled else { return }
                             var settings = cameraRaw
                             settings?.asShotNeutralTemperature = Double(rawResult.neutralTemperature)
@@ -1012,7 +1012,7 @@ struct FullScreenImageView: View {
             if needsHDRLoad {
                 if isRAW {
                     // Use CIRAWFilter for flat/neutral decode — get as-shot WB for correct rendering
-                    if let rawResult = FullScreenImageCache.loadRAWImage(from: url, draftMode: false) {
+                    if let rawResult = FullScreenImageCache.loadRAWImage(from: url, draftMode: false, isHDR: cameraRaw?.hdrEditMode == 1 || isNativeHDR) {
                         guard !Task.isCancelled else { return }
                         var settings = cameraRaw
                         settings?.asShotNeutralTemperature = Double(rawResult.neutralTemperature)
@@ -1127,6 +1127,7 @@ struct FullScreenImageView: View {
         let filename = url.lastPathComponent
         let cameraRaw = renderEdits ? currentImageFile?.cameraRawSettings : nil
         let needsHDRFullRes = cameraRaw != nil || currentImageFile?.isNativeHDR == true
+        let isHDRDecode = cameraRaw?.hdrEditMode == 1 || currentImageFile?.isNativeHDR == true
         let isRAWFile = SupportedImageFormats.isRaw(url: url)
         let orientation = currentImageFile?.exifOrientation ?? 1
         let zoomFileOrientation = lastLoadedOrientation
@@ -1140,7 +1141,7 @@ struct FullScreenImageView: View {
             if needsHDRFullRes {
                 if isRAWFile {
                     // Use CIRAWFilter for flat/neutral full-res decode — get as-shot WB
-                    if let rawResult = FullScreenImageCache.loadRAWImage(from: url, draftMode: false) {
+                    if let rawResult = FullScreenImageCache.loadRAWImage(from: url, draftMode: false, isHDR: isHDRDecode) {
                         guard !Task.isCancelled else { return }
                         var settings = cameraRaw
                         settings?.asShotNeutralTemperature = Double(rawResult.neutralTemperature)

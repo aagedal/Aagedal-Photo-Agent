@@ -230,7 +230,7 @@ final class FullScreenImageCache: @unchecked Sendable {
                         let ciImage: CIImage?
                         if isRAW {
                             // Use CIRAWFilter for flat/neutral decode — get as-shot WB for correct rendering
-                            if let rawResult = Self.loadRAWImage(from: url, draftMode: false) {
+                            if let rawResult = Self.loadRAWImage(from: url, draftMode: false, isHDR: settings?.hdrEditMode == 1) {
                                 guard !Task.isCancelled else { return }
                                 settings?.asShotNeutralTemperature = Double(rawResult.neutralTemperature)
                                 settings?.asShotNeutralTint = Double(rawResult.neutralTint)
@@ -376,8 +376,8 @@ final class FullScreenImageCache: @unchecked Sendable {
     /// Load a RAW image via CIRAWFilter at a target max pixel size.
     /// Uses flat/neutral decode (no auto-boost) matching EditWorkspaceView's pipeline,
     /// then downsamples to the target resolution. Returns CIImage for downstream processing.
-    nonisolated static func loadRAWPreview(from url: URL, maxPixelSize: CGFloat, draftMode: Bool = false) -> CIImage? {
-        guard let result = loadRAWImage(from: url, draftMode: draftMode) else { return nil }
+    nonisolated static func loadRAWPreview(from url: URL, maxPixelSize: CGFloat, draftMode: Bool = false, isHDR: Bool = false) -> CIImage? {
+        guard let result = loadRAWImage(from: url, draftMode: draftMode, isHDR: isHDR) else { return nil }
         return downsample(result.image, maxPixelSize: maxPixelSize)
     }
 
@@ -387,7 +387,8 @@ final class FullScreenImageCache: @unchecked Sendable {
     /// (caller should fall back to loadHDRFullResolution).
     nonisolated static func loadRAWImage(
         from url: URL,
-        draftMode: Bool = false
+        draftMode: Bool = false,
+        isHDR: Bool = false
     ) -> RAWDecodeResult? {
         guard let rawFilter = CIRAWFilter(imageURL: url) else {
             cacheLogger.info("CIRAWFilter unsupported for \(url.lastPathComponent), falling back")
@@ -396,6 +397,12 @@ final class FullScreenImageCache: @unchecked Sendable {
         rawFilter.isDraftModeEnabled = draftMode
         rawFilter.boostAmount = 0        // disable auto-boost (Metal shader handles exposure)
         rawFilter.boostShadowAmount = 0  // disable shadow recovery boost
+        // HDR: preserve highlight detail above SDR white as float values >1.0 so the
+        // pipeline can expand it into HDR headroom. Default 0 = tone-map/clamp to SDR;
+        // 1.0 = "use the most headroom present in the file" (lands ~4× / 800 nits for
+        // typical RAWs); 2.0 = maximum, pushing highlights toward the ~8× / 1600-nit
+        // ceiling to match Adobe Camera Raw's brighter HDR rendering.
+        if isHDR { rawFilter.extendedDynamicRangeAmount = 2.0 }
         let neutralTemp = rawFilter.neutralTemperature
         let neutralTint = rawFilter.neutralTint
         guard let output = rawFilter.outputImage else {

@@ -163,7 +163,7 @@ inline float3 applyEdits(
         float lum = dot(rgb, float3(0.2126, 0.7152, 0.0722));
         bool isHDR = (params.activeFlags & (1u << 4)) != 0;
         float desatLow  = isHDR ? 1.5  : 0.85;
-        float desatHigh = isHDR ? 4.0  : 1.6;
+        float desatHigh = isHDR ? 8.0  : 1.6;   // HDR ceiling ~1600 nits (+3 EV)
         float desatMax  = isHDR ? 0.5  : 0.40;
         float desat = smoothstep(desatLow, desatHigh, lum) * desatMax;
         rgb = mix(rgb, float3(lum), desat);

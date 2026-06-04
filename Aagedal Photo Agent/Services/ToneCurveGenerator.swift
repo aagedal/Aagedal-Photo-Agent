@@ -10,7 +10,7 @@ import Foundation
 nonisolated struct ToneCurveGenerator: Sendable {
     static let lutSize = 4096
     static let domainMin: Float = -0.5   // Handle negative from color matrix overshoot
-    static let domainMax: Float = 4.0    // HDR headroom
+    static let domainMax: Float = 8.0    // HDR headroom (~1600 nits / +3 EV at 203-nit SDR ref)
 
     /// Generates a 1D LUT from CameraRawSettings.
     /// Maps input values in [domainMin, domainMax] to output values.
@@ -34,12 +34,17 @@ nonisolated struct ToneCurveGenerator: Sendable {
 
             // 1. Exposure: x * exp2(ev), then progressive highlight compression.
             //    SDR: ACR-calibrated compression asymptoting near 1.0–1.2.
-            //    HDR: gentle shoulder starting at 2.0 (406 nits), preserving headroom to ~4.0 (812 nits).
+            //    HDR: gentle shoulder starting at 2.0 (406 nits) that asymptotes at
+            //    domainMax (8.0 ≈ 1600 nits). Strength is ev-independent so increasing
+            //    exposure pushes highlights *up toward* the HDR ceiling instead of
+            //    compressing them back down (a previous ev-scaled strength capped the
+            //    asymptote at ~4× and lowered it as exposure rose).
             x *= exp2f(ev)
             if ev > 0.001 {
                 if isHDR {
                     let threshold: Float = 2.0
-                    let strength: Float = 0.15 + ev * 0.08
+                    // asymptote = threshold + 1/strength = domainMax
+                    let strength: Float = 1.0 / (domainMax - threshold)
                     let overshoot = max(Float(0), x - threshold)
                     if overshoot > 0 {
                         x = threshold + overshoot / (1.0 + overshoot * strength)

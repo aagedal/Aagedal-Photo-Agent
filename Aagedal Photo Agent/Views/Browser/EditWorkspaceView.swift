@@ -23,6 +23,7 @@ struct EditWorkspaceView: View {
     @State private var previewImage: NSImage?
     @State private var previewTask: Task<Void, Never>?
     @State private var previewRenderTask: Task<Void, Never>?
+    @State private var hdrReloadTask: Task<Void, Never>?
     @State private var isLoadingPreview = false
     @State private var isDecodingFullResolution = false
     @State private var isSavingRenderedJPEG = false
@@ -148,6 +149,9 @@ struct EditWorkspaceView: View {
                     }
                     browserViewModel.images[index].cameraRawSettings?.hdrEditMode = newValue ? 1 : 0
                     browserViewModel.thumbnailService.invalidateEditedThumbnail(for: url)
+                    // The cached edited CGImage was decoded under the old HDR state
+                    // (SDR-clamped vs HDR-expanded). Drop it so full-screen re-decodes.
+                    browserViewModel.fullScreenImageCache.invalidateImage(for: url)
                 }
             }
         )
@@ -249,6 +253,12 @@ struct EditWorkspaceView: View {
         }
         .onChange(of: metadataViewModel.editingMetadata.cameraRaw) { _, _ in
             renderPreview()
+        }
+        .onChange(of: metadataViewModel.editingMetadata.cameraRaw?.hdrEditMode) { oldValue, newValue in
+            // extendedDynamicRangeAmount is baked at RAW decode time, so flipping HDR
+            // requires a fresh decode — re-render alone keeps the clamped/expanded pixels.
+            guard oldValue != newValue else { return }
+            reloadSourceForHDRChange()
         }
         .onChange(of: metadataViewModel.metadataLoadGeneration) { _, _ in
             // Re-apply HDR auto-enable after metadata load completes.
@@ -1075,6 +1085,8 @@ struct EditWorkspaceView: View {
         previewTask = nil
         previewRenderTask?.cancel()
         previewRenderTask = nil
+        hdrReloadTask?.cancel()
+        hdrReloadTask = nil
         sourceImage = nil
         sourceCIImage = nil
         asShotWhiteBalance = nil
@@ -1203,9 +1215,10 @@ struct EditWorkspaceView: View {
                     editLog.info("[\(filename)] Phase 2: starting (cacheHit=\(cacheHit))")
 
                     let phase2Start = ContinuousClock.now
+                    let decodeHDR = isHDREnabled
                     let rawResult: FullScreenImageCache.RAWDecodeResult? = await Task.detached(priority: .userInitiated) {
                         FullScreenImageCache.loadRAWImage(
-                            from: selectedImageURL, draftMode: false
+                            from: selectedImageURL, draftMode: false, isHDR: decodeHDR
                         )
                     }.value
                     let rawCIImage = rawResult?.image
@@ -1274,6 +1287,13 @@ struct EditWorkspaceView: View {
                     editLog.info("[\(filename)] Phase 2: complete in \(totalPhase2), hasTexture=\(pipeline.hasSourceTexture)")
                     syncViewportToMetal()
                     renderPreview()
+
+                    // If HDR was flipped while Phase 2 was decoding (e.g. the "Render RAW
+                    // as HDR" preference applied after metadata load), re-decode with the
+                    // correct headroom now that the initial load has settled.
+                    if !Task.isCancelled, isHDREnabled != decodeHDR {
+                        reloadSourceForHDRChange()
+                    }
 
                     // Pre-cache adjacent RAW images at screen resolution for instant navigation.
                     precacheAdjacentRAWTextures(
@@ -1404,6 +1424,85 @@ struct EditWorkspaceView: View {
         }
     }
 
+    /// Re-decodes the current RAW source with the current HDR state and re-uploads the
+    /// Metal texture. `CIRAWFilter.extendedDynamicRangeAmount` is set at decode time, so
+    /// toggling HDR can't be handled by re-rendering alone — highlights clamped (SDR) or
+    /// expanded (HDR) at decode must be re-materialized. The on-screen texture is kept
+    /// visible during the re-decode; zoom/crop state is preserved.
+    private func reloadSourceForHDRChange() {
+        guard let url = selectedImageURL,
+              SupportedImageFormats.isRaw(url: url) else { return }
+        // Only re-decode a fully-settled image. An in-flight initial load already decodes
+        // with the current flag (and its end-of-Phase-2 check re-fires this if it changed).
+        guard !isLoadingPreview, !isDecodingFullResolution,
+              let pipeline = metalPipeline, pipeline.hasSourceTexture else { return }
+
+        let isHDR = isHDREnabled
+        let previewMaxPixelSize = previewWorkingMaxPixelSize
+        let targetOrientation = selectedImageOrientation
+        let fileOrientation: Int = {
+            guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                  let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+                  let o = props[kCGImagePropertyOrientation] as? Int else { return targetOrientation }
+            return o
+        }()
+        let orientationCorrection = ImageFile.orientationCorrection(from: fileOrientation, to: targetOrientation)
+        let filename = url.lastPathComponent
+
+        editLog.info("[\(filename)] reloadSourceForHDRChange: re-decoding (isHDR=\(isHDR))")
+        hdrReloadTask?.cancel()
+        isDecodingFullResolution = true
+        hdrReloadTask = Task {
+            let rawResult: FullScreenImageCache.RAWDecodeResult? = await Task.detached(priority: .userInitiated) {
+                FullScreenImageCache.loadRAWImage(from: url, draftMode: false, isHDR: isHDR)
+            }.value
+            guard !Task.isCancelled, selectedImageURL == url, let rawResult else {
+                if selectedImageURL == url { isDecodingFullResolution = false }
+                return
+            }
+            let rawCIImage = rawResult.image
+            asShotWhiteBalance = (temperature: rawResult.neutralTemperature, tint: rawResult.neutralTint)
+            pipeline.asShotTemperature = Double(rawResult.neutralTemperature)
+            pipeline.asShotTint = Double(rawResult.neutralTint)
+
+            let uploadRAW = orientationCorrection != .up ? rawCIImage.oriented(orientationCorrection) : rawCIImage
+            await Task.detached(priority: .medium) {
+                pipeline.uploadSourceImage(uploadRAW)
+            }.value
+            guard !Task.isCancelled, selectedImageURL == url else { return }
+            syncViewportToMetal()
+            renderPreview()
+
+            // Materialize sourceCIImage at screen resolution (scopes / preview CGImage).
+            let materialized: CIImage? = await Task.detached(priority: .medium) {
+                let extent = rawCIImage.extent
+                let maxDim = max(extent.width, extent.height)
+                let scale = maxDim > previewMaxPixelSize * 1.5 ? previewMaxPixelSize / maxDim : 1.0
+                let downsampled = scale < 1.0
+                    ? rawCIImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+                    : rawCIImage
+                guard let cgImage = CameraRawApproximation.ciContext.createCGImage(
+                    downsampled, from: downsampled.extent,
+                    format: .RGBAh,
+                    colorSpace: CameraRawApproximation.workingColorSpace
+                ) else { return nil }
+                return CIImage(cgImage: cgImage)
+            }.value
+            guard !Task.isCancelled, selectedImageURL == url else { return }
+            sourceCIImage = materialized ?? rawCIImage
+            isDecodingFullResolution = false
+            syncViewportToMetal()
+            renderPreview()
+            editLog.info("[\(filename)] reloadSourceForHDRChange: done")
+
+            // If HDR was toggled again while this re-decode was in flight (its guard
+            // skips concurrent calls), reconcile to the latest state.
+            if isHDREnabled != isHDR {
+                reloadSourceForHDRChange()
+            }
+        }
+    }
+
     /// Pre-cache Metal textures for the previous and next RAW images in the background.
     /// Uses screen-resolution decode to limit memory (~50MB per texture vs ~260MB at full res).
     /// Runs at low priority so it doesn't compete with the current image's decode.
@@ -1414,22 +1513,28 @@ struct EditWorkspaceView: View {
         let images = browserViewModel.visibleImages
         guard let currentIndex = browserViewModel.urlToVisibleIndex[currentURL] else { return }
 
-        var adjacentRAWURLs: [URL] = []
+        // Capture each neighbor's HDR state so the precached texture is decoded with the
+        // same headroom the editor will request when navigating there (extendedDynamicRangeAmount
+        // is baked at decode time).
+        func neighborIsHDR(_ img: ImageFile) -> Bool {
+            img.isNativeHDR || img.cameraRawSettings?.hdrEditMode == 1
+        }
+        var adjacentRAWURLs: [(url: URL, isHDR: Bool)] = []
         if currentIndex > 0 {
-            let prevURL = images[currentIndex - 1].url
-            if SupportedImageFormats.isRaw(url: prevURL) { adjacentRAWURLs.append(prevURL) }
+            let prev = images[currentIndex - 1]
+            if SupportedImageFormats.isRaw(url: prev.url) { adjacentRAWURLs.append((prev.url, neighborIsHDR(prev))) }
         }
         if currentIndex < images.count - 1 {
-            let nextURL = images[currentIndex + 1].url
-            if SupportedImageFormats.isRaw(url: nextURL) { adjacentRAWURLs.append(nextURL) }
+            let next = images[currentIndex + 1]
+            if SupportedImageFormats.isRaw(url: next.url) { adjacentRAWURLs.append((next.url, neighborIsHDR(next))) }
         }
 
         guard !adjacentRAWURLs.isEmpty else { return }
         let screenMaxPx = previewWorkingMaxPixelSize
-        editLog.info("[\(currentURL.lastPathComponent)] precacheAdjacent: \(adjacentRAWURLs.map(\.lastPathComponent)) at \(Int(screenMaxPx))px")
+        editLog.info("[\(currentURL.lastPathComponent)] precacheAdjacent: \(adjacentRAWURLs.map(\.url.lastPathComponent)) at \(Int(screenMaxPx))px")
 
         Task.detached(priority: .background) {
-            for url in adjacentRAWURLs {
+            for (url, isHDR) in adjacentRAWURLs {
                 guard !Task.isCancelled else {
                     editLog.info("[\(url.lastPathComponent)] precache: cancelled")
                     return
@@ -1438,7 +1543,7 @@ struct EditWorkspaceView: View {
                 // Use the same flat CIRAWFilter decode as Phase 2 so the precached
                 // texture matches the final render (no auto-boost / tone mismatch).
                 guard let rawResult = FullScreenImageCache.loadRAWImage(
-                    from: url, draftMode: false
+                    from: url, draftMode: false, isHDR: isHDR
                 ) else {
                     editLog.info("[\(url.lastPathComponent)] precache: decode failed")
                     continue

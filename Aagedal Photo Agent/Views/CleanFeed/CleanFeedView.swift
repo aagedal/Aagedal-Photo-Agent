@@ -63,7 +63,7 @@ struct CleanFeedContentView: View {
                 // Base image (display-oriented as decoded by the cache loaders).
                 let base: CIImage?
                 if FullScreenImageCache.isRawFile(url) {
-                    base = FullScreenImageCache.loadRAWPreview(from: url, maxPixelSize: maxPixelSize, draftMode: true)
+                    base = FullScreenImageCache.loadRAWPreview(from: url, maxPixelSize: maxPixelSize, draftMode: true, isHDR: isHDR)
                         ?? FullScreenImageCache.extractEmbeddedPreview(from: url).map { CIImage(cgImage: $0) }
                 } else {
                     base = FullScreenImageCache.loadHDRPreview(from: url, maxPixelSize: maxPixelSize)

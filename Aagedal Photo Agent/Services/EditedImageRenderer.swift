@@ -11,14 +11,14 @@ nonisolated private let editedRendererLog = Logger(
 
 nonisolated enum EditedImageRenderer {
 
-    private static func loadAndProcess(from sourceURL: URL, cameraRaw: CameraRawSettings?) throws -> CIImage {
+    private static func loadAndProcess(from sourceURL: URL, cameraRaw: CameraRawSettings?, isHDR: Bool) throws -> CIImage {
         let input: CIImage
         var effectiveSettings = cameraRaw
 
         let rawExtensions: Set<String> = ["raw", "cr2", "cr3", "nef", "nrw", "arw", "raf", "dng", "rw2", "orf", "pef", "srw"]
         if rawExtensions.contains(sourceURL.pathExtension.lowercased()) {
             // Full-quality CIRAWFilter decode for export (no draft mode)
-            if let rawResult = FullScreenImageCache.loadRAWImage(from: sourceURL, draftMode: false) {
+            if let rawResult = FullScreenImageCache.loadRAWImage(from: sourceURL, draftMode: false, isHDR: isHDR) {
                 input = rawResult.image
                 // Propagate as-shot WB so renderOffscreen uses the correct reference
                 effectiveSettings?.asShotNeutralTemperature = Double(rawResult.neutralTemperature)
@@ -64,7 +64,7 @@ nonisolated enum EditedImageRenderer {
     /// `metadataCopier` is required to populate IPTC/XMP/EXIF on the rendered file.
     @discardableResult
     static func render(from sourceURL: URL, cameraRaw: CameraRawSettings?, isHDR: Bool, outputFolder: URL, metadataCopier: MetadataCopier? = nil) async throws -> URL {
-        let output = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw)
+        let output = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw, isHDR: isHDR)
 
         let destURL: URL
         if isHDR {
@@ -391,7 +391,7 @@ nonisolated enum EditedImageRenderer {
     // MARK: - Legacy API
 
     static func renderJPEG(from sourceURL: URL, cameraRaw: CameraRawSettings?, outputFolder: URL, metadataCopier: MetadataCopier? = nil) async throws {
-        let output = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw)
+        let output = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw, isHDR: false)
         let gamut = TargetColorGamut(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportColorGamutSDR) ?? "") ?? .sRGB
         let colorSpace = gamut.sdrColorSpace
         let quality = UserDefaults.standard.object(forKey: UserDefaultsKeys.exportQualitySDR) as? Double ?? 0.92
@@ -417,7 +417,7 @@ nonisolated enum EditedImageRenderer {
 
     @discardableResult
     static func renderHDR(from sourceURL: URL, cameraRaw: CameraRawSettings?, outputFolder: URL) async throws -> URL {
-        let output = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw)
+        let output = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw, isHDR: true)
         return try await renderHDRFormat(output, sourceURL: sourceURL, outputFolder: outputFolder)
     }
 
@@ -437,7 +437,7 @@ nonisolated enum EditedImageRenderer {
     /// Returns the output URL. Handles name collisions by appending a number.
     @discardableResult
     static func saveAs(from sourceURL: URL, cameraRaw: CameraRawSettings?, format: SaveAsFormat, destinationFolder: URL? = nil, metadataCopier: MetadataCopier? = nil) async throws -> URL {
-        let output = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw)
+        let output = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw, isHDR: false)
         let gamut = TargetColorGamut(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportColorGamutSDR) ?? "") ?? .sRGB
         let colorSpace = gamut.sdrColorSpace
         let ctx = CameraRawApproximation.ciContext

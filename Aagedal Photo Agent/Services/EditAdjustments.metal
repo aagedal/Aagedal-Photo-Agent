@@ -58,7 +58,7 @@ struct EditParams {
     float2 viewportSize;     // fraction of source visible per axis (1,1 = full image)
 
     float lutDomainMin;      // -0.5 (extended range for color matrix overshoot)
-    float lutDomainMax;      // 4.0 (HDR headroom)
+    float lutDomainMax;      // 8.0 (HDR headroom ~1600 nits)
 
     float2 viewportCenter;   // crop center in normalized source coords (rotation pivot)
     float viewportRotation;  // radians; rotate sampling for clean-feed crop straighten
@@ -194,7 +194,7 @@ kernel void editAdjustments(
         float lum = dot(rgbF, float3(0.2126, 0.7152, 0.0722));
         bool isHDR = (params.activeFlags & (1u << 4)) != 0;
         float desatLow  = isHDR ? 1.5  : 0.85;
-        float desatHigh = isHDR ? 4.0  : 1.6;
+        float desatHigh = isHDR ? 8.0  : 1.6;   // HDR ceiling ~1600 nits (+3 EV)
         float desatMax  = isHDR ? 0.5  : 0.40;
         float desat = smoothstep(desatLow, desatHigh, lum) * desatMax;
         rgb = half3(mix(rgbF, float3(lum), desat));
