@@ -1505,15 +1505,11 @@ struct ContentView: View {
         let fast = TechnicalMetadata.fromImageIO(url: image.url, hasC2PA: image.hasC2PA)
         technicalMetadata = fast
 
-        guard !fast.hasCameraInfo else {
-            // ImageIO already gave us camera data — done, cache it.
-            technicalMetadataCache[image.url] = fast
-            return
-        }
-
-        // Fall back to the SwiftExif reader, which parses EXIF from formats ImageIO can't
-        // (e.g. JPEG XL). Keep the fast path's reliable dimensions/bit depth/color space and
-        // overlay only the camera/exposure fields. Cache only the final (enriched) result.
+        // Always enrich from the SwiftExif reader. It parses EXIF from formats ImageIO can't
+        // (e.g. JPEG XL), and — even when ImageIO already supplied camera/exposure data — it
+        // surfaces MakerNote-only technical fields (shutter count, camera temperature, CR3
+        // lens model) that ImageIO never reads. We keep the fast path's reliable
+        // dimensions/bit depth/color space throughout. Cache only the final (enriched) result.
         let url = image.url
         let readService = browserViewModel.metadataReadService
         technicalMetadataTask = Task {
@@ -1522,7 +1518,11 @@ struct ContentView: View {
                 technicalMetadataCache[url] = fast
                 return
             }
-            let merged = exifMeta.hasCameraInfo ? fast.mergingCameraFields(from: exifMeta) : fast
+            // When ImageIO already supplied camera fields, keep them and overlay only the
+            // MakerNote extras; otherwise take exifMeta's camera/exposure fields wholesale.
+            let merged = fast.hasCameraInfo
+                ? fast.mergingTechnicalExtras(from: exifMeta)
+                : fast.mergingCameraFields(from: exifMeta)
             technicalMetadataCache[url] = merged
             // Only apply if this is still the selected image.
             if browserViewModel.selectedImages.first?.url == url {

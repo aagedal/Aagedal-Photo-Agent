@@ -28,6 +28,8 @@ struct TechnicalMetadata {
         static let software = "Software"
         static let lensID = "LensID"
         static let whiteBalance = "WhiteBalance"
+        static let shutterCount = "ShutterCount"
+        static let cameraTemperature = "CameraTemperature"
     }
 
     var camera: String?
@@ -46,6 +48,8 @@ struct TechnicalMetadata {
     var software: String?
     var lensID: String?
     var whiteBalance: String?
+    var shutterCount: Int?
+    var cameraTemperature: Int?
 
     // C2PA
     var hasC2PA: Bool
@@ -133,6 +137,11 @@ struct TechnicalMetadata {
             whiteBalance = wb
         }
 
+        // Shutter count & camera temperature — MakerNote-only (Canon/Nikon shutter
+        // count, Canon temperature in °C). Not exposed by ImageIO.
+        shutterCount = dict[ExifKey.shutterCount] as? Int
+        cameraTemperature = dict[ExifKey.cameraTemperature] as? Int
+
         // Resolution — prefer EXIF, fall back to File
         imageWidth = dict[ExifKey.imageWidth] as? Int ?? dict[ExifKey.fileImageWidth] as? Int
         imageHeight = dict[ExifKey.imageHeight] as? Int ?? dict[ExifKey.fileImageHeight] as? Int
@@ -210,7 +219,25 @@ struct TechnicalMetadata {
         copy.software = other.software
         copy.lensID = other.lensID
         copy.whiteBalance = other.whiteBalance
+        copy.shutterCount = other.shutterCount
+        copy.cameraTemperature = other.cameraTemperature
         if copy.modifiedDate == nil { copy.modifiedDate = other.modifiedDate }
+        return copy
+    }
+
+    /// Returns a copy that keeps all of our own fields but overlays the MakerNote-only
+    /// technical extras from `other` — shutter count and camera temperature (which the
+    /// ImageIO fast path never reads), plus lens/lens-ID/serial/firmware when we lacked
+    /// them (e.g. a CR3 whose lens model lives only in the Canon MakerNote). Used when
+    /// the ImageIO fast path already supplied reliable camera/exposure fields.
+    func mergingTechnicalExtras(from other: TechnicalMetadata) -> TechnicalMetadata {
+        var copy = self
+        copy.shutterCount = other.shutterCount
+        copy.cameraTemperature = other.cameraTemperature
+        if copy.lens == nil { copy.lens = other.lens }
+        if copy.lensID == nil { copy.lensID = other.lensID }
+        if copy.serialNumber == nil { copy.serialNumber = other.serialNumber }
+        if copy.software == nil { copy.software = other.software }
         return copy
     }
 

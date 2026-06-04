@@ -4,6 +4,18 @@ import SwiftExif
 /// XMP namespace URI for Adobe Camera Raw Settings.
 nonisolated private let crsNamespaceURI = "http://ns.adobe.com/camera-raw-settings/1.0/"
 
+private extension MakerNoteValue {
+    /// The value as an `Int` when it is an integer (signed or unsigned), else nil.
+    /// MakerNote scalar tags are emitted as `.int` or `.uint` depending on the field.
+    nonisolated var intValue: Int? {
+        switch self {
+        case .int(let i):  return i
+        case .uint(let u): return Int(u)
+        default:           return nil
+        }
+    }
+}
+
 /// Recursively unwrap `XMPValue` to plain Swift / Foundation types so the
 /// dict-based parsers (`parseMaskGroupBasedCorrections` etc.) can consume
 /// SwiftExif's recursive structured XMP without per-cast knowledge of the enum.
@@ -176,6 +188,26 @@ extension ImageMetadata {
             // Composite tags computed by SwiftExif from EXIF.
             let composite = CompositeTagCalculator.calculate(from: exif)
             if let lensID = composite["LensID"] { dict["LensID"] = lensID }
+
+            // MARK: MakerNote technical extras
+            //
+            // Shutter count, camera temperature, and (on CR3) the lens model live only
+            // in the manufacturer MakerNote — they have no standard EXIF tag and ImageIO
+            // never surfaces them. Pull the few we display into the flat dict.
+            if let makerNote = exif.makerNote {
+                if let shutterCount = makerNote.tags["ShutterCount"]?.intValue {
+                    dict["ShutterCount"] = shutterCount
+                }
+                if let temperature = makerNote.tags["CameraTemperature"]?.intValue {
+                    dict["CameraTemperature"] = temperature
+                }
+                // Canon CR3 carries the lens model in the MakerNote (0x0095) rather than
+                // the standard EXIF LensModel tag — fill it only when EXIF didn't.
+                if dict["LensModel"] == nil,
+                   case let .string(lens)? = makerNote.tags["LensModel"] {
+                    dict["LensModel"] = lens
+                }
+            }
         }
 
         // MARK: ICC profile

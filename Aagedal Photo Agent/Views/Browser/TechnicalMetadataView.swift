@@ -44,6 +44,12 @@ struct TechnicalMetadataView: View {
                 if let wb = m.whiteBalance {
                     row("White Balance", wb)
                 }
+                if let sc = m.shutterCount {
+                    row("Shutter Count", sc.formatted())
+                }
+                if let ct = m.cameraTemperature {
+                    row("Camera Temp.", "\(ct) °C")
+                }
                 if let res = m.resolution {
                     row("Resolution", res)
                 }
