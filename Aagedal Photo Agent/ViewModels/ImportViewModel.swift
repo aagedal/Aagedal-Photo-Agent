@@ -780,12 +780,25 @@ final class ImportViewModel {
     }
 
     /// Re-applies a changed import title to every group whose folder name still matches
-    /// the auto-generated pattern, so the title stays in sync without a re-scan. Groups
-    /// the user renamed by hand (and split sub-shoots) no longer match and are left as-is.
+    /// the auto-generated pattern, so the title stays in sync without a re-scan. This
+    /// includes split sub-shoots, whose names are the auto base plus a " – Shoot N"
+    /// suffix — the suffix is preserved. Groups the user renamed by hand no longer match
+    /// the pattern and are left untouched.
     func updateGroupFolderTitles(from oldTitle: String, to newTitle: String) {
         guard !dateGroups.isEmpty else { return }
-        for i in dateGroups.indices where dateGroups[i].folderName == autoLeafName(for: dateGroups[i], title: oldTitle) {
-            dateGroups[i].folderName = autoLeafName(for: dateGroups[i], title: newTitle)
+        for i in dateGroups.indices {
+            let oldBase = autoLeafName(for: dateGroups[i], title: oldTitle)
+            let newBase = autoLeafName(for: dateGroups[i], title: newTitle)
+            let current = dateGroups[i].folderName
+            if current == oldBase {
+                dateGroups[i].folderName = newBase
+            } else {
+                // Split sub-shoot: "<auto base> – Shoot N". Swap the base, keep the rest.
+                let shootPrefix = oldBase + " \u{2013} Shoot "
+                if current.hasPrefix(shootPrefix) {
+                    dateGroups[i].folderName = newBase + String(current.dropFirst(oldBase.count))
+                }
+            }
         }
         ensureUniqueFolderNames()
     }
