@@ -181,6 +181,14 @@ struct FTPService: Sendable {
             "-T", localPath,
             "--netrc-file", netrcPath,
             "--progress-bar",
+            // The remote URL is a literal upload target that may contain `[`, `]`,
+            // `{` or `}` (all legal filename characters). curl interprets those as
+            // URL globbing patterns by default, so e.g. "IMG_[2].jpg" aborts with
+            // "bad range specification" instead of uploading. Disable globbing so
+            // the path is always taken literally. Percent-encoding would be wrong
+            // here: curl does not percent-decode FTP paths, so the file would land
+            // on the server with the literal escapes in its name.
+            "--globoff",
             "--retry", "3",
             "--retry-delay", "2",
             "--retry-all-errors",

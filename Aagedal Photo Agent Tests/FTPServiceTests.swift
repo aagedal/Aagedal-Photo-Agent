@@ -49,6 +49,19 @@ struct FTPCurlArgumentsTests {
         #expect(insecure.contains("--insecure"))
     }
 
+    @Test("globbing is disabled so filenames with [] or {} upload literally")
+    func globbingDisabled() {
+        // curl treats [], {} in URLs as glob patterns by default, which would abort
+        // the upload of any file whose name contains those (legal) characters.
+        for connection in [
+            FTPConnection(useSFTP: false, useTLS: false),
+            FTPConnection(useSFTP: false, useTLS: true),
+            FTPConnection(useSFTP: true),
+        ] {
+            #expect(makeArgs(connection).contains("--globoff"))
+        }
+    }
+
     @Test("credentials are passed via netrc file, never on the command line")
     func credentialsViaNetrc() {
         let args = makeArgs(FTPConnection(useSFTP: false))
