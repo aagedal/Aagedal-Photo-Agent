@@ -76,6 +76,45 @@ struct FTPCurlArgumentsTests {
     }
 }
 
+@Suite("FTPService.remoteUploadURL")
+struct FTPRemoteURLTests {
+
+    private func url(_ filename: String, _ connection: FTPConnection) -> String {
+        FTPService.remoteUploadURL(for: filename, connection: connection)
+    }
+
+    @Test("# is encoded so the remote path is not truncated at the fragment")
+    func encodesHash() {
+        let conn = FTPConnection(host: "example.com", port: 21, remotePath: "/incoming/", useSFTP: false)
+        #expect(url("Shot #3.jpg", conn) == "ftp://example.com:21/incoming/Shot%20%233.jpg")
+    }
+
+    @Test("? is encoded so it is not split off as a query")
+    func encodesQuestionMark() {
+        let conn = FTPConnection(host: "h", port: 21, remotePath: "/d/", useSFTP: false)
+        #expect(url("a?b.jpg", conn).hasSuffix("/d/a%3Fb.jpg"))
+    }
+
+    @Test("brackets, spaces and percent are encoded and round-trip via curl's decode")
+    func encodesGlobAndSpecials() {
+        let conn = FTPConnection(host: "h", port: 21, remotePath: "/d/", useSFTP: false)
+        #expect(url("IMG_[2].jpg", conn).hasSuffix("/d/IMG_%5B2%5D.jpg"))
+        #expect(url("50% off {final}.jpg", conn).hasSuffix("/d/50%25%20off%20%7Bfinal%7D.jpg"))
+    }
+
+    @Test("scheme is sftp for SFTP connections; plain names are unchanged")
+    func schemeAndPlainNames() {
+        let sftp = FTPConnection(host: "h", port: 22, remotePath: "/d/", useSFTP: true)
+        #expect(url("plain.jpg", sftp) == "sftp://h:22/d/plain.jpg")
+    }
+
+    @Test("a missing trailing slash on the remote path is added")
+    func addsTrailingSlash() {
+        let conn = FTPConnection(host: "h", port: 21, remotePath: "/d", useSFTP: false)
+        #expect(url("a.jpg", conn) == "ftp://h:21/d/a.jpg")
+    }
+}
+
 @Suite("FTPConnection Codable")
 struct FTPConnectionCodableTests {
 

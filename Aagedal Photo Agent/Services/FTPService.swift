@@ -61,11 +61,7 @@ struct FTPService: Sendable {
         try Self.validateNetrcField(connection.username, name: "username")
         try Self.validateNetrcField(password, name: "password")
 
-        let scheme = connection.useSFTP ? "sftp" : "ftp"
-        let remotePath = connection.remotePath.hasSuffix("/")
-            ? connection.remotePath
-            : connection.remotePath + "/"
-        let remoteURL = "\(scheme)://\(connection.host):\(connection.port)\(remotePath)\(localURL.lastPathComponent)"
+        let remoteURL = Self.remoteUploadURL(for: localURL.lastPathComponent, connection: connection)
 
         let fileSize = try localURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
 
@@ -167,6 +163,29 @@ struct FTPService: Sendable {
         progressHandler(finalProgress)
     }
 
+    /// Builds the remote upload target URL for a file. Extracted as a pure function
+    /// so the filename encoding is unit-testable.
+    ///
+    /// The filename is percent-encoded so characters the URL parser treats specially
+    /// survive into the remote path — most importantly `#` (a URL fragment) and `?`
+    /// (a query), either of which silently truncates the path so the file would upload
+    /// under a mangled name (e.g. "Shot #3.jpg" → `STOR Shot `, verified against curl).
+    /// Spaces, `%`, brackets and non-ASCII are encoded too. curl percent-decodes the
+    /// path for both FTP and SFTP before issuing the transfer command, so the file
+    /// lands on the server under its real name.
+    ///
+    /// The configured remote directory is left unencoded (its `/` are real path
+    /// separators); `--globoff` in `curlArguments` keeps any `[]`/`{}` there from
+    /// being misread as glob patterns.
+    nonisolated static func remoteUploadURL(for filename: String, connection: FTPConnection) -> String {
+        let scheme = connection.useSFTP ? "sftp" : "ftp"
+        let remotePath = connection.remotePath.hasSuffix("/")
+            ? connection.remotePath
+            : connection.remotePath + "/"
+        let encodedName = filename.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? filename
+        return "\(scheme)://\(connection.host):\(connection.port)\(remotePath)\(encodedName)"
+    }
+
     /// Builds the curl argument vector for an upload. Extracted as a pure function
     /// so the security-critical transport flags are unit-testable: explicit FTPS
     /// must add `--ssl-reqd` (so a TLS failure aborts rather than silently sending
@@ -181,13 +200,11 @@ struct FTPService: Sendable {
             "-T", localPath,
             "--netrc-file", netrcPath,
             "--progress-bar",
-            // The remote URL is a literal upload target that may contain `[`, `]`,
-            // `{` or `}` (all legal filename characters). curl interprets those as
-            // URL globbing patterns by default, so e.g. "IMG_[2].jpg" aborts with
-            // "bad range specification" instead of uploading. Disable globbing so
-            // the path is always taken literally. Percent-encoding would be wrong
-            // here: curl does not percent-decode FTP paths, so the file would land
-            // on the server with the literal escapes in its name.
+            // Take the URL literally: never treat `[`/`]`/`{`/`}` in the configured
+            // remote directory as curl glob patterns, which would otherwise abort the
+            // upload with "bad range specification". The filename component is
+            // percent-encoded upstream (see remoteUploadURL); this guards the
+            // remaining unencoded path (the user's remote directory).
             "--globoff",
             "--retry", "3",
             "--retry-delay", "2",
