@@ -388,6 +388,15 @@ final class FaceRecognitionViewModel {
                 // Determine clustering approach based on recognition mode
                 let useModeAwareClustering = config.recognitionMode != .visionFeaturePrint
 
+                // Clustering runs incrementally per batch and matches each batch's new
+                // faces against every existing group, deserializing those members'
+                // feature prints (NSKeyedUnarchiver) on the way. Share one cache across
+                // all batches so each face's feature print is unarchived once for the
+                // whole scan instead of re-unarchived on every subsequent batch — without
+                // this the per-batch work grows with the running face count (≈O(N²) total
+                // unarchives over a scan). FeaturePrintCache is thread-safe.
+                let visionFeaturePrintCache = FaceDetectionService.FeaturePrintCache()
+
                 // Helper to process a completed batch and cluster incrementally
                 func processBatch(scannedURL: URL, results: [(face: DetectedFace, thumbnail: Data)], failed: Bool) async {
                     if failed { detectionErrors += 1 }
@@ -422,7 +431,7 @@ final class FaceRecognitionViewModel {
                             )
                         } else {
                             // Use algorithm-aware clustering with selected algorithm
-                            allGroups = detectionService.clusterFacesWithAlgorithm(newFaces, allFaces: allFaces, existingGroups: allGroups, config: config)
+                            allGroups = detectionService.clusterFacesWithAlgorithm(newFaces, allFaces: allFaces, existingGroups: allGroups, config: config, cache: visionFeaturePrintCache)
                         }
 
                         // Assign group IDs to the newly clustered faces
