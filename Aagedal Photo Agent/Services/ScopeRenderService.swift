@@ -815,6 +815,13 @@ nonisolated struct ScopeRenderService: Sendable {
     /// In-memory cache of the CIE background image. Persisted to disk across sessions.
     nonisolated(unsafe) private static var _bgCache: (w: Int, h: Int, img: CGImage)?
 
+    /// Serializes access to `_bgCache` and its backing disk file. Scope rendering and the
+    /// launch-time precompute both run on detached background tasks, and superseded renders
+    /// keep running (detached tasks don't inherit cancellation), so without this two threads
+    /// could race on the non-atomic `_bgCache` reference — an ARC retain/release race on the
+    /// cached CGImage, i.e. a use-after-free — and clobber each other's PNG write.
+    private static let _bgCacheLock = NSLock()
+
     /// Disk cache path for the CIE background PNG.
     private static func bgCachePath(width: Int, height: Int) -> URL {
         AppPaths.cacheDirectory.appendingPathComponent("cie_background_\(width)x\(height).png")
@@ -829,6 +836,13 @@ nonisolated struct ScopeRenderService: Sendable {
 
     /// Returns the CIE background, checking: memory cache → disk cache → compute.
     private func chromaticityBackground(width: Int, height: Int, xyMin: Float, xyRange: Float) -> CGImage? {
+        // Held across the whole body: read/write of `_bgCache` and the disk file must not
+        // race across concurrent renders. Only ever contended on a cold cache — once warm
+        // (the launch precompute primes it) this is a fast read. Never called on the main
+        // actor (only from detached scope-render / precompute tasks), so blocking is benign.
+        Self._bgCacheLock.lock()
+        defer { Self._bgCacheLock.unlock() }
+
         // 1. Memory cache
         if let c = Self._bgCache, c.w == width, c.h == height { return c.img }
 
