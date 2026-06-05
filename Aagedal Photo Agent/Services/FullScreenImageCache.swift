@@ -144,7 +144,7 @@ final class FullScreenImageCache: @unchecked Sendable {
                             group.addTask {
                                 guard !Task.isCancelled else { return }
                                 guard self.displayPreviewCache.object(forKey: url as NSURL) == nil else { return }
-                                guard let image = Self.loadDownsampled(from: url, maxPixelSize: screenMaxPx) else { return }
+                                guard let image = await Self.loadDownsampledOffPool(from: url, maxPixelSize: screenMaxPx) else { return }
                                 guard !Task.isCancelled else { return }
                                 self.storeDisplayPreview(image, for: url)
                             }
@@ -346,6 +346,27 @@ final class FullScreenImageCache: @unchecked Sendable {
 
     /// Load an image downsampled to the given max pixel size.
     /// Always uses CGImageSourceCreateThumbnailAtIndex to ensure EXIF orientation is applied.
+    /// Dedicated GCD queue for background preview decodes. ImageIO decoding is a long,
+    /// synchronous, blocking operation; running it directly in a Task occupies a thread
+    /// from the small Swift cooperative pool until it finishes. When the low-priority
+    /// background preview generation saturates that pool, higher-QoS on-screen decodes
+    /// can't get a thread — a priority inversion. Hopping the decode here keeps the
+    /// cooperative thread suspended (not blocked) for the duration.
+    nonisolated(unsafe) private static let backgroundDecodeQueue = DispatchQueue(
+        label: "com.aagedal.photo-agent.preview-decode",
+        qos: .utility,
+        attributes: .concurrent
+    )
+
+    /// Run `loadDownsampled` off the Swift cooperative thread pool. See `backgroundDecodeQueue`.
+    nonisolated static func loadDownsampledOffPool(from url: URL, maxPixelSize: CGFloat) async -> CGImage? {
+        await withCheckedContinuation { continuation in
+            backgroundDecodeQueue.async {
+                continuation.resume(returning: loadDownsampled(from: url, maxPixelSize: maxPixelSize))
+            }
+        }
+    }
+
     nonisolated static func loadDownsampled(from url: URL, maxPixelSize: CGFloat) -> CGImage? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
 
