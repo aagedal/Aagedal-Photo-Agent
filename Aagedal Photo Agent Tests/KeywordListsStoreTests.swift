@@ -75,7 +75,7 @@ struct KeywordListsStoreTests {
         // can receive `.keywordListChanged` posts triggered by *other* suites. Filter
         // to our own key and resume exactly once — otherwise a second matching post
         // resumes the continuation twice (SWIFT TASK CONTINUATION MISUSE → crash).
-        final class Box: @unchecked Sendable {
+        nonisolated final class Box: @unchecked Sendable {
             var token: NSObjectProtocol?
             var resumed = false
         }

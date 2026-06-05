@@ -62,7 +62,8 @@ extension Notification.Name {
 /// local (`~/Library/Application Support/.../Lists`) and iCloud (ubiquity
 /// container) storage and to emit change notifications.
 @Observable
-final class KeywordListsStore: @unchecked Sendable {
+@MainActor
+final class KeywordListsStore {
     static let shared = KeywordListsStore()
     nonisolated static let changedKeyUserInfo = "key"
 
