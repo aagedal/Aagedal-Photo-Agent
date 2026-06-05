@@ -1008,25 +1008,11 @@ final class BrowserViewModel {
         return nil
     }
 
-    private func parseDoubleValue(_ value: Any?) -> Double? {
-        if let doubleValue = value as? Double { return doubleValue }
-        if let intValue = value as? Int { return Double(intValue) }
-        if let number = value as? NSNumber { return number.doubleValue }
-        if let stringValue = value as? String {
-            return Double(stringValue.trimmingCharacters(in: .whitespacesAndNewlines))
-        }
-        return nil
-    }
-
-    private func parseIntValue(_ value: Any?) -> Int? {
-        if let intValue = value as? Int { return intValue }
-        if let doubleValue = value as? Double { return Int(doubleValue) }
-        if let number = value as? NSNumber { return number.intValue }
-        if let stringValue = value as? String {
-            return Int(stringValue.trimmingCharacters(in: .whitespacesAndNewlines))
-        }
-        return nil
-    }
+    // parseDoubleValue / parseIntValue intentionally live in IPTCMetadataParsing.swift
+    // (top-level `nonisolated` helpers). They used to be duplicated here, but the local
+    // parseIntValue did an unguarded `Int(doubleValue)` that traps on a crafted/corrupt
+    // metadata value of inf/nan/overflow — the shared version routes through `safeInt`.
+    // Don't reintroduce private copies; reuse the shared, hardened helpers.
 
     private func parseToneCurve(_ value: Any?) -> [ToneCurvePoint]? {
         guard let array = value as? [String], array.count > 2 else { return nil }

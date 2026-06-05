@@ -515,6 +515,24 @@ struct MalformedMetadataNumericTests {
         #expect(safeInt(-3.2) == -3)
     }
 
+    // MARK: parseIntValue (shared helper; also used by the browser metadata path)
+
+    @Test("parseIntValue guards non-finite and out-of-range Doubles")
+    func parseIntValueGuardsDoubles() {
+        // A crafted/corrupt metadata value of inf/nan/overflow must not trap Int(_:).
+        // (Regression: a stale BrowserViewModel copy did an unguarded Int(doubleValue).)
+        #expect(parseIntValue(Double.infinity) == nil)
+        #expect(parseIntValue(-Double.infinity) == nil)
+        #expect(parseIntValue(Double.nan) == nil)
+        #expect(parseIntValue(1e308) == nil)
+        // Valid values still parse across the supported representations.
+        #expect(parseIntValue(42) == 42)
+        #expect(parseIntValue(42.7) == 42)
+        #expect(parseIntValue("17") == 17)
+        #expect(parseIntValue("  9 ") == 9)
+        #expect(parseIntValue(nil) == nil)
+    }
+
     // MARK: Camera-Raw mask correction percentages
 
     @Test("parsePercentInt guards non-finite, scales valid values")

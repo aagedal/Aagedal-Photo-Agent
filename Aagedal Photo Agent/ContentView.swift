@@ -1597,8 +1597,9 @@ struct ContentView: View {
         default: (displayW, displayH) = (w, h)
         }
 
-        let croppedW = Int(round(Double(displayW) * cropW))
-        let croppedH = Int(round(Double(displayH) * cropH))
+        // safeInt: a crafted/corrupt XMP crop value of inf/nan would otherwise trap Int(_:).
+        guard let croppedW = safeInt((Double(displayW) * cropW).rounded()),
+              let croppedH = safeInt((Double(displayH) * cropH).rounded()) else { return nil }
 
         // Don't show if essentially full resolution
         if croppedW >= displayW && croppedH >= displayH { return nil }
