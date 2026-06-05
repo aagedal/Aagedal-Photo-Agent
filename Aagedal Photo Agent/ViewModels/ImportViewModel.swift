@@ -946,13 +946,20 @@ final class ImportViewModel {
     /// with " (2)", " (3)", … This protects the import copy step, which maps each file
     /// to its destination by folder name. Call after any split/merge or name edit.
     func ensureUniqueFolderNames() {
+        // Folder names become on-disk directories under a volume that is
+        // case-insensitive by default (APFS and HFS+), so uniqueness must be
+        // enforced case-insensitively. A case-sensitive check would let "Beach"
+        // and "beach" both pass, then `appendingPathComponent` would resolve them
+        // to the *same* physical folder — silently merging two groups' files (and
+        // overwriting same-named files under the .overwrite conflict policy).
+        // First occurrence keeps its original casing; later collisions get suffixed.
         var used = Set<String>()
         for i in dateGroups.indices {
             var name = dateGroups[i].folderName
             if name.isEmpty { name = dateGroups[i].dateString }
             var candidate = name
             var counter = 2
-            while !used.insert(candidate).inserted {
+            while !used.insert(candidate.lowercased()).inserted {
                 candidate = "\(name) (\(counter))"
                 counter += 1
             }
