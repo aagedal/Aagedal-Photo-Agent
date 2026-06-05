@@ -53,13 +53,21 @@ extension Process {
     nonisolated static func run(
         executableURL: URL,
         arguments: [String],
-        currentDirectoryURL: URL? = nil
+        currentDirectoryURL: URL? = nil,
+        environment: [String: String]? = nil
     ) async throws -> (stdout: String, stderr: String) {
         let process = Process()
         process.executableURL = executableURL
         process.arguments = arguments
         if let dir = currentDirectoryURL {
             process.currentDirectoryURL = dir
+        }
+        if let environment {
+            // Merge onto the inherited environment so the child keeps PATH/HOME/TMPDIR
+            // etc.; assigning `process.environment` replaces the whole environment.
+            // Used to pass secrets (e.g. a signing key) to the child without writing
+            // them to disk or exposing them in the argument vector (visible via `ps`).
+            process.environment = ProcessInfo.processInfo.environment.merging(environment) { _, new in new }
         }
 
         let stdoutPipe = Pipe()

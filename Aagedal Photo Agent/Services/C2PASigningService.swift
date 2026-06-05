@@ -106,7 +106,6 @@ enum C2PASigningError: Error, LocalizedError {
     case processFailed(String)
     case outputMissing
     case manifestSerializationFailed
-    case keyFileCreationFailed(Int32)
 
     var errorDescription: String? {
         switch self {
@@ -122,8 +121,6 @@ enum C2PASigningError: Error, LocalizedError {
             return "c2patool produced no output file"
         case .manifestSerializationFailed:
             return "Failed to serialize C2PA manifest JSON"
-        case .keyFileCreationFailed(let code):
-            return "Failed to create temporary key file (errno \(code))"
         }
     }
 }
@@ -157,21 +154,16 @@ nonisolated enum C2PASigningService {
 
         let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
 
-        // Write private key to temp file (c2patool reads it from the path in manifest JSON)
         let tempDir = FileManager.default.temporaryDirectory
-        let keyFile = tempDir.appendingPathComponent("c2pa_key_\(UUID().uuidString).pem")
         let manifestFile = tempDir.appendingPathComponent("c2pa_manifest_\(UUID().uuidString).json")
         let outputFile = tempDir.appendingPathComponent("c2pa_output_\(UUID().uuidString)_\(imageURL.lastPathComponent)")
 
         defer {
-            try? FileManager.default.removeItem(at: keyFile)
             try? FileManager.default.removeItem(at: manifestFile)
             try? FileManager.default.removeItem(at: outputFile)
         }
 
-        try Self.writeKeyAtomically(Data(privateKeyPEM.utf8), to: keyFile)
-
-        // Build manifest JSON (signing credentials go inside the manifest)
+        // Build manifest JSON; the private key is passed via the environment, not on disk.
         let claimGenerator = "Aagedal Photo Agent/\(appVersion)"
         let effectiveActions = actions.map { a in
             C2PAAction(
@@ -186,7 +178,6 @@ nonisolated enum C2PASigningService {
             author: author,
             actions: effectiveActions,
             certificatePath: certificatePath,
-            privateKeyPath: keyFile.path(percentEncoded: false),
             claimGenerator: claimGenerator
         )
         try manifestData.write(to: manifestFile)
@@ -206,7 +197,8 @@ nonisolated enum C2PASigningService {
         do {
             _ = try await Process.run(
                 executableURL: URL(fileURLWithPath: toolPath),
-                arguments: arguments
+                arguments: arguments,
+                environment: ["C2PA_PRIVATE_KEY": privateKeyPEM]
             )
         } catch {
             let message = error.localizedDescription
@@ -266,13 +258,11 @@ nonisolated enum C2PASigningService {
 
         let tempDir = FileManager.default.temporaryDirectory
         let ingredientDir = tempDir.appendingPathComponent("c2pa_ingredient_\(UUID().uuidString)")
-        let keyFile = tempDir.appendingPathComponent("c2pa_key_\(UUID().uuidString).pem")
         let manifestFile = tempDir.appendingPathComponent("c2pa_manifest_\(UUID().uuidString).json")
         let outputFile = tempDir.appendingPathComponent("c2pa_output_\(UUID().uuidString)_\(imageURL.lastPathComponent)")
 
         defer {
             try? FileManager.default.removeItem(at: ingredientDir)
-            try? FileManager.default.removeItem(at: keyFile)
             try? FileManager.default.removeItem(at: manifestFile)
             try? FileManager.default.removeItem(at: outputFile)
         }
@@ -292,9 +282,7 @@ nonisolated enum C2PASigningService {
             throw C2PASigningError.processFailed("Ingredient extraction failed: \(message)")
         }
 
-        // Step 2: Write private key and build manifest
-        try Self.writeKeyAtomically(Data(privateKeyPEM.utf8), to: keyFile)
-
+        // Step 2: Build manifest (the private key is passed via the environment, not on disk)
         let claimGenerator = "Aagedal Photo Agent/\(appVersion)"
         let effectiveActions = actions.map { a in
             C2PAAction(
@@ -309,7 +297,6 @@ nonisolated enum C2PASigningService {
             author: author,
             actions: effectiveActions,
             certificatePath: certificatePath,
-            privateKeyPath: keyFile.path(percentEncoded: false),
             claimGenerator: claimGenerator
         )
         try manifestData.write(to: manifestFile)
@@ -329,7 +316,8 @@ nonisolated enum C2PASigningService {
         do {
             _ = try await Process.run(
                 executableURL: URL(fileURLWithPath: toolPath),
-                arguments: signArguments
+                arguments: signArguments,
+                environment: ["C2PA_PRIVATE_KEY": privateKeyPEM]
             )
         } catch {
             let message = error.localizedDescription
@@ -389,13 +377,11 @@ nonisolated enum C2PASigningService {
 
         let tempDir = FileManager.default.temporaryDirectory
         let ingredientDir = tempDir.appendingPathComponent("c2pa_ingredient_\(UUID().uuidString)")
-        let keyFile = tempDir.appendingPathComponent("c2pa_key_\(UUID().uuidString).pem")
         let manifestFile = tempDir.appendingPathComponent("c2pa_manifest_\(UUID().uuidString).json")
         let outputFile = tempDir.appendingPathComponent("c2pa_output_\(UUID().uuidString)_\(imageURL.lastPathComponent)")
 
         defer {
             try? FileManager.default.removeItem(at: ingredientDir)
-            try? FileManager.default.removeItem(at: keyFile)
             try? FileManager.default.removeItem(at: manifestFile)
             try? FileManager.default.removeItem(at: outputFile)
         }
@@ -412,9 +398,7 @@ nonisolated enum C2PASigningService {
             throw C2PASigningError.processFailed("Ingredient extraction failed: \(message)")
         }
 
-        // Step 2: Write private key and build manifest
-        try Self.writeKeyAtomically(Data(privateKeyPEM.utf8), to: keyFile)
-
+        // Step 2: Build manifest (the private key is passed via the environment, not on disk)
         let claimGenerator = "Aagedal Photo Agent/\(appVersion)"
         let effectiveActions = actions.map { a in
             C2PAAction(
@@ -429,7 +413,6 @@ nonisolated enum C2PASigningService {
             author: author,
             actions: effectiveActions,
             certificatePath: certificatePath,
-            privateKeyPath: keyFile.path(percentEncoded: false),
             claimGenerator: claimGenerator
         )
         try manifestData.write(to: manifestFile)
@@ -449,7 +432,8 @@ nonisolated enum C2PASigningService {
         do {
             _ = try await Process.run(
                 executableURL: URL(fileURLWithPath: toolPath),
-                arguments: signArguments
+                arguments: signArguments,
+                environment: ["C2PA_PRIVATE_KEY": privateKeyPEM]
             )
         } catch {
             let message = error.localizedDescription
@@ -491,21 +475,20 @@ nonisolated enum C2PASigningService {
 
     /// Build c2patool manifest definition JSON.
     ///
-    /// Signing credentials are embedded in the manifest JSON per c2patool's interface.
-    /// The `private_key` and `sign_cert` fields point to file paths that c2patool reads.
+    /// The signing certificate is referenced by path via `sign_cert`. The private key
+    /// is intentionally NOT placed here: it is passed to c2patool through the
+    /// `C2PA_PRIVATE_KEY` environment variable instead, so it never touches the disk.
     static func buildManifestJSON(
         title: String?,
         author: String?,
         actions: [C2PAAction],
         certificatePath: String,
-        privateKeyPath: String,
         claimGenerator: String
     ) throws -> Data {
         let version = claimGenerator.components(separatedBy: "/").last ?? "0.0.0"
 
         var manifest: [String: Any] = [
             "alg": "es256",
-            "private_key": privateKeyPath,
             "sign_cert": certificatePath,
             "claim_generator": claimGenerator,
             "claim_generator_info": [
@@ -560,24 +543,5 @@ nonisolated enum C2PASigningService {
         }
 
         return try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
-    }
-
-    /// Write the private key PEM with mode 0o600 in a single open(2) call so the file
-    /// never exists with default umask permissions (closes the chmod TOCTOU against
-    /// other processes running as the same user). Mirrors FTPService.writeNetrcAtomically.
-    nonisolated private static func writeKeyAtomically(_ data: Data, to url: URL) throws {
-        let fd = open(url.path(percentEncoded: false), O_WRONLY | O_CREAT | O_EXCL, mode_t(0o600))
-        guard fd >= 0 else {
-            throw C2PASigningError.keyFileCreationFailed(errno)
-        }
-        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-        do {
-            try handle.write(contentsOf: data)
-            try handle.close()
-        } catch {
-            try? handle.close()
-            try? FileManager.default.removeItem(at: url)
-            throw error
-        }
     }
 }
