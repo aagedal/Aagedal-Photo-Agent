@@ -77,7 +77,6 @@ final class KeywordListsStore: @unchecked Sendable {
     /// surface the reason. Cleared on the next successful toggle attempt.
     private(set) var lastSyncError: String?
 
-    @ObservationIgnored private let queue = DispatchQueue(label: "com.aagedal.keyword-lists-store", qos: .userInitiated)
     @ObservationIgnored private var cachedRoot: URL?
 
     init() {
