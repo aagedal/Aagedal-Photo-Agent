@@ -6,6 +6,7 @@ struct FTPUploadView: View {
     let files: [URL]
     let readService: SwiftExifReadService
     let writeEngine: any MetadataWriteEngine
+    let inMemoryCameraRaw: @MainActor (URL) -> CameraRawSettings?
     var onStartUpload: (() -> Void)?
 
     @State private var activeFiles: [URL]
@@ -27,11 +28,12 @@ struct FTPUploadView: View {
     @State private var iptcCheckResults: [IPTCCheckResult] = []
     @State private var pendingUploadRenderFirst = false
 
-    init(viewModel: FTPViewModel, files: [URL], readService: SwiftExifReadService, writeEngine: any MetadataWriteEngine, onStartUpload: (() -> Void)? = nil) {
+    init(viewModel: FTPViewModel, files: [URL], readService: SwiftExifReadService, writeEngine: any MetadataWriteEngine, inMemoryCameraRaw: @escaping @MainActor (URL) -> CameraRawSettings?, onStartUpload: (() -> Void)? = nil) {
         self.viewModel = viewModel
         self.files = files
         self.readService = readService
         self.writeEngine = writeEngine
+        self.inMemoryCameraRaw = inMemoryCameraRaw
         self.onStartUpload = onStartUpload
         self._activeFiles = State(initialValue: files)
 
@@ -487,7 +489,7 @@ struct FTPUploadView: View {
 
     private func beginUpload(files: [URL], connection: FTPConnection, renderFirst: Bool) {
         if renderFirst {
-            viewModel.renderAndUploadFiles(files, to: connection, readService: readService, writeEngine: writeEngine)
+            viewModel.renderAndUploadFiles(files, to: connection, readService: readService, writeEngine: writeEngine, inMemoryCameraRaw: inMemoryCameraRaw)
         } else {
             viewModel.uploadFiles(files, to: connection)
         }

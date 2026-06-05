@@ -4,11 +4,6 @@ import os.log
 import SwiftUI
 import UniformTypeIdentifiers
 
-private let exportPipelineLog = Logger(
-    subsystem: "com.aagedal.photo-agent",
-    category: "ExportPipeline"
-)
-
 // MARK: - Main View Mode
 
 enum MainViewMode {
@@ -16,13 +11,6 @@ enum MainViewMode {
     case editing           // Dedicated image editing workspace
     case faceManagement    // Expanded face management (existing)
     case peopleDatabase    // Known People database view
-}
-
-actor MetadataFailureTracker: Sendable {
-    private(set) var metadataCopyFailures: [String] = []
-    private(set) var sidecarOverlayFailures: [String] = []
-    func recordCopyFailure(_ filename: String) { metadataCopyFailures.append(filename) }
-    func recordOverlayFailure(_ filename: String) { sidecarOverlayFailures.append(filename) }
 }
 
 struct FTPUploadItem: Identifiable {
@@ -162,6 +150,7 @@ struct ContentView: View {
                     files: item.urls,
                     readService: browserViewModel.metadataReadService,
                     writeEngine: browserViewModel.writeEngine,
+                    inMemoryCameraRaw: browserViewModel.currentCameraRawSettings,
                     onStartUpload: { ftpUploadItem = nil }
                 )
             }
@@ -1220,7 +1209,8 @@ struct ContentView: View {
                 browserViewModel.errorMessage = "Failed to read metadata: \(error.localizedDescription)"
                 return
             }
-            overlayCameraRawSettings(onto: &metadataByURL, urls: urls)
+            EditExportPipeline.resolveCameraRaw(into: &metadataByURL, urls: urls,
+                                                inMemory: browserViewModel.currentCameraRawSettings)
 
             var successCount = 0
             var failureCount = 0
@@ -1253,24 +1243,11 @@ struct ContentView: View {
                 }
 
                 do {
-                    // Step 1: Render the image (metadata copy via the active write engine)
-                    let writeEngine = browserViewModel.writeEngine
-                    let copier: EditedImageRenderer.MetadataCopier = { src, dst in
-                        do {
-                            try await writeEngine.copyMetadataToRenderedFile(from: src, to: dst)
-                        } catch {
-                            await failureTracker.recordCopyFailure(src.lastPathComponent)
-                        }
-                    }
-                    let renderedURL = try await Task.detached(priority: .userInitiated) {
-                        try await EditedImageRenderer.render(from: image.url, cameraRaw: cameraRaw, isHDR: isHDR, outputFolder: outputFolder, metadataCopier: copier)
-                    }.value
-
-                    // Step 1b: Apply pending sidecar IPTC edits to rendered file
-                    let overlayOk = await overlaySidecarIPTC(sourceURL: image.url, renderedURL: renderedURL, folderURL: folderURL)
-                    if !overlayOk {
-                        await failureTracker.recordOverlayFailure(image.url.lastPathComponent)
-                    }
+                    // Step 1: Render + copy source metadata + overlay pending IPTC edits
+                    let renderedURL = try await EditExportPipeline.renderItem(
+                        sourceURL: image.url, cameraRaw: cameraRaw, kind: .format,
+                        outputFolder: outputFolder, folderURL: folderURL,
+                        writeEngine: browserViewModel.writeEngine, failureTracker: failureTracker)
 
                     // Step 2: Build C2PA actions from edit settings
                     let actions = C2PAAction.fromSettings(cameraRaw)
@@ -1333,64 +1310,6 @@ struct ContentView: View {
                 overlayFailureFilenames: overlayFailures,
                 sourceFolderURL: folderURL
             )
-        }
-    }
-
-    // MARK: - Sidecar IPTC Overlay
-
-    /// Apply pending sidecar IPTC edits to a rendered output file.
-    /// Checks both XMP sidecars (default for C2PA) and JSON sidecars (history-only mode).
-    /// Called after render (and before C2PA signing) so the output includes edited metadata.
-    @discardableResult
-    private func overlaySidecarIPTC(sourceURL: URL, renderedURL: URL, folderURL: URL) async -> Bool {
-        // Prefer XMP sidecar IPTC (default write mode for C2PA files)
-        let xmpService = XMPSidecarService()
-        if let xmpMeta = xmpService.loadSidecar(for: sourceURL) {
-            var fields = xmpMeta.toWriteFields()
-            // Rating and label are excluded from toWriteFields() (managed separately
-            // in normal flow). For rendered output we must include them because the source
-            // file may be C2PA-protected and hold stale values.
-            if let rating = xmpMeta.rating {
-                fields[.rating] = String(rating)
-            }
-            if let label = xmpMeta.label, !label.isEmpty {
-                fields[.label] = label
-            }
-            if !fields.isEmpty {
-                do {
-                    try await browserViewModel.writeEngine.writeFields(fields, to: [renderedURL])
-                    return true
-                } catch {
-                    exportPipelineLog.error(
-                        "overlaySidecarIPTC XMP writeFields failed for \(sourceURL.lastPathComponent, privacy: .public) → \(renderedURL.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)"
-                    )
-                    return false
-                }
-            }
-        }
-
-        // Fall back to JSON sidecar (history-only mode)
-        let sidecarService = MetadataSidecarService()
-        guard let sidecar = sidecarService.loadSidecar(for: sourceURL, in: folderURL),
-              sidecar.pendingChanges else { return true }
-
-        var fields = sidecar.metadata.toWriteFields()
-        if let rating = sidecar.metadata.rating {
-            fields[.rating] = String(rating)
-        }
-        if let label = sidecar.metadata.label, !label.isEmpty {
-            fields[.label] = label
-        }
-        guard !fields.isEmpty else { return true }
-
-        do {
-            try await browserViewModel.writeEngine.writeFields(fields, to: [renderedURL])
-            return true
-        } catch {
-            exportPipelineLog.error(
-                "overlaySidecarIPTC JSON writeFields failed for \(sourceURL.lastPathComponent, privacy: .public) → \(renderedURL.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)"
-            )
-            return false
         }
     }
 
@@ -1719,26 +1638,6 @@ struct ContentView: View {
         }
     }
 
-    /// Overlay in-memory and XMP sidecar CameraRaw settings onto embedded metadata.
-    /// SwiftExif reads the image file directly but does not read the adjacent `.xmp` sidecar
-    /// where CameraRaw edits are stored for RAW files. This merges the correct settings back in.
-    private func overlayCameraRawSettings(onto metadataByURL: inout [URL: IPTCMetadata], urls: [URL]) {
-        let xmpService = XMPSidecarService()
-        for url in urls {
-            // Prefer in-memory CRS (kept in sync by edit workspace via syncCameraRawToImageFile)
-            if let index = browserViewModel.urlToImageIndex[url],
-               let inMemoryCRS = browserViewModel.images[index].cameraRawSettings {
-                metadataByURL[url]?.cameraRaw = inMemoryCRS
-            }
-            // For RAW files without in-memory CRS, read XMP sidecar (handles previous-session edits)
-            else if SupportedImageFormats.isRaw(url: url),
-                    let xmpMeta = xmpService.loadSidecar(for: url),
-                    let xmpCRS = xmpMeta.cameraRaw, !xmpCRS.isEmpty {
-                metadataByURL[url]?.cameraRaw = xmpCRS
-            }
-        }
-    }
-
     private func saveSelectedAs(format: EditedImageRenderer.SaveAsFormat) {
         guard !isRenderingEditedFolder else { return }
         let urls = browserViewModel.selectedImages.map(\.url)
@@ -1768,7 +1667,8 @@ struct ContentView: View {
                 browserViewModel.errorMessage = "Failed to read metadata: \(error.localizedDescription)"
                 return
             }
-            overlayCameraRawSettings(onto: &metadataByURL, urls: urls)
+            EditExportPipeline.resolveCameraRaw(into: &metadataByURL, urls: urls,
+                                                inMemory: browserViewModel.currentCameraRawSettings)
 
             var savedURLs: [URL] = []
             var saveFailedNames: [String] = []
@@ -1788,24 +1688,10 @@ struct ContentView: View {
                         createdFolders.insert(destinationFolder.path)
                     }
 
-                    let writeEngine = browserViewModel.writeEngine
-                    let copier: EditedImageRenderer.MetadataCopier = { src, dst in
-                        do {
-                            try await writeEngine.copyMetadataToRenderedFile(from: src, to: dst)
-                        } catch {
-                            await failureTracker.recordCopyFailure(src.lastPathComponent)
-                        }
-                    }
-                    let outputURL = try await Task.detached(priority: .userInitiated) {
-                        try await EditedImageRenderer.saveAs(from: url, cameraRaw: cameraRaw, format: format, destinationFolder: destinationFolder, metadataCopier: copier)
-                    }.value
-                    // Apply pending sidecar IPTC edits to saved file
-                    if let folderURL = browserViewModel.currentFolderURL {
-                        let overlayOk = await overlaySidecarIPTC(sourceURL: url, renderedURL: outputURL, folderURL: folderURL)
-                        if !overlayOk {
-                            await failureTracker.recordOverlayFailure(url.lastPathComponent)
-                        }
-                    }
+                    let outputURL = try await EditExportPipeline.renderItem(
+                        sourceURL: url, cameraRaw: cameraRaw, kind: .saveAs(format),
+                        outputFolder: destinationFolder, folderURL: browserViewModel.currentFolderURL,
+                        writeEngine: browserViewModel.writeEngine, failureTracker: failureTracker)
                     savedURLs.append(outputURL)
                 } catch {
                     saveFailedNames.append(url.lastPathComponent)
@@ -1878,7 +1764,8 @@ struct ContentView: View {
                 browserViewModel.errorMessage = "Failed to read metadata for export: \(error.localizedDescription)"
                 return
             }
-            overlayCameraRawSettings(onto: &metadataByURL, urls: urls)
+            EditExportPipeline.resolveCameraRaw(into: &metadataByURL, urls: urls,
+                                                inMemory: browserViewModel.currentCameraRawSettings)
 
             var successCount = 0
             var failureCount = 0
@@ -1911,22 +1798,10 @@ struct ContentView: View {
                 }
 
                 do {
-                    let writeEngine = browserViewModel.writeEngine
-                    let copier: EditedImageRenderer.MetadataCopier = { src, dst in
-                        do {
-                            try await writeEngine.copyMetadataToRenderedFile(from: src, to: dst)
-                        } catch {
-                            await failureTracker.recordCopyFailure(src.lastPathComponent)
-                        }
-                    }
-                    let renderedURL = try await Task.detached(priority: .userInitiated) {
-                        try await EditedImageRenderer.render(from: url, cameraRaw: cameraRaw, isHDR: isHDR, outputFolder: outputFolder, metadataCopier: copier)
-                    }.value
-                    // Apply pending sidecar IPTC edits to rendered file
-                    let overlayOk = await overlaySidecarIPTC(sourceURL: url, renderedURL: renderedURL, folderURL: folderURL)
-                    if !overlayOk {
-                        await failureTracker.recordOverlayFailure(url.lastPathComponent)
-                    }
+                    _ = try await EditExportPipeline.renderItem(
+                        sourceURL: url, cameraRaw: cameraRaw, kind: .format,
+                        outputFolder: outputFolder, folderURL: folderURL,
+                        writeEngine: browserViewModel.writeEngine, failureTracker: failureTracker)
                     successCount += 1
                 } catch {
                     failureCount += 1

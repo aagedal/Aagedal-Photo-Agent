@@ -342,6 +342,14 @@ final class BrowserViewModel {
         }
     }
 
+    /// The live in-memory CameraRaw edit settings for a file, if it is currently loaded.
+    /// Used by the export/publish pipeline to render the edits the user is seeing, even
+    /// before they've been flushed to a sidecar.
+    func currentCameraRawSettings(for url: URL) -> CameraRawSettings? {
+        guard let index = urlToImageIndex[url] else { return nil }
+        return images[index].cameraRawSettings
+    }
+
     private func rebuildSelectedCache() {
         guard !selectedImageIDs.isEmpty else {
             selectedImagesCache = []
