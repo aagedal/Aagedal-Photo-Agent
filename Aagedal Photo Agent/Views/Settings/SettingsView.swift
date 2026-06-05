@@ -1420,7 +1420,7 @@ struct SettingsView: View {
                             VStack(alignment: .leading) {
                                 Text(conn.name)
                                     .font(.body)
-                                Text("\(conn.useSFTP ? "sftp" : "ftp")://\(conn.host):\(conn.port)")
+                                Text("\(conn.useSFTP ? "sftp" : (conn.useTLS ? "ftps" : "ftp"))://\(conn.host):\(conn.port)")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }

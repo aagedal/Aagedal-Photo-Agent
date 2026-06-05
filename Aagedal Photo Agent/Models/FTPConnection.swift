@@ -8,6 +8,9 @@ struct FTPConnection: Codable, Identifiable, Hashable, Sendable {
     var username: String
     var remotePath: String
     var useSFTP: Bool
+    /// Explicit FTPS (FTP over TLS via AUTH TLS). Only meaningful when `useSFTP`
+    /// is false; SFTP is already encrypted over SSH.
+    var useTLS: Bool
     var allowInsecureHostVerification: Bool
 
     enum CodingKeys: String, CodingKey {
@@ -18,6 +21,7 @@ struct FTPConnection: Codable, Identifiable, Hashable, Sendable {
         case username
         case remotePath
         case useSFTP
+        case useTLS
         case allowInsecureHostVerification
     }
 
@@ -29,6 +33,7 @@ struct FTPConnection: Codable, Identifiable, Hashable, Sendable {
         username: String = "",
         remotePath: String = "/",
         useSFTP: Bool = false,
+        useTLS: Bool = false,
         allowInsecureHostVerification: Bool = false
     ) {
         self.id = id
@@ -38,6 +43,7 @@ struct FTPConnection: Codable, Identifiable, Hashable, Sendable {
         self.username = username
         self.remotePath = remotePath
         self.useSFTP = useSFTP
+        self.useTLS = useTLS
         self.allowInsecureHostVerification = allowInsecureHostVerification
     }
 
@@ -52,6 +58,7 @@ struct FTPConnection: Codable, Identifiable, Hashable, Sendable {
         username = try container.decodeIfPresent(String.self, forKey: .username) ?? ""
         remotePath = try container.decodeIfPresent(String.self, forKey: .remotePath) ?? "/"
         useSFTP = try container.decodeIfPresent(Bool.self, forKey: .useSFTP) ?? false
+        useTLS = try container.decodeIfPresent(Bool.self, forKey: .useTLS) ?? false
         allowInsecureHostVerification = try container.decodeIfPresent(Bool.self, forKey: .allowInsecureHostVerification) ?? false
     }
 }

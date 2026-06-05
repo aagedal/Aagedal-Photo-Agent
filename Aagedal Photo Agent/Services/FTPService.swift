@@ -81,23 +81,12 @@ struct FTPService: Sendable {
         try Self.writeNetrcAtomically(netrcData, to: netrcURL)
         defer { try? FileManager.default.removeItem(at: netrcURL) }
 
-        var arguments = [
-            "-T", localURL.path,
-            "--netrc-file", netrcURL.path,
-            "--progress-bar",
-            "--retry", "3",
-            "--retry-delay", "2",
-            "--retry-all-errors",
-            remoteURL,
-        ]
-
-        if connection.useSFTP {
-            if connection.allowInsecureHostVerification {
-                arguments.append(contentsOf: ["--insecure"])
-            }
-        } else {
-            arguments.append(contentsOf: ["--ftp-create-dirs"])
-        }
+        let arguments = Self.curlArguments(
+            localPath: localURL.path,
+            remoteURL: remoteURL,
+            netrcPath: netrcURL.path,
+            connection: connection
+        )
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
@@ -105,7 +94,9 @@ struct FTPService: Sendable {
 
         let stderrPipe = Pipe()
         process.standardError = stderrPipe
-        process.standardOutput = Pipe() // discard
+        // Discard stdout. nullDevice (vs an undrained Pipe) can't fill its buffer
+        // and block curl if the server ever writes a chatty response.
+        process.standardOutput = FileHandle.nullDevice
 
         // Parse progress from stderr and capture output for error reporting
         let stderrBuffer = LockedBuffer()
@@ -174,6 +165,46 @@ struct FTPService: Sendable {
             isComplete: true
         )
         progressHandler(finalProgress)
+    }
+
+    /// Builds the curl argument vector for an upload. Extracted as a pure function
+    /// so the security-critical transport flags are unit-testable: explicit FTPS
+    /// must add `--ssl-reqd` (so a TLS failure aborts rather than silently sending
+    /// credentials in the clear), and plain FTP must carry no TLS/insecure flags.
+    nonisolated static func curlArguments(
+        localPath: String,
+        remoteURL: String,
+        netrcPath: String,
+        connection: FTPConnection
+    ) -> [String] {
+        var arguments = [
+            "-T", localPath,
+            "--netrc-file", netrcPath,
+            "--progress-bar",
+            "--retry", "3",
+            "--retry-delay", "2",
+            "--retry-all-errors",
+            remoteURL,
+        ]
+
+        if connection.useSFTP {
+            if connection.allowInsecureHostVerification {
+                arguments.append("--insecure")
+            }
+        } else {
+            arguments.append("--ftp-create-dirs")
+            if connection.useTLS {
+                // Explicit FTPS: require AUTH TLS and abort if the server can't
+                // upgrade, rather than silently transferring credentials in the
+                // clear. --insecure additionally skips certificate verification
+                // for self-signed servers (opt-in).
+                arguments.append("--ssl-reqd")
+                if connection.allowInsecureHostVerification {
+                    arguments.append("--insecure")
+                }
+            }
+        }
+        return arguments
     }
 
     /// Reject characters that would corrupt netrc parsing — whitespace splits tokens

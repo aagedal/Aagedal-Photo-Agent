@@ -32,6 +32,16 @@ struct FTPServerForm: View {
                 .textFieldStyle(.roundedBorder)
 
             Toggle("Use SFTP", isOn: $viewModel.editingConnection.useSFTP)
+                .onChange(of: viewModel.editingConnection.useSFTP) { _, isSFTP in
+                    // Suggest the conventional port for the transport, but only when
+                    // the user is still on the other mode's default — don't clobber a
+                    // port they typed themselves.
+                    if isSFTP, viewModel.editingConnection.port == 21 {
+                        viewModel.editingConnection.port = 22
+                    } else if !isSFTP, viewModel.editingConnection.port == 22 {
+                        viewModel.editingConnection.port = 21
+                    }
+                }
 
             if viewModel.editingConnection.useSFTP {
                 Toggle("Allow insecure host verification", isOn: $viewModel.editingConnection.allowInsecureHostVerification)
@@ -40,13 +50,23 @@ struct FTPServerForm: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             } else {
-                Label(
-                    "Plain FTP sends your username, password, and files unencrypted. Use SFTP unless the server doesn't support it.",
-                    systemImage: "exclamationmark.triangle.fill"
-                )
-                .font(.caption)
-                .foregroundStyle(.orange)
-                .fixedSize(horizontal: false, vertical: true)
+                Toggle("Use TLS (FTPS)", isOn: $viewModel.editingConnection.useTLS)
+
+                if viewModel.editingConnection.useTLS {
+                    Toggle("Allow insecure certificate verification", isOn: $viewModel.editingConnection.allowInsecureHostVerification)
+                        .font(.caption)
+                    Text("Only enable this for self-signed certificates or testing.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Label(
+                        "Plain FTP sends your username, password, and files unencrypted. Enable TLS, or use SFTP.",
+                        systemImage: "exclamationmark.triangle.fill"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             Divider()
