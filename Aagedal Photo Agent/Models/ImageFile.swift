@@ -53,7 +53,7 @@ struct ImageFile: Identifiable, Hashable, Sendable {
 
     var isImageFile: Bool { SupportedImageFormats.isSupported(url: url) }
 
-    init(url: URL) {
+    nonisolated init(url: URL) {
         self.url = url
         self.filename = url.lastPathComponent
         self.filenameLowercased = url.lastPathComponent.lowercased()

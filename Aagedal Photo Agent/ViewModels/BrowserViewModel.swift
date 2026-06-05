@@ -500,7 +500,7 @@ final class BrowserViewModel {
         loadFolderTask = Task {
             do {
                 // Phase 1: Scan folder and show grid immediately
-                let files = try fileSystemService.scanFolder(at: url, includeAllFiles: showAllFiles)
+                let files = try await fileSystemService.scanFolder(at: url, includeAllFiles: showAllFiles)
                 guard !Task.isCancelled, self.currentFolderURL == url else { return }
                 self.images = files
                 self.rebuildNow()
@@ -581,7 +581,7 @@ final class BrowserViewModel {
 
             let scanned: [ImageFile]
             do {
-                scanned = try fileSystemService.scanFolder(at: folderURL, includeAllFiles: showAllFiles)
+                scanned = try await fileSystemService.scanFolder(at: folderURL, includeAllFiles: showAllFiles)
             } catch {
                 return
             }

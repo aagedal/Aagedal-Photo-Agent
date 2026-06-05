@@ -39,6 +39,14 @@ struct FTPServerForm: View {
                 Text("Only enable this for legacy servers or testing.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+            } else {
+                Label(
+                    "Plain FTP sends your username, password, and files unencrypted. Use SFTP unless the server doesn't support it.",
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
             }
 
             Divider()

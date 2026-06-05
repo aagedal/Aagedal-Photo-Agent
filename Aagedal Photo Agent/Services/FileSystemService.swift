@@ -1,7 +1,12 @@
 import Foundation
 
 struct FileSystemService: Sendable {
-    func scanFolder(at url: URL, includeAllFiles: Bool = false) throws -> [ImageFile] {
+    /// Scans a folder for image files. `nonisolated async` so the directory
+    /// enumeration plus the per-file `stat` (in `ImageFile.init`) run on the
+    /// cooperative pool rather than blocking the MainActor on folder open —
+    /// a multi-thousand-image folder would otherwise stall the UI before the
+    /// first frame.
+    nonisolated func scanFolder(at url: URL, includeAllFiles: Bool = false) async throws -> [ImageFile] {
         let contents = try FileManager.default.contentsOfDirectory(
             at: url,
             includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey, .addedToDirectoryDateKey, .isRegularFileKey],

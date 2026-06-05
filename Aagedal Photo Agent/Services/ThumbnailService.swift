@@ -102,9 +102,18 @@ final class ThumbnailService {
                 return nil
             }
 
-            guard let edited = applyCrop(to: original, settings: settings, exifOrientation: exifOrientation) else {
+            // Unwrap the CGImage on the current actor (cheap — the thumbnail is
+            // already a bitmap rep), then render the crop off-main. The CoreImage
+            // render must not run on the MainActor or it hitches grid scrolling.
+            guard settings.crop?.hasCrop == true,
+                  let cgImage = original.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
                 return nil
             }
+            guard let outputCG = await Self.renderCroppedThumbnail(
+                cgImage: cgImage, settings: settings, exifOrientation: exifOrientation) else {
+                return nil
+            }
+            let edited = NSImage(cgImage: outputCG, size: NSSize(width: outputCG.width, height: outputCG.height))
             editedCache.setObject(edited, forKey: url as NSURL)
             return edited
         }
@@ -174,14 +183,16 @@ final class ThumbnailService {
         }
     }
 
-    /// Applies only crop/rotation to the thumbnail — skips tonal and color adjustments.
+    /// Applies only crop/rotation to a thumbnail — skips tonal and color adjustments.
     /// The QL thumbnail already has camera processing baked in, so applying the full
     /// CameraRaw pipeline would produce incorrect white balance and color.
-    nonisolated private func applyCrop(to nsImage: NSImage, settings: CameraRawSettings, exifOrientation: Int = 1) -> NSImage? {
-        guard settings.crop?.hasCrop == true else { return nil }
-        guard let cgImage = nsImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-            return nil
-        }
+    ///
+    /// `nonisolated static async` so the CoreImage render runs on the cooperative
+    /// pool, off the MainActor. Takes/returns `CGImage` (Sendable) to cross the
+    /// isolation boundary cleanly.
+    nonisolated private static func renderCroppedThumbnail(
+        cgImage: CGImage, settings: CameraRawSettings, exifOrientation: Int
+    ) async -> CGImage? {
         let ciImage = CIImage(cgImage: cgImage)
         let extent = ciImage.extent
         let cropped = CameraRawApproximation.applyCrop(
@@ -189,12 +200,9 @@ final class ThumbnailService {
         let croppedExtent = cropped.extent
         guard croppedExtent.width > 0, croppedExtent.height > 0 else { return nil }
 
-        guard let outputCG = CameraRawApproximation.ciContext.createCGImage(
+        return CameraRawApproximation.ciContext.createCGImage(
             cropped, from: croppedExtent, format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB()
-        ) else {
-            return nil
-        }
-        return NSImage(cgImage: outputCG, size: NSSize(width: outputCG.width, height: outputCG.height))
+        )
     }
 
     /// Invalidates only the edited thumbnail for a URL (original remains cached).

@@ -67,6 +67,17 @@ struct TechnicalMetadata {
         dict.keys.contains { $0.hasPrefix("JUMD") || $0.hasPrefix("C2PA") || $0 == ExifKey.claimGenerator }
     }
 
+    /// Safely convert a Double derived from (possibly corrupt) file metadata to Int.
+    /// `Int(_:)` traps on non-finite or out-of-range values, so a malformed EXIF
+    /// field (e.g. a `0/n` exposure-time rational, or an `inf`/`nan` ISO) must be
+    /// filtered here before the conversion. Returns nil for unrepresentable values.
+    private static func safeInt(_ value: Double) -> Int? {
+        guard value.isFinite,
+              value >= Double(Int.min),
+              value < Double(Int.max) else { return nil }
+        return Int(value)
+    }
+
     init(from dict: [String: Any], fileURL: URL? = nil) {
         // Camera: combine Make + Model, avoiding duplication
         let make = (dict[ExifKey.make] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -100,12 +111,12 @@ struct TechnicalMetadata {
                 ? String(format: "f/%.0f", fn) : String(format: "f/%.1f", fn)
         }
 
-        // Shutter speed
-        if let et = dict[ExifKey.exposureTime] as? Double {
+        // Shutter speed (guard against corrupt 0/non-finite exposure times,
+        // which would trap in Int(.infinity) via the 1/et reciprocal below)
+        if let et = dict[ExifKey.exposureTime] as? Double, et.isFinite, et > 0 {
             if et >= 1 {
                 shutterSpeed = String(format: "%.1f s", et)
-            } else {
-                let denom = Int(round(1.0 / et))
+            } else if let denom = Self.safeInt((1.0 / et).rounded()) {
                 shutterSpeed = "1/\(denom) s"
             }
         }
@@ -113,8 +124,8 @@ struct TechnicalMetadata {
         // ISO
         if let isoVal = dict[ExifKey.iso] as? Int {
             iso = String(isoVal)
-        } else if let isoVal = dict[ExifKey.iso] as? Double {
-            iso = String(Int(isoVal))
+        } else if let isoVal = dict[ExifKey.iso] as? Double, let isoInt = Self.safeInt(isoVal) {
+            iso = String(isoInt)
         }
 
         // Serial number

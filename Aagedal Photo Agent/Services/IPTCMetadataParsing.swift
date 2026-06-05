@@ -89,7 +89,7 @@ nonisolated func parseFirstString(_ value: Any?) -> String? {
 
 nonisolated func parseIntValue(_ value: Any?) -> Int? {
     if let intValue = value as? Int { return intValue }
-    if let doubleValue = value as? Double { return Int(doubleValue) }
+    if let doubleValue = value as? Double { return safeInt(doubleValue) }
     if let stringValue = value as? String {
         return Int(stringValue.trimmingCharacters(in: .whitespacesAndNewlines))
     }
@@ -103,6 +103,23 @@ nonisolated func parseDoubleValue(_ value: Any?) -> Double? {
         return Double(stringValue.trimmingCharacters(in: .whitespacesAndNewlines))
     }
     return nil
+}
+
+/// Safely convert a Double (possibly parsed from corrupt metadata) to Int.
+/// `Int(_:)` traps on non-finite or out-of-range values, so guard them here.
+nonisolated func safeInt(_ value: Double) -> Int? {
+    guard value.isFinite,
+          value >= Double(Int.min),
+          value < Double(Int.max) else { return nil }
+    return Int(value)
+}
+
+/// Parse an Adobe Camera Raw fractional value (e.g. `LocalContrast2012`) into a
+/// 0–100-scale integer. Returns nil for missing or non-finite values — a crafted
+/// XMP value of `inf`/`nan` would otherwise trap in `Int(_:)`.
+nonisolated func parsePercentInt(_ value: Any?) -> Int? {
+    guard let d = parseDoubleValue(value) else { return nil }
+    return safeInt((d * 100).rounded())
 }
 
 nonisolated func parseBoolValue(_ value: Any?) -> Bool? {
@@ -168,13 +185,13 @@ nonisolated func parseMaskGroupBasedCorrections(_ value: Any?) -> [MaskAdjustmen
         // ACR stores all local adjustments as fractions of their full range (-1..+1).
         // Exposure range is -4..+4 EV, so XMP value × 4 = EV stops.
         let exposure = parseDoubleValue(corr["LocalExposure2012"]).map { $0 * 4.0 }
-        let contrast = parseDoubleValue(corr["LocalContrast2012"]).map { Int(round($0 * 100)) }
-        let highlights = parseDoubleValue(corr["LocalHighlights2012"]).map { Int(round($0 * 100)) }
-        let shadows = parseDoubleValue(corr["LocalShadows2012"]).map { Int(round($0 * 100)) }
-        let whites = parseDoubleValue(corr["LocalWhites2012"]).map { Int(round($0 * 100)) }
-        let blacks = parseDoubleValue(corr["LocalBlacks2012"]).map { Int(round($0 * 100)) }
-        let saturation = parseDoubleValue(corr["LocalSaturation"]).map { Int(round($0 * 100)) }
-        let vibrance = parseDoubleValue(corr["LocalVibrance"]).map { Int(round($0 * 100)) }
+        let contrast = parsePercentInt(corr["LocalContrast2012"])
+        let highlights = parsePercentInt(corr["LocalHighlights2012"])
+        let shadows = parsePercentInt(corr["LocalShadows2012"])
+        let whites = parsePercentInt(corr["LocalWhites2012"])
+        let blacks = parsePercentInt(corr["LocalBlacks2012"])
+        let saturation = parsePercentInt(corr["LocalSaturation"])
+        let vibrance = parsePercentInt(corr["LocalVibrance"])
         let temperature = parseDoubleValue(corr["LocalTemperature"]).map { $0 * 100 }
         let tint = parseDoubleValue(corr["LocalTint"]).map { $0 * 100 }
 

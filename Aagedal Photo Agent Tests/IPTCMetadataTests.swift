@@ -463,3 +463,84 @@ struct FieldKeyTests {
         #expect(defaults.contains(.copyright))
     }
 }
+
+/// Regression tests for crashes triggered by malformed numeric metadata fields.
+/// A corrupt EXIF exposure time of `0/n` (→ 0.0) or an `inf`/`nan` value used to
+/// trap in `Int(_:)` when building the technical-metadata inspector or parsing
+/// Camera-Raw mask corrections, crashing the app on opening an arbitrary file.
+@Suite("Malformed metadata numeric parsing")
+struct MalformedMetadataNumericTests {
+
+    // MARK: TechnicalMetadata shutter speed / ISO
+
+    @Test("zero exposure time does not crash and yields no shutter speed")
+    func zeroExposureTimeIsSafe() {
+        let meta = TechnicalMetadata(from: ["ExposureTime": 0.0])
+        #expect(meta.shutterSpeed == nil)
+    }
+
+    @Test("non-finite exposure times do not crash")
+    func nonFiniteExposureTimesAreSafe() {
+        #expect(TechnicalMetadata(from: ["ExposureTime": Double.infinity]).shutterSpeed == nil)
+        #expect(TechnicalMetadata(from: ["ExposureTime": Double.nan]).shutterSpeed == nil)
+        #expect(TechnicalMetadata(from: ["ExposureTime": -0.01]).shutterSpeed == nil)
+        // Subnormal would overflow 1/et to infinity — must not trap.
+        #expect(TechnicalMetadata(from: ["ExposureTime": Double.leastNonzeroMagnitude]).shutterSpeed == nil)
+    }
+
+    @Test("valid exposure times still format correctly")
+    func validExposureTimesFormat() {
+        #expect(TechnicalMetadata(from: ["ExposureTime": 0.005]).shutterSpeed == "1/200 s")
+        #expect(TechnicalMetadata(from: ["ExposureTime": 2.0]).shutterSpeed == "2.0 s")
+    }
+
+    @Test("non-finite ISO does not crash")
+    func nonFiniteISOIsSafe() {
+        #expect(TechnicalMetadata(from: ["ISO": Double.infinity]).iso == nil)
+        #expect(TechnicalMetadata(from: ["ISO": Double.nan]).iso == nil)
+        #expect(TechnicalMetadata(from: ["ISO": 800.0]).iso == "800")
+        #expect(TechnicalMetadata(from: ["ISO": 100]).iso == "100")
+    }
+
+    // MARK: safeInt helper
+
+    @Test("safeInt rejects non-finite and out-of-range values")
+    func safeIntGuards() {
+        #expect(safeInt(.infinity) == nil)
+        #expect(safeInt(-.infinity) == nil)
+        #expect(safeInt(.nan) == nil)
+        #expect(safeInt(1e308) == nil)
+        // safeInt truncates toward zero like Int(_:); callers round beforehand.
+        #expect(safeInt(42.7) == 42)
+        #expect(safeInt(-3.2) == -3)
+    }
+
+    // MARK: Camera-Raw mask correction percentages
+
+    @Test("parsePercentInt guards non-finite, scales valid values")
+    func parsePercentIntGuards() {
+        #expect(parsePercentInt("inf") == nil)
+        #expect(parsePercentInt("nan") == nil)
+        #expect(parsePercentInt("1e400") == nil)
+        #expect(parsePercentInt(nil) == nil)
+        #expect(parsePercentInt(0.25) == 25)
+        #expect(parsePercentInt("0.5") == 50)
+    }
+
+    @Test("mask corrections with non-finite local adjustments do not crash")
+    func maskCorrectionsWithNonFiniteAreSafe() {
+        let corrections: [[String: Any]] = [[
+            "CorrectionActive": true,
+            "CorrectionAmount": 1.0,
+            "LocalContrast2012": "inf",
+            "LocalHighlights2012": "nan",
+            "LocalShadows2012": 0.3,
+            "CorrectionMasks": [[
+                "What": "Mask/CircularGradient",
+                "Top": 0.0, "Left": 0.0, "Bottom": 1.0, "Right": 1.0
+            ]]
+        ]]
+        let masks = parseMaskGroupBasedCorrections(corrections)
+        #expect(masks?.count == 1)
+    }
+}

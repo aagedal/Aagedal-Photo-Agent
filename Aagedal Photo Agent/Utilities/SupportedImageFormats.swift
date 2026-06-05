@@ -27,7 +27,7 @@ enum SupportedImageFormats {
         UTType("com.olympus.raw-image") ?? .rawImage,
     ]
 
-    static let fileExtensions: Set<String> = [
+    nonisolated static let fileExtensions: Set<String> = [
         "jpg", "jpeg", "png", "tiff", "tif", "heic", "heif",
         "bmp", "gif", "webp", "avif", "jxl",
         "raw", "cr2", "cr3", "nef", "nrw", "arw", "raf",
@@ -49,7 +49,7 @@ enum SupportedImageFormats {
         "jpg", "jpeg",
     ]
 
-    static func isSupported(url: URL) -> Bool {
+    nonisolated static func isSupported(url: URL) -> Bool {
         fileExtensions.contains(url.pathExtension.lowercased())
     }
 
