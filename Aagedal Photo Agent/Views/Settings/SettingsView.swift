@@ -1221,6 +1221,12 @@ struct SettingsView: View {
     @ViewBuilder
     private var signingTab: some View {
         Form {
+            Section {
+                Label("C2PA signing is experimental and may change in a future release.", systemImage: "flask")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Signing Certificate") {
                 if settingsViewModel.c2paHasCertificate {
                     LabeledContent("Subject") {
