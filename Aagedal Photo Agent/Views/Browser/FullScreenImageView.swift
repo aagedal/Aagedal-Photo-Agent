@@ -917,6 +917,13 @@ struct FullScreenImageView: View {
         // the file isn't modified), applyCameraRaw applies corrective rotation.
         let fileOrientation = lastLoadedOrientation
 
+        // An in-flight prefetch decodes at the same resolution/edit-state as the
+        // foreground load, so reuse it instead of decoding twice during fast
+        // navigation. The prefetch path omits the fileOrientation corrective
+        // rotation, so only reuse it when that correction is a no-op.
+        let canReusePrefetch = fileOrientation == imageOrientation
+        let cache = imageCache
+
         // If corrective rotation swaps width/height, adjust sourcePixelSize
         let delta = ImageFile.rotationDelta(from: fileOrientation, to: imageOrientation)
         if (delta == 1 || delta == 3), let size = sourcePixelSize {
@@ -944,8 +951,12 @@ struct FullScreenImageView: View {
             let fullStart = CFAbsoluteTimeGetCurrent()
             fullLoadTask = Task.detached(priority: .medium) {
                 guard !Task.isCancelled else { return }
-                var image: CGImage?
-                if needsHDRLoad {
+                // Reuse an in-flight prefetch decode rather than decoding this exact
+                // image a second time concurrently (fast navigation).
+                var image: CGImage? = canReusePrefetch
+                    ? await cache.awaitPrefetchedImage(for: url, isEdited: isEdited)
+                    : nil
+                if image == nil, needsHDRLoad {
                     if isRAWFile {
                         // Use CIRAWFilter for flat/neutral decode — get as-shot WB for correct rendering
                         if let rawResult = FullScreenImageCache.loadRAWImage(from: url, draftMode: false, isHDR: cameraRaw?.hdrEditMode == 1 || isNativeHDR) {
@@ -1008,8 +1019,12 @@ struct FullScreenImageView: View {
         imageLogger.info("\(filename): Phase 2 starting (retina resolution, parallel with Phase 0.5)")
         fullLoadTask = Task.detached(priority: .medium) {
             guard !Task.isCancelled else { return }
-            var image: CGImage?
-            if needsHDRLoad {
+            // Reuse an in-flight prefetch decode rather than decoding this exact
+            // image a second time concurrently (fast navigation).
+            var image: CGImage? = canReusePrefetch
+                ? await cache.awaitPrefetchedImage(for: url, isEdited: isEdited)
+                : nil
+            if image == nil, needsHDRLoad {
                 if isRAW {
                     // Use CIRAWFilter for flat/neutral decode — get as-shot WB for correct rendering
                     if let rawResult = FullScreenImageCache.loadRAWImage(from: url, draftMode: false, isHDR: cameraRaw?.hdrEditMode == 1 || isNativeHDR) {

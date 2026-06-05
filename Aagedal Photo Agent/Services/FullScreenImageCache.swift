@@ -285,6 +285,17 @@ final class FullScreenImageCache: @unchecked Sendable {
         _ = lock.withLock { prefetchTasks.removeValue(forKey: url) }
     }
 
+    /// If a prefetch for `url` is already in flight, await it instead of launching a
+    /// duplicate decode, then return the freshly-cached image. Returns nil when no
+    /// prefetch is in flight (or it produced a different edit variant / failed), in
+    /// which case the caller decodes itself. Lets fast navigation reuse a decode that
+    /// is already running rather than decoding the same image twice concurrently.
+    nonisolated func awaitPrefetchedImage(for url: URL, isEdited: Bool = false) async -> CGImage? {
+        guard let task = lock.withLock({ prefetchTasks[url] }) else { return nil }
+        await task.value
+        return cachedImage(for: url, isEdited: isEdited)
+    }
+
     nonisolated func cancelAllPrefetch() {
         let tasksToCancel = lock.withLock {
             let tasks = Array(prefetchTasks.values)
