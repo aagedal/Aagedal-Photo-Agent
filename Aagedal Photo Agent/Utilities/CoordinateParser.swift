@@ -25,6 +25,12 @@ enum CoordinateParser {
     // MARK: - Formatting
 
     static func format(latitude: Double, longitude: Double, format: CoordinateFormat) -> String {
+        // A crafted/corrupt EXIF GPS value (inf/nan, or finite but out of range) would
+        // trap Int(_:) in the DMS/DDM formatters below. Reject anything outside valid
+        // coordinate bounds up front — `.contains` is already false for nan/inf.
+        guard (-90.0...90.0).contains(latitude), (-180.0...180.0).contains(longitude) else {
+            return "—"
+        }
         switch format {
         case .decimalDegrees:
             return formatDD(latitude: latitude, longitude: longitude)

@@ -19,6 +19,7 @@
 		AB0500000000000000000002 /* KeywordListsArchiveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0500000000000000000001 /* KeywordListsArchiveTests.swift */; };
 		AB0600000000000000000002 /* MetadataEngineConcurrencyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0600000000000000000001 /* MetadataEngineConcurrencyTests.swift */; };
 		AB0700000000000000000002 /* PresetVariableInterpolatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0700000000000000000001 /* PresetVariableInterpolatorTests.swift */; };
+		AB0800000000000000000002 /* CoordinateParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0800000000000000000001 /* CoordinateParserTests.swift */; };
 		AB0900000000000000000002 /* KnownPeopleServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0900000000000000000001 /* KnownPeopleServiceTests.swift */; };
 		B71AFE10A1B0E2510C12C200 /* ApprovedListServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A71AFE10A1B0E2510C12C100 /* ApprovedListServiceTests.swift */; };
 		D1C0023217A1B0E2510C12C2 /* MetadataIOCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */; };
@@ -52,6 +53,7 @@
 		AB0500000000000000000001 /* KeywordListsArchiveTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KeywordListsArchiveTests.swift; sourceTree = "<group>"; };
 		AB0600000000000000000001 /* MetadataEngineConcurrencyTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataEngineConcurrencyTests.swift; sourceTree = "<group>"; };
 		AB0700000000000000000001 /* PresetVariableInterpolatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PresetVariableInterpolatorTests.swift; sourceTree = "<group>"; };
+		AB0800000000000000000001 /* CoordinateParserTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CoordinateParserTests.swift; sourceTree = "<group>"; };
 		AB0900000000000000000001 /* KnownPeopleServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KnownPeopleServiceTests.swift; sourceTree = "<group>"; };
 		D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataIOCoordinatorTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -114,6 +116,7 @@
 				AB0500000000000000000001 /* KeywordListsArchiveTests.swift */,
 				AB0600000000000000000001 /* MetadataEngineConcurrencyTests.swift */,
 				AB0700000000000000000001 /* PresetVariableInterpolatorTests.swift */,
+				AB0800000000000000000001 /* CoordinateParserTests.swift */,
 			);
 			path = "Aagedal Photo Agent Tests";
 			sourceTree = "<group>";
@@ -292,6 +295,7 @@
 				AB0500000000000000000002 /* KeywordListsArchiveTests.swift in Sources */,
 				AB0600000000000000000002 /* MetadataEngineConcurrencyTests.swift in Sources */,
 				AB0700000000000000000002 /* PresetVariableInterpolatorTests.swift in Sources */,
+				AB0800000000000000000002 /* CoordinateParserTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
