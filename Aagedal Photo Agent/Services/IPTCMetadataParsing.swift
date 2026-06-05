@@ -146,9 +146,23 @@ nonisolated func parseToneCurveArray(_ value: Any?) -> [ToneCurvePoint]? {
         guard parts.count == 2,
               let x = Double(parts[0]),
               let y = Double(parts[1]) else { return nil }
-        return ToneCurvePoint(x: x / 255.0, y: y / 255.0)
+        return ToneCurvePoint(acr255: x, y)
     }
     return points.count > 2 ? points : nil
+}
+
+/// Serialize tone-curve points to Adobe Camera Raw `"x, y"` strings on the 0–255
+/// scale — the inverse of `parseToneCurveArray`. `ToneCurvePoint` x/y are
+/// normalized 0–1, but a corrupt sidecar (or a curve decoded straight from JSON)
+/// can carry non-finite or out-of-range coordinates; clamp before `Int(round(...))`,
+/// which traps on non-finite input. Clamp rather than drop so the point count —
+/// and the comma-separated list it feeds — stays valid.
+nonisolated func serializeToneCurvePoints(_ points: [ToneCurvePoint]) -> [String] {
+    func scaled(_ value: Double) -> Int {
+        guard value.isFinite else { return value == .infinity ? 255 : 0 }
+        return Int(round(min(max(value, 0), 1) * 255))
+    }
+    return points.map { "\(scaled($0.x)), \(scaled($0.y))" }
 }
 
 /// Parse Adobe Camera Raw `MaskGroupBasedCorrections` into `[MaskAdjustment]`.

@@ -1021,7 +1021,7 @@ final class BrowserViewModel {
             guard parts.count == 2,
                   let x = Double(parts[0]),
                   let y = Double(parts[1]) else { return nil }
-            return ToneCurvePoint(x: x / 255.0, y: y / 255.0)
+            return ToneCurvePoint(acr255: x, y)
         }
         return points.count > 2 ? points : nil
     }

@@ -5,6 +5,20 @@ nonisolated struct ToneCurvePoint: Codable, Sendable, Equatable {
     var y: Double  // 0-1 output brightness
 }
 
+extension ToneCurvePoint {
+    /// Build a point from Adobe Camera Raw 0–255 coordinates, sanitizing
+    /// non-finite or out-of-range input to the normalized 0...1 range. A corrupt
+    /// sidecar value of `inf`/`nan` would otherwise seed a non-finite coordinate
+    /// that traps on re-serialization (`Int(round(...))`) and poisons LUT generation.
+    nonisolated init(acr255 x: Double, _ y: Double) {
+        func normalized(_ value: Double) -> Double {
+            guard value.isFinite else { return value == .infinity ? 1 : 0 }
+            return min(max(value / 255, 0), 1)
+        }
+        self.init(x: normalized(x), y: normalized(y))
+    }
+}
+
 nonisolated struct ToneCurve: Codable, Sendable, Equatable {
     var master: [ToneCurvePoint]?
     var red: [ToneCurvePoint]?

@@ -420,7 +420,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
 
         func setChannel(_ property: String, _ points: [ToneCurvePoint]?) {
             if let points, points.count > 2 {
-                let values = points.map { "\(Int(round($0.x * 255))), \(Int(round($0.y * 255)))" }
+                let values = serializeToneCurvePoints(points)
                 metadata.xmp?.setValue(.array(values), namespace: crsNamespace, property: property)
             } else {
                 metadata.xmp?.removeValue(namespace: crsNamespace, property: property)

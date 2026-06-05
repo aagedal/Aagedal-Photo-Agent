@@ -447,7 +447,7 @@ struct XMPSidecarService: Sendable {
 
     private func updateToneCurveChannel(on description: XMLElement, localName: String, points: [ToneCurvePoint]?) {
         if let points, points.count > 2 {
-            let strings = points.map { "\(Int(round($0.x * 255))), \(Int(round($0.y * 255)))" }
+            let strings = serializeToneCurvePoints(points)
             setSeq(on: description, prefix: "crs", localName: localName, values: strings)
         } else {
             removeProperty(from: description, prefix: "crs", localName: localName)
@@ -470,7 +470,7 @@ struct XMPSidecarService: Sendable {
             guard parts.count == 2,
                   let x = Double(parts[0]),
                   let y = Double(parts[1]) else { return nil }
-            return ToneCurvePoint(x: x / 255.0, y: y / 255.0)
+            return ToneCurvePoint(acr255: x, y)
         }
         return points.isEmpty ? nil : points
     }

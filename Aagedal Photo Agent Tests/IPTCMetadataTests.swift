@@ -561,4 +561,51 @@ struct MalformedMetadataNumericTests {
         let masks = parseMaskGroupBasedCorrections(corrections)
         #expect(masks?.count == 1)
     }
+
+    // MARK: Tone-curve serialization
+
+    @Test("serializing a tone curve with non-finite points does not crash and clamps to 0...255")
+    func serializeToneCurveNonFiniteIsSafe() {
+        // A corrupt sidecar parsed to non-finite x/y used to trap `Int(round(...))`
+        // on re-serialization, crashing on save. Clamp instead of trapping.
+        let points = [
+            ToneCurvePoint(x: 0, y: 0),
+            ToneCurvePoint(x: .infinity, y: -.infinity),
+            ToneCurvePoint(x: .nan, y: .nan),
+            ToneCurvePoint(x: 2.0, y: -1.0),
+            ToneCurvePoint(x: 1, y: 1),
+        ]
+        let strings = serializeToneCurvePoints(points)
+        #expect(strings == ["0, 0", "255, 0", "0, 0", "255, 0", "255, 255"])
+    }
+
+    @Test("serializing valid normalized tone-curve points scales to the 0–255 ACR grid")
+    func serializeToneCurveValidScales() {
+        let strings = serializeToneCurvePoints([
+            ToneCurvePoint(x: 0, y: 0),
+            ToneCurvePoint(x: 0.5, y: 0.25),
+            ToneCurvePoint(x: 1, y: 1),
+        ])
+        #expect(strings == ["0, 0", "128, 64", "255, 255"])
+    }
+
+    @Test("ToneCurvePoint(acr255:) clamps non-finite/out-of-range input to 0...1")
+    func toneCurvePointACR255Clamps() {
+        #expect(ToneCurvePoint(acr255: .infinity, .infinity) == ToneCurvePoint(x: 1, y: 1))
+        #expect(ToneCurvePoint(acr255: -.infinity, .nan) == ToneCurvePoint(x: 0, y: 0))
+        #expect(ToneCurvePoint(acr255: 510, -255) == ToneCurvePoint(x: 1, y: 0))
+        #expect(ToneCurvePoint(acr255: 128, 64) == ToneCurvePoint(x: 128.0 / 255, y: 64.0 / 255))
+    }
+
+    @Test("parsing then re-serializing a corrupt tone curve does not crash")
+    func parseThenSerializeCorruptToneCurveIsSafe() throws {
+        // Mirrors the reported crash: load a sidecar with inf/nan coordinates,
+        // then re-save. Parsing sanitizes at the boundary, serialization clamps.
+        let parsed = parseToneCurveArray(["inf, nan", "0, 0", "255, 255", "nan, inf"])
+        let points = try #require(parsed)
+        // No non-finite coordinate survives the parse boundary.
+        #expect(points.allSatisfy { $0.x.isFinite && $0.y.isFinite })
+        let strings = serializeToneCurvePoints(points)
+        #expect(strings.count == points.count)
+    }
 }
