@@ -49,6 +49,53 @@ struct MetadataEngineConcurrencyTests {
         #expect(meta.title == "Hello")
     }
 
+    /// GPS regression: callers split a signed coordinate into a positive magnitude
+    /// (`.gpsLatitude`/`.gpsLongitude`) plus a hemisphere ref (`.gpsLatitudeRef`/
+    /// `.gpsLongitudeRef`), exactly as `IPTCMetadata.toWriteFields()` does. The write
+    /// engine must re-apply that ref before handing the value to `setGPS` (which
+    /// derives the hemisphere from the sign). Without it, southern/western coordinates
+    /// — i.e. anywhere in the Americas — get written flipped to N/E.
+    @Test("southern/western GPS preserves its hemisphere through write then read")
+    func southernWesternGPSRoundtrips() async throws {
+        let engine = SwiftExifWriteEngine()
+        let reader = SwiftExifReadService()
+        let url = try makeTempJPEG()
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        // Santiago, Chile: latitude S, longitude W.
+        try await engine.writeFields([
+            .gpsLatitude: "33.865", .gpsLatitudeRef: "S",
+            .gpsLongitude: "70.649", .gpsLongitudeRef: "W"
+        ], to: [url])
+
+        let meta = try await reader.readFullMetadata(url: url)
+        let lat = try #require(meta.latitude)
+        let lon = try #require(meta.longitude)
+        #expect(abs(lat - (-33.865)) < 0.001)
+        #expect(abs(lon - (-70.649)) < 0.001)
+    }
+
+    /// The northern/eastern path must not be over-corrected by the ref handling.
+    @Test("northern/eastern GPS stays positive through write then read")
+    func northernEasternGPSRoundtrips() async throws {
+        let engine = SwiftExifWriteEngine()
+        let reader = SwiftExifReadService()
+        let url = try makeTempJPEG()
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        // Oslo, Norway: latitude N, longitude E.
+        try await engine.writeFields([
+            .gpsLatitude: "59.913", .gpsLatitudeRef: "N",
+            .gpsLongitude: "10.752", .gpsLongitudeRef: "E"
+        ], to: [url])
+
+        let meta = try await reader.readFullMetadata(url: url)
+        let lat = try #require(meta.latitude)
+        let lon = try #require(meta.longitude)
+        #expect(abs(lat - 59.913) < 0.001)
+        #expect(abs(lon - 10.752) < 0.001)
+    }
+
     /// The core end-to-end guarantee: a rating write and a field write fired
     /// concurrently at the same photo must BOTH survive. Each is a read-modify-
     /// write cycle over the file's metadata; without per-photo serialization the

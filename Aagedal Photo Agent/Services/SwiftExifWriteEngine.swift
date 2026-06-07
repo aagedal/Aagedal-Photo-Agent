@@ -214,13 +214,19 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
     ) throws {
         var metadata = try readMetadata(from: url)
 
-        // GPS coordinates are paired: SwiftExif's setGPS takes both at once
-        // (refs are derived from sign). Pull them out before the per-field loop.
+        // GPS coordinates are paired: SwiftExif's setGPS takes both at once and
+        // derives the N/S and E/W refs from the *sign* of each value. Callers
+        // (see IPTCMetadata.toWriteFields) store the magnitude in .gpsLatitude/
+        // .gpsLongitude and the hemisphere in the paired *Ref field, so we must
+        // re-apply the ref sign here — otherwise southern/western coordinates
+        // (e.g. anywhere in the Americas) get written flipped to N/E.
         let latString = fields[.gpsLatitude]
         let lonString = fields[.gpsLongitude]
         let bothCleared = (latString?.isEmpty ?? false) && (lonString?.isEmpty ?? false)
         if let latString, let lonString, !latString.isEmpty, !lonString.isEmpty,
-           let lat = Double(latString), let lon = Double(lonString) {
+           let latMagnitude = Double(latString), let lonMagnitude = Double(lonString) {
+            let lat = applyHemisphere(latMagnitude, ref: fields[.gpsLatitudeRef], negativeRef: "S")
+            let lon = applyHemisphere(lonMagnitude, ref: fields[.gpsLongitudeRef], negativeRef: "W")
             metadata.setGPS(latitude: lat, longitude: lon)
         } else if bothCleared {
             metadata.removeGPS()
@@ -248,6 +254,17 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         metadata.syncIPTCToXMP()
 
         try metadata.write(to: url)
+    }
+
+    /// Re-applies an EXIF hemisphere ref onto a coordinate magnitude. Callers split a
+    /// signed coordinate into a positive magnitude plus a `*Ref` field ("N"/"S", "E"/"W");
+    /// `setGPS` wants the sign back. When the ref is missing we trust the value's own sign
+    /// so a directly-signed value still round-trips.
+    private func applyHemisphere(_ magnitude: Double, ref: String?, negativeRef: String) -> Double {
+        guard let ref = ref?.trimmingCharacters(in: .whitespaces), !ref.isEmpty else {
+            return magnitude
+        }
+        return ref.caseInsensitiveCompare(negativeRef) == .orderedSame ? -abs(magnitude) : abs(magnitude)
     }
 
     /// Apply a single field to the metadata.
