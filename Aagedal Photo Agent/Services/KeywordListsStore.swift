@@ -61,6 +61,20 @@ extension Notification.Name {
     static let keywordListChanged = Notification.Name("KeywordListsStore.changed")
 }
 
+/// Test-only seam for `KeywordListsStore`'s storage root.
+///
+/// Declared outside the `@MainActor` class so the `@TaskLocal` projected value
+/// is nonisolated — `rootURL` reads `current` and tests set it via
+/// `$current.withValue(tempDir) { … }`. It is **task-local** rather than a plain
+/// static because Swift Testing runs suites concurrently and several of them
+/// write to this shared singleton; a process-wide static override would leak
+/// across parallel suites, but a task-local stays confined to the test that set
+/// it, so sibling suites writing to the default root remain invisible.
+/// Production never sets it.
+nonisolated enum KeywordListsStoreStorageOverride {
+    @TaskLocal static var current: URL?
+}
+
 /// Canonical disk-backed store for every keyword list the app manages.
 ///
 /// All read/write goes through here so we have a single place to choose between
@@ -129,6 +143,12 @@ final class KeywordListsStore {
     /// Caching local in that window would pin the store to local for the entire
     /// session and silently stop syncing — the cause of lists reverting on launch.
     var rootURL: URL {
+        if let override = KeywordListsStoreStorageOverride.current {
+            // Test seam: never cached, so each test's task-local root is honored
+            // and never pins the singleton for the rest of the process.
+            ensureDirectories(at: override)
+            return override
+        }
         if let cached = cachedRoot { return cached }
         if iCloudEnabled {
             if let cloud = iCloudContainerListsURL {
