@@ -352,7 +352,7 @@ final class FullScreenImageCache: @unchecked Sendable {
     /// background preview generation saturates that pool, higher-QoS on-screen decodes
     /// can't get a thread — a priority inversion. Hopping the decode here keeps the
     /// cooperative thread suspended (not blocked) for the duration.
-    nonisolated(unsafe) private static let backgroundDecodeQueue = DispatchQueue(
+    private static let backgroundDecodeQueue = DispatchQueue(
         label: "com.aagedal.photo-agent.preview-decode",
         qos: .utility,
         attributes: .concurrent
