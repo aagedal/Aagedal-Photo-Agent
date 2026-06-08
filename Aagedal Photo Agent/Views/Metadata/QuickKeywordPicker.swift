@@ -141,13 +141,21 @@ struct QuickKeywordPicker: View {
     private var entriesList: some View {
         let entries = filteredEntries
         return ScrollViewReader { proxy in
-            List {
-                ForEach(Array(entries.enumerated()), id: \.element) { index, entry in
-                    row(for: entry, index: index)
-                        .id(index)
+            // A `ScrollView { LazyVStack }` is used here rather than `List`:
+            // `List` bridges to AppKit's NSTableView and is costly to instantiate,
+            // and the enclosing popover rebuilds its content on every open — so the
+            // table setup cost was paid on each click, making the picker feel slow
+            // to appear. LazyVStack mounts far faster while keeping scroll + keyboard
+            // navigation (ScrollViewReader still resolves `.id(index)`).
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(Array(entries.enumerated()), id: \.element) { index, entry in
+                        row(for: entry, index: index)
+                            .id(index)
+                    }
                 }
+                .padding(.vertical, 4)
             }
-            .listStyle(.plain)
             .focusable()
             .focused($rowsFocused)
             .focusEffectDisabled()
