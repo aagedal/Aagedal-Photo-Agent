@@ -275,14 +275,25 @@ final class FTPViewModel {
             // Render phase (0–50% of overall progress)
             let failureTracker = MetadataFailureTracker()
             var renderedURLs: [URL] = []
-            for url in urls {
+            // Tracks upload filenames already taken in this batch so two sources that
+            // share a basename across folders (e.g. /A/img.jpg and /B/img.jpg, both →
+            // img_jpg.jpg) don't end up overwriting each other on the remote server.
+            var usedNames: Set<String> = []
+            for (index, url) in urls.enumerated() {
                 guard !Task.isCancelled else { break }
                 do {
+                    // Render each file into its own subfolder. The render output name is
+                    // derived from the source basename only, so a shared temp dir would let
+                    // a later render clobber an earlier one on disk — losing the first photo
+                    // and uploading the second twice. Per-item folders make every render path
+                    // unique regardless of basename collisions.
+                    let itemDir = tempDir.appendingPathComponent(String(index), isDirectory: true)
+                    try FileManager.default.createDirectory(at: itemDir, withIntermediateDirectories: true)
                     let outputURL = try await EditExportPipeline.renderItem(
                         sourceURL: url, cameraRaw: metadataMap[url]?.cameraRaw, kind: .jpeg,
-                        outputFolder: tempDir, folderURL: url.deletingLastPathComponent(),
+                        outputFolder: itemDir, folderURL: url.deletingLastPathComponent(),
                         writeEngine: writeEngine, failureTracker: failureTracker)
-                    renderedURLs.append(outputURL)
+                    renderedURLs.append(try uniqueUploadName(for: outputURL, avoiding: &usedNames))
                 } catch {
                     self.errorMessages.append("Failed to render \(url.lastPathComponent): \(error.localizedDescription)")
                 }
@@ -297,6 +308,10 @@ final class FTPViewModel {
             let overlayFailures = await failureTracker.sidecarOverlayFailures
             if !overlayFailures.isEmpty {
                 self.errorMessages.append("Sidecar metadata overlay failed for \(overlayFailures.count) \(overlayFailures.count == 1 ? "image" : "images") — uploaded without pending edits")
+            }
+            let staleWarnings = await failureTracker.staleSidecarWarnings
+            if !staleWarnings.isEmpty {
+                self.errorMessages.append("\(staleWarnings.count) \(staleWarnings.count == 1 ? "image was" : "images were") uploaded from embedded metadata, not the .xmp sidecar (the image file was edited more recently) — check if you expected sidecar values")
             }
 
             guard !Task.isCancelled else {
@@ -334,6 +349,26 @@ final class FTPViewModel {
 
             self.recordUploadCompletion(id: historyID)
             self.showCompletionBriefly()
+        }
+    }
+
+    /// Returns `url` renamed in place when its filename is already used in this batch,
+    /// so two distinct photos that share a basename don't overwrite each other on the
+    /// remote server (the remote name is derived from the local filename). The first
+    /// occurrence keeps its name; later ones become `name-2.ext`, `name-3.ext`, ….
+    private func uniqueUploadName(for url: URL, avoiding usedNames: inout Set<String>) throws -> URL {
+        if usedNames.insert(url.lastPathComponent).inserted { return url }
+        let base = url.deletingPathExtension().lastPathComponent
+        let ext = url.pathExtension
+        var counter = 2
+        while true {
+            let candidate = ext.isEmpty ? "\(base)-\(counter)" : "\(base)-\(counter).\(ext)"
+            if usedNames.insert(candidate).inserted {
+                let newURL = url.deletingLastPathComponent().appendingPathComponent(candidate)
+                try FileManager.default.moveItem(at: url, to: newURL)
+                return newURL
+            }
+            counter += 1
         }
     }
 

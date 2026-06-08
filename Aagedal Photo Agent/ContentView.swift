@@ -1291,10 +1291,11 @@ struct ContentView: View {
 
             let copyFailures = await failureTracker.metadataCopyFailures
             let overlayFailures = await failureTracker.sidecarOverlayFailures
+            let staleWarnings = await failureTracker.staleSidecarWarnings
             let outcome: BatchOperationResult.Outcome
             if Task.isCancelled {
                 outcome = .cancelled
-            } else if failureCount > 0 || !copyFailures.isEmpty || !overlayFailures.isEmpty {
+            } else if failureCount > 0 || !copyFailures.isEmpty || !overlayFailures.isEmpty || !staleWarnings.isEmpty {
                 outcome = .partial
             } else {
                 outcome = .success
@@ -1308,6 +1309,7 @@ struct ContentView: View {
                 failedFilenames: signFailedNames,
                 copyFailureFilenames: copyFailures,
                 overlayFailureFilenames: overlayFailures,
+                staleSidecarFilenames: staleWarnings,
                 sourceFolderURL: folderURL
             )
         }
@@ -1567,12 +1569,13 @@ struct ContentView: View {
                 .help("Dismiss")
             }
 
-            if result.hasFailures {
+            if result.hasFailures || result.hasWarnings {
                 DisclosureGroup(isExpanded: $isBatchResultExpanded) {
                     VStack(alignment: .leading, spacing: 2) {
                         bannerFailureSection(label: "Failed", names: result.failedFilenames, folder: result.sourceFolderURL)
                         bannerFailureSection(label: "Metadata copy failed", names: result.copyFailureFilenames, folder: result.sourceFolderURL)
                         bannerFailureSection(label: "IPTC overlay failed", names: result.overlayFailureFilenames, folder: result.sourceFolderURL)
+                        bannerFailureSection(label: "Used embedded metadata (.xmp sidecar stale)", names: result.staleSidecarFilenames, folder: result.sourceFolderURL)
                     }
                     .padding(.top, 4)
                 } label: {
@@ -1710,10 +1713,11 @@ struct ContentView: View {
 
             let copyFailures = await failureTracker.metadataCopyFailures
             let overlayFailures = await failureTracker.sidecarOverlayFailures
+            let staleWarnings = await failureTracker.staleSidecarWarnings
             let outcome: BatchOperationResult.Outcome
             if Task.isCancelled {
                 outcome = .cancelled
-            } else if !saveFailedNames.isEmpty || !copyFailures.isEmpty || !overlayFailures.isEmpty {
+            } else if !saveFailedNames.isEmpty || !copyFailures.isEmpty || !overlayFailures.isEmpty || !staleWarnings.isEmpty {
                 outcome = .partial
             } else {
                 outcome = .success
@@ -1727,6 +1731,7 @@ struct ContentView: View {
                 failedFilenames: saveFailedNames,
                 copyFailureFilenames: copyFailures,
                 overlayFailureFilenames: overlayFailures,
+                staleSidecarFilenames: staleWarnings,
                 sourceFolderURL: browserViewModel.currentFolderURL
             )
         }
@@ -1821,10 +1826,11 @@ struct ContentView: View {
 
             let copyFailures = await failureTracker.metadataCopyFailures
             let overlayFailures = await failureTracker.sidecarOverlayFailures
+            let staleWarnings = await failureTracker.staleSidecarWarnings
             let outcome: BatchOperationResult.Outcome
             if Task.isCancelled {
                 outcome = .cancelled
-            } else if failureCount > 0 || !copyFailures.isEmpty || !overlayFailures.isEmpty {
+            } else if failureCount > 0 || !copyFailures.isEmpty || !overlayFailures.isEmpty || !staleWarnings.isEmpty {
                 outcome = .partial
             } else {
                 outcome = .success
@@ -1838,6 +1844,7 @@ struct ContentView: View {
                 failedFilenames: renderFailedNames,
                 copyFailureFilenames: copyFailures,
                 overlayFailureFilenames: overlayFailures,
+                staleSidecarFilenames: staleWarnings,
                 sourceFolderURL: folderURL
             )
         }
@@ -1868,7 +1875,10 @@ struct ContentViewModifiers: ViewModifier {
                     let hadC2PA = browserViewModel.images.contains { image in
                         metadataViewModel.selectedURLs.contains(image.url) && image.hasC2PA
                     }
-                    let mode = hadC2PA ? settingsViewModel.metadataWriteModeC2PA : settingsViewModel.metadataWriteModeNonC2PA
+                    let hadRaw = browserViewModel.images.contains { image in
+                        metadataViewModel.selectedURLs.contains(image.url) && SupportedImageFormats.isRaw(url: image.url)
+                    }
+                    let mode = MetadataWriteMode.current(forC2PA: hadC2PA, isRaw: hadRaw)
                     let previousURLs = metadataViewModel.selectedURLs
                     Task { @MainActor in
                         if hadC2PA, mode == .writeToFile {
@@ -1901,9 +1911,8 @@ struct ContentViewModifiers: ViewModifier {
                 if oldPhase == .active, newPhase != .active,
                    metadataViewModel.hasChanges {
                     let hasC2PA = browserViewModel.selectedImages.contains { $0.hasC2PA }
-                    let mode = hasC2PA
-                        ? settingsViewModel.metadataWriteModeC2PA
-                        : settingsViewModel.metadataWriteModeNonC2PA
+                    let isRaw = browserViewModel.selectedImages.contains { SupportedImageFormats.isRaw(url: $0.url) }
+                    let mode = MetadataWriteMode.current(forC2PA: hasC2PA, isRaw: isRaw)
                     if hasC2PA, mode == .writeToFile {
                         metadataViewModel.saveToSidecar()
                     } else {

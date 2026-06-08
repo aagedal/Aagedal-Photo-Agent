@@ -609,3 +609,122 @@ struct MalformedMetadataNumericTests {
         #expect(strings.count == points.count)
     }
 }
+
+@Suite("MetadataComparison per-field diff + merge")
+struct MetadataComparisonTests {
+    @Test("differences lists only fields that differ; keywords order-insensitive")
+    func differences() {
+        let embedded = IPTCMetadata(
+            title: "Embedded headline",
+            description: "Same caption",
+            keywords: ["a", "b"],
+            creator: "Embedded creator")
+        let sidecar = IPTCMetadata(
+            title: "Sidecar headline",
+            description: "Same caption",
+            keywords: ["b", "a"],            // reordered → not a difference
+            creator: "Sidecar creator")
+
+        let diffs = MetadataComparison.differences(embedded: embedded, sidecar: sidecar)
+        let fields = Set(diffs.map(\.field))
+        #expect(fields == [.title, .creator])
+        let titleDiff = try? #require(diffs.first { $0.field == .title })
+        #expect(titleDiff?.embeddedValue == "Embedded headline")
+        #expect(titleDiff?.sidecarValue == "Sidecar headline")
+    }
+
+    @Test("merge applies per-field choices and preserves untouched fields (CRS/GPS)")
+    func merge() {
+        var base = IPTCMetadata(title: "Sidecar headline", description: "Sidecar caption",
+                                latitude: 12.34, longitude: 56.78)
+        base.cameraRaw = CameraRawSettings()
+        let embedded = IPTCMetadata(title: "Embedded headline", description: "Embedded caption")
+        let sidecar = IPTCMetadata(title: "Sidecar headline", description: "Sidecar caption")
+
+        // Keep the embedded headline, keep the sidecar caption.
+        let merged = MetadataComparison.merge(
+            base: base, embedded: embedded, sidecar: sidecar,
+            choices: [.title: .embedded, .description: .sidecar])
+
+        #expect(merged.title == "Embedded headline")
+        #expect(merged.description == "Sidecar caption")
+        // Untouched technical fields survive.
+        #expect(merged.latitude == 12.34)
+        #expect(merged.longitude == 56.78)
+        #expect(merged.cameraRaw != nil)
+    }
+
+    @Test("a cleared field on one side is a real difference")
+    func clearedFieldDiffers() {
+        let embedded = IPTCMetadata(title: "Has headline")
+        let sidecar = IPTCMetadata()  // headline cleared
+        let diffs = MetadataComparison.differences(embedded: embedded, sidecar: sidecar)
+        #expect(diffs.map(\.field) == [.title])
+        #expect(diffs.first?.sidecarValue == "")
+    }
+}
+
+@Suite("MetadataWriteMode preset resolution", .serialized)
+struct MetadataWriteModePresetTests {
+    /// Runs `body` with the given preset set, restoring the previous value after.
+    private func withPreset(_ preset: MetadataWritePreset, _ body: () -> Void) {
+        let key = UserDefaultsKeys.metadataWritePreset
+        let saved = UserDefaults.standard.string(forKey: key)
+        UserDefaults.standard.set(preset.rawValue, forKey: key)
+        defer {
+            if let saved { UserDefaults.standard.set(saved, forKey: key) }
+            else { UserDefaults.standard.removeObject(forKey: key) }
+        }
+        body()
+    }
+
+    @Test("Simple writes embedded for every file (incl. RAW and C2PA)")
+    func simple() {
+        withPreset(.simple) {
+            #expect(MetadataWriteMode.current(forC2PA: false, isRaw: false) == .writeToFile)
+            #expect(MetadataWriteMode.current(forC2PA: true, isRaw: false) == .writeToFile)
+            #expect(MetadataWriteMode.current(forC2PA: false, isRaw: true) == .writeToFile)
+        }
+    }
+
+    @Test("Professional: sidecar for RAW/C2PA, dual-write for plain files")
+    func professional() {
+        withPreset(.professional) {
+            #expect(MetadataWriteMode.current(forC2PA: false, isRaw: false) == .writeToFileAndXMPSidecar)
+            #expect(MetadataWriteMode.current(forC2PA: true, isRaw: false) == .writeToXMPSidecar)
+            #expect(MetadataWriteMode.current(forC2PA: false, isRaw: true) == .writeToXMPSidecar)
+            #expect(MetadataWriteMode.current(forC2PA: true, isRaw: true) == .writeToXMPSidecar)
+        }
+    }
+
+    @Test("Custom RAW picker drives RAW resolution")
+    func customRaw() {
+        withPreset(.custom) {
+            let key = UserDefaultsKeys.metadataWriteModeRaw
+            let saved = UserDefaults.standard.string(forKey: key)
+            UserDefaults.standard.set(MetadataWriteMode.writeToFile.rawValue, forKey: key)
+            defer {
+                if let saved { UserDefaults.standard.set(saved, forKey: key) }
+                else { UserDefaults.standard.removeObject(forKey: key) }
+            }
+            #expect(MetadataWriteMode.current(forC2PA: false, isRaw: true) == .writeToFile)
+        }
+    }
+
+    @Test("dual-write mode reports both embedded and sidecar")
+    func flags() {
+        #expect(MetadataWriteMode.writeToFileAndXMPSidecar.writesEmbedded)
+        #expect(MetadataWriteMode.writeToFileAndXMPSidecar.writesXMPSidecar)
+        #expect(MetadataWriteMode.writeToFile.writesEmbedded)
+        #expect(!MetadataWriteMode.writeToFile.writesXMPSidecar)
+        #expect(MetadataWriteMode.writeToXMPSidecar.writesXMPSidecar)
+        #expect(!MetadataWriteMode.writeToXMPSidecar.writesEmbedded)
+    }
+
+    @Test("Custom never routes C2PA to a file-writing mode")
+    func customC2PASafety() {
+        withPreset(.custom) {
+            #expect(MetadataWriteMode.current(forC2PA: true, isRaw: false).writesEmbedded == false)
+        }
+    }
+}

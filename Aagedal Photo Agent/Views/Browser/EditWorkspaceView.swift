@@ -1842,7 +1842,9 @@ struct EditWorkspaceView: View {
     private func commitEditAdjustments() {
         guard metadataViewModel.hasChanges else { return }
         let hasC2PA = browserViewModel.selectedImages.contains { $0.hasC2PA }
-        let mode = hasC2PA ? settingsViewModel.metadataWriteModeC2PA : settingsViewModel.metadataWriteModeNonC2PA
+        let isRaw = selectedImageURL.map { SupportedImageFormats.isRaw(url: $0) }
+            ?? browserViewModel.selectedImages.contains { SupportedImageFormats.isRaw(url: $0.url) }
+        let mode = MetadataWriteMode.current(forC2PA: hasC2PA, isRaw: isRaw)
         let effectiveMode: MetadataWriteMode = {
             guard mode == .writeToXMPSidecar,
                   let selectedURL = selectedImageURL,

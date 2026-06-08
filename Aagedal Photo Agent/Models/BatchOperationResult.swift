@@ -15,10 +15,18 @@ struct BatchOperationResult: Identifiable, Sendable {
     let failedFilenames: [String]
     let copyFailureFilenames: [String]
     let overlayFailureFilenames: [String]
+    /// Files exported from the embedded image rather than the `.xmp` sidecar because the
+    /// sidecar looked stale (image file newer and metadata differed). A warning, not a
+    /// failure — the file was still published, just from its embedded metadata.
+    var staleSidecarFilenames: [String] = []
     let sourceFolderURL: URL?
 
     var hasFailures: Bool {
         !failedFilenames.isEmpty || !copyFailureFilenames.isEmpty || !overlayFailureFilenames.isEmpty
+    }
+
+    var hasWarnings: Bool {
+        !staleSidecarFilenames.isEmpty
     }
 
     var summaryLine: String {
@@ -40,6 +48,10 @@ struct BatchOperationResult: Identifiable, Sendable {
             if !overlayFailureFilenames.isEmpty {
                 let n = overlayFailureFilenames.count
                 parts.append("IPTC overlay failed for \(n) \(n == 1 ? "image" : "images")")
+            }
+            if !staleSidecarFilenames.isEmpty {
+                let n = staleSidecarFilenames.count
+                parts.append("\(n) \(n == 1 ? "image" : "images") used embedded metadata (.xmp sidecar looked stale)")
             }
             let warning = parts.isEmpty ? "" : ": \(parts.joined(separator: "; "))"
             return "\(title): \(successCount) of \(totalCount)\(warning)."

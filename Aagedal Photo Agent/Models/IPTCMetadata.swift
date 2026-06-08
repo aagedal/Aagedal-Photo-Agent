@@ -479,6 +479,42 @@ extension IPTCMetadata {
         }
         return fields
     }
+
+    /// Like `toWriteFields()` but emits an empty string for every *cleared* descriptive
+    /// field, so applying it replaces the target's descriptive metadata instead of only
+    /// overlaying present values. Used on export, where the sidecar is the authoritative
+    /// edited state: a field the user cleared must not survive from the source file's
+    /// embedded metadata.
+    ///
+    /// GPS is deliberately additive (written only when present, never force-cleared):
+    /// coordinates are technical source data that a sidecar — especially one written by
+    /// an external tool, or with GPS in a format our parser can't read — may legitimately
+    /// omit, and force-clearing would strip valid camera GPS from the export. Camera Raw,
+    /// rating, and label are excluded (managed separately).
+    func toOverwriteFields() -> [MetadataFieldKey: String] {
+        var fields: [MetadataFieldKey: String] = [:]
+        fields[.headline] = title ?? ""
+        fields[.description] = description ?? ""
+        fields[.extendedDescription] = extendedDescription ?? ""
+        fields[.subject] = keywords.uniqued().joined(separator: ", ")
+        fields[.personInImage] = personShown.uniqued().joined(separator: ", ")
+        fields[.digitalSourceType] = digitalSourceType?.rawValue ?? ""
+        fields[.creator] = creator ?? ""
+        fields[.credit] = credit ?? ""
+        fields[.rights] = copyright ?? ""
+        fields[.transmissionReference] = jobId ?? ""
+        fields[.dateCreated] = dateCreated ?? ""
+        fields[.city] = city ?? ""
+        fields[.country] = country ?? ""
+        fields[.event] = event ?? ""
+        if let lat = latitude, let lon = longitude {
+            fields[.gpsLatitude] = String(abs(lat))
+            fields[.gpsLatitudeRef] = lat >= 0 ? "N" : "S"
+            fields[.gpsLongitude] = String(abs(lon))
+            fields[.gpsLongitudeRef] = lon >= 0 ? "E" : "W"
+        }
+        return fields
+    }
 }
 
 nonisolated enum DigitalSourceType: String, Codable, CaseIterable, Sendable {

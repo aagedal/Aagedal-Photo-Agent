@@ -102,12 +102,20 @@ final class SettingsViewModel {
         didSet { UserDefaults.standard.set(faceCleanupPolicy.rawValue, forKey: UserDefaultsKeys.faceCleanupPolicy) }
     }
 
+    var metadataWritePreset: MetadataWritePreset {
+        didSet { UserDefaults.standard.set(metadataWritePreset.rawValue, forKey: UserDefaultsKeys.metadataWritePreset) }
+    }
+
     var metadataWriteModeNonC2PA: MetadataWriteMode {
         didSet { UserDefaults.standard.set(metadataWriteModeNonC2PA.rawValue, forKey: UserDefaultsKeys.metadataWriteModeNonC2PA) }
     }
 
     var metadataWriteModeC2PA: MetadataWriteMode {
         didSet { UserDefaults.standard.set(metadataWriteModeC2PA.rawValue, forKey: UserDefaultsKeys.metadataWriteModeC2PA) }
+    }
+
+    var metadataWriteModeRaw: MetadataWriteMode {
+        didSet { UserDefaults.standard.set(metadataWriteModeRaw.rawValue, forKey: UserDefaultsKeys.metadataWriteModeRaw) }
     }
 
     var preferXMPSidecar: Bool {
@@ -560,6 +568,14 @@ final class SettingsViewModel {
         self.defaultEditDestination = DefaultEditDestination(rawValue: editDestinationRaw) ?? .internalEditor
         let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.faceCleanupPolicy) ?? "never"
         self.faceCleanupPolicy = FaceCleanupPolicy(rawValue: raw) ?? .never
+
+        // Top-level preset. Absent (existing users / fresh install) → Professional.
+        let presetRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.metadataWritePreset)
+        self.metadataWritePreset = MetadataWritePreset(rawValue: presetRaw ?? "") ?? .professional
+
+        let rawModeStored = UserDefaults.standard.string(forKey: UserDefaultsKeys.metadataWriteModeRaw)
+            ?? MetadataWriteMode.defaultRaw.rawValue
+        self.metadataWriteModeRaw = MetadataWriteMode(rawValue: rawModeStored) ?? .defaultRaw
 
         let legacyWriteModeRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.metadataWriteMode)
         let nonC2PARaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.metadataWriteModeNonC2PA)

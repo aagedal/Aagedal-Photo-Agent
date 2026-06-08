@@ -191,6 +191,14 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
             destMetadata.exif?.ifd1 = nil
             destMetadata.stripICCProfile()
 
+            // Drop the source's Exif pixel-dimension tags (PixelXDimension/Y,
+            // 0xA002/0xA003). They describe the *source* frame and drift from the
+            // rendered output whenever a crop was applied, leaving a file whose Exif
+            // size contradicts its actual encoded (SOF / container) dimensions.
+            // Removing them lets readers fall back to the true rendered size.
+            destMetadata.removeExifSubIFDTag(0xA002)
+            destMetadata.removeExifSubIFDTag(0xA003)
+
             // Force orientation to 1 — rendered pixels are already upright.
             destMetadata.setOrientation(1)
 
@@ -272,11 +280,18 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         let isEmpty = value.isEmpty
 
         switch key {
-        // IPTC fields — set on IPTC, syncIPTCToXMP fills XMP
+        // IPTC fields — set on IPTC, syncIPTCToXMP fills XMP.
+        //
+        // On clear we must ALSO remove the mirrored XMP property: `syncIPTCToXMP`
+        // only ever *sets* XMP from a present IPTC value (never unsets), so removing
+        // the IPTC entry alone leaves the old XMP value behind — and readers that
+        // prefer XMP (ours does) would resurrect the field the user just cleared.
         case .headline:
             if isEmpty {
                 metadata.iptc.removeAll(for: .headline)
                 metadata.iptc.removeAll(for: .objectName)
+                metadata.xmp?.removeValue(namespace: XMPNamespace.photoshop, property: "Headline")
+                metadata.xmp?.removeValue(namespace: XMPNamespace.dc, property: "title")
             } else {
                 metadata.iptc.headline = value
                 metadata.iptc.objectName = value
@@ -285,6 +300,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         case .description:
             if isEmpty {
                 metadata.iptc.removeAll(for: .captionAbstract)
+                metadata.xmp?.removeValue(namespace: XMPNamespace.dc, property: "description")
             } else {
                 metadata.iptc.caption = value
             }
@@ -294,11 +310,14 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
             if !isEmpty {
                 let keywords = value.components(separatedBy: ", ")
                 metadata.iptc.keywords = keywords
+            } else {
+                metadata.xmp?.removeValue(namespace: XMPNamespace.dc, property: "subject")
             }
 
         case .creator:
             if isEmpty {
                 metadata.iptc.removeAll(for: .byline)
+                metadata.xmp?.removeValue(namespace: XMPNamespace.dc, property: "creator")
             } else {
                 metadata.iptc.byline = value
             }
@@ -306,6 +325,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         case .credit:
             if isEmpty {
                 metadata.iptc.removeAll(for: .credit)
+                metadata.xmp?.removeValue(namespace: XMPNamespace.photoshop, property: "Credit")
             } else {
                 metadata.iptc.credit = value
             }
@@ -313,6 +333,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         case .rights:
             if isEmpty {
                 metadata.iptc.removeAll(for: .copyrightNotice)
+                metadata.xmp?.removeValue(namespace: XMPNamespace.dc, property: "rights")
             } else {
                 metadata.iptc.copyright = value
             }
@@ -320,6 +341,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         case .transmissionReference:
             if isEmpty {
                 metadata.iptc.removeAll(for: .originalTransmissionReference)
+                metadata.xmp?.removeValue(namespace: XMPNamespace.photoshop, property: "TransmissionReference")
             } else {
                 metadata.iptc.jobId = value
             }
@@ -327,6 +349,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         case .dateCreated:
             if isEmpty {
                 metadata.iptc.removeAll(for: .dateCreated)
+                metadata.xmp?.removeValue(namespace: XMPNamespace.photoshop, property: "DateCreated")
             } else {
                 metadata.iptc.dateCreated = value
             }
@@ -334,6 +357,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         case .city:
             if isEmpty {
                 metadata.iptc.removeAll(for: .city)
+                metadata.xmp?.removeValue(namespace: XMPNamespace.photoshop, property: "City")
             } else {
                 metadata.iptc.city = value
             }
@@ -341,6 +365,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         case .country:
             if isEmpty {
                 metadata.iptc.removeAll(for: .countryPrimaryLocationName)
+                metadata.xmp?.removeValue(namespace: XMPNamespace.photoshop, property: "Country")
             } else {
                 metadata.iptc.countryName = value
             }

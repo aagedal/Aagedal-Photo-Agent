@@ -652,33 +652,60 @@ struct SettingsView: View {
             }
 
             Section("Write Behavior") {
-                Picker("Non-C2PA Images", selection: $settingsViewModel.metadataWriteModeNonC2PA) {
-                    ForEach(MetadataWriteMode.allCases) { mode in
-                        Text(mode.displayName).tag(mode)
+                Picker("Mode", selection: $settingsViewModel.metadataWritePreset) {
+                    ForEach(MetadataWritePreset.allCases) { preset in
+                        Text(preset.displayName).tag(preset)
                     }
                 }
-                .pickerStyle(.radioGroup)
+                .pickerStyle(.segmented)
 
-                Text(settingsViewModel.metadataWriteModeNonC2PA.description)
+                Text(settingsViewModel.metadataWritePreset.summary)
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                Divider()
+                if settingsViewModel.metadataWritePreset == .custom {
+                    Divider()
 
-                Picker("C2PA-Protected Images", selection: $settingsViewModel.metadataWriteModeC2PA) {
-                    ForEach(MetadataWriteMode.c2paOptions) { mode in
-                        Text(mode.displayName).tag(mode)
+                    Picker("RAW Images", selection: $settingsViewModel.metadataWriteModeRaw) {
+                        ForEach(MetadataWriteMode.standardOptions) { mode in
+                            Text(mode.displayName).tag(mode)
+                        }
                     }
-                }
-                .pickerStyle(.radioGroup)
+                    .pickerStyle(.radioGroup)
+                    Text(settingsViewModel.metadataWriteModeRaw.description)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
 
-                Text(settingsViewModel.metadataWriteModeC2PA.description)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    Divider()
+
+                    Picker("Non-C2PA Images", selection: $settingsViewModel.metadataWriteModeNonC2PA) {
+                        ForEach(MetadataWriteMode.standardOptions) { mode in
+                            Text(mode.displayName).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.radioGroup)
+                    Text(settingsViewModel.metadataWriteModeNonC2PA.description)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Divider()
+
+                    Picker("C2PA-Protected Images", selection: $settingsViewModel.metadataWriteModeC2PA) {
+                        ForEach(MetadataWriteMode.c2paOptions) { mode in
+                            Text(mode.displayName).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.radioGroup)
+                    Text(settingsViewModel.metadataWriteModeC2PA.description)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
 
                 Text("C2PA content credentials can be invalidated by writing to the image file. You will be prompted before overwriting.")
                     .font(.caption)
                     .foregroundStyle(.orange)
+
+                Divider()
 
                 Toggle("Prefer XMP sidecar when available", isOn: $settingsViewModel.preferXMPSidecar)
                 Text("When an XMP sidecar exists, use it as the primary metadata source for viewing and comparisons.")

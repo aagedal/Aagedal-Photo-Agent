@@ -9,7 +9,6 @@
 /* Begin PBXBuildFile section */
 		0A05BF3BF20F46F2A6736C66 /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 9B9D2A9AC78186B52BFC36D2 /* Cocoa.framework */; };
 		1C7A6B9BA3F2E2C3F90503C1 /* IPTCMetadataTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38D2DABC30701F41BE3F6B54 /* IPTCMetadataTests.swift */; };
-		AB1000000000000000000002 /* FTPServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1000000000000000000001 /* FTPServiceTests.swift */; };
 		8ED369F42F8CF02C00FB9A33 /* SwiftExif in Frameworks */ = {isa = PBXBuildFile; productRef = 8ED369F32F8CF02C00FB9A33 /* SwiftExif */; };
 		8ED36A042F8CF03000FB9A33 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 8ED36A032F8CF03000FB9A33 /* Sparkle */; };
 		AB0100000000000000000002 /* ApprovedListBypassTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0100000000000000000001 /* ApprovedListBypassTests.swift */; };
@@ -20,9 +19,10 @@
 		AB0600000000000000000002 /* MetadataEngineConcurrencyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0600000000000000000001 /* MetadataEngineConcurrencyTests.swift */; };
 		AB0700000000000000000002 /* PresetVariableInterpolatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0700000000000000000001 /* PresetVariableInterpolatorTests.swift */; };
 		AB0800000000000000000002 /* CoordinateParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0800000000000000000001 /* CoordinateParserTests.swift */; };
+		AB0900000000000000000002 /* KnownPeopleServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0900000000000000000001 /* KnownPeopleServiceTests.swift */; };
+		AB1000000000000000000002 /* FTPServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1000000000000000000001 /* FTPServiceTests.swift */; };
 		AB1100000000000000000002 /* FullScreenImageCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1100000000000000000001 /* FullScreenImageCacheTests.swift */; };
 		AB1200000000000000000002 /* EditExportPipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1200000000000000000001 /* EditExportPipelineTests.swift */; };
-		AB0900000000000000000002 /* KnownPeopleServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0900000000000000000001 /* KnownPeopleServiceTests.swift */; };
 		B71AFE10A1B0E2510C12C200 /* ApprovedListServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A71AFE10A1B0E2510C12C100 /* ApprovedListServiceTests.swift */; };
 		D1C0023217A1B0E2510C12C2 /* MetadataIOCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */; };
 		E957DC81E4AA200C4CD87043 /* MetadataSidecarServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CB424FD4CEB2C23AEFF5DB0 /* MetadataSidecarServiceTests.swift */; };
@@ -41,7 +41,6 @@
 /* Begin PBXFileReference section */
 		0F23FE232CC64C60490D92B3 /* Aagedal Photo Agent Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Aagedal Photo Agent Tests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		38D2DABC30701F41BE3F6B54 /* IPTCMetadataTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = IPTCMetadataTests.swift; sourceTree = "<group>"; };
-		AB1000000000000000000001 /* FTPServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FTPServiceTests.swift; sourceTree = "<group>"; };
 		8E0556B32F28C3F600BCFB49 /* Aagedal Photo Agent.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Aagedal Photo Agent.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		8E0557412F29098D00BCFB49 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		8E05576D2F2A149800BCFB49 /* TODO.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = TODO.md; sourceTree = "<group>"; };
@@ -56,9 +55,10 @@
 		AB0600000000000000000001 /* MetadataEngineConcurrencyTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataEngineConcurrencyTests.swift; sourceTree = "<group>"; };
 		AB0700000000000000000001 /* PresetVariableInterpolatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PresetVariableInterpolatorTests.swift; sourceTree = "<group>"; };
 		AB0800000000000000000001 /* CoordinateParserTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CoordinateParserTests.swift; sourceTree = "<group>"; };
+		AB0900000000000000000001 /* KnownPeopleServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KnownPeopleServiceTests.swift; sourceTree = "<group>"; };
+		AB1000000000000000000001 /* FTPServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FTPServiceTests.swift; sourceTree = "<group>"; };
 		AB1100000000000000000001 /* FullScreenImageCacheTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FullScreenImageCacheTests.swift; sourceTree = "<group>"; };
 		AB1200000000000000000001 /* EditExportPipelineTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = EditExportPipelineTests.swift; sourceTree = "<group>"; };
-		AB0900000000000000000001 /* KnownPeopleServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KnownPeopleServiceTests.swift; sourceTree = "<group>"; };
 		D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataIOCoordinatorTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 

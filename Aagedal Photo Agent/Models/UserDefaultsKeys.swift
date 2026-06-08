@@ -6,14 +6,16 @@ nonisolated enum UserDefaultsKeys {
     static let defaultEditDestination = "defaultEditDestination"
 
     // MARK: - Metadata Write Mode
+    /// Top-level preset (simple / professional / custom). Drives mode resolution; the
+    /// per-category keys below apply only under `.custom`.
+    static let metadataWritePreset = "metadataWritePreset"
     static let metadataWriteMode = "metadataWriteMode"
     static let metadataWriteModeNonC2PA = "metadataWriteModeNonC2PA"
     static let metadataWriteModeC2PA = "metadataWriteModeC2PA"
+    /// Custom-preset RAW write mode (RAW files, any C2PA status).
+    static let metadataWriteModeRaw = "metadataWriteModeRaw"
     static let metadataPreferXMPSidecar = "metadataPreferXMPSidecar"
     static let metadataAskOnMultipleSources = "metadataAskOnMultipleSources"
-    static let pmXmpCompatibilityMode = "pmXmpCompatibilityMode"
-    static let pmNonRawXmpBehavior = "pmNonRawXmpBehavior"
-    static let pmNonRawXmpRememberedChoice = "pmNonRawXmpRememberedChoice"
 
     // MARK: - Face Recognition
     static let faceCleanupPolicy = "faceCleanupPolicy"

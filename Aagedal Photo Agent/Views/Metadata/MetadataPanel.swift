@@ -361,7 +361,8 @@ struct MetadataPanel: View {
         flushBufferedFields()
         guard viewModel.hasChanges else { return }
         let hasC2PA = browserViewModel.selectedImages.contains { $0.hasC2PA }
-        let mode = hasC2PA ? settingsViewModel.metadataWriteModeC2PA : settingsViewModel.metadataWriteModeNonC2PA
+        let isRaw = browserViewModel.selectedImages.contains { SupportedImageFormats.isRaw(url: $0.url) }
+        let mode = MetadataWriteMode.current(forC2PA: hasC2PA, isRaw: isRaw)
         if hasC2PA, mode == .writeToFile {
             if !pendingC2PASelection.isEmpty, Set(pendingC2PASelection) == Set(viewModel.selectedURLs) {
                 return
@@ -399,6 +400,7 @@ struct MetadataPanel: View {
                                 }
 
                                 noticeBanner
+                                comparisonBanner
 
                                 metadataSourceBand
                                 ratingAndLabelSection
@@ -482,15 +484,14 @@ struct MetadataPanel: View {
             }
             fieldSelections[key] = editor.selectedRange()
         }
-        .alert("Multiple Metadata Sources", isPresented: $viewModel.showMetadataSourceChoice) {
-            Button("Embedded") {
-                viewModel.applyReferenceSource(.embedded)
-            }
-            Button("XMP Sidecar") {
-                viewModel.applyReferenceSource(.xmp)
-            }
-        } message: {
-            Text("This image has both embedded and XMP sidecar metadata with different values. Which source would you like to use?")
+        .sheet(isPresented: $viewModel.showMetadataComparison) {
+            MetadataComparisonSheet(
+                comparison: viewModel.metadataComparison,
+                isStale: viewModel.comparisonSidecarIsStale,
+                onApply: { viewModel.resolveMetadataComparison($0) },
+                onUseAll: { viewModel.resolveMetadataComparison(allFrom: $0) },
+                onCancel: { viewModel.showMetadataComparison = false }
+            )
         }
         .alert("C2PA Protected Image", isPresented: $showingC2PAWarning) {
             Button("Cancel", role: .cancel) {
@@ -1377,6 +1378,41 @@ struct MetadataPanel: View {
         .controlSize(.small)
     }
 
+    /// Shown when the embedded image and its `.xmp` sidecar have differing descriptive
+    /// fields. Opens the per-field comparison sheet. Hidden while the sheet is open.
+    @ViewBuilder
+    private var comparisonBanner: some View {
+        if !viewModel.metadataComparison.isEmpty, !viewModel.showMetadataComparison {
+            let isStale = viewModel.comparisonSidecarIsStale
+            Button {
+                viewModel.showMetadataComparison = true
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: isStale ? "exclamationmark.triangle.fill" : "arrow.triangle.2.circlepath")
+                        .foregroundStyle(isStale ? Color.yellow : Color.secondary)
+                        .font(.caption)
+                    Text(isStale
+                         ? "Sidecar may be stale — \(viewModel.metadataComparison.count) field\(viewModel.metadataComparison.count == 1 ? "" : "s") differ"
+                         : "Embedded and sidecar differ in \(viewModel.metadataComparison.count) field\(viewModel.metadataComparison.count == 1 ? "" : "s")")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                    Text("Compare…")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(Color.accentColor)
+                }
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill((isStale ? Color.yellow : Color.accentColor).opacity(0.08))
+                        .strokeBorder((isStale ? Color.yellow : Color.accentColor).opacity(0.3), lineWidth: 0.5)
+                )
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
     @ViewBuilder
     private var noticeBanner: some View {
         if let notice = viewModel.notice {
@@ -1535,7 +1571,8 @@ struct MetadataPanel: View {
 
             HStack(spacing: 12) {
                 let hasC2PA = browserViewModel.selectedImages.contains { $0.hasC2PA }
-                let mode = hasC2PA ? settingsViewModel.metadataWriteModeC2PA : settingsViewModel.metadataWriteModeNonC2PA
+                let isRaw = browserViewModel.selectedImages.contains { SupportedImageFormats.isRaw(url: $0.url) }
+                let mode = MetadataWriteMode.current(forC2PA: hasC2PA, isRaw: isRaw)
 
                 if let onApplyTemplate {
                     Button {

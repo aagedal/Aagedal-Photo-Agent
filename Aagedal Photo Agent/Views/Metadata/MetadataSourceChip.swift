@@ -3,6 +3,7 @@ import SwiftUI
 enum MetadataDestination: Equatable, Sendable {
     case embedded
     case sidecar
+    case embeddedAndSidecar
     case askedAtSave
     case mixed
 
@@ -10,6 +11,7 @@ enum MetadataDestination: Equatable, Sendable {
         switch self {
         case .embedded: return .blue
         case .sidecar: return .orange
+        case .embeddedAndSidecar: return .blue
         case .askedAtSave, .mixed: return .secondary
         }
     }
@@ -18,6 +20,7 @@ enum MetadataDestination: Equatable, Sendable {
         switch self {
         case .embedded: return "doc"
         case .sidecar: return "doc.badge.ellipsis"
+        case .embeddedAndSidecar: return "doc.on.doc"
         case .askedAtSave: return "questionmark.circle"
         case .mixed: return "rectangle.on.rectangle"
         }
@@ -27,6 +30,7 @@ enum MetadataDestination: Equatable, Sendable {
         switch self {
         case .embedded: return "Embedded file"
         case .sidecar: return "XMP sidecar"
+        case .embeddedAndSidecar: return "File + XMP sidecar"
         case .askedAtSave: return "Asked at save"
         case .mixed: return "Mixed"
         }
@@ -88,10 +92,14 @@ struct MetadataSourceChip: View {
             return "The current selection contains images with different read sources."
         case (.reading, .askedAtSave):
             return "Reading source is decided at save time."
+        case (.reading, .embeddedAndSidecar):
+            return "Metadata is kept in both the image file and the .xmp sidecar."
         case (.writing, .embedded):
             return "Edits will be written into the image file."
         case (.writing, .sidecar):
             return "Edits will be written to the .xmp sidecar — the image file is not modified."
+        case (.writing, .embeddedAndSidecar):
+            return "Edits will be written into the image file and a matching .xmp sidecar."
         case (.writing, .mixed):
             return "The current selection mixes RAW and non-RAW images with different write destinations."
         case (.writing, .askedAtSave):

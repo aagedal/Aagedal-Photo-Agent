@@ -39,7 +39,14 @@ final class MetadataViewModel {
     var variableProcessingHadFailures = false
     var selectedHasC2PA = false
     var descriptionConflict: DescriptionConflict?
-    var showMetadataSourceChoice = false
+    /// Per-field differences between the embedded image and its `.xmp` sidecar, for the
+    /// comparison/merge sheet. Empty when the two agree (or there's no sidecar).
+    var metadataComparison: [MetadataFieldComparison] = []
+    /// Drives presentation of the comparison sheet.
+    var showMetadataComparison = false
+    /// True when the sidecar looked stale at load (image file newer than the `.xmp` and they
+    /// differ) — used to default the per-field picks to embedded and to message the conflict.
+    var comparisonSidecarIsStale = false
     /// Non-blocking notice rendered as a dismissible banner in the metadata panel.
     /// Set by bulk-add paths (template apply, partial promotion, Quick List pick)
     /// when entries are rejected or canonicalised against the approved list.
@@ -198,39 +205,29 @@ final class MetadataViewModel {
     /// Returns nil when nothing is selected.
     var nextWriteDestination: MetadataWriteDestinations? {
         guard !selectedURLs.isEmpty else { return nil }
-        let perFile = selectedURLs.map(Self.writeDestinations(for:))
+        let perFile = selectedURLs.map { Self.writeDestinations(for: $0, isC2PA: selectedHasC2PA) }
         let iptc = Self.reduceDestinations(perFile.map(\.iptc))
         let develop = Self.reduceDestinations(perFile.map(\.develop))
         return MetadataWriteDestinations(iptc: iptc, develop: develop)
     }
 
-    private static func writeDestinations(for url: URL) -> MetadataWriteDestinations {
+    /// Where an IPTC/Develop write will actually land. Mirrors the real write dispatch
+    /// (`saveMetadataToDestination` / `commitEdits`) so the panel's "Next write" chip and
+    /// the "sources differ" warning reflect reality — honoring the write preset, C2PA
+    /// status, and RAW (all encoded in `MetadataWriteMode.current(forC2PA:isRaw:)`).
+    private static func writeDestinations(for url: URL, isC2PA: Bool) -> MetadataWriteDestinations {
         let isRaw = SupportedImageFormats.isRaw(url: url)
+        // Camera Raw / develop edits live in the XMP sidecar for RAW (the file is never
+        // modified); embedded otherwise.
         let developDest: MetadataDestination = isRaw ? .sidecar : .embedded
-        if isRaw {
-            return MetadataWriteDestinations(iptc: .embedded, develop: developDest)
-        }
-        guard PMXMPPolicy.mode == .strictPhotoMechanic else {
-            return MetadataWriteDestinations(iptc: .embedded, develop: developDest)
-        }
         let iptc: MetadataDestination
-        switch PMXMPPolicy.nonRawBehavior {
-        case .historyOnly:
-            iptc = .sidecar
-        case .embeddedWrite, .syncRawJpegPair:
-            iptc = .embedded
-        case .alwaysAsk:
-            iptc = remembered(from: PMXMPPolicy.rememberedChoice) ?? .askedAtSave
+        switch MetadataWriteMode.current(forC2PA: isC2PA, isRaw: isRaw) {
+        case .writeToFile: iptc = .embedded
+        case .writeToXMPSidecar: iptc = .sidecar
+        case .historyOnly: iptc = .sidecar
+        case .writeToFileAndXMPSidecar: iptc = .embeddedAndSidecar
         }
         return MetadataWriteDestinations(iptc: iptc, develop: developDest)
-    }
-
-    private static func remembered(from choice: PMNonRAWXMPSidecarChoice?) -> MetadataDestination? {
-        switch choice {
-        case .historyOnly: return .sidecar
-        case .embeddedWrite, .syncRawJpegPair: return .embedded
-        case nil: return nil
-        }
     }
 
     private static func reduceDestinations(_ values: [MetadataDestination]) -> MetadataDestination {
@@ -239,8 +236,7 @@ final class MetadataViewModel {
     }
 
     private func loadXMPMetadataIfAllowed(for imageURL: URL) -> IPTCMetadata? {
-        guard PMXMPPolicy.shouldUseXMPReference(for: imageURL) else { return nil }
-        return xmpSidecarService.loadSidecar(for: imageURL)
+        xmpSidecarService.loadSidecar(for: imageURL)
     }
 
     func loadMetadata(for images: [ImageFile], folderURL: URL? = nil) {
@@ -255,6 +251,9 @@ final class MetadataViewModel {
         variableProcessingStatus = nil
         selectedHasC2PA = images.contains { $0.hasC2PA }
         descriptionConflict = nil
+        metadataComparison = []
+        showMetadataComparison = false
+        comparisonSidecarIsStale = false
         sidecarHistory = []
         originalImageMetadata = nil
         embeddedMetadata = nil
@@ -301,6 +300,17 @@ final class MetadataViewModel {
                     self.perfLog.info("[MetadataVM] metadata read returned — \(exifMs)ms for \(imageURL.lastPathComponent, privacy: .public)")
                     guard !Task.isCancelled else { return }
                     let xmpMeta = self.loadXMPMetadataIfAllowed(for: imageURL)
+                    // Reconcile embedded vs sidecar: the sidecar is master unless the image
+                    // file was modified more recently and they disagree (e.g. Adobe Bridge
+                    // wrote into the file after the sidecar), in which case the file is the
+                    // trustworthy source. See SidecarReconciliation.
+                    let sidecarIsStale: Bool = {
+                        guard let xmp = xmpMeta else { return false }
+                        return SidecarReconciliation.verdict(
+                            imageURL: imageURL,
+                            sidecarURL: XMPSidecarService().sidecarURL(for: imageURL),
+                            embedded: embedded, sidecar: xmp) == .fileNewerConflict
+                    }()
                     // Preserve the user's manual reference source selection when
                     // reloading the same image (e.g. auto-refresh, post-save).
                     // Only fall back to the default on first load or if the
@@ -309,6 +319,10 @@ final class MetadataViewModel {
                     if isReloadingSameImage,
                        !(self.metadataReferenceSource == .xmp && xmpMeta == nil) {
                         referenceSource = self.metadataReferenceSource
+                    } else if sidecarIsStale {
+                        // Stale sidecar → trust the embedded file by default; the comparison
+                        // sheet lets the user merge per field.
+                        referenceSource = .embedded
                     } else {
                         referenceSource = self.defaultReferenceSource(hasXmp: xmpMeta != nil)
                     }
@@ -328,12 +342,20 @@ final class MetadataViewModel {
                     self.metadata = baseMeta
                     self.originalImageMetadata = baseMeta
 
-                    // Show source choice prompt when both sources exist with
-                    // different IPTC content and the "ask" setting is enabled.
-                    if self.shouldAskOnMultipleSources,
-                       let xmp = xmpMeta,
-                       embedded.hasIPTCDifferences(from: xmp) {
-                        self.showMetadataSourceChoice = true
+                    // Build the per-field embedded-vs-sidecar comparison. Always populated
+                    // (so the panel banner can offer "Compare…") when the two differ; the
+                    // sheet auto-opens on a stale conflict, or when the user opted into the
+                    // "ask on multiple sources" prompt.
+                    if let xmp = xmpMeta {
+                        let diffs = MetadataComparison.differences(embedded: embedded, sidecar: xmp)
+                        self.metadataComparison = diffs
+                        self.comparisonSidecarIsStale = sidecarIsStale
+                        if !diffs.isEmpty, sidecarIsStale || self.shouldAskOnMultipleSources {
+                            self.showMetadataComparison = true
+                        }
+                    } else {
+                        self.metadataComparison = []
+                        self.comparisonSidecarIsStale = false
                     }
 
                     var newEditingMetadata = baseMeta
@@ -631,6 +653,28 @@ final class MetadataViewModel {
         markChanged()
     }
 
+    /// Stage the user's per-field embedded/sidecar picks into the editor. The merged result
+    /// becomes the current edit (marked unsaved); the user saves normally afterwards, so this
+    /// goes through the existing write-mode/history flow rather than writing to disk directly.
+    func resolveMetadataComparison(_ choices: [IPTCMetadata.FieldKey: MetadataSource]) {
+        guard let embedded = embeddedMetadata, let sidecar = xmpMetadata else {
+            showMetadataComparison = false
+            return
+        }
+        editingMetadata = MetadataComparison.merge(
+            base: editingMetadata, embedded: embedded, sidecar: sidecar, choices: choices)
+        metadataComparison = []
+        comparisonSidecarIsStale = false
+        showMetadataComparison = false
+        markChanged()
+    }
+
+    /// Convenience: take every differing field from one source (the "use all" shortcuts).
+    func resolveMetadataComparison(allFrom source: MetadataSource) {
+        let choices = Dictionary(uniqueKeysWithValues: metadataComparison.map { ($0.field, source) })
+        resolveMetadataComparison(choices)
+    }
+
     func importEmbeddedCrop() {
         guard let embeddedCrop = embeddedMetadata?.cameraRaw?.crop,
               embeddedCrop.hasCrop == true else { return }
@@ -652,19 +696,15 @@ final class MetadataViewModel {
             saveToSidecar()
             onComplete?()
         case .writeToXMPSidecar:
-            if PMXMPPolicy.mode == .strictPhotoMechanic {
-                writeStrictPhotoMechanicXMP(onComplete: onComplete)
-                return
-            }
             writeXMPSidecarAndPreserveHistory(onComplete: onComplete)
-        case .writeToFile:
+        case .writeToFile, .writeToFileAndXMPSidecar:
             if hasC2PA && !allowC2PAOverwrite {
                 saveToSidecar()
                 saveError = "C2PA-protected image. Changes were saved to history only."
                 onComplete?()
                 return
             }
-            writeMetadataAndPreserveHistory(onComplete: onComplete)
+            writeMetadataAndPreserveHistory(alsoWriteXMPSidecar: mode.writesXMPSidecar, onComplete: onComplete)
         }
     }
 
@@ -792,16 +832,6 @@ final class MetadataViewModel {
         }
     }
 
-    private func resolveStrictNonRawChoice(for urls: [URL]) async throws -> PMNonRAWXMPSidecarChoice? {
-        let hasNonRaw = urls.contains { !SupportedImageFormats.isRaw(url: $0) }
-        guard hasNonRaw else { return nil }
-        let choice = await MainActor.run {
-            PMXMPPolicy.resolveNonRawChoiceWithPromptIfNeeded()
-        }
-        guard let choice else { throw CancellationError() }
-        return choice
-    }
-
     private func batchWriteFields(from metadata: IPTCMetadata) -> [MetadataFieldKey: String] {
         var fields: [MetadataFieldKey: String] = [:]
         if let v = metadata.title, !v.isEmpty { fields[.headline] = v }
@@ -855,197 +885,6 @@ final class MetadataViewModel {
         }
 
         return (addTags, removeTags)
-    }
-
-    private func writeStrictPhotoMechanicXMP(onComplete: (() -> Void)? = nil) {
-        guard let folderURL = currentFolderURL else {
-            writeXMPSidecar()
-            onComplete?()
-            return
-        }
-        guard !selectedURLs.isEmpty else {
-            onComplete?()
-            return
-        }
-
-        if selectedCount == 1, let imageURL = selectedURLs.first {
-            if SupportedImageFormats.isRaw(url: imageURL) {
-                writeXMPSidecarAndPreserveHistory(onComplete: onComplete)
-                return
-            }
-
-            writeTask?.cancel()
-            writeTask = Task {
-                do {
-                    guard let choice = try await resolveStrictNonRawChoice(for: [imageURL]) else {
-                        onComplete?()
-                        return
-                    }
-
-                    switch choice {
-                    case .historyOnly:
-                        saveToSidecar()
-                        onComplete?()
-                    case .embeddedWrite:
-                        writeMetadataAndClearSidecarForCurrentSelection(onComplete: onComplete)
-                    case .syncRawJpegPair:
-                        writeMetadataAndClearSidecarForCurrentSelection {
-                            self.writeTask?.cancel()
-                            self.writeTask = Task {
-                                await self.syncRawPairForSingleNonRaw(
-                                    nonRawURL: imageURL,
-                                    metadata: self.editingMetadata
-                                )
-                                onComplete?()
-                            }
-                        }
-                    }
-                } catch is CancellationError {
-                    saveError = PMXMPPolicy.cancelMessage
-                    onComplete?()
-                } catch {
-                    saveError = error.localizedDescription
-                    onComplete?()
-                }
-            }
-            return
-        }
-
-        isSaving = true
-        saveError = nil
-
-        let urls = selectedURLs
-        let edited = editingMetadata
-
-        writeTask?.cancel()
-        writeTask = Task {
-            do {
-                let nonRawChoice = try await resolveStrictNonRawChoice(for: urls)
-                var rawXmpTargets = Set<URL>()
-                var nonRawHistoryTargets = Set<URL>()
-                var nonRawEmbeddedTargets = Set<URL>()
-                var pairRawTargets = Set<URL>()
-                var missingPairCount = 0
-                var multiplePairCount = 0
-
-                for url in urls {
-                    if SupportedImageFormats.isRaw(url: url) {
-                        rawXmpTargets.insert(url)
-                        continue
-                    }
-
-                    guard let nonRawChoice else {
-                        continue
-                    }
-                    switch nonRawChoice {
-                    case .historyOnly:
-                        nonRawHistoryTargets.insert(url)
-                    case .embeddedWrite:
-                        nonRawEmbeddedTargets.insert(url)
-                    case .syncRawJpegPair:
-                        nonRawEmbeddedTargets.insert(url)
-                        if let pair = SupportedImageFormats.preferredRawSibling(for: url) {
-                            pairRawTargets.insert(pair.url)
-                            if pair.hadMultipleMatches {
-                                multiplePairCount += 1
-                            }
-                        } else {
-                            missingPairCount += 1
-                        }
-                    }
-                }
-
-                let allRawXmpTargets = rawXmpTargets.union(pairRawTargets)
-                let prevCommon = self.previousEditingMetadata
-                for rawURL in allRawXmpTargets {
-                    var existing = xmpSidecarService.loadSidecar(for: rawURL) ?? IPTCMetadata()
-                    applyBatchEdits(edited, to: &existing, previousCommon: prevCommon)
-                    try xmpSidecarService.saveSidecar(metadata: existing, for: rawURL)
-                }
-
-                let fields = batchWriteFields(from: edited)
-                if !nonRawEmbeddedTargets.isEmpty, !fields.isEmpty {
-                    let structuredData = StructuredWriteData(
-                        toneCurve: edited.cameraRaw?.toneCurve,
-                        masks: edited.cameraRaw?.localAdjustments
-                    )
-                    try await writeEngine.writeFields(fields, to: Array(nonRawEmbeddedTargets), structuredData: structuredData)
-                }
-
-                // Handle additive list fields for non-RAW embedded targets
-                if !nonRawEmbeddedTargets.isEmpty, let prev = prevCommon {
-                    let diffs = additiveListDiffs(from: edited, previous: prev)
-                    if !diffs.add.isEmpty || !diffs.remove.isEmpty {
-                        try await writeEngine.addRemoveListValues(
-                            add: diffs.add,
-                            remove: diffs.remove,
-                            to: Array(nonRawEmbeddedTargets)
-                        )
-                    }
-                }
-
-                if !allRawXmpTargets.isEmpty {
-                    saveBatchSidecars(
-                        folderURL: folderURL,
-                        pendingChanges: false,
-                        targetURLs: Array(allRawXmpTargets),
-                        updateState: false
-                    )
-                }
-                if !nonRawHistoryTargets.isEmpty {
-                    saveBatchSidecars(
-                        folderURL: folderURL,
-                        pendingChanges: true,
-                        targetURLs: Array(nonRawHistoryTargets),
-                        updateState: false
-                    )
-                }
-                if !nonRawEmbeddedTargets.isEmpty {
-                    removeSidecars(for: nonRawEmbeddedTargets, in: folderURL)
-                }
-
-                hasChanges = !nonRawHistoryTargets.isEmpty
-                selectedHavePendingSidecars = !nonRawHistoryTargets.isEmpty
-                if !nonRawHistoryTargets.isEmpty {
-                    saveError = "Saved \(nonRawHistoryTargets.count) non-RAW file(s) to history only."
-                } else if missingPairCount > 0 || multiplePairCount > 0 {
-                    var notes: [String] = []
-                    if missingPairCount > 0 {
-                        notes.append("\(missingPairCount) file(s) had no RAW sibling (embedded write only).")
-                    }
-                    if multiplePairCount > 0 {
-                        notes.append("\(multiplePairCount) file(s) matched multiple RAW siblings (first preferred extension used).")
-                    }
-                    saveError = notes.joined(separator: " ")
-                }
-            } catch is CancellationError {
-                saveError = PMXMPPolicy.cancelMessage
-            } catch {
-                saveError = "Failed to write metadata: \(error.localizedDescription)"
-            }
-
-            isSaving = false
-            onComplete?()
-        }
-    }
-
-    private func syncRawPairForSingleNonRaw(nonRawURL: URL, metadata: IPTCMetadata) async {
-        guard let pair = SupportedImageFormats.preferredRawSibling(for: nonRawURL) else {
-            saveError = "No RAW sibling found for \(nonRawURL.lastPathComponent). Wrote embedded metadata only."
-            return
-        }
-
-        do {
-            var existing = xmpSidecarService.loadSidecar(for: pair.url) ?? IPTCMetadata()
-            existing = existing.merged(preferring: metadata)
-            try xmpSidecarService.saveSidecar(metadata: existing, for: pair.url)
-
-            if pair.hadMultipleMatches {
-                saveError = "Multiple RAW siblings matched for \(nonRawURL.lastPathComponent). Used \(pair.url.lastPathComponent)."
-            }
-        } catch {
-            saveError = "Failed to sync RAW sidecar for \(pair.url.lastPathComponent): \(error.localizedDescription)"
-        }
     }
 
     private func writeXMPSidecar() {
@@ -1308,11 +1147,12 @@ final class MetadataViewModel {
         return absValue
     }
 
-    private func writeMetadataAndPreserveHistory(onComplete: (() -> Void)? = nil) {
+    private func writeMetadataAndPreserveHistory(alsoWriteXMPSidecar: Bool = false, onComplete: (() -> Void)? = nil) {
         guard selectedCount == 1,
               let imageURL = selectedURLs.first,
               let folderURL = currentFolderURL else {
             writeMetadata()
+            if alsoWriteXMPSidecar { writeXMPSidecar() }
             onComplete?()
             return
         }
@@ -1333,6 +1173,10 @@ final class MetadataViewModel {
                     masks: edited.cameraRaw?.localAdjustments
                 )
                 try await writeEngine.writeFields(fields, to: [imageURL], structuredData: structuredData)
+                // Professional preset: also keep a matching .xmp sidecar alongside the file.
+                if alsoWriteXMPSidecar {
+                    try xmpSidecarService.saveSidecar(metadata: edited, for: imageURL)
+                }
                 self.syncCameraRawToXMPSidecar(for: imageURL, metadata: edited)
 
                 let now = Date()
@@ -1360,51 +1204,6 @@ final class MetadataViewModel {
                     self.originalImageMetadata = edited
                     self.embeddedMetadata = edited
                     self.hasChanges = false
-                }
-            } catch {
-                self.saveError = error.localizedDescription
-            }
-            self.isSaving = false
-            onComplete?()
-        }
-    }
-
-    private func writeMetadataAndClearSidecarForCurrentSelection(onComplete: (() -> Void)? = nil) {
-        guard selectedCount == 1,
-              let imageURL = selectedURLs.first,
-              let folderURL = currentFolderURL else {
-            writeMetadata()
-            onComplete?()
-            return
-        }
-
-        let edited = editingMetadata
-
-        isSaving = true
-        saveError = nil
-
-        writeTask?.cancel()
-        writeTask = Task {
-            do {
-                let fields = overwriteFields(from: edited)
-                let structuredData = StructuredWriteData(
-                    toneCurve: edited.cameraRaw?.toneCurve,
-                    masks: edited.cameraRaw?.localAdjustments
-                )
-                try await writeEngine.writeFields(fields, to: [imageURL], structuredData: structuredData)
-                self.syncCameraRawToXMPSidecar(for: imageURL, metadata: edited)
-
-                try? sidecarService.deleteSidecar(for: imageURL, in: folderURL)
-
-                let isStillSelected = self.selectedCount == 1 && self.selectedURLs.first == imageURL
-                if isStillSelected {
-                    self.metadata = edited
-                    self.originalImageMetadata = edited
-                    self.embeddedMetadata = edited
-                    self.sidecarHistory = []
-                    self.previousEditingMetadata = edited
-                    self.hasChanges = false
-                    self.selectedHavePendingSidecars = false
                 }
             } catch {
                 self.saveError = error.localizedDescription
@@ -1645,52 +1444,12 @@ final class MetadataViewModel {
             return .savedToHistory
 
         case .writeToXMPSidecar:
-            if PMXMPPolicy.mode == .strictPhotoMechanic {
-                // In strict PM mode, RAW files get XMP sidecar normally
-                if SupportedImageFormats.isRaw(url: url) {
-                    try xmpSidecarService.saveSidecar(metadata: resolved, for: url)
-                    let sidecar = buildSidecar(pendingChanges: false, historyNote: "Written to XMP sidecar")
-                    try sidecarService.saveSidecar(sidecar, for: url, in: folder)
-                    return .writtenToXMPSidecar
-                }
-
-                // Non-RAW in PM strict mode: check nonRawBehavior setting.
-                // In batch context, we can't show dialogs, so .alwaysAsk falls back to history only.
-                switch PMXMPPolicy.nonRawBehavior {
-                case .historyOnly, .alwaysAsk:
-                    let sidecar = buildSidecar(pendingChanges: true, historyNote: "Saved to sidecar (PM strict non-RAW)")
-                    try sidecarService.saveSidecar(sidecar, for: url, in: folder)
-                    return .savedToHistory
-                case .embeddedWrite:
-                    if !fields.isEmpty {
-                        try await writeEngine.writeFields(fields, to: [url])
-                    }
-                    let sidecar = buildSidecar(pendingChanges: false, historyNote: "Written to image file (PM strict embedded)")
-                    try sidecarService.saveSidecar(sidecar, for: url, in: folder)
-                    return .writtenToFile
-                case .syncRawJpegPair:
-                    if !fields.isEmpty {
-                        try await writeEngine.writeFields(fields, to: [url])
-                    }
-                    // Write XMP sidecar for RAW sibling if found
-                    if let pair = SupportedImageFormats.preferredRawSibling(for: url) {
-                        var existing = xmpSidecarService.loadSidecar(for: pair.url) ?? IPTCMetadata()
-                        existing = existing.merged(preferring: resolved)
-                        try xmpSidecarService.saveSidecar(metadata: existing, for: pair.url)
-                    }
-                    let sidecar = buildSidecar(pendingChanges: false, historyNote: "Written to file + RAW sibling XMP (PM strict sync)")
-                    try sidecarService.saveSidecar(sidecar, for: url, in: folder)
-                    return .writtenToFile
-                }
-            }
-
-            // Normal XMP sidecar mode
             try xmpSidecarService.saveSidecar(metadata: resolved, for: url)
             let sidecar = buildSidecar(pendingChanges: false, historyNote: "Written to XMP sidecar")
             try sidecarService.saveSidecar(sidecar, for: url, in: folder)
             return .writtenToXMPSidecar
 
-        case .writeToFile:
+        case .writeToFile, .writeToFileAndXMPSidecar:
             if image.hasC2PA {
                 // C2PA-protected: save to sidecar only (same safety guard as commitEdits)
                 let sidecar = buildSidecar(pendingChanges: true, historyNote: "Saved to sidecar (C2PA protected)")
@@ -1701,7 +1460,12 @@ final class MetadataViewModel {
             if !fields.isEmpty {
                 try await writeEngine.writeFields(fields, to: [url])
             }
-            let sidecar = buildSidecar(pendingChanges: false, historyNote: "Written to image file")
+            // Professional preset: also keep a matching .xmp sidecar alongside the file.
+            if mode.writesXMPSidecar {
+                try xmpSidecarService.saveSidecar(metadata: resolved, for: url)
+            }
+            let note = mode.writesXMPSidecar ? "Written to image file + XMP sidecar" : "Written to image file"
+            let sidecar = buildSidecar(pendingChanges: false, historyNote: note)
             try sidecarService.saveSidecar(sidecar, for: url, in: folder)
             return .writtenToFile
         }
