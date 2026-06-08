@@ -22,6 +22,9 @@ struct Aagedal_Photo_AgentApp: App {
             KnownPeopleCloudCoordinator.shared.refresh()
             RosterCloudCoordinator.shared.refresh()
             PreferencesSyncService.shared.start()
+            // Begin keeping local timestamped backups of every keyword list and
+            // watch for empty-list-at-launch so we can offer a restore.
+            KeywordListsBackupService.shared.start()
         }
 
         // Pre-generate the CIE chromaticity background on a background thread

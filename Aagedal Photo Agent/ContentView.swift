@@ -89,6 +89,11 @@ struct ContentView: View {
     @State private var scopeViewModel = ScopeViewModel()
     @State private var scopeImageTask: Task<Void, Never>?
 
+    // Keyword-list backup recovery (prompts when a list comes back empty at launch).
+    @State private var isShowingListRecoveryPrompt = false
+    @State private var isShowingListBackups = false
+    @State private var listRecoveryHandled = false
+
     init() {
         let browser = BrowserViewModel()
         let faceRecognition = FaceRecognitionViewModel(readService: browser.metadataReadService, writeEngine: browser.writeEngine)
@@ -107,6 +112,23 @@ struct ContentView: View {
         contentWithStateHandlers
             .onReceive(NotificationCenter.default.publisher(for: .showStructuredKeywords)) { _ in
                 openWindow(id: "structuredKeywords")
+            }
+            .onChange(of: KeywordListsBackupService.shared.recoverableKeys.map(\.relativePath)) { _, keys in
+                // A keyword list read empty at launch while a backup exists.
+                // Offer to restore — once per launch, and never auto-write.
+                if !keys.isEmpty && !listRecoveryHandled {
+                    listRecoveryHandled = true
+                    isShowingListRecoveryPrompt = true
+                }
+            }
+            .alert("Some keyword lists look empty", isPresented: $isShowingListRecoveryPrompt) {
+                Button("Not Now", role: .cancel) { }
+                Button("Restore…") { isShowingListBackups = true }
+            } message: {
+                Text("One or more keyword lists came back empty, but local backups are available. You can restore an earlier version.")
+            }
+            .sheet(isPresented: $isShowingListBackups) {
+                KeywordListBackupsSheet(initialKey: KeywordListsBackupService.shared.recoverableKeys.first)
             }
     }
 

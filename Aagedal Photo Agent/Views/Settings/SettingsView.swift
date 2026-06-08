@@ -33,6 +33,7 @@ struct SettingsView: View {
     @State private var quickListsArchiveMessage: String?
     @State private var showingExportSheet = false
     @State private var importSource: ImportSource?
+    @State private var showingBackupsSheet = false
 
     /// Wrapper so we can drive `.sheet(item:)` from a URL, which is not
     /// Identifiable on its own.
@@ -1050,6 +1051,9 @@ struct SettingsView: View {
                     Button("Import Lists…") {
                         chooseImportSource()
                     }
+                    Button("Restore from Backup…") {
+                        showingBackupsSheet = true
+                    }
                     if let quickListsArchiveMessage {
                         Text(quickListsArchiveMessage)
                             .font(.caption)
@@ -1062,10 +1066,16 @@ struct SettingsView: View {
                 Text("Bundles your approved keywords and structured keyword/Person Shown trees into a single .zip with a manifest. On import you can replace or append per list — useful for merging collaborators' lists or restoring from a backup. Quick lists have their own Import / Export on the Quick Lists tab.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Text("Restore from Backup recovers earlier versions of any list (including quick lists) from automatic local backups kept on this Mac — handy if a list ever comes back empty after an iCloud sync.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
         .padding()
+        .sheet(isPresented: $showingBackupsSheet) {
+            KeywordListBackupsSheet()
+        }
         .sheet(isPresented: $editingApprovedKeywords) {
             KeywordListEditor(
                 title: "Approved Keywords",
