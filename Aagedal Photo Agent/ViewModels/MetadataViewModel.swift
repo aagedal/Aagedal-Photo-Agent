@@ -1959,6 +1959,16 @@ final class MetadataViewModel {
             new: edited.digitalSourceType?.rawValue
         )
 
+        func formatGPS(_ lat: Double?, _ lon: Double?) -> String? {
+            guard let lat, let lon else { return nil }
+            return "\(lat), \(lon)"
+        }
+        recordChange(
+            "GPS",
+            old: formatGPS(previous.latitude, previous.longitude),
+            new: formatGPS(edited.latitude, edited.longitude)
+        )
+
         history.trimToHistoryLimit()
         return history
     }
@@ -2091,6 +2101,15 @@ final class MetadataViewModel {
         }
         if batchMeta.digitalSourceType != nil {
             metadata.digitalSourceType = batchMeta.digitalSourceType
+        }
+
+        // GPS — apply only when both coordinates are set, mirroring the batch
+        // file-write path in writeMetadata(). When GPS differs across the
+        // selection and the user hasn't picked a location, the common
+        // coordinates are nil, so each image's existing GPS is preserved.
+        if let lat = batchMeta.latitude, let lon = batchMeta.longitude {
+            metadata.latitude = lat
+            metadata.longitude = lon
         }
     }
 
