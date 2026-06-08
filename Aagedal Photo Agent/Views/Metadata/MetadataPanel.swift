@@ -125,7 +125,7 @@ struct MetadataPanel: View {
             suggestionProvider: suggestionProvider,
             validator: validator,
             flaggedKeywords: flagged,
-            hideQuickListMenu: approvedActive,
+            hideQuickListMenu: false,
             autoHighlightFirstSuggestion: approvedActive && approvedMode != .suggest,
             onValidationReject: { rejected in
                 let count = rejected.count
@@ -1696,16 +1696,6 @@ struct KeywordsEditorWithDiff: View {
                     MultipleValuesIndicator()
                 }
                 Spacer()
-                if let onShowStructuredKeywords {
-                    Button {
-                        onShowStructuredKeywords()
-                    } label: {
-                        Image(systemName: "list.bullet.indent")
-                            .font(.caption)
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Open Structured Keywords picker")
-                }
                 if quickListMenuVisible {
                     Button {
                         quickListPopoverShown.toggle()
@@ -1737,6 +1727,16 @@ struct KeywordsEditorWithDiff: View {
                             onClose: { quickListPopoverShown = false }
                         )
                     }
+                }
+                if let onShowStructuredKeywords {
+                    Button {
+                        onShowStructuredKeywords()
+                    } label: {
+                        Image(systemName: "list.bullet.indent")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Open Structured Keywords picker")
                 }
             }
 

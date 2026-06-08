@@ -58,6 +58,14 @@ struct StructuredKeywordsPicker: View {
             footer
         }
         .frame(minWidth: 360, idealWidth: 420, minHeight: 420, idealHeight: 560)
+        .onAppear {
+            // Focus the search field as soon as the picker opens. Deferring to the
+            // next runloop tick lets the sheet finish presenting first; setting
+            // focus synchronously in onAppear is dropped on a freshly-shown sheet.
+            DispatchQueue.main.async {
+                searchFieldFocused = true
+            }
+        }
         .onKeyPress(keys: ["f"]) { press in
             // Cmd-F: jump to search field.
             guard press.modifiers.contains(.command) else { return .ignored }
