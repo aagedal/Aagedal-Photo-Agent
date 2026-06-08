@@ -34,6 +34,16 @@ nonisolated enum UserDefaultsKeys {
     static let knownPeopleMode = "knownPeopleMode"
     static let knownPeopleMinConfidence = "knownPeopleMinConfidence"
 
+    // MARK: - Sports Tagging (jersey-number detection)
+    /// True when the scan also detects jersey numbers + team colours.
+    static let sportsModeEnabled = "sports.modeEnabled"
+    /// Minimum Vision OCR confidence (0...1) to accept a recognised number.
+    static let sportsOCRConfidenceThreshold = "sports.ocrConfidenceThreshold"
+    /// Minimum number-box height as a fraction of image height, to skip tiny noise.
+    static let sportsNumberMinHeightFraction = "sports.numberMinHeightFraction"
+    /// Max CIELAB ΔE for a sampled jersey colour to count as matching a kit colour.
+    static let sportsColorDistanceThreshold = "sports.colorDistanceThreshold"
+
     // MARK: - Favorites, Recent & FTP
     static let favoriteFolders = "favoriteFolders"
     static let recentFolders = "recentFolders"
@@ -135,4 +145,6 @@ nonisolated enum UserDefaultsKeys {
     static let templatesICloudEnabled = "templates.iCloudEnabled"
     /// True when the Known People database lives in the iCloud ubiquity container.
     static let knownPeopleICloudEnabled = "knownPeople.iCloudEnabled"
+    /// True when the Teams library lives in the iCloud ubiquity container.
+    static let teamsICloudEnabled = "teams.iCloudEnabled"
 }

@@ -1,0 +1,63 @@
+import Foundation
+
+/// Which side of a match a detection belongs to. Disambiguates the common case
+/// where both teams field the same number, told apart by kit colour.
+nonisolated enum TeamSide: String, Codable, Sendable, CaseIterable {
+    case home
+    case away
+}
+
+/// Per-folder match setup: which two teams are playing in this working folder.
+///
+/// The home/away `Team`s are stored both by id (for re-linking to the live
+/// library) and as embedded snapshots, so the folder stays self-contained and
+/// keeps resolving player names even if the global Team is later edited or
+/// deleted. Persisted to `<folder>/.face_data/match_roster.json`.
+nonisolated struct MatchRoster: Codable, Sendable {
+    var folderURL: URL
+    var homeTeamID: UUID?
+    var awayTeamID: UUID?
+    var homeTeamSnapshot: Team?
+    var awayTeamSnapshot: Team?
+
+    /// Whether the photographer has confirmed the colour-cluster → side mapping.
+    /// Until confirmed, resolution pauses and surfaces the confirm/flip prompt.
+    var clusterMappingConfirmed: Bool
+    /// The photographer's confirmed flip choice (swaps which colour cluster maps
+    /// to home vs away). Persisted so re-scans reuse the decision.
+    var clusterFlipped: Bool
+    var lastUpdated: Date
+
+    init(
+        folderURL: URL,
+        homeTeamID: UUID? = nil,
+        awayTeamID: UUID? = nil,
+        homeTeamSnapshot: Team? = nil,
+        awayTeamSnapshot: Team? = nil,
+        clusterMappingConfirmed: Bool = false,
+        clusterFlipped: Bool = false,
+        lastUpdated: Date = Date()
+    ) {
+        self.folderURL = folderURL
+        self.homeTeamID = homeTeamID
+        self.awayTeamID = awayTeamID
+        self.homeTeamSnapshot = homeTeamSnapshot
+        self.awayTeamSnapshot = awayTeamSnapshot
+        self.clusterMappingConfirmed = clusterMappingConfirmed
+        self.clusterFlipped = clusterFlipped
+        self.lastUpdated = lastUpdated
+    }
+
+    /// The team snapshot for a given side, if set.
+    func team(for side: TeamSide) -> Team? {
+        switch side {
+        case .home: return homeTeamSnapshot
+        case .away: return awayTeamSnapshot
+        }
+    }
+
+    /// True when both sides have a team assigned — the minimum to resolve names.
+    var isReady: Bool {
+        homeTeamSnapshot != nil && awayTeamSnapshot != nil
+    }
+}

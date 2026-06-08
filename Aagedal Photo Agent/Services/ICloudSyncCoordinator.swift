@@ -149,6 +149,38 @@ final class ICloudSyncCoordinator {
         bump()
     }
 
+    // MARK: - Teams library
+
+    var teamsEnabled: Bool {
+        _ = version
+        return UserDefaults.standard.bool(forKey: UserDefaultsKeys.teamsICloudEnabled)
+    }
+
+    func setTeamsEnabled(_ on: Bool) {
+        lastError = nil
+        do {
+            if on {
+                guard let cloud = AppPaths.iCloudTeamsURL else {
+                    lastError = Self.unavailableMessage
+                    bump()
+                    return
+                }
+                try mergeCopy(from: RosterStore.localTeamsDirectory, to: cloud)
+                UserDefaults.standard.set(true, forKey: UserDefaultsKeys.teamsICloudEnabled)
+            } else {
+                if let cloud = AppPaths.iCloudTeamsURL {
+                    try? mergeCopy(from: cloud, to: RosterStore.localTeamsDirectory)
+                }
+                UserDefaults.standard.set(false, forKey: UserDefaultsKeys.teamsICloudEnabled)
+            }
+            RosterStore.shared.reloadAfterStorageChange()
+        } catch {
+            lastError = "Could not move the Teams library into iCloud Drive: \(error.localizedDescription)"
+        }
+        RosterCloudCoordinator.shared.refresh()
+        bump()
+    }
+
     // MARK: - Helpers
 
     private static let unavailableMessage =

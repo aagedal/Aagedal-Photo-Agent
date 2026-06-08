@@ -252,6 +252,25 @@ struct FaceGroupDetailView: View {
                     .help("Add to Known People database")
                 }
 
+                // Sports bridge: link a roster-resolved group to Known People so
+                // the player is recognised by face in future games.
+                if let target = viewModel.rosterLinkTarget(forGroup: group.id) {
+                    Button {
+                        if viewModel.linkPlayerToKnownPeople(
+                            groupID: group.id,
+                            playerNumber: target.number,
+                            teamID: target.teamID
+                        ) {
+                            knownPeopleMessage = "Linked #\(target.number) \(target.playerName) to Known People"
+                        }
+                    } label: {
+                        Label("Link #\(target.number)", systemImage: "person.crop.circle.badge.checkmark")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help("Link \(target.playerName) to Known People (recognise by face next time)")
+                }
+
                 Spacer()
 
                 Button(role: .destructive) {

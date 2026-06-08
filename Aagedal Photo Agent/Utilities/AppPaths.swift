@@ -28,6 +28,11 @@ nonisolated enum AppPaths {
         iCloudDocuments?.appendingPathComponent("KnownPeople", isDirectory: true)
     }
 
+    /// Teams library folder inside the ubiquity container.
+    static var iCloudTeamsURL: URL? {
+        iCloudDocuments?.appendingPathComponent("Teams", isDirectory: true)
+    }
+
     static var applicationSupport: URL {
         guard let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
             logger.error("Application Support directory not found, falling back to home directory")

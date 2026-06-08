@@ -11,6 +11,8 @@ struct AddToKnownPeopleResult {
     let addedToExisting: Bool
     let embeddingCount: Int
     let name: String
+    /// The id of the created/merged Known Person (used by the roster bridge).
+    let personID: UUID
 }
 
 enum AddToKnownPeopleError: LocalizedError {
@@ -63,6 +65,22 @@ final class FaceRecognitionViewModel {
     // Track matches between groups and known people
     // Maps groupID -> (knownPersonID, matchConfidence)
     var knownPersonMatchByGroup: [UUID: (personID: UUID, confidence: Float)] = [:]
+
+    // MARK: - Sports tagging
+    /// Per-folder match setup (home/away teams). Drives number→player resolution.
+    var matchRoster: MatchRoster?
+    /// When set, the colour-cluster → team mapping needs the photographer to
+    /// confirm (or flip) before names are written. Drives the confirm UI.
+    var pendingColorClusterConfirmation: TeamColorClusterer.ClusterResult?
+    /// Standalone numbers that couldn't be resolved unambiguously (same number on
+    /// both teams with unknown side, etc.) — surfaced for manual assignment.
+    var ambiguousNumberDetections: [NumberDetection] = []
+
+    @ObservationIgnored private let matchRosterService = MatchRosterService()
+    @ObservationIgnored private let colorClusterer = TeamColorClusterer()
+    @ObservationIgnored private let playerResolver = PlayerResolver()
+    /// Minimum colour-cluster confidence to treat the split as trustworthy.
+    @ObservationIgnored private let clusterConfidenceFloor: Float = 0.5
 
     // The currently selected group for thumbnail replacement (only one at a time)
     var selectedThumbnailReplacementGroupID: UUID?
@@ -124,6 +142,13 @@ final class FaceRecognitionViewModel {
 
         let attachSecondPass = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceClothingSecondPassAttachToExisting) as? Bool
         config.faceClothingSecondPassAttachToExisting = attachSecondPass ?? false
+
+        // Sports tagging
+        config.sportsModeEnabled = UserDefaults.standard.bool(forKey: UserDefaultsKeys.sportsModeEnabled)
+        let ocrConf = UserDefaults.standard.object(forKey: UserDefaultsKeys.sportsOCRConfidenceThreshold) as? Double
+        config.sportsOCRConfidenceThreshold = Float(ocrConf ?? 0.5)
+        let minHeight = UserDefaults.standard.object(forKey: UserDefaultsKeys.sportsNumberMinHeightFraction) as? Double
+        config.sportsNumberMinHeightFraction = CGFloat(minHeight ?? 0.04)
 
         return config
     }
@@ -326,6 +351,12 @@ final class FaceRecognitionViewModel {
             var initialGroups: [FaceGroup] = existingData?.groups ?? []
             var initialScannedFiles = existingData?.scannedFiles ?? [:]
 
+            // Keep standalone jersey numbers only for unchanged files: re-scanned
+            // files regenerate their own, and removed files drop out.
+            let initialNumbers: [NumberDetection] = existingData?.numberDetections?.filter { number in
+                unchangedFiles.contains(number.imageURL.path)
+            } ?? []
+
             // Remove faces from deleted/modified files
             let removedFaceIDs = Set(existingData?.faces.filter { face in
                 toRemove.contains(face.imageURL.path)
@@ -374,12 +405,13 @@ final class FaceRecognitionViewModel {
 
             let scanLogger = Logger(subsystem: "com.aagedal.photo-agent", category: "FaceRecognitionViewModel")
 
-            let (allFaces, allGroups, scannedFiles) = await withTaskGroup(
-                of: (URL, [(face: DetectedFace, thumbnail: Data)], Bool).self
-            ) { taskGroup -> ([DetectedFace], [FaceGroup], [String: FileSignature]) in
+            let (allFaces, allGroups, scannedFiles, allNumbers) = await withTaskGroup(
+                of: (URL, FaceDetectionService.DetectionResult, Bool).self
+            ) { taskGroup -> ([DetectedFace], [FaceGroup], [String: FileSignature], [NumberDetection]) in
                 var allFaces = initialFaces
                 var allGroups = initialGroups
                 var scannedFiles = initialScannedFiles
+                var allNumbers = initialNumbers
                 var processed = 0
                 var detectionErrors = 0
                 var batchesSinceLastSave = 0
@@ -398,11 +430,12 @@ final class FaceRecognitionViewModel {
                 let visionFeaturePrintCache = FaceDetectionService.FeaturePrintCache()
 
                 // Helper to process a completed batch and cluster incrementally
-                func processBatch(scannedURL: URL, results: [(face: DetectedFace, thumbnail: Data)], failed: Bool) async {
+                func processBatch(scannedURL: URL, detection: FaceDetectionService.DetectionResult, failed: Bool) async {
                     if failed { detectionErrors += 1 }
+                    allNumbers.append(contentsOf: detection.standaloneNumbers)
                     var newFaces: [DetectedFace] = []
 
-                    for result in results {
+                    for result in detection.faces {
                         allFaces.append(result.face)
                         newFaces.append(result.face)
                         do {
@@ -466,7 +499,8 @@ final class FaceRecognitionViewModel {
                             scanComplete: false,
                             scannedFiles: scannedFiles,
                             recognitionMode: config.recognitionMode,
-                            embeddingVersion: 1
+                            embeddingVersion: 1,
+                            numberDetections: allNumbers
                         )
                         do {
                             try storageService.saveFaceData(progressData)
@@ -502,30 +536,30 @@ final class FaceRecognitionViewModel {
                     }
 
                     if pending >= 4 {
-                        if let (scannedURL, results, failed) = await taskGroup.next() {
-                            await processBatch(scannedURL: scannedURL, results: results, failed: failed)
+                        if let (scannedURL, detection, failed) = await taskGroup.next() {
+                            await processBatch(scannedURL: scannedURL, detection: detection, failed: failed)
                         }
                         pending -= 1
                     }
 
                     taskGroup.addTask(priority: .utility) {
                         do {
-                            let results = try await detectionService.detectFaces(in: url, config: config)
-                            return (url, results, false)
+                            let detection = try await detectionService.detectFaces(in: url, config: config)
+                            return (url, detection, false)
                         } catch {
                             scanLogger.warning("Face detection failed for \(url.lastPathComponent): \(error.localizedDescription)")
-                            return (url, [], true)
+                            return (url, FaceDetectionService.DetectionResult(faces: []), true)
                         }
                     }
                     pending += 1
                 }
 
                 // Collect remaining
-                for await (scannedURL, results, failed) in taskGroup {
-                    await processBatch(scannedURL: scannedURL, results: results, failed: failed)
+                for await (scannedURL, detection, failed) in taskGroup {
+                    await processBatch(scannedURL: scannedURL, detection: detection, failed: failed)
                 }
 
-                return (allFaces, allGroups, scannedFiles)
+                return (allFaces, allGroups, scannedFiles, allNumbers)
             }
 
             let isCancelled = Task.isCancelled
@@ -538,7 +572,8 @@ final class FaceRecognitionViewModel {
                 scanComplete: !isCancelled,
                 scannedFiles: scannedFiles,
                 recognitionMode: config.recognitionMode,
-                embeddingVersion: 1
+                embeddingVersion: 1,
+                numberDetections: allNumbers
             )
 
             do {
@@ -558,6 +593,13 @@ final class FaceRecognitionViewModel {
                 self.activeScanTask = nil
                 self.loadThumbnails(for: folderData)
                 self.updateMergeSuggestions()
+
+                // Sports mode: resolve detected numbers → player names (or surface
+                // the colour-mapping confirmation if not yet confirmed).
+                if config.sportsModeEnabled {
+                    self.loadMatchRoster(for: folderURL)
+                    self.runSportsResolution()
+                }
             }
 
             guard !isCancelled else { return }
@@ -892,7 +934,7 @@ final class FaceRecognitionViewModel {
             duplicateCheck = .noDuplicate
         }
 
-        let (_, addedToExisting) = try KnownPeopleService.shared.addOrMergePerson(
+        let (person, addedToExisting) = try KnownPeopleService.shared.addOrMergePerson(
             name: name,
             embeddings: embeddings,
             thumbnailData: thumbnailData,
@@ -903,7 +945,8 @@ final class FaceRecognitionViewModel {
         return AddToKnownPeopleResult(
             addedToExisting: addedToExisting,
             embeddingCount: embeddings.count,
-            name: name
+            name: name,
+            personID: person.id
         )
     }
 
@@ -1047,6 +1090,194 @@ final class FaceRecognitionViewModel {
         }
     }
 
+    // MARK: - Sports tagging: match setup & resolution
+
+    /// Load the per-folder match roster, if one was saved.
+    func loadMatchRoster(for folderURL: URL) {
+        matchRoster = matchRosterService.load(for: folderURL)
+    }
+
+    /// Set the two teams for this folder, embedding current library snapshots.
+    /// Changing teams invalidates any previous colour-mapping confirmation.
+    func setMatchTeams(homeTeamID: UUID?, awayTeamID: UUID?, folderURL: URL) {
+        var roster = matchRoster ?? MatchRoster(folderURL: folderURL)
+        roster.folderURL = folderURL
+        roster.homeTeamID = homeTeamID
+        roster.awayTeamID = awayTeamID
+        roster.homeTeamSnapshot = homeTeamID.flatMap { RosterStore.shared.team(byID: $0) }
+        roster.awayTeamSnapshot = awayTeamID.flatMap { RosterStore.shared.team(byID: $0) }
+        roster.clusterMappingConfirmed = false
+        matchRoster = roster
+        try? matchRosterService.save(roster)
+    }
+
+    /// Cluster sampled jersey colours into the two teams. If the mapping is
+    /// already confirmed (and trustworthy), assign sides and resolve names; else
+    /// surface the confirm/flip prompt and stop.
+    func runSportsResolution() {
+        guard let data = faceData,
+              let match = matchRoster, match.isReady,
+              let home = match.homeTeamSnapshot,
+              let away = match.awayTeamSnapshot else { return }
+
+        var colors: [ColorRGB] = []
+        for face in data.faces { if let c = face.jerseyColorRGB { colors.append(c) } }
+        for number in data.numberDetections ?? [] { if let c = number.jerseyColorRGB { colors.append(c) } }
+
+        let cluster = colorClusterer.cluster(
+            colors: colors,
+            homeKit: home.primaryColor.colorRGB,
+            awayKit: away.primaryColor.colorRGB
+        )
+
+        // No usable colours → resolve by number alone (side unknown).
+        guard let cluster else {
+            applyResolution(cluster: nil, flipped: false)
+            return
+        }
+
+        if match.clusterMappingConfirmed {
+            applyResolution(cluster: cluster, flipped: match.clusterFlipped)
+        } else {
+            // First time (or teams changed): always confirm. Low confidence makes
+            // the confirm step doubly important.
+            pendingColorClusterConfirmation = cluster
+        }
+    }
+
+    /// Apply the photographer's confirm/flip choice, persist it, and resolve.
+    func confirmClusterMapping(flip: Bool) {
+        guard var roster = matchRoster else { return }
+        roster.clusterMappingConfirmed = true
+        roster.clusterFlipped = flip
+        matchRoster = roster
+        try? matchRosterService.save(roster)
+
+        let cluster = pendingColorClusterConfirmation
+        pendingColorClusterConfirmation = nil
+        applyResolution(cluster: cluster, flipped: flip)
+    }
+
+    /// Assign team sides from the colour cluster, then resolve numbers to player
+    /// names: name each face group (propagates to all its faces) and fill in
+    /// standalone numbers. Ambiguous numbers are bucketed for manual assignment.
+    private func applyResolution(cluster: TeamColorClusterer.ClusterResult?, flipped: Bool) {
+        guard var data = faceData, let match = matchRoster else { return }
+
+        // 1. Assign team sides from sampled colours.
+        for i in data.faces.indices {
+            if let c = data.faces[i].jerseyColorRGB, let cluster {
+                data.faces[i].teamSide = colorClusterer.side(for: c, in: cluster, flipped: flipped)
+            }
+        }
+        if data.numberDetections != nil {
+            for i in data.numberDetections!.indices {
+                if let c = data.numberDetections![i].jerseyColorRGB, let cluster {
+                    data.numberDetections![i].teamSide = colorClusterer.side(for: c, in: cluster, flipped: flipped)
+                }
+            }
+        }
+
+        // 2. Name face groups by majority (number, side) vote across their faces.
+        //    Skip groups the user already named so manual names aren't clobbered.
+        let facesByID = Dictionary(data.faces.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        for gi in data.groups.indices {
+            if let existing = data.groups[gi].name, !existing.isEmpty { continue }
+            var votes: [String: (count: Int, conf: Float, number: Int, side: TeamSide?)] = [:]
+            for faceID in data.groups[gi].faceIDs {
+                guard let face = facesByID[faceID], let number = face.jerseyNumber else { continue }
+                let key = "\(number)-\(face.teamSide?.rawValue ?? "?")"
+                var vote = votes[key] ?? (0, 0, number, face.teamSide)
+                vote.count += 1
+                vote.conf += face.numberConfidence ?? 0
+                votes[key] = vote
+            }
+            guard let best = votes.values.max(by: { ($0.count, $0.conf) < ($1.count, $1.conf) }) else { continue }
+            if case .resolved(let player, _) = playerResolver.resolve(number: best.number, side: best.side, match: match) {
+                data.groups[gi].name = player.playerName
+            }
+        }
+
+        // 3. Resolve standalone numbers; collect ambiguous ones for manual UI.
+        var ambiguous: [NumberDetection] = []
+        if data.numberDetections != nil {
+            for i in data.numberDetections!.indices {
+                let det = data.numberDetections![i]
+                switch playerResolver.resolve(number: det.number, side: det.teamSide, match: match) {
+                case .resolved(let player, _):
+                    data.numberDetections![i].resolvedPlayerName = player.playerName
+                case .ambiguous:
+                    ambiguous.append(det)
+                case .notFound:
+                    break
+                }
+            }
+        }
+
+        faceData = data
+        ambiguousNumberDetections = ambiguous
+        do {
+            try storageService.saveFaceData(data)
+        } catch {
+            errorMessage = "Failed to save sports resolution: \(error.localizedDescription)"
+        }
+    }
+
+    /// Manually assign a side to a standalone ambiguous number, then re-resolve it.
+    func assignSide(_ side: TeamSide, toNumberDetection detectionID: UUID) {
+        guard var data = faceData, let match = matchRoster, data.numberDetections != nil else { return }
+        guard let i = data.numberDetections!.firstIndex(where: { $0.id == detectionID }) else { return }
+        data.numberDetections![i].teamSide = side
+        if case .resolved(let player, _) = playerResolver.resolve(number: data.numberDetections![i].number, side: side, match: match) {
+            data.numberDetections![i].resolvedPlayerName = player.playerName
+        }
+        faceData = data
+        ambiguousNumberDetections.removeAll { $0.id == detectionID }
+        try? storageService.saveFaceData(data)
+    }
+
+    /// If a face group carries a jersey number that maps to a roster player on a
+    /// known side, return the data needed to link it to Known People. `nil` when
+    /// the group has no resolvable number/side yet.
+    func rosterLinkTarget(forGroup groupID: UUID) -> (number: Int, teamID: UUID, playerName: String)? {
+        guard let data = faceData,
+              let match = matchRoster,
+              let group = groupLookup[groupID] else { return nil }
+
+        let facesByID = Dictionary(data.faces.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var votes: [String: (count: Int, conf: Float, number: Int, side: TeamSide?)] = [:]
+        for faceID in group.faceIDs {
+            guard let face = facesByID[faceID], let number = face.jerseyNumber else { continue }
+            let key = "\(number)-\(face.teamSide?.rawValue ?? "?")"
+            var vote = votes[key] ?? (0, 0, number, face.teamSide)
+            vote.count += 1
+            vote.conf += face.numberConfidence ?? 0
+            votes[key] = vote
+        }
+        guard let best = votes.values.max(by: { ($0.count, $0.conf) < ($1.count, $1.conf) }),
+              let side = best.side,
+              let teamID = (side == .home ? match.homeTeamID : match.awayTeamID),
+              let player = match.team(for: side)?.player(forNumber: best.number) else { return nil }
+        return (best.number, teamID, player.playerName)
+    }
+
+    /// The bridge: confirm a face group is a roster player, promoting the group's
+    /// faces into Known People and stamping the new person's id onto the roster
+    /// entry so future games recognise the player by face.
+    @discardableResult
+    func linkPlayerToKnownPeople(groupID: UUID, playerNumber: Int, teamID: UUID) -> Bool {
+        guard let team = RosterStore.shared.team(byID: teamID),
+              let player = team.roster.first(where: { $0.number == playerNumber }) else { return false }
+        do {
+            let result = try addGroupToKnownPeople(groupID: groupID, name: player.playerName)
+            try RosterStore.shared.linkKnownPerson(result.personID, toPlayerNumber: playerNumber, teamID: teamID)
+            return true
+        } catch {
+            errorMessage = "Failed to link player to Known People: \(error.localizedDescription)"
+            return false
+        }
+    }
+
     func applyNameToMetadata(groupID: UUID) {
         guard let data = faceData,
               let group = groupLookup[groupID],
@@ -1150,6 +1381,25 @@ final class FaceRecognitionViewModel {
             }
             namesByURL[face.imageURL] = existing
             seenNamesByURL[face.imageURL] = seen
+        }
+
+        // Standalone jersey numbers (back-turned players, no face) that resolved
+        // to a player are written directly. Face-associated numbers flow through
+        // their group name above, so only standalone ones are merged here.
+        for det in data.numberDetections ?? [] where det.associatedFaceID == nil {
+            guard availableURLs.contains(det.imageURL),
+                  let rawName = det.resolvedPlayerName?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !rawName.isEmpty else { continue }
+            let names = splitPersonNames(rawName)
+            guard !names.isEmpty else { continue }
+
+            var existing = namesByURL[det.imageURL] ?? []
+            var seen = seenNamesByURL[det.imageURL] ?? Set(existing.map { $0.lowercased() })
+            for name in names where seen.insert(name.lowercased()).inserted {
+                existing.append(name)
+            }
+            namesByURL[det.imageURL] = existing
+            seenNamesByURL[det.imageURL] = seen
         }
 
         guard !namesByURL.isEmpty else {

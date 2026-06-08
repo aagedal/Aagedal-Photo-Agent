@@ -1235,6 +1235,14 @@ struct SettingsView: View {
                 Text("Reference faces and clothing samples used for auto-matching.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                Toggle("Teams library", isOn: Binding(
+                    get: { coordinator.teamsEnabled },
+                    set: { coordinator.setTeamsEnabled($0) }
+                ))
+                Text("Teams, kit colours, and player rosters used for jersey-number tagging.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             } header: {
                 Text("Sync with iCloud")
             } footer: {

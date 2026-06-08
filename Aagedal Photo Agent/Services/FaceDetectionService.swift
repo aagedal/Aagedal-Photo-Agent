@@ -74,6 +74,14 @@ nonisolated struct FaceDetectionService: Sendable {
         /// When using Face+Clothing, allow the second pass to match leftovers to existing groups
         var faceClothingSecondPassAttachToExisting: Bool = false
 
+        // MARK: - Sports tagging
+        /// When true, the scan also runs jersey-number OCR + colour sampling.
+        var sportsModeEnabled: Bool = false
+        /// Minimum Vision OCR confidence (0...1) to accept a recognised number.
+        var sportsOCRConfidenceThreshold: Float = 0.5
+        /// Minimum number-box height as a fraction of image height.
+        var sportsNumberMinHeightFraction: CGFloat = 0.04
+
         nonisolated init(
             minConfidence: Float = 0.7,
             minFaceSize: Int = 50,
@@ -86,7 +94,10 @@ nonisolated struct FaceDetectionService: Sendable {
             qualityGateThreshold: Float = 0.6,
             useQualityWeightedEdges: Bool = true,
             qualityEdgeWeight: Float = 0.3,
-            faceClothingSecondPassAttachToExisting: Bool = false
+            faceClothingSecondPassAttachToExisting: Bool = false,
+            sportsModeEnabled: Bool = false,
+            sportsOCRConfidenceThreshold: Float = 0.5,
+            sportsNumberMinHeightFraction: CGFloat = 0.04
         ) {
             self.minConfidence = minConfidence
             self.minFaceSize = minFaceSize
@@ -100,6 +111,22 @@ nonisolated struct FaceDetectionService: Sendable {
             self.useQualityWeightedEdges = useQualityWeightedEdges
             self.qualityEdgeWeight = qualityEdgeWeight
             self.faceClothingSecondPassAttachToExisting = faceClothingSecondPassAttachToExisting
+            self.sportsModeEnabled = sportsModeEnabled
+            self.sportsOCRConfidenceThreshold = sportsOCRConfidenceThreshold
+            self.sportsNumberMinHeightFraction = sportsNumberMinHeightFraction
+        }
+    }
+
+    /// Output of `detectFaces`: the detected faces (each possibly enriched with a
+    /// jersey number in sports mode) plus standalone jersey numbers that had no
+    /// containing face (back-turned players).
+    struct DetectionResult: Sendable {
+        var faces: [(face: DetectedFace, thumbnail: Data)]
+        var standaloneNumbers: [NumberDetection]
+
+        init(faces: [(face: DetectedFace, thumbnail: Data)], standaloneNumbers: [NumberDetection] = []) {
+            self.faces = faces
+            self.standaloneNumbers = standaloneNumbers
         }
     }
 
@@ -145,7 +172,7 @@ nonisolated struct FaceDetectionService: Sendable {
 
     /// Detect faces in a single image, generate feature prints and thumbnails.
     /// Returns an array of `DetectedFace` and their thumbnail JPEG data keyed by face ID.
-    func detectFaces(in imageURL: URL, config: DetectionConfig = DetectionConfig()) async throws -> [(face: DetectedFace, thumbnail: Data)] {
+    func detectFaces(in imageURL: URL, config: DetectionConfig = DetectionConfig()) async throws -> DetectionResult {
         guard let imageSource = CGImageSourceCreateWithURL(imageURL as CFURL, nil) else {
             throw NSError(
                 domain: "FaceDetectionService", code: 1,
@@ -164,11 +191,21 @@ nonisolated struct FaceDetectionService: Sendable {
 
         // Use face landmarks request for better quality detection
         let faceObservations = try await detectFaceLandmarks(in: cgImage)
-        guard !faceObservations.isEmpty else { return [] }
 
-        var results: [(face: DetectedFace, thumbnail: Data)] = []
         let clothingService = ClothingFeatureService()
         let imageSize = CGSize(width: cgImage.width, height: cgImage.height)
+
+        // No faces: in sports mode still scan for standalone jersey numbers
+        // (back-turned players have a number but no detectable face).
+        guard !faceObservations.isEmpty else {
+            if config.sportsModeEnabled {
+                let standalone = await detectStandaloneNumbers(in: cgImage, imageURL: imageURL, imageSize: imageSize, config: config)
+                return DetectionResult(faces: [], standaloneNumbers: standalone)
+            }
+            return DetectionResult(faces: [])
+        }
+
+        var results: [(face: DetectedFace, thumbnail: Data)] = []
 
         for observation in faceObservations {
             // Filter by confidence
@@ -263,7 +300,79 @@ nonisolated struct FaceDetectionService: Sendable {
             results.append((face: face, thumbnail: thumbnailData))
         }
 
-        return results
+        // Sports mode: detect jersey numbers across the image and attach each to
+        // the face whose estimated torso contains it; numbers with no containing
+        // face become standalone (back-turned) detections.
+        var standaloneNumbers: [NumberDetection] = []
+        if config.sportsModeEnabled {
+            let jersey = JerseyDetectionService()
+            let raws = (try? await jersey.detectNumbers(
+                in: cgImage,
+                imageSize: imageSize,
+                ocrConfidenceThreshold: config.sportsOCRConfidenceThreshold,
+                minHeightFraction: config.sportsNumberMinHeightFraction
+            )) ?? []
+
+            // Precompute each face's estimated torso rect once.
+            let torsos: [CGRect?] = results.map {
+                clothingService.estimateTorsoRect(from: $0.face.faceRect, imageSize: imageSize)
+            }
+
+            for raw in raws {
+                let center = CGPoint(x: raw.box.midX, y: raw.box.midY)
+                var bestIdx: Int?
+                var bestDist = CGFloat.greatestFiniteMagnitude
+                for (i, torso) in torsos.enumerated() {
+                    guard let torso, torso.contains(center) else { continue }
+                    let d = hypot(torso.midX - center.x, torso.midY - center.y)
+                    if d < bestDist { bestDist = d; bestIdx = i }
+                }
+                if let idx = bestIdx {
+                    // Collapse into the face; keep the highest-confidence number.
+                    if (results[idx].face.numberConfidence ?? 0) < raw.confidence {
+                        results[idx].face.jerseyNumber = raw.value
+                        results[idx].face.numberConfidence = raw.confidence
+                        results[idx].face.jerseyColorRGB = raw.color
+                    }
+                } else {
+                    standaloneNumbers.append(NumberDetection(
+                        imageURL: imageURL,
+                        number: raw.value,
+                        numberConfidence: raw.confidence,
+                        boundingBox: raw.box,
+                        jerseyColorRGB: raw.color
+                    ))
+                }
+            }
+        }
+
+        return DetectionResult(faces: results, standaloneNumbers: standaloneNumbers)
+    }
+
+    /// Detect jersey numbers in an image with no detectable faces — all results
+    /// are standalone (back-turned) detections.
+    private func detectStandaloneNumbers(
+        in cgImage: CGImage,
+        imageURL: URL,
+        imageSize: CGSize,
+        config: DetectionConfig
+    ) async -> [NumberDetection] {
+        let jersey = JerseyDetectionService()
+        let raws = (try? await jersey.detectNumbers(
+            in: cgImage,
+            imageSize: imageSize,
+            ocrConfidenceThreshold: config.sportsOCRConfidenceThreshold,
+            minHeightFraction: config.sportsNumberMinHeightFraction
+        )) ?? []
+        return raws.map {
+            NumberDetection(
+                imageURL: imageURL,
+                number: $0.value,
+                numberConfidence: $0.confidence,
+                boundingBox: $0.box,
+                jerseyColorRGB: $0.color
+            )
+        }
     }
 
     // MARK: - Quality Scoring

@@ -38,6 +38,16 @@ nonisolated struct DetectedFace: Codable, Identifiable {
     // The recognition mode used when this face was detected
     var embeddingMode: FaceRecognitionMode?
 
+    // MARK: - Sports tagging (optional, only populated in sports mode)
+    /// Jersey number found within this face's estimated torso region, if any.
+    var jerseyNumber: Int?
+    /// Vision OCR confidence for the jersey number (0...1).
+    var numberConfidence: Float?
+    /// Dominant jersey colour sampled near the number, used for team clustering.
+    var jerseyColorRGB: ColorRGB?
+    /// Team side assigned after colour clustering.
+    var teamSide: TeamSide?
+
     init(
         id: UUID,
         imageURL: URL,
@@ -51,7 +61,11 @@ nonisolated struct DetectedFace: Codable, Identifiable {
         blurScore: Float? = nil,
         clothingFeaturePrintData: Data? = nil,
         clothingRect: CGRect? = nil,
-        embeddingMode: FaceRecognitionMode? = nil
+        embeddingMode: FaceRecognitionMode? = nil,
+        jerseyNumber: Int? = nil,
+        numberConfidence: Float? = nil,
+        jerseyColorRGB: ColorRGB? = nil,
+        teamSide: TeamSide? = nil
     ) {
         self.id = id
         self.imageURL = imageURL
@@ -66,6 +80,10 @@ nonisolated struct DetectedFace: Codable, Identifiable {
         self.clothingFeaturePrintData = clothingFeaturePrintData
         self.clothingRect = clothingRect
         self.embeddingMode = embeddingMode
+        self.jerseyNumber = jerseyNumber
+        self.numberConfidence = numberConfidence
+        self.jerseyColorRGB = jerseyColorRGB
+        self.teamSide = teamSide
     }
 }
 
@@ -128,6 +146,10 @@ nonisolated struct FolderFaceData: Codable {
     /// Embedding version for compatibility detection (nil/0 = legacy unaligned, 1 = eye-aligned crops)
     var embeddingVersion: Int?
 
+    /// Standalone jersey-number detections (sports mode) with no associated face —
+    /// e.g. back-turned players. Optional so legacy face_data.json keeps decoding.
+    var numberDetections: [NumberDetection]?
+
     init(
         folderURL: URL,
         faces: [DetectedFace],
@@ -136,7 +158,8 @@ nonisolated struct FolderFaceData: Codable {
         scanComplete: Bool,
         scannedFiles: [String: FileSignature] = [:],
         recognitionMode: FaceRecognitionMode? = nil,
-        embeddingVersion: Int? = nil
+        embeddingVersion: Int? = nil,
+        numberDetections: [NumberDetection]? = nil
     ) {
         self.folderURL = folderURL
         self.faces = faces
@@ -146,5 +169,6 @@ nonisolated struct FolderFaceData: Codable {
         self.scannedFiles = scannedFiles
         self.recognitionMode = recognitionMode
         self.embeddingVersion = embeddingVersion
+        self.numberDetections = numberDetections
     }
 }

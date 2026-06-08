@@ -20,6 +20,7 @@ struct Aagedal_Photo_AgentApp: App {
             // per-person files; must run before the watcher starts reacting.
             KnownPeopleService.shared.migrateLegacyDatabaseIfNeeded()
             KnownPeopleCloudCoordinator.shared.refresh()
+            RosterCloudCoordinator.shared.refresh()
             PreferencesSyncService.shared.start()
         }
 
