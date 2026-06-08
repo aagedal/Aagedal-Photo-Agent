@@ -23,6 +23,27 @@ struct PresetVariableInterpolator: Sendable {
         sequenceIndex: Int = 1,
         initials: String = ""
     ) -> String {
+        resolve(
+            template,
+            filename: filename,
+            existingMetadata: existingMetadata,
+            sequenceIndex: sequenceIndex,
+            initials: initials,
+            visitedFields: []
+        )
+    }
+
+    /// `visitedFields` tracks the chain of `{field:…}` names currently being
+    /// expanded so a field that references another field (which may itself hold
+    /// variables) can be resolved recursively without looping on a cycle.
+    private func resolve(
+        _ template: String,
+        filename: String,
+        existingMetadata: IPTCMetadata?,
+        sequenceIndex: Int,
+        initials: String,
+        visitedFields: Set<String>
+    ) -> String {
         var result = template
 
         // {initials}
@@ -59,7 +80,14 @@ struct PresetVariableInterpolator: Sendable {
         }
 
         // {field:FIELDNAME}
-        result = resolveFields(in: result, metadata: existingMetadata)
+        result = resolveFields(
+            in: result,
+            metadata: existingMetadata,
+            filename: filename,
+            sequenceIndex: sequenceIndex,
+            initials: initials,
+            visitedFields: visitedFields
+        )
 
         return result
     }
@@ -177,17 +205,47 @@ struct PresetVariableInterpolator: Sendable {
         return result
     }
 
-    private func resolveFields(in template: String, metadata: IPTCMetadata?) -> String {
+    private func resolveFields(
+        in template: String,
+        metadata: IPTCMetadata?,
+        filename: String,
+        sequenceIndex: Int,
+        initials: String,
+        visitedFields: Set<String>
+    ) -> String {
         var result = template
         let fieldPattern = /\{field:([^}]+)\}/
 
         for match in result.matches(of: fieldPattern) {
             let fieldName = String(match.1)
-            let value = fieldValue(for: fieldName, from: metadata)
+            var value = fieldValue(for: fieldName, from: metadata)
+            // A referenced field may itself contain variables (e.g. event =
+            // "{date}", or another {field:…}). Resolve them recursively, keyed
+            // by normalized name so a reference cycle stops instead of looping.
+            let key = normalizeFieldName(fieldName)
+            if !value.isEmpty, !visitedFields.contains(key) {
+                value = resolve(
+                    value,
+                    filename: filename,
+                    existingMetadata: metadata,
+                    sequenceIndex: sequenceIndex,
+                    initials: initials,
+                    visitedFields: visitedFields.union([key])
+                )
+            }
             result = result.replacingOccurrences(of: String(match.0), with: value)
         }
 
         return result
+    }
+
+    /// Normalizes a field name so lookups (and cycle keys) accept both keys and
+    /// labels, case-insensitively and ignoring spaces/dashes/underscores.
+    private func normalizeFieldName(_ name: String) -> String {
+        name.lowercased()
+            .replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: "-", with: "")
+            .replacingOccurrences(of: "_", with: "")
     }
 
     /// Matches field by key or display label, case-insensitive.
@@ -195,10 +253,7 @@ struct PresetVariableInterpolator: Sendable {
         guard let metadata else { return "" }
 
         // Build a lookup that accepts both keys and labels
-        let normalized = name.lowercased()
-            .replacingOccurrences(of: " ", with: "")
-            .replacingOccurrences(of: "-", with: "")
-            .replacingOccurrences(of: "_", with: "")
+        let normalized = normalizeFieldName(name)
 
         switch normalized {
         case "title": return metadata.title ?? ""
