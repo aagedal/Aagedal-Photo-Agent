@@ -1232,13 +1232,20 @@ final class MetadataViewModel {
                 let parsed = value.split(separator: ",")
                     .map { $0.trimmingCharacters(in: .whitespaces) }
                     .filter { !$0.isEmpty }
-                let validated = ApprovedListService.shared.validateBulk(parsed, in: .keywords, source: .template)
+                // Tokens containing a variable ({...}) can't be validated against
+                // the approved list until they're resolved, so pass them through
+                // verbatim — validation happens after variable processing (see
+                // resolveListField). Validate only literal keywords here.
+                let variableTokens = parsed.filter { $0.contains("{") }
+                let literalTokens = parsed.filter { !$0.contains("{") }
+                let validated = ApprovedListService.shared.validateBulk(literalTokens, in: .keywords, source: .template)
+                let toAdd = variableTokens + validated.accepted
                 if append {
                     let existing = Set(editingMetadata.keywords)
-                    editingMetadata.keywords += validated.accepted.filter { !existing.contains($0) }
+                    editingMetadata.keywords += toAdd.filter { !existing.contains($0) }
                 } else {
                     var seen = Set<String>()
-                    editingMetadata.keywords = validated.accepted.filter { seen.insert($0).inserted }
+                    editingMetadata.keywords = toAdd.filter { seen.insert($0).inserted }
                 }
                 if !validated.rejected.isEmpty {
                     let acceptedCount = validated.accepted.count
@@ -1356,7 +1363,7 @@ final class MetadataViewModel {
         editingMetadata.country = resolveIfPresent(editingMetadata.country, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
         editingMetadata.event = resolveIfPresent(editingMetadata.event, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
 
-        editingMetadata.keywords = resolveListField(editingMetadata.keywords, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
+        editingMetadata.keywords = resolveListField(editingMetadata.keywords, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials, validateField: .keywords)
         editingMetadata.personShown = resolveListField(editingMetadata.personShown, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
 
         // Add resolved Job ID to keywords if enabled (after all variables are resolved)
@@ -1505,7 +1512,6 @@ final class MetadataViewModel {
         var writtenToFile = 0
         var writtenToXMP = 0
         var savedToHistory = 0
-        var resolved = 0
         var unchanged = 0
         var failed = 0
         var updatedURLs: Set<URL> = []
@@ -1545,12 +1551,27 @@ final class MetadataViewModel {
                 let before = self.editingMetadata
                 self.processVariables(filename: filename, sequenceIndex: sequenceNumber)
                 if self.editingMetadata != before {
-                    self.saveToSidecar()
-                    resolved += 1
+                    // Honor the Simple/Professional/Custom write-mode toggle for the
+                    // displayed image too, rather than forcing a history-only sidecar.
+                    // commitEdits writes the full editing buffer (all fields, incl.
+                    // digitalSourceType/GPS/cameraRaw) to the destination the mode
+                    // dictates and reconciles editing state itself, so this URL is
+                    // not added to updatedURLs / refreshed again below.
+                    let mode = MetadataWriteMode.current(forC2PA: image.hasC2PA, isRaw: SupportedImageFormats.isRaw(url: url))
+                    self.commitEdits(mode: mode, hasC2PA: image.hasC2PA)
+                    switch mode {
+                    case .writeToXMPSidecar:
+                        writtenToXMP += 1
+                    case .writeToFile, .writeToFileAndXMPSidecar:
+                        if image.hasC2PA { savedToHistory += 1 } else { writtenToFile += 1 }
+                    case .historyOnly:
+                        savedToHistory += 1
+                    }
                 } else {
                     unchanged += 1
                 }
                 processed += 1
+                sequenceNumber += 1
                 self.folderProcessProgress = "\(processed)/\(images.count)"
                 continue
             }
@@ -1558,6 +1579,7 @@ final class MetadataViewModel {
             guard let embedded = batchMetadata[url] else {
                 // Already counted as failed during batch read
                 processed += 1
+                sequenceNumber += 1
                 self.folderProcessProgress = "\(processed)/\(images.count)"
                 continue
             }
@@ -1600,7 +1622,7 @@ final class MetadataViewModel {
                 resolvedMeta.country = resolveIfChanged(meta.country, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
                 resolvedMeta.event = resolveIfChanged(meta.event, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
 
-                let newKeywords = resolveListField(meta.keywords, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceNumber, initials: initials)
+                let newKeywords = resolveListField(meta.keywords, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceNumber, initials: initials, validateField: .keywords)
                 if newKeywords != meta.keywords { resolvedMeta.keywords = newKeywords; changed = true }
                 let newPersons = resolveListField(meta.personShown, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceNumber, initials: initials)
                 if newPersons != meta.personShown { resolvedMeta.personShown = newPersons; changed = true }
@@ -1651,7 +1673,6 @@ final class MetadataViewModel {
         if writtenToFile > 0 { statusParts.append("written to file: \(writtenToFile)") }
         if writtenToXMP > 0 { statusParts.append("written to XMP: \(writtenToXMP)") }
         if savedToHistory > 0 { statusParts.append("saved to sidecar: \(savedToHistory)") }
-        if resolved > 0 { statusParts.append("resolved: \(resolved)") }
         if unchanged > 0 { statusParts.append("unchanged: \(unchanged)") }
         if failed > 0 { statusParts.append("failed: \(failed)") }
         if !statusParts.isEmpty {
@@ -1719,16 +1740,29 @@ final class MetadataViewModel {
     /// Resolves variables in each entry of a keyword/person array.
     /// After interpolation, splits on commas so a single token can expand into
     /// multiple values, trims, drops empties, and dedups in order.
-    private func resolveListField(_ values: [String], interpolator: PresetVariableInterpolator, filename: String, ref: IPTCMetadata, sequenceIndex: Int, initials: String) -> [String] {
+    /// When `validateField` is set, each resolved value is checked against the
+    /// approved list — this is where variable tokens that bypassed validation at
+    /// apply time finally get validated/canonicalised (rejected values dropped).
+    private func resolveListField(_ values: [String], interpolator: PresetVariableInterpolator, filename: String, ref: IPTCMetadata, sequenceIndex: Int, initials: String, validateField: ApprovedListField? = nil) -> [String] {
         var result: [String] = []
         var seen = Set<String>()
         for value in values {
             let resolved = interpolator.resolve(value, filename: filename, existingMetadata: ref, sequenceIndex: sequenceIndex, initials: initials)
             for part in resolved.components(separatedBy: ",") {
                 let trimmed = part.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmed.isEmpty, !seen.contains(trimmed) else { continue }
-                seen.insert(trimmed)
-                result.append(trimmed)
+                guard !trimmed.isEmpty else { continue }
+                let finalValue: String
+                if let field = validateField {
+                    switch ApprovedListService.shared.validate(trimmed, in: field, source: .template) {
+                    case .accept: finalValue = trimmed
+                    case .acceptCanonical(let canonical): finalValue = canonical
+                    case .reject: continue
+                    }
+                } else {
+                    finalValue = trimmed
+                }
+                guard seen.insert(finalValue).inserted else { continue }
+                result.append(finalValue)
             }
         }
         return result
