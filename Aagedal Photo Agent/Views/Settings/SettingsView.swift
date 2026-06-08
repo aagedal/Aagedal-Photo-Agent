@@ -24,6 +24,10 @@ struct SettingsView: View {
     @State private var structuredKeywordsErrorMessage: String?
     @State private var editingStructuredKeywords = false
 
+    // Structured Person Shown state
+    @State private var structuredPersonShownErrorMessage: String?
+    @State private var editingStructuredPersonShown = false
+
     // Quick Lists state
     @State private var editingQuickList: QuickListType?
     @State private var quickListsArchiveMessage: String?
@@ -465,9 +469,19 @@ struct SettingsView: View {
                     }
                 }
             }
+
+            structuredPersonShownSection
         }
         .formStyle(.grouped)
         .padding()
+        .sheet(isPresented: $editingStructuredPersonShown) {
+            StructuredKeywordEditor(
+                service: .personShown,
+                title: "Structured Person Shown",
+                leafNoun: "Name",
+                exportFilename: "Structured Person Shown.txt"
+            )
+        }
         .onAppear {
             refreshKnownPeopleStats()
         }
@@ -934,6 +948,91 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - Structured Person Shown Section
+
+    @ViewBuilder
+    private var structuredPersonShownSection: some View {
+        let service = settingsViewModel.structuredPersonShown
+        let displayPath = service.sourcePath
+        let isLoaded = service.isLoaded
+        let nameCount = service.keywordCount
+
+        Section("Structured Person Shown") {
+            HStack {
+                if let displayPath {
+                    Text((displayPath as NSString).lastPathComponent)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .foregroundStyle(.secondary)
+                        .help(displayPath)
+                } else {
+                    Text("No file chosen").foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Edit…") {
+                    editingStructuredPersonShown = true
+                }
+                .help("Edit the structured Person Shown tree in-app")
+                Button(isLoaded ? "Import…" : "Import File…") {
+                    chooseStructuredPersonShownFile()
+                }
+                if isLoaded {
+                    Button(role: .destructive) {
+                        service.clearList()
+                        structuredPersonShownErrorMessage = nil
+                    } label: {
+                        Image(systemName: "xmark.circle")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Clear structured Person Shown")
+                }
+            }
+
+            if isLoaded, nameCount > 0 {
+                Text("\(nameCount.formatted()) names")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let loadError = service.loadError {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text(loadError)
+                        .foregroundStyle(.orange)
+                }
+                .font(.caption)
+            }
+
+            if let structuredPersonShownErrorMessage {
+                Text(structuredPersonShownErrorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+            Text("A PhotoMechanic-style tree of people — group names under [brackets] like [Politicians] or [Athletes], and add {braces} for alternate spellings or nicknames so they're easy to search. Picking a name writes it (plus any synonyms) but never the category. Open the picker via the tree icon next to the Person Shown field.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func chooseStructuredPersonShownFile() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.plainText]
+        panel.message = "Choose a structured Person Shown file (.txt)"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try settingsViewModel.structuredPersonShown.importListURL(url)
+            structuredPersonShownErrorMessage = nil
+        } catch {
+            let description = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            structuredPersonShownErrorMessage = description
+        }
+    }
+
     // MARK: - Keywords Tab
 
     @ViewBuilder
@@ -960,7 +1059,7 @@ struct SettingsView: View {
                     }
                     Spacer()
                 }
-                Text("Bundles your approved and structured keyword lists into a single .zip with a manifest. On import you can replace or append per list — useful for merging collaborators' lists or restoring from a backup. Quick lists have their own Import / Export on the Quick Lists tab.")
+                Text("Bundles your approved keywords and structured keyword/Person Shown trees into a single .zip with a manifest. On import you can replace or append per list — useful for merging collaborators' lists or restoring from a backup. Quick lists have their own Import / Export on the Quick Lists tab.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

@@ -18,6 +18,18 @@ import UniformTypeIdentifiers
 struct StructuredKeywordEditor: View {
     @Environment(\.dismiss) private var dismiss
 
+    /// Which tree this editor loads and saves. Defaults to the keyword tree;
+    /// the Person Shown editor passes `.personShown`.
+    var service: StructuredKeywordService = .shared
+    /// Title shown in the editor header.
+    var title: String = "Structured Keywords"
+    /// Capitalized noun for a leaf node, used in buttons/menus ("Add \(leafNoun)").
+    var leafNoun: String = "Keyword"
+    /// Default filename offered when exporting the tree.
+    var exportFilename: String = "Structured Keywords.txt"
+
+    private var leafNounLower: String { leafNoun.lowercased() }
+
     /// The synthetic root whose `children` are the file's top-level nodes.
     @State private var root: EditableStructuredKeyword = EditableStructuredKeyword(name: "", kind: .container)
     @State private var expandedIDs: Set<UUID> = []
@@ -47,9 +59,9 @@ struct StructuredKeywordEditor: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            Text("Structured Keywords").font(.headline)
+            Text(title).font(.headline)
             Spacer()
-            Text("\(keywordCount) \(keywordCount == 1 ? "keyword" : "keywords")")
+            Text("\(keywordCount) \(keywordCount == 1 ? leafNounLower : leafNounLower + "s")")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -62,9 +74,9 @@ struct StructuredKeywordEditor: View {
             Button {
                 addTopLevel(kind: .keyword)
             } label: {
-                Label("Add Keyword", systemImage: "tag")
+                Label("Add \(leafNoun)", systemImage: "tag")
             }
-            .help("Add a top-level keyword (\\u2318N)")
+            .help("Add a top-level \(leafNounLower) (\\u2318N)")
             .keyboardShortcut("n", modifiers: .command)
             Button {
                 addTopLevel(kind: .container)
@@ -115,9 +127,9 @@ struct StructuredKeywordEditor: View {
             Image(systemName: "list.bullet.indent")
                 .font(.system(size: 36))
                 .foregroundStyle(.secondary)
-            Text("No keywords yet")
+            Text("No \(leafNounLower)s yet")
                 .font(.headline)
-            Text("Click **Add Keyword** above (or press \\u2318N) to start building your tree. Use Tab to indent a row as a child of the row above it.")
+            Text("Click **Add \(leafNoun)** above (or press \\u2318N) to start building your tree. Use Tab to indent a row as a child of the row above it.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -256,7 +268,7 @@ struct StructuredKeywordEditor: View {
         Button("Rename") { startRename(node) }
         Button("Add Synonym…") { synonymPopoverFor = node.id }
         Divider()
-        Button("Add Child Keyword") { addChild(under: node, kind: .keyword) }
+        Button("Add Child \(leafNoun)") { addChild(under: node, kind: .keyword) }
         Button("Add Child Category") { addChild(under: node, kind: .container) }
         Button("Add Sibling Below") { addSibling(below: node) }
         Divider()
@@ -269,7 +281,7 @@ struct StructuredKeywordEditor: View {
         Button("Move Down") { moveDown(node) }
             .disabled(!canMoveDown(node))
         Divider()
-        Button(node.isContainer ? "Convert to Keyword" : "Convert to Category") {
+        Button(node.isContainer ? "Convert to \(leafNoun)" : "Convert to Category") {
             node.kind = node.isKeyword ? .container : .keyword
         }
         Divider()
@@ -510,7 +522,7 @@ struct StructuredKeywordEditor: View {
     // MARK: - Load / Save / Import / Export
 
     private func load() {
-        let parsed = StructuredKeywordService.shared.roots
+        let parsed = service.roots
         root = EditableStructuredKeyword.root(from: parsed)
         // Expand the first level by default so the user immediately sees structure.
         for child in root.children where child.hasChildren {
@@ -524,7 +536,7 @@ struct StructuredKeywordEditor: View {
         // can't accidentally lose a real node, only blanks they left behind.
         let cleaned = root.snapshotChildren().compactMap { strip($0) }
         do {
-            try StructuredKeywordService.shared.saveTree(cleaned)
+            try service.saveTree(cleaned)
             dismiss()
         } catch {
             feedback = "Save failed: \(error.localizedDescription)"
@@ -575,8 +587,8 @@ struct StructuredKeywordEditor: View {
     private func exportToFile() {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.plainText]
-        panel.nameFieldStringValue = "Structured Keywords.txt"
-        panel.message = "Export the structured keyword tree"
+        panel.nameFieldStringValue = exportFilename
+        panel.message = "Export the structured tree"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         let snapshot = root.snapshotChildren().compactMap { strip($0) }
         let text = StructuredKeywordSerializer.serialize(snapshot)

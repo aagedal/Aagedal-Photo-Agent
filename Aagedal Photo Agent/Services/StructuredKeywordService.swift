@@ -16,7 +16,17 @@ struct StructuredKeywordPath: Hashable {
 
 @Observable
 final class StructuredKeywordService {
+    /// Keyword tree: activation includes keyword-ancestors + node + synonyms.
     static let shared = StructuredKeywordService()
+    /// Person Shown tree: activation writes the node name + synonyms only —
+    /// category ancestors are navigation-only and never applied as names.
+    static let personShown = StructuredKeywordService(key: .structuredPersonShown, includesAncestors: false)
+
+    /// Which managed list this service reads/writes (keywords vs person-shown tree).
+    @ObservationIgnored private let key: KeywordListKey
+    /// When true (keywords), `expand` prepends keyword-kind ancestors. When false
+    /// (person-shown), only the activated node's name and synonyms are returned.
+    @ObservationIgnored private let includesAncestors: Bool
 
     /// Bumped on any state change so SwiftUI views re-render.
     private(set) var version: Int = 0
@@ -29,22 +39,26 @@ final class StructuredKeywordService {
 
     @ObservationIgnored nonisolated(unsafe) private var changeObserver: NSObjectProtocol?
 
-    init() {
+    init(key: KeywordListKey = .structured, includesAncestors: Bool = true) {
+        self.key = key
+        self.includesAncestors = includesAncestors
         loadFromStore()
         changeObserver = NotificationCenter.default.addObserver(
             forName: .keywordListChanged,
             object: nil,
             queue: .main
         ) { [weak self] note in
-            // Extract the key on the notification queue (synchronously); only
-            // transmit a Sendable Bool flag to the main-actor Task to avoid
-            // shipping NSDictionary/Sendable issues across actors.
+            // Extract the changed key on the notification queue (synchronously),
+            // then ship the Sendable key into the main-actor Task and compare
+            // there — `KeywordListKey`'s Equatable conformance is main-actor
+            // isolated under the module's default isolation, so the match can't
+            // run in this nonisolated callback.
             guard
-                let key = note.userInfo?[KeywordListsStore.changedKeyUserInfo] as? KeywordListKey,
-                case .structured = key
+                let changed = note.userInfo?[KeywordListsStore.changedKeyUserInfo] as? KeywordListKey
             else { return }
             Task { @MainActor [weak self] in
-                self?.loadFromStore()
+                guard let self, changed == self.key else { return }
+                self.loadFromStore()
             }
         }
     }
@@ -77,13 +91,13 @@ final class StructuredKeywordService {
     /// file's bytes are copied into the store and parsed; the source URL is no
     /// longer referenced.
     func importListURL(_ url: URL) throws {
-        let text = try KeywordListsStore.shared.importText(from: url, into: .structured)
+        let text = try KeywordListsStore.shared.importText(from: url, into: key)
         let parsed = StructuredKeywordParser.parseString(text)
         if parsed.isEmpty {
             throw StructuredKeywordParserError.empty
         }
         roots = parsed
-        sourcePath = KeywordListsStore.shared.url(for: .structured).path
+        sourcePath = KeywordListsStore.shared.url(for: key).path
         loadError = nil
         bumpVersion()
     }
@@ -92,15 +106,15 @@ final class StructuredKeywordService {
     /// `StructuredKeywordSerializer` so the on-disk format remains PhotoMechanic-compatible.
     func saveTree(_ tree: [StructuredKeyword]) throws {
         let text = StructuredKeywordSerializer.serialize(tree)
-        try KeywordListsStore.shared.writeText(text, to: .structured)
+        try KeywordListsStore.shared.writeText(text, to: key)
         roots = tree
-        sourcePath = KeywordListsStore.shared.url(for: .structured).path
+        sourcePath = KeywordListsStore.shared.url(for: key).path
         loadError = nil
         bumpVersion()
     }
 
     func clearList() {
-        KeywordListsStore.shared.delete(.structured)
+        KeywordListsStore.shared.delete(key)
         roots = []
         sourcePath = nil
         loadError = nil
@@ -113,8 +127,10 @@ final class StructuredKeywordService {
     /// Container ancestors and container nodes themselves are skipped.
     func expand(_ path: StructuredKeywordPath) -> [String] {
         var result: [String] = []
-        for ancestor in path.ancestors where ancestor.isKeyword {
-            result.append(ancestor.name)
+        if includesAncestors {
+            for ancestor in path.ancestors where ancestor.isKeyword {
+                result.append(ancestor.name)
+            }
         }
         if path.node.isKeyword {
             result.append(path.node.name)
@@ -171,14 +187,14 @@ final class StructuredKeywordService {
 
     private func loadFromStore() {
         let store = KeywordListsStore.shared
-        guard store.exists(.structured) else {
+        guard store.exists(key) else {
             roots = []
             sourcePath = nil
             loadError = nil
             bumpVersion()
             return
         }
-        guard let text = store.readText(.structured) else {
+        guard let text = store.readText(key) else {
             roots = []
             sourcePath = nil
             loadError = "Could not read structured keywords file."
@@ -187,7 +203,7 @@ final class StructuredKeywordService {
         }
         let parsed = StructuredKeywordParser.parseString(text)
         roots = parsed
-        sourcePath = store.url(for: .structured).path
+        sourcePath = store.url(for: key).path
         loadError = parsed.isEmpty ? "File contained no keywords." : nil
         bumpVersion()
     }

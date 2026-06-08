@@ -646,6 +646,27 @@ final class MetadataViewModel {
         return addedCount
     }
 
+    /// Appends trimmed, de-duplicated names to `personShown`, preserving order.
+    /// Returns the number actually added; calls `markChanged()` when non-zero.
+    @discardableResult
+    func appendPersonShown(_ incoming: [String]) -> Int {
+        var current = editingMetadata.personShown
+        var seen = Set(current)
+        var addedCount = 0
+        for name in incoming {
+            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            if seen.insert(trimmed).inserted {
+                current.append(trimmed)
+                addedCount += 1
+            }
+        }
+        guard addedCount > 0 else { return 0 }
+        editingMetadata.personShown = current
+        markChanged()
+        return addedCount
+    }
+
     func resolveDescriptionConflict(keepXMP: Bool) {
         guard let conflict = descriptionConflict else { return }
         editingMetadata.description = keepXMP ? conflict.xmpDescription : conflict.iptcCaptionAbstract

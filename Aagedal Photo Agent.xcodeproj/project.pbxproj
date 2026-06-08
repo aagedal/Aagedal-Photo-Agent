@@ -20,6 +20,7 @@
 		AB0700000000000000000002 /* PresetVariableInterpolatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0700000000000000000001 /* PresetVariableInterpolatorTests.swift */; };
 		AB0800000000000000000002 /* CoordinateParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0800000000000000000001 /* CoordinateParserTests.swift */; };
 		AB0900000000000000000002 /* KnownPeopleServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0900000000000000000001 /* KnownPeopleServiceTests.swift */; };
+		AB0700000000000000000002 /* StructuredKeywordServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0700000000000000000001 /* StructuredKeywordServiceTests.swift */; };
 		AB1000000000000000000002 /* FTPServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1000000000000000000001 /* FTPServiceTests.swift */; };
 		AB1100000000000000000002 /* FullScreenImageCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1100000000000000000001 /* FullScreenImageCacheTests.swift */; };
 		AB1200000000000000000002 /* EditExportPipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1200000000000000000001 /* EditExportPipelineTests.swift */; };
@@ -56,6 +57,7 @@
 		AB0700000000000000000001 /* PresetVariableInterpolatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PresetVariableInterpolatorTests.swift; sourceTree = "<group>"; };
 		AB0800000000000000000001 /* CoordinateParserTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CoordinateParserTests.swift; sourceTree = "<group>"; };
 		AB0900000000000000000001 /* KnownPeopleServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KnownPeopleServiceTests.swift; sourceTree = "<group>"; };
+		AB0700000000000000000001 /* StructuredKeywordServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = StructuredKeywordServiceTests.swift; sourceTree = "<group>"; };
 		AB1000000000000000000001 /* FTPServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FTPServiceTests.swift; sourceTree = "<group>"; };
 		AB1100000000000000000001 /* FullScreenImageCacheTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FullScreenImageCacheTests.swift; sourceTree = "<group>"; };
 		AB1200000000000000000001 /* EditExportPipelineTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = EditExportPipelineTests.swift; sourceTree = "<group>"; };
@@ -115,6 +117,7 @@
 				AB0100000000000000000001 /* ApprovedListBypassTests.swift */,
 				AB0200000000000000000001 /* KeywordListsStoreTests.swift */,
 				AB0900000000000000000001 /* KnownPeopleServiceTests.swift */,
+				AB0700000000000000000001 /* StructuredKeywordServiceTests.swift */,
 				AB0300000000000000000001 /* StructuredKeywordParserTests.swift */,
 				AB0400000000000000000001 /* StructuredKeywordSerializerTests.swift */,
 				AB0500000000000000000001 /* KeywordListsArchiveTests.swift */,
@@ -296,6 +299,7 @@
 				AB0100000000000000000002 /* ApprovedListBypassTests.swift in Sources */,
 				AB0200000000000000000002 /* KeywordListsStoreTests.swift in Sources */,
 				AB0900000000000000000002 /* KnownPeopleServiceTests.swift in Sources */,
+				AB0700000000000000000002 /* StructuredKeywordServiceTests.swift in Sources */,
 				AB0300000000000000000002 /* StructuredKeywordParserTests.swift in Sources */,
 				AB0400000000000000000002 /* StructuredKeywordSerializerTests.swift in Sources */,
 				AB0500000000000000000002 /* KeywordListsArchiveTests.swift in Sources */,

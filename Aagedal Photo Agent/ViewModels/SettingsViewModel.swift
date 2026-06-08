@@ -145,6 +145,7 @@ final class SettingsViewModel {
 
     var approvedLists: ApprovedListService { .shared }
     var structuredKeywords: StructuredKeywordService { .shared }
+    var structuredPersonShown: StructuredKeywordService { .personShown }
     var keywordLists: KeywordListsStore { .shared }
 
     /// Path of the store-backed file when the quick list has any entries. Empty

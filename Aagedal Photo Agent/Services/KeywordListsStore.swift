@@ -10,6 +10,7 @@ enum KeywordListKey: Hashable, CustomStringConvertible {
     case quick(QuickListType)
     case approved(ApprovedListField)
     case structured
+    case structuredPersonShown
 
     /// Relative path under the store root. The path is stable per-key — do not
     /// change it once shipped, or migration logic will need to handle a rename.
@@ -21,6 +22,8 @@ enum KeywordListKey: Hashable, CustomStringConvertible {
             return "approved/\(field.rawValue).txt"
         case .structured:
             return "structured/keywords.txt"
+        case .structuredPersonShown:
+            return "structured/personShown.txt"
         }
     }
 
@@ -30,7 +33,7 @@ enum KeywordListKey: Hashable, CustomStringConvertible {
         switch self {
         case .quick: return "quick"
         case .approved: return "approved"
-        case .structured: return "structured"
+        case .structured, .structuredPersonShown: return "structured"
         }
     }
 
@@ -46,6 +49,8 @@ enum KeywordListKey: Hashable, CustomStringConvertible {
             return "Approved \(field.displayName)"
         case .structured:
             return "Structured Keywords"
+        case .structuredPersonShown:
+            return "Structured Person Shown"
         }
     }
 }
@@ -352,6 +357,7 @@ final class KeywordListsStore {
         keys.append(contentsOf: QuickListType.allCases.map { KeywordListKey.quick($0) })
         keys.append(contentsOf: ApprovedListField.allCases.map { KeywordListKey.approved($0) })
         keys.append(.structured)
+        keys.append(.structuredPersonShown)
         return keys
     }
 
@@ -394,7 +400,7 @@ final class KeywordListsStore {
                 }
                 let joined = merged.joined(separator: "\n") + (merged.isEmpty ? "" : "\n")
                 try CloudCoordinatedIO.writeText(joined, to: destURL)
-            case .structured:
+            case .structured, .structuredPersonShown:
                 guard !CloudCoordinatedIO.itemExists(at: destURL) else { continue }
                 let data = try CloudCoordinatedIO.readData(at: sourceURL)
                 try CloudCoordinatedIO.writeData(data, to: destURL)

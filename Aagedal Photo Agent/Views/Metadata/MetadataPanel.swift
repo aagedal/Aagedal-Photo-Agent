@@ -27,6 +27,7 @@ struct MetadataPanel: View {
     @State private var commitDebounceTask: Task<Void, Never>?
     @State private var showingRawMetadata = false
     @State private var showingStructuredKeywords = false
+    @State private var showingStructuredPersonShown = false
     @State private var editingQuickList: QuickListType?
 
     enum ListFileTarget {
@@ -177,6 +178,14 @@ struct MetadataPanel: View {
                 severity: .warning
             )
         }
+        guard added > 0 else { return }
+        commitEdits()
+    }
+
+    /// Adds names picked from the structured Person Shown tree. Person Shown has
+    /// no approved list, so names are appended directly (deduped) and committed.
+    private func addStructuredPeople(_ expanded: [String]) {
+        let added = viewModel.appendPersonShown(expanded)
         guard added > 0 else { return }
         commitEdits()
     }
@@ -830,9 +839,27 @@ struct MetadataPanel: View {
                 showingListFilePicker = true
             },
             focusKey: "personShown",
-            focusedField: $focusedField
+            focusedField: $focusedField,
+            onShowStructuredKeywords: {
+                showingStructuredPersonShown = true
+            },
+            structuredPickerHelp: "Open Structured Person Shown picker"
         )
         .id("personShown")
+        .sheet(isPresented: $showingStructuredPersonShown) {
+            StructuredKeywordsPicker(
+                onAddKeywords: { expanded in
+                    addStructuredPeople(expanded)
+                },
+                onClose: {
+                    showingStructuredPersonShown = false
+                },
+                service: .personShown,
+                searchPrompt: "Search names or alternate spellings…",
+                emptyTitle: "No structured Person Shown file loaded",
+                emptySubtitle: "Build or import a name tree in Settings → Metadata → Structured Person Shown."
+            )
+        }
 
         EditableTextField(
             label: "Copyright",
@@ -1666,6 +1693,9 @@ struct KeywordsEditorWithDiff: View {
     /// When set, a tree icon appears in the toolbar that invokes this callback,
     /// typically to open the structured-keywords picker as a sheet.
     var onShowStructuredKeywords: (() -> Void)? = nil
+    /// Help text for the structured-tree button. Overridden by the Person Shown
+    /// field so it reads "Open Structured Person Shown picker".
+    var structuredPickerHelp: String = "Open Structured Keywords picker"
     /// When set, the overflow menu inside the quick-list popover gains an
     /// "Edit Quick List…" item. Caller is expected to present `KeywordListEditor`.
     var onEditQuickList: (() -> Void)? = nil
@@ -1736,7 +1766,7 @@ struct KeywordsEditorWithDiff: View {
                             .font(.caption)
                     }
                     .buttonStyle(.borderless)
-                    .help("Open Structured Keywords picker")
+                    .help(structuredPickerHelp)
                 }
             }
 

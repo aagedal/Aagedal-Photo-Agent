@@ -24,7 +24,7 @@ enum KeywordListScope {
             return false
         case .keywords:
             switch key {
-            case .approved, .structured: return true
+            case .approved, .structured, .structuredPersonShown: return true
             case .quick: return false
             }
         }
@@ -98,6 +98,12 @@ struct KeywordListsExportSheet: View {
             let count = StructuredKeywordParser.parseString(text)
                 .reduce(0) { $0 + countKeywords(in: $1) }
             rows.append((.structured, count))
+        }
+        if store.exists(.structuredPersonShown) {
+            let text = store.readText(.structuredPersonShown) ?? ""
+            let count = StructuredKeywordParser.parseString(text)
+                .reduce(0) { $0 + countKeywords(in: $1) }
+            rows.append((.structuredPersonShown, count))
         }
         return rows.filter { scope.includes($0.0) }
     }
@@ -336,7 +342,7 @@ struct KeywordListsImportSheet: View {
     private func importRow(entry: KeywordListsArchive.ManifestPreview.Entry) -> some View {
         let key = entry.key
         let localCount = localCounts[key] ?? 0
-        let isStructured = (key == .structured)
+        let isStructured = (key == .structured || key == .structuredPersonShown)
         return HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 1) {
                 Text(key.displayName)
@@ -410,8 +416,8 @@ struct KeywordListsImportSheet: View {
     private func localEntryCount(for key: KeywordListKey) -> Int {
         let store = KeywordListsStore.shared
         switch key {
-        case .structured:
-            let text = store.readText(.structured) ?? ""
+        case .structured, .structuredPersonShown:
+            let text = store.readText(key) ?? ""
             return StructuredKeywordParser.parseString(text).reduce(0) { $0 + countKeywords(in: $1) }
         case .quick, .approved:
             return store.readEntries(key).count
@@ -422,7 +428,7 @@ struct KeywordListsImportSheet: View {
     /// Replace. The structured tree always defaults to Replace (Append isn't
     /// well-defined for the tab-indented format).
     private func defaultMode(for key: KeywordListKey) -> KeywordListsArchive.ImportMode {
-        if key == .structured { return .replace }
+        if key == .structured || key == .structuredPersonShown { return .replace }
         return (localCounts[key] ?? 0) > 0 ? .append : .replace
     }
 
@@ -430,7 +436,7 @@ struct KeywordListsImportSheet: View {
         guard let preview else { return }
         for entry in scopedEntries(preview) {
             // `.append` doesn't apply to structured — fall back to Replace.
-            if entry.key == .structured && mode == .append {
+            if (entry.key == .structured || entry.key == .structuredPersonShown) && mode == .append {
                 choices[entry.key] = .replace
             } else {
                 choices[entry.key] = mode

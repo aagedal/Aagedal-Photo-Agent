@@ -21,7 +21,16 @@ struct StructuredKeywordsPicker: View {
     /// Optional dismiss handler used by the modal-sheet presentation.
     var onClose: (() -> Void)? = nil
 
-    private let service = StructuredKeywordService.shared
+    /// Which tree to browse. Defaults to the keyword tree; Person Shown passes
+    /// `.personShown`.
+    var service: StructuredKeywordService = .shared
+
+    /// Placeholder shown in the search field.
+    var searchPrompt: String = "Search keywords or synonyms…"
+    /// Title shown when no tree file is loaded.
+    var emptyTitle: String = "No structured keywords file loaded"
+    /// Subtitle pointing the user at the relevant Settings location.
+    var emptySubtitle: String = "Choose a PhotoMechanic-style tree file in Settings → Metadata → Structured Keywords."
 
     @State private var searchText: String = ""
     @State private var feedback: Feedback?
@@ -88,7 +97,7 @@ struct StructuredKeywordsPicker: View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
-            TextField("Search keywords or synonyms…", text: $searchText)
+            TextField(searchPrompt, text: $searchText)
                 .textFieldStyle(.plain)
                 .focused($searchFieldFocused)
                 .onSubmit {
@@ -129,9 +138,9 @@ struct StructuredKeywordsPicker: View {
             Image(systemName: "list.bullet.indent")
                 .font(.system(size: 36))
                 .foregroundStyle(.secondary)
-            Text("No structured keywords file loaded")
+            Text(emptyTitle)
                 .font(.headline)
-            Text("Choose a PhotoMechanic-style tree file in Settings → Metadata → Structured Keywords.")
+            Text(emptySubtitle)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

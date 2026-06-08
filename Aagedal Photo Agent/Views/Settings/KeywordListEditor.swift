@@ -164,7 +164,7 @@ struct KeywordListEditor: View {
             switch storeKey {
             case .approved(let field):
                 try ApprovedListService.shared.saveEntries(entries, for: field)
-            case .quick, .structured:
+            case .quick, .structured, .structuredPersonShown:
                 // Writing directly through the store posts `.keywordListChanged`
                 // so observers (SettingsViewModel quick-list cache, services)
                 // refresh automatically.
@@ -222,6 +222,8 @@ struct KeywordListEditor: View {
             return type.defaultFilename
         case .structured:
             return "Structured Keywords.txt"
+        case .structuredPersonShown:
+            return "Structured Person Shown.txt"
         }
     }
 }

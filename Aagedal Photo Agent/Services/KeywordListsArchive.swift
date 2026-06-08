@@ -181,7 +181,7 @@ enum KeywordListsArchive {
             let text = (try? String(contentsOf: fileURL, encoding: .utf8)) ?? ""
 
             switch key {
-            case .structured:
+            case .structured, .structuredPersonShown:
                 // Append-mode on a tab-indented tree isn't meaningfully defined
                 // (two trees may collide on the same parent), so for the
                 // structured file `.append` falls through to `.replace`. The
@@ -253,12 +253,13 @@ enum KeywordListsArchive {
         keys.append(contentsOf: QuickListType.allCases.map { KeywordListKey.quick($0) })
         keys.append(contentsOf: ApprovedListField.allCases.map { KeywordListKey.approved($0) })
         keys.append(.structured)
+        keys.append(.structuredPersonShown)
         return keys
     }
 
     private static func entryCount(for key: KeywordListKey, in store: KeywordListsStore) -> Int {
         switch key {
-        case .structured:
+        case .structured, .structuredPersonShown:
             // Count keyword (not container) lines in the text.
             let text = store.readText(key) ?? ""
             return StructuredKeywordParser.parseString(text).reduce(0) { $0 + countKeywords(in: $1) }
@@ -278,11 +279,13 @@ enum KeywordListsArchive {
         case .quick(let type): return "quick.\(type.rawValue)"
         case .approved(let field): return "approved.\(field.rawValue)"
         case .structured: return "structured"
+        case .structuredPersonShown: return "structuredPersonShown"
         }
     }
 
     private static func resolveKey(forKind kind: String, path: String) -> KeywordListKey? {
         if kind == "structured" { return .structured }
+        if kind == "structuredPersonShown" { return .structuredPersonShown }
         if kind.hasPrefix("quick.") {
             let raw = String(kind.dropFirst("quick.".count))
             return QuickListType(rawValue: raw).map { .quick($0) }
