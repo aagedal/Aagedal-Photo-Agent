@@ -22,6 +22,9 @@ final class KnownPeopleCloudCoordinator {
     private var query: NSMetadataQuery?
     private var observers: [NSObjectProtocol] = []
     private var pendingRefresh: Task<Void, Never>?
+    /// In-flight off-main resolution of the ubiquity container. Held so a second
+    /// `refresh()` doesn't stack a duplicate attempt and so disabling can cancel it.
+    private var pendingStart: Task<Void, Never>?
     /// Changed person-file URLs accumulated across query updates within one
     /// debounce window, keyed by path so repeated notifications coalesce.
     private var pendingChanges: [String: (url: URL, contentChangeDate: Date?)] = [:]
@@ -31,12 +34,41 @@ final class KnownPeopleCloudCoordinator {
     /// Idempotent. Call after app launch and whenever the iCloud toggle changes.
     func refresh() {
         let enabled = UserDefaults.standard.bool(forKey: UserDefaultsKeys.knownPeopleICloudEnabled)
-        let containerAvailable = AppPaths.iCloudKnownPeopleURL != nil
-
-        if enabled && containerAvailable {
+        guard enabled else {
+            stopQuery()
+            return
+        }
+        if AppPaths.iCloudKnownPeopleURL != nil {
             startQueryIfNeeded()
         } else {
-            stopQuery()
+            // The ubiquity container isn't reachable yet. Early in launch the
+            // daemon may still be provisioning it, and resolving on the main
+            // thread can transiently return nil — so resolve off-main and start
+            // the query once it lands, instead of giving up for the session.
+            scheduleContainerResolution()
+        }
+    }
+
+    /// Resolves the ubiquity container off the main thread (the documented
+    /// pattern: the call provisions and blocks, then returns the URL), then
+    /// starts the metadata query back on the main actor. A single attempt
+    /// suffices — the call blocks until provisioning finishes; a nil result
+    /// means iCloud is genuinely unavailable (signed out / Drive off).
+    private func scheduleContainerResolution() {
+        guard query == nil, pendingStart == nil else { return }
+        pendingStart = Task { [weak self] in
+            let resolved = await Task.detached(priority: .utility) {
+                AppPaths.iCloudKnownPeopleURL
+            }.value
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.pendingStart = nil
+                let stillEnabled = UserDefaults.standard.bool(forKey: UserDefaultsKeys.knownPeopleICloudEnabled)
+                guard stillEnabled, resolved != nil else { return }
+                self.startQueryIfNeeded()
+                // The query's gathering callback delivers the synced person files
+                // and drives the per-record refresh from there.
+            }
         }
     }
 
@@ -84,6 +116,8 @@ final class KnownPeopleCloudCoordinator {
     }
 
     private func stopQuery() {
+        pendingStart?.cancel()
+        pendingStart = nil
         guard let q = query else { return }
         q.stop()
         for observer in observers {
