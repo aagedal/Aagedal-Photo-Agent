@@ -1390,7 +1390,7 @@ final class MetadataViewModel {
         image: ImageFile,
         url: URL
     ) async throws -> VariableWriteResult {
-        let mode = MetadataWriteMode.current(forC2PA: image.hasC2PA)
+        let mode = MetadataWriteMode.current(forC2PA: image.hasC2PA, isRaw: SupportedImageFormats.isRaw(url: url))
         guard let folder = self.currentFolderURL else {
             throw NSError(domain: "MetadataViewModel", code: 1, userInfo: [NSLocalizedDescriptionKey: "No folder URL"])
         }
