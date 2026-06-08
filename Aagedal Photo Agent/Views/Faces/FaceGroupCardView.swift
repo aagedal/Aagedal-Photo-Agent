@@ -759,15 +759,25 @@ final class FaceGroupCardView: NSView {
         viewModel?.ungroupFace(faceID)
     }
 
+    /// Faces a context-menu action should apply to: the whole selection when the
+    /// right-clicked face is part of it, otherwise just the clicked face.
+    private func menuTargetFaceIDs(clicked faceID: UUID) -> Set<UUID> {
+        if let selected = selectionState?.selectedFaceIDs, selected.contains(faceID) {
+            return selected
+        }
+        return [faceID]
+    }
+
     @objc private func faceMenuUngroup(_ sender: NSMenuItem) {
         guard let faceID = sender.representedObject as? UUID else { return }
-        viewModel?.moveToUnmatched(Set([faceID]))
+        viewModel?.moveToUnmatched(menuTargetFaceIDs(clicked: faceID))
     }
 
     @objc private func faceMenuDeleteFace(_ sender: NSMenuItem) {
         guard let faceID = sender.representedObject as? UUID else { return }
-        viewModel?.deleteFaces(Set([faceID]))
-        selectionState?.selectedFaceIDs.remove(faceID)
+        let ids = menuTargetFaceIDs(clicked: faceID)
+        viewModel?.deleteFaces(ids)
+        selectionState?.selectedFaceIDs.subtract(ids)
     }
 
     // MARK: - Editing
