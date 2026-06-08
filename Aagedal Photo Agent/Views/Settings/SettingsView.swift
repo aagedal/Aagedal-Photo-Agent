@@ -662,50 +662,53 @@ struct SettingsView: View {
                 Text(settingsViewModel.metadataWritePreset.summary)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
 
-                if settingsViewModel.metadataWritePreset == .custom {
-                    Divider()
-
+            if settingsViewModel.metadataWritePreset == .custom {
+                Section("RAW Images") {
                     Picker("RAW Images", selection: $settingsViewModel.metadataWriteModeRaw) {
                         ForEach(MetadataWriteMode.standardOptions) { mode in
                             Text(mode.displayName).tag(mode)
                         }
                     }
                     .pickerStyle(.radioGroup)
+                    .labelsHidden()
                     Text(settingsViewModel.metadataWriteModeRaw.description)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
 
-                    Divider()
-
+                Section("Non-C2PA Images") {
                     Picker("Non-C2PA Images", selection: $settingsViewModel.metadataWriteModeNonC2PA) {
                         ForEach(MetadataWriteMode.standardOptions) { mode in
                             Text(mode.displayName).tag(mode)
                         }
                     }
                     .pickerStyle(.radioGroup)
+                    .labelsHidden()
                     Text(settingsViewModel.metadataWriteModeNonC2PA.description)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
 
-                    Divider()
-
+                Section("C2PA-Protected Images") {
                     Picker("C2PA-Protected Images", selection: $settingsViewModel.metadataWriteModeC2PA) {
                         ForEach(MetadataWriteMode.c2paOptions) { mode in
                             Text(mode.displayName).tag(mode)
                         }
                     }
                     .pickerStyle(.radioGroup)
+                    .labelsHidden()
                     Text(settingsViewModel.metadataWriteModeC2PA.description)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+            }
 
+            Section {
                 Text("C2PA content credentials can be invalidated by writing to the image file. You will be prompted before overwriting.")
                     .font(.caption)
                     .foregroundStyle(.orange)
-
-                Divider()
 
                 Toggle("Prefer XMP sidecar when available", isOn: $settingsViewModel.preferXMPSidecar)
                 Text("When an XMP sidecar exists, use it as the primary metadata source for viewing and comparisons.")
@@ -716,7 +719,6 @@ struct SettingsView: View {
                 Text("When both embedded and XMP sidecar metadata exist with different values, prompt to choose which source to use.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-
             }
 
             Section("Variable Processing") {
