@@ -1706,17 +1706,17 @@ struct KeywordsEditorWithDiff: View {
                     }
                     .buttonStyle(.borderless)
                     .help(presetList.isEmpty ? "Choose a Quick List file" : "Choose from Quick List")
-                    .popover(isPresented: $quickListPopoverShown, arrowEdge: .bottom) {
-                        QuickKeywordPicker(
+                    .instantPopover(isPresented: $quickListPopoverShown, arrowEdge: .bottom) {
+                        QuickListPicker(
                             presetList: presetList,
-                            currentKeywords: Set(keywords),
+                            currentValues: Set(keywords),
+                            allowsMultiple: true,
                             allowsToggleRemoval: allowsPresetToggleRemoval,
-                            onAddSelected: { picks in
-                                for item in picks {
-                                    addPresetItem(item)
-                                }
+                            appliedBadge: "on image",
+                            onPick: { item in
+                                addPresetItem(item)
                             },
-                            onRemoveItem: { item in
+                            onRemove: { item in
                                 keywords.removeAll { $0 == item }
                                 onChange?()
                                 onCommit?()
@@ -2175,6 +2175,7 @@ struct EditableTextField: View {
     var focusedField: FocusState<String?>.Binding? = nil
 
     @State private var localText: String = ""
+    @State private var quickListPopoverShown: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -2202,47 +2203,30 @@ struct EditableTextField: View {
                     trailingLabelContent
                 }
                 if !presetList.isEmpty || onChooseListFile != nil {
-                    Menu {
-                        if let onAddCurrentToQuickList {
-                            Button("Add Current to Quick List") {
-                                onAddCurrentToQuickList()
-                            }
-                            .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                            Divider()
-                        }
-                        if let onChooseListFile {
-                            Button("Choose Quick List File...") {
-                                onChooseListFile()
-                            }
-                        }
-                        if !presetList.isEmpty {
-                            Divider()
-                            ForEach(presetList, id: \.self) { item in
-                                let isSelected = text == item
-                                Button {
-                                    if !isSelected {
-                                        text = item
-                                        onCommit?()
-                                    }
-                                } label: {
-                                    HStack(spacing: 6) {
-                                        if isSelected {
-                                            Image(systemName: "checkmark")
-                                        }
-                                        Text(item)
-                                    }
-                                }
-                                .disabled(isSelected)
-                            }
-                        }
+                    Button {
+                        quickListPopoverShown.toggle()
                     } label: {
                         Image(systemName: "list.bullet")
                             .font(.caption)
                             .foregroundStyle(presetList.isEmpty ? .secondary : .primary)
                     }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
+                    .buttonStyle(.borderless)
                     .help(presetList.isEmpty ? "Choose a Quick List file" : "Choose from Quick List")
+                    .instantPopover(isPresented: $quickListPopoverShown, arrowEdge: .bottom) {
+                        QuickListPicker(
+                            presetList: presetList,
+                            currentValues: text.isEmpty ? [] : [text],
+                            allowsMultiple: false,
+                            compact: true,
+                            onPick: { picked in
+                                text = picked
+                                onCommit?()
+                            },
+                            onAddCurrentToQuickList: onAddCurrentToQuickList,
+                            onChooseListFile: onChooseListFile,
+                            onClose: { quickListPopoverShown = false }
+                        )
+                    }
                 }
             }
             if let focusedField, let focusKey {

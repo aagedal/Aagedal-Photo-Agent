@@ -1,33 +1,45 @@
 import SwiftUI
 
-/// Popover picker for a Quick List of keywords. Peer in style to
-/// `StructuredKeywordsPicker`: searchable, keyboard-navigable, multi-select.
+/// Searchable, keyboard-navigable Quick List picker shared by every metadata
+/// field that has a quick list. Presented through `.instantPopover` so it
+/// appears with no grow animation.
+///
+/// Two modes:
+/// - `allowsMultiple` (Keywords, Person shown): clicking a row adds that value
+///   immediately and leaves the popover open, so several can be added in a row.
+///   Rows already applied can be toggled off when `allowsToggleRemoval` is set.
+/// - single value (Copyright, Creator, City, …): clicking a row sets the field's
+///   one value and closes the popover.
 ///
 /// Keyboard:
 /// - Up / Down — move focus
-/// - Space — toggle selection of focused row
-/// - Return — add selected rows
+/// - Space / Return — activate the focused row
 /// - Cmd-F — focus search
 /// - Esc — close
-struct QuickKeywordPicker: View {
+struct QuickListPicker: View {
     /// The quick list, in stored order.
     let presetList: [String]
-    /// Keywords already on the image(s) — used to render checkmarks and to
-    /// suppress re-add of duplicates when the user activates a selection.
-    let currentKeywords: Set<String>
+    /// Values already applied to the field. For single-value fields this holds
+    /// 0 or 1 entry; for multi-value fields it's the full current set. Drives the
+    /// row checkmark and suppresses duplicate adds.
+    let currentValues: Set<String>
 
-    /// Whether selecting an already-present keyword should remove it from
-    /// the image(s) instead of being a no-op. Matches `KeywordsEditorWithDiff`'s
-    /// `allowsPresetToggleRemoval`.
+    /// Multi-value fields add on click and stay open; single-value fields set the
+    /// one value and close.
+    var allowsMultiple: Bool = true
+    /// When `allowsMultiple`, whether clicking an already-applied value removes it
+    /// rather than being a no-op.
     var allowsToggleRemoval: Bool = false
+    /// Optional badge shown on rows already applied (e.g. "on image" for keywords).
+    var appliedBadge: String? = nil
+    /// Compact sizing for short single-value lists.
+    var compact: Bool = false
 
-    /// Invoked with the user's selection when they hit Add / Return. Caller is
-    /// responsible for dedupe and adding to the underlying field.
-    let onAddSelected: ([String]) -> Void
-
-    /// Invoked when the user toggles an already-present keyword off (only
-    /// relevant when `allowsToggleRemoval` is true).
-    var onRemoveItem: ((String) -> Void)? = nil
+    /// Invoked with the value to add/set when a row is activated. Caller dedupes
+    /// and writes to the underlying field.
+    let onPick: (String) -> Void
+    /// Invoked when an already-applied value is toggled off (multi-value only).
+    var onRemove: ((String) -> Void)? = nil
 
     var onAddCurrentToQuickList: (() -> Void)? = nil
     var onChooseListFile: (() -> Void)? = nil
@@ -35,7 +47,6 @@ struct QuickKeywordPicker: View {
     var onClose: (() -> Void)? = nil
 
     @State private var searchText: String = ""
-    @State private var selection: Set<String> = []
     @State private var focusedIndex: Int? = 0
     @FocusState private var searchFieldFocused: Bool
     @FocusState private var rowsFocused: Bool
@@ -54,7 +65,12 @@ struct QuickKeywordPicker: View {
             Divider()
             footer
         }
-        .frame(minWidth: 320, idealWidth: 380, minHeight: 340, idealHeight: 460)
+        .frame(
+            minWidth: compact ? 240 : 320,
+            idealWidth: compact ? 300 : 380,
+            minHeight: compact ? 220 : 340,
+            idealHeight: compact ? 300 : 460
+        )
         .onKeyPress(keys: ["f"]) { press in
             guard press.modifiers.contains(.command) else { return .ignored }
             searchFieldFocused = true
@@ -87,7 +103,7 @@ struct QuickKeywordPicker: View {
                     Button("Add Current to Quick List") {
                         onAddCurrentToQuickList()
                     }
-                    .disabled(currentKeywords.isEmpty)
+                    .disabled(currentValues.isEmpty)
                 }
                 if let onEditQuickList {
                     Button("Edit Quick List…") { onEditQuickList() }
@@ -182,11 +198,12 @@ struct QuickKeywordPicker: View {
             }
             .onKeyPress(.space) {
                 guard let i = focusedIndex, entries.indices.contains(i) else { return .ignored }
-                toggleSelection(of: entries[i])
+                activate(entries[i])
                 return .handled
             }
             .onKeyPress(.return) {
-                commitSelection(from: entries)
+                guard let i = focusedIndex, entries.indices.contains(i) else { return .ignored }
+                activate(entries[i])
                 return .handled
             }
         }
@@ -194,17 +211,19 @@ struct QuickKeywordPicker: View {
 
     private func row(for entry: String, index: Int) -> some View {
         let isFocused = (focusedIndex == index)
-        let isInImage = currentKeywords.contains(entry)
-        let isSelectedForAdd = selection.contains(entry)
+        let isApplied = currentValues.contains(entry)
+        let iconName = isApplied
+            ? "checkmark.circle.fill"
+            : (allowsMultiple ? "plus.circle" : "circle")
         return HStack(spacing: 6) {
-            Image(systemName: isSelectedForAdd ? "checkmark.square.fill" : (isInImage ? "circle.fill" : "square"))
-                .foregroundStyle(isSelectedForAdd ? Color.accentColor : (isInImage ? .secondary : .secondary))
+            Image(systemName: iconName)
+                .foregroundStyle(isApplied ? Color.accentColor : .secondary)
                 .font(.caption)
             Text(entry)
-                .foregroundStyle(isInImage ? .secondary : .primary)
+                .foregroundStyle(isApplied ? .secondary : .primary)
             Spacer()
-            if isInImage {
-                Text("on image")
+            if isApplied, let appliedBadge {
+                Text(appliedBadge)
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
@@ -213,31 +232,21 @@ struct QuickKeywordPicker: View {
         .padding(.horizontal, 6)
         .contentShape(Rectangle())
         .background(isFocused ? Color.accentColor.opacity(0.18) : Color.clear)
-        .onTapGesture(count: 1) {
+        // Single tap only — activates immediately. No double-tap gesture, so
+        // SwiftUI doesn't stall the tap waiting to disambiguate a second click.
+        .onTapGesture {
             focusedIndex = index
-            toggleSelection(of: entry)
-        }
-        .onTapGesture(count: 2) {
-            focusedIndex = index
-            onAddSelected([entry])
-            selection.remove(entry)
+            activate(entry)
         }
     }
 
     private var footer: some View {
         HStack {
-            Text(selection.isEmpty ? "No selection" : "\(selection.count) selected")
+            Text(allowsMultiple ? "Click to add" : "Click to set")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer()
-            Button("Cancel") { onClose?() }
-                .keyboardShortcut(.cancelAction)
-            Button("Add") {
-                commitSelection(from: filteredEntries)
-            }
-            .keyboardShortcut(.defaultAction)
-            .buttonStyle(.borderedProminent)
-            .disabled(selection.isEmpty)
+            Button("Done") { onClose?() }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -245,26 +254,18 @@ struct QuickKeywordPicker: View {
 
     // MARK: - Actions
 
-    private func toggleSelection(of entry: String) {
-        if selection.contains(entry) {
-            selection.remove(entry)
-            return
-        }
-        if currentKeywords.contains(entry) {
-            // Already on the image. If the field allows removal, remove it; else
-            // treat as a no-op selection (don't allow duplicate-add).
-            if allowsToggleRemoval {
-                onRemoveItem?(entry)
+    /// Apply a row's primary action. Multi-value: add, or toggle off when already
+    /// applied and removal is allowed; stays open. Single-value: set and close.
+    private func activate(_ entry: String) {
+        if allowsMultiple {
+            if currentValues.contains(entry) {
+                if allowsToggleRemoval { onRemove?(entry) }
+                return
             }
-            return
+            onPick(entry)
+        } else {
+            onPick(entry)
+            onClose?()
         }
-        selection.insert(entry)
-    }
-
-    private func commitSelection(from entries: [String]) {
-        let toAdd = entries.filter { selection.contains($0) && !currentKeywords.contains($0) }
-        guard !toAdd.isEmpty else { return }
-        onAddSelected(toAdd)
-        selection.removeAll()
     }
 }

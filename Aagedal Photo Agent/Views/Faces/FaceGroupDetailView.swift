@@ -12,6 +12,7 @@ struct FaceGroupDetailView: View {
     @State private var moveTargetID: UUID?
     @State private var showDeleteGroupAlert = false
     @State private var showingNameListFilePicker = false
+    @State private var nameQuickListShown = false
     @State private var isAddingToKnownPeople = false
     @State private var knownPeopleMessage: String?
     @State private var presetNameImportMessage: String?
@@ -114,25 +115,29 @@ struct FaceGroupDetailView: View {
 
                 let presetNames = settingsViewModel.loadPersonShownList()
                 let _ = settingsViewModel.quickListVersion
-                Menu {
-                    if !presetNames.isEmpty {
-                        ForEach(presetNames, id: \.self) { name in
-                            Button(name) {
-                                editingName = name
-                            }
-                        }
-                        Divider()
-                    }
-                    Button("Choose List File...") {
-                        showingNameListFilePicker = true
-                    }
+                Button {
+                    nameQuickListShown.toggle()
                 } label: {
                     Image(systemName: "list.bullet")
                         .foregroundStyle(presetNames.isEmpty ? .secondary : .primary)
                 }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
+                .buttonStyle(.borderless)
                 .help(presetNames.isEmpty ? "Choose a list file to load names" : "Choose from preset names")
+                .instantPopover(isPresented: $nameQuickListShown, arrowEdge: .bottom) {
+                    QuickListPicker(
+                        presetList: presetNames,
+                        currentValues: editingName.isEmpty ? [] : [editingName],
+                        allowsMultiple: false,
+                        compact: true,
+                        onPick: { picked in
+                            editingName = picked
+                        },
+                        onChooseListFile: {
+                            showingNameListFilePicker = true
+                        },
+                        onClose: { nameQuickListShown = false }
+                    )
+                }
             }
 
             if let presetNameImportMessage {
