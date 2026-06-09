@@ -654,13 +654,24 @@ struct MetadataComparisonTests {
         #expect(merged.cameraRaw != nil)
     }
 
-    @Test("a cleared field on one side is a real difference")
-    func clearedFieldDiffers() {
-        let embedded = IPTCMetadata(title: "Has headline")
-        let sidecar = IPTCMetadata()  // headline cleared
+    @Test("an empty sidecar field is not a conflict — the sidecar owns only what it sets")
+    func emptySidecarFieldIsNotAConflict() {
+        // Photo-Mechanic model: a field the sidecar leaves empty inherits the embedded
+        // value, so it must not be flagged (this is what kept the overlay popping on every
+        // partial sidecar). Only a non-empty sidecar value that differs is a conflict.
+        let embedded = IPTCMetadata(title: "Has headline", creator: "Embedded creator")
+        let sidecar = IPTCMetadata()  // sidecar set nothing
+        #expect(MetadataComparison.differences(embedded: embedded, sidecar: sidecar).isEmpty)
+    }
+
+    @Test("a non-empty sidecar value the embedded file lacks is a conflict")
+    func sidecarSetsFieldEmbeddedLacks() {
+        let embedded = IPTCMetadata()
+        let sidecar = IPTCMetadata(title: "Sidecar headline")
         let diffs = MetadataComparison.differences(embedded: embedded, sidecar: sidecar)
         #expect(diffs.map(\.field) == [.title])
-        #expect(diffs.first?.sidecarValue == "")
+        #expect(diffs.first?.embeddedValue == "")
+        #expect(diffs.first?.sidecarValue == "Sidecar headline")
     }
 }
 

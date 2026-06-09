@@ -26,12 +26,18 @@ nonisolated struct MetadataFieldComparison: Identifiable, Sendable, Equatable {
 /// `IPTCMetadata.FieldKey` set) — GPS and technical EXIF are reconciled separately and are
 /// never force-overwritten here.
 nonisolated enum MetadataComparison {
-    /// The descriptive fields that differ between `embedded` and `sidecar`, in a stable
-    /// display order. Keywords and people are compared order-insensitively so a mere
-    /// reorder isn't reported as a conflict.
+    /// The descriptive fields where the `.xmp` sidecar holds a value that genuinely
+    /// conflicts with the embedded file, in a stable display order. Keywords and people
+    /// are compared order-insensitively so a mere reorder isn't reported as a conflict.
+    ///
+    /// Photo-Mechanic model — the sidecar *owns only what it sets*. A field the sidecar
+    /// leaves empty is "unset" (it inherits the embedded value via `merged(preferring:)`),
+    /// not a conflicting clear, so it is never listed here. This keeps the overlay/banner
+    /// quiet for partial sidecars (e.g. those written by batch tagging, which carry only
+    /// the fields the app touched) instead of flagging every missing Creator/Date.
     static func differences(embedded: IPTCMetadata, sidecar: IPTCMetadata) -> [MetadataFieldComparison] {
         IPTCMetadata.FieldKey.allCases.compactMap { key in
-            guard key.differs(embedded, sidecar) else { return nil }
+            guard key.sidecarConflicts(embedded: embedded, sidecar: sidecar) else { return nil }
             return MetadataFieldComparison(
                 field: key,
                 embeddedValue: key.displayValue(in: embedded),
@@ -78,13 +84,21 @@ nonisolated extension IPTCMetadata.FieldKey {
         }
     }
 
-    /// Whether this field's value differs between two versions. List fields compare
-    /// order-insensitively.
-    func differs(_ a: IPTCMetadata, _ b: IPTCMetadata) -> Bool {
+    /// Whether the sidecar holds a genuine conflict for this field: it has set a non-empty
+    /// value that differs from the embedded file. An empty sidecar value means the sidecar
+    /// never set the field — it inherits the embedded value (see `merged(preferring:)`), so
+    /// it is not a conflict. List fields compare order-insensitively.
+    func sidecarConflicts(embedded: IPTCMetadata, sidecar: IPTCMetadata) -> Bool {
         switch self {
-        case .keywords: return Set(a.keywords) != Set(b.keywords)
-        case .personShown: return Set(a.personShown) != Set(b.personShown)
-        default: return displayValue(in: a) != displayValue(in: b)
+        case .keywords:
+            let s = Set(sidecar.keywords)
+            return !s.isEmpty && s != Set(embedded.keywords)
+        case .personShown:
+            let s = Set(sidecar.personShown)
+            return !s.isEmpty && s != Set(embedded.personShown)
+        default:
+            let s = displayValue(in: sidecar)
+            return !s.isEmpty && s != displayValue(in: embedded)
         }
     }
 

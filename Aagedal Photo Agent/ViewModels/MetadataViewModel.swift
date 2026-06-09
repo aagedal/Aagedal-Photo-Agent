@@ -343,14 +343,18 @@ final class MetadataViewModel {
                     self.originalImageMetadata = baseMeta
 
                     // Build the per-field embedded-vs-sidecar comparison. Always populated
-                    // (so the panel banner can offer "Compare…") when the two differ; the
-                    // sheet auto-opens on a stale conflict, or when the user opted into the
-                    // "ask on multiple sources" prompt.
+                    // (so the panel banner can offer "Compare…") when the two differ. We no
+                    // longer auto-present the sheet on a stale conflict — that fired on nearly
+                    // every image (e.g. Professional mode writes partial sidecars that lack
+                    // Creator/Date, so file-newer-than-sidecar trips constantly). The panel's
+                    // comparisonBanner now surfaces both the stale warning and the diff count,
+                    // and opens the sheet on demand. Only the explicit opt-in setting
+                    // ("Ask when multiple metadata sources exist", default off) auto-presents.
                     if let xmp = xmpMeta {
                         let diffs = MetadataComparison.differences(embedded: embedded, sidecar: xmp)
                         self.metadataComparison = diffs
                         self.comparisonSidecarIsStale = sidecarIsStale
-                        if !diffs.isEmpty, sidecarIsStale || self.shouldAskOnMultipleSources {
+                        if !diffs.isEmpty, self.shouldAskOnMultipleSources {
                             self.showMetadataComparison = true
                         }
                     } else {
