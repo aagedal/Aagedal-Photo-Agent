@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Editor for the reusable, optionally iCloud-synced Teams library.
 /// Each team has a name, kit colour(s), and a number→player roster.
@@ -22,7 +23,15 @@ struct TeamsLibraryView: View {
             }
             .padding(12)
         }
-        .frame(minWidth: 700, minHeight: 480)
+        // Cap the height so a long roster scrolls inside the Form instead of
+        // growing the sheet past the bottom of the screen. Sized to the visible
+        // screen (minus the menu bar / margins) with a safe fallback.
+        .frame(minWidth: 700, minHeight: 480, maxHeight: Self.maxSheetHeight)
+    }
+
+    private static var maxSheetHeight: CGFloat {
+        guard let visible = NSScreen.main?.visibleFrame.height else { return 760 }
+        return max(480, visible - 80)
     }
 }
 
@@ -200,7 +209,17 @@ private struct TeamEditorView: View {
                         roster.append(RosterPlayer(number: nextNumber(), playerName: ""))
                     } label: { Label("Add player", systemImage: "plus") }
                     Spacer()
-                    Button("Paste roster…") { showPaste = true }
+                    Menu {
+                        Button("From file…") { importTextFile() }
+                        Button("Paste…") { showPaste = true }
+                    } label: { Label("Import", systemImage: "square.and.arrow.down") }
+                    .fixedSize()
+                    Menu {
+                        Button("PDF…") { exportPDF() }
+                        Button("Roster text (.txt)…") { exportText() }
+                    } label: { Label("Export", systemImage: "square.and.arrow.up") }
+                    .fixedSize()
+                    .disabled(roster.allSatisfy { $0.playerName.trimmingCharacters(in: .whitespaces).isEmpty })
                 }
             } header: {
                 Text("Roster (\(roster.count))")
@@ -254,7 +273,7 @@ private struct TeamEditorView: View {
             if let id = player.wrappedValue.knownPersonID {
                 LinkedFaceThumbnail(personID: id)
             } else {
-                Color.clear.frame(width: 28, height: 28)
+                Color.clear.frame(width: 56, height: 56)
             }
             faceLinkMenu(player: player)
         }
@@ -346,10 +365,16 @@ private struct TeamEditorView: View {
         // If the team was deleted while its editor was on screen, onDisappear
         // would otherwise resurrect it via upsert. Skip when it's already gone.
         guard store.team(byID: teamID) != nil else { return }
+        try? store.upsert(currentTeam())
+    }
+
+    /// Build a `Team` from the current editor state, dropping unnamed rows and
+    /// sorting by number. Shared by autosave and PDF export.
+    private func currentTeam() -> Team {
         let cleaned = roster
             .filter { !$0.playerName.trimmingCharacters(in: .whitespaces).isEmpty }
             .sorted { $0.number < $1.number }
-        let team = Team(
+        return Team(
             id: teamID,
             name: name.trimmingCharacters(in: .whitespaces),
             primaryColor: primary.teamKitColor,
@@ -358,7 +383,68 @@ private struct TeamEditorView: View {
             createdAt: createdAt,
             updatedAt: Date()
         )
-        try? store.upsert(team)
+    }
+
+    /// Export the roster as a laid-out PDF (number, name, face, team name) via a
+    /// save panel. Face images come from the linked Known People thumbnails.
+    private func exportPDF() {
+        let team = currentTeam()
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.pdf]
+        panel.canCreateDirectories = true
+        let base = team.name.isEmpty ? "Roster" : team.name
+        panel.nameFieldStringValue = "\(base).pdf"
+        panel.title = "Export Roster PDF"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        let pdf = RosterPDFExporter.makePDF(for: team, exportedOn: Date()) { id in
+            KnownPeopleService.shared.loadThumbnail(for: id)
+        }
+        do {
+            try pdf.write(to: url)
+        } catch {
+            NSAlert(error: error).runModal()
+        }
+    }
+
+    /// Export the roster as a plain-text list, one "<number> <name>" per line —
+    /// the same format the paste/import parser accepts, so it round-trips.
+    private func exportText() {
+        let team = currentTeam()
+        let lines = team.roster.map { "\($0.number) \($0.playerName)" }
+        let text = lines.joined(separator: "\n") + (lines.isEmpty ? "" : "\n")
+
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.plainText]
+        panel.canCreateDirectories = true
+        let base = team.name.isEmpty ? "Roster" : team.name
+        panel.nameFieldStringValue = "\(base).txt"
+        panel.title = "Export Roster Text"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        do {
+            try text.write(to: url, atomically: true, encoding: .utf8)
+        } catch {
+            NSAlert(error: error).runModal()
+        }
+    }
+
+    /// Import a "<number> <name>" roster from a text file, merging into the
+    /// current roster via the same parser as paste.
+    private func importTextFile() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.plainText, .text]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.title = "Import Roster Text"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        do {
+            let text = try String(contentsOf: url, encoding: .utf8)
+            importRoster(from: text)
+        } catch {
+            NSAlert(error: error).runModal()
+        }
     }
 }
 
@@ -379,12 +465,12 @@ private struct LinkedFaceThumbnail: View {
                     .resizable()
                     .scaledToFit()
                     .foregroundStyle(.secondary)
-                    .padding(4)
+                    .padding(8)
             }
         }
-        .frame(width: 28, height: 28)
-        .clipShape(RoundedRectangle(cornerRadius: 5))
-        .background(RoundedRectangle(cornerRadius: 5).fill(.quaternary))
+        .frame(width: 56, height: 56)
+        .clipShape(RoundedRectangle(cornerRadius: 7))
+        .background(RoundedRectangle(cornerRadius: 7).fill(.quaternary))
         .help("Linked known person's face")
         .task(id: personID) {
             image = KnownPeopleService.shared.loadThumbnail(for: personID)
