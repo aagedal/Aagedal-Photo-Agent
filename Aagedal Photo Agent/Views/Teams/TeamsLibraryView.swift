@@ -26,7 +26,7 @@ struct TeamsLibraryView: View {
                     .tag(team.id)
                 }
             }
-            .frame(minWidth: 200)
+            .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 320)
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button {
@@ -48,7 +48,7 @@ struct TeamsLibraryView: View {
                                        description: Text("Select a team, or add one with +."))
             }
         }
-        .frame(minWidth: 620, minHeight: 440)
+        .frame(minWidth: 680, minHeight: 440)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Done") { dismiss() }
@@ -98,21 +98,44 @@ private struct TeamEditorView: View {
             }
 
             Section {
-                ForEach($roster) { $player in
-                    HStack(spacing: 8) {
-                        TextField("No.", value: $player.number, format: .number)
-                            .frame(width: 44)
-                            .multilineTextAlignment(.trailing)
-                        TextField("Player name", text: $player.playerName)
-                        if player.knownPersonID != nil {
+                // Grid so the number, name and trailing controls line up in fixed
+                // columns across every row — an HStack per row drifts because the
+                // optional "linked" badge changes each row's layout.
+                Grid(alignment: .leading, verticalSpacing: 6) {
+                    GridRow {
+                        Text("No.")
+                        Text("Player")
+                        Color.clear.frame(width: 1, height: 1)
+                        Color.clear.frame(width: 1, height: 1)
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                    ForEach($roster) { $player in
+                        GridRow {
+                            // labelsHidden() + prompt keeps the placeholder *inside*
+                            // the field; without it a grouped Form renders the title
+                            // as a separate leading label and the columns drift.
+                            TextField("No.", value: $player.number, format: .number, prompt: Text("No."))
+                                .labelsHidden()
+                                .multilineTextAlignment(.trailing)
+                                .frame(width: 52)
+                                .textFieldStyle(.roundedBorder)
+                            TextField("Player name", text: $player.playerName, prompt: Text("Player name"))
+                                .labelsHidden()
+                                .textFieldStyle(.roundedBorder)
+                                .frame(minWidth: 180)
+                            // Fixed badge column so the delete buttons stay aligned
+                            // whether or not a player is linked to a known person.
                             Image(systemName: "person.crop.circle.badge.checkmark")
-                                .foregroundStyle(.green)
-                                .help("Linked to a known person (recognised by face)")
+                                .foregroundStyle(player.knownPersonID != nil ? Color.green : Color.clear)
+                                .help(player.knownPersonID != nil ? "Linked to a known person (recognised by face)" : "")
+                            Button {
+                                roster.removeAll { $0.id == player.id }
+                            } label: { Image(systemName: "minus.circle.fill").foregroundStyle(.red) }
+                            .buttonStyle(.plain)
+                            .gridColumnAlignment(.trailing)
                         }
-                        Button {
-                            roster.removeAll { $0.id == player.id }
-                        } label: { Image(systemName: "minus.circle.fill").foregroundStyle(.red) }
-                        .buttonStyle(.plain)
                     }
                 }
                 HStack {

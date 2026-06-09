@@ -116,13 +116,15 @@ struct FaceBarView: View {
                 .disabled(!canApplyAllNames)
                 .help("Apply all named faces to metadata")
 
-                // Sports match setup (only when jersey detection is enabled)
+                // Sports tagging: a visible entry point in the bar. When jersey
+                // detection is off it's a subtle toggle to enable it; once on it
+                // becomes the Teams setup button (gated on sports mode).
                 if sportsModeEnabled {
                     Button {
                         showMatchSetup = true
                     } label: {
                         VStack(spacing: 1) {
-                            Image(systemName: "tshirt")
+                            Image(systemName: "tshirt.fill")
                                 .font(.system(size: 16))
                             Text("Teams")
                                 .font(.system(size: 9))
@@ -141,6 +143,22 @@ struct FaceBarView: View {
                     .sheet(isPresented: $showMatchSetup) {
                         MatchSetupView(viewModel: viewModel, folderURL: folderURL)
                     }
+                } else {
+                    Button {
+                        sportsModeEnabled = true
+                    } label: {
+                        VStack(spacing: 1) {
+                            Image(systemName: "tshirt")
+                                .font(.system(size: 16))
+                            Text("Sports")
+                                .font(.system(size: 9))
+                        }
+                        .frame(width: 40, height: 48)
+                        .contentShape(Rectangle())
+                        .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Turn on jersey-number detection, then set up teams. Rescan to read numbers on already-scanned photos.")
                 }
 
                 // Expand/collapse button
