@@ -1194,7 +1194,15 @@ final class FaceRecognitionViewModel {
             }
             guard let best = votes.values.max(by: { ($0.count, $0.conf) < ($1.count, $1.conf) }) else { continue }
             if case .resolved(let player, _) = playerResolver.resolve(number: best.number, side: best.side, match: match) {
-                data.groups[gi].name = player.playerName
+                // Consume the face↔number link: if this roster player is linked to a
+                // Known Person, the number sighting vouches for that identity. Tag with
+                // the canonical name and register the group↔person association so the
+                // face manager treats this group as that person too (badge, thumbnail).
+                data.groups[gi].name = resolvedDisplayName(for: player)
+                if let personID = player.knownPersonID {
+                    let avgConf = best.count > 0 ? best.conf / Float(best.count) : 0
+                    knownPersonMatchByGroup[data.groups[gi].id] = (personID: personID, confidence: avgConf)
+                }
             }
         }
 
@@ -1205,7 +1213,7 @@ final class FaceRecognitionViewModel {
                 let det = data.numberDetections![i]
                 switch playerResolver.resolve(number: det.number, side: det.teamSide, match: match) {
                 case .resolved(let player, _):
-                    data.numberDetections![i].resolvedPlayerName = player.playerName
+                    data.numberDetections![i].resolvedPlayerName = resolvedDisplayName(for: player)
                 case .ambiguous:
                     ambiguous.append(det)
                 case .notFound:
@@ -1223,13 +1231,25 @@ final class FaceRecognitionViewModel {
         }
     }
 
+    /// The canonical name to tag a resolved player with: prefer the linked Known
+    /// Person's name (stable identity, shared across games) over the free-text
+    /// roster name, falling back to the roster name when there's no link.
+    private func resolvedDisplayName(for player: RosterPlayer) -> String {
+        if let personID = player.knownPersonID,
+           let known = KnownPeopleService.shared.person(byID: personID),
+           !known.name.isEmpty {
+            return known.name
+        }
+        return player.playerName
+    }
+
     /// Manually assign a side to a standalone ambiguous number, then re-resolve it.
     func assignSide(_ side: TeamSide, toNumberDetection detectionID: UUID) {
         guard var data = faceData, let match = matchRoster, data.numberDetections != nil else { return }
         guard let i = data.numberDetections!.firstIndex(where: { $0.id == detectionID }) else { return }
         data.numberDetections![i].teamSide = side
         if case .resolved(let player, _) = playerResolver.resolve(number: data.numberDetections![i].number, side: side, match: match) {
-            data.numberDetections![i].resolvedPlayerName = player.playerName
+            data.numberDetections![i].resolvedPlayerName = resolvedDisplayName(for: player)
         }
         faceData = data
         ambiguousNumberDetections.removeAll { $0.id == detectionID }

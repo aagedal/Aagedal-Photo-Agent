@@ -3,9 +3,24 @@ import SwiftUI
 /// Editor for the reusable, optionally iCloud-synced Teams library.
 /// Each team has a name, kit colour(s), and a number→player roster.
 struct TeamsLibraryView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        TeamsLibraryContent()
+            .frame(minWidth: 680, minHeight: 440)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+    }
+}
+
+/// The team list + editor split, reusable both as a sheet (TeamsLibraryView)
+/// and embedded in Settings (People and Groups ▸ Teams).
+struct TeamsLibraryContent: View {
     @State private var store = RosterStore.shared
     @State private var selection: UUID?
-    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationSplitView {
@@ -48,12 +63,6 @@ struct TeamsLibraryView: View {
                                        description: Text("Select a team, or add one with +."))
             }
         }
-        .frame(minWidth: 680, minHeight: 440)
-        .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                Button("Done") { dismiss() }
-            }
-        }
     }
 }
 
@@ -70,6 +79,7 @@ private struct TeamEditorView: View {
     @State private var pasteText: String = ""
     @State private var showPaste = false
     @State private var showDeleteAlert = false
+    @State private var knownPeople: [KnownPerson] = []
 
     private let teamID: UUID
     private let createdAt: Date
@@ -105,7 +115,7 @@ private struct TeamEditorView: View {
                     GridRow {
                         Text("No.")
                         Text("Player")
-                        Color.clear.frame(width: 1, height: 1)
+                        Text("Face")
                         Color.clear.frame(width: 1, height: 1)
                     }
                     .font(.caption)
@@ -125,11 +135,9 @@ private struct TeamEditorView: View {
                                 .labelsHidden()
                                 .textFieldStyle(.roundedBorder)
                                 .frame(minWidth: 180)
-                            // Fixed badge column so the delete buttons stay aligned
-                            // whether or not a player is linked to a known person.
-                            Image(systemName: "person.crop.circle.badge.checkmark")
-                                .foregroundStyle(player.knownPersonID != nil ? Color.green : Color.clear)
-                                .help(player.knownPersonID != nil ? "Linked to a known person (recognised by face)" : "")
+                            // Link this jersey number to a Known Person (face).
+                            // Fixed column keeps the delete buttons aligned.
+                            faceLinkMenu(player: $player)
                             Button {
                                 roster.removeAll { $0.id == player.id }
                             } label: { Image(systemName: "minus.circle.fill").foregroundStyle(.red) }
@@ -150,6 +158,7 @@ private struct TeamEditorView: View {
             }
         }
         .formStyle(.grouped)
+        .onAppear { knownPeople = KnownPeopleService.shared.getAllPeople() }
         .navigationTitle(name.isEmpty ? "Untitled Team" : name)
         .toolbar {
             ToolbarItem(placement: .destructiveAction) {
@@ -198,6 +207,53 @@ private struct TeamEditorView: View {
         }
         .padding()
         .frame(width: 380)
+    }
+
+    /// Per-player control to bind a jersey number to a Known Person, so face
+    /// recognition and number recognition identify the same player.
+    @ViewBuilder
+    private func faceLinkMenu(player: Binding<RosterPlayer>) -> some View {
+        let linkedID = player.wrappedValue.knownPersonID
+        Menu {
+            if knownPeople.isEmpty {
+                Text("No known people yet — add people from the face manager first.")
+            } else {
+                ForEach(knownPeople) { person in
+                    Button {
+                        player.wrappedValue.knownPersonID = person.id
+                        if player.wrappedValue.playerName.trimmingCharacters(in: .whitespaces).isEmpty {
+                            player.wrappedValue.playerName = person.name
+                        }
+                    } label: {
+                        if linkedID == person.id {
+                            Label(person.name, systemImage: "checkmark")
+                        } else {
+                            Text(person.name)
+                        }
+                    }
+                }
+            }
+            if linkedID != nil {
+                Divider()
+                Button(role: .destructive) {
+                    player.wrappedValue.knownPersonID = nil
+                } label: { Label("Unlink", systemImage: "person.crop.circle.badge.xmark") }
+            }
+        } label: {
+            Image(systemName: linkedID != nil ? "person.crop.circle.badge.checkmark" : "person.crop.circle.badge.plus")
+                .foregroundStyle(linkedID != nil ? Color.green : Color.secondary)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help(linkedID != nil
+              ? "Linked to \(linkedName(linkedID) ?? "a known person") — recognised by face. Click to change or unlink."
+              : "Link this number to a known person so their face and jersey number identify each other.")
+    }
+
+    private func linkedName(_ id: UUID?) -> String? {
+        guard let id else { return nil }
+        return knownPeople.first { $0.id == id }?.name
     }
 
     private func nextNumber() -> Int {
