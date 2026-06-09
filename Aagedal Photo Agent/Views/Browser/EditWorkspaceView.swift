@@ -415,12 +415,11 @@ struct EditWorkspaceView: View {
                                             lockedCropImageRect = computedImageRect
                                         }
                                         let clampedAngle = min(max(newAngle, -45), 45)
-                                        let oldAngle = dragCropAngle ?? activeCropAngle
                                         let currentRegion = dragCropRegion ?? activeCrop
                                         let ar = sourceAspectRatio
-                                        // Recalculate crop to fit within rotated image bounds
+                                        // The crop keeps its (upright) dimensions; only re-fit
+                                        // its position/scale to the new rotated image bounds.
                                         let fitted = currentRegion
-                                            .withAngle(from: oldAngle, to: clampedAngle, aspectRatio: ar)
                                             .centerClampedForRotation(angleDegrees: clampedAngle, aspectRatio: ar)
                                             .fittingRotated(angleDegrees: clampedAngle, aspectRatio: ar)
                                         dragCropAngle = clampedAngle
@@ -818,14 +817,12 @@ struct EditWorkspaceView: View {
                                 let orientation = selectedImageOrientation
                                 let sensorCrop = settings.crop ?? CameraRawCrop(top: 0, left: 0, bottom: 1, right: 1, angle: 0, hasCrop: true)
                                 let dCrop = sensorCrop.transformedForDisplay(orientation: orientation)
-                                let oldAngle = dCrop.angle ?? 0
                                 let region = NormalizedCropRegion(
                                     top: dCrop.top ?? 0,
                                     left: dCrop.left ?? 0,
                                     bottom: dCrop.bottom ?? 1,
                                     right: dCrop.right ?? 1
                                 )
-                                .withAngle(from: oldAngle, to: clampedAngle, aspectRatio: ar)
                                 .centerClampedForRotation(angleDegrees: clampedAngle, aspectRatio: ar)
                                 .fittingRotated(angleDegrees: clampedAngle, aspectRatio: ar)
                                 dragCropAngle = clampedAngle
@@ -1935,23 +1932,9 @@ struct EditWorkspaceView: View {
         let availW = max(containerSize.width - handlePadding * 2, 1)
         let availH = max(containerSize.height - handlePadding * 2, 1)
 
-        // AABB crop dimensions in image pixels
-        let aabbW = crop.width * imageSize.width
-        let aabbH = crop.height * imageSize.height
-
-        // Forward project AABB to actual (rotated) crop pixel dimensions
-        let radians = angleDegrees * Double.pi / 180.0
-        let cosA = cos(radians)
-        let sinA = sin(radians)
-        let actualW: Double
-        let actualH: Double
-        if abs(radians) > 0.000001 {
-            actualW = abs(aabbW * cosA + aabbH * sinA)
-            actualH = abs(-aabbW * sinA + aabbH * cosA)
-        } else {
-            actualW = aabbW
-            actualH = aabbH
-        }
+        // The stored region is the upright crop — its dimensions are the actual crop dims.
+        let actualW = crop.width * imageSize.width
+        let actualH = crop.height * imageSize.height
 
         // Scale so actual crop fills available area, then apply zoom
         let baseScale = min(availW / max(actualW, 1), availH / max(actualH, 1))
@@ -1986,13 +1969,13 @@ struct EditWorkspaceView: View {
     }
 
     /// Computes the view-space crop rectangle for a given crop region, angle, and image rect.
-    /// Uses the same forward projection math as CropOverlayView.viewCropRect.
+    /// Matches CropOverlayView.viewCropRect (upright crop, rotated center offset).
     private func cropViewRect(crop: NormalizedCropRegion, angleDegrees: Double, imageRect: CGRect) -> CGRect {
         let A = -angleDegrees * Double.pi / 180.0
         let cosA = cos(A)
         let sinA = sin(A)
 
-        // AABB center offset from image center in image-rect pixel units
+        // Crop center offset from image center in image-rect pixel units
         let imgCX = (crop.centerX - 0.5) * imageRect.width
         let imgCY = (crop.centerY - 0.5) * imageRect.height
 
@@ -2000,21 +1983,9 @@ struct EditWorkspaceView: View {
         let viewCX = imgCX * cosA - imgCY * sinA + imageRect.midX
         let viewCY = imgCX * sinA + imgCY * cosA + imageRect.midY
 
-        // Forward project AABB dims to actual crop dims
-        let aabbW = crop.width * imageRect.width
-        let aabbH = crop.height * imageRect.height
-        let radians = angleDegrees * Double.pi / 180.0
-        let actualW: Double
-        let actualH: Double
-        if abs(radians) > 0.000001 {
-            let cosR = cos(radians)
-            let sinR = sin(radians)
-            actualW = abs(aabbW * cosR + aabbH * sinR)
-            actualH = abs(-aabbW * sinR + aabbH * cosR)
-        } else {
-            actualW = aabbW
-            actualH = aabbH
-        }
+        // The stored region is the upright crop — its dimensions map directly.
+        let actualW = crop.width * imageRect.width
+        let actualH = crop.height * imageRect.height
 
         return CGRect(
             x: viewCX - actualW / 2,
@@ -2360,14 +2331,12 @@ struct EditWorkspaceView: View {
             // Read the current sensor crop and transform to display space for angle calculations
             let sensorCrop = cameraRaw.crop ?? CameraRawCrop(top: 0, left: 0, bottom: 1, right: 1, angle: 0, hasCrop: true)
             let displayCrop = sensorCrop.transformedForDisplay(orientation: orientation)
-            let oldAngle = displayCrop.angle ?? 0
             let region = NormalizedCropRegion(
                 top: displayCrop.top ?? 0,
                 left: displayCrop.left ?? 0,
                 bottom: displayCrop.bottom ?? 1,
                 right: displayCrop.right ?? 1
             )
-            .withAngle(from: oldAngle, to: clampedAngle, aspectRatio: ar)
             .centerClampedForRotation(angleDegrees: clampedAngle, aspectRatio: ar)
             .fittingRotated(angleDegrees: clampedAngle, aspectRatio: ar)
 

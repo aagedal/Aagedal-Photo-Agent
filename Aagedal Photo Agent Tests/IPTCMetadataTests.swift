@@ -739,3 +739,84 @@ struct MetadataWriteModePresetTests {
         }
     }
 }
+
+// MARK: - Crop rotation geometry
+
+/// Regression coverage for the crop straighten geometry. The stored `NormalizedCropRegion`
+/// is the *upright* crop rectangle, so the visible crop aspect ratio is `(width·ar)/height`
+/// and must stay constant as the straighten angle changes. A prior rotated-AABB encoding
+/// drifted the aspect ratio and collapsed catastrophically near `angle = -atan(h/w)`.
+@MainActor
+@Suite("NormalizedCropRegion rotation geometry")
+struct CropRotationGeometryTests {
+    /// Image aspect ratio (3:2 landscape) used throughout.
+    let ar = 1.5
+
+    /// Visible crop aspect ratio = (width · imageAR) / height.
+    func visibleAspect(_ r: NormalizedCropRegion) -> Double {
+        (r.width * ar) / r.height
+    }
+
+    /// Replicates the editor's angle-change pipeline (updateCropAngle / onAngleChange).
+    func rotated(_ r: NormalizedCropRegion, to angle: Double) -> NormalizedCropRegion {
+        r.centerClampedForRotation(angleDegrees: angle, aspectRatio: ar)
+         .fittingRotated(angleDegrees: angle, aspectRatio: ar)
+    }
+
+    /// A full-frame "Original"-locked crop: square in normalized coords (visible aspect == ar).
+    var originalLockedCrop: NormalizedCropRegion {
+        NormalizedCropRegion.full.resizedToActualAspectRatio(ar, imageAspectRatio: ar)
+    }
+
+    @Test("Original-locked aspect is preserved across the full angle range")
+    func originalAspectPreservedAcrossAngles() {
+        let start = originalLockedCrop
+        #expect(abs(visibleAspect(start) - ar) < 0.001)
+        for angle in stride(from: -45.0, through: 45.0, by: 1.5) {
+            let r = rotated(start, to: angle)
+            #expect(abs(visibleAspect(r) - ar) < 0.01,
+                    "aspect drifted to \(visibleAspect(r)) at \(angle)°")
+        }
+    }
+
+    @Test("Reported singular angle (-32.87°) does not collapse the crop")
+    func singularAngleDoesNotCollapse() {
+        let r = rotated(originalLockedCrop, to: -32.87)
+        #expect(abs(visibleAspect(r) - ar) < 0.01)
+        // Must remain a substantial, non-degenerate rectangle (no near-zero dimension).
+        #expect(r.width > 0.2)
+        #expect(r.height > 0.2)
+    }
+
+    @Test("A locked non-Original ratio is preserved across rotation")
+    func lockedRatioPreservedAcrossRotation() {
+        // 16:9 locked crop.
+        let target = 16.0 / 9.0
+        let start = NormalizedCropRegion.full.resizedToActualAspectRatio(target, imageAspectRatio: ar)
+        #expect(abs(visibleAspect(start) - target) < 0.001)
+        for angle in [-40.0, -20.0, -5.0, 10.0, 30.0, 44.0] {
+            let r = rotated(start, to: angle)
+            #expect(abs(visibleAspect(r) - target) < 0.01,
+                    "16:9 drifted to \(visibleAspect(r)) at \(angle)°")
+        }
+    }
+
+    @Test("fittingRotated scales uniformly (preserves aspect) and keeps the crop in bounds")
+    func fittingRotatedIsUniform() {
+        // Off-center, non-square crop.
+        let crop = NormalizedCropRegion(top: 0.1, left: 0.1, bottom: 0.7, right: 0.9)
+        let before = crop.width / crop.height
+        let fitted = crop.fittingRotated(angleDegrees: 25, aspectRatio: ar)
+        #expect(abs(fitted.width / fitted.height - before) < 0.001)
+        // All four straightened corners stay within [0,1]².
+        let rad = 25.0 * Double.pi / 180.0
+        let cosA = cos(rad), sinA = sin(rad)
+        let px = fitted.width * 0.5 * ar, py = fitted.height * 0.5
+        for (sx, sy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+            let nx = (sx * px * cosA - sy * py * sinA) / ar + fitted.centerX
+            let ny = (sx * px * sinA + sy * py * cosA) + fitted.centerY
+            #expect(nx >= -0.001 && nx <= 1.001, "corner x \(nx) out of bounds")
+            #expect(ny >= -0.001 && ny <= 1.001, "corner y \(ny) out of bounds")
+        }
+    }
+}

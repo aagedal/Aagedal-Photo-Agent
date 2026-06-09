@@ -893,10 +893,11 @@ final class MetalEditPipeline: @unchecked Sendable {
 
     /// Clean-feed crop viewport. Renders only the confirmed crop region (with straighten
     /// rotation), aspect-fit to the secondary display. Mirrors the editor's own crop
-    /// geometry (`EditWorkspaceView.cropFittedImageRect`): the AABB is forward-projected to
-    /// the actual rotated crop dimensions, those are fit to the container, and the shader
-    /// rotates sampling around the crop center. Crop edges are normalized [0,1] in
-    /// display-oriented source coords (top-left origin), matching the editor's `activeCrop`.
+    /// geometry (`EditWorkspaceView.cropFittedImageRect`): the stored region is the upright
+    /// crop rectangle, so its dimensions are the actual crop dimensions; those are fit to the
+    /// container, and the shader rotates sampling around the crop center. Crop edges are
+    /// normalized [0,1] in display-oriented source coords (top-left origin), matching the
+    /// editor's `activeCrop`.
     nonisolated func updateCropViewport(
         containerSize: CGSize,
         imageSize: CGSize,
@@ -913,19 +914,15 @@ final class MetalEditPipeline: @unchecked Sendable {
         let imgW = Double(imageSize.width)
         let imgH = Double(imageSize.height)
 
-        // Crop AABB dimensions and center in source pixels / normalized coords.
-        let aabbW = max((cropRight - cropLeft), 0.0001) * imgW
-        let aabbH = max((cropBottom - cropTop), 0.0001) * imgH
+        // The stored region is the upright crop rectangle, so its dimensions are the actual
+        // (straightened) crop dimensions directly.
+        let actualW = max((cropRight - cropLeft), 0.0001) * imgW
+        let actualH = max((cropBottom - cropTop), 0.0001) * imgH
         let centerX = (cropLeft + cropRight) / 2
         let centerY = (cropTop + cropBottom) / 2
 
-        // Forward-project the AABB to the actual rotated crop dimensions, then fit those
-        // into the container (identical to cropFittedImageRect's baseScale).
+        // Fit the actual crop into the container (identical to cropFittedImageRect's baseScale).
         let radians = angleDegrees * .pi / 180.0
-        let cosA = cos(radians)
-        let sinA = sin(radians)
-        let actualW = abs(aabbW * cosA + aabbH * sinA)
-        let actualH = abs(-aabbW * sinA + aabbH * cosA)
 
         let fitScale = min(containerSize.width / max(actualW, 1),
                            containerSize.height / max(actualH, 1))

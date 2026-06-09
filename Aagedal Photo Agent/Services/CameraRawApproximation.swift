@@ -97,11 +97,15 @@ enum CameraRawApproximation {
         let hasCrop = crop.hasCrop ?? false
         let angle = crop.angle ?? 0
 
-        // Inline clamping to avoid calling MainActor-isolated NormalizedCropRegion.clamped()
-        let regionTop = min(max(crop.top ?? 0, 0), 1)
-        let regionLeft = min(max(crop.left ?? 0, 0), 1)
-        let regionBottom = min(max(crop.bottom ?? 1, 0), 1)
-        let regionRight = min(max(crop.right ?? 1, 0), 1)
+        // Normalize edge ordering. Do NOT clamp to [0,1]: the stored region is the upright
+        // crop rectangle, which — once straightened — can legitimately extend past the image
+        // box. The final `.intersection(rotated.extent)` clamps safely instead.
+        let rawTop = crop.top ?? 0, rawLeft = crop.left ?? 0
+        let rawBottom = crop.bottom ?? 1, rawRight = crop.right ?? 1
+        let regionTop = min(rawTop, rawBottom)
+        let regionLeft = min(rawLeft, rawRight)
+        let regionBottom = max(rawTop, rawBottom)
+        let regionRight = max(rawLeft, rawRight)
 
         let epsilon = 0.0001
         let hasNonDefaultBounds = abs(regionTop) > epsilon
@@ -118,10 +122,14 @@ enum CameraRawApproximation {
         let y = extent.minY + ((1 - regionBottom) * extent.height)
         let width = (regionRight - regionLeft) * extent.width
         let height = (regionBottom - regionTop) * extent.height
-        let cropRect = CGRect(x: x, y: y, width: width, height: height).intersection(input.extent)
-        guard !cropRect.isNull, cropRect.width > 1, cropRect.height > 1 else { return input }
+        guard width > 1, height > 1 else { return input }
+        // The full (un-clipped) upright crop rectangle. For a straightened crop this may extend
+        // past the image box; the true center stays valid and intersection is applied later.
+        let fullCropRect = CGRect(x: x, y: y, width: width, height: height)
 
         guard hasRotation else {
+            let cropRect = fullCropRect.intersection(input.extent)
+            guard !cropRect.isNull, cropRect.width > 1, cropRect.height > 1 else { return input }
             return input.cropped(to: cropRect)
         }
 
@@ -136,16 +144,13 @@ enum CameraRawApproximation {
             .translatedBy(x: -imageCenter.x, y: -imageCenter.y)
         let rotated = input.transformed(by: transform)
 
-        // 2. Forward-project AABB to actual crop dims (CropOverlayView.forwardProjectDims).
-        //    Uses the POSITIVE crop angle, not the negated view rotation.
-        let fwdRadians = CGFloat(angle * .pi / 180.0)
-        let fwdCos = cos(fwdRadians)
-        let fwdSin = sin(fwdRadians)
-        let actualWidth = abs(width * fwdCos + height * fwdSin)
-        let actualHeight = abs(-width * fwdSin + height * fwdCos)
+        // 2. The stored region is the upright crop rectangle, so its dimensions are the actual
+        //    (straightened) crop dimensions directly — no projection needed.
+        let actualWidth = width
+        let actualHeight = height
 
-        // 3. Place crop rect at the rotated AABB center (CropOverlayView.viewCropRect).
-        let cropCenter = CGPoint(x: cropRect.midX, y: cropRect.midY)
+        // 3. Place crop rect at the rotated crop center (CropOverlayView.viewCropRect).
+        let cropCenter = CGPoint(x: fullCropRect.midX, y: fullCropRect.midY)
         let newCenter = cropCenter.applying(transform)
 
         let actualCropRect = CGRect(

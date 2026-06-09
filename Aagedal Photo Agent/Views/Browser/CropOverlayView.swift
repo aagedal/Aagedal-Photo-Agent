@@ -122,9 +122,9 @@ struct CropOverlayView: View {
     }
 
     /// The straight crop rectangle in view coordinates.
-    /// The image is displayed rotated by -angle degrees. We compute the crop's AABB center
-    /// offset from the image center, rotate it by the image rotation, then compute actual
-    /// crop dimensions via forward projection.
+    /// The image is displayed rotated by -angle degrees. The crop rectangle stays upright on
+    /// screen: we rotate its center offset from the image center by the image rotation, and
+    /// use its stored (upright) dimensions directly.
     private var viewCropRect: CGRect {
         let nc = normalizedCrop
         let ir = activeImageRect
@@ -132,7 +132,7 @@ struct CropOverlayView: View {
         let cosA = cos(A)
         let sinA = sin(A)
 
-        // AABB center offset from image center in image-rect pixel units
+        // Crop center offset from image center in image-rect pixel units
         let imgCX = (nc.centerX - 0.5) * ir.width
         let imgCY = (nc.centerY - 0.5) * ir.height
 
@@ -140,10 +140,9 @@ struct CropOverlayView: View {
         let viewCX = imgCX * cosA - imgCY * sinA + ir.midX
         let viewCY = imgCX * sinA + imgCY * cosA + ir.midY
 
-        // Compute actual crop dimensions from AABB via forward projection
-        let aabbW = nc.width * ir.width
-        let aabbH = nc.height * ir.height
-        let (actualW, actualH) = forwardProjectDims(aabbW: aabbW, aabbH: aabbH)
+        // The stored region is the upright crop rectangle — dimensions map directly.
+        let actualW = nc.width * ir.width
+        let actualH = nc.height * ir.height
 
         return CGRect(
             x: viewCX - actualW / 2,
@@ -174,31 +173,6 @@ struct CropOverlayView: View {
                 y: lx * sinA + ly * cosA + cy
             )
         }
-    }
-
-    // MARK: - Forward / inverse projection helpers
-
-    /// Forward project: AABB pixel dims -> actual (rotated) crop dims.
-    /// Uses the crop angle (not the view rotation).
-    private func forwardProjectDims(aabbW: Double, aabbH: Double) -> (w: Double, h: Double) {
-        let radians = angle * Double.pi / 180.0
-        guard abs(radians) > 0.000001 else { return (aabbW, aabbH) }
-        let cosA = cos(radians)
-        let sinA = sin(radians)
-        let w = abs(aabbW * cosA + aabbH * sinA)
-        let h = abs(-aabbW * sinA + aabbH * cosA)
-        return (w, h)
-    }
-
-    /// Inverse project: actual crop dims -> AABB pixel dims.
-    private func inverseProjectDims(actualW: Double, actualH: Double) -> (aabbW: Double, aabbH: Double) {
-        let radians = angle * Double.pi / 180.0
-        guard abs(radians) > 0.000001 else { return (actualW, actualH) }
-        let cosA = cos(radians)
-        let sinA = sin(radians)
-        let aabbW = abs(actualW * cosA - actualH * sinA)
-        let aabbH = abs(actualW * sinA + actualH * cosA)
-        return (aabbW, aabbH)
     }
 
     // MARK: - Body
@@ -558,7 +532,7 @@ struct CropOverlayView: View {
                     }
                 }
 
-                // Convert view rect back to image-space AABB
+                // Convert view rect back to the image-space upright crop region
                 let A = viewRotationRadians
                 let cosA = cos(A)
                 let sinA = sin(A)
@@ -571,10 +545,9 @@ struct CropOverlayView: View {
                 let newCX = imgCenterOffX / ir.width + 0.5
                 let newCY = imgCenterOffY / ir.height + 0.5
 
-                // Inverse project actual view dims to AABB dims
-                let (aabbW, aabbH) = inverseProjectDims(actualW: newRect.width, actualH: newRect.height)
-                let halfW = aabbW / ir.width / 2
-                let halfH = aabbH / ir.height / 2
+                // The stored region is the upright crop — view dims map directly.
+                let halfW = newRect.width / ir.width / 2
+                let halfH = newRect.height / ir.height / 2
 
                 let ar = ir.width / ir.height
                 let result = NormalizedCropRegion(

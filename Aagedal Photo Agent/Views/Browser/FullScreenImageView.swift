@@ -888,21 +888,12 @@ struct FullScreenImageView: View {
             // Adjust for crop if present (only when rendering edits)
             if renderEdits, let crop = cameraRaw?.crop, !(crop.isEmpty) {
                 let displayCrop = crop.transformedForDisplay(orientation: orientation)
-                let aabbW = ((displayCrop.right ?? 1) - (displayCrop.left ?? 0)) * rawSize.width
-                let aabbH = ((displayCrop.bottom ?? 1) - (displayCrop.top ?? 0)) * rawSize.height
-                let angle = crop.angle ?? 0
-                if aabbW > 1, aabbH > 1 {
-                    if abs(angle) > 0.0001 {
-                        // Forward-project AABB to actual crop dims (matches CropOverlayView.forwardProjectDims)
-                        let r = angle * .pi / 180.0
-                        let cosR = cos(r)
-                        let sinR = sin(r)
-                        let projW = abs(aabbW * cosR + aabbH * sinR)
-                        let projH = abs(-aabbW * sinR + aabbH * cosR)
-                        rawSize = CGSize(width: projW, height: projH)
-                    } else {
-                        rawSize = CGSize(width: aabbW, height: aabbH)
-                    }
+                // The stored region is the upright crop rectangle — its dimensions are the
+                // actual (straightened) crop output dimensions directly.
+                let cropW = ((displayCrop.right ?? 1) - (displayCrop.left ?? 0)) * rawSize.width
+                let cropH = ((displayCrop.bottom ?? 1) - (displayCrop.top ?? 0)) * rawSize.height
+                if cropW > 1, cropH > 1 {
+                    rawSize = CGSize(width: cropW, height: cropH)
                 }
             }
             sourcePixelSize = rawSize

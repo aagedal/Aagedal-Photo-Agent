@@ -89,8 +89,13 @@ struct NormalizedCropRegion: Equatable {
         ).clamped()
     }
 
-    /// Constrains the crop so all 4 corners of the rotated rectangle stay within the image.
-    /// `aspectRatio` is imageWidth / imageHeight.
+    /// Constrains the crop so all 4 corners of the rotated rectangle stay within the image,
+    /// shrinking it uniformly (preserving aspect ratio) if needed.
+    ///
+    /// The region stores the *upright* crop rectangle directly (its `width`/`height` are the
+    /// actual on-screen crop dimensions in normalized image units). When the crop is
+    /// straightened by `angleDegrees`, its footprint in image space is this rectangle rotated
+    /// by `+angle`. `aspectRatio` is imageWidth / imageHeight.
     func fittingRotated(angleDegrees: Double, aspectRatio: Double) -> NormalizedCropRegion {
         let radians = angleDegrees * Double.pi / 180.0
         if abs(radians) < 0.000001 {
@@ -105,25 +110,19 @@ struct NormalizedCropRegion: Equatable {
         let sinA: Double = Foundation.sin(radians)
         let ar = Swift.max(aspectRatio, 0.001)
 
-        // Convert AABB diagonal half-sizes to pixel-proportional units (in terms of image height)
-        let dW = halfW * ar
-        let dH = halfH
+        // Crop half-extents in pixel-proportional units (relative to image height), measured
+        // along the crop's own (view) axes.
+        let px = halfW * ar
+        let py = halfH
 
-        // Forward projection: signed actual crop half-dimensions (preserves rotation identity)
-        let hw = dW * cosA + dH * sinA
-        let hh = -dW * sinA + dH * cosA
-
-        // Actual crop magnitudes for corner checking
-        let absHw = Swift.abs(hw)
-        let absHh = Swift.abs(hh)
-
-        // Check all 4 rotated corners stay within [0,1]² normalized bounds
+        // Check all 4 rotated corners stay within [0,1]² normalized bounds. Each corner offset
+        // (±px, ±py) is rotated by +angle into image space, then converted back to normalized.
         let signs: [(Double, Double)] = [(-1, -1), (1, -1), (-1, 1), (1, 1)]
         var maxScale = 1.0
 
         for (sx, sy) in signs {
-            let ox = sx * absHw * cosA - sy * absHh * sinA
-            let oy = sx * absHw * sinA + sy * absHh * cosA
+            let ox = sx * px * cosA - sy * py * sinA
+            let oy = sx * px * sinA + sy * py * cosA
             // Convert back to normalized space
             let nx = ox / ar
             let ny = oy
@@ -138,13 +137,9 @@ struct NormalizedCropRegion: Equatable {
         if maxScale < 0 { maxScale = 0 }
         if maxScale >= 1.0 - 0.0001 { return self }
 
-        // Scale actual crop dimensions uniformly
-        let newHw = hw * maxScale
-        let newHh = hh * maxScale
-
-        // Inverse projection: actual → AABB diagonal
-        let newHalfW = Swift.abs(newHw * cosA - newHh * sinA) / ar
-        let newHalfH = Swift.abs(newHw * sinA + newHh * cosA)
+        // Scale both crop dimensions uniformly — aspect ratio is preserved exactly.
+        let newHalfW = halfW * maxScale
+        let newHalfH = halfH * maxScale
 
         return NormalizedCropRegion(
             top: cy - newHalfH,
@@ -158,8 +153,8 @@ struct NormalizedCropRegion: Equatable {
     /// without changing the crop dimensions. Use instead of `fittingRotated` when
     /// only the position should change (e.g., during movement).
     func centerClampedForRotation(angleDegrees: Double, aspectRatio: Double) -> NormalizedCropRegion {
-        let halfW = Swift.max(width * 0.5, 0.015)
-        let halfH = Swift.max(height * 0.5, 0.015)
+        let halfW = Swift.max(width * 0.5, 0.0001)
+        let halfH = Swift.max(height * 0.5, 0.0001)
         let radians = angleDegrees * Double.pi / 180.0
 
         if abs(radians) < 0.000001 {
@@ -180,10 +175,9 @@ struct NormalizedCropRegion: Equatable {
         let sinA: Double = Foundation.sin(radians)
         let ar = Swift.max(aspectRatio, 0.001)
 
-        let dW = halfW * ar
-        let dH = halfH
-        let hw = Swift.abs(dW * cosA + dH * sinA)
-        let hh = Swift.abs(-dW * sinA + dH * cosA)
+        // Crop half-extents in pixel-proportional units, along the crop's own (view) axes.
+        let px = halfW * ar
+        let py = halfH
 
         // Compute center bounds from rotated corner constraints
         var minCX = 0.0, maxCX = 1.0
@@ -191,8 +185,8 @@ struct NormalizedCropRegion: Equatable {
         let signs: [(Double, Double)] = [(-1, -1), (1, -1), (-1, 1), (1, 1)]
 
         for (sx, sy) in signs {
-            let ox = sx * hw * cosA - sy * hh * sinA
-            let oy = sx * hw * sinA + sy * hh * cosA
+            let ox = sx * px * cosA - sy * py * sinA
+            let oy = sx * px * sinA + sy * py * cosA
             let nx = ox / ar
             let ny = oy
 
@@ -224,103 +218,18 @@ struct NormalizedCropRegion: Equatable {
         )
     }
 
-    /// Recomputes the AABB when changing the crop angle, preserving the actual crop dimensions.
-    /// `aspectRatio` is imageWidth / imageHeight.
-    func withAngle(from oldAngle: Double, to newAngle: Double, aspectRatio: Double) -> NormalizedCropRegion {
-        let base = self
-        let oldRad = oldAngle * Double.pi / 180.0
-        let newRad = newAngle * Double.pi / 180.0
-        let ar = Swift.max(aspectRatio, 0.001)
-
-        let halfW = base.width * 0.5
-        let halfH = base.height * 0.5
-
-        // AABB diagonal in pixel-proportional units
-        let dW = halfW * ar
-        let dH = halfH
-
-        // Forward: signed actual crop dims from old angle (preserves rotation identity)
-        let cosOld: Double = Foundation.cos(oldRad)
-        let sinOld: Double = Foundation.sin(oldRad)
-        let hw = dW * cosOld + dH * sinOld
-        let hh = -dW * sinOld + dH * cosOld
-
-        // Inverse: new AABB at new angle
-        let cosNew: Double = Foundation.cos(newRad)
-        let sinNew: Double = Foundation.sin(newRad)
-        let newHalfW = Swift.abs(hw * cosNew - hh * sinNew) / ar
-        let newHalfH = Swift.abs(hw * sinNew + hh * cosNew)
-
-        let cx = base.centerX
-        let cy = base.centerY
-        return NormalizedCropRegion(
-            top: cy - newHalfH,
-            left: cx - newHalfW,
-            bottom: cy + newHalfH,
-            right: cx + newHalfW
-        )
-    }
-
-    /// Resizes the AABB encoding so the actual (rotated) crop has the target pixel aspect ratio,
-    /// while preserving the actual crop area.
+    /// Resizes the crop so the visible (upright) crop rectangle has the target pixel aspect
+    /// ratio, while preserving the crop area.
     /// `targetRatio` is the desired width/height of the visible crop rectangle.
-    /// `angleDegrees` is the crop rotation angle.
     /// `imageAspectRatio` is imageWidth / imageHeight.
-    func resizedToActualAspectRatio(_ targetRatio: Double, angleDegrees: Double, imageAspectRatio: Double) -> NormalizedCropRegion {
+    ///
+    /// Because the region stores the upright crop directly, the visible aspect ratio is simply
+    /// `(width · imageAspectRatio) / height` regardless of the straighten angle — so this is
+    /// angle-independent. `angleDegrees` is accepted for call-site symmetry but unused.
+    func resizedToActualAspectRatio(_ targetRatio: Double, angleDegrees: Double = 0, imageAspectRatio: Double) -> NormalizedCropRegion {
         guard targetRatio > 0, imageAspectRatio > 0 else { return self }
-
-        let radians = angleDegrees * Double.pi / 180.0
-        if abs(radians) < 0.000001 {
-            // At zero angle, actual ratio = halfW*ar/halfH, so aabbRatio = targetRatio/ar
-            return resizedToAspectRatio(targetRatio / imageAspectRatio)
-        }
-
-        let cosA = Foundation.cos(radians)
-        let sinA = Foundation.sin(radians)
-        let ar = Swift.max(imageAspectRatio, 0.001)
-
-        // Forward project current AABB to signed actual crop dims
-        let dW = width * 0.5 * ar
-        let dH = height * 0.5
-        let hw = dW * cosA + dH * sinA
-        let hh = -dW * sinA + dH * cosA
-
-        let currentArea = Swift.abs(hw) * Swift.abs(hh)
-        guard currentArea > 0.000001 else { return self }
-
-        // Compute AABB ratio (halfW/halfH) that gives target actual ratio |hw|/|hh| = targetRatio.
-        // From: hw = halfW*ar*cos + halfH*sin, hh = -halfW*ar*sin + halfH*cos
-        // Solving hw/hh = targetRatio for r = halfW/halfH:
-        //   r = (targetRatio*cos - sin) / (ar*(cos + targetRatio*sin))
-        let num = targetRatio * cosA - sinA
-        let den = ar * (cosA + targetRatio * sinA)
-        guard Swift.abs(den) > 0.000001 else { return self }
-
-        var aabbRatio = num / den
-        if aabbRatio <= 0 {
-            // Target ratio below minimum achievable (tan|angle|) at this angle — use minimum
-            aabbRatio = 0.001
-        }
-
-        // Compute new AABB dims that preserve actual crop area
-        // Actual area = halfH² * |r*ar*cos + sin| * |cos - r*ar*sin|
-        let factorA = aabbRatio * ar * cosA + sinA
-        let factorB = cosA - aabbRatio * ar * sinA
-        let areaFactor = Swift.abs(factorA * factorB)
-        guard areaFactor > 0.000001 else { return self }
-
-        let newHalfH = Foundation.sqrt(currentArea / areaFactor)
-        let newHalfW = aabbRatio * newHalfH
-
-        let cx = centerX
-        let cy = centerY
-
-        return NormalizedCropRegion(
-            top: cy - newHalfH,
-            left: cx - newHalfW,
-            bottom: cy + newHalfH,
-            right: cx + newHalfW
-        )
+        // Visible ratio = (width·ar)/height = targetRatio  ⇒  normalized width/height = targetRatio/ar
+        return resizedToAspectRatio(targetRatio / imageAspectRatio)
     }
 
     /// Resizes the crop to match a target aspect ratio while preserving the crop area.
