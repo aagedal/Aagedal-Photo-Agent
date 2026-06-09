@@ -230,7 +230,7 @@ final class FullScreenImageCache: @unchecked Sendable {
                         let ciImage: CIImage?
                         if isRAW {
                             // Use CIRAWFilter for flat/neutral decode — get as-shot WB for correct rendering
-                            if let rawResult = Self.loadRAWImage(from: url, draftMode: false, isHDR: settings?.hdrEditMode == 1) {
+                            if let rawResult = Self.loadRAWImage(from: url, draftMode: false, isHDR: settings?.hdrEditMode == 1, maxPixelSize: screenMaxPx) {
                                 guard !Task.isCancelled else { return }
                                 settings?.asShotNeutralTemperature = Double(rawResult.neutralTemperature)
                                 settings?.asShotNeutralTint = Double(rawResult.neutralTint)
@@ -405,22 +405,37 @@ final class FullScreenImageCache: @unchecked Sendable {
         return ciImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
     }
 
+    /// Native longest-side pixel dimension of an image file, read from metadata
+    /// only (no decode). Pre-orientation, but the longest side is orientation-invariant.
+    nonisolated private static func nativeLongestSide(of url: URL) -> CGFloat? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let pw = props[kCGImagePropertyPixelWidth] as? Int,
+              let ph = props[kCGImagePropertyPixelHeight] as? Int else { return nil }
+        return CGFloat(max(pw, ph))
+    }
+
     /// Load a RAW image via CIRAWFilter at a target max pixel size.
     /// Uses flat/neutral decode (no auto-boost) matching EditWorkspaceView's pipeline,
-    /// then downsamples to the target resolution. Returns CIImage for downstream processing.
+    /// decoding directly at preview scale via CIRAWFilter.scaleFactor. Returns CIImage
+    /// for downstream processing.
     nonisolated static func loadRAWPreview(from url: URL, maxPixelSize: CGFloat, draftMode: Bool = false, isHDR: Bool = false) -> CIImage? {
-        guard let result = loadRAWImage(from: url, draftMode: draftMode, isHDR: isHDR) else { return nil }
+        guard let result = loadRAWImage(from: url, draftMode: draftMode, isHDR: isHDR, maxPixelSize: maxPixelSize) else { return nil }
+        // Final clamp against scaleFactor rounding; a no-op once scaleFactor has shrunk it.
         return downsample(result.image, maxPixelSize: maxPixelSize)
     }
 
     /// Load a RAW image using CIRAWFilter for optimized decoding.
     /// draftMode: true = bilinear demosaicing (2-5x faster), false = full quality AHD.
-    /// Always decodes at full sensor resolution. Returns nil for unsupported formats
+    /// maxPixelSize: when set, the RAW engine demosaics directly at that longest-side
+    /// resolution (faster + far less memory than decoding full sensor then shrinking);
+    /// nil decodes at full sensor resolution. Returns nil for unsupported formats
     /// (caller should fall back to loadHDRFullResolution).
     nonisolated static func loadRAWImage(
         from url: URL,
         draftMode: Bool = false,
-        isHDR: Bool = false
+        isHDR: Bool = false,
+        maxPixelSize: CGFloat? = nil
     ) -> RAWDecodeResult? {
         guard let rawFilter = CIRAWFilter(imageURL: url) else {
             cacheLogger.info("CIRAWFilter unsupported for \(url.lastPathComponent), falling back")
@@ -429,6 +444,13 @@ final class FullScreenImageCache: @unchecked Sendable {
         rawFilter.isDraftModeEnabled = draftMode
         rawFilter.boostAmount = 0        // disable auto-boost (Metal shader handles exposure)
         rawFilter.boostShadowAmount = 0  // disable shadow recovery boost
+        // Decode straight to the requested preview size: demosaic at the reduced scale
+        // instead of decoding the full sensor and shrinking afterward. Only ever downscale,
+        // and keep the same 1.5× slack the affine downsample used so output sizes are unchanged.
+        if let maxPixelSize, let longestSide = nativeLongestSide(of: url),
+           longestSide > maxPixelSize * 1.5 {
+            rawFilter.scaleFactor = Float(maxPixelSize / longestSide)
+        }
         // HDR: preserve highlight detail above SDR white as float values >1.0 so the
         // pipeline can expand it into HDR headroom. Default 0 = tone-map/clamp to SDR;
         // 1.0 = "use the most headroom present in the file" (lands ~4× / 800 nits for
@@ -442,7 +464,7 @@ final class FullScreenImageCache: @unchecked Sendable {
             return nil
         }
         let extent = output.extent
-        cacheLogger.info("RAW decoded \(url.lastPathComponent) draft=\(draftMode) \(Int(extent.width))x\(Int(extent.height)) asShot=\(Int(neutralTemp))K tint=\(Int(neutralTint))")
+        cacheLogger.info("RAW decoded \(url.lastPathComponent) draft=\(draftMode) scale=\(rawFilter.scaleFactor, format: .fixed(precision: 3)) \(Int(extent.width))x\(Int(extent.height)) asShot=\(Int(neutralTemp))K tint=\(Int(neutralTint))")
         return RAWDecodeResult(image: output, neutralTemperature: neutralTemp, neutralTint: neutralTint)
     }
 
