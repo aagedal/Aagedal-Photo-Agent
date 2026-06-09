@@ -2,17 +2,27 @@ import SwiftUI
 
 /// Editor for the reusable, optionally iCloud-synced Teams library.
 /// Each team has a name, kit colour(s), and a number→player roster.
+///
+/// Presented as a sheet from the folder view; the same `TeamsLibraryContent`
+/// is embedded directly in Settings (People and Groups ▸ Teams). The content
+/// uses an explicit two-pane layout (rather than a NavigationSplitView) so it
+/// renders identically in both hosts — a nested split view inside the Settings
+/// window's own split view rendered cramped and hoisted its toolbar buttons.
 struct TeamsLibraryView: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        TeamsLibraryContent()
-            .frame(minWidth: 680, minHeight: 440)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { dismiss() }
-                }
+        VStack(spacing: 0) {
+            TeamsLibraryContent()
+            Divider()
+            HStack {
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
             }
+            .padding(12)
+        }
+        .frame(minWidth: 700, minHeight: 480)
     }
 }
 
@@ -21,9 +31,20 @@ struct TeamsLibraryView: View {
 struct TeamsLibraryContent: View {
     @State private var store = RosterStore.shared
     @State private var selection: UUID?
+    @State private var showDeleteAlert = false
 
     var body: some View {
-        NavigationSplitView {
+        HStack(spacing: 0) {
+            teamList
+                .frame(width: 240)
+            Divider()
+            editor
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private var teamList: some View {
+        VStack(spacing: 0) {
             List(selection: $selection) {
                 ForEach(store.allTeams()) { team in
                     HStack(spacing: 8) {
@@ -33,7 +54,7 @@ struct TeamsLibraryContent: View {
                             .overlay(Circle().strokeBorder(.secondary.opacity(0.4)))
                         VStack(alignment: .leading, spacing: 1) {
                             Text(team.name.isEmpty ? "Untitled Team" : team.name)
-                            Text("\(team.roster.count) players")
+                            Text("\(team.roster.count) player\(team.roster.count == 1 ? "" : "s")")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -41,35 +62,63 @@ struct TeamsLibraryContent: View {
                     .tag(team.id)
                 }
             }
-            .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 320)
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        let team = Team(name: "", primaryColor: TeamKitColor(r: 0.2, g: 0.4, b: 0.9))
-                        try? store.upsert(team)
-                        selection = team.id
-                    } label: { Image(systemName: "plus") }
-                    .help("Add a team")
+
+            Divider()
+
+            // Add and delete sit together as a native source-list +/- control.
+            HStack(spacing: 2) {
+                Button(action: addTeam) {
+                    Image(systemName: "plus")
                 }
+                .help("Add a team")
+
+                Button { showDeleteAlert = true } label: {
+                    Image(systemName: "trash")
+                }
+                .help("Delete the selected team")
+                .disabled(selection == nil)
+
+                Spacer()
             }
-        } detail: {
-            if let id = selection, let team = store.team(byID: id) {
-                TeamEditorView(team: team, store: store) {
+            .buttonStyle(.borderless)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+        }
+        .alert("Delete this team?", isPresented: $showDeleteAlert) {
+            Button("Delete", role: .destructive) {
+                if let id = selection {
+                    try? store.delete(id: id)
                     selection = nil
                 }
-                .id(id)
-            } else {
-                ContentUnavailableView("No Team Selected", systemImage: "tshirt",
-                                       description: Text("Select a team, or add one with +."))
             }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes the team and its roster from the library on all your devices.")
         }
+    }
+
+    @ViewBuilder
+    private var editor: some View {
+        if let id = selection, let team = store.team(byID: id) {
+            TeamEditorView(team: team, store: store)
+                .id(id)
+        } else {
+            ContentUnavailableView("No Team Selected", systemImage: "tshirt",
+                                   description: Text("Select a team, or add one with +."))
+        }
+    }
+
+    private func addTeam() {
+        let team = Team(name: "", primaryColor: TeamKitColor(r: 0.2, g: 0.4, b: 0.9))
+        try? store.upsert(team)
+        selection = team.id
     }
 }
 
-/// Editor for one team — name, kit colours, and roster.
+/// Editor for one team — name, kit colours, and roster. Changes save
+/// automatically (debounced), so there is no explicit Save button.
 private struct TeamEditorView: View {
     let store: RosterStore
-    let onDelete: () -> Void
 
     @State private var name: String
     @State private var primary: Color
@@ -78,15 +127,14 @@ private struct TeamEditorView: View {
     @State private var roster: [RosterPlayer]
     @State private var pasteText: String = ""
     @State private var showPaste = false
-    @State private var showDeleteAlert = false
     @State private var knownPeople: [KnownPerson] = []
+    @State private var saveTask: Task<Void, Never>?
 
     private let teamID: UUID
     private let createdAt: Date
 
-    init(team: Team, store: RosterStore, onDelete: @escaping () -> Void) {
+    init(team: Team, store: RosterStore) {
         self.store = store
-        self.onDelete = onDelete
         self.teamID = team.id
         self.createdAt = team.createdAt
         _name = State(initialValue: team.name)
@@ -135,9 +183,10 @@ private struct TeamEditorView: View {
                                 .labelsHidden()
                                 .textFieldStyle(.roundedBorder)
                                 .frame(minWidth: 180)
-                            // Link this jersey number to a Known Person (face).
-                            // Fixed column keeps the delete buttons aligned.
-                            faceLinkMenu(player: $player)
+                            // Link this jersey number to a Known Person (face), and
+                            // show their thumbnail so the photographer can confirm
+                            // the right person at a glance.
+                            faceColumn(player: $player)
                             Button {
                                 roster.removeAll { $0.id == player.id }
                             } label: { Image(systemName: "minus.circle.fill").foregroundStyle(.red) }
@@ -159,29 +208,17 @@ private struct TeamEditorView: View {
         }
         .formStyle(.grouped)
         .onAppear { knownPeople = KnownPeopleService.shared.getAllPeople() }
-        .navigationTitle(name.isEmpty ? "Untitled Team" : name)
-        .toolbar {
-            ToolbarItem(placement: .destructiveAction) {
-                Button(role: .destructive) { showDeleteAlert = true } label: {
-                    Image(systemName: "trash")
-                }
-                .help("Delete this team")
-            }
-            ToolbarItem(placement: .confirmationAction) {
-                Button("Save") { save() }
-            }
+        .onChange(of: name) { scheduleSave() }
+        .onChange(of: primary) { scheduleSave() }
+        .onChange(of: hasGoalkeeper) { scheduleSave() }
+        .onChange(of: goalkeeper) { scheduleSave() }
+        .onChange(of: roster) { scheduleSave() }
+        .onDisappear {
+            saveTask?.cancel()
+            save()
         }
         .sheet(isPresented: $showPaste) {
             pasteSheet
-        }
-        .alert("Delete this team?", isPresented: $showDeleteAlert) {
-            Button("Delete", role: .destructive) {
-                try? store.delete(id: teamID)
-                onDelete()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This removes the team and its roster from the library on all your devices.")
         }
     }
 
@@ -207,6 +244,20 @@ private struct TeamEditorView: View {
         }
         .padding()
         .frame(width: 380)
+    }
+
+    /// The "Face" column: a fixed-width thumbnail of the linked Known Person
+    /// (or an empty placeholder so the columns stay aligned) plus the link menu.
+    @ViewBuilder
+    private func faceColumn(player: Binding<RosterPlayer>) -> some View {
+        HStack(spacing: 6) {
+            if let id = player.wrappedValue.knownPersonID {
+                LinkedFaceThumbnail(personID: id)
+            } else {
+                Color.clear.frame(width: 28, height: 28)
+            }
+            faceLinkMenu(player: player)
+        }
     }
 
     /// Per-player control to bind a jersey number to a Known Person, so face
@@ -280,7 +331,21 @@ private struct TeamEditorView: View {
         roster = byNumber.values.sorted { $0.number < $1.number }
     }
 
+    /// Debounce writes so each keystroke or colour-wheel drag doesn't trigger a
+    /// coordinated (possibly iCloud) disk write.
+    private func scheduleSave() {
+        saveTask?.cancel()
+        saveTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
+            save()
+        }
+    }
+
     private func save() {
+        // If the team was deleted while its editor was on screen, onDisappear
+        // would otherwise resurrect it via upsert. Skip when it's already gone.
+        guard store.team(byID: teamID) != nil else { return }
         let cleaned = roster
             .filter { !$0.playerName.trimmingCharacters(in: .whitespaces).isEmpty }
             .sorted { $0.number < $1.number }
@@ -294,6 +359,36 @@ private struct TeamEditorView: View {
             updatedAt: Date()
         )
         try? store.upsert(team)
+    }
+}
+
+/// A small rounded thumbnail of a Known Person's representative face, loaded
+/// from the Known People database. Falls back to a placeholder glyph.
+private struct LinkedFaceThumbnail: View {
+    let personID: UUID
+    @State private var image: NSImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Image(systemName: "person.crop.circle.fill")
+                    .resizable()
+                    .scaledToFit()
+                    .foregroundStyle(.secondary)
+                    .padding(4)
+            }
+        }
+        .frame(width: 28, height: 28)
+        .clipShape(RoundedRectangle(cornerRadius: 5))
+        .background(RoundedRectangle(cornerRadius: 5).fill(.quaternary))
+        .help("Linked known person's face")
+        .task(id: personID) {
+            image = KnownPeopleService.shared.loadThumbnail(for: personID)
+        }
     }
 }
 
