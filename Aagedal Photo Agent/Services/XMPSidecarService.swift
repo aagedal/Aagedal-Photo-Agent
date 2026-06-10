@@ -26,6 +26,10 @@ struct XMPSidecarService: Sendable {
         imageURL.deletingPathExtension().appendingPathExtension("xmp")
     }
 
+    nonisolated func sidecarExists(for imageURL: URL) -> Bool {
+        FileManager.default.fileExists(atPath: sidecarURL(for: imageURL).path)
+    }
+
     func loadSidecar(for imageURL: URL) -> IPTCMetadata? {
         guard let data = sidecarDataIfExists(for: imageURL) else { return nil }
         return loadSidecar(fromData: data)

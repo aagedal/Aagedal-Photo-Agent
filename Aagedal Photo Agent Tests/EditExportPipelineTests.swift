@@ -129,6 +129,44 @@ struct EditExportPipelineTests {
         #expect(abs(lon - 151.2093) < 0.001)
     }
 
+    /// A develop-settings-only sidecar (written by `saveCameraRawOnly` after a develop edit
+    /// in writeToFile mode) is not an IPTC record. It is typically *newer* than the image
+    /// file, so the staleness guard can't help — without the descriptive-content guard its
+    /// all-nil fields would force-clear every embedded descriptive value from the render.
+    @Test("renderItem keeps embedded IPTC when the sidecar is develop-settings-only")
+    func renderItemIgnoresDevelopOnlySidecar() async throws {
+        let (dir, source) = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let engine = SwiftExifWriteEngine()
+        try await engine.writeFields(
+            [.headline: "Embedded headline", .description: "Embedded caption",
+             .subject: "kw1, kw2", .creator: "Tester"],
+            to: [source])
+
+        // CRS-only sidecar, written after the file (newer mtime) — the Simple-mode artifact.
+        var crs = CameraRawSettings()
+        crs.exposure2012 = 0.5
+        try XMPSidecarService().saveCameraRawOnly(crs, orientation: 1, for: source)
+
+        let outDir = dir.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+
+        let tracker = MetadataFailureTracker()
+        let rendered = try await EditExportPipeline.renderItem(
+            sourceURL: source, cameraRaw: nil, kind: .jpeg,
+            outputFolder: outDir, folderURL: source.deletingLastPathComponent(),
+            writeEngine: engine, failureTracker: tracker)
+
+        #expect(await tracker.sidecarOverlayFailures.isEmpty)
+        #expect(await tracker.staleSidecarWarnings.isEmpty)
+        let meta = try await SwiftExifReadService().readFullMetadata(url: rendered)
+        #expect(meta.title == "Embedded headline")
+        #expect(meta.description == "Embedded caption")
+        #expect(Set(meta.keywords) == Set(["kw1", "kw2"]))
+        #expect(meta.creator == "Tester")
+    }
+
     /// Sidecar-master is the default, but if the image file was modified more recently than
     /// the .xmp AND they disagree, the sidecar looks stale (e.g. Adobe Bridge wrote into the
     /// file after the sidecar was made): the embedded values win and a warning is recorded.

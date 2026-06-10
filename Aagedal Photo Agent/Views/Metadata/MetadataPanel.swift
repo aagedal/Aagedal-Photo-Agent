@@ -22,8 +22,6 @@ struct MetadataPanel: View {
     @State private var showingListFilePicker = false
     @State private var listFilePickerTarget: ListFileTarget = .keywords
     @FocusState private var focusedField: String?
-    @State private var c2paOverwriteIntent: C2PAOverwriteIntent?
-    @State private var pendingC2PASelection: [URL] = []
     @State private var commitDebounceTask: Task<Void, Never>?
     @State private var showingRawMetadata = false
     @State private var showingStructuredKeywords = false
@@ -39,11 +37,6 @@ struct MetadataPanel: View {
         case city
         case country
         case event
-    }
-
-    enum C2PAOverwriteIntent {
-        case autoCommit
-        case manualWrite
     }
 
     enum VariableInsertTarget {
@@ -371,21 +364,11 @@ struct MetadataPanel: View {
         guard viewModel.hasChanges else { return }
         let hasC2PA = browserViewModel.selectedImages.contains { $0.hasC2PA }
         let isRaw = browserViewModel.selectedImages.contains { SupportedImageFormats.isRaw(url: $0.url) }
+        // Simple resolves C2PA to .writeToFile and deliberately ignores content
+        // credentials — no warning, the file is written like any other.
         let mode = MetadataWriteMode.current(forC2PA: hasC2PA, isRaw: isRaw)
-        if hasC2PA, mode == .writeToFile {
-            if !pendingC2PASelection.isEmpty, Set(pendingC2PASelection) == Set(viewModel.selectedURLs) {
-                return
-            }
-            viewModel.saveToSidecar()
-            onPendingStatusChanged?()
-            pendingC2PASelection = viewModel.selectedURLs
-            c2paOverwriteIntent = .autoCommit
-            showingC2PAWarning = true
-            return
-        }
         viewModel.commitEdits(
             mode: mode,
-            hasC2PA: hasC2PA,
             onComplete: onPendingStatusChanged
         )
     }
@@ -503,29 +486,13 @@ struct MetadataPanel: View {
             )
         }
         .alert("C2PA Protected Image", isPresented: $showingC2PAWarning) {
-            Button("Cancel", role: .cancel) {
-                c2paOverwriteIntent = nil
-                pendingC2PASelection = []
-            }
+            Button("Cancel", role: .cancel) {}
             Button("Write Anyway") {
-                let intent = c2paOverwriteIntent
-                c2paOverwriteIntent = nil
-
-                switch intent {
-                case .autoCommit:
-                    if Set(pendingC2PASelection) == Set(viewModel.selectedURLs) {
-                        viewModel.commitEdits(
-                            mode: .writeToFile,
-                            hasC2PA: true,
-                            allowC2PAOverwrite: true,
-                            onComplete: onPendingStatusChanged
-                        )
-                    }
-                    pendingC2PASelection = []
-                case .manualWrite, .none:
-                    viewModel.writeMetadataAndClearSidecar()
-                    onPendingStatusChanged?()
-                }
+                // Explicit "Write metadata to image" override from a sidecar mode —
+                // the one place a C2PA embed still warrants confirmation. (Simple
+                // resolves C2PA to .writeToFile and writes without asking.)
+                viewModel.writeMetadataAndClearSidecar()
+                onPendingStatusChanged?()
             }
         } message: {
             Text("This image has C2PA content credentials. Writing metadata will invalidate the authenticity chain.")
@@ -632,9 +599,6 @@ struct MetadataPanel: View {
             HStack {
                 Text("Metadata")
                     .font(.headline)
-                if !viewModel.isBatchEdit, viewModel.hasXmpMetadata {
-                    referenceSourcePicker
-                }
                 if !viewModel.isBatchEdit, viewModel.hasEmbeddedCropNotLoaded {
                     Button {
                         viewModel.importEmbeddedCrop()
@@ -1390,21 +1354,6 @@ struct MetadataPanel: View {
         .id("event")
     }
 
-    private var referenceSourcePicker: some View {
-        Picker("", selection: Binding(
-            get: { viewModel.metadataReferenceSource },
-            set: { viewModel.applyReferenceSource($0) }
-        )) {
-            Text("Embedded").tag(MetadataReferenceSource.embedded)
-            Text("XMP Sidecar")
-                .tag(MetadataReferenceSource.xmp)
-                .disabled(!viewModel.hasXmpMetadata)
-        }
-        .pickerStyle(.menu)
-        .labelsHidden()
-        .controlSize(.small)
-    }
-
     /// Shown when the embedded image and its `.xmp` sidecar have differing descriptive
     /// fields. Opens the per-field comparison sheet. Hidden while the sheet is open.
     @ViewBuilder
@@ -1500,7 +1449,10 @@ struct MetadataPanel: View {
             let readingDest = viewModel.isBatchEdit
                 ? MetadataDestination.mixed
                 : viewModel.metadataReferenceSource.asDestination
-            let sourcesDiffer = readingDest != destinations.iptc
+            // Warn only when the next write leaves the surface being read untouched
+            // (e.g. reading embedded while edits go to a sidecar). A writeToFile save
+            // that mirrors an existing sidecar covers both surfaces — no warning.
+            let sourcesDiffer = !viewModel.isBatchEdit && !destinations.iptc.covers(readingDest)
             let developSplits = destinations.develop != destinations.iptc
 
             VStack(alignment: .leading, spacing: 4) {
@@ -1520,7 +1472,7 @@ struct MetadataPanel: View {
                     }
                 }
                 if sourcesDiffer {
-                    Label("Sources differ \u{2014} reading and writing target different surfaces.",
+                    Label("Edits save to the \(destinations.iptc.shortLabel.lowercased()) but you're reading the \(readingDest.shortLabel.lowercased()) \u{2014} saved changes won't show under this source.",
                           systemImage: "exclamationmark.triangle.fill")
                         .font(.caption2)
                         .foregroundStyle(.orange)
@@ -1640,7 +1592,6 @@ struct MetadataPanel: View {
                     Button {
                         flushBufferedFields()
                         if browserViewModel.firstSelectedImage?.hasC2PA == true {
-                            c2paOverwriteIntent = .manualWrite
                             showingC2PAWarning = true
                         } else {
                             viewModel.writeMetadataAndClearSidecar()

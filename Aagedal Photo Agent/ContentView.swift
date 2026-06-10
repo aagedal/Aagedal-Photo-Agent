@@ -1903,16 +1903,10 @@ struct ContentViewModifiers: ViewModifier {
                     let mode = MetadataWriteMode.current(forC2PA: hadC2PA, isRaw: hadRaw)
                     let previousURLs = metadataViewModel.selectedURLs
                     Task { @MainActor in
-                        if hadC2PA, mode == .writeToFile {
-                            metadataViewModel.saveToSidecar()
+                        // Simple resolves C2PA to .writeToFile and deliberately
+                        // ignores content credentials — commit the mode as-is.
+                        metadataViewModel.commitEdits(mode: mode) {
                             browserViewModel.refreshPendingStatusBatch(for: previousURLs)
-                        } else {
-                            metadataViewModel.commitEdits(
-                                mode: mode,
-                                hasC2PA: hadC2PA
-                            ) {
-                                browserViewModel.refreshPendingStatusBatch(for: previousURLs)
-                            }
                         }
                     }
                 }
@@ -1935,11 +1929,7 @@ struct ContentViewModifiers: ViewModifier {
                     let hasC2PA = browserViewModel.selectedImages.contains { $0.hasC2PA }
                     let isRaw = browserViewModel.selectedImages.contains { SupportedImageFormats.isRaw(url: $0.url) }
                     let mode = MetadataWriteMode.current(forC2PA: hasC2PA, isRaw: isRaw)
-                    if hasC2PA, mode == .writeToFile {
-                        metadataViewModel.saveToSidecar()
-                    } else {
-                        metadataViewModel.commitEdits(mode: mode, hasC2PA: hasC2PA)
-                    }
+                    metadataViewModel.commitEdits(mode: mode)
                 }
             }
             .onDrop(of: [.fileURL], isTargeted: nil) { providers in

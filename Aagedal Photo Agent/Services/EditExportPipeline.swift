@@ -133,9 +133,14 @@ enum SidecarIPTCOverlay {
 
     static func apply(sourceURL: URL, renderedURL: URL, folderURL: URL?,
                       writeEngine: any MetadataWriteEngine) async -> Outcome {
-        // Prefer XMP sidecar IPTC (default write mode for C2PA files)
+        // Prefer XMP sidecar IPTC (default write mode for RAW and C2PA files). A sidecar
+        // without descriptive content (develop-settings-only, written by saveCameraRawOnly
+        // or stripped by Remove IPTC) is not an IPTC record: running toOverwriteFields on
+        // it would wipe every descriptive field from the render. Skip it and fall through
+        // to the JSON sidecar, which may still hold pending history-only edits.
         let xmpService = XMPSidecarService()
-        if let xmpMeta = xmpService.loadSidecar(for: sourceURL) {
+        if let xmpMeta = xmpService.loadSidecar(for: sourceURL),
+           xmpMeta.hasDescriptiveContent || xmpMeta.rating != nil || xmpMeta.label != nil {
             // Staleness guard: if the image file was modified more recently than the .xmp
             // and their descriptive metadata differs, an external tool (e.g. Adobe Bridge,
             // which writes into the file rather than a sidecar) likely edited the embedded
@@ -155,8 +160,9 @@ enum SidecarIPTCOverlay {
             // Overwrite (not overlay): the sidecar is the authoritative edited state, so a
             // descriptive field the user cleared is emitted empty here to strip the source's
             // stale embedded value from the rendered output. GPS stays additive (see
-            // toOverwriteFields).
-            var fields = xmpMeta.toOverwriteFields()
+            // toOverwriteFields). Guarded again here: a rating/label-only sidecar must not
+            // wipe the descriptive fields it never carried.
+            var fields = xmpMeta.hasDescriptiveContent ? xmpMeta.toOverwriteFields() : [:]
             // Rating and label are excluded from toOverwriteFields() (managed separately
             // in normal flow). For rendered output we must include them because the source
             // file may be C2PA-protected and hold stale values.
@@ -186,7 +192,9 @@ enum SidecarIPTCOverlay {
         guard let sidecar = sidecarService.loadSidecar(for: sourceURL, in: folderURL),
               sidecar.pendingChanges else { return .noPendingEdits }
 
-        var fields = sidecar.metadata.toOverwriteFields()
+        // Same partial-record guard as the .xmp branch: a record with no descriptive
+        // content (e.g. a failed-seed fallback) must not wipe fields it never carried.
+        var fields = sidecar.metadata.hasDescriptiveContent ? sidecar.metadata.toOverwriteFields() : [:]
         if let rating = sidecar.metadata.rating {
             fields[.rating] = String(rating)
         }

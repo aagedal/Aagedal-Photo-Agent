@@ -1844,6 +1844,7 @@ struct EditWorkspaceView: View {
         let mode = MetadataWriteMode.current(forC2PA: hasC2PA, isRaw: isRaw)
         let effectiveMode: MetadataWriteMode = {
             guard mode == .writeToXMPSidecar,
+                  !hasC2PA,  // C2PA keeps the sidecar — an embed would invalidate the credential
                   let selectedURL = selectedImageURL,
                   !SupportedImageFormats.isRaw(url: selectedURL) else {
                 return mode
@@ -1855,21 +1856,9 @@ struct EditWorkspaceView: View {
         // Sync cameraRaw to ImageFile so the thumbnail reflects edits immediately
         syncCameraRawToImageFile()
 
-        if hasC2PA, effectiveMode == .writeToFile {
-            // Can't write to file — save to JSON sidecar + XMP sidecar
-            metadataViewModel.commitEdits(
-                mode: .writeToXMPSidecar,
-                hasC2PA: hasC2PA
-            ) {
-                onPendingStatusChanged?()
-            }
-            return
-        }
-
-        metadataViewModel.commitEdits(
-            mode: effectiveMode,
-            hasC2PA: hasC2PA
-        ) {
+        // Simple resolves C2PA to .writeToFile and deliberately ignores content
+        // credentials, so the mode is committed as-is.
+        metadataViewModel.commitEdits(mode: effectiveMode) {
             onPendingStatusChanged?()
         }
     }

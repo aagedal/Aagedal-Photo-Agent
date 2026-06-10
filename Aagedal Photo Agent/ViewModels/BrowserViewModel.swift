@@ -1495,7 +1495,11 @@ final class BrowserViewModel {
                 await applySidecar(url, true, false)
             }
             for url in writeToFileWithSidecar {
-                await applySidecar(url, false, false)
+                // PM-style embed: the file is the record, but an .xmp already on disk
+                // must mirror the new value or its stale copy shadows the file on
+                // read/export. (Dual-write URLs were already handled above; the
+                // unchanged-value guard makes this second pass a no-op for them.)
+                await applySidecar(url, xmpSidecarService.sidecarExists(for: url), false)
             }
 
             if metadataReadService.isAvailable, !writeToFileWithSidecar.isEmpty {
@@ -1598,10 +1602,17 @@ final class BrowserViewModel {
         }
 
         if snapshot == nil {
-            snapshot = await loadMetadataSnapshot(for: url, includeXmp: writeXmpSidecar)
+            snapshot = await loadMetadataSnapshot(for: url)
         }
 
-        if !hadSidecar, let snapshot {
+        if !hadSidecar {
+            // Never seed a new record from nothing: a partial sidecar holding only
+            // this field would become the authoritative record and mask the file's
+            // other descriptive fields on read and export.
+            guard let snapshot else {
+                errorMessage = "Could not read metadata for \(url.lastPathComponent); \(fieldName) was not written to its sidecar."
+                return
+            }
             metadata = snapshot
         }
 
@@ -1642,13 +1653,16 @@ final class BrowserViewModel {
         }
     }
 
-    private func loadMetadataSnapshot(for url: URL, includeXmp: Bool) async -> IPTCMetadata? {
+    private func loadMetadataSnapshot(for url: URL) async -> IPTCMetadata? {
         do {
             var metadata = try await metadataReadService.readFullMetadata(url: url)
-            let preferXmp = UserDefaults.standard.bool(forKey: UserDefaultsKeys.metadataPreferXMPSidecar)
-            if (includeXmp || preferXmp),
-               let xmpMetadata = xmpSidecarService.loadSidecar(for: url) {
-                metadata = metadata.merged(preferring: xmpMetadata)
+            if let xmpMetadata = xmpSidecarService.loadSidecar(for: url) {
+                // Record semantics, matching the panel's reference read: a descriptive
+                // sidecar IS the record (clears stick — don't reseed cleared fields
+                // from embedded); develop-only sidecars overlay additively.
+                metadata = xmpMetadata.hasDescriptiveContent
+                    ? metadata.replacingDescriptiveFields(from: xmpMetadata)
+                    : metadata.merged(preferring: xmpMetadata)
             }
             return metadata
         } catch {

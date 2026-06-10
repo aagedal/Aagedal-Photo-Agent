@@ -304,6 +304,73 @@ struct MergedTests {
     }
 }
 
+// MARK: - descriptive record (Photo Mechanic semantics)
+
+@Suite("IPTCMetadata descriptive record")
+struct DescriptiveRecordTests {
+
+    @Test("hasDescriptiveContent is false for empty, GPS-only, rating-only, and CRS-only metadata")
+    func noDescriptiveContent() {
+        #expect(!IPTCMetadata().hasDescriptiveContent)
+        #expect(!IPTCMetadata(latitude: 59.9, longitude: 10.7).hasDescriptiveContent)
+        #expect(!IPTCMetadata(rating: 5).hasDescriptiveContent)
+        var crs = CameraRawSettings()
+        crs.exposure2012 = 0.5
+        var crsOnly = IPTCMetadata()
+        crsOnly.cameraRaw = crs
+        #expect(!crsOnly.hasDescriptiveContent)
+    }
+
+    @Test("hasDescriptiveContent is true for any descriptive field")
+    func descriptiveContent() {
+        #expect(IPTCMetadata(title: "T").hasDescriptiveContent)
+        #expect(IPTCMetadata(keywords: ["k"]).hasDescriptiveContent)
+        #expect(IPTCMetadata(personShown: ["P"]).hasDescriptiveContent)
+        #expect(IPTCMetadata(creator: "C").hasDescriptiveContent)
+        #expect(IPTCMetadata(city: "Oslo").hasDescriptiveContent)
+        #expect(!IPTCMetadata(title: "").hasDescriptiveContent)
+    }
+
+    @Test("replacingDescriptiveFields: a field absent from the record stays cleared")
+    func clearsStick() {
+        let embedded = IPTCMetadata(title: "Old title",
+                                    description: "Old caption",
+                                    keywords: ["old1", "old2"],
+                                    creator: "Old creator")
+        // The record keeps the creator but the user cleared title/caption/keywords.
+        let record = IPTCMetadata(creator: "Old creator")
+        let result = embedded.replacingDescriptiveFields(from: record)
+        #expect(result.title == nil)
+        #expect(result.description == nil)
+        #expect(result.keywords.isEmpty)
+        #expect(result.creator == "Old creator")
+    }
+
+    @Test("replacingDescriptiveFields keeps GPS, rating, and label additive")
+    func nonDescriptiveStaysAdditive() {
+        let embedded = IPTCMetadata(latitude: 59.9, longitude: 10.7, rating: 3)
+        let record = IPTCMetadata(title: "New title")
+        let result = embedded.replacingDescriptiveFields(from: record)
+        #expect(result.title == "New title")
+        #expect(result.rating == 3)
+        #expect(result.latitude == 59.9)
+        #expect(result.longitude == 10.7)
+
+        let recordWithRating = IPTCMetadata(title: "T", rating: 5)
+        #expect(embedded.replacingDescriptiveFields(from: recordWithRating).rating == 5)
+    }
+
+    @Test("replacingDescriptiveFields differs from merged for cleared fields")
+    func contrastWithMerged() {
+        let embedded = IPTCMetadata(title: "Resurrected?")
+        let record = IPTCMetadata(keywords: ["kept"])
+        // merged() lets the embedded title show through the record's empty field…
+        #expect(embedded.merged(preferring: record).title == "Resurrected?")
+        // …the record read does not: the clear sticks.
+        #expect(embedded.replacingDescriptiveFields(from: record).title == nil)
+    }
+}
+
 // MARK: - Codable
 
 @Suite("IPTCMetadata Codable")
@@ -698,10 +765,10 @@ struct MetadataWriteModePresetTests {
         }
     }
 
-    @Test("Professional: sidecar for RAW/C2PA, dual-write for plain files")
+    @Test("Professional: sidecar for RAW/C2PA, embed for plain files (Photo Mechanic)")
     func professional() {
         withPreset(.professional) {
-            #expect(MetadataWriteMode.current(forC2PA: false, isRaw: false) == .writeToFileAndXMPSidecar)
+            #expect(MetadataWriteMode.current(forC2PA: false, isRaw: false) == .writeToFile)
             #expect(MetadataWriteMode.current(forC2PA: true, isRaw: false) == .writeToXMPSidecar)
             #expect(MetadataWriteMode.current(forC2PA: false, isRaw: true) == .writeToXMPSidecar)
             #expect(MetadataWriteMode.current(forC2PA: true, isRaw: true) == .writeToXMPSidecar)

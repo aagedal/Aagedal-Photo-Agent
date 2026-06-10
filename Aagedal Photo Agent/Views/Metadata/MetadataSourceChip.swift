@@ -35,6 +35,21 @@ enum MetadataDestination: Equatable, Sendable {
         case .mixed: return "Mixed"
         }
     }
+
+    /// Whether a write to `self` also updates the given read surface — i.e. after
+    /// saving, re-reading from `reading` reflects the edit. Drives the panel's
+    /// "sources differ" warning: only warn when the next write leaves the surface
+    /// being read untouched.
+    func covers(_ reading: MetadataDestination) -> Bool {
+        switch self {
+        case .embeddedAndSidecar:
+            return reading == .embedded || reading == .sidecar || reading == .embeddedAndSidecar
+        case .embedded, .sidecar:
+            return reading == self
+        case .askedAtSave, .mixed:
+            return false
+        }
+    }
 }
 
 extension MetadataReferenceSource {

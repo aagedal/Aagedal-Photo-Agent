@@ -14,8 +14,6 @@ nonisolated enum UserDefaultsKeys {
     static let metadataWriteModeC2PA = "metadataWriteModeC2PA"
     /// Custom-preset RAW write mode (RAW files, any C2PA status).
     static let metadataWriteModeRaw = "metadataWriteModeRaw"
-    static let metadataPreferXMPSidecar = "metadataPreferXMPSidecar"
-    static let metadataAskOnMultipleSources = "metadataAskOnMultipleSources"
 
     // MARK: - Face Recognition
     static let faceCleanupPolicy = "faceCleanupPolicy"

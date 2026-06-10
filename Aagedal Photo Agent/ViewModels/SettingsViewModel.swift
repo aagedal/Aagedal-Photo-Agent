@@ -118,14 +118,6 @@ final class SettingsViewModel {
         didSet { UserDefaults.standard.set(metadataWriteModeRaw.rawValue, forKey: UserDefaultsKeys.metadataWriteModeRaw) }
     }
 
-    var preferXMPSidecar: Bool {
-        didSet { UserDefaults.standard.set(preferXMPSidecar, forKey: UserDefaultsKeys.metadataPreferXMPSidecar) }
-    }
-
-    var askOnMultipleMetadataSources: Bool {
-        didSet { UserDefaults.standard.set(askOnMultipleMetadataSources, forKey: UserDefaultsKeys.metadataAskOnMultipleSources) }
-    }
-
     var addJobIdToKeywords: Bool {
         didSet { UserDefaults.standard.set(addJobIdToKeywords, forKey: UserDefaultsKeys.addJobIdToKeywords) }
     }
@@ -528,12 +520,6 @@ final class SettingsViewModel {
             let c2paMode = MetadataWriteMode(rawValue: c2paRaw) ?? .defaultC2PA
             self.metadataWriteModeC2PA = c2paMode == .writeToFile ? .writeToXMPSidecar : c2paMode
         }
-
-        let preferXmpStored = UserDefaults.standard.object(forKey: UserDefaultsKeys.metadataPreferXMPSidecar) as? Bool
-        self.preferXMPSidecar = preferXmpStored ?? true
-
-        let askOnMultipleSourcesStored = UserDefaults.standard.object(forKey: UserDefaultsKeys.metadataAskOnMultipleSources) as? Bool
-        self.askOnMultipleMetadataSources = askOnMultipleSourcesStored ?? false
 
         self.addJobIdToKeywords = UserDefaults.standard.bool(forKey: UserDefaultsKeys.addJobIdToKeywords)
 

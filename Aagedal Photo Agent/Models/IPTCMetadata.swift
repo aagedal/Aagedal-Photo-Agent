@@ -414,6 +414,75 @@ extension IPTCMetadata {
             || event != other.event
     }
 
+    /// Whether any descriptive (editor-managed) field carries a value. The field set
+    /// mirrors `SidecarReconciliation.descriptiveFieldsDiffer` / `toOverwriteFields()`.
+    /// A sidecar without descriptive content (e.g. develop-settings-only `.xmp` written
+    /// by `saveCameraRawOnly`) is not an IPTC record and must never be treated as one —
+    /// neither authoritatively on read nor as an overwrite source on export.
+    nonisolated var hasDescriptiveContent: Bool {
+        if let title, !title.isEmpty { return true }
+        if let description, !description.isEmpty { return true }
+        if let extendedDescription, !extendedDescription.isEmpty { return true }
+        if !keywords.isEmpty { return true }
+        if !personShown.isEmpty { return true }
+        if digitalSourceType != nil { return true }
+        if let creator, !creator.isEmpty { return true }
+        if let credit, !credit.isEmpty { return true }
+        if let copyright, !copyright.isEmpty { return true }
+        if let jobId, !jobId.isEmpty { return true }
+        if let dateCreated, !dateCreated.isEmpty { return true }
+        if let city, !city.isEmpty { return true }
+        if let country, !country.isEmpty { return true }
+        if let event, !event.isEmpty { return true }
+        return false
+    }
+
+    /// Photo Mechanic-style read of a sidecar record: the record's *descriptive* fields
+    /// replace `self`'s wholesale — a field absent from the record stays cleared rather
+    /// than inheriting the embedded value (unlike `merged(preferring:)`, which skips
+    /// empties). Everything outside the descriptive domain keeps the additive merge:
+    /// GPS, rating, label, capture date, Camera Raw, and orientation come from the
+    /// record only when present.
+    ///
+    /// Only call this when `record.hasDescriptiveContent` — for develop-only sidecars
+    /// use `merged(preferring:)` so embedded descriptive values show through.
+    nonisolated func replacingDescriptiveFields(from record: IPTCMetadata) -> IPTCMetadata {
+        var result = self
+
+        result.title = record.title
+        result.description = record.description
+        result.extendedDescription = record.extendedDescription
+        result.keywords = record.keywords
+        result.personShown = record.personShown
+        result.digitalSourceType = record.digitalSourceType
+        result.creator = record.creator
+        result.credit = record.credit
+        result.copyright = record.copyright
+        result.jobId = record.jobId
+        result.dateCreated = record.dateCreated
+        result.city = record.city
+        result.country = record.country
+        result.event = record.event
+
+        if let value = record.captureDate, !value.isEmpty { result.captureDate = value }
+        if let value = record.latitude { result.latitude = value }
+        if let value = record.longitude { result.longitude = value }
+        if let value = record.rating { result.rating = value }
+        if let value = record.label, !value.isEmpty { result.label = value }
+        if let recordCRS = record.cameraRaw, !recordCRS.isEmpty {
+            if let existingCRS = result.cameraRaw {
+                result.cameraRaw = existingCRS.merged(preferring: recordCRS)
+            } else {
+                result.cameraRaw = recordCRS
+            }
+        }
+        if let recordOrientation = record.exifOrientation {
+            result.exifOrientation = recordOrientation
+        }
+
+        return result
+    }
+
     func merged(preferring override: IPTCMetadata) -> IPTCMetadata {
         var result = self
 

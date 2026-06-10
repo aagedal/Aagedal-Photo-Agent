@@ -139,18 +139,11 @@ final class MetadataViewModel {
         }
     }
 
-    private var prefersXMPSidecar: Bool {
-        let stored = UserDefaults.standard.object(forKey: UserDefaultsKeys.metadataPreferXMPSidecar) as? Bool
-        return stored ?? true
-    }
-
-    private var shouldAskOnMultipleSources: Bool {
-        UserDefaults.standard.bool(forKey: UserDefaultsKeys.metadataAskOnMultipleSources)
-    }
-
+    /// PM record semantics: when a sidecar exists it is the metadata record, so it is
+    /// always the default reference (the per-image reading chip lets the user inspect
+    /// embedded values; a stale verdict overrides this to .embedded at load).
     private func defaultReferenceSource(hasXmp: Bool) -> MetadataReferenceSource {
-        if prefersXMPSidecar, hasXmp { return .xmp }
-        return .embedded
+        hasXmp ? .xmp : .embedded
     }
 
     private func referenceMetadata(
@@ -179,7 +172,14 @@ final class MetadataViewModel {
             return embedded
         case .xmp:
             if let embedded, let xmp {
-                var merged = embedded.merged(preferring: xmp)
+                // Photo Mechanic semantics: a sidecar with descriptive content IS the
+                // IPTC record — take its descriptive fields wholesale so clears stick
+                // instead of resurrecting embedded values through empty fields. A
+                // develop-only sidecar (no descriptive content) is not a record;
+                // overlay it additively so embedded descriptive values show through.
+                var merged = xmp.hasDescriptiveContent
+                    ? embedded.replacingDescriptiveFields(from: xmp)
+                    : embedded.merged(preferring: xmp)
                 // RAW: XMP sidecar is authoritative for CRS — replace, don't merge,
                 // to avoid stale embedded values leaking through nil sidecar fields
                 // (e.g. Adobe omitting Temperature even with WhiteBalance="Custom").
@@ -222,7 +222,10 @@ final class MetadataViewModel {
         let developDest: MetadataDestination = isRaw ? .sidecar : .embedded
         let iptc: MetadataDestination
         switch MetadataWriteMode.current(forC2PA: isC2PA, isRaw: isRaw) {
-        case .writeToFile: iptc = .embedded
+        case .writeToFile:
+            // PM-style embed: the file is the record, but an existing .xmp is
+            // mirrored on every save — the write genuinely lands on both surfaces.
+            iptc = XMPSidecarService().sidecarExists(for: url) ? .embeddedAndSidecar : .embedded
         case .writeToXMPSidecar: iptc = .sidecar
         case .historyOnly: iptc = .sidecar
         case .writeToFileAndXMPSidecar: iptc = .embeddedAndSidecar
@@ -235,7 +238,7 @@ final class MetadataViewModel {
         return values.allSatisfy { $0 == first } ? first : .mixed
     }
 
-    private func loadXMPMetadataIfAllowed(for imageURL: URL) -> IPTCMetadata? {
+    private func loadXMPMetadata(for imageURL: URL) -> IPTCMetadata? {
         xmpSidecarService.loadSidecar(for: imageURL)
     }
 
@@ -299,7 +302,7 @@ final class MetadataViewModel {
                     let exifMs = loadStart.elapsedMilliseconds()
                     self.perfLog.info("[MetadataVM] metadata read returned — \(exifMs)ms for \(imageURL.lastPathComponent, privacy: .public)")
                     guard !Task.isCancelled else { return }
-                    let xmpMeta = self.loadXMPMetadataIfAllowed(for: imageURL)
+                    let xmpMeta = self.loadXMPMetadata(for: imageURL)
                     // Reconcile embedded vs sidecar: the sidecar is master unless the image
                     // file was modified more recently and they disagree (e.g. Adobe Bridge
                     // wrote into the file after the sidecar), in which case the file is the
@@ -343,20 +346,14 @@ final class MetadataViewModel {
                     self.originalImageMetadata = baseMeta
 
                     // Build the per-field embedded-vs-sidecar comparison. Always populated
-                    // (so the panel banner can offer "Compare…") when the two differ. We no
-                    // longer auto-present the sheet on a stale conflict — that fired on nearly
-                    // every image (e.g. Professional mode writes partial sidecars that lack
-                    // Creator/Date, so file-newer-than-sidecar trips constantly). The panel's
-                    // comparisonBanner now surfaces both the stale warning and the diff count,
-                    // and opens the sheet on demand. Only the explicit opt-in setting
-                    // ("Ask when multiple metadata sources exist", default off) auto-presents.
+                    // (so the panel banner can offer "Compare…") when the two differ, but
+                    // never auto-presented — under PM record semantics the sidecar simply IS
+                    // the record when it has descriptive content, and embedded retaining
+                    // older values is expected, not a conflict. The comparisonBanner
+                    // surfaces the stale warning and diff count; the sheet opens on demand.
                     if let xmp = xmpMeta {
-                        let diffs = MetadataComparison.differences(embedded: embedded, sidecar: xmp)
-                        self.metadataComparison = diffs
+                        self.metadataComparison = MetadataComparison.differences(embedded: embedded, sidecar: xmp)
                         self.comparisonSidecarIsStale = sidecarIsStale
-                        if !diffs.isEmpty, self.shouldAskOnMultipleSources {
-                            self.showMetadataComparison = true
-                        }
                     } else {
                         self.metadataComparison = []
                         self.comparisonSidecarIsStale = false
@@ -467,9 +464,13 @@ final class MetadataViewModel {
 
             for image in images {
                 guard var meta = batchResults[image.url] else { continue }
-                if prefersXMPSidecar,
-                   let xmpMeta = loadXMPMetadataIfAllowed(for: image.url) {
-                    meta = meta.merged(preferring: xmpMeta)
+                if let xmpMeta = loadXMPMetadata(for: image.url) {
+                    // Same record semantics as the single-image reference read: a
+                    // descriptive sidecar IS the IPTC record (clears stick); a
+                    // develop-only sidecar is overlaid additively.
+                    meta = xmpMeta.hasDescriptiveContent
+                        ? meta.replacingDescriptiveFields(from: xmpMeta)
+                        : meta.merged(preferring: xmpMeta)
                 }
                 allMetadata.append(meta)
             }
@@ -710,10 +711,12 @@ final class MetadataViewModel {
         markChanged()
     }
 
+    /// Writes the editing buffer to the destination the mode dictates. A file-writing
+    /// mode writes into C2PA files without ceremony — only the Simple preset resolves
+    /// C2PA to `.writeToFile`, and Simple deliberately ignores content credentials
+    /// (Professional and Custom route C2PA to sidecar-only modes upstream).
     func commitEdits(
         mode: MetadataWriteMode,
-        hasC2PA: Bool,
-        allowC2PAOverwrite: Bool = false,
         onComplete: (() -> Void)? = nil
     ) {
         switch mode {
@@ -723,12 +726,6 @@ final class MetadataViewModel {
         case .writeToXMPSidecar:
             writeXMPSidecarAndPreserveHistory(onComplete: onComplete)
         case .writeToFile, .writeToFileAndXMPSidecar:
-            if hasC2PA && !allowC2PAOverwrite {
-                saveToSidecar()
-                saveError = "C2PA-protected image. Changes were saved to history only."
-                onComplete?()
-                return
-            }
             writeMetadataAndPreserveHistory(alsoWriteXMPSidecar: mode.writesXMPSidecar, onComplete: onComplete)
         }
     }
@@ -846,6 +843,8 @@ final class MetadataViewModel {
                     }
                 }
 
+                await self.mirrorEmbeddedStateToExistingSidecars(for: urls)
+
                 if Set(self.selectedURLs) == selectionSnapshot {
                     self.metadata = edited
                     self.hasChanges = false
@@ -910,6 +909,37 @@ final class MetadataViewModel {
         }
 
         return (addTags, removeTags)
+    }
+
+    /// PM-style writeToFile invariant: an `.xmp` already on disk must mirror the file,
+    /// or its stale descriptive values shadow the freshly embedded ones on read and
+    /// export (the sidecar is the record once it has descriptive content). Batch writes
+    /// don't track per-file post-state, so read it back from each file that has a
+    /// sidecar. The sidecar's Camera Raw settings and orientation are preserved —
+    /// develop edits (RAW especially) live in the sidecar, not the embedded read-back.
+    private func mirrorEmbeddedStateToExistingSidecars(for urls: [URL]) async {
+        let sidecarURLs = urls.filter { xmpSidecarService.sidecarExists(for: $0) }
+        guard !sidecarURLs.isEmpty else { return }
+        guard let postWrite = try? await readService.readBatchFullMetadata(urls: sidecarURLs) else {
+            logger.error("Sidecar mirror: post-write metadata read-back failed; existing .xmp sidecars left untouched")
+            return
+        }
+        for url in sidecarURLs {
+            guard var record = postWrite[url] else { continue }
+            if let existingSidecar = xmpSidecarService.loadSidecar(for: url) {
+                if let crs = existingSidecar.cameraRaw, !crs.isEmpty {
+                    record.cameraRaw = crs
+                }
+                if record.exifOrientation == nil {
+                    record.exifOrientation = existingSidecar.exifOrientation
+                }
+            }
+            do {
+                try xmpSidecarService.saveSidecar(metadata: record, for: url)
+            } catch {
+                logger.error("Sidecar mirror failed for \(url.lastPathComponent): \(error.localizedDescription)")
+            }
+        }
     }
 
     private func writeXMPSidecar() {
@@ -1198,11 +1228,19 @@ final class MetadataViewModel {
                     masks: edited.cameraRaw?.localAdjustments
                 )
                 try await writeEngine.writeFields(fields, to: [imageURL], structuredData: structuredData)
-                // Professional preset: also keep a matching .xmp sidecar alongside the file.
-                if alsoWriteXMPSidecar {
+                var sidecarMirrored = false
+                if alsoWriteXMPSidecar || xmpSidecarService.sidecarExists(for: imageURL) {
+                    // Dual-write keeps a matching full .xmp record. In PM-style
+                    // writeToFile mode the file is the record, but any .xmp already on
+                    // disk must mirror it — otherwise its stale descriptive values (or a
+                    // develop-sync mtime bump) shadow the file on read and export.
                     try xmpSidecarService.saveSidecar(metadata: edited, for: imageURL)
+                    sidecarMirrored = true
+                } else {
+                    // No sidecar yet: keep develop settings ACR-readable without
+                    // creating a descriptive IPTC record next to an embedded-mode file.
+                    self.syncCameraRawToXMPSidecar(for: imageURL, metadata: edited)
                 }
-                self.syncCameraRawToXMPSidecar(for: imageURL, metadata: edited)
 
                 let now = Date()
                 let history = buildHistory(
@@ -1228,6 +1266,9 @@ final class MetadataViewModel {
                     self.metadata = edited
                     self.originalImageMetadata = edited
                     self.embeddedMetadata = edited
+                    if sidecarMirrored {
+                        self.xmpMetadata = edited
+                    }
                     self.hasChanges = false
                 }
             } catch {
@@ -1482,18 +1523,13 @@ final class MetadataViewModel {
             return .writtenToXMPSidecar
 
         case .writeToFile, .writeToFileAndXMPSidecar:
-            if image.hasC2PA {
-                // C2PA-protected: save to sidecar only (same safety guard as commitEdits)
-                let sidecar = buildSidecar(pendingChanges: true, historyNote: "Saved to sidecar (C2PA protected)")
-                try sidecarService.saveSidecar(sidecar, for: url, in: folder)
-                return .savedToHistory
-            }
-
             if !fields.isEmpty {
                 try await writeEngine.writeFields(fields, to: [url])
             }
-            // Professional preset: also keep a matching .xmp sidecar alongside the file.
-            if mode.writesXMPSidecar {
+            // Dual-write keeps a matching full .xmp record. In PM-style writeToFile
+            // mode any existing .xmp must mirror the file (full resolved record), or
+            // its stale values shadow the freshly embedded ones on read and export.
+            if mode.writesXMPSidecar || xmpSidecarService.sidecarExists(for: url) {
                 try xmpSidecarService.saveSidecar(metadata: resolved, for: url)
             }
             let note = mode.writesXMPSidecar ? "Written to image file + XMP sidecar" : "Written to image file"
@@ -1583,12 +1619,12 @@ final class MetadataViewModel {
                     // dictates and reconciles editing state itself, so this URL is
                     // not added to updatedURLs / refreshed again below.
                     let mode = MetadataWriteMode.current(forC2PA: image.hasC2PA, isRaw: SupportedImageFormats.isRaw(url: url))
-                    self.commitEdits(mode: mode, hasC2PA: image.hasC2PA)
+                    self.commitEdits(mode: mode)
                     switch mode {
                     case .writeToXMPSidecar:
                         writtenToXMP += 1
                     case .writeToFile, .writeToFileAndXMPSidecar:
-                        if image.hasC2PA { savedToHistory += 1 } else { writtenToFile += 1 }
+                        writtenToFile += 1
                     case .historyOnly:
                         savedToHistory += 1
                     }
@@ -1612,7 +1648,7 @@ final class MetadataViewModel {
             do {
                 // Load XMP sidecar if policy allows, matching the normal
                 // metadata loading path that merges embedded + XMP
-                let xmpMeta = self.loadXMPMetadataIfAllowed(for: url)
+                let xmpMeta = self.loadXMPMetadata(for: url)
                 let refSource = defaultReferenceSource(hasXmp: xmpMeta != nil)
                 let baseMeta = referenceMetadata(for: refSource, embedded: embedded, xmp: xmpMeta, imageURL: url) ?? embedded
 
@@ -1715,7 +1751,7 @@ final class MetadataViewModel {
 
         do {
             let (embedded, conflict) = try await readService.readFullMetadataWithConflictCheck(url: url)
-            let xmpMeta = loadXMPMetadataIfAllowed(for: url)
+            let xmpMeta = loadXMPMetadata(for: url)
             // Preserve the user's current reference source selection after processing
             let refSource: MetadataReferenceSource
             if metadataReferenceSource == .xmp, xmpMeta == nil {

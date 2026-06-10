@@ -3,11 +3,13 @@ import Foundation
 /// Top-level metadata-write preset shown as a single picker in Settings. Resolves down to a
 /// concrete `MetadataWriteMode` per file (via `MetadataWriteMode.current(forC2PA:isRaw:)`).
 enum MetadataWritePreset: String, CaseIterable, Identifiable, Sendable {
-    /// Always write metadata directly into the image file, for every file — including
-    /// C2PA (subject to the usual overwrite warning) and RAW (best-effort embed).
+    /// Always write metadata directly into the image file, for every file. Simple
+    /// deliberately ignores C2PA: the file is written without warnings even though
+    /// that invalidates content credentials. RAW gets a best-effort embed.
     case simple
-    /// Sidecar for RAW and C2PA files; write to the image file *and* a sidecar for
-    /// non-RAW non-C2PA files. Matches a Photo Mechanic-style professional workflow.
+    /// Mirrors Photo Mechanic: sidecar for RAW files (and C2PA, which we treat like RAW
+    /// because writing into the file would invalidate the credential); embed directly
+    /// into the image file for everything else, including JPEG.
     case professional
     /// Use the per-category pickers below (RAW / C2PA / non-C2PA).
     case custom
@@ -25,9 +27,9 @@ enum MetadataWritePreset: String, CaseIterable, Identifiable, Sendable {
     var summary: String {
         switch self {
         case .simple:
-            return "Always write metadata directly into the image file."
+            return "Always write metadata directly into the image file — including C2PA-protected files."
         case .professional:
-            return "Sidecar for RAW and C2PA files. Image file + sidecar for everything else."
+            return "Sidecar for RAW and C2PA files. Write into the image file for everything else, like Photo Mechanic."
         case .custom:
             return "Choose where each kind of file is written, below."
         }
@@ -43,8 +45,8 @@ enum MetadataWriteMode: String, CaseIterable, Identifiable, Sendable {
     case historyOnly = "historyOnly"
     case writeToFile = "writeToFile"
     case writeToXMPSidecar = "writeToXMPSidecar"
-    /// Write embedded metadata into the image file *and* an `.xmp` sidecar (the
-    /// "Professional" preset's choice for non-RAW non-C2PA files).
+    /// Write embedded metadata into the image file *and* an `.xmp` sidecar
+    /// (available via the Custom preset's per-category pickers).
     case writeToFileAndXMPSidecar = "writeToFileAndXMPSidecar"
 
     var id: String { rawValue }
@@ -114,12 +116,16 @@ enum MetadataWriteMode: String, CaseIterable, Identifiable, Sendable {
     static func current(forC2PA: Bool, isRaw: Bool) -> MetadataWriteMode {
         switch MetadataWritePreset.current {
         case .simple:
-            // Literal: always embed, for every file (C2PA goes through the usual overwrite
-            // warning at write time; RAW is a best-effort embed).
+            // Literal: always embed, for every file. C2PA is ignored — the write
+            // proceeds without warnings (invalidating the credential is accepted);
+            // RAW is a best-effort embed.
             return .writeToFile
         case .professional:
+            // Photo Mechanic semantics: RAW gets a sidecar; everything else (incl. JPEG)
+            // is embedded directly. C2PA is the exception — treated like RAW so the
+            // credential survives.
             if isRaw || forC2PA { return .writeToXMPSidecar }
-            return .writeToFileAndXMPSidecar
+            return .writeToFile
         case .custom:
             if isRaw { return customMode(key: UserDefaultsKeys.metadataWriteModeRaw, default: .defaultRaw) }
             if forC2PA { return customC2PAMode() }

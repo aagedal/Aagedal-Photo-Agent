@@ -38,8 +38,6 @@ final class PreferencesSyncService {
         UserDefaultsKeys.metadataWriteModeNonC2PA,
         UserDefaultsKeys.metadataWriteModeC2PA,
         UserDefaultsKeys.metadataWriteModeRaw,
-        UserDefaultsKeys.metadataPreferXMPSidecar,
-        UserDefaultsKeys.metadataAskOnMultipleSources,
         UserDefaultsKeys.multiSelectKeywordsMode,
         UserDefaultsKeys.multiSelectPersonShownMode,
         UserDefaultsKeys.addJobIdToKeywords,

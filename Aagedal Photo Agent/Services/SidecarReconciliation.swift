@@ -30,6 +30,12 @@ nonisolated enum SidecarReconciliation {
         embedded: IPTCMetadata?,
         sidecar: IPTCMetadata
     ) -> Verdict {
+        // A develop-settings-only sidecar (no descriptive content, e.g. written by
+        // saveCameraRawOnly) is not an IPTC record — there is nothing to reconcile
+        // and it must never be flagged stale against embedded descriptive values.
+        guard sidecar.hasDescriptiveContent else {
+            return .sidecarMaster
+        }
         // No embedded baseline, or the two agree → nothing to reconcile; sidecar stands.
         guard let embedded, descriptiveFieldsDiffer(embedded, sidecar) else {
             return .sidecarMaster
