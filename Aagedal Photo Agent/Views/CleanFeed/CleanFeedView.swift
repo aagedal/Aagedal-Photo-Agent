@@ -62,8 +62,11 @@ struct CleanFeedContentView: View {
             let edited: CIImage? = await Task.detached(priority: .userInitiated) {
                 // Base image (display-oriented as decoded by the cache loaders).
                 let base: CIImage?
+                var isRawDecode = false
                 if FullScreenImageCache.isRawFile(url) {
-                    base = FullScreenImageCache.loadRAWPreview(from: url, maxPixelSize: maxPixelSize, draftMode: true, isHDR: isHDR)
+                    let rawPreview = FullScreenImageCache.loadRAWPreview(from: url, maxPixelSize: maxPixelSize, draftMode: true)
+                    isRawDecode = rawPreview != nil
+                    base = rawPreview
                         ?? FullScreenImageCache.extractEmbeddedPreview(from: url).map { CIImage(cgImage: $0) }
                 } else {
                     base = FullScreenImageCache.loadHDRPreview(from: url, maxPixelSize: maxPixelSize)
@@ -81,9 +84,17 @@ struct CleanFeedContentView: View {
                 }()
 
                 var processed = base
-                if let settings {
+                var effectiveSettings = settings
+                if isRawDecode {
+                    // Flat RAW decode carries full EDR headroom — mark it so the SDR
+                    // output tonemap applies when HDR edit mode is off (even unedited).
+                    var s = effectiveSettings ?? CameraRawSettings()
+                    s.sourceHasHDRHeadroom = true
+                    effectiveSettings = s
+                }
+                if let effectiveSettings {
                     processed = CameraRawApproximation.applyWithCrop(
-                        to: base, settings: settings, exifOrientation: fileOrientation
+                        to: base, settings: effectiveSettings, exifOrientation: fileOrientation
                     )
                 }
                 let correction = ImageFile.orientationCorrection(from: fileOrientation, to: exifOrientation)

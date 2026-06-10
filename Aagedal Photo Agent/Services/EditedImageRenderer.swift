@@ -11,18 +11,24 @@ nonisolated private let editedRendererLog = Logger(
 
 nonisolated enum EditedImageRenderer {
 
-    private static func loadAndProcess(from sourceURL: URL, cameraRaw: CameraRawSettings?, isHDR: Bool) throws -> CIImage {
+    private static func loadAndProcess(from sourceURL: URL, cameraRaw: CameraRawSettings?) throws -> CIImage {
         let input: CIImage
         var effectiveSettings = cameraRaw
 
         let rawExtensions: Set<String> = ["raw", "cr2", "cr3", "nef", "nrw", "arw", "raf", "dng", "rw2", "orf", "pef", "srw"]
         if rawExtensions.contains(sourceURL.pathExtension.lowercased()) {
-            // Full-quality CIRAWFilter decode for export (no draft mode)
-            if let rawResult = FullScreenImageCache.loadRAWImage(from: sourceURL, draftMode: false, isHDR: isHDR) {
+            // Full-quality CIRAWFilter decode for export (no draft mode). Always decodes
+            // with full EDR headroom; SDR output is rolled off by the tone pipeline.
+            if let rawResult = FullScreenImageCache.loadRAWImage(from: sourceURL, draftMode: false) {
                 input = rawResult.image
-                // Propagate as-shot WB so renderOffscreen uses the correct reference
-                effectiveSettings?.asShotNeutralTemperature = Double(rawResult.neutralTemperature)
-                effectiveSettings?.asShotNeutralTint = Double(rawResult.neutralTint)
+                // Synthesize settings for unedited RAWs so the SDR output tonemap still
+                // applies, then propagate as-shot WB so renderOffscreen uses the correct
+                // reference.
+                var settings = effectiveSettings ?? CameraRawSettings()
+                settings.asShotNeutralTemperature = Double(rawResult.neutralTemperature)
+                settings.asShotNeutralTint = Double(rawResult.neutralTint)
+                settings.sourceHasHDRHeadroom = true
+                effectiveSettings = settings
             } else {
                 // Fallback to generic CIImage for unsupported RAW formats
                 guard let ciImage = CIImage(contentsOf: sourceURL, options: [
@@ -64,7 +70,7 @@ nonisolated enum EditedImageRenderer {
     /// `metadataCopier` is required to populate IPTC/XMP/EXIF on the rendered file.
     @discardableResult
     static func render(from sourceURL: URL, cameraRaw: CameraRawSettings?, isHDR: Bool, outputFolder: URL, metadataCopier: MetadataCopier? = nil) async throws -> URL {
-        let output = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw, isHDR: isHDR)
+        let output = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw)
 
         let destURL: URL
         if isHDR {
@@ -391,7 +397,11 @@ nonisolated enum EditedImageRenderer {
     // MARK: - Legacy API
 
     static func renderJPEG(from sourceURL: URL, cameraRaw: CameraRawSettings?, outputFolder: URL, metadataCopier: MetadataCopier? = nil) async throws {
-        let output = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw, isHDR: false)
+        // JPEG output is always SDR — force SDR render mode so the tone pipeline
+        // rolls HDR headroom off into display range instead of clipping it.
+        var sdrSettings = cameraRaw
+        sdrSettings?.hdrEditMode = 0
+        let output = try loadAndProcess(from: sourceURL, cameraRaw: sdrSettings)
         let gamut = TargetColorGamut(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportColorGamutSDR) ?? "") ?? .sRGB
         let colorSpace = gamut.sdrColorSpace
         let quality = UserDefaults.standard.object(forKey: UserDefaultsKeys.exportQualitySDR) as? Double ?? 0.92
@@ -417,7 +427,10 @@ nonisolated enum EditedImageRenderer {
 
     @discardableResult
     static func renderHDR(from sourceURL: URL, cameraRaw: CameraRawSettings?, outputFolder: URL) async throws -> URL {
-        let output = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw, isHDR: true)
+        // Force HDR render mode so headroom passes through to the HDR encode.
+        var hdrSettings = cameraRaw ?? CameraRawSettings()
+        hdrSettings.hdrEditMode = 1
+        let output = try loadAndProcess(from: sourceURL, cameraRaw: hdrSettings)
         return try await renderHDRFormat(output, sourceURL: sourceURL, outputFolder: outputFolder)
     }
 
@@ -437,7 +450,11 @@ nonisolated enum EditedImageRenderer {
     /// Returns the output URL. Handles name collisions by appending a number.
     @discardableResult
     static func saveAs(from sourceURL: URL, cameraRaw: CameraRawSettings?, format: SaveAsFormat, destinationFolder: URL? = nil, metadataCopier: MetadataCopier? = nil) async throws -> URL {
-        let output = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw, isHDR: false)
+        // Save As always renders SDR (JPEG/PNG) — force SDR render mode so HDR-edited
+        // images tonemap into display range instead of clipping.
+        var sdrSettings = cameraRaw
+        sdrSettings?.hdrEditMode = 0
+        let output = try loadAndProcess(from: sourceURL, cameraRaw: sdrSettings)
         let gamut = TargetColorGamut(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportColorGamutSDR) ?? "") ?? .sRGB
         let colorSpace = gamut.sdrColorSpace
         let ctx = CameraRawApproximation.ciContext

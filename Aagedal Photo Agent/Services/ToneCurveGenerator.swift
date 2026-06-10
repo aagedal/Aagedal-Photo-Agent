@@ -25,6 +25,7 @@ nonisolated struct ToneCurveGenerator: Sendable {
         let highlights = Float(settings?.highlights2012 ?? 0) / 100.0
         let whites = Float(settings?.whites2012 ?? 0) / 100.0
         let isHDR = (settings?.hdrEditMode ?? 0) == 1
+        let tonemapToSDR = !isHDR && (settings?.sourceHasHDRHeadroom == true)
 
         var lut = [Float](repeating: 0, count: lutSize)
 
@@ -137,6 +138,22 @@ nonisolated struct ToneCurveGenerator: Sendable {
                 }
             }
 
+            // 7. SDR output tonemap (scene-referred sources only): RAW files always
+            //    decode with full EDR headroom, so in SDR edit mode the super-white
+            //    scene data must be rolled off into display range here instead of
+            //    being clamped at decode. Calibrated against Apple's own EDR=0 RAW
+            //    tonemap (identity below 0.7 linear, saturating to 1.0 by ~2.0× SDR
+            //    white) so the default rendering matches the previous SDR decode.
+            //    Closed-form monotone cubic: identity slope at the knee, zero slope
+            //    at the 1.6 white point, exactly 1.0 above. Because this runs AFTER
+            //    exposure, pulling exposure down shifts recoverable highlight detail
+            //    below the knee — true highlight recovery in SDR mode.
+            if tonemapToSDR && x > 0.7 {
+                let t = min((x - 0.7) / 0.9, Float(1.0))
+                let u = t - 1.0
+                x = 1.0 + 0.3 * u * u * u
+            }
+
             lut[i] = x
         }
 
@@ -146,6 +163,9 @@ nonisolated struct ToneCurveGenerator: Sendable {
     /// Returns true if no tonal adjustments are active (LUT would be identity).
     static func isIdentity(settings: CameraRawSettings?) -> Bool {
         guard let s = settings else { return true }
+        // Scene-referred source in SDR mode: the LUT is never identity because the
+        // SDR output tonemap must roll super-white data into display range.
+        if s.sourceHasHDRHeadroom == true && (s.hdrEditMode ?? 0) != 1 { return false }
         return (s.exposure2012 == nil || abs(s.exposure2012!) < 0.0001)
             && s.contrast2012 == nil
             && s.highlights2012 == nil

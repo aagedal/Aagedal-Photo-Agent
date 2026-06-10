@@ -151,6 +151,14 @@ nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
     var asShotNeutralTemperature: Double?
     var asShotNeutralTint: Double?
 
+    /// True when the source pixels are a scene-referred RAW decode with highlight data
+    /// above SDR white (RAW files always decode with full EDR headroom). Tells the tone
+    /// pipeline to apply the SDR output tonemap when hdrEditMode is off, so super-white
+    /// detail rolls off smoothly and stays recoverable via Exposure/Highlights.
+    /// Render-time only — set on local copies at decode sites, never persisted; excluded
+    /// from isEmpty, merged(), and paste operations like the as-shot fields above.
+    var sourceHasHDRHeadroom: Bool?
+
     var isEmpty: Bool {
         version == nil
             && processVersion == nil

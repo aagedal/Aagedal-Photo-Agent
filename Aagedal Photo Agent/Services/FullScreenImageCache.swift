@@ -78,6 +78,17 @@ final class FullScreenImageCache: @unchecked Sendable {
         prefetch?.cancel()
     }
 
+    /// Drop only the edited (rendered) cache entries for one URL — the unedited RAW
+    /// decode stays valid because decoding no longer depends on edit state (HDR toggle,
+    /// slider changes only alter the render). Cancels any in-flight prefetch since it
+    /// may be rendering with the old settings.
+    nonisolated func invalidateEditedImage(for url: URL) {
+        editedCache.removeObject(forKey: url as NSURL)
+        editedDisplayPreviewCache.removeObject(forKey: url as NSURL)
+        let prefetch = lock.withLock { prefetchTasks.removeValue(forKey: url) }
+        prefetch?.cancel()
+    }
+
     /// Clear edited caches only (e.g. when edit parameters change globally).
     nonisolated func clearEdited() {
         editedCache.removeAllObjects()
@@ -230,10 +241,11 @@ final class FullScreenImageCache: @unchecked Sendable {
                         let ciImage: CIImage?
                         if isRAW {
                             // Use CIRAWFilter for flat/neutral decode — get as-shot WB for correct rendering
-                            if let rawResult = Self.loadRAWImage(from: url, draftMode: false, isHDR: settings?.hdrEditMode == 1, maxPixelSize: screenMaxPx) {
+                            if let rawResult = Self.loadRAWImage(from: url, draftMode: false, maxPixelSize: screenMaxPx) {
                                 guard !Task.isCancelled else { return }
                                 settings?.asShotNeutralTemperature = Double(rawResult.neutralTemperature)
                                 settings?.asShotNeutralTint = Double(rawResult.neutralTint)
+                                settings?.sourceHasHDRHeadroom = true
                                 ciImage = Self.downsample(rawResult.image, maxPixelSize: screenMaxPx)
                             } else {
                                 ciImage = nil
@@ -419,8 +431,8 @@ final class FullScreenImageCache: @unchecked Sendable {
     /// Uses flat/neutral decode (no auto-boost) matching EditWorkspaceView's pipeline,
     /// decoding directly at preview scale via CIRAWFilter.scaleFactor. Returns CIImage
     /// for downstream processing.
-    nonisolated static func loadRAWPreview(from url: URL, maxPixelSize: CGFloat, draftMode: Bool = false, isHDR: Bool = false) -> CIImage? {
-        guard let result = loadRAWImage(from: url, draftMode: draftMode, isHDR: isHDR, maxPixelSize: maxPixelSize) else { return nil }
+    nonisolated static func loadRAWPreview(from url: URL, maxPixelSize: CGFloat, draftMode: Bool = false) -> CIImage? {
+        guard let result = loadRAWImage(from: url, draftMode: draftMode, maxPixelSize: maxPixelSize) else { return nil }
         // Final clamp against scaleFactor rounding; a no-op once scaleFactor has shrunk it.
         return downsample(result.image, maxPixelSize: maxPixelSize)
     }
@@ -434,7 +446,6 @@ final class FullScreenImageCache: @unchecked Sendable {
     nonisolated static func loadRAWImage(
         from url: URL,
         draftMode: Bool = false,
-        isHDR: Bool = false,
         maxPixelSize: CGFloat? = nil
     ) -> RAWDecodeResult? {
         guard let rawFilter = CIRAWFilter(imageURL: url) else {
@@ -451,12 +462,14 @@ final class FullScreenImageCache: @unchecked Sendable {
            longestSide > maxPixelSize * 1.5 {
             rawFilter.scaleFactor = Float(maxPixelSize / longestSide)
         }
-        // HDR: preserve highlight detail above SDR white as float values >1.0 so the
-        // pipeline can expand it into HDR headroom. Default 0 = tone-map/clamp to SDR;
-        // 1.0 = "use the most headroom present in the file" (lands ~4× / 800 nits for
-        // typical RAWs); 2.0 = maximum, pushing highlights toward the ~8× / 1600-nit
-        // ceiling to match Adobe Camera Raw's brighter HDR rendering.
-        if isHDR { rawFilter.extendedDynamicRangeAmount = 2.0 }
+        // Always decode scene-referred with maximum EDR headroom: highlight detail
+        // above SDR white survives as float values >1.0. (0 = tone-map/clamp to SDR;
+        // 1.0 = "use the headroom present in the file" ~4×/800 nits; 2.0 = maximum,
+        // toward the ~8×/1600-nit ceiling, matching Adobe Camera Raw's HDR rendering.)
+        // SDR vs HDR is now purely an output decision: SDR mode rolls the headroom off
+        // via ToneCurveGenerator's output tonemap (sourceHasHDRHeadroom), so toggling
+        // HDR never requires a re-decode and SDR keeps real highlight recovery.
+        rawFilter.extendedDynamicRangeAmount = 2.0
         let neutralTemp = rawFilter.neutralTemperature
         let neutralTint = rawFilter.neutralTint
         guard let output = rawFilter.outputImage else {
