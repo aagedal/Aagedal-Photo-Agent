@@ -756,7 +756,7 @@ final class FaceGroupCardView: NSView {
 
     @objc private func faceMenuMoveToNewGroup(_ sender: NSMenuItem) {
         guard let faceID = sender.representedObject as? UUID else { return }
-        viewModel?.ungroupFace(faceID)
+        viewModel?.createNewGroup(withFaces: menuTargetFaceIDs(clicked: faceID))
     }
 
     /// Faces a context-menu action should apply to: the whole selection when the
