@@ -29,6 +29,10 @@ nonisolated struct DetectedFace: Codable, Identifiable {
     let confidence: Float?
     let faceSize: Int?
     let blurScore: Float?
+    /// Apple `VNDetectFaceCaptureQuality` score (0...1): a learned "is this a good capture of a
+    /// face" metric (blur, lighting, occlusion, pose). More reliable than `blurScore` for filtering
+    /// out unusable faces and for picking a group's representative thumbnail.
+    let captureQuality: Float?
 
     /// Clothing/torso features (optional, only in Face+Clothing mode).
     /// Used ONLY for within-folder clustering, never for Known People matching.
@@ -59,6 +63,7 @@ nonisolated struct DetectedFace: Codable, Identifiable {
         confidence: Float? = nil,
         faceSize: Int? = nil,
         blurScore: Float? = nil,
+        captureQuality: Float? = nil,
         clothingFeaturePrintData: Data? = nil,
         clothingRect: CGRect? = nil,
         embeddingMode: FaceRecognitionMode? = nil,
@@ -77,6 +82,7 @@ nonisolated struct DetectedFace: Codable, Identifiable {
         self.confidence = confidence
         self.faceSize = faceSize
         self.blurScore = blurScore
+        self.captureQuality = captureQuality
         self.clothingFeaturePrintData = clothingFeaturePrintData
         self.clothingRect = clothingRect
         self.embeddingMode = embeddingMode

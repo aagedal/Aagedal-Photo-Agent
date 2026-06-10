@@ -245,24 +245,10 @@ final class SettingsViewModel {
         }
     }
 
-    /// Clustering sensitivity threshold for Vision mode. Default: 0.40
+    /// Grouping sensitivity, stored as the cosine-distance clustering threshold.
+    /// This is the single user-facing face-recognition knob. (Key name kept for back-compat.)
     var visionClusteringThreshold: Double {
         didSet { UserDefaults.standard.set(visionClusteringThreshold, forKey: UserDefaultsKeys.visionClusteringThreshold) }
-    }
-
-    /// Clustering sensitivity threshold for Face+Clothing mode. Default: 0.48
-    var faceClothingClusteringThreshold: Double {
-        didSet { UserDefaults.standard.set(faceClothingClusteringThreshold, forKey: UserDefaultsKeys.faceClothingClusteringThreshold) }
-    }
-
-    /// Returns the effective clustering threshold for the current recognition mode
-    var effectiveClusteringThreshold: Double {
-        switch faceRecognitionMode {
-        case .visionFeaturePrint:
-            return visionClusteringThreshold
-        case .faceAndClothing:
-            return faceClothingClusteringThreshold
-        }
     }
 
     /// Minimum detection confidence (0.5 - 0.95). Default: 0.7
@@ -275,50 +261,6 @@ final class SettingsViewModel {
         didSet { UserDefaults.standard.set(faceMinFaceSize, forKey: UserDefaultsKeys.faceMinFaceSize) }
     }
 
-    /// Face recognition mode (vision, arcface, faceClothing). Default: vision
-    var faceRecognitionMode: FaceRecognitionMode {
-        didSet { UserDefaults.standard.set(faceRecognitionMode.rawValue, forKey: UserDefaultsKeys.faceRecognitionMode) }
-    }
-
-    /// Face weight for Face+Clothing mode (0.3 - 0.9). Default: 0.7
-    var faceFaceWeight: Double {
-        didSet {
-            UserDefaults.standard.set(faceFaceWeight, forKey: UserDefaultsKeys.faceFaceWeight)
-        }
-    }
-
-    /// Clothing weight for Face+Clothing mode (auto-calculated as 1 - faceWeight)
-    var faceClothingWeight: Double {
-        return 1.0 - faceFaceWeight
-    }
-
-    /// Clustering algorithm. Default: chineseWhispers (most accurate)
-    var faceClusteringAlgorithm: FaceClusteringAlgorithm {
-        didSet {
-            UserDefaults.standard.set(faceClusteringAlgorithm.rawValue, forKey: UserDefaultsKeys.faceClusteringAlgorithm)
-        }
-    }
-
-    /// Quality gate threshold for quality-gated clustering (0.3 - 0.9). Default: 0.6
-    var faceQualityGateThreshold: Double {
-        didSet {
-            UserDefaults.standard.set(faceQualityGateThreshold, forKey: UserDefaultsKeys.faceQualityGateThreshold)
-        }
-    }
-
-    /// Whether to use quality-weighted edges in Chinese Whispers. Default: true
-    var faceUseQualityWeightedEdges: Bool {
-        didSet {
-            UserDefaults.standard.set(faceUseQualityWeightedEdges, forKey: UserDefaultsKeys.faceUseQualityWeightedEdges)
-        }
-    }
-
-    /// For Face+Clothing mode: allow the second pass to match leftovers to existing groups. Default: false
-    var faceClothingSecondPassAttachToExisting: Bool {
-        didSet {
-            UserDefaults.standard.set(faceClothingSecondPassAttachToExisting, forKey: UserDefaultsKeys.faceClothingSecondPassAttachToExisting)
-        }
-    }
 
     // MARK: - Format & Compression
 
@@ -365,13 +307,6 @@ final class SettingsViewModel {
     /// Custom sub-folder name used when `exportLocationMode == .customSubfolder`. Default: "Exports"
     var exportCustomSubfolderName: String {
         didSet { UserDefaults.standard.set(exportCustomSubfolderName, forKey: UserDefaultsKeys.exportCustomSubfolderName) }
-    }
-
-    /// Known People database mode. Default: off
-    var knownPeopleMode: KnownPeopleMode {
-        didSet {
-            UserDefaults.standard.set(knownPeopleMode.rawValue, forKey: UserDefaultsKeys.knownPeopleMode)
-        }
     }
 
     /// Minimum confidence required for auto-matching known people. Default: 0.60
@@ -608,13 +543,19 @@ final class SettingsViewModel {
         let personShownModeRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.multiSelectPersonShownMode) ?? MultiSelectFieldMode.add.rawValue
         self.multiSelectPersonShownMode = MultiSelectFieldMode(rawValue: personShownModeRaw) ?? .add
 
-        // Face recognition settings with defaults
-        // Mode-specific thresholds with optimized defaults
+        // Face recognition settings (ArcFace cosine-distance space).
+        // The sensitivity moved from Vision-feature-print scale to cosine scale in v2.0; reset any
+        // value stored under the old semantics exactly once.
+        let cosineMigrated = UserDefaults.standard.bool(forKey: UserDefaultsKeys.faceThresholdCosineMigrated)
         let storedVisionThreshold = UserDefaults.standard.object(forKey: UserDefaultsKeys.visionClusteringThreshold) as? Double
-        self.visionClusteringThreshold = storedVisionThreshold ?? 0.90
-
-        let storedFaceClothingThreshold = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceClothingClusteringThreshold) as? Double
-        self.faceClothingClusteringThreshold = storedFaceClothingThreshold ?? 0.48
+        if cosineMigrated, let storedVisionThreshold {
+            self.visionClusteringThreshold = storedVisionThreshold
+        } else {
+            let fresh = Double(FaceRecognitionDefaults.clusteringThreshold)
+            self.visionClusteringThreshold = fresh
+            UserDefaults.standard.set(fresh, forKey: UserDefaultsKeys.visionClusteringThreshold)
+            UserDefaults.standard.set(true, forKey: UserDefaultsKeys.faceThresholdCosineMigrated)
+        }
 
         let storedConfidence = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceMinConfidence) as? Double
         self.faceMinConfidence = storedConfidence ?? 0.7
@@ -622,28 +563,8 @@ final class SettingsViewModel {
         let storedMinSize = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceMinFaceSize) as? Int
         self.faceMinFaceSize = storedMinSize ?? 50
 
-        let storedMode = UserDefaults.standard.string(forKey: UserDefaultsKeys.faceRecognitionMode) ?? "faceClothing"
-        self.faceRecognitionMode = FaceRecognitionMode(rawValue: storedMode) ?? .faceAndClothing
-
-        let storedFaceWeight = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceFaceWeight) as? Double
-        self.faceFaceWeight = storedFaceWeight ?? 0.7
-
-        let storedAlgorithm = UserDefaults.standard.string(forKey: UserDefaultsKeys.faceClusteringAlgorithm) ?? "chineseWhispers"
-        self.faceClusteringAlgorithm = FaceClusteringAlgorithm(rawValue: storedAlgorithm) ?? .chineseWhispers
-
-        let storedQualityGate = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceQualityGateThreshold) as? Double
-        self.faceQualityGateThreshold = storedQualityGate ?? 0.6
-
-        let storedQualityWeighted = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceUseQualityWeightedEdges) as? Bool
-        self.faceUseQualityWeightedEdges = storedQualityWeighted ?? true
-
-        let storedSecondPassAttach = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceClothingSecondPassAttachToExisting) as? Bool
-        self.faceClothingSecondPassAttachToExisting = storedSecondPassAttach ?? false
-
-        let storedKnownPeopleMode = UserDefaults.standard.string(forKey: UserDefaultsKeys.knownPeopleMode) ?? "off"
-        self.knownPeopleMode = KnownPeopleMode(rawValue: storedKnownPeopleMode) ?? .off
         let storedKnownPeopleMinConfidence = UserDefaults.standard.object(forKey: UserDefaultsKeys.knownPeopleMinConfidence) as? Double
-        self.knownPeopleMinConfidence = storedKnownPeopleMinConfidence ?? 0.60
+        self.knownPeopleMinConfidence = storedKnownPeopleMinConfidence ?? Double(FaceRecognitionDefaults.knownPeopleMinConfidence)
 
         // C2PA Signing settings
         self.c2paCertificatePath = UserDefaults.standard.string(forKey: UserDefaultsKeys.c2paCertificatePath) ?? ""

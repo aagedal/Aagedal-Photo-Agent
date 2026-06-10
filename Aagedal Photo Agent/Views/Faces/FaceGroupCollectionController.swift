@@ -223,7 +223,9 @@ final class FaceGroupCollectionController: NSViewController, NSCollectionViewDel
         let groups = viewModel.sortedGroups
         let newGroupIDs = groups.map(\.id)
         let newStates = Dictionary(uniqueKeysWithValues: groups.map { g in
-            (g.id, GroupState(name: g.name, faceCount: g.faceIDs.count, representativeFaceID: g.representativeFaceID))
+            // Use the VISIBLE face count (after the live sharpness filter) so cards reconfigure
+            // when the slider hides/shows faces, not just when the underlying group changes.
+            (g.id, GroupState(name: g.name, faceCount: viewModel.faces(in: g).count, representativeFaceID: g.representativeFaceID))
         })
 
         // Find changed groups (property changes requiring reconfigure)
@@ -263,7 +265,7 @@ final class FaceGroupCollectionController: NSViewController, NSCollectionViewDel
         let width = isUnmatched
             ? collectionView.bounds.width - gridPadding * 2
             : cardWidth(for: collectionView.bounds.width)
-        let faceCount = viewModel.group(byID: groupID)?.faceIDs.count ?? 0
+        let faceCount = viewModel.group(byID: groupID).map { viewModel.faces(in: $0).count } ?? 0
         // Unmatched group is always expanded
         let isExpanded = isUnmatched || expandedGroupIDs.contains(groupID)
         let height = FaceGroupCardView.computeHeight(

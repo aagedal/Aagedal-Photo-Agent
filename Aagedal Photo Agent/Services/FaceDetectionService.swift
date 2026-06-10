@@ -7,72 +7,54 @@ import Accelerate
 
 nonisolated struct FaceDetectionService: Sendable {
 
-    /// Cache for VNFeaturePrintObservation objects during clustering operations.
-    /// Reduces NSKeyedUnarchiver calls from O(N³) to O(N) by deserializing each feature print only once.
+    /// The face-identity embedder. Folder faces and (transitively, via copied face
+    /// embeddings) the Known People gallery all run through this one embedder, so every
+    /// comparison happens in the same embedding space.
+    let embedder: any FaceEmbedder
+
+    nonisolated init(embedder: any FaceEmbedder = CoreMLFaceEmbedder.shared) {
+        self.embedder = embedder
+    }
+
+    /// Cache for decoded face embeddings during clustering operations.
+    /// Reduces `EmbeddingCodec.decode` calls from O(N³) to O(N) by decoding each embedding only once.
     /// Uses NSCache (thread-safe, auto-evicts under memory pressure) instead of Dictionary.
     final class FeaturePrintCache: @unchecked Sendable {
-        private let cache: NSCache<NSUUID, VNFeaturePrintObservation> = {
-            let c = NSCache<NSUUID, VNFeaturePrintObservation>()
-            c.countLimit = 2000
-            c.totalCostLimit = 20 * 1024 * 1024 // 20 MB
+        private final class Entry { let vector: [Float]; init(_ v: [Float]) { self.vector = v } }
+        private let cache: NSCache<NSUUID, Entry> = {
+            let c = NSCache<NSUUID, Entry>()
+            c.countLimit = 4000
             return c
         }()
 
-        func getFeaturePrint(for face: DetectedFace) -> VNFeaturePrintObservation? {
-            let key = face.id as NSUUID
-            if let cached = cache.object(forKey: key) { return cached }
-            guard let fp = try? NSKeyedUnarchiver.unarchivedObject(
-                ofClass: VNFeaturePrintObservation.self,
-                from: face.featurePrintData
-            ) else { return nil }
-            cache.setObject(fp, forKey: key)
-            return fp
+        func getFeaturePrint(for face: DetectedFace) -> [Float]? {
+            getFeaturePrint(for: face.id, data: face.featurePrintData)
         }
 
-        func getFeaturePrint(for faceID: UUID, data: Data) -> VNFeaturePrintObservation? {
+        func getFeaturePrint(for faceID: UUID, data: Data) -> [Float]? {
             let key = faceID as NSUUID
-            if let cached = cache.object(forKey: key) { return cached }
-            guard let fp = try? NSKeyedUnarchiver.unarchivedObject(
-                ofClass: VNFeaturePrintObservation.self,
-                from: data
-            ) else { return nil }
-            cache.setObject(fp, forKey: key)
-            return fp
+            if let cached = cache.object(forKey: key) { return cached.vector }
+            guard let vector = EmbeddingCodec.decode(data) else { return nil }
+            cache.setObject(Entry(vector), forKey: key)
+            return vector
         }
     }
 
-    /// Configuration for face detection quality filtering
+    /// Configuration for face detection quality filtering and clustering.
     struct DetectionConfig: Sendable {
         var minConfidence: Float = 0.7
         var minFaceSize: Int = 50
-        var clusteringThreshold: Float = 0.45
 
-        /// Recognition mode for embedding generation and distance computation
+        /// Maximum cosine distance (0...2) for two faces to be considered the same person.
+        /// Default lives in `FaceRecognitionDefaults`; lower = stricter.
+        var clusteringThreshold: Float = FaceRecognitionDefaults.clusteringThreshold
+
+        /// Minimum face quality score (0...1) to participate in the first clustering pass.
+        var qualityGateThreshold: Float = FaceRecognitionDefaults.qualityGateThreshold
+
+        /// Retained only as stored metadata on `FolderFaceData`/`DetectedFace.embeddingMode`.
+        /// The pipeline always uses the single CoreML face embedder; this is no longer a user choice.
         var recognitionMode: FaceRecognitionMode = .visionFeaturePrint
-
-        /// Weight for face features in Face+Clothing mode (0-1)
-        var faceWeight: Float = 0.7
-
-        /// Weight for clothing features in Face+Clothing mode (0-1)
-        var clothingWeight: Float = 0.3
-
-        /// Clustering algorithm to use for grouping faces
-        var clusteringAlgorithm: FaceClusteringAlgorithm = .chineseWhispers
-
-        /// Number of iterations for Chinese Whispers algorithm
-        var chineseWhispersIterations: Int = 15
-
-        /// Minimum quality score for faces in the first pass of quality-gated clustering
-        var qualityGateThreshold: Float = 0.6
-
-        /// Whether to weight graph edges by face quality in Chinese Whispers
-        var useQualityWeightedEdges: Bool = true
-
-        /// Weight factor for quality in edge calculations (0-1)
-        var qualityEdgeWeight: Float = 0.3
-
-        /// When using Face+Clothing, allow the second pass to match leftovers to existing groups
-        var faceClothingSecondPassAttachToExisting: Bool = false
 
         // MARK: - Sports tagging
         /// When true, the scan also runs jersey-number OCR + colour sampling.
@@ -85,16 +67,9 @@ nonisolated struct FaceDetectionService: Sendable {
         nonisolated init(
             minConfidence: Float = 0.7,
             minFaceSize: Int = 50,
-            clusteringThreshold: Float = 0.45,
+            clusteringThreshold: Float = FaceRecognitionDefaults.clusteringThreshold,
+            qualityGateThreshold: Float = FaceRecognitionDefaults.qualityGateThreshold,
             recognitionMode: FaceRecognitionMode = .visionFeaturePrint,
-            faceWeight: Float = 0.7,
-            clothingWeight: Float = 0.3,
-            clusteringAlgorithm: FaceClusteringAlgorithm = .chineseWhispers,
-            chineseWhispersIterations: Int = 15,
-            qualityGateThreshold: Float = 0.6,
-            useQualityWeightedEdges: Bool = true,
-            qualityEdgeWeight: Float = 0.3,
-            faceClothingSecondPassAttachToExisting: Bool = false,
             sportsModeEnabled: Bool = false,
             sportsOCRConfidenceThreshold: Float = 0.5,
             sportsNumberMinHeightFraction: CGFloat = 0.04
@@ -102,15 +77,8 @@ nonisolated struct FaceDetectionService: Sendable {
             self.minConfidence = minConfidence
             self.minFaceSize = minFaceSize
             self.clusteringThreshold = clusteringThreshold
-            self.recognitionMode = recognitionMode
-            self.faceWeight = faceWeight
-            self.clothingWeight = clothingWeight
-            self.clusteringAlgorithm = clusteringAlgorithm
-            self.chineseWhispersIterations = chineseWhispersIterations
             self.qualityGateThreshold = qualityGateThreshold
-            self.useQualityWeightedEdges = useQualityWeightedEdges
-            self.qualityEdgeWeight = qualityEdgeWeight
-            self.faceClothingSecondPassAttachToExisting = faceClothingSecondPassAttachToExisting
+            self.recognitionMode = recognitionMode
             self.sportsModeEnabled = sportsModeEnabled
             self.sportsOCRConfidenceThreshold = sportsOCRConfidenceThreshold
             self.sportsNumberMinHeightFraction = sportsNumberMinHeightFraction
@@ -127,46 +95,6 @@ nonisolated struct FaceDetectionService: Sendable {
         init(faces: [(face: DetectedFace, thumbnail: Data)], standaloneNumbers: [NumberDetection] = []) {
             self.faces = faces
             self.standaloneNumbers = standaloneNumbers
-        }
-    }
-
-    /// Extended cache that also stores clothing feature prints.
-    /// Uses NSCache (thread-safe, auto-evicts under memory pressure) instead of Dictionary.
-    final class ExtendedFeatureCache: @unchecked Sendable {
-        private let faceFeaturePrints: NSCache<NSUUID, VNFeaturePrintObservation> = {
-            let c = NSCache<NSUUID, VNFeaturePrintObservation>()
-            c.countLimit = 2000
-            c.totalCostLimit = 20 * 1024 * 1024 // 20 MB
-            return c
-        }()
-        private let clothingFeaturePrints: NSCache<NSUUID, VNFeaturePrintObservation> = {
-            let c = NSCache<NSUUID, VNFeaturePrintObservation>()
-            c.countLimit = 2000
-            c.totalCostLimit = 20 * 1024 * 1024 // 20 MB
-            return c
-        }()
-
-        func getFaceFeaturePrint(for face: DetectedFace) -> VNFeaturePrintObservation? {
-            let key = face.id as NSUUID
-            if let cached = faceFeaturePrints.object(forKey: key) { return cached }
-            guard let fp = try? NSKeyedUnarchiver.unarchivedObject(
-                ofClass: VNFeaturePrintObservation.self,
-                from: face.featurePrintData
-            ) else { return nil }
-            faceFeaturePrints.setObject(fp, forKey: key)
-            return fp
-        }
-
-        func getClothingFeaturePrint(for face: DetectedFace) -> VNFeaturePrintObservation? {
-            let key = face.id as NSUUID
-            if let cached = clothingFeaturePrints.object(forKey: key) { return cached }
-            guard let data = face.clothingFeaturePrintData,
-                  let fp = try? NSKeyedUnarchiver.unarchivedObject(
-                      ofClass: VNFeaturePrintObservation.self,
-                      from: data
-                  ) else { return nil }
-            clothingFeaturePrints.setObject(fp, forKey: key)
-            return fp
         }
     }
 
@@ -205,15 +133,23 @@ nonisolated struct FaceDetectionService: Sendable {
             return DetectionResult(faces: [])
         }
 
+        // Apple's learned face-capture-quality per detected face (blur/lighting/pose/occlusion),
+        // reusing the observations we already detected. Index-aligned to faceObservations.
+        let captureQualities = await faceCaptureQualities(for: faceObservations, in: cgImage)
+
         var results: [(face: DetectedFace, thumbnail: Data)] = []
 
-        for observation in faceObservations {
+        for (faceIndex, observation) in faceObservations.enumerated() {
             // Filter by confidence
             guard observation.confidence >= config.minConfidence else { continue }
 
             // Calculate face size in pixels
             let facePixelWidth = Int(observation.boundingBox.width * CGFloat(cgImage.width))
             guard facePixelWidth >= config.minFaceSize else { continue }
+
+            // Capture-quality is stored per face; the too-blurry filter is applied live at display
+            // time (the "Sharpness" slider) rather than dropped here, so it can be tuned without rescanning.
+            let captureQuality = captureQualities[faceIndex]
 
             // Standard bounding box crop for thumbnail and blur score (unchanged from original)
             let expandedRect = expandBoundingBox(observation.boundingBox, by: 0.15, imageSize: imageSize)
@@ -244,7 +180,7 @@ nonisolated struct FaceDetectionService: Sendable {
                     let eyeDy = rightPixel.y - leftPixel.y
                     let interEyeDist = sqrt(eyeDx * eyeDx + eyeDy * eyeDy)
                     if interEyeDist >= 20,
-                       let aligned = createAlignedFaceCrop(from: preCrop, leftEyePixel: leftPixel, rightEyePixel: rightPixel) {
+                       let aligned = createArcFaceAlignedCrop(from: preCrop, leftEyePixel: leftPixel, rightEyePixel: rightPixel) {
                         featurePrintImage = aligned
                     }
                 }
@@ -261,25 +197,14 @@ nonisolated struct FaceDetectionService: Sendable {
             let qualityScore = computeQualityScore(
                 confidence: observation.confidence,
                 faceSize: facePixelWidth,
-                blurScore: blurScore
+                blurScore: blurScore,
+                captureQuality: captureQuality
             )
 
-            // Generate mode-specific embeddings
-            var clothingFeaturePrintData: Data? = nil
-            var clothingRect: CGRect? = nil
-
-            switch config.recognitionMode {
-            case .visionFeaturePrint:
-                // Vision mode: only need the base feature print (already generated)
-                break
-
-            case .faceAndClothing:
-                // Face+Clothing mode: generate torso feature print
-                if let torsoRect = clothingService.estimateTorsoRect(from: observation.boundingBox, imageSize: imageSize) {
-                    clothingRect = torsoRect
-                    clothingFeaturePrintData = try? await clothingService.generateClothingFeaturePrint(for: cgImage, torsoRect: torsoRect)
-                }
-            }
+            // The single CoreML face embedder is identity-discriminative on its own, so
+            // clothing features are no longer used for recognition (only the face embedding).
+            let clothingFeaturePrintData: Data? = nil
+            let clothingRect: CGRect? = nil
 
             let face = DetectedFace(
                 id: UUID(),
@@ -292,6 +217,7 @@ nonisolated struct FaceDetectionService: Sendable {
                 confidence: observation.confidence,
                 faceSize: facePixelWidth,
                 blurScore: blurScore,
+                captureQuality: captureQuality,
                 clothingFeaturePrintData: clothingFeaturePrintData,
                 clothingRect: clothingRect,
                 embeddingMode: config.recognitionMode
@@ -464,83 +390,18 @@ nonisolated struct FaceDetectionService: Sendable {
     }
 
     /// Compute composite quality score from individual metrics
-    private func computeQualityScore(confidence: Float, faceSize: Int, blurScore: Float) -> Float {
+    private func computeQualityScore(confidence: Float, faceSize: Int, blurScore: Float, captureQuality: Float?) -> Float {
         // Normalize face size (50-200 pixels maps to 0-1)
         let sizeScore = min(1.0, max(0.0, Float(faceSize - 50) / 150.0))
 
-        // Weighted combination
-        let weights: (confidence: Float, size: Float, blur: Float) = (0.4, 0.3, 0.3)
+        // Prefer Apple's learned capture-quality (robust) over the Laplacian blur proxy, which is
+        // unreliable at typical face-crop resolutions. Weighted so the sharpest face wins as the
+        // group representative/thumbnail.
+        let sharpness = captureQuality ?? blurScore
+        let weights: (confidence: Float, size: Float, sharpness: Float) = (0.3, 0.2, 0.5)
         return weights.confidence * confidence +
                weights.size * sizeScore +
-               weights.blur * blurScore
-    }
-
-    /// Cluster faces into groups based on feature print distance using hierarchical agglomerative clustering.
-    /// - Parameters:
-    ///   - faces: Only the unclustered faces to assign to groups.
-    ///   - allFaces: All known faces (including already-grouped ones) so representative lookups succeed.
-    ///   - existingGroups: Previously formed groups to match against.
-    ///   - threshold: Maximum average distance to consider faces part of the same group.
-    ///   - cache: Optional pre-populated feature print cache for performance.
-    func clusterFaces(_ faces: [DetectedFace], allFaces: [DetectedFace], existingGroups: [FaceGroup], threshold: Float = 0.55, cache: FeaturePrintCache? = nil) -> [FaceGroup] {
-        let unclusteredFaces = faces.filter { $0.groupID == nil }
-        guard !unclusteredFaces.isEmpty else { return existingGroups }
-
-        // Use provided cache or create a new one for this clustering operation
-        let fpCache = cache ?? FeaturePrintCache()
-
-        var groups = existingGroups
-        let faceLookup = Dictionary(uniqueKeysWithValues: allFaces.map { ($0.id, $0) })
-
-        // First, try to assign new faces to existing groups
-        var remainingFaces: [DetectedFace] = []
-
-        for face in unclusteredFaces {
-            guard let faceFP = fpCache.getFeaturePrint(for: face) else {
-                remainingFaces.append(face)
-                continue
-            }
-
-            var bestGroupIndex: Int?
-            var bestDistance: Float = threshold
-
-            for (index, group) in groups.enumerated() {
-                let memberFaces = group.faceIDs.compactMap { faceLookup[$0] }
-                guard !memberFaces.isEmpty else { continue }
-
-                var totalDistance: Float = 0
-                var count = 0
-                for memberFace in memberFaces {
-                    if let memberFP = fpCache.getFeaturePrint(for: memberFace),
-                       let distance = computeDistanceCached(faceFP, memberFP) {
-                        totalDistance += distance
-                        count += 1
-                    }
-                }
-                guard count > 0 else { continue }
-
-                let avgDistance = totalDistance / Float(count)
-
-                if avgDistance < bestDistance {
-                    bestDistance = avgDistance
-                    bestGroupIndex = index
-                }
-            }
-
-            if let index = bestGroupIndex {
-                groups[index].faceIDs.append(face.id)
-            } else {
-                remainingFaces.append(face)
-            }
-        }
-
-        // For remaining faces, use hierarchical agglomerative clustering
-        if !remainingFaces.isEmpty {
-            let newGroups = clusterFacesHierarchical(remainingFaces, threshold: threshold, cache: fpCache)
-            groups.append(contentsOf: newGroups)
-        }
-
-        return groups
+               weights.sharpness * sharpness
     }
 
     /// Hierarchical agglomerative clustering with average linkage.
@@ -657,228 +518,6 @@ nonisolated struct FaceDetectionService: Sendable {
         return Int64(a) &<< 32 | Int64(b)
     }
 
-    // MARK: - Median Linkage Clustering
-
-    /// Compute distance using median linkage (Apple Photos style).
-    /// More robust to outliers than average linkage.
-    private func computeMedianLinkageDistance(
-        _ cluster1: [DetectedFace],
-        _ cluster2: [DetectedFace],
-        cache: FeaturePrintCache
-    ) -> Float {
-        var distances: [Float] = []
-        for face1 in cluster1 {
-            guard let fp1 = cache.getFeaturePrint(for: face1) else { continue }
-            for face2 in cluster2 {
-                guard let fp2 = cache.getFeaturePrint(for: face2) else { continue }
-                if let distance = computeDistanceCached(fp1, fp2) {
-                    distances.append(distance)
-                }
-            }
-        }
-        guard !distances.isEmpty else { return .infinity }
-        distances.sort()
-        return distances[distances.count / 2]  // Median
-    }
-
-    /// Hierarchical agglomerative clustering with median linkage.
-    private func clusterFacesHierarchicalMedian(_ faces: [DetectedFace], threshold: Float, cache: FeaturePrintCache? = nil) -> [FaceGroup] {
-        guard !faces.isEmpty else { return [] }
-
-        let fpCache = cache ?? FeaturePrintCache()
-
-        // Start with each face in its own cluster, using stable IDs
-        var clusters: [Int: [DetectedFace]] = Dictionary(uniqueKeysWithValues: faces.indices.map { ($0, [faces[$0]]) })
-        var activeIndices = Set(0..<faces.count)
-        var nextClusterID = faces.count
-
-        var distanceMatrix = buildDistanceMatrix(faces, cache: fpCache)
-
-        while activeIndices.count > 1 {
-            guard !Task.isCancelled else { break }
-
-            var minDistance: Float = .infinity
-            var minI = 0
-            var minJ = 0
-            let active = activeIndices.sorted()
-
-            for ai in 0..<active.count {
-                for aj in (ai + 1)..<active.count {
-                    let key = distanceKey(active[ai], active[aj])
-                    if let distance = distanceMatrix[key], distance < minDistance {
-                        minDistance = distance
-                        minI = active[ai]
-                        minJ = active[aj]
-                    }
-                }
-            }
-
-            if minDistance > threshold {
-                break
-            }
-
-            // Merge clusters using stable IDs — no matrix rebuild needed
-            let mergedCluster = clusters[minI]! + clusters[minJ]!
-            activeIndices.remove(minI)
-            activeIndices.remove(minJ)
-
-            let mergedID = nextClusterID
-            nextClusterID += 1
-            clusters[mergedID] = mergedCluster
-
-            // Compute distances from the merged cluster to each surviving cluster
-            for otherID in activeIndices {
-                let distance = computeMedianLinkageDistance(mergedCluster, clusters[otherID]!, cache: fpCache)
-                distanceMatrix[distanceKey(otherID, mergedID)] = distance
-            }
-
-            activeIndices.insert(mergedID)
-        }
-
-        return activeIndices.compactMap { id -> FaceGroup? in
-            guard let clusterFaces = clusters[id] else { return nil }
-            let sortedByQuality = clusterFaces.sorted { ($0.qualityScore ?? 0) > ($1.qualityScore ?? 0) }
-            guard let representative = sortedByQuality.first else { return nil }
-            return FaceGroup(
-                id: UUID(),
-                name: nil,
-                representativeFaceID: representative.id,
-                faceIDs: clusterFaces.map(\.id)
-            )
-        }
-    }
-
-    // MARK: - Chinese Whispers Clustering
-
-    /// Edge in the similarity graph for Chinese Whispers algorithm
-    private struct GraphEdge {
-        let face1ID: UUID
-        let face2ID: UUID
-        let weight: Float
-    }
-
-    /// Cluster faces using Chinese Whispers algorithm.
-    /// Graph-based, order-independent, naturally handles outliers.
-    func clusterFacesChineseWhispers(
-        _ faces: [DetectedFace],
-        config: DetectionConfig,
-        cache: FeaturePrintCache? = nil
-    ) -> [FaceGroup] {
-        guard !faces.isEmpty else { return [] }
-
-        let fpCache = cache ?? FeaturePrintCache()
-
-        // Build similarity graph
-        let edges = buildSimilarityGraph(faces: faces, config: config, cache: fpCache)
-
-        // Initialize labels: each face starts in its own cluster
-        var labels: [UUID: UUID] = [:]
-        for face in faces {
-            labels[face.id] = face.id
-        }
-
-        // Build adjacency list for efficient neighbor lookup
-        var adjacency: [UUID: [(neighborID: UUID, weight: Float)]] = [:]
-        for face in faces {
-            adjacency[face.id] = []
-        }
-        for edge in edges {
-            adjacency[edge.face1ID, default: []].append((edge.face2ID, edge.weight))
-            adjacency[edge.face2ID, default: []].append((edge.face1ID, edge.weight))
-        }
-
-        // Iterate: each face adopts the highest-weighted neighbor label
-        var faceIDs = faces.map(\.id)
-        for _ in 0..<config.chineseWhispersIterations {
-            guard !Task.isCancelled else { break }
-
-            // Shuffle for randomness (reduces order dependency)
-            faceIDs.shuffle()
-
-            var changed = false
-            for faceID in faceIDs {
-                guard let neighbors = adjacency[faceID], !neighbors.isEmpty else { continue }
-
-                // Count weighted votes for each label
-                var labelVotes: [UUID: Float] = [:]
-                for (neighborID, weight) in neighbors {
-                    if let neighborLabel = labels[neighborID] {
-                        labelVotes[neighborLabel, default: 0] += weight
-                    }
-                }
-
-                // Find the label with the highest vote
-                if let bestLabel = labelVotes.max(by: { $0.value < $1.value })?.key {
-                    if labels[faceID] != bestLabel {
-                        labels[faceID] = bestLabel
-                        changed = true
-                    }
-                }
-            }
-
-            // Early termination if no changes
-            if !changed {
-                break
-            }
-        }
-
-        // Convert labels to FaceGroups
-        var groupsByLabel: [UUID: [DetectedFace]] = [:]
-        for face in faces {
-            if let label = labels[face.id] {
-                groupsByLabel[label, default: []].append(face)
-            }
-        }
-
-        return groupsByLabel.values.compactMap { clusterFaces in
-            let sortedByQuality = clusterFaces.sorted { ($0.qualityScore ?? 0) > ($1.qualityScore ?? 0) }
-            guard let representative = sortedByQuality.first else { return nil }
-            return FaceGroup(
-                id: UUID(),
-                name: nil,
-                representativeFaceID: representative.id,
-                faceIDs: clusterFaces.map(\.id)
-            )
-        }
-    }
-
-    /// Build similarity graph for Chinese Whispers.
-    /// Creates edges between faces that are similar enough, weighted by similarity and quality.
-    private func buildSimilarityGraph(
-        faces: [DetectedFace],
-        config: DetectionConfig,
-        cache: FeaturePrintCache
-    ) -> [GraphEdge] {
-        var edges: [GraphEdge] = []
-
-        for i in 0..<faces.count {
-            guard !Task.isCancelled else { break }
-            guard let fp1 = cache.getFeaturePrint(for: faces[i]) else { continue }
-
-            for j in (i + 1)..<faces.count {
-                guard let fp2 = cache.getFeaturePrint(for: faces[j]) else { continue }
-                guard let distance = computeDistanceCached(fp1, fp2) else { continue }
-
-                // Only create edge if distance is below threshold
-                if distance < config.clusteringThreshold {
-                    var weight: Float = 1.0 - (distance / config.clusteringThreshold)
-
-                    // Apply quality weighting if enabled
-                    if config.useQualityWeightedEdges {
-                        let quality1 = faces[i].qualityScore ?? 0.5
-                        let quality2 = faces[j].qualityScore ?? 0.5
-                        let qualityFactor = (quality1 + quality2) / 2.0
-                        weight = weight * (1.0 - config.qualityEdgeWeight) + qualityFactor * config.qualityEdgeWeight
-                    }
-
-                    edges.append(GraphEdge(face1ID: faces[i].id, face2ID: faces[j].id, weight: weight))
-                }
-            }
-        }
-
-        return edges
-    }
-
     // MARK: - Quality-Gated Two-Pass Clustering
 
     /// Cluster faces using quality-gated two-pass algorithm.
@@ -905,10 +544,10 @@ nonisolated struct FaceDetectionService: Sendable {
         }
         let highQualityByID = Dictionary(uniqueKeysWithValues: highQualityFaces.map { ($0.id, $0) })
 
-        // Pass 1: Cluster high-quality faces using Chinese Whispers
+        // Pass 1: Cluster high-quality faces with deterministic agglomerative (average-linkage) clustering.
         var groups: [FaceGroup]
         if !highQualityFaces.isEmpty {
-            groups = clusterFacesChineseWhispers(highQualityFaces, config: config, cache: fpCache)
+            groups = clusterFacesHierarchical(highQualityFaces, threshold: config.clusteringThreshold, cache: fpCache)
         } else {
             groups = []
         }
@@ -959,9 +598,11 @@ nonisolated struct FaceDetectionService: Sendable {
         return groups
     }
 
-    // MARK: - Algorithm-Aware Clustering Entry Point
+    // MARK: - Clustering Entry Point
 
-    /// Cluster faces using the algorithm specified in config.
+    /// The single standardized clustering pipeline: incrementally assign each new face to the
+    /// nearest existing group (average cosine linkage), then cluster the leftovers with the
+    /// quality-gated agglomerative pass. Deterministic and order-independent.
     func clusterFacesWithAlgorithm(
         _ faces: [DetectedFace],
         allFaces: [DetectedFace],
@@ -976,7 +617,7 @@ nonisolated struct FaceDetectionService: Sendable {
         var groups = existingGroups
         let faceLookup = Dictionary(uniqueKeysWithValues: allFaces.map { ($0.id, $0) })
 
-        // First, try to assign new faces to existing groups using selected algorithm's distance metric
+        // First, try to assign new faces to existing groups by average cosine distance to members.
         var remainingFaces: [DetectedFace] = []
 
         for face in unclusteredFaces {
@@ -992,23 +633,17 @@ nonisolated struct FaceDetectionService: Sendable {
                 let memberFaces = group.faceIDs.compactMap { faceLookup[$0] }
                 guard !memberFaces.isEmpty else { continue }
 
-                let distance: Float
-                switch config.clusteringAlgorithm {
-                case .hierarchicalMedian:
-                    distance = computeMedianLinkageDistance([face], memberFaces, cache: fpCache)
-                case .hierarchicalAverage, .chineseWhispers, .qualityGatedTwoPass:
-                    // Use average for assignment to existing groups
-                    var totalDistance: Float = 0
-                    var count = 0
-                    for memberFace in memberFaces {
-                        if let memberFP = fpCache.getFeaturePrint(for: memberFace),
-                           let d = computeDistanceCached(faceFP, memberFP) {
-                            totalDistance += d
-                            count += 1
-                        }
+                var totalDistance: Float = 0
+                var count = 0
+                for memberFace in memberFaces {
+                    if let memberFP = fpCache.getFeaturePrint(for: memberFace),
+                       let d = computeDistanceCached(faceFP, memberFP) {
+                        totalDistance += d
+                        count += 1
                     }
-                    distance = count > 0 ? totalDistance / Float(count) : .infinity
                 }
+                guard count > 0 else { continue }
+                let distance = totalDistance / Float(count)
 
                 if distance < bestDistance {
                     bestDistance = distance
@@ -1023,19 +658,9 @@ nonisolated struct FaceDetectionService: Sendable {
             }
         }
 
-        // For remaining faces, use the selected clustering algorithm
+        // Cluster the remaining faces with the quality-gated agglomerative pass.
         if !remainingFaces.isEmpty {
-            let newGroups: [FaceGroup]
-            switch config.clusteringAlgorithm {
-            case .hierarchicalAverage:
-                newGroups = clusterFacesHierarchical(remainingFaces, threshold: config.clusteringThreshold, cache: fpCache)
-            case .hierarchicalMedian:
-                newGroups = clusterFacesHierarchicalMedian(remainingFaces, threshold: config.clusteringThreshold, cache: fpCache)
-            case .chineseWhispers:
-                newGroups = clusterFacesChineseWhispers(remainingFaces, config: config, cache: fpCache)
-            case .qualityGatedTwoPass:
-                newGroups = clusterFacesQualityGated(remainingFaces, config: config, cache: fpCache)
-            }
+            let newGroups = clusterFacesQualityGated(remainingFaces, config: config, cache: fpCache)
             groups.append(contentsOf: newGroups)
         }
 
@@ -1160,6 +785,29 @@ nonisolated struct FaceDetectionService: Sendable {
         }
     }
 
+    /// Apple `VNDetectFaceCaptureQuality` for already-detected faces, returned aligned (by index)
+    /// to `observations`. Reuses the existing detections via `inputFaceObservations`; results are
+    /// matched back by observation UUID. Returns `nil` for any face whose quality couldn't be scored.
+    private nonisolated func faceCaptureQualities(for observations: [VNFaceObservation], in cgImage: CGImage) async -> [Float?] {
+        guard !observations.isEmpty else { return [] }
+        return await withCheckedContinuation { continuation in
+            let request = VNDetectFaceCaptureQualityRequest()
+            request.inputFaceObservations = observations
+            let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+            do {
+                try handler.perform([request])
+                let scored = request.results as? [VNFaceObservation] ?? []
+                var byUUID: [UUID: Float] = [:]
+                for face in scored where face.faceCaptureQuality != nil {
+                    byUUID[face.uuid] = face.faceCaptureQuality
+                }
+                continuation.resume(returning: observations.map { byUUID[$0.uuid] })
+            } catch {
+                continuation.resume(returning: [Float?](repeating: nil, count: observations.count))
+            }
+        }
+    }
+
     private nonisolated func detectFaceRectangles(in cgImage: CGImage) async throws -> [VNFaceObservation] {
         try await withCheckedThrowingContinuation { continuation in
             let request = VNDetectFaceRectanglesRequest { request, error in
@@ -1180,31 +828,11 @@ nonisolated struct FaceDetectionService: Sendable {
         }
     }
 
+    /// Generate the face-identity embedding for an aligned crop and encode it for storage.
+    /// Backed by the bundled ArcFace CoreML model via `FaceEmbedder`.
     private func generateFeaturePrint(for cgImage: CGImage) async throws -> Data? {
-        try await withCheckedThrowingContinuation { continuation in
-            let request = VNGenerateImageFeaturePrintRequest { request, error in
-                if let error {
-                    continuation.resume(throwing: error)
-                    return
-                }
-                guard let observation = request.results?.first as? VNFeaturePrintObservation else {
-                    continuation.resume(returning: nil)
-                    return
-                }
-                do {
-                    let data = try NSKeyedArchiver.archivedData(withRootObject: observation, requiringSecureCoding: true)
-                    continuation.resume(returning: data)
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-            let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-            do {
-                try handler.perform([request])
-            } catch {
-                continuation.resume(throwing: error)
-            }
-        }
+        let vector = try await embedder.embed(cgImage)
+        return EmbeddingCodec.encode(vector)
     }
 
     // MARK: - Image Processing
@@ -1408,40 +1036,48 @@ nonisolated struct FaceDetectionService: Sendable {
         return (leftEye: leftImageNorm, rightEye: rightImageNorm)
     }
 
-    /// Create an aligned face crop by rotating and scaling so eyes land at canonical positions.
-    /// All coordinates use CG/Vision bottom-left origin convention.
-    /// Output: square CGImage of `outputSize` x `outputSize` with eyes at 35% from top (65% from bottom).
-    private func createAlignedFaceCrop(
+    /// Warp a face crop to the canonical ArcFace 112×112 template via a two-point (eye) similarity
+    /// transform, so the bundled ArcFace model sees faces aligned the way it was trained.
+    ///
+    /// Robust to Vision's left/right eye naming: the image-left eye (smaller x) is anchored to the
+    /// template's left-eye position and the image-right eye to the right, which guarantees an upright,
+    /// non-mirrored result. Coordinates use the CG/Vision bottom-left origin convention.
+    private func createArcFaceAlignedCrop(
         from cgImage: CGImage,
         leftEyePixel: CGPoint,
         rightEyePixel: CGPoint,
-        outputSize: Int = 224
+        outputSize: Int = 112
     ) -> CGImage? {
-        let size = CGFloat(outputSize)
+        let n = CGFloat(outputSize)
+        let scaleToN = n / 112.0  // canonical template is defined for 112×112
 
-        // Target eye positions in CG bottom-left coords
-        // 35% from top = 65% from bottom; horizontally at 35% and 65%
-        let desiredLeftEye = CGPoint(x: size * 0.35, y: size * 0.65)
-        let desiredDist = size * 0.30  // 0.65 - 0.35
+        // Standard ArcFace 5-point template eye coords (top-left origin, 112×112),
+        // converted to CG bottom-left (y' = 112 - y) and scaled to the output size.
+        let templateLeftEye  = CGPoint(x: 38.2946 * scaleToN, y: (112.0 - 51.6963) * scaleToN)
+        let templateRightEye = CGPoint(x: 73.5318 * scaleToN, y: (112.0 - 51.5014) * scaleToN)
 
-        // Compute rotation angle and scale from actual eye positions (bottom-left coords)
-        let dx = rightEyePixel.x - leftEyePixel.x
-        let dy = rightEyePixel.y - leftEyePixel.y
-        let actualDist = sqrt(dx * dx + dy * dy)
-        guard actualDist > 0 else { return nil }
+        // Anchor by image position, not by Vision's naming, to avoid mirror/flip.
+        let p0 = leftEyePixel.x <= rightEyePixel.x ? leftEyePixel : rightEyePixel   // image-left eye
+        let p1 = leftEyePixel.x <= rightEyePixel.x ? rightEyePixel : leftEyePixel   // image-right eye
 
-        let angle = atan2(dy, dx)
-        let scale = desiredDist / actualDist
+        let sdx = p1.x - p0.x, sdy = p1.y - p0.y
+        let srcDist = sqrt(sdx * sdx + sdy * sdy)
+        guard srcDist > 0 else { return nil }
 
-        // Build transform: source CG pixel → output CG pixel
-        // Applied right-to-left: translate to origin → rotate → scale → translate to target
+        let tdx = templateRightEye.x - templateLeftEye.x
+        let tdy = templateRightEye.y - templateLeftEye.y
+        let dstDist = sqrt(tdx * tdx + tdy * tdy)
+
+        let scale = dstDist / srcDist
+        let rotation = atan2(tdy, tdx) - atan2(sdy, sdx)
+
+        // T = translate(q0) · scale · rotate · translate(-p0): maps p0→q0 and p1→q1.
         var transform = CGAffineTransform.identity
-        transform = transform.translatedBy(x: desiredLeftEye.x, y: desiredLeftEye.y)
+        transform = transform.translatedBy(x: templateLeftEye.x, y: templateLeftEye.y)
         transform = transform.scaledBy(x: scale, y: scale)
-        transform = transform.rotated(by: -angle)
-        transform = transform.translatedBy(x: -leftEyePixel.x, y: -leftEyePixel.y)
+        transform = transform.rotated(by: rotation)
+        transform = transform.translatedBy(x: -p0.x, y: -p0.y)
 
-        // Create output context (CG contexts use bottom-left origin by default)
         let colorSpace = cgImage.colorSpace ?? CGColorSpaceCreateDeviceRGB()
         guard let context = CGContext(
             data: nil,
@@ -1493,372 +1129,14 @@ nonisolated struct FaceDetectionService: Sendable {
 
     // MARK: - Feature Print Comparison
 
+    /// Cosine distance (0...2) between two encoded face embeddings. Lower = more similar.
     func computeDistance(_ data1: Data, _ data2: Data) -> Float? {
-        guard let fp1 = try? NSKeyedUnarchiver.unarchivedObject(ofClass: VNFeaturePrintObservation.self, from: data1),
-              let fp2 = try? NSKeyedUnarchiver.unarchivedObject(ofClass: VNFeaturePrintObservation.self, from: data2) else {
-            return nil
-        }
-
-        var distance: Float = 0
-        do {
-            try fp1.computeDistance(&distance, to: fp2)
-            return distance
-        } catch {
-            return nil
-        }
+        EmbeddingCodec.cosineDistance(data1, data2)
     }
 
-    /// Compute distance between two already-deserialized feature prints (avoids NSKeyedUnarchiver overhead).
-    func computeDistanceCached(_ fp1: VNFeaturePrintObservation, _ fp2: VNFeaturePrintObservation) -> Float? {
-        var distance: Float = 0
-        do {
-            try fp1.computeDistance(&distance, to: fp2)
-            return distance
-        } catch {
-            return nil
-        }
-    }
-
-    // MARK: - Mode-Aware Distance Computation
-
-    /// Compute distance between two faces using the appropriate mode.
-    /// Falls back to Vision mode if required embeddings are missing.
-    func computeModeAwareDistance(
-        face1: DetectedFace,
-        face2: DetectedFace,
-        mode: FaceRecognitionMode,
-        config: DetectionConfig,
-        cache: ExtendedFeatureCache
-    ) -> Float? {
-        switch mode {
-        case .visionFeaturePrint:
-            // Use Vision feature prints
-            guard let fp1 = cache.getFaceFeaturePrint(for: face1),
-                  let fp2 = cache.getFaceFeaturePrint(for: face2) else {
-                return nil
-            }
-            return computeDistanceCached(fp1, fp2)
-
-        case .faceAndClothing:
-            // Get face feature prints (required)
-            guard let faceFP1 = cache.getFaceFeaturePrint(for: face1),
-                  let faceFP2 = cache.getFaceFeaturePrint(for: face2) else {
-                return nil
-            }
-
-            var faceDistance: Float = 0
-            do {
-                try faceFP1.computeDistance(&faceDistance, to: faceFP2)
-            } catch {
-                return nil
-            }
-
-            // Get clothing feature prints (optional)
-            let clothingFP1 = cache.getClothingFeaturePrint(for: face1)
-            let clothingFP2 = cache.getClothingFeaturePrint(for: face2)
-
-            // If either face lacks clothing data, use face-only distance
-            guard let cfp1 = clothingFP1, let cfp2 = clothingFP2 else {
-                return faceDistance
-            }
-
-            var clothingDistance: Float = 0
-            do {
-                try cfp1.computeDistance(&clothingDistance, to: cfp2)
-            } catch {
-                return faceDistance
-            }
-
-            // Combine with weights
-            return (faceDistance * config.faceWeight) + (clothingDistance * config.clothingWeight)
-        }
-    }
-
-    /// Compute average linkage distance between two clusters using mode-aware distance.
-    func computeModeAwareAverageLinkage(
-        cluster1: [DetectedFace],
-        cluster2: [DetectedFace],
-        mode: FaceRecognitionMode,
-        config: DetectionConfig,
-        cache: ExtendedFeatureCache
-    ) -> Float {
-        var totalDistance: Float = 0
-        var count = 0
-
-        for face1 in cluster1 {
-            for face2 in cluster2 {
-                if let distance = computeModeAwareDistance(
-                    face1: face1,
-                    face2: face2,
-                    mode: mode,
-                    config: config,
-                    cache: cache
-                ) {
-                    totalDistance += distance
-                    count += 1
-                }
-            }
-        }
-
-        return count > 0 ? totalDistance / Float(count) : .infinity
-    }
-
-    // MARK: - Mode-Aware Clustering
-
-    /// Cluster faces using mode-aware distance computation.
-    /// Falls back to Vision mode for faces without required embeddings.
-    func clusterFacesModeAware(
-        _ faces: [DetectedFace],
-        allFaces: [DetectedFace],
-        existingGroups: [FaceGroup],
-        config: DetectionConfig,
-        visionClusteringThreshold: Float? = nil
-    ) -> [FaceGroup] {
-        let unclusteredFaces = faces.filter { $0.groupID == nil }
-        guard !unclusteredFaces.isEmpty else { return existingGroups }
-
-        if config.recognitionMode == .faceAndClothing,
-           let visionThreshold = visionClusteringThreshold {
-            return clusterFacesFaceThenClothing(
-                unclusteredFaces,
-                allFaces: allFaces,
-                existingGroups: existingGroups,
-                config: config,
-                visionThreshold: visionThreshold,
-                attachSecondPassToExisting: config.faceClothingSecondPassAttachToExisting
-            )
-        }
-
-        return clusterFacesModeAwareInternal(
-            unclusteredFaces,
-            allFaces: allFaces,
-            existingGroups: existingGroups,
-            config: config,
-            mode: config.recognitionMode,
-            threshold: config.clusteringThreshold
-        )
-    }
-
-    private func clusterFacesFaceThenClothing(
-        _ faces: [DetectedFace],
-        allFaces: [DetectedFace],
-        existingGroups: [FaceGroup],
-        config: DetectionConfig,
-        visionThreshold: Float,
-        attachSecondPassToExisting: Bool
-    ) -> [FaceGroup] {
-        let faceOnlyGroups = clusterFacesModeAwareInternal(
-            faces,
-            allFaces: allFaces,
-            existingGroups: existingGroups,
-            config: config,
-            mode: .visionFeaturePrint,
-            threshold: visionThreshold
-        )
-
-        let faceLookup = Dictionary(uniqueKeysWithValues: faces.map { ($0.id, $0) })
-        var remainingFaces: [DetectedFace] = []
-        var filteredGroups: [FaceGroup] = []
-
-        for group in faceOnlyGroups {
-            if group.faceIDs.count == 1,
-               let faceID = group.faceIDs.first,
-               let face = faceLookup[faceID] {
-                remainingFaces.append(face)
-            } else {
-                filteredGroups.append(group)
-            }
-        }
-
-        guard !remainingFaces.isEmpty else { return faceOnlyGroups }
-
-        if attachSecondPassToExisting {
-            return clusterFacesModeAwareInternal(
-                remainingFaces,
-                allFaces: allFaces,
-                existingGroups: filteredGroups,
-                config: config,
-                mode: .faceAndClothing,
-                threshold: config.clusteringThreshold
-            )
-        }
-
-        let newGroups = clusterFacesModeAwareInternal(
-            remainingFaces,
-            allFaces: allFaces,
-            existingGroups: [],
-            config: config,
-            mode: .faceAndClothing,
-            threshold: config.clusteringThreshold
-        )
-        return filteredGroups + newGroups
-    }
-
-    private func clusterFacesModeAwareInternal(
-        _ faces: [DetectedFace],
-        allFaces: [DetectedFace],
-        existingGroups: [FaceGroup],
-        config: DetectionConfig,
-        mode: FaceRecognitionMode,
-        threshold: Float
-    ) -> [FaceGroup] {
-        let unclusteredFaces = faces.filter { $0.groupID == nil }
-        guard !unclusteredFaces.isEmpty else { return existingGroups }
-
-        let cache = ExtendedFeatureCache()
-        var groups = existingGroups
-        let faceLookup = Dictionary(uniqueKeysWithValues: allFaces.map { ($0.id, $0) })
-
-        // First, try to assign new faces to existing groups
-        var remainingFaces: [DetectedFace] = []
-
-        for face in unclusteredFaces {
-            var bestGroupIndex: Int?
-            var bestDistance: Float = threshold
-
-            for (index, group) in groups.enumerated() {
-                let memberFaces = group.faceIDs.compactMap { faceLookup[$0] }
-                guard !memberFaces.isEmpty else { continue }
-
-                var totalDistance: Float = 0
-                var count = 0
-                for memberFace in memberFaces {
-                    if let distance = computeModeAwareDistance(
-                        face1: face,
-                        face2: memberFace,
-                        mode: mode,
-                        config: config,
-                        cache: cache
-                    ) {
-                        totalDistance += distance
-                        count += 1
-                    }
-                }
-                guard count > 0 else { continue }
-
-                let avgDistance = totalDistance / Float(count)
-
-                if avgDistance < bestDistance {
-                    bestDistance = avgDistance
-                    bestGroupIndex = index
-                }
-            }
-
-            if let index = bestGroupIndex {
-                groups[index].faceIDs.append(face.id)
-            } else {
-                remainingFaces.append(face)
-            }
-        }
-
-        // For remaining faces, use hierarchical agglomerative clustering
-        if !remainingFaces.isEmpty {
-            let newGroups = clusterFacesHierarchicalModeAware(
-                remainingFaces,
-                mode: mode,
-                threshold: threshold,
-                config: config,
-                cache: cache
-            )
-            groups.append(contentsOf: newGroups)
-        }
-
-        return groups
-    }
-
-    /// Hierarchical agglomerative clustering with mode-aware distance computation.
-    private func clusterFacesHierarchicalModeAware(
-        _ faces: [DetectedFace],
-        mode: FaceRecognitionMode,
-        threshold: Float,
-        config: DetectionConfig,
-        cache: ExtendedFeatureCache
-    ) -> [FaceGroup] {
-        guard !faces.isEmpty else { return [] }
-
-        // Start with each face in its own cluster, using stable IDs
-        var clusters: [Int: [DetectedFace]] = Dictionary(uniqueKeysWithValues: faces.indices.map { ($0, [faces[$0]]) })
-        var activeIndices = Set(0..<faces.count)
-        var nextClusterID = faces.count
-
-        // Build initial distance matrix
-        var distanceMatrix: [Int64: Float] = [:]
-        for i in 0..<faces.count {
-            guard !Task.isCancelled else { break }
-            for j in (i + 1)..<faces.count {
-                if let distance = computeModeAwareDistance(
-                    face1: faces[i],
-                    face2: faces[j],
-                    mode: mode,
-                    config: config,
-                    cache: cache
-                ) {
-                    distanceMatrix[distanceKey(i, j)] = distance
-                }
-            }
-        }
-
-        // Iteratively merge closest clusters
-        while activeIndices.count > 1 {
-            guard !Task.isCancelled else { break }
-
-            var minDistance: Float = .infinity
-            var minI = 0
-            var minJ = 0
-            let active = activeIndices.sorted()
-
-            for ai in 0..<active.count {
-                for aj in (ai + 1)..<active.count {
-                    let key = distanceKey(active[ai], active[aj])
-                    if let distance = distanceMatrix[key], distance < minDistance {
-                        minDistance = distance
-                        minI = active[ai]
-                        minJ = active[aj]
-                    }
-                }
-            }
-
-            if minDistance > threshold {
-                break
-            }
-
-            // Merge clusters using stable IDs — no matrix rebuild needed
-            let mergedCluster = clusters[minI]! + clusters[minJ]!
-            activeIndices.remove(minI)
-            activeIndices.remove(minJ)
-
-            let mergedID = nextClusterID
-            nextClusterID += 1
-            clusters[mergedID] = mergedCluster
-
-            // Compute distances from the merged cluster to each surviving cluster
-            for otherID in activeIndices {
-                let distance = computeModeAwareAverageLinkage(
-                    cluster1: mergedCluster,
-                    cluster2: clusters[otherID]!,
-                    mode: mode,
-                    config: config,
-                    cache: cache
-                )
-                distanceMatrix[distanceKey(otherID, mergedID)] = distance
-            }
-
-            activeIndices.insert(mergedID)
-        }
-
-        // Convert clusters to FaceGroups
-        return activeIndices.compactMap { id -> FaceGroup? in
-            guard let clusterFaces = clusters[id] else { return nil }
-            let sortedByQuality = clusterFaces.sorted { ($0.qualityScore ?? 0) > ($1.qualityScore ?? 0) }
-            guard let representative = sortedByQuality.first else { return nil }
-
-            return FaceGroup(
-                id: UUID(),
-                name: nil,
-                representativeFaceID: representative.id,
-                faceIDs: clusterFaces.map(\.id)
-            )
-        }
+    /// Cosine distance between two already-decoded embeddings (avoids re-decoding in clustering).
+    func computeDistanceCached(_ v1: [Float], _ v2: [Float]) -> Float? {
+        EmbeddingCodec.cosineDistance(v1, v2)
     }
 
 }

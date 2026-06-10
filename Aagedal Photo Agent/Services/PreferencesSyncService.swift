@@ -46,16 +46,9 @@ final class PreferencesSyncService {
         // Face recognition
         UserDefaultsKeys.faceCleanupPolicy,
         UserDefaultsKeys.visionClusteringThreshold,
-        UserDefaultsKeys.faceClothingClusteringThreshold,
         UserDefaultsKeys.faceMinConfidence,
         UserDefaultsKeys.faceMinFaceSize,
-        UserDefaultsKeys.faceRecognitionMode,
-        UserDefaultsKeys.faceFaceWeight,
-        UserDefaultsKeys.faceClusteringAlgorithm,
-        UserDefaultsKeys.faceQualityGateThreshold,
-        UserDefaultsKeys.faceUseQualityWeightedEdges,
-        UserDefaultsKeys.faceClothingSecondPassAttachToExisting,
-        UserDefaultsKeys.knownPeopleMode,
+        UserDefaultsKeys.faceMinQuality,
         UserDefaultsKeys.knownPeopleMinConfidence,
         // Format & compression
         UserDefaultsKeys.exportFormatSDR,

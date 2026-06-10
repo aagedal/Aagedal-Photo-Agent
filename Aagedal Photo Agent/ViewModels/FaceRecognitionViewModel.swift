@@ -33,6 +33,20 @@ final class FaceRecognitionViewModel {
     var faceData: FolderFaceData? {
         didSet { invalidateCaches() }
     }
+
+    /// Live "minimum sharpness" filter (0...1 face capture-quality). Faces below this are hidden
+    /// from the displayed face set without re-scanning. Bound to the slider in the expanded face
+    /// view and persisted to `faceMinQuality`.
+    var displayQualityThreshold: Float = Float(
+        UserDefaults.standard.object(forKey: UserDefaultsKeys.faceMinQuality) as? Double
+            ?? Double(FaceRecognitionDefaults.minFaceQuality)
+    ) {
+        didSet {
+            guard displayQualityThreshold != oldValue else { return }
+            UserDefaults.standard.set(Double(displayQualityThreshold), forKey: UserDefaultsKeys.faceMinQuality)
+            invalidateCaches()
+        }
+    }
     var isScanning = false
     var scanProgress: String = ""
     var scanComplete = false
@@ -107,41 +121,15 @@ final class FaceRecognitionViewModel {
     var detectionConfig: FaceDetectionService.DetectionConfig {
         var config = FaceDetectionService.DetectionConfig()
 
-        // Recognition mode settings
-        let modeRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.faceRecognitionMode) ?? "vision"
-        config.recognitionMode = FaceRecognitionMode(rawValue: modeRaw) ?? .visionFeaturePrint
-
-        // Mode-specific clustering thresholds
-        let threshold: Double
-        switch config.recognitionMode {
-        case .visionFeaturePrint:
-            threshold = UserDefaults.standard.object(forKey: UserDefaultsKeys.visionClusteringThreshold) as? Double ?? 0.90
-        case .faceAndClothing:
-            threshold = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceClothingClusteringThreshold) as? Double ?? 0.48
+        // Grouping sensitivity (cosine-distance threshold) — the single user-facing recognition knob.
+        if let threshold = UserDefaults.standard.object(forKey: UserDefaultsKeys.visionClusteringThreshold) as? Double {
+            config.clusteringThreshold = Float(threshold)
         }
-        config.clusteringThreshold = Float(threshold)
 
         let confidence = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceMinConfidence) as? Double
         config.minConfidence = Float(confidence ?? 0.7)
         let minSize = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceMinFaceSize) as? Int
         config.minFaceSize = minSize ?? 50
-
-        let faceWeight = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceFaceWeight) as? Double
-        config.faceWeight = Float(faceWeight ?? 0.7)
-        config.clothingWeight = 1.0 - config.faceWeight
-
-        // Clustering algorithm settings
-        let algorithmRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.faceClusteringAlgorithm) ?? "chineseWhispers"
-        config.clusteringAlgorithm = FaceClusteringAlgorithm(rawValue: algorithmRaw) ?? .chineseWhispers
-
-        let qualityGate = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceQualityGateThreshold) as? Double
-        config.qualityGateThreshold = Float(qualityGate ?? 0.6)
-
-        let useQualityWeighted = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceUseQualityWeightedEdges) as? Bool
-        config.useQualityWeightedEdges = useQualityWeighted ?? true
-
-        let attachSecondPass = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceClothingSecondPassAttachToExisting) as? Bool
-        config.faceClothingSecondPassAttachToExisting = attachSecondPass ?? false
 
         // Sports tagging
         config.sportsModeEnabled = UserDefaults.standard.bool(forKey: UserDefaultsKeys.sportsModeEnabled)
@@ -151,20 +139,6 @@ final class FaceRecognitionViewModel {
         config.sportsNumberMinHeightFraction = CGFloat(minHeight ?? 0.04)
 
         return config
-    }
-
-    /// Current recognition mode from settings
-    var recognitionMode: FaceRecognitionMode {
-        let modeRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.faceRecognitionMode) ?? "vision"
-        return FaceRecognitionMode(rawValue: modeRaw) ?? .visionFeaturePrint
-    }
-
-    /// Check if loaded face data was scanned with a different mode than current settings
-    var needsRescanForModeChange: Bool {
-        guard let data = faceData else { return false }
-        // Legacy data (nil mode) is compatible with Vision mode
-        let dataMode = data.recognitionMode ?? .visionFeaturePrint
-        return dataMode != recognitionMode
     }
 
     @ObservationIgnored private var activeScanTask: Task<Void, Never>?
@@ -208,10 +182,17 @@ final class FaceRecognitionViewModel {
             return
         }
 
+        // Live sharpness filter: only groups with at least one visible face appear in the display
+        // lists. (groupLookup below keeps the FULL groups, so mutations still see every face.)
+        let visibleFaceIDs: Set<UUID> = Set((faceData?.faces ?? []).filter(isVisibleByQuality).map(\.id))
+        let visibleGroups = groups.filter { group in
+            group.faceIDs.contains { visibleFaceIDs.contains($0) }
+        }
+
         // Split into named/unnamed — both sort modes need this partition
         var named: [FaceGroup] = []
         var unnamed: [FaceGroup] = []
-        for group in groups {
+        for group in visibleGroups {
             if group.name != nil {
                 named.append(group)
             } else {
@@ -309,8 +290,6 @@ final class FaceRecognitionViewModel {
         guard !isScanning else { return }
 
         let config = detectionConfig
-        let visionThreshold = UserDefaults.standard.object(forKey: UserDefaultsKeys.visionClusteringThreshold) as? Double ?? 0.90
-        let visionClusteringThreshold = Float(visionThreshold)
         let storageService = self.storageService
         let detectionService = self.detectionService
 
@@ -331,7 +310,7 @@ final class FaceRecognitionViewModel {
             // Load existing data for incremental scan
             // Discard stale data if embedding version is outdated (pre-alignment feature prints)
             let loadedData = forceFullScan ? nil : storageService.loadFaceData(for: folderURL)
-            let existingData: FolderFaceData? = if let loadedData, (loadedData.embeddingVersion ?? 0) >= 1 {
+            let existingData: FolderFaceData? = if let loadedData, (loadedData.embeddingVersion ?? 0) >= FaceRecognitionDefaults.embeddingVersion {
                 loadedData
             } else {
                 nil
@@ -417,9 +396,6 @@ final class FaceRecognitionViewModel {
                 var batchesSinceLastSave = 0
                 let saveInterval = 10 // Save progress every 10 batches
 
-                // Determine clustering approach based on recognition mode
-                let useModeAwareClustering = config.recognitionMode != .visionFeaturePrint
-
                 // Clustering runs incrementally per batch and matches each batch's new
                 // faces against every existing group, deserializing those members'
                 // feature prints (NSKeyedUnarchiver) on the way. Share one cache across
@@ -453,19 +429,7 @@ final class FaceRecognitionViewModel {
 
                     // Incremental clustering: cluster new faces immediately against existing groups
                     if !newFaces.isEmpty {
-                        if useModeAwareClustering {
-                            // Use mode-aware clustering for ArcFace and Face+Clothing modes
-                            allGroups = detectionService.clusterFacesModeAware(
-                                newFaces,
-                                allFaces: allFaces,
-                                existingGroups: allGroups,
-                                config: config,
-                                visionClusteringThreshold: visionClusteringThreshold
-                            )
-                        } else {
-                            // Use algorithm-aware clustering with selected algorithm
-                            allGroups = detectionService.clusterFacesWithAlgorithm(newFaces, allFaces: allFaces, existingGroups: allGroups, config: config, cache: visionFeaturePrintCache)
-                        }
+                        allGroups = detectionService.clusterFacesWithAlgorithm(newFaces, allFaces: allFaces, existingGroups: allGroups, config: config, cache: visionFeaturePrintCache)
 
                         // Assign group IDs to the newly clustered faces
                         let ungroupedIndex = Dictionary(
@@ -499,7 +463,7 @@ final class FaceRecognitionViewModel {
                             scanComplete: false,
                             scannedFiles: scannedFiles,
                             recognitionMode: config.recognitionMode,
-                            embeddingVersion: 1,
+                            embeddingVersion: FaceRecognitionDefaults.embeddingVersion,
                             numberDetections: allNumbers
                         )
                         do {
@@ -572,7 +536,7 @@ final class FaceRecognitionViewModel {
                 scanComplete: !isCancelled,
                 scannedFiles: scannedFiles,
                 recognitionMode: config.recognitionMode,
-                embeddingVersion: 1,
+                embeddingVersion: FaceRecognitionDefaults.embeddingVersion,
                 numberDetections: allNumbers
             )
 
@@ -604,12 +568,9 @@ final class FaceRecognitionViewModel {
 
             guard !isCancelled else { return }
 
-            // Auto-match known people if Always On mode
-            let modeRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.knownPeopleMode) ?? "off"
-            let mode = KnownPeopleMode(rawValue: modeRaw) ?? .off
-            if mode == .alwaysOn {
-                await self.matchKnownPeopleIntegrated()
-            }
+            // Known People matching is always automatic now. `applyKnownPeopleMatches`
+            // no-ops when the database is empty, so this is safe to always call.
+            await self.matchKnownPeopleIntegrated()
         }
     }
 
@@ -2094,8 +2055,16 @@ final class FaceRecognitionViewModel {
     // MARK: - Helper
 
     func faces(in group: FaceGroup) -> [DetectedFace] {
-        // Use lookup dictionary for O(1) access per face instead of O(n)
-        return group.faceIDs.compactMap { faceLookup[$0] }
+        // Use lookup dictionary for O(1) access per face instead of O(n).
+        // Apply the live sharpness filter so blurry faces are hidden everywhere faces are shown.
+        return group.faceIDs.compactMap { faceLookup[$0] }.filter(isVisibleByQuality)
+    }
+
+    /// Whether a face passes the live "minimum sharpness" filter. Faces with no capture-quality
+    /// (scanned before the metric existed) always pass, so older data isn't hidden.
+    func isVisibleByQuality(_ face: DetectedFace) -> Bool {
+        guard let q = face.captureQuality else { return true }
+        return q >= displayQualityThreshold
     }
 
     func face(byID faceID: UUID) -> DetectedFace? {

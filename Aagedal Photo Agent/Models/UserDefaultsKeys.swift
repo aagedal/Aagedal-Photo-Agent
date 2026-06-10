@@ -19,10 +19,21 @@ nonisolated enum UserDefaultsKeys {
 
     // MARK: - Face Recognition
     static let faceCleanupPolicy = "faceCleanupPolicy"
+    /// Grouping sensitivity (cosine-distance threshold). The sole user-facing recognition knob.
     static let visionClusteringThreshold = "visionClusteringThreshold"
-    static let faceClothingClusteringThreshold = "faceClothingClusteringThreshold"
+    /// One-shot marker: set once the stored sensitivity has been reset to the calibrated v2.0
+    /// ArcFace cosine default. Bump the version suffix whenever the calibrated default changes so
+    /// existing installs pick it up once (the old Vision-feature-print value is not comparable).
+    static let faceThresholdCosineMigrated = "face.thresholdCosineMigratedV3"
     static let faceMinConfidence = "faceMinConfidence"
     static let faceMinFaceSize = "faceMinFaceSize"
+    /// Minimum face capture-quality (0...1) to keep a detected face — drops too-blurry faces.
+    static let faceMinQuality = "faceMinQuality"
+
+    // Retired in the v2.0 face-recognition rewrite (single CoreML embedder + one clustering
+    // algorithm). Constants kept for one release so old stored prefs decode cleanly; no longer
+    // read, written, or synced.
+    static let faceClothingClusteringThreshold = "faceClothingClusteringThreshold"
     static let faceRecognitionMode = "faceRecognitionMode"
     static let faceFaceWeight = "faceFaceWeight"
     static let faceClusteringAlgorithm = "faceClusteringAlgorithm"
@@ -31,8 +42,12 @@ nonisolated enum UserDefaultsKeys {
     static let faceClothingSecondPassAttachToExisting = "faceClothingSecondPassAttachToExisting"
 
     // MARK: - Known People
-    static let knownPeopleMode = "knownPeopleMode"
+    /// Embedding-space version the Known People database was built with. A mismatch with
+    /// `FaceRecognitionDefaults.embeddingVersion` triggers a one-time start-fresh migration.
+    static let knownPeopleEmbeddingVersion = "knownPeople.embeddingVersion"
     static let knownPeopleMinConfidence = "knownPeopleMinConfidence"
+    /// Retired: matching is now always automatic. Kept for one release for clean decoding.
+    static let knownPeopleMode = "knownPeopleMode"
 
     // MARK: - Sports Tagging (jersey-number detection)
     /// True when the scan also detects jersey numbers + team colours.

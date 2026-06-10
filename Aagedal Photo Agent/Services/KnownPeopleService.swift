@@ -155,10 +155,11 @@ final class KnownPeopleService {
         didSet { rebuildPeopleIndex() }
     }
     private var peopleIndex: [UUID: Int] = [:]
-    private let featurePrintCache: NSCache<NSUUID, VNFeaturePrintObservation> = {
-        let cache = NSCache<NSUUID, VNFeaturePrintObservation>()
-        cache.countLimit = 1000
-        cache.totalCostLimit = 10 * 1024 * 1024 // 10 MB
+    /// Boxed decoded embedding for `NSCache` (which requires class values).
+    private final class CachedEmbedding { let vector: [Float]; init(_ v: [Float]) { self.vector = v } }
+    private let featurePrintCache: NSCache<NSUUID, CachedEmbedding> = {
+        let cache = NSCache<NSUUID, CachedEmbedding>()
+        cache.countLimit = 4000
         return cache
     }()
 
@@ -186,6 +187,7 @@ final class KnownPeopleService {
         }
 
         migrateLegacyDatabaseIfNeeded()
+        migrateEmbeddingVersionIfNeeded()
 
         let entries = (try? CloudCoordinatedIO.contentsOfDirectory(at: peopleDirectory)) ?? []
 
@@ -665,7 +667,7 @@ final class KnownPeopleService {
     func checkForDuplicate(
         name: String,
         representativeFaceData: Data,
-        threshold: Float = 0.45,
+        threshold: Float = FaceRecognitionDefaults.knownPeopleMatchThreshold,
         allowFaceMatch: Bool = true
     ) -> DuplicateCheckResult {
         let db = loadDatabase()
@@ -856,6 +858,35 @@ final class KnownPeopleService {
         return db.people[index]
     }
 
+    /// First launch after the face-embedding model changed: embeddings stored by the previous
+    /// model live in a different vector space and can't be compared to new ones. Per the rewrite
+    /// decision the Known People database starts fresh — but the old store is backed up first, so
+    /// nothing is silently destroyed. A no-op once the stored version matches the current one.
+    private func migrateEmbeddingVersionIfNeeded() {
+        let key = UserDefaultsKeys.knownPeopleEmbeddingVersion
+        let stored = UserDefaults.standard.object(forKey: key) as? Int
+        let current = FaceRecognitionDefaults.embeddingVersion
+        guard stored != current else { return }
+
+        let hasExisting = ((try? CloudCoordinatedIO.contentsOfDirectory(at: peopleDirectory)) ?? [])
+            .contains { $0.pathExtension == "json" }
+
+        if hasExisting {
+            let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+            let backup = knownPeopleDirectory.deletingLastPathComponent()
+                .appendingPathComponent("\(knownPeopleDirectory.lastPathComponent).backup-embv\(stored.map(String.init) ?? "1")-\(timestamp)", isDirectory: true)
+            do {
+                try CloudCoordinatedIO.mergeCopy(from: knownPeopleDirectory, to: backup)
+                knownPeopleLog.warning("Backed up pre-v\(current) Known People store to \(backup.lastPathComponent, privacy: .public) before reset")
+            } catch {
+                knownPeopleLog.error("Failed to back up Known People store before reset: \(error.localizedDescription, privacy: .public)")
+            }
+            try? clearDatabase()
+        }
+
+        UserDefaults.standard.set(current, forKey: key)
+    }
+
     func clearDatabase() throws {
         let emptyDB = KnownPeopleDatabase()
         featurePrintCache.removeAllObjects()
@@ -883,11 +914,12 @@ final class KnownPeopleService {
     }
 
     func currentAutoMatchPolicy() -> MatchPolicy {
-        let minConfidence = Float(UserDefaults.standard.object(forKey: UserDefaultsKeys.knownPeopleMinConfidence) as? Double ?? 0.60)
+        let minConfidence = Float(UserDefaults.standard.object(forKey: UserDefaultsKeys.knownPeopleMinConfidence) as? Double
+            ?? Double(FaceRecognitionDefaults.knownPeopleMinConfidence))
         return MatchPolicy(
-            threshold: 0.45,
+            threshold: FaceRecognitionDefaults.knownPeopleMatchThreshold,
             minConfidence: minConfidence,
-            minConfidenceGap: 0.05
+            minConfidenceGap: FaceRecognitionDefaults.knownPeopleMinConfidenceGap
         )
     }
 
@@ -895,34 +927,22 @@ final class KnownPeopleService {
         featurePrintCache.removeAllObjects()
     }
 
-    private func getFeaturePrint(for embedding: PersonEmbedding) -> VNFeaturePrintObservation? {
+    private func getFeaturePrint(for embedding: PersonEmbedding) -> [Float]? {
         let key = embedding.id as NSUUID
         if let cached = featurePrintCache.object(forKey: key) {
-            return cached
+            return cached.vector
         }
-
-        let fp: VNFeaturePrintObservation
-        do {
-            guard let unarchived = try NSKeyedUnarchiver.unarchivedObject(
-                ofClass: VNFeaturePrintObservation.self,
-                from: embedding.featurePrintData
-            ) else {
-                return nil
-            }
-            fp = unarchived
-        } catch {
-            knownPeopleLog.error("Failed to unarchive feature print for embedding \(embedding.id): \(error.localizedDescription, privacy: .public)")
+        guard let vector = EmbeddingCodec.decode(embedding.featurePrintData) else {
             return nil
         }
-
-        featurePrintCache.setObject(fp, forKey: key, cost: embedding.featurePrintData.count)
-        return fp
+        featurePrintCache.setObject(CachedEmbedding(vector), forKey: key, cost: embedding.featurePrintData.count)
+        return vector
     }
 
-    /// Core matching loop: compare a query feature print against a pre-loaded database snapshot.
-    /// Extracted so that `matchFaces()` can load the database once and reuse it across all faces.
+    /// Core matching loop: compare a query embedding against a pre-loaded database snapshot
+    /// using cosine distance. Extracted so callers can load the database once and reuse it.
     private func matchFaceAgainstDatabase(
-        queryFP: VNFeaturePrintObservation,
+        queryFP: [Float],
         database: KnownPeopleDatabase,
         threshold: Float,
         maxResults: Int
@@ -935,19 +955,12 @@ final class KnownPeopleService {
             var bestEmbeddingID: UUID?
 
             for embedding in person.embeddings {
-                guard let personFP = getFeaturePrint(for: embedding) else { continue }
-
-                var distance: Float = 0
-                do {
-                    try queryFP.computeDistance(&distance, to: personFP)
-                    if distance < bestDistance {
-                        bestDistance = distance
-                        bestEmbeddingID = embedding.id
-                        if bestDistance < 0.05 { break }
-                    }
-                } catch {
-                    knownPeopleLog.debug("Failed to compute distance for person \(person.name, privacy: .public): \(error.localizedDescription, privacy: .public)")
-                    continue
+                guard let personFP = getFeaturePrint(for: embedding),
+                      let distance = EmbeddingCodec.cosineDistance(queryFP, personFP) else { continue }
+                if distance < bestDistance {
+                    bestDistance = distance
+                    bestEmbeddingID = embedding.id
+                    if bestDistance < 0.05 { break }
                 }
             }
 
@@ -984,20 +997,10 @@ final class KnownPeopleService {
     /// across different contexts (same person in different clothing).
     func matchFace(
         featurePrintData: Data,
-        threshold: Float = 0.45,
+        threshold: Float = FaceRecognitionDefaults.knownPeopleMatchThreshold,
         maxResults: Int = 5
     ) -> [KnownPersonMatch] {
-        let queryFP: VNFeaturePrintObservation
-        do {
-            guard let unarchived = try NSKeyedUnarchiver.unarchivedObject(
-                ofClass: VNFeaturePrintObservation.self,
-                from: featurePrintData
-            ) else {
-                return []
-            }
-            queryFP = unarchived
-        } catch {
-            knownPeopleLog.error("Failed to unarchive query feature print: \(error.localizedDescription, privacy: .public)")
+        guard let queryFP = EmbeddingCodec.decode(featurePrintData) else {
             return []
         }
 
@@ -1048,19 +1051,7 @@ final class KnownPeopleService {
         var results: [UUID: KnownPersonMatch] = [:]
 
         for face in faces {
-            let queryFP: VNFeaturePrintObservation
-            do {
-                guard let unarchived = try NSKeyedUnarchiver.unarchivedObject(
-                    ofClass: VNFeaturePrintObservation.self,
-                    from: face.featurePrintData
-                ) else {
-                    continue
-                }
-                queryFP = unarchived
-            } catch {
-                knownPeopleLog.error("Failed to unarchive feature print for face \(face.id): \(error.localizedDescription, privacy: .public)")
-                continue
-            }
+            guard let queryFP = EmbeddingCodec.decode(face.featurePrintData) else { continue }
 
             let matches = matchFaceAgainstDatabase(
                 queryFP: queryFP,
@@ -1089,25 +1080,13 @@ final class KnownPeopleService {
     /// Returns a dictionary mapping face IDs to their best match (if any).
     func matchFaces(
         _ faces: [(id: UUID, featurePrintData: Data)],
-        threshold: Float = 0.45
+        threshold: Float = FaceRecognitionDefaults.knownPeopleMatchThreshold
     ) -> [UUID: KnownPersonMatch] {
         let db = loadDatabase()
         var results: [UUID: KnownPersonMatch] = [:]
 
         for face in faces {
-            let queryFP: VNFeaturePrintObservation
-            do {
-                guard let unarchived = try NSKeyedUnarchiver.unarchivedObject(
-                    ofClass: VNFeaturePrintObservation.self,
-                    from: face.featurePrintData
-                ) else {
-                    continue
-                }
-                queryFP = unarchived
-            } catch {
-                knownPeopleLog.error("Failed to unarchive feature print for face \(face.id): \(error.localizedDescription, privacy: .public)")
-                continue
-            }
+            guard let queryFP = EmbeddingCodec.decode(face.featurePrintData) else { continue }
 
             if let bestMatch = matchFaceAgainstDatabase(
                 queryFP: queryFP,
@@ -1131,7 +1110,7 @@ final class KnownPeopleService {
     /// indicating how many sampled faces agreed on each person.
     func matchGroupsForSuggestions(
         groups: [(groupID: UUID, faceEmbeddings: [(faceID: UUID, featurePrintData: Data)])],
-        threshold: Float = 0.45,
+        threshold: Float = FaceRecognitionDefaults.knownPeopleMatchThreshold,
         maxResultsPerFace: Int = 3
     ) -> [UUID: [(match: KnownPersonMatch, matchedFaceCount: Int)]] {
         let db = loadDatabase()
@@ -1144,18 +1123,7 @@ final class KnownPeopleService {
             var personAggregation: [UUID: (bestMatch: KnownPersonMatch, matchCount: Int)] = [:]
 
             for faceEmbedding in group.faceEmbeddings {
-                let queryFP: VNFeaturePrintObservation
-                do {
-                    guard let unarchived = try NSKeyedUnarchiver.unarchivedObject(
-                        ofClass: VNFeaturePrintObservation.self,
-                        from: faceEmbedding.featurePrintData
-                    ) else {
-                        continue
-                    }
-                    queryFP = unarchived
-                } catch {
-                    continue
-                }
+                guard let queryFP = EmbeddingCodec.decode(faceEmbedding.featurePrintData) else { continue }
 
                 let faceMatches = matchFaceAgainstDatabase(
                     queryFP: queryFP,

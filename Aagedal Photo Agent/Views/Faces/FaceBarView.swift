@@ -24,7 +24,6 @@ struct FaceBarView: View {
     @State private var highlightedGroupID: UUID?
     @State private var isDraggingOverBar: Bool = false
     @State private var showMatchSetup = false
-    @AppStorage("knownPeopleMode") private var knownPeopleMode: String = "off"
     @AppStorage("sports.modeEnabled") private var sportsModeEnabled: Bool = false
 
     /// Height of the face bar
@@ -299,8 +298,9 @@ struct FaceBarView: View {
                 .help("Review merge suggestions for similar face groups")
             }
 
-            // Check Known People button (On Demand mode)
-            if knownPeopleMode == "onDemand" && viewModel.scanComplete {
+            // Manual re-check button: matching runs automatically after each scan, but this
+            // lets the user re-run it on demand (e.g. after adding new known people).
+            if viewModel.scanComplete {
                 Divider()
                     .frame(height: 58)
 
@@ -667,67 +667,40 @@ struct ClusteringSettingsPopover: View {
             Text("Face Clustering")
                 .font(.headline)
 
-            // Recognition mode picker
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Mode")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                Picker("Mode", selection: $settingsViewModel.faceRecognitionMode) {
-                    ForEach(FaceRecognitionMode.allCases, id: \.self) { mode in
-                        Text(mode.displayName).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-
-                Text(settingsViewModel.faceRecognitionMode.description)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Divider()
-
-            // Clustering threshold slider
+            // Grouping sensitivity (cosine-distance threshold) — the single recognition knob.
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     Text("Sensitivity")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Text(String(format: "%.2f", settingsViewModel.effectiveClusteringThreshold))
+                    Text(String(format: "%.2f", settingsViewModel.visionClusteringThreshold))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
                 }
 
-            if settingsViewModel.faceRecognitionMode == .visionFeaturePrint {
-                Slider(value: $settingsViewModel.visionClusteringThreshold, in: 0.3...0.8, step: 0.01)
-            } else {
-                Slider(value: $settingsViewModel.faceClothingClusteringThreshold, in: 0.3...0.8, step: 0.01)
-            }
+                Slider(
+                    value: $settingsViewModel.visionClusteringThreshold,
+                    in: Double(FaceRecognitionDefaults.sensitivityMin)...Double(FaceRecognitionDefaults.sensitivityMax),
+                    step: 0.01
+                )
 
                 HStack {
-                    Text("Strict")
+                    Text("Stricter")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                     Spacer()
-                    Text("Loose")
+                    Text("Looser")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
             }
 
-            if settingsViewModel.faceRecognitionMode == .faceAndClothing {
-                Divider()
-                Toggle("Second-pass can join existing groups", isOn: $settingsViewModel.faceClothingSecondPassAttachToExisting)
-                Text("If off, leftovers only cluster among themselves.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
             Divider()
 
-            // Sports tagging (jersey-number detection)
+            // Sports tagging (jersey-number detection) — experimental, deferred to a later release.
+            DisclosureGroup("Experimental") {
             VStack(alignment: .leading, spacing: 6) {
                 Toggle("Detect jersey numbers (Sports)", isOn: $sportsModeEnabled)
                     .font(.subheadline)
@@ -754,6 +727,7 @@ struct ClusteringSettingsPopover: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+            }
             }
 
             Text("Changes apply to new scans. Option+click Scan to rescan.")

@@ -26,6 +26,7 @@
 		AB1300000000000000000002 /* PlayerResolverTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1300000000000000000001 /* PlayerResolverTests.swift */; };
 		AB1400000000000000000002 /* TeamColorClustererTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1400000000000000000001 /* TeamColorClustererTests.swift */; };
 		AB1500000000000000000002 /* SportsTaggingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1500000000000000000001 /* SportsTaggingTests.swift */; };
+		AB1600000000000000000002 /* FaceEmbeddingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1600000000000000000001 /* FaceEmbeddingTests.swift */; };
 		B71AFE10A1B0E2510C12C200 /* ApprovedListServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A71AFE10A1B0E2510C12C100 /* ApprovedListServiceTests.swift */; };
 		D1C0023217A1B0E2510C12C2 /* MetadataIOCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */; };
 		E957DC81E4AA200C4CD87043 /* MetadataSidecarServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CB424FD4CEB2C23AEFF5DB0 /* MetadataSidecarServiceTests.swift */; };
@@ -65,6 +66,7 @@
 		AB1300000000000000000001 /* PlayerResolverTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PlayerResolverTests.swift; sourceTree = "<group>"; };
 		AB1400000000000000000001 /* TeamColorClustererTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TeamColorClustererTests.swift; sourceTree = "<group>"; };
 		AB1500000000000000000001 /* SportsTaggingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SportsTaggingTests.swift; sourceTree = "<group>"; };
+		AB1600000000000000000001 /* FaceEmbeddingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FaceEmbeddingTests.swift; sourceTree = "<group>"; };
 		D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataIOCoordinatorTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -121,6 +123,7 @@
 				AB0100000000000000000001 /* ApprovedListBypassTests.swift */,
 				AB0200000000000000000001 /* KeywordListsStoreTests.swift */,
 				AB0900000000000000000001 /* KnownPeopleServiceTests.swift */,
+				AB1600000000000000000001 /* FaceEmbeddingTests.swift */,
 				AB0300000000000000000001 /* StructuredKeywordParserTests.swift */,
 				AB0400000000000000000001 /* StructuredKeywordSerializerTests.swift */,
 				AB0500000000000000000001 /* KeywordListsArchiveTests.swift */,
@@ -305,6 +308,7 @@
 				AB0100000000000000000002 /* ApprovedListBypassTests.swift in Sources */,
 				AB0200000000000000000002 /* KeywordListsStoreTests.swift in Sources */,
 				AB0900000000000000000002 /* KnownPeopleServiceTests.swift in Sources */,
+				AB1600000000000000000002 /* FaceEmbeddingTests.swift in Sources */,
 				AB0700000000000000000002 /* StructuredKeywordServiceTests.swift in Sources */,
 				AB0300000000000000000002 /* StructuredKeywordParserTests.swift in Sources */,
 				AB0400000000000000000002 /* StructuredKeywordSerializerTests.swift in Sources */,

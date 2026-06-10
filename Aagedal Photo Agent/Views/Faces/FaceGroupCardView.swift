@@ -875,12 +875,9 @@ final class FaceGroupCardView: NSView {
             applyItem.target = self
             menu.addItem(applyItem)
 
-            let knownPeopleMode = UserDefaults.standard.string(forKey: "knownPeopleMode") ?? "off"
-            if knownPeopleMode != "off" {
-                let addKnownItem = NSMenuItem(title: "Add to Known People", action: #selector(menuAddToKnownPeople), keyEquivalent: "")
-                addKnownItem.target = self
-                menu.addItem(addKnownItem)
-            }
+            let addKnownItem = NSMenuItem(title: "Add to Known People", action: #selector(menuAddToKnownPeople), keyEquivalent: "")
+            addKnownItem.target = self
+            menu.addItem(addKnownItem)
         }
 
         menu.addItem(NSMenuItem.separator())

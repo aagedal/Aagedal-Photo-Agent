@@ -16,7 +16,6 @@ struct FaceGroupDetailView: View {
     @State private var isAddingToKnownPeople = false
     @State private var knownPeopleMessage: String?
     @State private var presetNameImportMessage: String?
-    @AppStorage("knownPeopleMode") private var knownPeopleMode: String = "off"
     var isExpanded: Bool = false
     var onSelectImages: ((Set<URL>) -> Void)?
     var onScrollToGroup: ((UUID) -> Void)?
@@ -236,21 +235,19 @@ struct FaceGroupDetailView: View {
                     .help("Use selected face as group thumbnail")
                 }
 
-                // Add to Known People button (only when mode is enabled)
-                if knownPeopleMode != "off" {
-                    Button {
-                        addToKnownPeople()
-                    } label: {
-                        Label("Add to Known", systemImage: "person.badge.plus")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(
-                        editingName.trimmingCharacters(in: .whitespaces).isEmpty ||
-                        isAddingToKnownPeople
-                    )
-                    .help("Add to Known People database")
+                // Add to Known People (matching is always automatic; this seeds the gallery).
+                Button {
+                    addToKnownPeople()
+                } label: {
+                    Label("Add to Known", systemImage: "person.badge.plus")
                 }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(
+                    editingName.trimmingCharacters(in: .whitespaces).isEmpty ||
+                    isAddingToKnownPeople
+                )
+                .help("Add to Known People database")
 
                 // Sports bridge: link a roster-resolved group to Known People so
                 // the player is recognised by face in future games.

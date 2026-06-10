@@ -96,6 +96,32 @@ struct ExpandedFaceManagementView: View {
                     .padding(.vertical, 6)
                 }
                 Divider()
+                // Live sharpness filter — hides too-blurry faces from the set without re-scanning.
+                HStack(spacing: 8) {
+                    Image(systemName: "camera.filters")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("Sharpness filter")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Slider(value: $viewModel.displayQualityThreshold,
+                           in: 0...FaceRecognitionDefaults.minFaceQualityMax, step: 0.01)
+                        .controlSize(.small)
+                        .frame(maxWidth: 240)
+                    Text(viewModel.displayQualityThreshold <= 0
+                         ? "Off"
+                         : String(format: "%.2f", viewModel.displayQualityThreshold))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 30, alignment: .trailing)
+                    Spacer()
+                    Text("Hides blurry faces • drag to taste")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                Divider()
                 FaceGroupCollectionRepresentable(
                     viewModel: viewModel,
                     selectionState: selectionState,
@@ -280,7 +306,6 @@ struct FaceSuggestionsPanel: View {
     @Bindable var viewModel: FaceRecognitionViewModel
     var onClose: () -> Void
 
-    @AppStorage("knownPeopleMode") private var knownPeopleMode: String = "off"
     @State private var isRefining = false
     @State private var isCheckingKnown = false
     @State private var lastRefinementCount = 0
@@ -355,8 +380,8 @@ struct FaceSuggestionsPanel: View {
                             .disabled(isRefining)
                         }
 
-                        // Known People button
-                        if knownPeopleMode != "off" {
+                        // Known People button (matching is automatic; this re-runs it on demand).
+                        Group {
                             Button {
                                 checkKnownPeople()
                             } label: {
@@ -489,7 +514,7 @@ struct FaceSuggestionsPanel: View {
         }
         .background(.background)
         .onAppear {
-            if knownPeopleMode != "off" && viewModel.lastKnownPeopleCheckResult == nil {
+            if viewModel.lastKnownPeopleCheckResult == nil {
                 checkKnownPeople()
             }
         }

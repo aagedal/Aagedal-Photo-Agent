@@ -255,38 +255,32 @@ struct SettingsView: View {
     @ViewBuilder
     private var faceRecognitionTab: some View {
         Form {
-            Section("Recognition Mode") {
-                Picker("Mode", selection: $settingsViewModel.faceRecognitionMode) {
-                    ForEach(FaceRecognitionMode.allCases, id: \.self) { mode in
-                        Text(mode.displayName).tag(mode)
+            Section("Grouping") {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Grouping Sensitivity")
+                        Spacer()
+                        Text(String(format: "%.2f", settingsViewModel.visionClusteringThreshold))
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
                     }
-                }
-                .pickerStyle(.segmented)
-
-                Text(settingsViewModel.faceRecognitionMode.description)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                if settingsViewModel.faceRecognitionMode == .faceAndClothing {
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack {
-                            Text("Face Weight")
-                            Spacer()
-                            Text(String(format: "%.0f%%", settingsViewModel.faceFaceWeight * 100))
-                                .foregroundStyle(.secondary)
-                                .monospacedDigit()
-                        }
-                        Slider(value: $settingsViewModel.faceFaceWeight, in: 0.3...0.9, step: 0.05)
-                        HStack {
-                            Text("Face: \(Int(settingsViewModel.faceFaceWeight * 100))%")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Text("Clothing: \(Int(settingsViewModel.faceClothingWeight * 100))%")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
+                    Slider(
+                        value: $settingsViewModel.visionClusteringThreshold,
+                        in: Double(FaceRecognitionDefaults.sensitivityMin)...Double(FaceRecognitionDefaults.sensitivityMax),
+                        step: 0.01
+                    )
+                    HStack {
+                        Text("Stricter (more groups)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text("Looser (fewer groups)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
+                    Text("If one person is split across several groups, move toward Looser. If different people are merged, move toward Stricter.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
 
@@ -323,73 +317,6 @@ struct SettingsView: View {
                 }
             }
 
-            Section("Clustering") {
-                Picker("Algorithm", selection: $settingsViewModel.faceClusteringAlgorithm) {
-                    ForEach(FaceClusteringAlgorithm.allCases, id: \.self) { algorithm in
-                        Text(algorithm.displayName).tag(algorithm)
-                    }
-                }
-
-                Text(settingsViewModel.faceClusteringAlgorithm.description)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text("Clustering Sensitivity (\(settingsViewModel.faceRecognitionMode.displayName))")
-                        Spacer()
-                        Text(String(format: "%.2f", settingsViewModel.effectiveClusteringThreshold))
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-                    }
-                    if settingsViewModel.faceRecognitionMode == .visionFeaturePrint {
-                        Slider(value: $settingsViewModel.visionClusteringThreshold, in: 0.3...0.8, step: 0.01)
-                    } else {
-                        Slider(value: $settingsViewModel.faceClothingClusteringThreshold, in: 0.3...0.8, step: 0.01)
-                    }
-                HStack {
-                    Text("Strict (fewer matches)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text("Loose (more matches)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                if settingsViewModel.faceRecognitionMode == .faceAndClothing {
-                    Toggle("Second-pass can join existing groups", isOn: $settingsViewModel.faceClothingSecondPassAttachToExisting)
-                    Text("If off, leftover singletons only cluster among themselves.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-                if settingsViewModel.faceClusteringAlgorithm == .chineseWhispers ||
-                   settingsViewModel.faceClusteringAlgorithm == .qualityGatedTwoPass {
-                    Toggle("Quality-weighted edges", isOn: $settingsViewModel.faceUseQualityWeightedEdges)
-                    Text("Higher quality faces have more influence on clustering")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                if settingsViewModel.faceClusteringAlgorithm == .qualityGatedTwoPass {
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack {
-                            Text("Quality Gate Threshold")
-                            Spacer()
-                            Text(String(format: "%.2f", settingsViewModel.faceQualityGateThreshold))
-                                .foregroundStyle(.secondary)
-                                .monospacedDigit()
-                        }
-                        Slider(value: $settingsViewModel.faceQualityGateThreshold, in: 0.3...0.9, step: 0.05)
-                        Text("Faces below this quality are assigned after initial clustering")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-
             Section("Data Management") {
                 Picker("Auto-delete face data", selection: $settingsViewModel.faceCleanupPolicy) {
                     ForEach(FaceCleanupPolicy.allCases, id: \.self) { policy in
@@ -408,18 +335,11 @@ struct SettingsView: View {
     private var knownPeopleTab: some View {
         Form {
             Section("Known People Database") {
-                Picker("Mode", selection: $settingsViewModel.knownPeopleMode) {
-                    ForEach(KnownPeopleMode.allCases, id: \.self) { mode in
-                        Text(mode.displayName).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-
-                Text(settingsViewModel.knownPeopleMode.description)
+                Text("After each scan, face groups are matched against your known people automatically.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                if settingsViewModel.knownPeopleMode != .off {
+                Group {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
                             Text("Auto-match Min Confidence")
@@ -428,7 +348,7 @@ struct SettingsView: View {
                                 .foregroundStyle(.secondary)
                                 .monospacedDigit()
                         }
-                        Slider(value: $settingsViewModel.knownPeopleMinConfidence, in: 0.50...0.95, step: 0.01)
+                        Slider(value: $settingsViewModel.knownPeopleMinConfidence, in: 0.20...0.65, step: 0.01)
                         Text("Lower values match more often; higher values reduce false matches.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -496,9 +416,6 @@ struct SettingsView: View {
             )
         }
         .onAppear {
-            refreshKnownPeopleStats()
-        }
-        .onChange(of: settingsViewModel.knownPeopleMode) {
             refreshKnownPeopleStats()
         }
         .alert("Clear Known People Database?", isPresented: $showClearConfirmation) {
