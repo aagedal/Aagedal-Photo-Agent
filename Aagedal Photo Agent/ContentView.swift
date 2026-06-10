@@ -871,12 +871,26 @@ struct ContentView: View {
 
     // MARK: - Sidebar
 
+    private func sidebarSectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .padding(.leading, 14)
+            .padding(.top, 8)
+            .padding(.bottom, 3)
+    }
+
     @ViewBuilder
     private var sidebar: some View {
         VStack(spacing: 0) {
-            List {
-                if !browserViewModel.favoriteFolders.isEmpty {
-                    Section("Favorites") {
+            // A plain ScrollView rather than List(.sidebar): the NSTableView
+            // behind a sidebar list imposes its own row height and inter-row
+            // spacing, so compact rows are impossible there — only the
+            // highlight shrinks, not the row pitch.
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    if !browserViewModel.favoriteFolders.isEmpty {
+                        sidebarSectionHeader("Favorites")
                         ForEach(browserViewModel.favoriteFolders) { favorite in
                             FolderTreeRow(
                                 url: favorite.url,
@@ -888,20 +902,16 @@ struct ContentView: View {
                             )
                         }
                     }
-                }
 
-                if !browserViewModel.favoriteFolders.isEmpty && !browserViewModel.openFolders.isEmpty {
-                    HStack {
+                    if !browserViewModel.favoriteFolders.isEmpty && !browserViewModel.openFolders.isEmpty {
                         Rectangle()
                             .fill(Color(nsColor: .separatorColor))
                             .frame(height: 1)
+                            .padding(.vertical, 6)
                     }
-                    .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
-                    .listRowSeparator(.hidden)
-                }
 
-                if !browserViewModel.openFolders.isEmpty {
-                    Section("Open Folders") {
+                    if !browserViewModel.openFolders.isEmpty {
+                        sidebarSectionHeader("Open Folders")
                         ForEach(browserViewModel.openFolders, id: \.self) { folderURL in
                             FolderTreeRow(
                                 url: folderURL,
@@ -914,12 +924,9 @@ struct ContentView: View {
                         }
                     }
                 }
-
+                .padding(.vertical, 8)
             }
-            .listStyle(.sidebar)
-            // The sidebar list's default min row height (~24pt) would undo the
-            // compact row padding in FolderTreeRow; rows are 22pt themselves.
-            .environment(\.defaultMinListRowHeight, 22)
+            .frame(maxHeight: .infinity)
 
             if ftpViewModel.isUploading || ftpViewModel.isRendering || ftpViewModel.uploadCompleted {
                 Divider()

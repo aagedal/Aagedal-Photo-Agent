@@ -48,12 +48,8 @@ struct FolderTreeRow: View {
 
     var body: some View {
         rowContent
-            .listRowInsets(EdgeInsets(
-                top: 0,
-                leading: 8 + CGFloat(depth) * 16,
-                bottom: 0,
-                trailing: 8
-            ))
+            .padding(.leading, 8 + CGFloat(depth) * 16)
+            .padding(.trailing, 8)
             .contextMenu { contextMenuItems }
 
         if isExpanded {
@@ -71,12 +67,9 @@ struct FolderTreeRow: View {
             } else if viewModel.subfoldersByOpenFolder[url] == nil {
                 ProgressView()
                     .controlSize(.small)
-                    .listRowInsets(EdgeInsets(
-                        top: 1,
-                        leading: 8 + CGFloat(depth + 1) * 16,
-                        bottom: 1,
-                        trailing: 8
-                    ))
+                    .padding(.leading, 8 + CGFloat(depth + 1) * 16)
+                    .padding(.trailing, 8)
+                    .padding(.vertical, 1)
             }
         }
     }
@@ -96,7 +89,8 @@ struct FolderTreeRow: View {
                         .animation(.easeInOut(duration: 0.15), value: isExpanded)
                         // Hit target much larger than the glyph, so expanding
                         // doesn't get mistaken for a click that opens the folder.
-                        .frame(width: 20, height: 20, alignment: .center)
+                        // Height matches the text line so it doesn't tax row height.
+                        .frame(width: 20, height: 16, alignment: .center)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -124,7 +118,7 @@ struct FolderTreeRow: View {
                 .help("Close Folder")
             }
         }
-        .padding(.vertical, 1)
+        .padding(.vertical, 3)
         .padding(.horizontal, 6)
         .background(
             RoundedRectangle(cornerRadius: 6)
