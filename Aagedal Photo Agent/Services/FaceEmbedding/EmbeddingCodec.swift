@@ -16,7 +16,7 @@ nonisolated enum EmbeddingCodec {
     static let magic: UInt32 = 0x46_45_4D_32
 
     static func encode(_ vector: [Float]) -> Data {
-        var header: [UInt32] = [magic, UInt32(vector.count)]
+        let header: [UInt32] = [magic, UInt32(vector.count)]
         var data = Data(capacity: 8 + vector.count * MemoryLayout<Float>.size)
         header.withUnsafeBytes { data.append(contentsOf: $0) }
         vector.withUnsafeBytes { data.append(contentsOf: $0) }
@@ -33,7 +33,7 @@ nonisolated enum EmbeddingCodec {
             guard count > 0, data.count == 8 + count * MemoryLayout<Float>.size else { return nil }
             var out = [Float](repeating: 0, count: count)
             out.withUnsafeMutableBytes { dst in
-                memcpy(dst.baseAddress!, raw.baseAddress!.advanced(by: 8), count * MemoryLayout<Float>.size)
+                _ = memcpy(dst.baseAddress!, raw.baseAddress!.advanced(by: 8), count * MemoryLayout<Float>.size)
             }
             return out
         }

@@ -865,7 +865,7 @@ nonisolated struct FaceDetectionService: Sendable {
             let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
             do {
                 try handler.perform([request])
-                let scored = request.results as? [VNFaceObservation] ?? []
+                let scored = request.results ?? []
                 var byUUID: [UUID: Float] = [:]
                 for face in scored where face.faceCaptureQuality != nil {
                     byUUID[face.uuid] = face.faceCaptureQuality
