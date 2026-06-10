@@ -45,6 +45,22 @@ struct FaceGroupDetailView: View {
         return out
     }
 
+    /// 4 columns of 60pt thumbnails fit the popover's fixed 340pt width
+    /// (308pt content after padding).
+    private static let gridColumnCount = 4
+    private static let thumbnailSize: CGFloat = 60
+    private static let gridSpacing: CGFloat = 8
+    private static let gridMaxHeight: CGFloat = 160
+
+    /// Rigid grid height so the thumbnails can never be compressed away when
+    /// conditional sections (multi-select bar, name suggestions) appear — the
+    /// popover must grow vertically instead.
+    private func gridHeight(faceCount: Int) -> CGFloat {
+        let rows = max(1, (faceCount + Self.gridColumnCount - 1) / Self.gridColumnCount)
+        let height = CGFloat(rows) * Self.thumbnailSize + CGFloat(rows - 1) * Self.gridSpacing
+        return min(height, Self.gridMaxHeight)
+    }
+
     var body: some View {
         let faces = viewModel.faces(in: group)
         let imageCount = Set(faces.map(\.imageURL)).count
@@ -64,13 +80,19 @@ struct FaceGroupDetailView: View {
 
             // Face grid with multi-select and context menu
             ScrollView {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 60))], spacing: 8) {
+                LazyVGrid(
+                    columns: Array(
+                        repeating: GridItem(.flexible(), spacing: Self.gridSpacing),
+                        count: Self.gridColumnCount
+                    ),
+                    spacing: Self.gridSpacing
+                ) {
                     ForEach(faces) { face in
                         faceThumbnail(face: face, canUngroup: faces.count > 1)
                     }
                 }
             }
-            .frame(maxHeight: 160)
+            .frame(height: gridHeight(faceCount: faces.count))
 
             // Multi-select action bar
             if !selectedFaceIDs.isEmpty {
@@ -172,6 +194,9 @@ struct FaceGroupDetailView: View {
         }
         .padding()
         .frame(width: 340)
+        // Force the popover to track the content's required height when
+        // conditional sections appear, rather than compressing the layout.
+        .fixedSize(horizontal: false, vertical: true)
         .onAppear {
             editingName = group.name ?? ""
         }
