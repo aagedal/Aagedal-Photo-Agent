@@ -76,9 +76,6 @@ struct ExpandedFaceManagementView: View {
     @State private var showDeleteGroupAlert = false
     @State private var showingNameListFilePicker = false
     @State private var nameListImportMessage: String?
-    @State private var showSuggestionsPanel = true
-
-    private let suggestionsPanelWidth: CGFloat = 320
 
     var body: some View {
         HStack(spacing: 0) {
@@ -137,16 +134,6 @@ struct ExpandedFaceManagementView: View {
                         onPhotosDeleted: onPhotosDeleted
                     )
                 )
-            }
-
-            // Suggestions panel on the right
-            if showSuggestionsPanel {
-                Divider()
-                FaceSuggestionsPanel(
-                    viewModel: viewModel,
-                    onClose: { showSuggestionsPanel = false }
-                )
-                .frame(width: suggestionsPanelWidth)
             }
         }
         .onChange(of: selectionState.focusedFaceID) { _, newValue in
@@ -250,19 +237,6 @@ struct ExpandedFaceManagementView: View {
             Spacer()
 
             SelectionInfoView(selectionState: selectionState, viewModel: viewModel)
-
-            // Toggle suggestions panel
-            Button {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    showSuggestionsPanel.toggle()
-                }
-            } label: {
-                Label(
-                    showSuggestionsPanel ? "Hide Suggestions" : "Show Suggestions",
-                    systemImage: showSuggestionsPanel ? "sidebar.trailing" : "sidebar.trailing"
-                )
-            }
-            .help(showSuggestionsPanel ? "Hide suggestions panel" : "Show suggestions panel")
 
             Button {
                 onClose()

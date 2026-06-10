@@ -15,7 +15,6 @@ struct FaceBarView: View {
 
     @State private var selectedGroup: FaceGroup?
     @State private var multiSelectedGroupIDs: Set<UUID> = []
-    @State private var showMergeSuggestions = false
     @State private var showClusteringSettings = false
     @State private var isApplyingAllNames = false
     @State private var refinementCount = 0
@@ -115,7 +114,6 @@ struct FaceBarView: View {
                 if viewModel.scanComplete {
                     Button {
                         selectedGroup = nil
-                        showMergeSuggestions = false
                         onToggleExpanded?()
                     } label: {
                         VStack(spacing: 1) {
@@ -211,42 +209,6 @@ struct FaceBarView: View {
                 Text("\(multiSelectedGroupIDs.count)")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
-            }
-
-            // Merge suggestions indicator
-            if !viewModel.mergeSuggestions.isEmpty {
-                Divider()
-                    .frame(height: 58)
-
-                Button {
-                    showMergeSuggestions = true
-                } label: {
-                    ZStack(alignment: .topTrailing) {
-                        VStack(spacing: 2) {
-                            Image(systemName: "person.2.badge.gearshape")
-                                .font(.system(size: 16))
-                            Text("Suggestions")
-                                .font(.system(size: 9))
-                        }
-                        .frame(width: 60, height: 48)
-
-                        // Badge
-                        Text("\(viewModel.mergeSuggestions.count)")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 2)
-                            .background(Color.orange)
-                            .clipShape(Capsule())
-                            .offset(x: 4, y: -2)
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .popover(isPresented: $showMergeSuggestions) {
-                    MergeSuggestionsPopover(viewModel: viewModel)
-                }
-                .help("Review merge suggestions for similar face groups")
             }
 
             Spacer()
