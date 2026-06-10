@@ -21,8 +21,6 @@ struct FaceBarView: View {
     @State private var refinementCount = 0
     @State private var highlightedGroupID: UUID?
     @State private var isDraggingOverBar: Bool = false
-    @State private var showMatchSetup = false
-    @AppStorage("sports.modeEnabled") private var sportsModeEnabled: Bool = false
 
     /// Height of the face bar
     private let barHeight: CGFloat = 100
@@ -112,51 +110,6 @@ struct FaceBarView: View {
                 .buttonStyle(.plain)
                 .disabled(!canApplyAllNames)
                 .help("Apply all named faces to metadata")
-
-                // Sports tagging: a visible entry point in the bar. When jersey
-                // detection is off it's a subtle toggle to enable it; once on it
-                // becomes the Teams setup button (gated on sports mode).
-                if sportsModeEnabled {
-                    Button {
-                        showMatchSetup = true
-                    } label: {
-                        VStack(spacing: 1) {
-                            Image(systemName: "tshirt.fill")
-                                .font(.system(size: 16))
-                            Text("Teams")
-                                .font(.system(size: 9))
-                        }
-                        .frame(width: 40, height: 48)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help("Set up teams and resolve jersey numbers")
-                    .overlay(alignment: .topTrailing) {
-                        if viewModel.pendingColorClusterConfirmation != nil
-                            || !viewModel.ambiguousNumberDetections.isEmpty {
-                            Circle().fill(.orange).frame(width: 8, height: 8)
-                        }
-                    }
-                    .sheet(isPresented: $showMatchSetup) {
-                        MatchSetupView(viewModel: viewModel, folderURL: folderURL)
-                    }
-                } else {
-                    Button {
-                        sportsModeEnabled = true
-                    } label: {
-                        VStack(spacing: 1) {
-                            Image(systemName: "tshirt")
-                                .font(.system(size: 16))
-                            Text("Sports")
-                                .font(.system(size: 9))
-                        }
-                        .frame(width: 40, height: 48)
-                        .contentShape(Rectangle())
-                        .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Turn on jersey-number detection, then set up teams. Rescan to read numbers on already-scanned photos.")
-                }
 
                 // Expand/collapse button
                 if viewModel.scanComplete {
@@ -579,10 +532,6 @@ struct MergeSuggestionRow: View {
 struct ClusteringSettingsPopover: View {
     @Bindable var settingsViewModel: SettingsViewModel
 
-    @AppStorage("sports.modeEnabled") private var sportsModeEnabled: Bool = false
-    @AppStorage("sports.ocrConfidenceThreshold") private var sportsOCRConfidence: Double = 0.5
-    @AppStorage("sports.numberMinHeightFraction") private var sportsMinHeight: Double = 0.04
-
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Face Clustering")
@@ -616,39 +565,6 @@ struct ClusteringSettingsPopover: View {
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
-            }
-
-            Divider()
-
-            // Sports tagging (jersey-number detection) — experimental, deferred to a later release.
-            DisclosureGroup("Experimental") {
-            VStack(alignment: .leading, spacing: 6) {
-                Toggle("Detect jersey numbers (Sports)", isOn: $sportsModeEnabled)
-                    .font(.subheadline)
-                if sportsModeEnabled {
-                    HStack {
-                        Text("Number confidence")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Text(String(format: "%.2f", sportsOCRConfidence))
-                            .font(.caption2).monospacedDigit().foregroundStyle(.secondary)
-                    }
-                    Slider(value: $sportsOCRConfidence, in: 0.1...0.9, step: 0.05)
-                    HStack {
-                        Text("Min number size")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Text(String(format: "%.0f%%", sportsMinHeight * 100))
-                            .font(.caption2).monospacedDigit().foregroundStyle(.secondary)
-                    }
-                    Slider(value: $sportsMinHeight, in: 0.01...0.2, step: 0.01)
-                    Text("Identifies players by the number on their shirt, even when the face isn't visible. Use the Teams button to pick the two teams.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
             }
 
             Text("Changes apply to new scans. Option+click Scan to rescan.")

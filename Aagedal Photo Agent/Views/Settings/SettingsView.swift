@@ -51,7 +51,6 @@ struct SettingsView: View {
         case quickLists
         case faceRecognition
         case knownPeople
-        case teams
         case locations
         case format
         case templates
@@ -71,7 +70,6 @@ struct SettingsView: View {
             case .quickLists: return "Quick Lists"
             case .faceRecognition: return "Face Recognition"
             case .knownPeople: return "Known People"
-            case .teams: return "Teams"
             case .locations: return "Locations"
             case .format: return "Format"
             case .templates: return "Templates"
@@ -91,7 +89,6 @@ struct SettingsView: View {
             case .quickLists: return "bolt"
             case .faceRecognition: return "person.crop.rectangle.stack"
             case .knownPeople: return "person.crop.square"
-            case .teams: return "tshirt"
             case .locations: return "folder"
             case .format: return "doc.richtext"
             case .templates: return "doc.on.clipboard"
@@ -121,7 +118,6 @@ struct SettingsView: View {
                 Section("People and Groups") {
                     row(.faceRecognition)
                     row(.knownPeople)
-                    row(.teams)
                 }
                 Section("Export & Publishing") {
                     row(.locations)
@@ -164,7 +160,6 @@ struct SettingsView: View {
         case .quickLists: quickListsTab
         case .faceRecognition: faceRecognitionTab
         case .knownPeople: knownPeopleTab
-        case .teams: teamsTab
         case .locations: locationsTab
         case .format: formatTab
         case .templates: templatesTab
@@ -174,13 +169,6 @@ struct SettingsView: View {
         case .updates: updatesTab
         case .shortcuts: KeyboardShortcutsSettingsView()
         }
-    }
-
-    // MARK: - Teams Tab
-
-    @ViewBuilder
-    private var teamsTab: some View {
-        TeamsLibraryContent()
     }
 
     // MARK: - General Tab
@@ -1172,14 +1160,6 @@ struct SettingsView: View {
                     set: { coordinator.setKnownPeopleEnabled($0) }
                 ))
                 Text("Reference faces and clothing samples used for auto-matching.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Toggle("Teams library", isOn: Binding(
-                    get: { coordinator.teamsEnabled },
-                    set: { coordinator.setTeamsEnabled($0) }
-                ))
-                Text("Teams, kit colours, and player rosters used for jersey-number tagging.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } header: {
