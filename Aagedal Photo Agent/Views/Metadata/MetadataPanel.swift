@@ -80,9 +80,23 @@ struct MetadataPanel: View {
             if approvedActive {
                 return { prefix in approved.suggestions(prefix: prefix, in: .keywords) }
             }
-            guard !quickList.isEmpty else { return nil }
-            return { prefix in ApprovedListService.suggestions(prefix: prefix, in: quickList) }
+            // No approved list: suggest from the quick list and the structured
+            // keyword tree.
+            let candidates = Self.mergeSuggestionCandidates(
+                quickList,
+                StructuredKeywordService.shared.allNodeNames()
+            )
+            guard !candidates.isEmpty else { return nil }
+            return { prefix in ApprovedListService.suggestions(prefix: prefix, in: candidates) }
         }()
+
+        // Accepting a structured-tree suggestion applies the same keyword-
+        // ancestor + synonym expansion as the picker. Only wired when the
+        // approved list is inactive — its suggestions are approved entries,
+        // never structured nodes.
+        let suggestionExpander: ((String) -> [String]?)? = approvedActive
+            ? nil
+            : { name in StructuredKeywordService.shared.expansion(forName: name) }
 
         let validator: ((String) -> KeywordValidation)? = approvedActive
             ? { value in approved.validate(value, in: .keywords) }
@@ -118,6 +132,7 @@ struct MetadataPanel: View {
             focusedField: $focusedField,
             suggestionProvider: suggestionProvider,
             validator: validator,
+            suggestionExpander: suggestionExpander,
             flaggedKeywords: flagged,
             hideQuickListMenu: false,
             autoHighlightFirstSuggestion: approvedActive && approvedMode != .suggest,
@@ -153,6 +168,92 @@ struct MetadataPanel: View {
                 storeKey: .quick(type)
             )
         }
+    }
+
+    @ViewBuilder
+    private var personShownEditor: some View {
+        let quickList = settingsViewModel.loadPersonShownList()
+        // Names come from every source the app already maintains: the quick
+        // list, the structured Person Shown tree, and Known People from face
+        // recognition.
+        let candidates = Self.mergeSuggestionCandidates(
+            quickList,
+            StructuredKeywordService.personShown.allNodeNames(),
+            KnownPeopleService.shared.getAllPeople().map(\.name)
+        )
+        let suggestionProvider: ((String) -> [ApprovedListSuggestion])? = candidates.isEmpty
+            ? nil
+            : { prefix in ApprovedListService.suggestions(prefix: prefix, in: candidates) }
+
+        KeywordsEditorWithDiff(
+            label: "Person Shown",
+            keywords: $viewModel.editingMetadata.personShown,
+            differs: viewModel.personShownDiffer(),
+            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("personShown"),
+            partialKeywords: viewModel.isBatchEdit ? viewModel.batchPartialPersonShown : [],
+            selectedCount: viewModel.selectedCount,
+            onPromotePartial: { person in
+                viewModel.promotePartialPerson(person)
+            },
+            placeholder: "Add name",
+            onChange: { viewModel.markChanged() },
+            onCommit: { commitEdits() },
+            showPresetSelectionIndicator: true,
+            allowsPresetToggleRemoval: true,
+            onAddCurrentToQuickList: {
+                addCurrentToQuickList(type: .personShown, values: viewModel.editingMetadata.personShown)
+            },
+            presetList: quickList,
+            onChooseListFile: {
+                listFilePickerTarget = .personShown
+                showingListFilePicker = true
+            },
+            focusKey: "personShown",
+            focusedField: $focusedField,
+            suggestionProvider: suggestionProvider,
+            // Names from the structured tree expand to include their alternate
+            // spellings, same as the picker. Quick-list and Known People names
+            // fall back to the plain name.
+            suggestionExpander: { name in
+                StructuredKeywordService.personShown.expansion(forName: name)
+            },
+            onShowStructuredKeywords: {
+                showingStructuredPersonShown = true
+            },
+            structuredPickerHelp: "Open Structured Person Shown picker"
+        )
+        .sheet(isPresented: $showingStructuredPersonShown) {
+            StructuredKeywordsPicker(
+                onAddKeywords: { expanded in
+                    addStructuredPeople(expanded)
+                },
+                onClose: {
+                    showingStructuredPersonShown = false
+                },
+                service: .personShown,
+                searchPrompt: "Search names or alternate spellings…",
+                emptyTitle: "No structured Person Shown file loaded",
+                emptySubtitle: "Build or import a name tree in Settings → Metadata → Structured Person Shown."
+            )
+        }
+    }
+
+    /// Merges suggestion sources into one candidate list, deduplicated
+    /// case-insensitively. First occurrence wins, so earlier sources control
+    /// the casing shown in the suggestions popover.
+    private static func mergeSuggestionCandidates(_ sources: [String]...) -> [String] {
+        var seen = Set<String>()
+        var merged: [String] = []
+        for source in sources {
+            for entry in source {
+                let trimmed = entry.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { continue }
+                if seen.insert(trimmed.lowercased()).inserted {
+                    merged.append(trimmed)
+                }
+            }
+        }
+        return merged
     }
 
     private func addStructuredKeywords(_ expanded: [String]) {
@@ -769,51 +870,8 @@ struct MetadataPanel: View {
         keywordsEditor
             .id("keywords")
 
-        KeywordsEditorWithDiff(
-            label: "Person Shown",
-            keywords: $viewModel.editingMetadata.personShown,
-            differs: viewModel.personShownDiffer(),
-            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("personShown"),
-            partialKeywords: viewModel.isBatchEdit ? viewModel.batchPartialPersonShown : [],
-            selectedCount: viewModel.selectedCount,
-            onPromotePartial: { person in
-                viewModel.promotePartialPerson(person)
-            },
-            placeholder: "Add name",
-            onChange: { viewModel.markChanged() },
-            onCommit: { commitEdits() },
-            showPresetSelectionIndicator: true,
-            allowsPresetToggleRemoval: true,
-            onAddCurrentToQuickList: {
-                addCurrentToQuickList(type: .personShown, values: viewModel.editingMetadata.personShown)
-            },
-            presetList: settingsViewModel.loadPersonShownList(),
-            onChooseListFile: {
-                listFilePickerTarget = .personShown
-                showingListFilePicker = true
-            },
-            focusKey: "personShown",
-            focusedField: $focusedField,
-            onShowStructuredKeywords: {
-                showingStructuredPersonShown = true
-            },
-            structuredPickerHelp: "Open Structured Person Shown picker"
-        )
-        .id("personShown")
-        .sheet(isPresented: $showingStructuredPersonShown) {
-            StructuredKeywordsPicker(
-                onAddKeywords: { expanded in
-                    addStructuredPeople(expanded)
-                },
-                onClose: {
-                    showingStructuredPersonShown = false
-                },
-                service: .personShown,
-                searchPrompt: "Search names or alternate spellings…",
-                emptyTitle: "No structured Person Shown file loaded",
-                emptySubtitle: "Build or import a name tree in Settings → Metadata → Structured Person Shown."
-            )
-        }
+        personShownEditor
+            .id("personShown")
 
         EditableTextField(
             label: "Copyright",
@@ -1533,6 +1591,12 @@ struct KeywordsEditorWithDiff: View {
     // Approved-keywords integration. All optional — other callers keep current behavior.
     var suggestionProvider: ((String) -> [ApprovedListSuggestion])? = nil
     var validator: ((String) -> KeywordValidation)? = nil
+    /// Maps a committed suggestion to the full value list to add. Wired to the
+    /// structured trees so accepting a typed suggestion applies the same
+    /// ancestor + synonym expansion as the picker. A nil return falls back to
+    /// the plain single-value commit. Expanded values bypass the validator,
+    /// matching the picker's structured-tree bypass.
+    var suggestionExpander: ((String) -> [String]?)? = nil
     var flaggedKeywords: Set<String> = []
     var hideQuickListMenu: Bool = false
     /// When true, the first suggestion is highlighted as soon as the popover opens,
@@ -1832,6 +1896,20 @@ struct KeywordsEditorWithDiff: View {
     }
 
     private func commitSuggestion(_ suggestion: ApprovedListSuggestion) {
+        if let expansion = suggestionExpander?(suggestion.canonical) {
+            var added: [String] = []
+            for value in expansion where !keywords.contains(value) && !added.contains(value) {
+                added.append(value)
+            }
+            if !added.isEmpty {
+                keywords.append(contentsOf: added)
+                onChange?()
+                onCommit?()
+            }
+            inputText = ""
+            updateSuggestions(for: inputText)
+            return
+        }
         inputText = suggestion.canonical
         addKeywords(useHighlightedSuggestion: false)
     }

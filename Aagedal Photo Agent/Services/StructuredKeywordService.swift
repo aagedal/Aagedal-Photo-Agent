@@ -139,6 +139,28 @@ final class StructuredKeywordService {
         return result
     }
 
+    /// Expands the keyword node whose canonical name matches `name`
+    /// (case-insensitive) as if it had been activated in the picker — see
+    /// `expand(_:)`. Returns nil when no keyword node matches, so callers can
+    /// fall back to the plain name. The first match in tree order wins when
+    /// the same name appears under multiple categories.
+    func expansion(forName name: String) -> [String]? {
+        _ = version
+        let needle = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !needle.isEmpty else { return nil }
+
+        var result: [String]?
+        for root in roots {
+            walk(root, ancestors: []) { node, ancestors in
+                guard node.isKeyword, node.name.lowercased() == needle else { return true }
+                result = expand(StructuredKeywordPath(ancestors: ancestors, node: node))
+                return false
+            }
+            if result != nil { break }
+        }
+        return result
+    }
+
     /// Case-insensitive substring search returning up to `limit` matching keyword (not
     /// container) nodes along with their ancestor paths.
     func search(_ query: String, limit: Int = 200) -> [StructuredKeywordPath] {
