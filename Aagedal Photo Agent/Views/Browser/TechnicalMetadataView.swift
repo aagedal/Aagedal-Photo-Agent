@@ -69,17 +69,58 @@ struct TechnicalMetadataView: View {
     }
 
     private func row(_ label: String, _ value: String) -> some View {
-        HStack {
-            Text(label)
-                .foregroundStyle(.secondary)
-            Spacer()
-            Text(value)
-                .lineLimit(1)
-        }
+        CopyableMetadataRow(label: label, value: value)
     }
 
     private var formattedFileSize: String {
         ByteCountFormatter.string(fromByteCount: fileSize, countStyle: .file)
+    }
+}
+
+/// A label/value row that copies its value to the clipboard when clicked.
+private struct CopyableMetadataRow: View {
+    let label: String
+    let value: String
+
+    @State private var isHovering = false
+    @State private var showsCopied = false
+    @State private var resetTask: Task<Void, Never>?
+
+    var body: some View {
+        HStack {
+            Text(label)
+                .foregroundStyle(.secondary)
+            Spacer()
+            if showsCopied {
+                Label("Copied", systemImage: "checkmark")
+                    .foregroundStyle(.secondary)
+            } else {
+                Text(value)
+                    .lineLimit(1)
+            }
+        }
+        .contentShape(Rectangle())
+        .background(
+            RoundedRectangle(cornerRadius: 4)
+                .fill(.primary.opacity(isHovering ? 0.07 : 0))
+                .padding(.horizontal, -4)
+                .padding(.vertical, -1)
+        )
+        .onHover { isHovering = $0 }
+        .onTapGesture { copyValue() }
+        .help("Click to copy")
+    }
+
+    private func copyValue() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(value, forType: .string)
+        showsCopied = true
+        resetTask?.cancel()
+        resetTask = Task {
+            try? await Task.sleep(for: .seconds(1.2))
+            guard !Task.isCancelled else { return }
+            showsCopied = false
+        }
     }
 }
 
