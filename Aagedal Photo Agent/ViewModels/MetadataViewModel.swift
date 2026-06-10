@@ -17,11 +17,6 @@ enum MetadataReferenceSource: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-struct MetadataWriteDestinations: Equatable, Sendable {
-    let iptc: MetadataDestination
-    let develop: MetadataDestination
-}
-
 @Observable
 final class MetadataViewModel {
     var metadata: IPTCMetadata?
@@ -39,14 +34,6 @@ final class MetadataViewModel {
     var variableProcessingHadFailures = false
     var selectedHasC2PA = false
     var descriptionConflict: DescriptionConflict?
-    /// Per-field differences between the embedded image and its `.xmp` sidecar, for the
-    /// comparison/merge sheet. Empty when the two agree (or there's no sidecar).
-    var metadataComparison: [MetadataFieldComparison] = []
-    /// Drives presentation of the comparison sheet.
-    var showMetadataComparison = false
-    /// True when the sidecar looked stale at load (image file newer than the `.xmp` and they
-    /// differ) — used to default the per-field picks to embedded and to message the conflict.
-    var comparisonSidecarIsStale = false
     /// Non-blocking notice rendered as a dismissible banner in the metadata panel.
     /// Set by bulk-add paths (template apply, partial promotion, Quick List pick)
     /// when entries are rejected or canonicalised against the approved list.
@@ -201,43 +188,6 @@ final class MetadataViewModel {
 
     private(set) var selectedHavePendingSidecars = false
 
-    /// Where the next IPTC and Develop write will land for the current selection.
-    /// Returns nil when nothing is selected.
-    var nextWriteDestination: MetadataWriteDestinations? {
-        guard !selectedURLs.isEmpty else { return nil }
-        let perFile = selectedURLs.map { Self.writeDestinations(for: $0, isC2PA: selectedHasC2PA) }
-        let iptc = Self.reduceDestinations(perFile.map(\.iptc))
-        let develop = Self.reduceDestinations(perFile.map(\.develop))
-        return MetadataWriteDestinations(iptc: iptc, develop: develop)
-    }
-
-    /// Where an IPTC/Develop write will actually land. Mirrors the real write dispatch
-    /// (`saveMetadataToDestination` / `commitEdits`) so the panel's "Next write" chip and
-    /// the "sources differ" warning reflect reality — honoring the write preset, C2PA
-    /// status, and RAW (all encoded in `MetadataWriteMode.current(forC2PA:isRaw:)`).
-    private static func writeDestinations(for url: URL, isC2PA: Bool) -> MetadataWriteDestinations {
-        let isRaw = SupportedImageFormats.isRaw(url: url)
-        // Camera Raw / develop edits live in the XMP sidecar for RAW (the file is never
-        // modified); embedded otherwise.
-        let developDest: MetadataDestination = isRaw ? .sidecar : .embedded
-        let iptc: MetadataDestination
-        switch MetadataWriteMode.current(forC2PA: isC2PA, isRaw: isRaw) {
-        case .writeToFile:
-            // PM-style embed: the file is the record, but an existing .xmp is
-            // mirrored on every save — the write genuinely lands on both surfaces.
-            iptc = XMPSidecarService().sidecarExists(for: url) ? .embeddedAndSidecar : .embedded
-        case .writeToXMPSidecar: iptc = .sidecar
-        case .historyOnly: iptc = .sidecar
-        case .writeToFileAndXMPSidecar: iptc = .embeddedAndSidecar
-        }
-        return MetadataWriteDestinations(iptc: iptc, develop: developDest)
-    }
-
-    private static func reduceDestinations(_ values: [MetadataDestination]) -> MetadataDestination {
-        guard let first = values.first else { return .embedded }
-        return values.allSatisfy { $0 == first } ? first : .mixed
-    }
-
     private func loadXMPMetadata(for imageURL: URL) -> IPTCMetadata? {
         xmpSidecarService.loadSidecar(for: imageURL)
     }
@@ -254,9 +204,6 @@ final class MetadataViewModel {
         variableProcessingStatus = nil
         selectedHasC2PA = images.contains { $0.hasC2PA }
         descriptionConflict = nil
-        metadataComparison = []
-        showMetadataComparison = false
-        comparisonSidecarIsStale = false
         sidecarHistory = []
         originalImageMetadata = nil
         embeddedMetadata = nil
@@ -344,20 +291,6 @@ final class MetadataViewModel {
                     self.metadataReferenceSource = referenceSource
                     self.metadata = baseMeta
                     self.originalImageMetadata = baseMeta
-
-                    // Build the per-field embedded-vs-sidecar comparison. Always populated
-                    // (so the panel banner can offer "Compare…") when the two differ, but
-                    // never auto-presented — under PM record semantics the sidecar simply IS
-                    // the record when it has descriptive content, and embedded retaining
-                    // older values is expected, not a conflict. The comparisonBanner
-                    // surfaces the stale warning and diff count; the sheet opens on demand.
-                    if let xmp = xmpMeta {
-                        self.metadataComparison = MetadataComparison.differences(embedded: embedded, sidecar: xmp)
-                        self.comparisonSidecarIsStale = sidecarIsStale
-                    } else {
-                        self.metadataComparison = []
-                        self.comparisonSidecarIsStale = false
-                    }
 
                     var newEditingMetadata = baseMeta
                     if let folder = self.currentFolderURL,
@@ -677,28 +610,6 @@ final class MetadataViewModel {
         editingMetadata.description = keepXMP ? conflict.xmpDescription : conflict.iptcCaptionAbstract
         descriptionConflict = nil
         markChanged()
-    }
-
-    /// Stage the user's per-field embedded/sidecar picks into the editor. The merged result
-    /// becomes the current edit (marked unsaved); the user saves normally afterwards, so this
-    /// goes through the existing write-mode/history flow rather than writing to disk directly.
-    func resolveMetadataComparison(_ choices: [IPTCMetadata.FieldKey: MetadataSource]) {
-        guard let embedded = embeddedMetadata, let sidecar = xmpMetadata else {
-            showMetadataComparison = false
-            return
-        }
-        editingMetadata = MetadataComparison.merge(
-            base: editingMetadata, embedded: embedded, sidecar: sidecar, choices: choices)
-        metadataComparison = []
-        comparisonSidecarIsStale = false
-        showMetadataComparison = false
-        markChanged()
-    }
-
-    /// Convenience: take every differing field from one source (the "use all" shortcuts).
-    func resolveMetadataComparison(allFrom source: MetadataSource) {
-        let choices = Dictionary(uniqueKeysWithValues: metadataComparison.map { ($0.field, source) })
-        resolveMetadataComparison(choices)
     }
 
     func importEmbeddedCrop() {

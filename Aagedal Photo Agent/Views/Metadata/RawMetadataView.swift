@@ -4,15 +4,24 @@ struct RawMetadataView: View {
     let filename: String
     let readService: SwiftExifReadService
     let imageURL: URL
+    /// Folder for the app's JSON sidecar (history + pending edits). Nil hides nothing —
+    /// the tab just reports that no sidecar was found.
+    var folderURL: URL? = nil
+    /// Open on the XMP Sidecar tab when the panel is reading the sidecar record, so the
+    /// view shows the same surface the editor does (sidecar-only files like RAW/C2PA
+    /// keep their edits out of the embedded file entirely).
+    var prefersSidecarTab: Bool = false
 
     private enum MetadataTab: String, CaseIterable {
         case embedded = "Embedded"
         case xmpSidecar = "XMP Sidecar"
+        case appSidecar = "App Sidecar"
     }
 
     @State private var selectedTab: MetadataTab = .embedded
     @State private var jsonText = ""
     @State private var xmpText = ""
+    @State private var appSidecarText = ""
     @State private var hasXMPSidecar = false
     @State private var isLoading = true
     @State private var errorMessage: String?
@@ -48,15 +57,6 @@ struct RawMetadataView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding()
                 }
-                if !hasXMPSidecar {
-                    Divider()
-                    Text("No .xmp sidecar exists for this image yet.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal)
-                        .padding(.vertical, 6)
-                }
             }
         }
         .frame(
@@ -68,17 +68,42 @@ struct RawMetadataView: View {
         .task {
             await loadRawMetadata()
             await loadXMPSidecar()
+            loadAppSidecar()
+            if prefersSidecarTab, hasXMPSidecar {
+                selectedTab = .xmpSidecar
+            }
+            refreshDisplayedText()
             isSearchFocused = true
         }
         .onChange(of: searchText) { _, _ in refreshDisplayedText() }
         .onChange(of: jsonText) { _, _ in refreshDisplayedText() }
         .onChange(of: xmpText) { _, _ in refreshDisplayedText() }
+        .onChange(of: appSidecarText) { _, _ in refreshDisplayedText() }
         .onChange(of: selectedTab) { _, _ in refreshDisplayedText() }
     }
 
+    private func sourceText(for tab: MetadataTab) -> String {
+        switch tab {
+        case .embedded: return jsonText
+        case .xmpSidecar: return xmpText
+        case .appSidecar: return appSidecarText
+        }
+    }
+
+    private func placeholder(for tab: MetadataTab) -> String {
+        switch tab {
+        case .embedded:
+            return "No embedded metadata could be read from this image."
+        case .xmpSidecar:
+            return "No .xmp sidecar exists for this image yet."
+        case .appSidecar:
+            return "No app sidecar (history / pending edits) exists for this image yet."
+        }
+    }
+
     private func refreshDisplayedText() {
-        let source = selectedTab == .embedded ? jsonText : xmpText
-        displayedText = filteredText(source)
+        let source = sourceText(for: selectedTab)
+        displayedText = source.isEmpty ? placeholder(for: selectedTab) : filteredText(source)
     }
 
     private var header: some View {
@@ -91,15 +116,14 @@ struct RawMetadataView: View {
             sourcePicker
             Button {
                 NSPasteboard.general.clearContents()
-                let textToCopy = selectedTab == .embedded ? jsonText : xmpText
-                NSPasteboard.general.setString(textToCopy, forType: .string)
+                NSPasteboard.general.setString(sourceText(for: selectedTab), forType: .string)
             } label: {
                 Label(
-                    selectedTab == .embedded ? "Copy JSON" : "Copy XML",
+                    selectedTab == .xmpSidecar ? "Copy XML" : "Copy JSON",
                     systemImage: "doc.on.doc"
                 )
             }
-            .disabled(selectedTab == .embedded ? jsonText.isEmpty : xmpText.isEmpty)
+            .disabled(sourceText(for: selectedTab).isEmpty)
         }
         .padding()
     }
@@ -107,24 +131,22 @@ struct RawMetadataView: View {
     @ViewBuilder
     private var sourcePicker: some View {
         Picker("Source", selection: $selectedTab) {
-            Text(MetadataTab.embedded.rawValue).tag(MetadataTab.embedded)
-            Text(MetadataTab.xmpSidecar.rawValue)
-                .tag(MetadataTab.xmpSidecar)
+            ForEach(MetadataTab.allCases, id: \.self) { tab in
+                Text(tab.rawValue).tag(tab)
+            }
         }
         .pickerStyle(.segmented)
         .labelsHidden()
-        .frame(maxWidth: 200)
+        .frame(maxWidth: 300)
         .controlSize(.small)
-        .disabled(!hasXMPSidecar)
-        .help(hasXMPSidecar
-              ? "Switch between embedded metadata and XMP sidecar content."
-              : "No .xmp sidecar for this image yet \u{2014} sidecar view unavailable.")
+        .help("Switch between embedded metadata, the .xmp sidecar, and the app's JSON sidecar (history / pending edits).")
     }
 
     private var activeTint: Color {
         switch selectedTab {
         case .embedded: return .blue
         case .xmpSidecar: return .orange
+        case .appSidecar: return .purple
         }
     }
 
@@ -132,6 +154,7 @@ struct RawMetadataView: View {
         switch selectedTab {
         case .embedded: return "doc"
         case .xmpSidecar: return "doc.badge.ellipsis"
+        case .appSidecar: return "doc.badge.clock"
         }
     }
 
@@ -206,5 +229,21 @@ struct RawMetadataView: View {
         }.value
         hasXMPSidecar = result.exists
         xmpText = result.text
+    }
+
+    private func loadAppSidecar() {
+        guard let folderURL,
+              let sidecar = MetadataSidecarService().loadSidecar(for: imageURL, in: folderURL) else {
+            appSidecarText = ""
+            return
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        if let data = try? encoder.encode(sidecar), let text = String(data: data, encoding: .utf8) {
+            appSidecarText = text
+        } else {
+            appSidecarText = "Unable to encode app sidecar."
+        }
     }
 }

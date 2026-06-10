@@ -392,9 +392,6 @@ struct MetadataPanel: View {
                                 }
 
                                 noticeBanner
-                                comparisonBanner
-
-                                metadataSourceBand
                                 ratingAndLabelSection
                                 actionButtons
                                 Divider()
@@ -475,15 +472,6 @@ struct MetadataPanel: View {
                 return
             }
             fieldSelections[key] = editor.selectedRange()
-        }
-        .sheet(isPresented: $viewModel.showMetadataComparison) {
-            MetadataComparisonSheet(
-                comparison: viewModel.metadataComparison,
-                isStale: viewModel.comparisonSidecarIsStale,
-                onApply: { viewModel.resolveMetadataComparison($0) },
-                onUseAll: { viewModel.resolveMetadataComparison(allFrom: $0) },
-                onCancel: { viewModel.showMetadataComparison = false }
-            )
         }
         .alert("C2PA Protected Image", isPresented: $showingC2PAWarning) {
             Button("Cancel", role: .cancel) {}
@@ -624,7 +612,9 @@ struct MetadataPanel: View {
                             RawMetadataView(
                                 filename: url.lastPathComponent,
                                 readService: browserViewModel.metadataReadService,
-                                imageURL: url
+                                imageURL: url,
+                                folderURL: browserViewModel.currentFolderURL,
+                                prefersSidecarTab: viewModel.metadataReferenceSource == .xmp
                             )
                         }
                     }
@@ -1354,41 +1344,6 @@ struct MetadataPanel: View {
         .id("event")
     }
 
-    /// Shown when the embedded image and its `.xmp` sidecar have differing descriptive
-    /// fields. Opens the per-field comparison sheet. Hidden while the sheet is open.
-    @ViewBuilder
-    private var comparisonBanner: some View {
-        if !viewModel.metadataComparison.isEmpty, !viewModel.showMetadataComparison {
-            let isStale = viewModel.comparisonSidecarIsStale
-            Button {
-                viewModel.showMetadataComparison = true
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: isStale ? "exclamationmark.triangle.fill" : "arrow.triangle.2.circlepath")
-                        .foregroundStyle(isStale ? Color.yellow : Color.secondary)
-                        .font(.caption)
-                    Text(isStale
-                         ? "Sidecar may be stale — \(viewModel.metadataComparison.count) field\(viewModel.metadataComparison.count == 1 ? "" : "s") differ"
-                         : "Embedded and sidecar differ in \(viewModel.metadataComparison.count) field\(viewModel.metadataComparison.count == 1 ? "" : "s")")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer(minLength: 0)
-                    Text("Compare…")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(Color.accentColor)
-                }
-                .padding(8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill((isStale ? Color.yellow : Color.accentColor).opacity(0.08))
-                        .strokeBorder((isStale ? Color.yellow : Color.accentColor).opacity(0.3), lineWidth: 0.5)
-                )
-            }
-            .buttonStyle(.plain)
-        }
-    }
-
     @ViewBuilder
     private var noticeBanner: some View {
         if let notice = viewModel.notice {
@@ -1440,61 +1395,6 @@ struct MetadataPanel: View {
         case .info: return .accentColor
         case .warning: return .orange
         case .error: return .red
-        }
-    }
-
-    @ViewBuilder
-    private var metadataSourceBand: some View {
-        if let destinations = viewModel.nextWriteDestination {
-            let readingDest = viewModel.isBatchEdit
-                ? MetadataDestination.mixed
-                : viewModel.metadataReferenceSource.asDestination
-            // Warn only when the next write leaves the surface being read untouched
-            // (e.g. reading embedded while edits go to a sidecar). A writeToFile save
-            // that mirrors an existing sidecar covers both surfaces — no warning.
-            let sourcesDiffer = !viewModel.isBatchEdit && !destinations.iptc.covers(readingDest)
-            let developSplits = destinations.develop != destinations.iptc
-
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    readingChip(destination: readingDest)
-                    MetadataSourceChip(role: .writing, destination: destinations.iptc)
-                    Spacer(minLength: 0)
-                }
-                if developSplits {
-                    HStack(spacing: 4) {
-                        Image(systemName: "slider.horizontal.3")
-                            .imageScale(.small)
-                            .foregroundStyle(.secondary)
-                        Text("Develop edits \u{2192} \(destinations.develop.shortLabel)")
-                            .font(.caption2)
-                            .foregroundStyle(destinations.develop.color)
-                    }
-                }
-                if sourcesDiffer {
-                    Label("Edits save to the \(destinations.iptc.shortLabel.lowercased()) but you're reading the \(readingDest.shortLabel.lowercased()) \u{2014} saved changes won't show under this source.",
-                          systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func readingChip(destination: MetadataDestination) -> some View {
-        if viewModel.hasXmpMetadata, !viewModel.isBatchEdit {
-            Menu {
-                Button("Embedded") { viewModel.applyReferenceSource(.embedded) }
-                Button("XMP Sidecar") { viewModel.applyReferenceSource(.xmp) }
-            } label: {
-                MetadataSourceChip(role: .reading, destination: destination)
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-        } else {
-            MetadataSourceChip(role: .reading, destination: destination)
         }
     }
 
