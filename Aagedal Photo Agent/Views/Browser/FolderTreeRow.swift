@@ -49,9 +49,9 @@ struct FolderTreeRow: View {
     var body: some View {
         rowContent
             .listRowInsets(EdgeInsets(
-                top: depth == 0 ? 2 : 1,
+                top: 0,
                 leading: 8 + CGFloat(depth) * 16,
-                bottom: depth == 0 ? 2 : 1,
+                bottom: 0,
                 trailing: 8
             ))
             .contextMenu { contextMenuItems }
@@ -94,12 +94,15 @@ struct FolderTreeRow: View {
                         .foregroundStyle(.secondary)
                         .rotationEffect(.degrees(isExpanded ? 90 : 0))
                         .animation(.easeInOut(duration: 0.15), value: isExpanded)
-                        .frame(width: 12, alignment: .center)
+                        // Hit target much larger than the glyph, so expanding
+                        // doesn't get mistaken for a click that opens the folder.
+                        .frame(width: 20, height: 20, alignment: .center)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             } else {
                 Spacer()
-                    .frame(width: 12)
+                    .frame(width: 20)
             }
 
             Image(systemName: isCurrent || isRootOfSection ? "folder.fill" : "folder")
@@ -121,7 +124,7 @@ struct FolderTreeRow: View {
                 .help("Close Folder")
             }
         }
-        .padding(.vertical, depth == 0 ? 4 : 3)
+        .padding(.vertical, 1)
         .padding(.horizontal, 6)
         .background(
             RoundedRectangle(cornerRadius: 6)
@@ -133,20 +136,14 @@ struct FolderTreeRow: View {
                 .stroke(isDropHighlighted ? Color.accentColor : Color.clear, lineWidth: 2)
         )
         .contentShape(Rectangle())
-        .applyIf(isFavoriteSection) { view in
-            view
-                .onTapGesture(count: 2) {
-                    viewModel.loadFolder(url: url, addToOpenFolders: isRootOfSection)
-                }
-                .onTapGesture(count: 1) {
-                    viewModel.toggleFolderExpansion(url, in: tree)
-                }
-        }
-        .applyIf(!isFavoriteSection) { view in
-            view
-                .onTapGesture {
-                    viewModel.loadFolder(url: url, addToOpenFolders: isRootOfSection)
-                }
+        // Photo Mechanic semantics: a single click on the name opens the
+        // folder; only the disclosure chevron expands/collapses. A paired
+        // double-tap gesture would also delay every single click by the
+        // double-click timeout, making the sidebar feel sluggish.
+        .onTapGesture {
+            // Favorites open in place — they already have a sidebar home, so
+            // they must not get duplicated into the Open Folders section.
+            viewModel.loadFolder(url: url, addToOpenFolders: section == .openRoot)
         }
         .onDrag {
             NSItemProvider(object: url as NSURL)
@@ -164,7 +161,7 @@ struct FolderTreeRow: View {
         switch section {
         case .favoriteRoot:
             Button("Open") {
-                viewModel.loadFolder(url: url)
+                viewModel.loadFolder(url: url, addToOpenFolders: false)
             }
             Button("Reveal in Finder") {
                 revealInFinder(url)
@@ -330,17 +327,6 @@ struct FolderDropDelegate: DropDelegate {
                     cont.resume(returning: nil)
                 }
             }
-        }
-    }
-}
-
-extension View {
-    @ViewBuilder
-    fileprivate func applyIf(_ condition: Bool, transform: (Self) -> some View) -> some View {
-        if condition {
-            transform(self)
-        } else {
-            self
         }
     }
 }

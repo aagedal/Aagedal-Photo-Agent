@@ -4,6 +4,7 @@ import SwiftUI
 struct Aagedal_Photo_AgentApp: App {
     @StateObject private var updater = SparkleUpdaterService.shared
     @ObservedObject private var imageScaling = ImageScalingController.shared
+    private let recentFolders = RecentFoldersStore.shared
 
     init() {
         // One-shot migration from the legacy bookmark-pointed list files into the
@@ -67,6 +68,23 @@ struct Aagedal_Photo_AgentApp: App {
                     NotificationCenter.default.post(name: .openFolder, object: nil)
                 }
                 .keyboardShortcut("o", modifiers: .command)
+
+                Menu("Open Recent") {
+                    ForEach(recentFolders.folders) { recent in
+                        Button(recent.name) {
+                            NotificationCenter.default.post(name: .openRecentFolder, object: recent.url)
+                        }
+                    }
+
+                    if !recentFolders.folders.isEmpty {
+                        Divider()
+                    }
+
+                    Button("Clear Menu") {
+                        recentFolders.clear()
+                    }
+                    .disabled(recentFolders.folders.isEmpty)
+                }
 
                 Button("Import Photos...") {
                     NotificationCenter.default.post(name: .showImport, object: nil)
@@ -385,6 +403,7 @@ struct Aagedal_Photo_AgentApp: App {
 
 extension Notification.Name {
     static let openFolder = Notification.Name("openFolder")
+    static let openRecentFolder = Notification.Name("openRecentFolder")
     static let setRating = Notification.Name("setRating")
     static let setLabel = Notification.Name("setLabel")
     static let faceMetadataDidChange = Notification.Name("faceMetadataDidChange")

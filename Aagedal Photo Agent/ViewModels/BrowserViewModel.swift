@@ -66,7 +66,6 @@ final class BrowserViewModel {
     var sortFeedback: String?
     @ObservationIgnored private var sortFeedbackTask: Task<Void, Never>?
     var favoriteFolders: [FavoriteFolder] = []
-    var recentFolders: [RecentFolder] = []
     var openFolders: [URL] = []
     var subfoldersByOpenFolder: [URL: [URL]] = [:]
     var expandedFavoriteFolders: Set<URL> = []
@@ -167,7 +166,6 @@ final class BrowserViewModel {
     @ObservationIgnored private var pendingStatusRefreshTask: Task<Void, Never>?
 
     private let favoritesKey = UserDefaultsKeys.favoriteFolders
-    private let recentFoldersKey = UserDefaultsKeys.recentFolders
 
     private(set) var sortedImages: [ImageFile] = []
     private(set) var urlToSortedIndex: [URL: Int] = [:]
@@ -488,7 +486,7 @@ final class BrowserViewModel {
 
         currentFolderURL = url
         currentFolderName = url.lastPathComponent
-        trackRecentFolder(url: url)
+        RecentFoldersStore.shared.track(url)
         isLoading = true
         errorMessage = nil
         images = []
@@ -1712,12 +1710,27 @@ final class BrowserViewModel {
         }
     }
 
-    /// Lazily loads direct subfolders for a URL if not already cached.
+    @ObservationIgnored private var pendingSubfolderLoads: Set<URL> = []
+
+    /// Lazily loads direct subfolders for a URL if not already cached. The
+    /// directory scan runs off MainActor so expanding a folder on a slow or
+    /// large volume can't stall the UI; the row shows a spinner until the
+    /// cache fills in.
     func ensureSubfoldersLoaded(for url: URL) {
-        guard subfoldersByOpenFolder[url] == nil else { return }
-        let discovered = (try? fileSystemService.listSubfolders(at: url)) ?? []
-        subfoldersByOpenFolder[url] = discovered
-        prefetchGrandchildren(of: url)
+        guard subfoldersByOpenFolder[url] == nil, !pendingSubfolderLoads.contains(url) else { return }
+        pendingSubfolderLoads.insert(url)
+        let service = fileSystemService
+        Task.detached(priority: .userInitiated) {
+            let discovered = (try? service.listSubfolders(at: url)) ?? []
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.pendingSubfolderLoads.remove(url)
+                if self.subfoldersByOpenFolder[url] == nil {
+                    self.subfoldersByOpenFolder[url] = discovered
+                }
+                self.prefetchGrandchildren(of: url)
+            }
+        }
     }
 
     /// For each child of `parentURL` not yet cached, scan its direct subfolders off
@@ -1813,31 +1826,6 @@ final class BrowserViewModel {
     var isCurrentFolderFavorited: Bool {
         guard let url = currentFolderURL else { return false }
         return favoriteFolders.contains { $0.url == url }
-    }
-
-    // MARK: - Recent Folders
-
-    func loadRecentFolders() {
-        guard let data = UserDefaults.standard.data(forKey: recentFoldersKey),
-              let decoded = try? JSONDecoder().decode([RecentFolder].self, from: data) else {
-            return
-        }
-        recentFolders = decoded
-    }
-
-    private func saveRecentFolders() {
-        if let data = try? JSONEncoder().encode(recentFolders) {
-            UserDefaults.standard.set(data, forKey: recentFoldersKey)
-        }
-    }
-
-    private func trackRecentFolder(url: URL) {
-        recentFolders.removeAll { $0.url == url }
-        recentFolders.insert(RecentFolder(url: url), at: 0)
-        if recentFolders.count > 3 {
-            recentFolders = Array(recentFolders.prefix(3))
-        }
-        saveRecentFolders()
     }
 
     // MARK: - Subfolder Actions

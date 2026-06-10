@@ -232,16 +232,8 @@ struct ContentView: View {
                     Text("Are you sure you want to move \"\(url.lastPathComponent)\" and all its contents to the Trash?")
                 }
             }
-            .alert("Rename Folder", isPresented: $browserViewModel.showRenameSubfolderAlert) {
-                TextField("Name", text: $browserViewModel.renameSubfolderNewName)
-                Button("Cancel", role: .cancel) {
-                    browserViewModel.pendingRenameSubfolderURL = nil
-                }
-                Button("Rename") {
-                    browserViewModel.renamePendingSubfolder()
-                }
-            } message: {
-                Text("Enter a new name for this folder.")
+            .sheet(isPresented: $browserViewModel.showRenameSubfolderAlert) {
+                RenameFolderSheet(viewModel: browserViewModel)
             }
             .alert("New Subfolder", isPresented: $browserViewModel.showNewSubfolderAlert) {
                 TextField("Name", text: $browserViewModel.newSubfolderName)
@@ -464,7 +456,6 @@ struct ContentView: View {
             .onAppear {
                 browserViewModel.loadFavorites()
                 browserViewModel.loadFavoriteTopLevelSubfolders()
-                browserViewModel.loadRecentFolders()
                 templateViewModel.loadTemplates()
                 ftpViewModel.loadConnections()
             }
@@ -899,24 +890,7 @@ struct ContentView: View {
                     }
                 }
 
-                if !browserViewModel.recentFolders.isEmpty {
-                    Section("Recent") {
-                        ForEach(browserViewModel.recentFolders) { recent in
-                            Button {
-                                browserViewModel.loadFolder(url: recent.url)
-                            } label: {
-                                Label(recent.name, systemImage: "clock")
-                            }
-                            .contextMenu {
-                                Button("Reveal in Finder") {
-                                    revealInFinder(recent.url)
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if (!browserViewModel.favoriteFolders.isEmpty || !browserViewModel.recentFolders.isEmpty) && !browserViewModel.openFolders.isEmpty {
+                if !browserViewModel.favoriteFolders.isEmpty && !browserViewModel.openFolders.isEmpty {
                     HStack {
                         Rectangle()
                             .fill(Color(nsColor: .separatorColor))
@@ -943,6 +917,9 @@ struct ContentView: View {
 
             }
             .listStyle(.sidebar)
+            // The sidebar list's default min row height (~24pt) would undo the
+            // compact row padding in FolderTreeRow; rows are 22pt themselves.
+            .environment(\.defaultMinListRowHeight, 22)
 
             if ftpViewModel.isUploading || ftpViewModel.isRendering || ftpViewModel.uploadCompleted {
                 Divider()
@@ -1993,6 +1970,12 @@ struct ContentViewModifiers: ViewModifier {
             }
         return base
             .modifier(AutoRefreshModifier(browserViewModel: browserViewModel, metadataViewModel: metadataViewModel))
+            // Lives outside `base`: that modifier chain is at the
+            // type-checker's expression-complexity limit already.
+            .onReceive(NotificationCenter.default.publisher(for: .openRecentFolder)) { notification in
+                guard let url = notification.object as? URL else { return }
+                browserViewModel.loadFolder(url: url)
+            }
     }
 
     private func handleDrop(providers: [NSItemProvider]) -> Bool {
