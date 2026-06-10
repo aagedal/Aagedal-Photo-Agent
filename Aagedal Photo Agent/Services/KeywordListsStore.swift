@@ -73,6 +73,23 @@ extension Notification.Name {
 /// Production never sets it.
 nonisolated enum KeywordListsStoreStorageOverride {
     @TaskLocal static var current: URL?
+
+    /// Process-wide fallback root used for ALL store I/O while a test run is in
+    /// progress and no task-local override is set. The test host launches the
+    /// real app, so any test (or app code reacting to a test's write) that hits
+    /// the shared singleton outside a `$current.withValue` scope — a
+    /// notification observer, a `DispatchQueue.main.async` hop, a suite that
+    /// never adopted the seam — would otherwise read and write the user's real
+    /// lists, and with sync enabled, the live iCloud container. That actually
+    /// happened: test fixtures overwrote and deleted real synced lists. This
+    /// fallback makes escaping the task-local harmless.
+    static let testProcessFallback: URL? = {
+        guard AppPaths.isTestProcess else { return nil }
+        return FileManager.default.temporaryDirectory.appendingPathComponent(
+            "KeywordListsStore-TestFallback-\(ProcessInfo.processInfo.processIdentifier)",
+            isDirectory: true
+        )
+    }()
 }
 
 /// Canonical disk-backed store for every keyword list the app manages.
@@ -148,6 +165,11 @@ final class KeywordListsStore {
             // and never pins the singleton for the rest of the process.
             ensureDirectories(at: override)
             return override
+        }
+        if let testRoot = KeywordListsStoreStorageOverride.testProcessFallback {
+            // Test run without a task-local override: never touch real data.
+            ensureDirectories(at: testRoot)
+            return testRoot
         }
         if let cached = cachedRoot { return cached }
         if iCloudEnabled {

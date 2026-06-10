@@ -4,6 +4,14 @@ import os
 nonisolated private let logger = Logger(subsystem: "com.aagedal.photo-agent", category: "AppPaths")
 
 nonisolated enum AppPaths {
+    /// True when this process hosts a test run (the app is launched as the test
+    /// host, so XCTest/Swift Testing is loaded). Services that touch real user
+    /// data — the keyword-list store, its backup service — check this to avoid
+    /// reading from or writing to the user's live files (or the iCloud
+    /// container) during tests.
+    static let isTestProcess: Bool = NSClassFromString("XCTestCase") != nil
+        || ProcessInfo.processInfo.environment["XCTestSessionIdentifier"] != nil
+
     /// iCloud ubiquity container identifier. Must match the entitlements file and
     /// `KeywordListsStore.iCloudContainerID`.
     static let iCloudContainerID = "iCloud.aagedal.Aagedal-Photo-Agent"
@@ -94,4 +102,31 @@ nonisolated enum AppPaths {
     }
 
     // v2: applicationSupport/ApprovedLists/ — reserved for URL-refreshed cached vocabulary files.
+}
+
+/// Process-wide `UserDefaults` seam, the defaults counterpart of
+/// `KeywordListsStoreStorageOverride.testProcessFallback`.
+///
+/// The unit tests run with the real app as the test host, so
+/// `UserDefaults.standard` in a test process IS the user's live settings —
+/// suites that clear or set keys (approved-list mode/enabled, metadata write
+/// preset) were persisting into them. Any service whose defaults keys are
+/// mutated by tests must read and write through `AppDefaults.store`, and the
+/// tests must do the same, so a test run stays inside a throwaway suite that
+/// is wiped at process start. Production behaviour is unchanged: outside a
+/// test process this is exactly `UserDefaults.standard`.
+nonisolated enum AppDefaults {
+    // UserDefaults is documented thread-safe but not marked Sendable in the SDK.
+    nonisolated(unsafe) static let store: UserDefaults = {
+        guard AppPaths.isTestProcess else { return .standard }
+        let suiteName = "com.aagedal.photo-agent.tests"
+        guard let suite = UserDefaults(suiteName: suiteName) else {
+            // Only happens if the suite name collides with the bundle ID or
+            // global domain. Crash rather than silently touch real settings.
+            preconditionFailure("Could not create test UserDefaults suite \(suiteName)")
+        }
+        // Fresh slate every run; also prevents leakage between test runs.
+        suite.removePersistentDomain(forName: suiteName)
+        return suite
+    }()
 }

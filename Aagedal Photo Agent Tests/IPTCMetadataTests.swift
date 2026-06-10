@@ -682,11 +682,11 @@ struct MetadataWriteModePresetTests {
     /// Runs `body` with the given preset set, restoring the previous value after.
     private func withPreset(_ preset: MetadataWritePreset, _ body: () -> Void) {
         let key = UserDefaultsKeys.metadataWritePreset
-        let saved = UserDefaults.standard.string(forKey: key)
-        UserDefaults.standard.set(preset.rawValue, forKey: key)
+        let saved = AppDefaults.store.string(forKey: key)
+        AppDefaults.store.set(preset.rawValue, forKey: key)
         defer {
-            if let saved { UserDefaults.standard.set(saved, forKey: key) }
-            else { UserDefaults.standard.removeObject(forKey: key) }
+            if let saved { AppDefaults.store.set(saved, forKey: key) }
+            else { AppDefaults.store.removeObject(forKey: key) }
         }
         body()
     }
@@ -714,11 +714,11 @@ struct MetadataWriteModePresetTests {
     func customRaw() {
         withPreset(.custom) {
             let key = UserDefaultsKeys.metadataWriteModeRaw
-            let saved = UserDefaults.standard.string(forKey: key)
-            UserDefaults.standard.set(MetadataWriteMode.writeToFile.rawValue, forKey: key)
+            let saved = AppDefaults.store.string(forKey: key)
+            AppDefaults.store.set(MetadataWriteMode.writeToFile.rawValue, forKey: key)
             defer {
-                if let saved { UserDefaults.standard.set(saved, forKey: key) }
-                else { UserDefaults.standard.removeObject(forKey: key) }
+                if let saved { AppDefaults.store.set(saved, forKey: key) }
+                else { AppDefaults.store.removeObject(forKey: key) }
             }
             #expect(MetadataWriteMode.current(forC2PA: false, isRaw: true) == .writeToFile)
         }

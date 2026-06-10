@@ -981,7 +981,7 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .padding()
         .sheet(isPresented: $showingBackupsSheet) {
-            KeywordListBackupsSheet()
+            KeywordListBackupsSheet(recoverableKeys: KeywordListsBackupService.shared.recoverableKeys)
         }
         .sheet(isPresented: $editingApprovedKeywords) {
             KeywordListEditor(

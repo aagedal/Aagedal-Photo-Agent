@@ -93,6 +93,9 @@ struct ContentView: View {
     @State private var isShowingListRecoveryPrompt = false
     @State private var isShowingListBackups = false
     @State private var listRecoveryHandled = false
+    /// Names of the lists that read empty when the prompt fired, frozen at that
+    /// moment so the alert and sheet describe exactly what was flagged.
+    @State private var listRecoveryAffectedNames: [String] = []
 
     init() {
         let browser = BrowserViewModel()
@@ -118,6 +121,7 @@ struct ContentView: View {
                 // Offer to restore — once per launch, and never auto-write.
                 if !keys.isEmpty && !listRecoveryHandled {
                     listRecoveryHandled = true
+                    listRecoveryAffectedNames = KeywordListsBackupService.shared.recoverableKeys.map(\.displayName)
                     isShowingListRecoveryPrompt = true
                 }
             }
@@ -125,10 +129,13 @@ struct ContentView: View {
                 Button("Not Now", role: .cancel) { }
                 Button("Restore…") { isShowingListBackups = true }
             } message: {
-                Text("One or more keyword lists came back empty, but local backups are available. You can restore an earlier version.")
+                Text("These lists came back empty, but local backups are available:\n\n\(listRecoveryAffectedNames.joined(separator: "\n"))\n\nYou can restore an earlier version.")
             }
             .sheet(isPresented: $isShowingListBackups) {
-                KeywordListBackupsSheet(initialKey: KeywordListsBackupService.shared.recoverableKeys.first)
+                KeywordListBackupsSheet(
+                    initialKey: KeywordListsBackupService.shared.recoverableKeys.first,
+                    recoverableKeys: KeywordListsBackupService.shared.recoverableKeys
+                )
             }
     }
 

@@ -73,6 +73,10 @@ final class KeywordListsBackupService {
     /// false-flag a list whose synced file hasn't downloaded yet).
     func start() {
         guard !started else { return }
+        // The test host launches the full app, which calls start(). Snapshotting
+        // there would capture test-fixture list content into the user's real
+        // backup history (and the recovery prompt could fire mid-test-run).
+        guard !AppPaths.isTestProcess else { return }
         started = true
 
         observer = NotificationCenter.default.addObserver(

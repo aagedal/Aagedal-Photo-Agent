@@ -120,11 +120,11 @@ final class ApprovedListService {
     // MARK: - Public surface
 
     func isEnabled(_ field: ApprovedListField) -> Bool {
-        UserDefaults.standard.bool(forKey: field.enabledKey)
+        AppDefaults.store.bool(forKey: field.enabledKey)
     }
 
     func mode(for field: ApprovedListField) -> ApprovedListMode {
-        if let raw = UserDefaults.standard.string(forKey: field.modeKey),
+        if let raw = AppDefaults.store.string(forKey: field.modeKey),
            let mode = ApprovedListMode(rawValue: raw) {
             return mode
         }
@@ -134,10 +134,10 @@ final class ApprovedListService {
     /// Whether the structured-tree picker's contributions should bypass approved-list
     /// validation. Default true (matches pre-toggle behaviour).
     func allowStructuredBypass(_ field: ApprovedListField) -> Bool {
-        if UserDefaults.standard.object(forKey: field.allowStructuredBypassKey) == nil {
+        if AppDefaults.store.object(forKey: field.allowStructuredBypassKey) == nil {
             return true
         }
-        return UserDefaults.standard.bool(forKey: field.allowStructuredBypassKey)
+        return AppDefaults.store.bool(forKey: field.allowStructuredBypassKey)
     }
 
     func displayPath(for field: ApprovedListField) -> String? {
@@ -157,17 +157,17 @@ final class ApprovedListService {
     }
 
     func setEnabled(_ enabled: Bool, for field: ApprovedListField) {
-        UserDefaults.standard.set(enabled, forKey: field.enabledKey)
+        AppDefaults.store.set(enabled, forKey: field.enabledKey)
         bumpVersion()
     }
 
     func setMode(_ mode: ApprovedListMode, for field: ApprovedListField) {
-        UserDefaults.standard.set(mode.rawValue, forKey: field.modeKey)
+        AppDefaults.store.set(mode.rawValue, forKey: field.modeKey)
         bumpVersion()
     }
 
     func setAllowStructuredBypass(_ enabled: Bool, for field: ApprovedListField) {
-        UserDefaults.standard.set(enabled, forKey: field.allowStructuredBypassKey)
+        AppDefaults.store.set(enabled, forKey: field.allowStructuredBypassKey)
         bumpVersion()
     }
 

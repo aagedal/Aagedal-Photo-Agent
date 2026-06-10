@@ -36,7 +36,7 @@ enum MetadataWritePreset: String, CaseIterable, Identifiable, Sendable {
     }
 
     static var current: MetadataWritePreset {
-        MetadataWritePreset(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.metadataWritePreset) ?? "")
+        MetadataWritePreset(rawValue: AppDefaults.store.string(forKey: UserDefaultsKeys.metadataWritePreset) ?? "")
             ?? .professional
     }
 }
@@ -136,12 +136,12 @@ enum MetadataWriteMode: String, CaseIterable, Identifiable, Sendable {
     // MARK: - Custom-preset per-category resolution
 
     private static func customMode(key: String, default fallback: MetadataWriteMode) -> MetadataWriteMode {
-        let raw = UserDefaults.standard.string(forKey: key) ?? fallback.rawValue
+        let raw = AppDefaults.store.string(forKey: key) ?? fallback.rawValue
         return MetadataWriteMode(rawValue: raw) ?? fallback
     }
 
     private static func customC2PAMode() -> MetadataWriteMode {
-        let defaults = UserDefaults.standard
+        let defaults = AppDefaults.store
         if defaults.object(forKey: UserDefaultsKeys.metadataWriteModeC2PA) != nil {
             let raw = defaults.string(forKey: UserDefaultsKeys.metadataWriteModeC2PA) ?? MetadataWriteMode.defaultC2PA.rawValue
             return MetadataWriteMode(rawValue: raw) ?? .defaultC2PA
@@ -153,7 +153,7 @@ enum MetadataWriteMode: String, CaseIterable, Identifiable, Sendable {
     }
 
     private static func customNonC2PAMode() -> MetadataWriteMode {
-        let defaults = UserDefaults.standard
+        let defaults = AppDefaults.store
         let raw = defaults.string(forKey: UserDefaultsKeys.metadataWriteModeNonC2PA)
             ?? defaults.string(forKey: UserDefaultsKeys.metadataWriteMode)
             ?? MetadataWriteMode.defaultNonC2PA.rawValue

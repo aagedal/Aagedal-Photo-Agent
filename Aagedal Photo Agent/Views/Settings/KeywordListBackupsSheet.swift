@@ -10,6 +10,11 @@ struct KeywordListBackupsSheet: View {
     /// Preselect a specific list (used by the launch recovery prompt).
     var initialKey: KeywordListKey?
 
+    /// Lists that currently read empty while backups exist (from the launch
+    /// recovery prompt). They get an "Empty" badge so the user can see exactly
+    /// which lists need restoring.
+    var recoverableKeys: [KeywordListKey] = []
+
     @State private var groups: [(key: KeywordListKey, versions: [KeywordListsBackupService.Version])] = []
     @State private var selectedKey: KeywordListKey?
     @State private var previewedVersion: KeywordListsBackupService.Version?
@@ -105,6 +110,14 @@ struct KeywordListBackupsSheet: View {
                 HStack {
                     Text(group.key.displayName)
                     Spacer()
+                    if recoverableKeys.contains(group.key) {
+                        Text("Empty")
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(Color.orange.opacity(0.25), in: Capsule())
+                            .foregroundStyle(.orange)
+                    }
                     Text("\(group.versions.count)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -119,6 +132,15 @@ struct KeywordListBackupsSheet: View {
     private var versionColumn: some View {
         if let key = selectedKey, let versions = versions(for: key) {
             VStack(spacing: 0) {
+                if recoverableKeys.contains(key) {
+                    Label("This list is currently empty. Restoring a version below brings its content back.", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(Color.orange.opacity(0.1))
+                }
                 List {
                     Section {
                         ForEach(versions) { version in

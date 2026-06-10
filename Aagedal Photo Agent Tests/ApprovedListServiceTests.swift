@@ -131,10 +131,10 @@ struct ApprovedListServiceTests {
 
     private func clearDefaults() {
         let field = ApprovedListField.keywords
-        UserDefaults.standard.removeObject(forKey: field.bookmarkKey)
-        UserDefaults.standard.removeObject(forKey: field.enabledKey)
-        UserDefaults.standard.removeObject(forKey: field.modeKey)
-        UserDefaults.standard.removeObject(forKey: field.allowStructuredBypassKey)
+        AppDefaults.store.removeObject(forKey: field.bookmarkKey)
+        AppDefaults.store.removeObject(forKey: field.enabledKey)
+        AppDefaults.store.removeObject(forKey: field.modeKey)
+        AppDefaults.store.removeObject(forKey: field.allowStructuredBypassKey)
         KeywordListsStore.shared.delete(.approved(field))
     }
 
@@ -222,10 +222,10 @@ struct ApprovedListValidationTests {
 
     private func clearDefaults() {
         let field = ApprovedListField.keywords
-        UserDefaults.standard.removeObject(forKey: field.bookmarkKey)
-        UserDefaults.standard.removeObject(forKey: field.enabledKey)
-        UserDefaults.standard.removeObject(forKey: field.modeKey)
-        UserDefaults.standard.removeObject(forKey: field.allowStructuredBypassKey)
+        AppDefaults.store.removeObject(forKey: field.bookmarkKey)
+        AppDefaults.store.removeObject(forKey: field.enabledKey)
+        AppDefaults.store.removeObject(forKey: field.modeKey)
+        AppDefaults.store.removeObject(forKey: field.allowStructuredBypassKey)
         KeywordListsStore.shared.delete(.approved(field))
     }
 
