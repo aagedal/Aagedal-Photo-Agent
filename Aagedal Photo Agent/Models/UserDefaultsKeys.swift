@@ -29,6 +29,10 @@ nonisolated enum UserDefaultsKeys {
     static let faceMinFaceSize = "faceMinFaceSize"
     /// Minimum face capture-quality (0...1) to keep a detected face — drops too-blurry faces.
     static let faceMinQuality = "faceMinQuality"
+    /// When true, face detection also runs Vision over overlapping image tiles and merges the
+    /// results, recovering faces the single whole-image pass misses (small/off-angle faces in
+    /// group shots). Costs ~7× the detection passes per image. Default on.
+    static let faceTiledDetection = "faceTiledDetection"
 
     // Retired in the v2.0 face-recognition rewrite (single CoreML embedder + one clustering
     // algorithm). Constants kept for one release so old stored prefs decode cleanly; no longer

@@ -131,6 +131,10 @@ final class FaceRecognitionViewModel {
         let minSize = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceMinFaceSize) as? Int
         config.minFaceSize = minSize ?? 50
 
+        // Tiled detection recovers faces the single whole-image Vision pass misses (group shots).
+        // Defaults on; absent key reads as nil so we keep the `true` default rather than `false`.
+        config.tiledDetection = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceTiledDetection) as? Bool ?? true
+
         // Sports tagging
         config.sportsModeEnabled = UserDefaults.standard.bool(forKey: UserDefaultsKeys.sportsModeEnabled)
         let ocrConf = UserDefaults.standard.object(forKey: UserDefaultsKeys.sportsOCRConfidenceThreshold) as? Double

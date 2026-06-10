@@ -45,6 +45,13 @@ nonisolated struct FaceDetectionService: Sendable {
         var minConfidence: Float = 0.7
         var minFaceSize: Int = 50
 
+        /// When true, detection runs Vision over the whole image plus a grid of overlapping tiles
+        /// and merges the results. Apple's detector under-detects on large group shots (small/off-angle
+        /// faces are dropped); restricting it to a sub-region recovers many of them. Costs extra Vision
+        /// passes per image (one per tile). The hardest non-frontal/motion poses still aren't found —
+        /// that's a detector limitation, not a tiling one.
+        var tiledDetection: Bool = true
+
         /// Maximum cosine distance (0...2) for two faces to be considered the same person.
         /// Default lives in `FaceRecognitionDefaults`; lower = stricter.
         var clusteringThreshold: Float = FaceRecognitionDefaults.clusteringThreshold
@@ -67,6 +74,7 @@ nonisolated struct FaceDetectionService: Sendable {
         nonisolated init(
             minConfidence: Float = 0.7,
             minFaceSize: Int = 50,
+            tiledDetection: Bool = true,
             clusteringThreshold: Float = FaceRecognitionDefaults.clusteringThreshold,
             qualityGateThreshold: Float = FaceRecognitionDefaults.qualityGateThreshold,
             recognitionMode: FaceRecognitionMode = .visionFeaturePrint,
@@ -76,6 +84,7 @@ nonisolated struct FaceDetectionService: Sendable {
         ) {
             self.minConfidence = minConfidence
             self.minFaceSize = minFaceSize
+            self.tiledDetection = tiledDetection
             self.clusteringThreshold = clusteringThreshold
             self.qualityGateThreshold = qualityGateThreshold
             self.recognitionMode = recognitionMode
@@ -117,8 +126,10 @@ nonisolated struct FaceDetectionService: Sendable {
         // Apply EXIF orientation to get correctly oriented image
         let cgImage = applyEXIFOrientation(to: rawCGImage, from: imageSource)
 
-        // Use face landmarks request for better quality detection
-        let faceObservations = try await detectFaceLandmarks(in: cgImage)
+        // Use face landmarks request for better quality detection. When tiling is enabled we also
+        // scan overlapping sub-regions and merge — Apple's whole-image detector drops small/off-angle
+        // faces in group shots, and restricting it to a tile recovers many of them.
+        let faceObservations = try await detectFaceLandmarksTiled(in: cgImage, tiled: config.tiledDetection)
 
         let clothingService = ClothingFeatureService()
         let imageSize = CGSize(width: cgImage.width, height: cgImage.height)
@@ -758,8 +769,63 @@ nonisolated struct FaceDetectionService: Sendable {
 
     // MARK: - Vision Requests
 
-    /// Detect faces with landmarks for better quality filtering
-    private nonisolated func detectFaceLandmarks(in cgImage: CGImage) async throws -> [VNFaceObservation] {
+    /// Tile grid for `detectFaceLandmarksTiled`: columns × rows, plus the fractional overlap added
+    /// to each tile edge so faces straddling a seam are fully contained in at least one tile.
+    private static let tileColumns = 3
+    private static let tileRows = 2
+    private static let tileOverlap = 0.15
+    /// Two detections whose bounding boxes overlap by at least this IoU are treated as the same face.
+    private static let mergeIoUThreshold: CGFloat = 0.3
+
+    /// Detect faces with landmarks, optionally scanning overlapping tiles and merging the results.
+    ///
+    /// Apple's whole-image detector under-detects on large group shots (small or slightly
+    /// off-angle faces get dropped). Re-running the request restricted to a `regionOfInterest`
+    /// lets Vision resolve those faces; because ROI results are reported in full-image normalized
+    /// coordinates with landmarks intact, the merged observations flow through the rest of the
+    /// pipeline (capture quality, eye alignment, crops) unchanged.
+    private nonisolated func detectFaceLandmarksTiled(in cgImage: CGImage, tiled: Bool) async throws -> [VNFaceObservation] {
+        // Whole-image pass first; its detections are best-centered, so they win ties on merge.
+        var merged = try await detectFaceLandmarks(in: cgImage, regionOfInterest: nil)
+        guard tiled else { return merged }
+
+        for roi in Self.tileRegions() {
+            let tileFaces = try await detectFaceLandmarks(in: cgImage, regionOfInterest: roi)
+            for face in tileFaces where !merged.contains(where: { Self.iou($0.boundingBox, face.boundingBox) >= Self.mergeIoUThreshold }) {
+                merged.append(face)
+            }
+        }
+        return merged
+    }
+
+    /// The set of overlapping regions-of-interest (normalized, bottom-left origin) tiling the image.
+    private nonisolated static func tileRegions() -> [CGRect] {
+        var regions: [CGRect] = []
+        for row in 0..<tileRows {
+            for col in 0..<tileColumns {
+                let x0 = max(0.0, Double(col) / Double(tileColumns) - tileOverlap)
+                let x1 = min(1.0, Double(col + 1) / Double(tileColumns) + tileOverlap)
+                let y0 = max(0.0, Double(row) / Double(tileRows) - tileOverlap)
+                let y1 = min(1.0, Double(row + 1) / Double(tileRows) + tileOverlap)
+                regions.append(CGRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0))
+            }
+        }
+        return regions
+    }
+
+    /// Intersection-over-union of two normalized rects, used to dedup faces seen in multiple tiles.
+    private nonisolated static func iou(_ a: CGRect, _ b: CGRect) -> CGFloat {
+        let inter = a.intersection(b)
+        guard !inter.isNull, inter.width > 0, inter.height > 0 else { return 0 }
+        let interArea = inter.width * inter.height
+        let unionArea = a.width * a.height + b.width * b.height - interArea
+        return unionArea > 0 ? interArea / unionArea : 0
+    }
+
+    /// Detect faces with landmarks for better quality filtering. When `regionOfInterest` is set
+    /// (normalized, bottom-left origin), Vision searches only that sub-region but still reports
+    /// results in full-image coordinates.
+    private nonisolated func detectFaceLandmarks(in cgImage: CGImage, regionOfInterest: CGRect? = nil) async throws -> [VNFaceObservation] {
         try await withCheckedThrowingContinuation { continuation in
             let request = VNDetectFaceLandmarksRequest { request, error in
                 if let error {
@@ -775,6 +841,9 @@ nonisolated struct FaceDetectionService: Sendable {
                 }
                 nonisolated(unsafe) let result = validFaces
                 continuation.resume(returning: result)
+            }
+            if let regionOfInterest {
+                request.regionOfInterest = regionOfInterest
             }
             let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
             do {
