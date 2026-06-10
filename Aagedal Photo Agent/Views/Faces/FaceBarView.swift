@@ -17,9 +17,7 @@ struct FaceBarView: View {
     @State private var multiSelectedGroupIDs: Set<UUID> = []
     @State private var showMergeSuggestions = false
     @State private var showClusteringSettings = false
-    @State private var isCheckingKnownPeople = false
     @State private var isApplyingAllNames = false
-    @State private var knownPeopleMatchCount = 0
     @State private var refinementCount = 0
     @State private var highlightedGroupID: UUID?
     @State private var isDraggingOverBar: Bool = false
@@ -298,48 +296,6 @@ struct FaceBarView: View {
                 .help("Review merge suggestions for similar face groups")
             }
 
-            // Manual re-check button: matching runs automatically after each scan, but this
-            // lets the user re-run it on demand (e.g. after adding new known people).
-            if viewModel.scanComplete {
-                Divider()
-                    .frame(height: 58)
-
-                Button {
-                    checkKnownPeople()
-                } label: {
-                    ZStack(alignment: .topTrailing) {
-                        VStack(spacing: 2) {
-                            if isCheckingKnownPeople {
-                                ProgressView()
-                                    .controlSize(.small)
-                            } else {
-                                Image(systemName: "person.text.rectangle")
-                                    .font(.system(size: 16))
-                            }
-                            Text("Known")
-                                .font(.system(size: 9))
-                        }
-                        .frame(width: 52, height: 48)
-
-                        // Badge showing match count
-                        if knownPeopleMatchCount > 0 {
-                            Text("\(knownPeopleMatchCount)")
-                                .font(.system(size: 9, weight: .bold))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 2)
-                                .background(Color.green)
-                                .clipShape(Capsule())
-                                .offset(x: 4, y: -2)
-                        }
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .disabled(isCheckingKnownPeople)
-                .help("Match faces against Known People database")
-            }
-
             Spacer()
         }
         .padding(.horizontal, 8)
@@ -398,41 +354,6 @@ struct FaceBarView: View {
             multiSelectedGroupIDs.remove(id)
         } else {
             multiSelectedGroupIDs.insert(id)
-        }
-    }
-
-    private func checkKnownPeople() {
-        guard viewModel.faceData != nil else { return }
-
-        isCheckingKnownPeople = true
-        knownPeopleMatchCount = 0
-
-        // Batch-match all unnamed groups at once
-        let unnamedGroups = viewModel.unnamedGroups
-        let facesToMatch = unnamedGroups.compactMap { group -> (id: UUID, featurePrintData: Data)? in
-            guard let face = viewModel.face(byID: group.representativeFaceID) else { return nil }
-            return (id: group.id, featurePrintData: face.featurePrintData)
-        }
-
-        let batchMatches = KnownPeopleService.shared.bestAutoMatches(facesToMatch)
-
-        var matchCount = 0
-        for group in unnamedGroups {
-            if let bestMatch = batchMatches[group.id] {
-                viewModel.nameGroup(group.id, name: bestMatch.person.name)
-                matchCount += 1
-            }
-        }
-
-        isCheckingKnownPeople = false
-        knownPeopleMatchCount = matchCount
-
-        // Clear the badge after a delay
-        if matchCount > 0 {
-            Task {
-                try? await Task.sleep(for: .seconds(5))
-                knownPeopleMatchCount = 0
-            }
         }
     }
 

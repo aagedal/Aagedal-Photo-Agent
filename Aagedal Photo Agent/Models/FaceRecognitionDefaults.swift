@@ -28,9 +28,9 @@ nonisolated enum FaceRecognitionDefaults {
     /// Minimum Apple `VNDetectFaceCaptureQuality` (0...1) to keep a detected face. Faces below this
     /// are too blurry/occluded to be useful and are dropped at detection. Tunable via Settings.
     /// LFW calibration: sharp ≈ 0.3–0.45, slight ≈ 0.22–0.34, moderate ≈ 0.09–0.16, heavy < 0.08.
-    /// Real high-quality photos score higher across the board, so the default sits above the LFW
-    /// midpoint; raise the "Minimum Sharpness" slider for stricter filtering.
-    static let minFaceQuality: Float = 0.20
+    /// 0.15 chosen from real-photo testing as a light default; the end user fine-tunes via the
+    /// "Sharpness" slider in the expanded face view.
+    static let minFaceQuality: Float = 0.15
     /// Slider range for the "minimum sharpness" control (0 = keep everything).
     static let minFaceQualityMax: Float = 0.5
 
