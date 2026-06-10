@@ -1,5 +1,4 @@
 import SwiftUI
-import UniformTypeIdentifiers
 
 struct FaceGroupDetailView: View {
     let group: FaceGroup
@@ -11,11 +10,10 @@ struct FaceGroupDetailView: View {
     @State private var selectedFaceIDs: Set<UUID> = []
     @State private var moveTargetID: UUID?
     @State private var showDeleteGroupAlert = false
-    @State private var showingNameListFilePicker = false
-    @State private var nameQuickListShown = false
+    @State private var showMergePopover = false
     @State private var isAddingToKnownPeople = false
     @State private var knownPeopleMessage: String?
-    @State private var presetNameImportMessage: String?
+    @FocusState private var nameFieldFocused: Bool
     var isExpanded: Bool = false
     var onSelectImages: ((Set<URL>) -> Void)?
     var onScrollToGroup: ((UUID) -> Void)?
@@ -26,13 +24,45 @@ struct FaceGroupDetailView: View {
         viewModel.sortedGroups.filter { $0.id != group.id }
     }
 
+    private var trimmedName: String {
+        editingName.trimmingCharacters(in: .whitespaces)
+    }
+
+    /// Type-ahead matches from the structured Person Shown vocabulary. Empty
+    /// until the user has typed and a structured list is loaded (managed in Settings).
+    private var nameSuggestions: [String] {
+        _ = StructuredKeywordService.personShown.version  // observe for reactivity
+        let query = trimmedName
+        guard !query.isEmpty else { return [] }
+        var seen = Set<String>()
+        var out: [String] = []
+        for path in StructuredKeywordService.personShown.search(query, limit: 12) {
+            let name = path.node.name
+            guard !name.isEmpty, name.caseInsensitiveCompare(query) != .orderedSame else { continue }
+            if seen.insert(name.lowercased()).inserted { out.append(name) }
+            if out.count >= 5 { break }
+        }
+        return out
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Face Group")
-                .font(.headline)
+        let faces = viewModel.faces(in: group)
+        let imageCount = Set(faces.map(\.imageURL)).count
+
+        VStack(alignment: .leading, spacing: 10) {
+            // Header: title + close
+            HStack {
+                Text("Face Group")
+                    .font(.headline)
+                Spacer()
+                Button { dismiss() } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.borderless)
+                .help("Close")
+            }
 
             // Face grid with multi-select and context menu
-            let faces = viewModel.faces(in: group)
             ScrollView {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 60))], spacing: 8) {
                     ForEach(faces) { face in
@@ -40,240 +70,100 @@ struct FaceGroupDetailView: View {
                     }
                 }
             }
-            .frame(maxHeight: 200)
+            .frame(maxHeight: 160)
 
             // Multi-select action bar
             if !selectedFaceIDs.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    Divider()
-
-                    Text("\(selectedFaceIDs.count) face\(selectedFaceIDs.count == 1 ? "" : "s") selected")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    HStack {
-                        Button("Remove \(selectedFaceIDs.count) from Group") {
-                            for faceID in selectedFaceIDs {
-                                viewModel.ungroupFace(faceID)
-                            }
-                            selectedFaceIDs.removeAll()
-                        }
-                        .disabled(faces.count <= 1)
-
-                        Spacer()
-
-                        Button(role: .destructive) {
-                            viewModel.deleteFaces(selectedFaceIDs)
-                            selectedFaceIDs.removeAll()
-                        } label: {
-                            Label("Delete \(selectedFaceIDs.count)", systemImage: "trash")
-                        }
-                    }
-
-                    if !otherGroups.isEmpty {
-                        HStack {
-                            Text("Move to:")
-                                .font(.caption)
-                            Picker("", selection: $moveTargetID) {
-                                Text("Select group...").tag(nil as UUID?)
-                                ForEach(otherGroups) { other in
-                                    Text(other.name ?? "Unnamed (\(other.faceIDs.count))").tag(other.id as UUID?)
-                                }
-                            }
-                            .labelsHidden()
-                            .frame(maxWidth: .infinity)
-
-                            Button("Move") {
-                                guard let targetID = moveTargetID else { return }
-                                viewModel.moveFaces(selectedFaceIDs, toGroup: targetID)
-                                selectedFaceIDs.removeAll()
-                            }
-                            .disabled(moveTargetID == nil)
-                        }
-                    }
-                }
+                multiSelectBar(faceCount: faces.count)
             }
 
             Divider()
 
-            // Name field with preset picker
+            // Name field with structured-name type-ahead
+            TextField("Person name", text: $editingName)
+                .textFieldStyle(.roundedBorder)
+                .focused($nameFieldFocused)
+                .onChange(of: editingName) { _, newValue in
+                    // Names are single-line — strip any newlines.
+                    let filtered = newValue.replacingOccurrences(of: "\n", with: "")
+                        .replacingOccurrences(of: "\r", with: "")
+                    if filtered != newValue { editingName = filtered }
+                }
+                .onSubmit { applyName() }
+
+            if nameFieldFocused && !nameSuggestions.isEmpty {
+                nameSuggestionsList
+            }
+
+            // Count + Apply
             HStack {
-                TextField("Person name", text: $editingName)
-                    .textFieldStyle(.roundedBorder)
-                    .onChange(of: editingName) { _, newValue in
-                        // Filter out newlines - names should be single line
-                        let filtered = newValue.replacingOccurrences(of: "\n", with: "")
-                            .replacingOccurrences(of: "\r", with: "")
-                        if filtered != newValue {
-                            editingName = filtered
-                        }
-                    }
-                    .onSubmit {
-                        applyName()
-                    }
-
-                let presetNames = settingsViewModel.loadPersonShownList()
-                let _ = settingsViewModel.quickListVersion
-                Button {
-                    nameQuickListShown.toggle()
-                } label: {
-                    Image(systemName: "list.bullet")
-                        .foregroundStyle(presetNames.isEmpty ? .secondary : .primary)
-                }
-                .buttonStyle(.borderless)
-                .help(presetNames.isEmpty ? "Choose a list file to load names" : "Choose from preset names")
-                .instantPopover(isPresented: $nameQuickListShown, arrowEdge: .bottom) {
-                    QuickListPicker(
-                        presetList: presetNames,
-                        currentValues: editingName.isEmpty ? [] : [editingName],
-                        allowsMultiple: false,
-                        compact: true,
-                        onPick: { picked in
-                            editingName = picked
-                        },
-                        onChooseListFile: {
-                            showingNameListFilePicker = true
-                        },
-                        onClose: { nameQuickListShown = false }
-                    )
-                }
-            }
-
-            if let presetNameImportMessage {
-                Text(presetNameImportMessage)
+                Text("\(faces.count) face\(faces.count == 1 ? "" : "s") · \(imageCount) image\(imageCount == 1 ? "" : "s")")
                     .font(.caption)
-                    .foregroundStyle(.red)
-            }
-
-            Text("\(faces.count) face\(faces.count == 1 ? "" : "s") in \(Set(faces.map(\.imageURL)).count) image\(Set(faces.map(\.imageURL)).count == 1 ? "" : "s")")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            // Merge picker
-            if !otherGroups.isEmpty {
-                HStack {
-                    Text("Merge into:")
-                        .font(.caption)
-                    Picker("", selection: $mergeTargetID) {
-                        Text("Select group...").tag(nil as UUID?)
-                        ForEach(otherGroups) { other in
-                            Text(other.name ?? "Unnamed (\(other.faceIDs.count))").tag(other.id as UUID?)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(maxWidth: .infinity)
-
-                    Button("Merge") {
-                        guard let targetID = mergeTargetID else { return }
-                        viewModel.mergeGroups(sourceID: group.id, into: targetID)
-                        dismiss()
-                    }
-                    .disabled(mergeTargetID == nil)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button { applyName() } label: {
+                    Image(systemName: "checkmark")
                 }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(trimmedName.isEmpty || isApplying)
+                .help("Apply name")
             }
 
-            // Known People feedback
             if let message = knownPeopleMessage {
                 Text(message)
                     .font(.caption)
                     .foregroundStyle(.green)
             }
 
-            // Primary actions
-            HStack {
-                Button {
-                    dismiss()
-                } label: {
-                    Image(systemName: "xmark")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help("Close")
+            Divider()
 
-                Spacer()
-
-                Button("Apply Name") {
-                    applyName()
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(editingName.trimmingCharacters(in: .whitespaces).isEmpty || isApplying)
-            }
-
-            // Secondary actions
-            HStack {
+            // Icon action row
+            HStack(spacing: 10) {
                 if isExpanded {
-                    Button {
+                    iconAction("arrow.down.to.line", help: "Scroll to group") {
                         onScrollToGroup?(group.id)
-                    } label: {
-                        Label("Scroll to Group", systemImage: "arrow.down.to.line")
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
                 } else {
-                    Button {
-                        let urls = viewModel.imageURLs(for: group)
-                        onSelectImages?(urls)
+                    iconAction("photo.on.rectangle", help: "Select images") {
+                        onSelectImages?(viewModel.imageURLs(for: group))
                         dismiss()
-                    } label: {
-                        Label("Select Images", systemImage: "photo.on.rectangle")
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                }
+
+                iconAction(
+                    "person.crop.circle.badge.plus",
+                    help: "Add to Known People",
+                    disabled: trimmedName.isEmpty || isAddingToKnownPeople
+                ) {
+                    addToKnownPeople()
                 }
 
                 // Set as Key Art — when exactly one face selected and not already representative
                 if selectedFaceIDs.count == 1,
                    let faceID = selectedFaceIDs.first,
                    faceID != group.representativeFaceID {
-                    Button {
+                    iconAction("star", help: "Set selected face as key art") {
                         viewModel.setRepresentativeFace(faceID, forGroup: group.id)
-                    } label: {
-                        Label("Set as Key Art", systemImage: "star.fill")
+                    }
+                }
+
+                if !otherGroups.isEmpty {
+                    Button { showMergePopover.toggle() } label: {
+                        Image(systemName: "arrow.triangle.merge")
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .help("Use selected face as group thumbnail")
-                }
-
-                // Add to Known People (matching is always automatic; this seeds the gallery).
-                Button {
-                    addToKnownPeople()
-                } label: {
-                    Label("Add to Known", systemImage: "person.badge.plus")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(
-                    editingName.trimmingCharacters(in: .whitespaces).isEmpty ||
-                    isAddingToKnownPeople
-                )
-                .help("Add to Known People database")
-
-                // Sports bridge: link a roster-resolved group to Known People so
-                // the player is recognised by face in future games.
-                if let target = viewModel.rosterLinkTarget(forGroup: group.id) {
-                    Button {
-                        if viewModel.linkPlayerToKnownPeople(
-                            groupID: group.id,
-                            playerNumber: target.number,
-                            teamID: target.teamID
-                        ) {
-                            knownPeopleMessage = "Linked #\(target.number) \(target.playerName) to Known People"
-                        }
-                    } label: {
-                        Label("Link #\(target.number)", systemImage: "person.crop.circle.badge.checkmark")
+                    .help("Merge into another group")
+                    .popover(isPresented: $showMergePopover, arrowEdge: .bottom) {
+                        mergePopover
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .help("Link \(target.playerName) to Known People (recognise by face next time)")
                 }
 
                 Spacer()
 
-                Button(role: .destructive) {
-                    showDeleteGroupAlert = true
-                } label: {
-                    Label("Delete", systemImage: "trash")
+                Button(role: .destructive) { showDeleteGroupAlert = true } label: {
+                    Image(systemName: "trash")
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
@@ -281,7 +171,7 @@ struct FaceGroupDetailView: View {
             }
         }
         .padding()
-        .frame(width: 360, height: 500)
+        .frame(width: 340)
         .onAppear {
             editingName = group.name ?? ""
         }
@@ -303,21 +193,121 @@ struct FaceGroupDetailView: View {
             let photoCount = viewModel.imageURLs(for: group).count
             Text("This will delete \(group.faceIDs.count) face(s) across \(photoCount) photo(s). Moving photos to Trash cannot be undone from this app.")
         }
-        .fileImporter(
-            isPresented: $showingNameListFilePicker,
-            allowedContentTypes: [.plainText],
-            allowsMultipleSelection: false
-        ) { result in
-            if case .success(let urls) = result, let url = urls.first {
-                do {
-                    try settingsViewModel.setPersonShownListURL(url)
-                    presetNameImportMessage = nil
-                } catch {
-                    let description = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                    presetNameImportMessage = "Name list import failed: \(description)"
+    }
+
+    // MARK: - Subviews
+
+    private var nameSuggestionsList: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(nameSuggestions, id: \.self) { name in
+                Button {
+                    editingName = name
+                    nameFieldFocused = false
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "person.crop.circle")
+                            .foregroundStyle(.secondary)
+                        Text(name)
+                            .lineLimit(1)
+                        Spacer()
+                    }
+                    .contentShape(Rectangle())
+                    .padding(.vertical, 4)
+                    .padding(.horizontal, 8)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    @ViewBuilder
+    private func multiSelectBar(faceCount: Int) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Divider()
+
+            HStack {
+                Text("\(selectedFaceIDs.count) selected")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                iconAction("rectangle.badge.minus", help: "Remove from group", disabled: faceCount <= 1) {
+                    for faceID in selectedFaceIDs { viewModel.ungroupFace(faceID) }
+                    selectedFaceIDs.removeAll()
+                }
+
+                iconAction("trash", help: "Delete selected faces", role: .destructive) {
+                    viewModel.deleteFaces(selectedFaceIDs)
+                    selectedFaceIDs.removeAll()
+                }
+            }
+
+            if !otherGroups.isEmpty {
+                HStack {
+                    Picker("", selection: $moveTargetID) {
+                        Text("Move to…").tag(nil as UUID?)
+                        ForEach(otherGroups) { other in
+                            Text(other.name ?? "Unnamed (\(other.faceIDs.count))").tag(other.id as UUID?)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity)
+
+                    iconAction("arrow.turn.up.right", help: "Move to selected group", disabled: moveTargetID == nil) {
+                        guard let targetID = moveTargetID else { return }
+                        viewModel.moveFaces(selectedFaceIDs, toGroup: targetID)
+                        selectedFaceIDs.removeAll()
+                    }
                 }
             }
         }
+    }
+
+    private var mergePopover: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Merge into")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Picker("", selection: $mergeTargetID) {
+                Text("Select group…").tag(nil as UUID?)
+                ForEach(otherGroups) { other in
+                    Text(other.name ?? "Unnamed (\(other.faceIDs.count))").tag(other.id as UUID?)
+                }
+            }
+            .labelsHidden()
+            HStack {
+                Spacer()
+                Button("Merge") {
+                    guard let targetID = mergeTargetID else { return }
+                    viewModel.mergeGroups(sourceID: group.id, into: targetID)
+                    showMergePopover = false
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(mergeTargetID == nil)
+            }
+        }
+        .padding()
+        .frame(width: 260)
+    }
+
+    /// A small bordered icon button used across the action rows.
+    private func iconAction(
+        _ systemImage: String,
+        help: String,
+        role: ButtonRole? = nil,
+        disabled: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(role: role, action: action) {
+            Image(systemName: systemImage)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .disabled(disabled)
+        .help(help)
     }
 
     @ViewBuilder
@@ -381,7 +371,7 @@ struct FaceGroupDetailView: View {
     }
 
     private func applyName() {
-        let trimmed = editingName.trimmingCharacters(in: .whitespaces)
+        let trimmed = trimmedName
         guard !trimmed.isEmpty else { return }
 
         isApplying = true
@@ -392,7 +382,7 @@ struct FaceGroupDetailView: View {
     }
 
     private func addToKnownPeople() {
-        let trimmed = editingName.trimmingCharacters(in: .whitespaces)
+        let trimmed = trimmedName
         guard !trimmed.isEmpty else { return }
 
         isAddingToKnownPeople = true

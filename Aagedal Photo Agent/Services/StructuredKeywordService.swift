@@ -163,6 +163,25 @@ final class StructuredKeywordService {
         return results
     }
 
+    /// All keyword-node names (excluding container categories and synonyms),
+    /// de-duplicated case-insensitively, in tree order. Used to populate name
+    /// pickers / autocomplete where only the canonical names are wanted.
+    func allNodeNames() -> [String] {
+        _ = version
+        var seen = Set<String>()
+        var out: [String] = []
+        for root in roots {
+            walk(root, ancestors: []) { node, _ in
+                if node.isKeyword, !node.name.isEmpty,
+                   seen.insert(node.name.lowercased()).inserted {
+                    out.append(node.name)
+                }
+                return true
+            }
+        }
+        return out
+    }
+
     /// Flattens the tree into a list of (node, ancestors) pairs whose nodes are
     /// keyword-kind only. Used by the bypass-toggle flow to enumerate every
     /// keyword the user could pick via the structured tree.

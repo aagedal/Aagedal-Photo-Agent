@@ -166,14 +166,15 @@ final class FaceGroupCardView: NSView {
     // MARK: - Header views
 
     private let nameLabel = NSTextField(labelWithString: "")
-    private let nameEditor = NSTextField()
+    private let nameEditor = NSComboBox()
     private let countBadge = NSView()
     private let countLabel = NSTextField(labelWithString: "")
     private let menuButton = NSButton()
-    private let namePresetButton = NSPopUpButton(frame: .zero, pullsDown: true)
 
     private var isEditingName = false
     private var editingName = ""
+    /// Structured Person Shown names backing the name combo box's list + completion.
+    private var structuredNameCache: [String] = []
 
     // MARK: - Face grid
 
@@ -261,15 +262,14 @@ final class FaceGroupCardView: NSView {
         nameEditor.target = self
         nameEditor.action = #selector(nameEditorCommit)
         nameEditor.delegate = self
+        // Structured Person Shown autocomplete: full-string prefix completion plus
+        // a browsable dropdown of all names, backed by `structuredNameCache`.
+        nameEditor.completes = true
+        nameEditor.usesDataSource = true
+        nameEditor.dataSource = self
+        nameEditor.numberOfVisibleItems = 8
+        nameEditor.hasVerticalScroller = true
         addSubview(nameEditor)
-
-        namePresetButton.isHidden = true
-        namePresetButton.isBordered = false
-        namePresetButton.font = .systemFont(ofSize: 12)
-        namePresetButton.translatesAutoresizingMaskIntoConstraints = false
-        namePresetButton.target = self
-        namePresetButton.action = #selector(namePresetSelected(_:))
-        addSubview(namePresetButton)
 
         countBadge.wantsLayer = true
         countBadge.layer?.backgroundColor = NSColor.secondaryLabelColor.cgColor
@@ -298,11 +298,7 @@ final class FaceGroupCardView: NSView {
 
             nameEditor.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
             nameEditor.topAnchor.constraint(equalTo: topAnchor, constant: 8),
-            nameEditor.widthAnchor.constraint(lessThanOrEqualToConstant: 150),
-
-            namePresetButton.leadingAnchor.constraint(equalTo: nameEditor.trailingAnchor, constant: 4),
-            namePresetButton.centerYAnchor.constraint(equalTo: nameEditor.centerYAnchor),
-            namePresetButton.widthAnchor.constraint(equalToConstant: 28),
+            nameEditor.widthAnchor.constraint(equalToConstant: 170),
 
             countBadge.leadingAnchor.constraint(equalTo: nameLabel.trailingAnchor, constant: 6),
             countBadge.centerYAnchor.constraint(equalTo: nameLabel.centerYAnchor),
@@ -791,22 +787,9 @@ final class FaceGroupCardView: NSView {
         countBadge.isHidden = true
         nameEditor.isHidden = false
 
-        // Populate name preset menu
-        if let settingsVM = settingsViewModel {
-            let names = settingsVM.loadPersonShownList()
-            namePresetButton.removeAllItems()
-            namePresetButton.addItem(withTitle: "")
-            namePresetButton.item(at: 0)?.image = NSImage(systemSymbolName: "list.bullet", accessibilityDescription: "Preset names")
-            for name in names {
-                namePresetButton.addItem(withTitle: name)
-            }
-            namePresetButton.addItem(withTitle: "")
-            namePresetButton.menu?.addItem(NSMenuItem.separator())
-            let chooseItem = NSMenuItem(title: "Choose List File...", action: #selector(chooseListFile), keyEquivalent: "")
-            chooseItem.target = self
-            namePresetButton.menu?.addItem(chooseItem)
-            namePresetButton.isHidden = false
-        }
+        // Refresh structured Person Shown names for autocomplete + dropdown.
+        structuredNameCache = StructuredKeywordService.personShown.allNodeNames()
+        nameEditor.reloadData()
 
         window?.makeFirstResponder(nameEditor)
     }
@@ -817,7 +800,6 @@ final class FaceGroupCardView: NSView {
         nameLabel.isHidden = false
         countBadge.isHidden = false
         nameEditor.isHidden = true
-        namePresetButton.isHidden = true
     }
 
     @objc private func nameEditorCommit() {
@@ -826,16 +808,6 @@ final class FaceGroupCardView: NSView {
             viewModel?.nameGroup(groupID, name: name)
         }
         endEditing()
-    }
-
-    @objc private func namePresetSelected(_ sender: NSPopUpButton) {
-        guard let title = sender.selectedItem?.title, !title.isEmpty else { return }
-        nameEditor.stringValue = title
-        editingName = title
-    }
-
-    @objc private func chooseListFile() {
-        callbacks.onChooseListFile?()
     }
 
     // MARK: - Key Art
@@ -938,7 +910,7 @@ final class FaceGroupCardView: NSView {
 
 // MARK: - NSTextFieldDelegate
 
-extension FaceGroupCardView: NSTextFieldDelegate {
+extension FaceGroupCardView: NSComboBoxDelegate {
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
         if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
             endEditing()
@@ -960,5 +932,33 @@ extension FaceGroupCardView: NSTextFieldDelegate {
         if isEditingName {
             nameEditorCommit()
         }
+    }
+}
+
+// MARK: - NSComboBoxDataSource (structured Person Shown names)
+
+extension FaceGroupCardView: NSComboBoxDataSource {
+    func numberOfItems(in comboBox: NSComboBox) -> Int {
+        structuredNameCache.count
+    }
+
+    func comboBox(_ comboBox: NSComboBox, objectValueForItemAt index: Int) -> Any? {
+        structuredNameCache.indices.contains(index) ? structuredNameCache[index] : nil
+    }
+
+    func comboBox(_ comboBox: NSComboBox, indexOfItemWithStringValue string: String) -> Int {
+        structuredNameCache.firstIndex { $0.caseInsensitiveCompare(string) == .orderedSame } ?? NSNotFound
+    }
+
+    func comboBox(_ comboBox: NSComboBox, completedString string: String) -> String? {
+        let needle = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return nil }
+        // Prefer a prefix match for natural inline completion; fall back to substring.
+        if let prefix = structuredNameCache.first(where: {
+            $0.range(of: needle, options: [.caseInsensitive, .anchored]) != nil
+        }) {
+            return prefix
+        }
+        return structuredNameCache.first { $0.localizedCaseInsensitiveContains(needle) }
     }
 }
