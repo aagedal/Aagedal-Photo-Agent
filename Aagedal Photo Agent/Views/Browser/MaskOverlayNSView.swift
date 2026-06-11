@@ -439,11 +439,22 @@ final class MaskOverlayNSView: NSView {
 
             var newAngle = startGeo.rotation + deltaDegrees
             newAngle = newAngle.truncatingRemainder(dividingBy: 360)
-            if newAngle < 0 { newAngle += 360 }
+            if newAngle > 180 { newAngle -= 360 }
+            if newAngle <= -180 { newAngle += 360 }
+
+            // Canonicalize into ACR's (−45°, 45°] range, swapping the ellipse
+            // axes per quarter turn — ACR's decoder renders nothing for angles
+            // outside this range, and its own files always store the canonical
+            // form. The displayed ellipse is identical either way.
+            var radii = trueScreenRadii(of: startGeo)
+            let quarterTurns = (newAngle / 90).rounded()
+            newAngle -= quarterTurns * 90
+            if !Int(quarterTurns).isMultiple(of: 2) {
+                radii = (x: radii.y, y: radii.x)
+            }
 
             // Rotation keeps the true semi-axes fixed; the stored corner
             // half-extents change with the angle, so re-encode them.
-            let radii = trueScreenRadii(of: startGeo)
             var geo = startGeo
             geo.rotation = newAngle
             geo = settingTrueScreenRadii(geo, x: radii.x, y: radii.y)

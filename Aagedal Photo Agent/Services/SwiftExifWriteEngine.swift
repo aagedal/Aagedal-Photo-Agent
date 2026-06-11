@@ -505,25 +505,25 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
             let maskSyncID = UUID().uuidString.replacingOccurrences(of: "-", with: "")
 
             let maskStruct: [String: XMPValue] = [
-                "What": .simple("Mask/CircularGradient"),
-                "Top": .simple(acrNum(top)),
-                "Left": .simple(acrNum(left)),
-                "Bottom": .simple(acrNum(bottom)),
-                "Right": .simple(acrNum(right)),
-                "Angle": .simple(acrNum(geo.rotation)),
-                "Feather": .simple(acrNum(geo.feather)),
-                "Midpoint": .simple("50"),
-                "Roundness": .simple("0"),
+                "\(crsNamespace)What": .simple("Mask/CircularGradient"),
+                "\(crsNamespace)Top": .simple(acrNum(top)),
+                "\(crsNamespace)Left": .simple(acrNum(left)),
+                "\(crsNamespace)Bottom": .simple(acrNum(bottom)),
+                "\(crsNamespace)Right": .simple(acrNum(right)),
+                "\(crsNamespace)Angle": .simple(acrNum(geo.rotation)),
+                "\(crsNamespace)Feather": .simple(acrNum(geo.feather)),
+                "\(crsNamespace)Midpoint": .simple("50"),
+                "\(crsNamespace)Roundness": .simple("0"),
                 // ACR Flipped=true means effect applies inside the ellipse;
                 // our `inverted=true` means effect applies outside. Negate.
-                "Flipped": .simple(mask.inverted ? "false" : "true"),
-                "MaskActive": .simple("true"),
-                "MaskBlendMode": .simple("0"),
-                "MaskInverted": .simple("false"),
-                "MaskName": .simple("Radial Gradient \(index + 1)"),
-                "MaskSyncID": .simple(maskSyncID),
-                "MaskValue": .simple("1"),
-                "Version": .simple("2")
+                "\(crsNamespace)Flipped": .simple(mask.inverted ? "false" : "true"),
+                "\(crsNamespace)MaskActive": .simple("true"),
+                "\(crsNamespace)MaskBlendMode": .simple("0"),
+                "\(crsNamespace)MaskInverted": .simple("false"),
+                "\(crsNamespace)MaskName": .simple("Radial Gradient \(index + 1)"),
+                "\(crsNamespace)MaskSyncID": .simple(maskSyncID),
+                "\(crsNamespace)MaskValue": .simple("1"),
+                "\(crsNamespace)Version": .simple("2")
             ]
 
             // ACR stores all local adjustments as fractions of their full range
@@ -540,39 +540,47 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
             let tint = (mask.tint ?? 0) / 100.0
 
             return [
-                "CorrectionActive": .simple("true"),
-                "CorrectionAmount": .simple(acrNum(mask.amount)),
-                "CorrectionName": .simple(mask.name),
-                "CorrectionSyncID": .simple(corrSyncID),
-                "What": .simple("Correction"),
-                "CorrectionMasks": .structuredArray([maskStruct]),
-                "LocalExposure2012": .simple(acrNum(exp)),
-                "LocalContrast2012": .simple(acrNum(con)),
-                "LocalHighlights2012": .simple(acrNum(hi)),
-                "LocalShadows2012": .simple(acrNum(sh)),
-                "LocalWhites2012": .simple(acrNum(wh)),
-                "LocalBlacks2012": .simple(acrNum(bl)),
-                "LocalSaturation": .simple(acrNum(sat)),
-                "LocalVibrance": .simple(acrNum(vib)),
-                "LocalTemperature": .simple(acrNum(temp)),
-                "LocalTint": .simple(acrNum(tint)),
+                "\(crsNamespace)CorrectionActive": .simple("true"),
+                "\(crsNamespace)CorrectionAmount": .simple(acrNum(mask.amount)),
+                "\(crsNamespace)CorrectionName": .simple(mask.name),
+                "\(crsNamespace)CorrectionSyncID": .simple(corrSyncID),
+                "\(crsNamespace)What": .simple("Correction"),
+                "\(crsNamespace)CorrectionMasks": .structuredArray([maskStruct]),
+                "\(crsNamespace)LocalExposure2012": .simple(acrNum(exp)),
+                "\(crsNamespace)LocalContrast2012": .simple(acrNum(con)),
+                "\(crsNamespace)LocalHighlights2012": .simple(acrNum(hi)),
+                "\(crsNamespace)LocalShadows2012": .simple(acrNum(sh)),
+                "\(crsNamespace)LocalWhites2012": .simple(acrNum(wh)),
+                "\(crsNamespace)LocalBlacks2012": .simple(acrNum(bl)),
+                "\(crsNamespace)LocalSaturation": .simple(acrNum(sat)),
+                "\(crsNamespace)LocalVibrance": .simple(acrNum(vib)),
+                "\(crsNamespace)LocalTemperature": .simple(acrNum(temp)),
+                "\(crsNamespace)LocalTint": .simple(acrNum(tint)),
                 // Legacy fields ACR still expects, all zero.
-                "LocalExposure": .simple("0"),
-                "LocalContrast": .simple("0"),
-                "LocalBrightness": .simple("0"),
-                "LocalClarity": .simple("0"),
-                "LocalClarity2012": .simple("0"),
-                "LocalSharpness": .simple("0"),
-                "LocalLuminanceNoise": .simple("0"),
-                "LocalMoire": .simple("0"),
-                "LocalDefringe": .simple("0"),
-                "LocalDehaze": .simple("0"),
-                "LocalTexture": .simple("0"),
-                "LocalHue": .simple("0"),
-                "LocalToningHue": .simple("0"),
-                "LocalToningSaturation": .simple("0")
+                "\(crsNamespace)LocalExposure": .simple("0"),
+                "\(crsNamespace)LocalContrast": .simple("0"),
+                "\(crsNamespace)LocalBrightness": .simple("0"),
+                "\(crsNamespace)LocalClarity": .simple("0"),
+                "\(crsNamespace)LocalClarity2012": .simple("0"),
+                "\(crsNamespace)LocalSharpness": .simple("0"),
+                "\(crsNamespace)LocalLuminanceNoise": .simple("0"),
+                "\(crsNamespace)LocalMoire": .simple("0"),
+                "\(crsNamespace)LocalDefringe": .simple("0"),
+                "\(crsNamespace)LocalDehaze": .simple("0"),
+                "\(crsNamespace)LocalTexture": .simple("0"),
+                "\(crsNamespace)LocalHue": .simple("0"),
+                "\(crsNamespace)LocalToningHue": .simple("0"),
+                "\(crsNamespace)LocalToningSaturation": .simple("0")
             ]
         }
+
+        // ACR ignores every crs setting in a block marked AlreadyApplied=True
+        // (the marker means "baked into the pixels during export", common on JPEGs
+        // ACR rendered from RAW). Our edits are live settings — and Bridge/ACR only
+        // badge a file as edited when the marker is EXPLICITLY False (removing it
+        // entirely is not enough; verified against ACR 18.3.2 output 2026-06).
+        metadata.xmp?.setValue(.simple("False"), namespace: crsNamespace, property: "AlreadyApplied")
+        metadata.xmp?.setValue(.simple("234881024"), namespace: crsNamespace, property: "CompatibleVersion")
 
         metadata.xmp?.setValue(
             .structuredArray(corrections),

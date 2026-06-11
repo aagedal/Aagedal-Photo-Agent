@@ -65,8 +65,12 @@ nonisolated struct CameraRawCrop: Codable, Sendable, Equatable {
 ///
 /// where (a, b) are the true UV semi-axes; both must come out positive or the mask is
 /// degenerate (ACR renders nothing). At rotation 0 the box half-extents ARE the
-/// semi-axes — verified empirically against Camera Raw 18.3.2 (2026-06, two rotated
-/// samples decode to the authored ellipse within 4 decimals).
+/// semi-axes — verified empirically against Camera Raw 18.3.2 (2026-06: two rotated
+/// samples decode to the authored ellipse within 4 decimals; a rotated visually-circular
+/// mask decodes to a pixel circle within 0.04%; a rendered export fits the rigid
+/// pixel-space rotation within 0.6°). ACR additionally only accepts `rotation` in its
+/// canonical (−45°, 45°] range — out-of-range angles render nothing there — so the
+/// mask overlay canonicalizes the angle (swapping axes per quarter turn) on rotation.
 nonisolated struct EllipseMaskGeometry: Codable, Sendable, Equatable {
     var centerX: Double = 0.5
     var centerY: Double = 0.5
