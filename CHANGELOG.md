@@ -109,6 +109,7 @@ Replaced ExifTool with **SwiftExif**, a pure-Swift in-process engine. Metadata r
 - Auto-scroll metadata panel; deduplicated keywords and personShown; partial values shown when batch-editing across images.
 - Keyboard shortcuts settings tab.
 - Licenses settings tab with attribution and full license texts for bundled components (FFmpeg, c2patool, Sparkle, SwiftExif, AuraFace).
+- Bundled FFmpeg rebuilt as a minimal image-only GPL build (19 MB, down from 53 MB) with no non-redistributable components.
 - Empty-state in the template palette no longer cramped.
 - Sidebar chevron only appears for folders that actually have subfolders.
 - Full-screen scaling-filter toggle moved to Option+S, freeing bare S for selection.
