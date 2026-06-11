@@ -39,6 +39,11 @@ nonisolated struct DetectedFace: Codable, Identifiable {
     var clothingFeaturePrintData: Data?
     var clothingRect: CGRect?
 
+    /// Appearance feature print (archived `VNFeaturePrintObservation` of the face crop),
+    /// prewarmed after the Face scan for the Expression lens. Deliberately NOT an identity
+    /// embedding — used only for within-folder appearance clustering, never for Known People.
+    var appearanceFeaturePrintData: Data?
+
     // The recognition mode used when this face was detected
     var embeddingMode: FaceRecognitionMode?
 
@@ -66,6 +71,7 @@ nonisolated struct DetectedFace: Codable, Identifiable {
         captureQuality: Float? = nil,
         clothingFeaturePrintData: Data? = nil,
         clothingRect: CGRect? = nil,
+        appearanceFeaturePrintData: Data? = nil,
         embeddingMode: FaceRecognitionMode? = nil,
         jerseyNumber: Int? = nil,
         numberConfidence: Float? = nil,
@@ -85,6 +91,7 @@ nonisolated struct DetectedFace: Codable, Identifiable {
         self.captureQuality = captureQuality
         self.clothingFeaturePrintData = clothingFeaturePrintData
         self.clothingRect = clothingRect
+        self.appearanceFeaturePrintData = appearanceFeaturePrintData
         self.embeddingMode = embeddingMode
         self.jerseyNumber = jerseyNumber
         self.numberConfidence = numberConfidence
@@ -117,15 +124,24 @@ nonisolated enum FaceLens: String, Codable, CaseIterable, Sendable {
     /// Identity + clothing combined distance — same event, same outfit.
     case redCarpet
 
-    /// Lenses wired end-to-end. Expression and Red Carpet land in later phases; the lens
-    /// switcher stays hidden while only one lens is available.
-    static let available: [FaceLens] = [.face]
+    /// Lenses wired end-to-end and offered in the lens switcher. The switcher hides itself
+    /// if this ever drops back to a single lens.
+    static let available: [FaceLens] = FaceLens.allCases
 
     var displayName: String {
         switch self {
         case .face: "Face"
         case .expression: "Expression"
         case .redCarpet: "Red Carpet"
+        }
+    }
+
+    /// One-line explanation of the lens's grouping, shown in the lens view.
+    var caption: String {
+        switch self {
+        case .face: "Groups people by who they are."
+        case .expression: "Groups by look and expression, not identity."
+        case .redCarpet: "Groups by face and clothing — same event, same outfit."
         }
     }
 

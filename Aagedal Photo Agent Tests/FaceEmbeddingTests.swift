@@ -89,6 +89,70 @@ struct FaceEmbeddingTests {
         #expect(v2.allSatisfy { $0.isFinite })
     }
 
+    // MARK: - FaceLensService clustering
+
+    /// Red Carpet clustering with no clothing prints falls back to the identity distance:
+    /// two faces with near-identical ArcFace vectors group; an orthogonal one stays apart.
+    @Test func redCarpetLensClustersByIdentityWithoutClothing() {
+        func face(vector: [Float], quality: Float = 0.9) -> DetectedFace {
+            DetectedFace(
+                id: UUID(),
+                imageURL: URL(fileURLWithPath: "/tmp/a.jpg"),
+                faceRect: CGRect(x: 0.1, y: 0.5, width: 0.2, height: 0.2),
+                featurePrintData: EmbeddingCodec.encode(vector),
+                detectedAt: Date(),
+                qualityScore: quality
+            )
+        }
+
+        let a = face(vector: [1, 0, 0, 0])
+        let b = face(vector: [0.999, 0.0447, 0, 0])   // ~0.001 cosine distance from a
+        let c = face(vector: [0, 1, 0, 0])            // orthogonal: distance 1 > threshold
+
+        let groups = FaceLensService().cluster(lens: .redCarpet, faces: [a, b, c])
+
+        #expect(groups.count == 2)
+        #expect(Set(groups.flatMap(\.faceIDs)) == Set([a.id, b.id, c.id]))
+        let pairGroup = groups.first { $0.faceIDs.count == 2 }
+        #expect(pairGroup != nil)
+        #expect(Set(pairGroup?.faceIDs ?? []) == Set([a.id, b.id]))
+        // Largest group sorts first for the lens view.
+        #expect(groups.first?.faceIDs.count == 2)
+    }
+
+    /// Faces below the quality gate still land somewhere: near an existing cluster they join
+    /// it; otherwise they become singletons. Faces with undecodable embeddings end up as
+    /// singletons rather than being dropped.
+    @Test func lensClusteringAssignsLowQualityAndKeepsUndecodableFaces() {
+        func face(vector: [Float]?, quality: Float) -> DetectedFace {
+            DetectedFace(
+                id: UUID(),
+                imageURL: URL(fileURLWithPath: "/tmp/a.jpg"),
+                faceRect: CGRect(x: 0.1, y: 0.5, width: 0.2, height: 0.2),
+                featurePrintData: vector.map(EmbeddingCodec.encode) ?? Data([0xDE, 0xAD]),
+                detectedAt: Date(),
+                qualityScore: quality
+            )
+        }
+
+        let anchor1 = face(vector: [1, 0, 0, 0], quality: 0.9)
+        let anchor2 = face(vector: [0.999, 0.0447, 0, 0], quality: 0.9)
+        let lowNear = face(vector: [0.998, 0.0632, 0, 0], quality: 0.1)  // below gate, near the pair
+        let lowFar = face(vector: [0, 0, 1, 0], quality: 0.1)            // below gate, far away
+        let broken = face(vector: nil, quality: 0.9)                     // undecodable embedding
+
+        let groups = FaceLensService().cluster(
+            lens: .redCarpet,
+            faces: [anchor1, anchor2, lowNear, lowFar, broken]
+        )
+
+        #expect(Set(groups.flatMap(\.faceIDs)) == Set([anchor1.id, anchor2.id, lowNear.id, lowFar.id, broken.id]))
+        let mainGroup = groups.first { $0.faceIDs.contains(anchor1.id) }
+        #expect(Set(mainGroup?.faceIDs ?? []) == Set([anchor1.id, anchor2.id, lowNear.id]))
+        #expect(groups.first { $0.faceIDs.contains(lowFar.id) }?.faceIDs.count == 1)
+        #expect(groups.first { $0.faceIDs.contains(broken.id) }?.faceIDs.count == 1)
+    }
+
     // MARK: - Helpers
 
     private func approxEqual(_ a: Float?, _ b: Float?, tolerance: Float = 1e-4) -> Bool {

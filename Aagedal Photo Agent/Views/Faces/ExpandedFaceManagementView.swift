@@ -95,47 +95,57 @@ struct ExpandedFaceManagementView: View {
                     .padding(.vertical, 6)
                 }
                 Divider()
-                // Live sharpness filter — hides too-blurry faces from the set without re-scanning.
-                HStack(spacing: 8) {
-                    Image(systemName: "camera.filters")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text("Sharpness filter")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Slider(value: $viewModel.displayQualityThreshold,
-                           in: 0...FaceRecognitionDefaults.minFaceQualityMax, step: 0.01)
-                        .controlSize(.small)
-                        .frame(maxWidth: 240)
-                    Text(viewModel.displayQualityThreshold <= 0
-                         ? "Off"
-                         : String(format: "%.2f", viewModel.displayQualityThreshold))
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .frame(width: 30, alignment: .trailing)
-                    Spacer()
-                    Text("Hides blurry faces • drag to taste")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                Divider()
-                FaceGroupCollectionRepresentable(
-                    viewModel: viewModel,
-                    selectionState: selectionState,
-                    settingsViewModel: settingsViewModel,
-                    callbacks: FaceGroupCardCallbacks(
-                        onDeleteGroup: { group in
-                            groupToDelete = group
-                            showDeleteGroupAlert = true
-                        },
-                        onChooseListFile: { showingNameListFilePicker = true },
-                        onToggleExpand: nil, // Handled internally by controller
-                        onOpenFullScreen: onOpenFullScreen,
-                        onPhotosDeleted: onPhotosDeleted
+                if viewModel.activeLens == .face {
+                    // Live sharpness filter — hides too-blurry faces from the set without re-scanning.
+                    HStack(spacing: 8) {
+                        Image(systemName: "camera.filters")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text("Sharpness filter")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Slider(value: $viewModel.displayQualityThreshold,
+                               in: 0...FaceRecognitionDefaults.minFaceQualityMax, step: 0.01)
+                            .controlSize(.small)
+                            .frame(maxWidth: 240)
+                        Text(viewModel.displayQualityThreshold <= 0
+                             ? "Off"
+                             : String(format: "%.2f", viewModel.displayQualityThreshold))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .frame(width: 30, alignment: .trailing)
+                        Spacer()
+                        Text("Hides blurry faces • drag to taste")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    Divider()
+                    FaceGroupCollectionRepresentable(
+                        viewModel: viewModel,
+                        selectionState: selectionState,
+                        settingsViewModel: settingsViewModel,
+                        callbacks: FaceGroupCardCallbacks(
+                            onDeleteGroup: { group in
+                                groupToDelete = group
+                                showDeleteGroupAlert = true
+                            },
+                            onChooseListFile: { showingNameListFilePicker = true },
+                            onToggleExpand: nil, // Handled internally by controller
+                            onOpenFullScreen: onOpenFullScreen,
+                            onPhotosDeleted: onPhotosDeleted
+                        )
                     )
-                )
+                } else {
+                    // Secondary lenses are read-only alternative groupings over the same scan.
+                    // Naming, merging and Known People live in the Face lens.
+                    LensGroupsView(
+                        viewModel: viewModel,
+                        lens: viewModel.activeLens,
+                        onOpenFullScreen: onOpenFullScreen
+                    )
+                }
             }
         }
         .onChange(of: selectionState.focusedFaceID) { _, newValue in
@@ -212,42 +222,45 @@ struct ExpandedFaceManagementView: View {
                     .frame(height: 16)
             }
 
-            Button {
-                viewModel.createNewGroup(withFaces: selectionState.selectedFaceIDs)
-                selectionState.selectedFaceIDs.removeAll()
-            } label: {
-                Label("New Group", systemImage: "plus")
-            }
-            .disabled(selectionState.selectedFaceIDs.isEmpty)
+            if viewModel.activeLens == .face {
+                Button {
+                    viewModel.createNewGroup(withFaces: selectionState.selectedFaceIDs)
+                    selectionState.selectedFaceIDs.removeAll()
+                } label: {
+                    Label("New Group", systemImage: "plus")
+                }
+                .disabled(selectionState.selectedFaceIDs.isEmpty)
 
-            Divider()
-                .frame(height: 16)
+                Divider()
+                    .frame(height: 16)
 
-            Menu {
-                ForEach(FaceGroupSortMode.allCases, id: \.self) { mode in
-                    Button {
-                        viewModel.sortMode = mode
-                    } label: {
-                        HStack {
-                            Text(mode.rawValue)
-                            if viewModel.sortMode == mode {
-                                Spacer()
-                                Image(systemName: "checkmark")
+                Menu {
+                    ForEach(FaceGroupSortMode.allCases, id: \.self) { mode in
+                        Button {
+                            viewModel.sortMode = mode
+                        } label: {
+                            HStack {
+                                Text(mode.rawValue)
+                                if viewModel.sortMode == mode {
+                                    Spacer()
+                                    Image(systemName: "checkmark")
+                                }
                             }
                         }
                     }
+                } label: {
+                    Label("Sort", systemImage: "arrow.up.arrow.down")
                 }
-            } label: {
-                Label("Sort", systemImage: "arrow.up.arrow.down")
-            }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
+                .menuStyle(.borderlessButton)
+                .fixedSize()
 
-            Divider()
-                .frame(height: 16)
+                Divider()
+                    .frame(height: 16)
+            }
 
             if let faceData = viewModel.faceData {
-                Text("\(faceData.faces.count) faces in \(faceData.groups.count) groups")
+                let groupCount = faceData.groups(for: viewModel.activeLens).count
+                Text("\(faceData.faces.count) faces in \(groupCount) groups")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -281,6 +294,140 @@ struct ExpandedFaceManagementView: View {
         .padding(.horizontal)
         .padding(.vertical, 8)
         .background(.bar)
+    }
+}
+
+// MARK: - Secondary Lens View (read-only alternative grouping)
+
+/// Read-only grid for the Expression / Red Carpet lenses: the same detected faces, grouped
+/// by that lens's stored clustering. Shows an in-progress state until the background prewarm
+/// has computed the lens's embeddings. Editing (naming, merging, Known People) stays in the
+/// Face lens.
+struct LensGroupsView: View {
+    @Bindable var viewModel: FaceRecognitionViewModel
+    let lens: FaceLens
+    var onOpenFullScreen: ((URL, UUID?) -> Void)?
+
+    var body: some View {
+        let state = viewModel.lensState(for: lens)
+
+        VStack(spacing: 0) {
+            HStack {
+                Text(lens.caption)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if !lens.usesIdentity {
+                    Text("Not identity — naming is in the Face view")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            Divider()
+
+            switch state.status {
+            case .complete where !state.groups.isEmpty:
+                groupsGrid(state.groups)
+            case .complete:
+                placeholder(
+                    systemImage: "person.2.slash",
+                    title: "No \(lens.displayName) groups",
+                    detail: "No faces in this folder could be grouped by this lens."
+                )
+            case .embedding, .clustering:
+                placeholder(
+                    systemImage: "sparkles",
+                    title: "Preparing \(lens.displayName) groups…",
+                    detail: "Computing in the background from the existing scan — no rescan needed.",
+                    showsProgress: true
+                )
+            case .notStarted:
+                placeholder(
+                    systemImage: "camera.viewfinder",
+                    title: "Not computed yet",
+                    detail: viewModel.scanComplete
+                        ? "\(lens.displayName) groups are computed automatically after a scan."
+                        : "Scan the folder for faces first."
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func groupsGrid(_ groups: [FaceGroup]) -> some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 12) {
+                ForEach(groups) { group in
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("\(group.faceIDs.count) face\(group.faceIDs.count == 1 ? "" : "s")")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 64), spacing: 4)], alignment: .leading, spacing: 4) {
+                            ForEach(group.faceIDs, id: \.self) { faceID in
+                                faceThumbnail(faceID)
+                            }
+                        }
+
+                        Divider()
+                    }
+                }
+            }
+            .padding(12)
+        }
+    }
+
+    @ViewBuilder
+    private func faceThumbnail(_ faceID: UUID) -> some View {
+        Group {
+            if let image = viewModel.thumbnailImage(for: faceID) {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                Rectangle()
+                    .fill(.quaternary)
+                    .overlay {
+                        Image(systemName: "person.fill")
+                            .foregroundStyle(.secondary)
+                    }
+            }
+        }
+        .frame(width: 64, height: 64)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .onTapGesture {
+            if let face = viewModel.face(byID: faceID) {
+                onOpenFullScreen?(face.imageURL, faceID)
+            }
+        }
+        .help("Click to open the photo")
+    }
+
+    @ViewBuilder
+    private func placeholder(systemImage: String, title: String, detail: String, showsProgress: Bool = false) -> some View {
+        VStack(spacing: 10) {
+            Spacer()
+            if showsProgress {
+                ProgressView()
+                    .controlSize(.regular)
+            } else {
+                Image(systemName: systemImage)
+                    .font(.system(size: 32))
+                    .foregroundStyle(.secondary)
+            }
+            Text(title)
+                .font(.headline)
+                .foregroundStyle(.secondary)
+            Text(detail)
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
+        .padding()
     }
 }
 

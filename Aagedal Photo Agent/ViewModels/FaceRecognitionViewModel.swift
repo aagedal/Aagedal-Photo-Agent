@@ -89,6 +89,118 @@ final class FaceRecognitionViewModel {
         }
     }
 
+    func lensState(for lens: FaceLens) -> FaceLensState {
+        faceData?.lensState(for: lens) ?? FaceLensState()
+    }
+
+    func lensGroups(for lens: FaceLens) -> [FaceGroup] {
+        faceData?.groups(for: lens) ?? []
+    }
+
+    // MARK: - Secondary Lens Prewarm
+
+    /// Compute Expression/Red Carpet embeddings and clusterings in the background once the
+    /// Face scan is complete (or when opening a folder whose stored lens data is missing or
+    /// stale). Lens switches never wait on this — they show whatever grouping is stored, with
+    /// an in-progress state until this pass lands.
+    private func prewarmSecondaryLensesIfNeeded() {
+        guard let data = faceData, data.scanComplete, !data.faces.isEmpty else { return }
+
+        let staleLenses = FaceLens.allCases.filter { lens in
+            switch lens {
+            case .face:
+                false
+            case .expression:
+                needsPrewarm(data.lensState(for: lens), version: FaceRecognitionDefaults.expressionEmbeddingVersion)
+            case .redCarpet:
+                needsPrewarm(data.lensState(for: lens), version: FaceRecognitionDefaults.redCarpetEmbeddingVersion)
+            }
+        }
+        guard !staleLenses.isEmpty else { return }
+
+        lensPrewarmTask?.cancel()
+
+        // Mark the stale lenses as in-progress (in memory only; persisted state stays as-is
+        // so an interrupted prewarm simply re-runs on the next folder open).
+        var marked = data
+        for lens in staleLenses {
+            var state = marked.lensState(for: lens)
+            state.status = .embedding
+            marked.setLensState(state, for: lens)
+        }
+        faceData = marked
+
+        let faces = marked.faces
+        let folderURL = marked.folderURL
+        let storage = storageService
+        let service = lensService
+
+        lensPrewarmTask = Task(priority: .utility) { [weak self] in
+            let outcome = await service.prewarm(faces: faces, folderURL: folderURL, storage: storage)
+            guard !Task.isCancelled else { return }
+            self?.applyLensPrewarm(outcome)
+        }
+    }
+
+    /// A lens needs (re)computation unless its stored results are complete on the current
+    /// embedding version. `.embedding` from a superseded in-memory run also re-queues.
+    private func needsPrewarm(_ state: FaceLensState, version: Int) -> Bool {
+        state.status != .complete || (state.embeddingVersion ?? 0) < version
+    }
+
+    private func applyLensPrewarm(_ outcome: FaceLensPrewarmOutcome) {
+        // The folder may have changed while the prewarm ran; results merge by face ID, so
+        // faces deleted in the meantime simply drop out.
+        guard var data = faceData, data.folderURL == outcome.folderURL else { return }
+
+        let indexByID = faceIndexMap(from: data)
+        for (id, print) in outcome.appearancePrints {
+            if let i = indexByID[id] { data.faces[i].appearanceFeaturePrintData = print }
+        }
+        for (id, item) in outcome.clothingPrints {
+            if let i = indexByID[id] {
+                data.faces[i].clothingFeaturePrintData = item.data
+                data.faces[i].clothingRect = item.rect
+            }
+        }
+
+        let validIDs = Set(data.faces.map(\.id))
+        data.setLensState(FaceLensState(
+            groups: Self.sanitizedLensGroups(outcome.expressionGroups, validFaceIDs: validIDs),
+            status: .complete,
+            embeddingVersion: FaceRecognitionDefaults.expressionEmbeddingVersion,
+            lastUpdated: Date()
+        ), for: .expression)
+        data.setLensState(FaceLensState(
+            groups: Self.sanitizedLensGroups(outcome.redCarpetGroups, validFaceIDs: validIDs),
+            status: .complete,
+            embeddingVersion: FaceRecognitionDefaults.redCarpetEmbeddingVersion,
+            lastUpdated: Date()
+        ), for: .redCarpet)
+
+        faceData = data
+        lensPrewarmTask = nil
+        do {
+            try storageService.saveFaceData(data)
+        } catch {
+            errorMessage = "Failed to save face data: \(error.localizedDescription)"
+        }
+    }
+
+    /// Drop face IDs that no longer exist (deleted while the prewarm ran) and repair
+    /// representatives; empty groups vanish.
+    nonisolated private static func sanitizedLensGroups(_ groups: [FaceGroup], validFaceIDs: Set<UUID>) -> [FaceGroup] {
+        groups.compactMap { group in
+            var sanitized = group
+            sanitized.faceIDs = sanitized.faceIDs.filter { validFaceIDs.contains($0) }
+            guard !sanitized.faceIDs.isEmpty else { return nil }
+            if !sanitized.faceIDs.contains(sanitized.representativeFaceID) {
+                sanitized.representativeFaceID = sanitized.faceIDs[0]
+            }
+            return sanitized
+        }
+    }
+
     // Track matches between groups and known people
     // Maps groupID -> (knownPersonID, matchConfidence)
     var knownPersonMatchByGroup: [UUID: (personID: UUID, confidence: Float)] = [:]
@@ -155,7 +267,9 @@ final class FaceRecognitionViewModel {
 
     @ObservationIgnored private var activeScanTask: Task<Void, Never>?
     @ObservationIgnored private var metadataWriteTask: Task<Void, Never>?
+    @ObservationIgnored private var lensPrewarmTask: Task<Void, Never>?
     private let detectionService = FaceDetectionService()
+    private let lensService = FaceLensService()
     private let storageService = FaceDataStorageService()
     private let readService: SwiftExifReadService
     private let writeEngine: any MetadataWriteEngine
@@ -171,6 +285,7 @@ final class FaceRecognitionViewModel {
     deinit {
         activeScanTask?.cancel()
         metadataWriteTask?.cancel()
+        lensPrewarmTask?.cancel()
     }
 
     // MARK: - Cache Management
@@ -269,10 +384,13 @@ final class FaceRecognitionViewModel {
         // Apply cleanup policy first
         try? storageService.applyCleanupIfNeeded(for: folderURL, policy: cleanupPolicy)
 
+        lensPrewarmTask?.cancel()
+
         if let data = storageService.loadFaceData(for: folderURL) {
             self.faceData = data
             self.scanComplete = data.scanComplete
             loadThumbnails(for: data)
+            prewarmSecondaryLensesIfNeeded()
         } else {
             self.faceData = nil
             self.scanComplete = false
@@ -300,6 +418,9 @@ final class FaceRecognitionViewModel {
     ///   - forceFullScan: If true, deletes existing data and rescans all images
     func scanFolder(imageURLs: [URL], folderURL: URL, forceFullScan: Bool = false) {
         guard !isScanning else { return }
+
+        // A scan invalidates the face set the prewarm was working from.
+        lensPrewarmTask?.cancel()
 
         let config = detectionConfig
         let storageService = self.storageService
@@ -581,6 +702,9 @@ final class FaceRecognitionViewModel {
             // Known People matching is always automatic now. `applyKnownPeopleMatches`
             // no-ops when the database is empty, so this is safe to always call.
             await self.matchKnownPeopleIntegrated()
+
+            // Face results are live; compute the secondary lenses in the background.
+            self.prewarmSecondaryLensesIfNeeded()
         }
     }
 
@@ -2060,6 +2184,7 @@ final class FaceRecognitionViewModel {
     // MARK: - Delete Face Data
 
     func deleteFaceData(for folderURL: URL) {
+        lensPrewarmTask?.cancel()
         try? storageService.deleteFaceData(for: folderURL)
         faceData = nil
         thumbnailCache.removeAllObjects()

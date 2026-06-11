@@ -1,6 +1,19 @@
 # Follow-up plan: face lenses (always-scan, switch-view)
 
-**Status:** proposal / not started. Supersedes the earlier "pick a scan mode up front" draft.
+**Status:** Phases 1–3 implemented (2026-06-11). Phase 1: per-lens `FolderFaceData` scaffolding
+(`FaceLens` / `FaceLensStatus` / `FaceLensState` in `FaceData.swift`, `recognitionMode` dropped),
+segmented lens switcher in `ExpandedFaceManagementView`, cog/sensitivity slider removed everywhere
+(popover, Settings tab, UserDefaults key, iCloud pref sync), rescan demoted to the scan button's
+context menu + an overflow menu in the expanded view. (Teams/Sports UI was already removed in
+commit 71f4e36.) Phases 2+3: `FaceLensService` prewarms Expression (VNFeaturePrint of the stored
+face thumbnails — no original re-decode) and Red Carpet (VNFeaturePrint of the torso region from a
+1536px downsampled decode, combined with ArcFace at weight 0.7/0.3) after the Face scan completes
+or on folder open if missing/stale; per-lens results/status persist in `face_data.json`; the
+secondary lens views are **read-only** grids (naming/merging/Known People stay in the Face lens —
+a divergence from the draft below, which allowed naming in Red Carpet). Thresholds
+(`expressionClusteringThreshold` 0.80, `redCarpetClusteringThreshold` 0.72 in
+`FaceRecognitionDefaults`) are starting points pending real-data calibration. Phase 4 (Sports)
+remains. Supersedes the earlier "pick a scan mode up front" draft.
 
 ## Context
 

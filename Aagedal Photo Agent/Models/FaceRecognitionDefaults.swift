@@ -44,4 +44,36 @@ nonisolated enum FaceRecognitionDefaults {
 
     /// Required confidence gap between the best and second-best candidate (ambiguity guard).
     static let knownPeopleMinConfidenceGap: Float = 0.04
+
+    // MARK: - Expression lens (VNFeaturePrint distance, 0...~2)
+    //
+    // Appearance vectors come from `VNGenerateImageFeaturePrintRequest` on the stored face
+    // crops — a general image-similarity descriptor, deliberately not identity. The scale is
+    // Vision's own; the pre-ArcFace face pipeline clustered identities at 0.90 on it, so the
+    // appearance default sits a bit stricter to group by look rather than person.
+
+    /// Maximum Vision feature-print distance for two face crops to share an Expression group.
+    static let expressionClusteringThreshold: Float = 0.80
+
+    /// Version of the Expression lens's appearance embedding. Bump when the source crop or
+    /// request changes; a mismatch re-runs the prewarm for that lens only.
+    static let expressionEmbeddingVersion = 1
+
+    // MARK: - Red Carpet lens (combined distance)
+    //
+    // `faceCosine * redCarpetFaceWeight + clothingFeaturePrint * (1 - redCarpetFaceWeight)`.
+    // Both components live on a 0...2 scale (ArcFace cosine; Vision feature print). With the
+    // 0.7/0.3 split carried over from the old Face+Clothing mode and the calibrated face
+    // threshold of 0.70, consistent attire pulls borderline same-person pairs together:
+    // 0.7·0.70 + 0.3·0.8 ≈ 0.73.
+
+    /// Weight of the face (identity) component in the Red Carpet combined distance.
+    static let redCarpetFaceWeight: Float = 0.7
+
+    /// Maximum combined distance for two faces to share a Red Carpet group.
+    static let redCarpetClusteringThreshold: Float = 0.72
+
+    /// Version of the Red Carpet lens's clothing embedding. Bump when the torso estimation
+    /// or request changes; a mismatch re-runs the prewarm for that lens only.
+    static let redCarpetEmbeddingVersion = 1
 }
