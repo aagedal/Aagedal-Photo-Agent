@@ -1105,17 +1105,12 @@ struct EditWorkspaceView: View {
         isLoadingPreview = true
         let isRaw = SupportedImageFormats.isRaw(url: selectedImageURL)
 
-        // Detect the file's baked-in orientation for corrective rotation.
-        // C2PA images can't be modified, so the file orientation may differ
-        // from the in-memory orientation after the user rotates.
+        // The file's baked-in orientation can differ from the in-memory orientation:
+        // C2PA images can't be modified, and rotation writes the new tag to the file
+        // asynchronously. Each decode below computes its own corrective rotation from
+        // the orientation of the bytes it actually decoded — a single upfront read can
+        // race the pending write (Phase 2 decodes seconds later) and over-rotate.
         let targetOrientation = selectedImageOrientation
-        let fileOrientation: Int = {
-            guard let source = CGImageSourceCreateWithURL(selectedImageURL as CFURL, nil),
-                  let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-                  let o = props[kCGImagePropertyOrientation] as? Int else { return targetOrientation }
-            return o
-        }()
-        let orientationCorrection = ImageFile.orientationCorrection(from: fileOrientation, to: targetOrientation)
 
         editLog.info("[\(filename)] loadSelectedImagePreview: starting previewTask (isRaw=\(isRaw), maxPx=\(Int(previewMaxPixelSize)))")
 
@@ -1131,15 +1126,15 @@ struct EditWorkspaceView: View {
 
                 // Phase 1: Extract embedded JPEG preview from RAW container (no RAW decode)
                 let phase1Start = ContinuousClock.now
-                let quickPreview = await Task.detached(priority: .userInitiated) { () -> (image: NSImage, ciImage: CIImage)? in
-                    guard let cgImage = FullScreenImageCache.extractEmbeddedPreview(
+                let quickPreview = await Task.detached(priority: .userInitiated) { () -> (image: NSImage, ciImage: CIImage, orientation: Int)? in
+                    guard let result = FullScreenImageCache.extractEmbeddedPreviewWithOrientation(
                         from: selectedImageURL
                     ) else { return nil }
                     let nsImage = NSImage(
-                        cgImage: cgImage,
-                        size: NSSize(width: cgImage.width, height: cgImage.height)
+                        cgImage: result.image,
+                        size: NSSize(width: result.image.width, height: result.image.height)
                     )
-                    return (image: nsImage, ciImage: CIImage(cgImage: cgImage))
+                    return (image: nsImage, ciImage: CIImage(cgImage: result.image), orientation: result.orientation)
                 }.value
                 let phase1Elapsed = ContinuousClock.now - phase1Start
 
@@ -1148,10 +1143,14 @@ struct EditWorkspaceView: View {
                     return
                 }
 
+                // Thumbnails are kept rotated to match the in-memory orientation, so the
+                // fallback needs no correction (decoded == target).
+                var phase1Orientation = targetOrientation
                 if let quickPreview {
                     editLog.info("[\(filename)] Phase 1: embedded preview in \(phase1Elapsed) (\(quickPreview.image.size.width)x\(quickPreview.image.size.height))")
                     sourceImage = quickPreview.image
                     sourceCIImage = quickPreview.ciImage
+                    phase1Orientation = quickPreview.orientation
                 } else {
                     editLog.info("[\(filename)] Phase 1: no embedded preview, falling back to thumbnail")
                     let thumbnail = await browserViewModel.thumbnailService.loadThumbnail(for: selectedImageURL)
@@ -1172,7 +1171,8 @@ struct EditWorkspaceView: View {
                 // (mirrors non-RAW path so WB/tonal adjustments render as soon as
                 // metadata loads, even before the full RAW decode completes).
                 if let ci = sourceCIImage, let pipeline = metalPipeline {
-                    let uploadCI = orientationCorrection != .up ? ci.oriented(orientationCorrection) : ci
+                    let correction = ImageFile.orientationCorrection(from: phase1Orientation, to: targetOrientation)
+                    let uploadCI = correction != .up ? ci.oriented(correction) : ci
                     await Task.detached(priority: .medium) {
                         pipeline.uploadSourceImage(uploadCI)
                     }.value
@@ -1204,11 +1204,16 @@ struct EditWorkspaceView: View {
                     editLog.info("[\(filename)] Phase 2: starting (cacheHit=\(cacheHit))")
 
                     let phase2Start = ContinuousClock.now
-                    let rawResult: FullScreenImageCache.RAWDecodeResult? = await Task.detached(priority: .userInitiated) {
-                        FullScreenImageCache.loadRAWImage(
+                    let rawDecode: (result: FullScreenImageCache.RAWDecodeResult, orientation: Int)? = await Task.detached(priority: .userInitiated) {
+                        // Read the tag adjacent to the decode so the correction below matches
+                        // these bytes even if a pending rotation write lands mid-load.
+                        let orientation = FullScreenImageCache.fileEXIFOrientation(at: selectedImageURL)
+                        guard let result = FullScreenImageCache.loadRAWImage(
                             from: selectedImageURL, draftMode: false
-                        )
+                        ) else { return nil }
+                        return (result, orientation)
                     }.value
+                    let rawResult = rawDecode?.result
                     let rawCIImage = rawResult?.image
                     let decodeElapsed = ContinuousClock.now - phase2Start
 
@@ -1232,7 +1237,10 @@ struct EditWorkspaceView: View {
                             editLog.info("[\(filename)] Phase 2: upgrading cached texture to full resolution")
                         }
                         let uploadStart = ContinuousClock.now
-                        let uploadRAW = orientationCorrection != .up ? rawCIImage.oriented(orientationCorrection) : rawCIImage
+                        let correction = ImageFile.orientationCorrection(
+                            from: rawDecode?.orientation ?? targetOrientation, to: targetOrientation
+                        )
+                        let uploadRAW = correction != .up ? rawCIImage.oriented(correction) : rawCIImage
                         await Task.detached(priority: .medium) {
                             pipeline.uploadSourceImage(uploadRAW)
                         }.value
@@ -1290,37 +1298,42 @@ struct EditWorkspaceView: View {
                 // Phase 1: HDR-preserving path (keeps float values >1.0 for HEIC-HLG, AVIF, JXL).
                 // Falls back to SDR CGImageSource path for formats CIImage can't decode.
                 let phase1Start = ContinuousClock.now
-                let previewSource = await Task.detached(priority: .userInitiated) { () -> (image: NSImage?, ciImage: CIImage?) in
-                    if let ciImage = FullScreenImageCache.loadHDRPreview(from: selectedImageURL, maxPixelSize: previewMaxPixelSize) {
+                let previewSource = await Task.detached(priority: .userInitiated) { () -> (image: NSImage?, ciImage: CIImage?, orientation: Int) in
+                    if let result = FullScreenImageCache.loadHDRPreviewWithOrientation(from: selectedImageURL, maxPixelSize: previewMaxPixelSize) {
                         let ctx = CameraRawApproximation.ciContext
-                        if let cgImage = ctx.createCGImage(ciImage, from: ciImage.extent, format: .RGBAh, colorSpace: CameraRawApproximation.workingColorSpace) {
+                        if let cgImage = ctx.createCGImage(result.image, from: result.image.extent, format: .RGBAh, colorSpace: CameraRawApproximation.workingColorSpace) {
                             let nsImage = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
-                            return (image: nsImage, ciImage: ciImage)
+                            return (image: nsImage, ciImage: result.image, orientation: result.orientation)
                         }
                     }
-                    if let cgImage = FullScreenImageCache.loadDownsampled(
+                    if let result = FullScreenImageCache.loadDownsampledWithOrientation(
                         from: selectedImageURL,
                         maxPixelSize: previewMaxPixelSize
                     ) {
                         let image = NSImage(
-                            cgImage: cgImage,
-                            size: NSSize(width: cgImage.width, height: cgImage.height)
+                            cgImage: result.image,
+                            size: NSSize(width: result.image.width, height: result.image.height)
                         )
-                        return (image: image, ciImage: CIImage(cgImage: cgImage))
+                        return (image: image, ciImage: CIImage(cgImage: result.image), orientation: result.orientation)
                     }
                     if let image = NSImage(contentsOf: selectedImageURL) {
+                        let orientation = FullScreenImageCache.fileEXIFOrientation(at: selectedImageURL)
                         let ciImage = image.tiffRepresentation.flatMap { CIImage(data: $0) }
-                        return (image: image, ciImage: ciImage)
+                        return (image: image, ciImage: ciImage, orientation: orientation)
                     }
-                    return (image: nil, ciImage: nil)
+                    return (image: nil, ciImage: nil, orientation: 1)
                 }.value
                 let phase1Elapsed = ContinuousClock.now - phase1Start
 
                 guard !Task.isCancelled else { return }
 
+                // Thumbnails are kept rotated to match the in-memory orientation, so the
+                // fallback needs no correction (decoded == target).
+                var phase1Orientation = targetOrientation
                 if let image = previewSource.image {
                     sourceImage = image
                     sourceCIImage = previewSource.ciImage
+                    phase1Orientation = previewSource.orientation
                     editLog.info("[\(filename)] Phase 1: preview in \(phase1Elapsed) (\(image.size.width)x\(image.size.height))")
                 } else {
                     let thumbnail = await browserViewModel.thumbnailService.loadThumbnail(for: selectedImageURL)
@@ -1332,7 +1345,8 @@ struct EditWorkspaceView: View {
 
                 // Upload Phase 1 preview to Metal for immediate interactive editing
                 if let ci = sourceCIImage, let pipeline = metalPipeline {
-                    let uploadCI = orientationCorrection != .up ? ci.oriented(orientationCorrection) : ci
+                    let correction = ImageFile.orientationCorrection(from: phase1Orientation, to: targetOrientation)
+                    let uploadCI = correction != .up ? ci.oriented(correction) : ci
                     await Task.detached(priority: .medium) {
                         pipeline.uploadSourceImage(uploadCI)
                     }.value
@@ -1349,24 +1363,26 @@ struct EditWorkspaceView: View {
                 // the full-resolution CIImage graph (same strategy as RAW path).
                 if let pipeline = metalPipeline {
                     let phase2Start = ContinuousClock.now
-                    let fullResCIImage: CIImage? = await Task.detached(priority: .userInitiated) {
-                        if let ci = FullScreenImageCache.loadHDRFullResolution(from: selectedImageURL) {
-                            return ci
+                    let fullRes: (image: CIImage, orientation: Int)? = await Task.detached(priority: .userInitiated) {
+                        if let result = FullScreenImageCache.loadHDRFullResolutionWithOrientation(from: selectedImageURL) {
+                            return result
                         }
-                        if let cg = FullScreenImageCache.loadFullResolution(from: selectedImageURL) {
-                            return CIImage(cgImage: cg)
+                        if let result = FullScreenImageCache.loadFullResolutionWithOrientation(from: selectedImageURL) {
+                            return (CIImage(cgImage: result.image), result.orientation)
                         }
                         return nil
                     }.value
 
                     guard !Task.isCancelled else { return }
 
-                    if let fullResCIImage {
+                    if let fullRes {
+                        let fullResCIImage = fullRes.image
                         let extent = fullResCIImage.extent
                         editLog.info("[\(filename)] Phase 2: full-res decoded in \(ContinuousClock.now - phase2Start) (\(Int(extent.width))x\(Int(extent.height)))")
 
                         let uploadStart = ContinuousClock.now
-                        let uploadFull = orientationCorrection != .up ? fullResCIImage.oriented(orientationCorrection) : fullResCIImage
+                        let correction = ImageFile.orientationCorrection(from: fullRes.orientation, to: targetOrientation)
+                        let uploadFull = correction != .up ? fullResCIImage.oriented(correction) : fullResCIImage
                         await Task.detached(priority: .medium) {
                             pipeline.uploadSourceImage(uploadFull)
                         }.value

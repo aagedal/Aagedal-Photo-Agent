@@ -343,17 +343,29 @@ final class FullScreenImageCache: @unchecked Sendable {
     /// Returns CIImage directly so the edit pipeline can work in extended linear sRGB.
     /// Falls back to nil for formats CIImage can't decode (caller should use `loadDownsampled`).
     nonisolated static func loadHDRPreview(from url: URL, maxPixelSize: CGFloat) -> CIImage? {
+        loadHDRPreviewWithOrientation(from: url, maxPixelSize: maxPixelSize)?.image
+    }
+
+    /// Variant of `loadHDRPreview` that also reports the EXIF orientation baked into the
+    /// returned pixels, read from the same decode. Rotation writes the new orientation tag
+    /// to the file asynchronously, so a caller that needs a file→display correction must
+    /// compute it against the orientation of the bytes it actually decoded — a separate
+    /// read can race the pending write and over-rotate.
+    nonisolated static func loadHDRPreviewWithOrientation(
+        from url: URL, maxPixelSize: CGFloat
+    ) -> (image: CIImage, orientation: Int)? {
         guard let ciImage = CIImage(contentsOf: url, options: [
             .applyOrientationProperty: true,
             .toneMapHDRtoSDR: false
         ]) else { return nil }
+        let orientation = ciImage.properties[kCGImagePropertyOrientation as String] as? Int ?? 1
 
         let extent = ciImage.extent
         let longestSide = max(extent.width, extent.height)
-        guard longestSide > maxPixelSize * 1.5 else { return ciImage }
+        guard longestSide > maxPixelSize * 1.5 else { return (ciImage, orientation) }
 
         let scale = maxPixelSize / longestSide
-        return ciImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        return (ciImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale)), orientation)
     }
 
     /// Load an image downsampled to the given max pixel size.
@@ -380,14 +392,23 @@ final class FullScreenImageCache: @unchecked Sendable {
     }
 
     nonisolated static func loadDownsampled(from url: URL, maxPixelSize: CGFloat) -> CGImage? {
+        loadDownsampledWithOrientation(from: url, maxPixelSize: maxPixelSize)?.image
+    }
+
+    /// Variant of `loadDownsampled` that also reports the EXIF orientation baked into the
+    /// returned pixels, read from the same `CGImageSource`. See `loadHDRPreviewWithOrientation`.
+    nonisolated static func loadDownsampledWithOrientation(
+        from url: URL, maxPixelSize: CGFloat
+    ) -> (image: CGImage, orientation: Int)? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
 
         // Determine target size: downsample if significantly larger, otherwise use actual size
         // (still go through the thumbnail API so orientation transform is always applied)
+        let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        let orientation = props?[kCGImagePropertyOrientation] as? Int ?? 1
         let targetSize: CGFloat
-        if let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-           let pw = props[kCGImagePropertyPixelWidth] as? Int,
-           let ph = props[kCGImagePropertyPixelHeight] as? Int {
+        if let pw = props?[kCGImagePropertyPixelWidth] as? Int,
+           let ph = props?[kCGImagePropertyPixelHeight] as? Int {
             let longestSide = CGFloat(max(pw, ph))
             targetSize = longestSide > maxPixelSize * 1.5 ? maxPixelSize : longestSide
         } else {
@@ -399,7 +420,10 @@ final class FullScreenImageCache: @unchecked Sendable {
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
         ]
-        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return nil
+        }
+        return (image, orientation)
     }
     
     struct RAWDecodeResult: @unchecked Sendable {
@@ -484,22 +508,41 @@ final class FullScreenImageCache: @unchecked Sendable {
     /// Load an HDR-preserving full-resolution image via CoreImage.
     /// Returns CIImage directly so the caller can process in extended linear sRGB.
     nonisolated static func loadHDRFullResolution(from url: URL) -> CIImage? {
-        CIImage(contentsOf: url, options: [
+        loadHDRFullResolutionWithOrientation(from: url)?.image
+    }
+
+    /// Variant of `loadHDRFullResolution` that also reports the EXIF orientation baked
+    /// into the returned pixels, read from the same decode. See `loadHDRPreviewWithOrientation`.
+    nonisolated static func loadHDRFullResolutionWithOrientation(
+        from url: URL
+    ) -> (image: CIImage, orientation: Int)? {
+        guard let ciImage = CIImage(contentsOf: url, options: [
             .applyOrientationProperty: true,
             .toneMapHDRtoSDR: false
-        ])
+        ]) else { return nil }
+        let orientation = ciImage.properties[kCGImagePropertyOrientation as String] as? Int ?? 1
+        return (ciImage, orientation)
     }
 
     /// Load an image at full source resolution, preserving color space and bit depth.
     /// Uses CGImageSourceCreateThumbnailAtIndex to ensure EXIF orientation is applied.
     nonisolated static func loadFullResolution(from url: URL) -> CGImage? {
+        loadFullResolutionWithOrientation(from: url)?.image
+    }
+
+    /// Variant of `loadFullResolution` that also reports the EXIF orientation baked into
+    /// the returned pixels, read from the same `CGImageSource`. See `loadHDRPreviewWithOrientation`.
+    nonisolated static func loadFullResolutionWithOrientation(
+        from url: URL
+    ) -> (image: CGImage, orientation: Int)? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
 
         // Read actual pixel dimensions to use as maxPixelSize (no downsampling, but orientation IS applied)
+        let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        let orientation = props?[kCGImagePropertyOrientation] as? Int ?? 1
         let maxDimension: CGFloat
-        if let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-           let pw = props[kCGImagePropertyPixelWidth] as? Int,
-           let ph = props[kCGImagePropertyPixelHeight] as? Int {
+        if let pw = props?[kCGImagePropertyPixelWidth] as? Int,
+           let ph = props?[kCGImagePropertyPixelHeight] as? Int {
             maxDimension = CGFloat(max(pw, ph))
         } else {
             maxDimension = 32000 // Safe fallback
@@ -511,16 +554,39 @@ final class FullScreenImageCache: @unchecked Sendable {
             kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceShouldCacheImmediately: true,
         ]
-        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return nil
+        }
+        return (image, orientation)
+    }
+
+    /// The file's current EXIF orientation tag (1 if absent or unreadable). For decodes
+    /// whose loader can't report the orientation it baked (e.g. `CIRAWFilter`), read this
+    /// adjacent to the decode so a pending rotation write can't slip in between.
+    nonisolated static func fileEXIFOrientation(at url: URL) -> Int {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let orientation = props[kCGImagePropertyOrientation] as? Int else { return 1 }
+        return orientation
     }
 
     /// Extract the embedded JPEG preview from a RAW file.
     nonisolated static func extractEmbeddedPreview(from url: URL) -> CGImage? {
+        extractEmbeddedPreviewWithOrientation(from: url)?.image
+    }
+
+    /// Variant of `extractEmbeddedPreview` that also reports the EXIF orientation baked
+    /// into the returned pixels, read from the same `CGImageSource`. See `loadHDRPreviewWithOrientation`.
+    nonisolated static func extractEmbeddedPreviewWithOrientation(
+        from url: URL
+    ) -> (image: CGImage, orientation: Int)? {
         let filename = url.lastPathComponent
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
             cacheLogger.warning("\(filename): CGImageSourceCreateWithURL failed")
             return nil
         }
+        let primaryOrientation = (CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
+            as? [CFString: Any])?[kCGImagePropertyOrientation] as? Int ?? 1
 
         let imageCount = CGImageSourceGetCount(source)
         let sourceType = CGImageSourceGetType(source) as String? ?? "unknown"
@@ -534,7 +600,7 @@ final class FullScreenImageCache: @unchecked Sendable {
         ]
         if let cgThumb = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbOptions as CFDictionary) {
             cacheLogger.info("\(filename): Got embedded thumbnail \(cgThumb.width)x\(cgThumb.height)")
-            return cgThumb
+            return (cgThumb, primaryOrientation)
         } else {
             cacheLogger.info("\(filename): No embedded thumbnail at index 0")
         }
@@ -555,7 +621,9 @@ final class FullScreenImageCache: @unchecked Sendable {
             ]
             if let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 1, options as CFDictionary) {
                 cacheLogger.info("\(filename): Using secondary image \(cgImage.width)x\(cgImage.height)")
-                return cgImage
+                let orientation = (CGImageSourceCopyPropertiesAtIndex(source, 1, nil)
+                    as? [CFString: Any])?[kCGImagePropertyOrientation] as? Int ?? primaryOrientation
+                return (cgImage, orientation)
             }
         }
 
