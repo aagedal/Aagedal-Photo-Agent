@@ -248,35 +248,6 @@ struct SettingsView: View {
     @ViewBuilder
     private var faceRecognitionTab: some View {
         Form {
-            Section("Grouping") {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text("Grouping Sensitivity")
-                        Spacer()
-                        Text(String(format: "%.2f", settingsViewModel.visionClusteringThreshold))
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-                    }
-                    Slider(
-                        value: $settingsViewModel.visionClusteringThreshold,
-                        in: Double(FaceRecognitionDefaults.sensitivityMin)...Double(FaceRecognitionDefaults.sensitivityMax),
-                        step: 0.01
-                    )
-                    HStack {
-                        Text("Stricter (more groups)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Text("Looser (fewer groups)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Text("If one person is split across several groups, move toward Looser. If different people are merged, move toward Stricter.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
             Section("Detection") {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {

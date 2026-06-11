@@ -15,7 +15,6 @@ struct FaceBarView: View {
 
     @State private var selectedGroup: FaceGroup?
     @State private var multiSelectedGroupIDs: Set<UUID> = []
-    @State private var showClusteringSettings = false
     @State private var isApplyingAllNames = false
     @State private var refinementCount = 0
     @State private var highlightedGroupID: UUID?
@@ -54,40 +53,9 @@ struct FaceBarView: View {
         let canApplyAllNames = viewModel.scanComplete && !namedGroups.isEmpty && !isApplyingAllNames
 
         HStack(spacing: 6) {
-            // Scan button with settings
+            // Scan button (rescan/reset lives in its context menu and the expanded view's overflow menu)
             HStack(spacing: 2) {
                 scanButton
-
-                VStack(spacing: 2) {
-                    // Reset/rescan button on top
-                    Button {
-                        guard let folderURL else { return }
-                        viewModel.scanFolder(imageURLs: imageURLs, folderURL: folderURL, forceFullScan: true)
-                    } label: {
-                        Image(systemName: "arrow.counterclockwise")
-                            .font(.system(size: 8, weight: .bold))
-                            .foregroundStyle(.white)
-                            .padding(3)
-                            .background(Color.orange)
-                            .clipShape(Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .help("Force full rescan")
-
-                    // Cog button below
-                    Button {
-                        showClusteringSettings.toggle()
-                    } label: {
-                        Image(systemName: "gearshape")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Clustering settings")
-                    .popover(isPresented: $showClusteringSettings) {
-                        ClusteringSettingsPopover(settingsViewModel: settingsViewModel)
-                    }
-                }
 
                 Button {
                     applyAllNamesToMetadata()
@@ -486,55 +454,6 @@ struct MergeSuggestionRow: View {
                 .fill(Color.gray.opacity(0.3))
                 .frame(width: 40, height: 40)
         }
-    }
-}
-
-// MARK: - Clustering Settings Popover
-
-struct ClusteringSettingsPopover: View {
-    @Bindable var settingsViewModel: SettingsViewModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Face Clustering")
-                .font(.headline)
-
-            // Grouping sensitivity (cosine-distance threshold) — the single recognition knob.
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text("Sensitivity")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text(String(format: "%.2f", settingsViewModel.visionClusteringThreshold))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
-                }
-
-                Slider(
-                    value: $settingsViewModel.visionClusteringThreshold,
-                    in: Double(FaceRecognitionDefaults.sensitivityMin)...Double(FaceRecognitionDefaults.sensitivityMax),
-                    step: 0.01
-                )
-
-                HStack {
-                    Text("Stricter")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                    Spacer()
-                    Text("Looser")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-            }
-
-            Text("Changes apply to new scans. Option+click Scan to rescan.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .padding()
-        .frame(width: 260)
     }
 }
 

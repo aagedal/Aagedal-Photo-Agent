@@ -43,7 +43,6 @@ final class PreferencesSyncService {
         UserDefaultsKeys.addJobIdToKeywords,
         // Face recognition
         UserDefaultsKeys.faceCleanupPolicy,
-        UserDefaultsKeys.visionClusteringThreshold,
         UserDefaultsKeys.faceMinConfidence,
         UserDefaultsKeys.faceMinFaceSize,
         UserDefaultsKeys.faceMinQuality,

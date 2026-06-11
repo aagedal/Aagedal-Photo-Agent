@@ -497,6 +497,8 @@ struct ContentView: View {
                     viewModel: faceRecognitionViewModel,
                     settingsViewModel: settingsViewModel,
                     selectionState: faceSelectionState,
+                    folderURL: browserViewModel.currentFolderURL,
+                    images: browserViewModel.images,
                     onClose: { mainViewMode = .browser },
                     onPhotosDeleted: { trashedURLs in
                         browserViewModel.images.removeAll { trashedURLs.contains($0.url) }

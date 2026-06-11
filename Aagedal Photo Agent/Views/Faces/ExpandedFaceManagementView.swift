@@ -69,6 +69,8 @@ struct ExpandedFaceManagementView: View {
     @Bindable var viewModel: FaceRecognitionViewModel
     let settingsViewModel: SettingsViewModel
     @Bindable var selectionState: FaceSelectionState
+    let folderURL: URL?
+    let images: [ImageFile]
     var onClose: () -> Void
     var onPhotosDeleted: ((Set<URL>) -> Void)?
     var onOpenFullScreen: ((URL, UUID?) -> Void)?
@@ -194,6 +196,22 @@ struct ExpandedFaceManagementView: View {
     @ViewBuilder
     private var toolbar: some View {
         HStack {
+            // Lens switcher: alternative groupings over the same scan. Hidden until more than
+            // one lens is wired up (Expression and Red Carpet land in later phases).
+            if FaceLens.available.count > 1 {
+                Picker("Lens", selection: $viewModel.activeLens) {
+                    ForEach(FaceLens.available, id: \.self) { lens in
+                        Text(lens.displayName).tag(lens)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+
+                Divider()
+                    .frame(height: 16)
+            }
+
             Button {
                 viewModel.createNewGroup(withFaces: selectionState.selectedFaceIDs)
                 selectionState.selectedFaceIDs.removeAll()
@@ -237,6 +255,22 @@ struct ExpandedFaceManagementView: View {
             Spacer()
 
             SelectionInfoView(selectionState: selectionState, viewModel: viewModel)
+
+            Menu {
+                Button("Rescan Folder (Force Full)") {
+                    guard let folderURL else { return }
+                    viewModel.scanFolder(imageURLs: images.map(\.url), folderURL: folderURL, forceFullScan: true)
+                }
+                Button("Delete Face Data", role: .destructive) {
+                    guard let folderURL else { return }
+                    viewModel.deleteFaceData(for: folderURL)
+                }
+            } label: {
+                Label("More", systemImage: "ellipsis.circle")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .disabled(folderURL == nil)
 
             Button {
                 onClose()

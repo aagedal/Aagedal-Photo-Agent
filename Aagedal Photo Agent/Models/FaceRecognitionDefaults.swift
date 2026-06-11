@@ -44,11 +44,4 @@ nonisolated enum FaceRecognitionDefaults {
 
     /// Required confidence gap between the best and second-best candidate (ambiguity guard).
     static let knownPeopleMinConfidenceGap: Float = 0.04
-
-    // MARK: - Sensitivity slider
-
-    /// The single user-facing "grouping sensitivity" slider maps linearly onto the clustering
-    /// threshold across this range. Higher sensitivity = looser grouping (larger threshold).
-    static let sensitivityMin: Float = 0.55
-    static let sensitivityMax: Float = 0.90
 }

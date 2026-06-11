@@ -237,12 +237,6 @@ final class SettingsViewModel {
         }
     }
 
-    /// Grouping sensitivity, stored as the cosine-distance clustering threshold.
-    /// This is the single user-facing face-recognition knob. (Key name kept for back-compat.)
-    var visionClusteringThreshold: Double {
-        didSet { UserDefaults.standard.set(visionClusteringThreshold, forKey: UserDefaultsKeys.visionClusteringThreshold) }
-    }
-
     /// Minimum detection confidence (0.5 - 0.95). Default: 0.7
     var faceMinConfidence: Double {
         didSet { UserDefaults.standard.set(faceMinConfidence, forKey: UserDefaultsKeys.faceMinConfidence) }
@@ -528,20 +522,6 @@ final class SettingsViewModel {
 
         let personShownModeRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.multiSelectPersonShownMode) ?? MultiSelectFieldMode.add.rawValue
         self.multiSelectPersonShownMode = MultiSelectFieldMode(rawValue: personShownModeRaw) ?? .add
-
-        // Face recognition settings (ArcFace cosine-distance space).
-        // The sensitivity moved from Vision-feature-print scale to cosine scale in v2.0; reset any
-        // value stored under the old semantics exactly once.
-        let cosineMigrated = UserDefaults.standard.bool(forKey: UserDefaultsKeys.faceThresholdCosineMigrated)
-        let storedVisionThreshold = UserDefaults.standard.object(forKey: UserDefaultsKeys.visionClusteringThreshold) as? Double
-        if cosineMigrated, let storedVisionThreshold {
-            self.visionClusteringThreshold = storedVisionThreshold
-        } else {
-            let fresh = Double(FaceRecognitionDefaults.clusteringThreshold)
-            self.visionClusteringThreshold = fresh
-            UserDefaults.standard.set(fresh, forKey: UserDefaultsKeys.visionClusteringThreshold)
-            UserDefaults.standard.set(true, forKey: UserDefaultsKeys.faceThresholdCosineMigrated)
-        }
 
         let storedConfidence = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceMinConfidence) as? Double
         self.faceMinConfidence = storedConfidence ?? 0.7

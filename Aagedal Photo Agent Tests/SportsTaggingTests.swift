@@ -32,6 +32,8 @@ struct SportsTaggingTests {
         let encoded = try JSONEncoder().encode(folder)
         let object = try #require(try JSONSerialization.jsonObject(with: encoded) as? [String: Any])
         #expect(object["numberDetections"] == nil)
+        #expect(object["activeLens"] == nil)
+        #expect(object["lensStates"] == nil)
         let faceObjects = try #require(object["faces"] as? [[String: Any]])
         #expect(faceObjects.first?["jerseyNumber"] == nil)
 
@@ -40,6 +42,54 @@ struct SportsTaggingTests {
         #expect(decoded.numberDetections == nil)
         #expect(decoded.faces[0].jerseyNumber == nil)
         #expect(decoded.faces[0].teamSide == nil)
+        #expect(decoded.currentLens == .face)
+
+        // Files written before the lens rework carried a top-level `recognitionMode` key;
+        // the current model (which dropped that field) must still decode them.
+        var legacyObject = object
+        legacyObject["recognitionMode"] = "vision"
+        let legacyData = try JSONSerialization.data(withJSONObject: legacyObject)
+        let legacyDecoded = try JSONDecoder().decode(FolderFaceData.self, from: legacyData)
+        #expect(legacyDecoded.faces.count == 1)
+    }
+
+    @Test("Lens state and active lens round-trip; Face lens derives from canonical groups")
+    func lensStateRoundTrip() throws {
+        let face = DetectedFace(
+            id: UUID(),
+            imageURL: URL(fileURLWithPath: "/tmp/a.jpg"),
+            faceRect: CGRect(x: 0.1, y: 0.1, width: 0.2, height: 0.2),
+            featurePrintData: Data([1, 2, 3]),
+            detectedAt: Date()
+        )
+        let faceGroup = FaceGroup(id: UUID(), name: nil, representativeFaceID: face.id, faceIDs: [face.id])
+        var folder = FolderFaceData(
+            folderURL: URL(fileURLWithPath: "/tmp"),
+            faces: [face],
+            groups: [faceGroup],
+            lastScanDate: Date(),
+            scanComplete: true
+        )
+
+        #expect(folder.currentLens == .face)
+        #expect(folder.lensState(for: .face).status == .complete)
+        #expect(folder.groups(for: .face).count == 1)
+        #expect(folder.lensState(for: .expression).status == .notStarted)
+        #expect(folder.groups(for: .expression).isEmpty)
+
+        let expressionGroup = FaceGroup(id: UUID(), name: nil, representativeFaceID: face.id, faceIDs: [face.id])
+        folder.setLensState(
+            FaceLensState(groups: [expressionGroup], status: .complete, embeddingVersion: 1, lastUpdated: Date()),
+            for: .expression
+        )
+        folder.activeLens = .expression
+
+        let decoded = try JSONDecoder().decode(FolderFaceData.self, from: try JSONEncoder().encode(folder))
+        #expect(decoded.currentLens == .expression)
+        #expect(decoded.lensState(for: .expression).status == .complete)
+        #expect(decoded.groups(for: .expression).map(\.id) == [expressionGroup.id])
+        #expect(decoded.groups(for: .face).map(\.id) == [faceGroup.id])
+        #expect(decoded.lensState(for: .redCarpet).status == .notStarted)
     }
 
     @Test("Enriched face and standalone number round-trip")

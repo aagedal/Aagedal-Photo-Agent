@@ -102,6 +102,55 @@ nonisolated struct FaceGroup: Codable, Identifiable {
     var userCreated: Bool?
 }
 
+// MARK: - Lenses
+
+/// A clustering "lens": one alternative grouping over the same detected faces.
+///
+/// Detection runs once and embeddings are stored per face; each lens is a different
+/// clustering/labeling of those crops, so switching lenses never re-detects or re-embeds.
+nonisolated enum FaceLens: String, Codable, CaseIterable, Sendable {
+    /// ArcFace identity clustering — group people by who they are. The default.
+    case face
+    /// Appearance clustering (VNFeaturePrint on the face crop) — group by look and
+    /// expression, not identity. Never feeds or matches Known People.
+    case expression
+    /// Identity + clothing combined distance — same event, same outfit.
+    case redCarpet
+
+    /// Lenses wired end-to-end. Expression and Red Carpet land in later phases; the lens
+    /// switcher stays hidden while only one lens is available.
+    static let available: [FaceLens] = [.face]
+
+    var displayName: String {
+        switch self {
+        case .face: "Face"
+        case .expression: "Expression"
+        case .redCarpet: "Red Carpet"
+        }
+    }
+
+    /// Whether this lens's groups represent identity and may feed/match Known People.
+    var usesIdentity: Bool { self != .expression }
+}
+
+nonisolated enum FaceLensStatus: String, Codable, Sendable {
+    case notStarted
+    case embedding
+    case clustering
+    case complete
+}
+
+/// Per-lens clustering results and progress for one folder. The Face lens keeps its groups
+/// in `FolderFaceData.groups` (the legacy location); secondary lenses store theirs here.
+nonisolated struct FaceLensState: Codable, Sendable {
+    var groups: [FaceGroup] = []
+    var status: FaceLensStatus = .notStarted
+    /// Embedding version for this lens's vectors, so bumping one lens's model doesn't
+    /// invalidate the others.
+    var embeddingVersion: Int?
+    var lastUpdated: Date?
+}
+
 /// Tracks a file's identity for incremental scanning
 nonisolated struct FileSignature: Codable, Equatable {
     let modificationDate: Date
@@ -146,15 +195,19 @@ nonisolated struct FolderFaceData: Codable {
     /// File signatures for incremental scanning (URL string -> signature)
     var scannedFiles: [String: FileSignature]
 
-    /// The recognition mode used for this dataset (nil = legacy Vision mode)
-    var recognitionMode: FaceRecognitionMode?
-
     /// Embedding version for compatibility detection (nil/0 = legacy unaligned, 1 = eye-aligned crops)
     var embeddingVersion: Int?
 
     /// Standalone jersey-number detections (sports mode) with no associated face —
     /// e.g. back-turned players. Optional so legacy face_data.json keeps decoding.
     var numberDetections: [NumberDetection]?
+
+    /// The lens whose grouping the expanded view shows (nil = Face).
+    var activeLens: FaceLens?
+
+    /// Secondary-lens results keyed by `FaceLens.rawValue` — the Face lens lives in `groups`.
+    /// Optional so legacy face_data.json keeps decoding.
+    var lensStates: [String: FaceLensState]?
 
     init(
         folderURL: URL,
@@ -163,9 +216,10 @@ nonisolated struct FolderFaceData: Codable {
         lastScanDate: Date,
         scanComplete: Bool,
         scannedFiles: [String: FileSignature] = [:],
-        recognitionMode: FaceRecognitionMode? = nil,
         embeddingVersion: Int? = nil,
-        numberDetections: [NumberDetection]? = nil
+        numberDetections: [NumberDetection]? = nil,
+        activeLens: FaceLens? = nil,
+        lensStates: [String: FaceLensState]? = nil
     ) {
         self.folderURL = folderURL
         self.faces = faces
@@ -173,8 +227,36 @@ nonisolated struct FolderFaceData: Codable {
         self.lastScanDate = lastScanDate
         self.scanComplete = scanComplete
         self.scannedFiles = scannedFiles
-        self.recognitionMode = recognitionMode
         self.embeddingVersion = embeddingVersion
         self.numberDetections = numberDetections
+        self.activeLens = activeLens
+        self.lensStates = lensStates
+    }
+
+    var currentLens: FaceLens { activeLens ?? .face }
+
+    func groups(for lens: FaceLens) -> [FaceGroup] {
+        lens == .face ? groups : (lensStates?[lens.rawValue]?.groups ?? [])
+    }
+
+    func lensState(for lens: FaceLens) -> FaceLensState {
+        if lens == .face {
+            return FaceLensState(
+                groups: groups,
+                status: scanComplete ? .complete : (faces.isEmpty ? .notStarted : .clustering),
+                embeddingVersion: embeddingVersion,
+                lastUpdated: lastScanDate
+            )
+        }
+        return lensStates?[lens.rawValue] ?? FaceLensState()
+    }
+
+    /// Store a secondary lens's results. The Face lens is canonical in `groups`/`scanComplete`
+    /// and cannot be set through here.
+    mutating func setLensState(_ state: FaceLensState, for lens: FaceLens) {
+        guard lens != .face else { return }
+        var states = lensStates ?? [:]
+        states[lens.rawValue] = state
+        lensStates = states
     }
 }

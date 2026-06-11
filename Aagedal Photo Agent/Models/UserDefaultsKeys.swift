@@ -17,12 +17,6 @@ nonisolated enum UserDefaultsKeys {
 
     // MARK: - Face Recognition
     static let faceCleanupPolicy = "faceCleanupPolicy"
-    /// Grouping sensitivity (cosine-distance threshold). The sole user-facing recognition knob.
-    static let visionClusteringThreshold = "visionClusteringThreshold"
-    /// One-shot marker: set once the stored sensitivity has been reset to the calibrated v2.0
-    /// ArcFace cosine default. Bump the version suffix whenever the calibrated default changes so
-    /// existing installs pick it up once (the old Vision-feature-print value is not comparable).
-    static let faceThresholdCosineMigrated = "face.thresholdCosineMigratedV3"
     static let faceMinConfidence = "faceMinConfidence"
     static let faceMinFaceSize = "faceMinFaceSize"
     /// Minimum face capture-quality (0...1) to keep a detected face — drops too-blurry faces.

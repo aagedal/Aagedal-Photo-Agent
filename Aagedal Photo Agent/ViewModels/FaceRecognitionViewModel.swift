@@ -76,6 +76,19 @@ final class FaceRecognitionViewModel {
         didSet { invalidateCaches() }
     }
 
+    /// The lens whose grouping the expanded view shows. Persisted per folder. Switching never
+    /// re-detects or re-embeds — it only changes which stored grouping is displayed (secondary
+    /// lenses re-cluster from stored embeddings when they land).
+    var activeLens: FaceLens {
+        get { faceData?.currentLens ?? .face }
+        set {
+            guard var data = faceData, data.currentLens != newValue else { return }
+            data.activeLens = newValue
+            faceData = data
+            try? storageService.saveFaceData(data)
+        }
+    }
+
     // Track matches between groups and known people
     // Maps groupID -> (knownPersonID, matchConfidence)
     var knownPersonMatchByGroup: [UUID: (personID: UUID, confidence: Float)] = [:]
@@ -120,11 +133,6 @@ final class FaceRecognitionViewModel {
     // Detection configuration from settings
     var detectionConfig: FaceDetectionService.DetectionConfig {
         var config = FaceDetectionService.DetectionConfig()
-
-        // Grouping sensitivity (cosine-distance threshold) — the single user-facing recognition knob.
-        if let threshold = UserDefaults.standard.object(forKey: UserDefaultsKeys.visionClusteringThreshold) as? Double {
-            config.clusteringThreshold = Float(threshold)
-        }
 
         let confidence = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceMinConfidence) as? Double
         config.minConfidence = Float(confidence ?? 0.7)
@@ -466,7 +474,6 @@ final class FaceRecognitionViewModel {
                             lastScanDate: Date(),
                             scanComplete: false,
                             scannedFiles: scannedFiles,
-                            recognitionMode: config.recognitionMode,
                             embeddingVersion: FaceRecognitionDefaults.embeddingVersion,
                             numberDetections: allNumbers
                         )
@@ -539,7 +546,6 @@ final class FaceRecognitionViewModel {
                 lastScanDate: Date(),
                 scanComplete: !isCancelled,
                 scannedFiles: scannedFiles,
-                recognitionMode: config.recognitionMode,
                 embeddingVersion: FaceRecognitionDefaults.embeddingVersion,
                 numberDetections: allNumbers
             )
