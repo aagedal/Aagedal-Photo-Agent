@@ -108,6 +108,7 @@ Replaced ExifTool with **SwiftExif**, a pure-Swift in-process engine. Metadata r
 - Persistent metadata panel width across sessions.
 - Auto-scroll metadata panel; deduplicated keywords and personShown; partial values shown when batch-editing across images.
 - Keyboard shortcuts settings tab.
+- Licenses settings tab with attribution and full license texts for bundled components (FFmpeg, c2patool, Sparkle, SwiftExif, AuraFace).
 - Empty-state in the template palette no longer cramped.
 - Sidebar chevron only appears for folders that actually have subfolders.
 - Full-screen scaling-filter toggle moved to Option+S, freeing bare S for selection.

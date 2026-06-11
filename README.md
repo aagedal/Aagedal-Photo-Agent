@@ -202,3 +202,15 @@ The app uses [Sparkle](https://sparkle-project.org) for in-app auto-updates. Rel
 ## License
 
 GPL-3.0 - see [LICENSE](Aagedal%20Photo%20Agent/LICENSE) for details.
+
+### Bundled third-party components
+
+License texts ship with the app (Settings → Licenses) and live in `Aagedal Photo Agent/Resources/Licenses/`.
+
+| Component | Purpose | License |
+|---|---|---|
+| [FFmpeg](https://ffmpeg.org) | AVIF / JPEG XL encoding | GPL-3.0 |
+| [c2patool](https://github.com/contentauth/c2pa-rs) | C2PA content credentials | MIT |
+| [Sparkle](https://sparkle-project.org) | Software updates | MIT |
+| [SwiftExif](https://codeberg.org/taagedal/SwiftExif) | EXIF / IPTC metadata | GPL-3.0 |
+| [AuraFace-v1](https://huggingface.co/fal/AuraFace-v1) | Face recognition model | Apache-2.0 |

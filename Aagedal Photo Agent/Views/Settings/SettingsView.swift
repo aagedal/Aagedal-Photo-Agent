@@ -59,6 +59,7 @@ struct SettingsView: View {
         case sync
         case updates
         case shortcuts
+        case licenses
 
         var id: String { rawValue }
 
@@ -78,6 +79,7 @@ struct SettingsView: View {
             case .sync: return "iCloud Sync"
             case .updates: return "Updates"
             case .shortcuts: return "Shortcuts"
+            case .licenses: return "Licenses"
             }
         }
 
@@ -97,6 +99,7 @@ struct SettingsView: View {
             case .sync: return "icloud"
             case .updates: return "arrow.triangle.2.circlepath"
             case .shortcuts: return "keyboard"
+            case .licenses: return "doc.text"
             }
         }
     }
@@ -129,6 +132,7 @@ struct SettingsView: View {
                     row(.sync)
                     row(.updates)
                     row(.shortcuts)
+                    row(.licenses)
                 }
             }
             .navigationSplitViewColumnWidth(210)
@@ -168,6 +172,7 @@ struct SettingsView: View {
         case .sync: syncTab
         case .updates: updatesTab
         case .shortcuts: KeyboardShortcutsSettingsView()
+        case .licenses: LicensesSettingsView()
         }
     }
 

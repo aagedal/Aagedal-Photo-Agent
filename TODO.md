@@ -1,6 +1,7 @@
 # TODO
 
 ## Priority
+[] Rebuild bundled ffmpeg without `--enable-nonfree` / `--enable-libfdk-aac` before release — the current binary's `-version` output shows `--enable-nonfree`, which makes it legally non-redistributable (fdk-aac is GPL-incompatible). The app only uses ffmpeg for AVIF/JPEG XL encoding, so dropping the audio encoders loses nothing. A plain `--enable-gpl --enable-version3` build is redistributable under GPL-3.0, matching the app license.
 
 
 ## Nice to have
