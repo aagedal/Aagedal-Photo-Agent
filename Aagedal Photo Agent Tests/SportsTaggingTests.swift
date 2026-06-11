@@ -53,6 +53,121 @@ struct SportsTaggingTests {
         #expect(legacyDecoded.faces.count == 1)
     }
 
+    // MARK: - Jersey merge plan (Sports lens assist)
+
+    private func numberedFace(number: Int?, color: ColorRGB?) -> DetectedFace {
+        DetectedFace(
+            id: UUID(),
+            imageURL: URL(fileURLWithPath: "/tmp/a.jpg"),
+            faceRect: CGRect(x: 0.1, y: 0.5, width: 0.2, height: 0.2),
+            featurePrintData: Data([1]),
+            detectedAt: Date(),
+            jerseyNumber: number,
+            jerseyColorRGB: color
+        )
+    }
+
+    private func group(of faces: [DetectedFace], name: String? = nil) -> FaceGroup {
+        FaceGroup(id: UUID(), name: name, representativeFaceID: faces[0].id, faceIDs: faces.map(\.id))
+    }
+
+    @MainActor
+    @Test("Same number with agreeing colours merges toward the named group; conflicts never merge")
+    func jerseyMergePlanRules() {
+        let red = ColorRGB(r: 0.8, g: 0.1, b: 0.1)
+        let alsoRed = ColorRGB(r: 0.75, g: 0.15, b: 0.12)
+        let white = ColorRGB(r: 0.95, g: 0.95, b: 0.95)
+
+        // Two groups of the same red #9 player — one named. Should merge into the named one.
+        let named9 = [numberedFace(number: 9, color: red), numberedFace(number: nil, color: nil)]
+        let unnamed9 = [numberedFace(number: 9, color: alsoRed)]
+        // A white #9 on the other team must NOT merge with the red #9.
+        let otherTeam9 = [numberedFace(number: 9, color: white)]
+        // A group with conflicting member numbers never participates.
+        let mixed = [numberedFace(number: 4, color: red), numberedFace(number: 7, color: red)]
+        // Same number but no sampled colour on either side: too risky, no merge.
+        let colorless9a = [numberedFace(number: 19, color: nil)]
+        let colorless9b = [numberedFace(number: 19, color: nil)]
+
+        let groups = [
+            group(of: named9, name: "Erling Braut Haaland"),
+            group(of: unnamed9),
+            group(of: otherTeam9),
+            group(of: mixed),
+            group(of: colorless9a),
+            group(of: colorless9b)
+        ]
+        let faces = (named9 + unnamed9 + otherTeam9 + mixed + colorless9a + colorless9b)
+
+        let plan = FaceRecognitionViewModel.jerseyMergePlan(groups: groups, faces: faces)
+
+        #expect(plan.count == 1)
+        #expect(plan.first?.source == groups[1].id)
+        #expect(plan.first?.target == groups[0].id)
+    }
+
+    @MainActor
+    @Test("Differently named groups sharing a number never merge")
+    func jerseyMergePlanRespectsNames() {
+        let red = ColorRGB(r: 0.8, g: 0.1, b: 0.1)
+        let faces1 = [numberedFace(number: 7, color: red)]
+        let faces2 = [numberedFace(number: 7, color: red)]
+        let groups = [
+            group(of: faces1, name: "Player A"),
+            group(of: faces2, name: "Player B")
+        ]
+        let plan = FaceRecognitionViewModel.jerseyMergePlan(groups: groups, faces: faces1 + faces2)
+        #expect(plan.isEmpty)
+    }
+
+    // MARK: - Jersey OCR parsing & dedup
+
+    @Test("Jersey OCR parsing tolerates one junk character, rejects boards and dates")
+    func jerseyNumberParsing() {
+        #expect(JerseyDetectionService.parseJerseyNumber("14") == 14)
+        #expect(JerseyDetectionService.parseJerseyNumber(" 7 ") == 7)
+        // Stylised kit fonts often read with one junk character: "c17", "d7".
+        #expect(JerseyDetectionService.parseJerseyNumber("c17") == 17)
+        #expect(JerseyDetectionService.parseJerseyNumber("d7") == 7)
+        #expect(JerseyDetectionService.parseJerseyNumber("#9") == 9)
+        // Sponsor boards, dates, scoreboards must not become numbers.
+        #expect(JerseyDetectionService.parseJerseyNumber("TO26") == nil)
+        #expect(JerseyDetectionService.parseJerseyNumber("07.06.2026") == nil)
+        #expect(JerseyDetectionService.parseJerseyNumber("026") == nil)
+        #expect(JerseyDetectionService.parseJerseyNumber("100") == nil)
+        #expect(JerseyDetectionService.parseJerseyNumber("ROAD") == nil)
+        #expect(JerseyDetectionService.parseJerseyNumber("") == nil)
+    }
+
+    @Test("Coinciding reads collapse to the two-digit number; separate numbers survive")
+    func dedupPartialReads() {
+        // "4" read inside the same printed "14" (overlapping tile passes).
+        let full = JerseyDetectionService.RawNumber(
+            value: 14, confidence: 1.0,
+            box: CGRect(x: 0.30, y: 0.36, width: 0.025, height: 0.035), color: nil
+        )
+        let partial = JerseyDetectionService.RawNumber(
+            value: 4, confidence: 1.0,
+            box: CGRect(x: 0.312, y: 0.36, width: 0.012, height: 0.035), color: nil
+        )
+        // A genuine #7 on a different player elsewhere in the frame.
+        let other = JerseyDetectionService.RawNumber(
+            value: 7, confidence: 1.0,
+            box: CGRect(x: 0.53, y: 0.54, width: 0.02, height: 0.03), color: nil
+        )
+        // The same #7 seen again by an overlapping tile, slightly shifted.
+        let duplicate = JerseyDetectionService.RawNumber(
+            value: 7, confidence: 0.5,
+            box: CGRect(x: 0.532, y: 0.541, width: 0.02, height: 0.03), color: nil
+        )
+
+        let merged = JerseyDetectionService.deduplicate([partial, duplicate, full, other])
+        #expect(merged.count == 2)
+        #expect(Set(merged.map(\.value)) == Set([14, 7]))
+        // The higher-confidence read of the #7 wins.
+        #expect(merged.first { $0.value == 7 }?.confidence == 1.0)
+    }
+
     @Test("Lens state and active lens round-trip; Face lens derives from canonical groups")
     func lensStateRoundTrip() throws {
         let face = DetectedFace(

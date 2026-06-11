@@ -499,6 +499,10 @@ struct ContentView: View {
                     selectionState: faceSelectionState,
                     folderURL: browserViewModel.currentFolderURL,
                     images: browserViewModel.images,
+                    onLabelImages: { urls, label in
+                        browserViewModel.selectedImageIDs = urls
+                        browserViewModel.setLabel(label)
+                    },
                     onClose: { mainViewMode = .browser },
                     onPhotosDeleted: { trashedURLs in
                         browserViewModel.images.removeAll { trashedURLs.contains($0.url) }

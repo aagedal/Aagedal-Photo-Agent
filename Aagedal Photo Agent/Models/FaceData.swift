@@ -52,6 +52,9 @@ nonisolated struct DetectedFace: Codable, Identifiable {
     var jerseyNumber: Int?
     /// Vision OCR confidence for the jersey number (0...1).
     var numberConfidence: Float?
+    /// Normalised bounding box of the detected number (Vision coordinates, origin bottom-left).
+    /// Kept so the full-screen debug overlay can draw where OCR found the number.
+    var jerseyNumberBox: CGRect?
     /// Dominant jersey colour sampled near the number, used for team clustering.
     var jerseyColorRGB: ColorRGB?
     /// Team side assigned after colour clustering.
@@ -75,6 +78,7 @@ nonisolated struct DetectedFace: Codable, Identifiable {
         embeddingMode: FaceRecognitionMode? = nil,
         jerseyNumber: Int? = nil,
         numberConfidence: Float? = nil,
+        jerseyNumberBox: CGRect? = nil,
         jerseyColorRGB: ColorRGB? = nil,
         teamSide: TeamSide? = nil
     ) {
@@ -95,6 +99,7 @@ nonisolated struct DetectedFace: Codable, Identifiable {
         self.embeddingMode = embeddingMode
         self.jerseyNumber = jerseyNumber
         self.numberConfidence = numberConfidence
+        self.jerseyNumberBox = jerseyNumberBox
         self.jerseyColorRGB = jerseyColorRGB
         self.teamSide = teamSide
     }
@@ -111,39 +116,50 @@ nonisolated struct FaceGroup: Codable, Identifiable {
 
 // MARK: - Lenses
 
-/// A clustering "lens": one alternative grouping over the same detected faces.
+/// A face lens. Detection runs once and embeddings are stored per face; lenses never
+/// re-detect or re-embed.
 ///
-/// Detection runs once and embeddings are stored per face; each lens is a different
-/// clustering/labeling of those crops, so switching lenses never re-detects or re-embeds.
+/// The **people lenses** (`face`, `redCarpet`, `sports`) all show the same editable
+/// people-grouping — the goal is fast Person Shown tagging. They differ only in which extra
+/// evidence assists when face data alone is weak: clothing similarity suggests merges
+/// (Red Carpet), jersey numbers merge groups toward one player and surface back-turned
+/// detections (Sports). `expression` is the odd one out: its own appearance-based grouping
+/// for building collections by look, not identity.
 nonisolated enum FaceLens: String, Codable, CaseIterable, Sendable {
     /// ArcFace identity clustering — group people by who they are. The default.
     case face
+    /// People grouping + clothing assist: combined face+clothing distance suggests merges
+    /// face distance alone couldn't make (same event, same outfit).
+    case redCarpet
+    /// People grouping + jersey-number assist: groups sharing one number merge toward a
+    /// player; number-only (back-turned) detections surface as unmatched.
+    case sports
     /// Appearance clustering (VNFeaturePrint on the face crop) — group by look and
     /// expression, not identity. Never feeds or matches Known People.
     case expression
-    /// Identity + clothing combined distance — same event, same outfit.
-    case redCarpet
-
-    /// Lenses wired end-to-end and offered in the lens switcher. The switcher hides itself
-    /// if this ever drops back to a single lens.
-    static let available: [FaceLens] = FaceLens.allCases
 
     var displayName: String {
         switch self {
         case .face: "Face"
-        case .expression: "Expression"
         case .redCarpet: "Red Carpet"
+        case .sports: "Sports"
+        case .expression: "Expression"
         }
     }
 
-    /// One-line explanation of the lens's grouping, shown in the lens view.
+    /// One-line explanation of the lens, shown in the lens view.
     var caption: String {
         switch self {
         case .face: "Groups people by who they are."
+        case .redCarpet: "Same people groups — clothing suggests extra merges when faces are weak."
+        case .sports: "Same people groups — jersey numbers merge groups and catch back-turned players."
         case .expression: "Groups by look and expression, not identity."
-        case .redCarpet: "Groups by face and clothing — same event, same outfit."
         }
     }
+
+    /// People lenses share the canonical, editable people-grouping (naming, merging,
+    /// Known People, Apply). Expression has its own read-mostly grouping.
+    var isPeopleLens: Bool { self != .expression }
 
     /// Whether this lens's groups represent identity and may feed/match Known People.
     var usesIdentity: Bool { self != .expression }

@@ -71,6 +71,8 @@ struct ExpandedFaceManagementView: View {
     @Bindable var selectionState: FaceSelectionState
     let folderURL: URL?
     let images: [ImageFile]
+    /// Apply a colour label to a set of images (wired to the browser's metadata pipeline).
+    var onLabelImages: ((Set<URL>, ColorLabel) -> Void)?
     var onClose: () -> Void
     var onPhotosDeleted: ((Set<URL>) -> Void)?
     var onOpenFullScreen: ((URL, UUID?) -> Void)?
@@ -95,7 +97,15 @@ struct ExpandedFaceManagementView: View {
                     .padding(.vertical, 6)
                 }
                 Divider()
-                if viewModel.activeLens == .face {
+                if viewModel.activeLens.isPeopleLens {
+                    // Lens assists augment the shared people grouping below.
+                    if viewModel.activeLens == .redCarpet {
+                        RedCarpetAssistStrip(viewModel: viewModel)
+                        Divider()
+                    } else if viewModel.activeLens == .sports {
+                        SportsAssistStrip(viewModel: viewModel, folderURL: folderURL, onOpenFullScreen: onOpenFullScreen)
+                        Divider()
+                    }
                     // Live sharpness filter — hides too-blurry faces from the set without re-scanning.
                     HStack(spacing: 8) {
                         Image(systemName: "camera.filters")
@@ -138,12 +148,12 @@ struct ExpandedFaceManagementView: View {
                         )
                     )
                 } else {
-                    // Secondary lenses are read-only alternative groupings over the same scan.
-                    // Naming, merging and Known People live in the Face lens.
-                    LensGroupsView(
+                    // Expression: appearance-based collections, separate from the people
+                    // grouping. Select faces and label the underlying photos.
+                    ExpressionLensView(
                         viewModel: viewModel,
-                        lens: viewModel.activeLens,
-                        onOpenFullScreen: onOpenFullScreen
+                        onOpenFullScreen: onOpenFullScreen,
+                        onLabelImages: onLabelImages
                     )
                 }
             }
@@ -206,23 +216,21 @@ struct ExpandedFaceManagementView: View {
     @ViewBuilder
     private var toolbar: some View {
         HStack {
-            // Lens switcher: alternative groupings over the same scan. Hidden until more than
-            // one lens is wired up (Expression and Red Carpet land in later phases).
-            if FaceLens.available.count > 1 {
-                Picker("Lens", selection: $viewModel.activeLens) {
-                    ForEach(FaceLens.available, id: \.self) { lens in
-                        Text(lens.displayName).tag(lens)
-                    }
+            // Lens switcher. Face/Red Carpet/Sports share the editable people grouping with
+            // different assists; Expression is its own appearance grouping.
+            Picker("Lens", selection: $viewModel.activeLens) {
+                ForEach(viewModel.availableLenses, id: \.self) { lens in
+                    Text(lens.displayName).tag(lens)
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .fixedSize()
-
-                Divider()
-                    .frame(height: 16)
             }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
 
-            if viewModel.activeLens == .face {
+            Divider()
+                .frame(height: 16)
+
+            if viewModel.activeLens.isPeopleLens {
                 Button {
                     viewModel.createNewGroup(withFaces: selectionState.selectedFaceIDs)
                     selectionState.selectedFaceIDs.removeAll()
@@ -297,30 +305,195 @@ struct ExpandedFaceManagementView: View {
     }
 }
 
-// MARK: - Secondary Lens View (read-only alternative grouping)
+// MARK: - Red Carpet Assist Strip
 
-/// Read-only grid for the Expression / Red Carpet lenses: the same detected faces, grouped
-/// by that lens's stored clustering. Shows an in-progress state until the background prewarm
-/// has computed the lens's embeddings. Editing (naming, merging, Known People) stays in the
-/// Face lens.
-struct LensGroupsView: View {
+/// Clothing-assisted merge suggestions over the shared people grouping: pairs whose combined
+/// face+clothing distance clears the Red Carpet threshold, surfaced for one-click merging.
+struct RedCarpetAssistStrip: View {
     @Bindable var viewModel: FaceRecognitionViewModel
-    let lens: FaceLens
-    var onOpenFullScreen: ((URL, UUID?) -> Void)?
 
     var body: some View {
-        let state = viewModel.lensState(for: lens)
-
-        VStack(spacing: 0) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text(lens.caption)
+                Text(FaceLens.redCarpet.caption)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
-                if !lens.usesIdentity {
-                    Text("Not identity — naming is in the Face view")
+            }
+
+            if viewModel.lensState(for: .redCarpet).status != .complete {
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Preparing clothing data in the background…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else if viewModel.mergeSuggestions.isEmpty {
+                Text("No clothing-based merge suggestions for this folder.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(viewModel.mergeSuggestions) { suggestion in
+                            SuggestionRow(suggestion: suggestion, viewModel: viewModel)
+                                .frame(width: 300)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+    }
+}
+
+// MARK: - Sports Assist Strip
+
+/// Jersey-number assist over the shared people grouping: set up the match teams, resolve
+/// numbers into player names, re-run the number merge, and surface unmatched (back-turned)
+/// number detections that have no face to attach to.
+struct SportsAssistStrip: View {
+    @Bindable var viewModel: FaceRecognitionViewModel
+    let folderURL: URL?
+    var onOpenFullScreen: ((URL, UUID?) -> Void)?
+
+    @State private var showMatchSetup = false
+
+    /// Standalone detections grouped by number, largest sets first.
+    private var unmatchedByNumber: [(number: Int, detections: [NumberDetection])] {
+        Dictionary(grouping: viewModel.standaloneNumberDetections, by: \.number)
+            .map { (number: $0.key, detections: $0.value) }
+            .sorted { ($0.detections.count, $1.number) > ($1.detections.count, $0.number) }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(FaceLens.sports.caption)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if viewModel.lastJerseyMergeCount > 0 {
+                    Text("Merged \(viewModel.lastJerseyMergeCount) group\(viewModel.lastJerseyMergeCount == 1 ? "" : "s") by number")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Button("Merge by Numbers") {
+                    viewModel.lastJerseyMergeCount = viewModel.applyJerseyNumberMerges()
+                }
+                .controlSize(.small)
+                .help("Merge people groups that share one jersey number with agreeing kit colours")
+            }
+
+            // Match setup → number-to-player-name resolution.
+            HStack(spacing: 8) {
+                if let roster = viewModel.matchRoster, roster.isReady {
+                    Text("\(roster.homeTeamSnapshot?.name ?? "Home") vs \(roster.awayTeamSnapshot?.name ?? "Away")")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    Button("Resolve Names") {
+                        viewModel.runSportsResolution()
+                        if viewModel.pendingColorClusterConfirmation != nil {
+                            showMatchSetup = true
+                        }
+                    }
+                    .controlSize(.small)
+                    .help("Name groups and back-turned numbers from the team rosters; Apply writes them as Person Shown")
+                    if viewModel.pendingColorClusterConfirmation != nil {
+                        Button("Confirm Colours…") { showMatchSetup = true }
+                            .controlSize(.small)
+                            .buttonStyle(.borderedProminent)
+                    }
+                    if !viewModel.ambiguousNumberDetections.isEmpty {
+                        Button("\(viewModel.ambiguousNumberDetections.count) Ambiguous…") { showMatchSetup = true }
+                            .controlSize(.small)
+                    }
+                } else {
+                    Text("Pick the two teams to resolve numbers into player names.")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+                Button("Match Setup…") { showMatchSetup = true }
+                    .controlSize(.small)
+                Spacer()
+            }
+
+            if !unmatchedByNumber.isEmpty {
+                HStack(spacing: 6) {
+                    Text("Unmatched numbers:")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(unmatchedByNumber, id: \.number) { entry in
+                                Button {
+                                    if let first = entry.detections.first {
+                                        onOpenFullScreen?(first.imageURL, nil)
+                                    }
+                                } label: {
+                                    HStack(spacing: 3) {
+                                        Text("#\(entry.number)")
+                                            .font(.caption.weight(.semibold))
+                                        if entry.detections.count > 1 {
+                                            Text("×\(entry.detections.count)")
+                                                .font(.caption2)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 3)
+                                    .background(.quaternary.opacity(0.6), in: Capsule())
+                                }
+                                .buttonStyle(.plain)
+                                .help("Back-turned detection\(entry.detections.count == 1 ? "" : "s") with no face — click to view")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .onAppear {
+            if let folderURL, viewModel.matchRoster == nil {
+                viewModel.loadMatchRoster(for: folderURL)
+            }
+        }
+        .sheet(isPresented: $showMatchSetup) {
+            MatchSetupView(viewModel: viewModel, folderURL: folderURL)
+        }
+    }
+}
+
+// MARK: - Expression Lens View
+
+/// Appearance-based collections, separate from the people grouping: faces grouped by look
+/// and expression. Click to select (⌘-click for multi), double-click to open the photo, and
+/// apply a colour label to the selected faces' photos.
+struct ExpressionLensView: View {
+    @Bindable var viewModel: FaceRecognitionViewModel
+    var onOpenFullScreen: ((URL, UUID?) -> Void)?
+    var onLabelImages: ((Set<URL>, ColorLabel) -> Void)?
+
+    @State private var selectedFaceIDs: Set<UUID> = []
+
+    var body: some View {
+        let state = viewModel.lensState(for: .expression)
+
+        VStack(spacing: 0) {
+            HStack {
+                Text(FaceLens.expression.caption)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if selectedFaceIDs.isEmpty {
+                    Text("Click to select • ⌘-click for multiple • double-click to open")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
+                } else {
+                    selectionActions
                 }
             }
             .padding(.horizontal, 12)
@@ -333,13 +506,13 @@ struct LensGroupsView: View {
             case .complete:
                 placeholder(
                     systemImage: "person.2.slash",
-                    title: "No \(lens.displayName) groups",
-                    detail: "No faces in this folder could be grouped by this lens."
+                    title: "No expression groups",
+                    detail: "No faces in this folder could be grouped by appearance."
                 )
             case .embedding, .clustering:
                 placeholder(
                     systemImage: "sparkles",
-                    title: "Preparing \(lens.displayName) groups…",
+                    title: "Preparing expression groups…",
                     detail: "Computing in the background from the existing scan — no rescan needed.",
                     showsProgress: true
                 )
@@ -348,10 +521,52 @@ struct LensGroupsView: View {
                     systemImage: "camera.viewfinder",
                     title: "Not computed yet",
                     detail: viewModel.scanComplete
-                        ? "\(lens.displayName) groups are computed automatically after a scan."
+                        ? "Expression groups are computed automatically after a scan."
                         : "Scan the folder for faces first."
                 )
             }
+        }
+    }
+
+    private var selectedImageURLs: Set<URL> {
+        Set(selectedFaceIDs.compactMap { viewModel.face(byID: $0)?.imageURL })
+    }
+
+    @ViewBuilder
+    private var selectionActions: some View {
+        HStack(spacing: 8) {
+            Text("\(selectedFaceIDs.count) selected")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            // Colour-label the selected faces' photos.
+            HStack(spacing: 4) {
+                ForEach(ColorLabel.allCases.filter { $0 != .none && $0 != .trash }, id: \.self) { label in
+                    Button {
+                        onLabelImages?(selectedImageURLs, label)
+                    } label: {
+                        Circle()
+                            .fill(label.color ?? .gray)
+                            .frame(width: 14, height: 14)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Label \(selectedImageURLs.count) photo\(selectedImageURLs.count == 1 ? "" : "s") \(label.displayName)")
+                }
+                Button {
+                    onLabelImages?(selectedImageURLs, .none)
+                } label: {
+                    Circle()
+                        .strokeBorder(.secondary, lineWidth: 1)
+                        .frame(width: 14, height: 14)
+                }
+                .buttonStyle(.plain)
+                .help("Remove label")
+            }
+
+            Button("Clear") {
+                selectedFaceIDs.removeAll()
+            }
+            .controlSize(.small)
         }
     }
 
@@ -361,9 +576,16 @@ struct LensGroupsView: View {
             LazyVStack(alignment: .leading, spacing: 12) {
                 ForEach(groups) { group in
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("\(group.faceIDs.count) face\(group.faceIDs.count == 1 ? "" : "s")")
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(.secondary)
+                        HStack {
+                            Text("\(group.faceIDs.count) face\(group.faceIDs.count == 1 ? "" : "s")")
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(.secondary)
+                            Button("Select All") {
+                                selectedFaceIDs.formUnion(group.faceIDs)
+                            }
+                            .controlSize(.mini)
+                            .buttonStyle(.borderless)
+                        }
 
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 64), spacing: 4)], alignment: .leading, spacing: 4) {
                             ForEach(group.faceIDs, id: \.self) { faceID in
@@ -381,6 +603,7 @@ struct LensGroupsView: View {
 
     @ViewBuilder
     private func faceThumbnail(_ faceID: UUID) -> some View {
+        let isSelected = selectedFaceIDs.contains(faceID)
         Group {
             if let image = viewModel.thumbnailImage(for: faceID) {
                 Image(nsImage: image)
@@ -397,12 +620,28 @@ struct LensGroupsView: View {
         }
         .frame(width: 64, height: 64)
         .clipShape(RoundedRectangle(cornerRadius: 6))
-        .onTapGesture {
+        .overlay {
+            if isSelected {
+                RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(Color.accentColor, lineWidth: 3)
+            }
+        }
+        .onTapGesture(count: 2) {
             if let face = viewModel.face(byID: faceID) {
                 onOpenFullScreen?(face.imageURL, faceID)
             }
         }
-        .help("Click to open the photo")
+        .onTapGesture {
+            if NSEvent.modifierFlags.contains(.command) {
+                if isSelected {
+                    selectedFaceIDs.remove(faceID)
+                } else {
+                    selectedFaceIDs.insert(faceID)
+                }
+            } else {
+                selectedFaceIDs = [faceID]
+            }
+        }
     }
 
     @ViewBuilder

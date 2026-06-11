@@ -68,8 +68,9 @@ nonisolated struct FaceDetectionService: Sendable {
         var sportsModeEnabled: Bool = false
         /// Minimum Vision OCR confidence (0...1) to accept a recognised number.
         var sportsOCRConfidenceThreshold: Float = 0.5
-        /// Minimum number-box height as a fraction of image height.
-        var sportsNumberMinHeightFraction: CGFloat = 0.04
+        /// Minimum number-box height as a fraction of image height. Chest numbers on a
+        /// 4–6k sports frame measure ~0.025–0.035; back numbers ~0.07–0.11.
+        var sportsNumberMinHeightFraction: CGFloat = 0.02
 
         nonisolated init(
             minConfidence: Float = 0.7,
@@ -80,7 +81,7 @@ nonisolated struct FaceDetectionService: Sendable {
             recognitionMode: FaceRecognitionMode = .visionFeaturePrint,
             sportsModeEnabled: Bool = false,
             sportsOCRConfidenceThreshold: Float = 0.5,
-            sportsNumberMinHeightFraction: CGFloat = 0.04
+            sportsNumberMinHeightFraction: CGFloat = 0.02
         ) {
             self.minConfidence = minConfidence
             self.minFaceSize = minFaceSize
@@ -265,11 +266,33 @@ nonisolated struct FaceDetectionService: Sendable {
                     if d < bestDist { bestDist = d; bestIdx = i }
                 }
                 if let idx = bestIdx {
-                    // Collapse into the face; keep the highest-confidence number.
+                    // Collapse into the face; keep the highest-confidence number. The loser is
+                    // demoted to a standalone detection, NOT dropped — in packed group shots the
+                    // estimated torsos overlap, so a face's torso routinely contains another
+                    // player's (real) number.
                     if (results[idx].face.numberConfidence ?? 0) < raw.confidence {
+                        if let previousNumber = results[idx].face.jerseyNumber,
+                           let previousBox = results[idx].face.jerseyNumberBox {
+                            standaloneNumbers.append(NumberDetection(
+                                imageURL: imageURL,
+                                number: previousNumber,
+                                numberConfidence: results[idx].face.numberConfidence ?? 0,
+                                boundingBox: previousBox,
+                                jerseyColorRGB: results[idx].face.jerseyColorRGB
+                            ))
+                        }
                         results[idx].face.jerseyNumber = raw.value
                         results[idx].face.numberConfidence = raw.confidence
+                        results[idx].face.jerseyNumberBox = raw.box
                         results[idx].face.jerseyColorRGB = raw.color
+                    } else {
+                        standaloneNumbers.append(NumberDetection(
+                            imageURL: imageURL,
+                            number: raw.value,
+                            numberConfidence: raw.confidence,
+                            boundingBox: raw.box,
+                            jerseyColorRGB: raw.color
+                        ))
                     }
                 } else {
                     standaloneNumbers.append(NumberDetection(

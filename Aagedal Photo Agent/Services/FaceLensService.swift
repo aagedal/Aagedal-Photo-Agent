@@ -11,19 +11,17 @@ nonisolated struct FaceLensPrewarmOutcome: Sendable {
     /// Newly computed clothing prints + torso rects by face ID.
     let clothingPrints: [UUID: (data: Data, rect: CGRect)]
     let expressionGroups: [FaceGroup]
-    let redCarpetGroups: [FaceGroup]
 }
 
-/// Embedding prewarm + clustering for the secondary face lenses (Expression, Red Carpet).
+/// Embedding prewarm + assists for the non-Face lenses.
 ///
-/// The Face lens clusters ArcFace identity embeddings during the scan itself. The secondary
-/// lenses never re-detect and never re-embed on switch: after the Face scan completes, a
-/// low-priority prewarm computes their extra vectors once —
-/// - **Expression**: a `VNFeaturePrintObservation` of each stored face thumbnail (appearance,
-///   deliberately not identity),
-/// - **Red Carpet**: a `VNFeaturePrintObservation` of each face's estimated torso region
-///   (clothing), combined with the existing ArcFace identity distance at cluster time —
-/// and each lens is then just a different clustering of those stored vectors.
+/// The Face lens clusters ArcFace identity embeddings during the scan itself. After that
+/// scan completes, a low-priority prewarm computes the extra vectors once —
+/// - **appearance**: a `VNFeaturePrintObservation` of each stored face thumbnail (used by the
+///   Expression lens's own clustering; deliberately not identity),
+/// - **clothing**: a `VNFeaturePrintObservation` of each face's estimated torso region (used
+///   by the Red Carpet assist's combined distance) —
+/// so lens switches never re-detect or re-embed.
 nonisolated struct FaceLensService: Sendable {
 
     private let clothingService = ClothingFeatureService()
@@ -31,7 +29,7 @@ nonisolated struct FaceLensService: Sendable {
     // MARK: - Prewarm
 
     /// One full prewarm pass: compute the missing appearance + clothing feature prints, then
-    /// cluster both secondary lenses from the enriched faces. Runs off the main actor; checks
+    /// cluster the Expression lens from the enriched faces. Runs off the main actor; checks
     /// cancellation throughout (a cancelled pass returns a partial outcome the caller discards).
     func prewarm(
         faces: [DetectedFace],
@@ -56,9 +54,61 @@ nonisolated struct FaceLensService: Sendable {
             folderURL: folderURL,
             appearancePrints: appearance,
             clothingPrints: clothing,
-            expressionGroups: cluster(lens: .expression, faces: enriched),
-            redCarpetGroups: cluster(lens: .redCarpet, faces: enriched)
+            expressionGroups: clusterExpression(faces: enriched)
         )
+    }
+
+    // MARK: - Red Carpet assist
+
+    /// Suggest merging existing people groups whose combined face+clothing distance clears
+    /// the Red Carpet threshold — pairs the face-only threshold alone couldn't merge. Pairs
+    /// without clothing data on both sides are skipped (face-only similarity is the Face
+    /// lens's job); so are pairs already named as different people.
+    func clothingAssistedMergeSuggestions(
+        groups: [FaceGroup],
+        faces: [DetectedFace]
+    ) async -> [MergeSuggestion] {
+        let lookup = Dictionary(uniqueKeysWithValues: faces.map { ($0.id, $0) })
+        let identityVectors = decodeIdentityVectors(faces)
+        let clothing = decodeObservations(faces, data: \.clothingFeaturePrintData)
+        let faceWeight = FaceRecognitionDefaults.redCarpetFaceWeight
+        let threshold = FaceRecognitionDefaults.redCarpetClusteringThreshold
+
+        var suggestions: [MergeSuggestion] = []
+        for i in 0..<groups.count {
+            if Task.isCancelled { break }
+            for j in (i + 1)..<groups.count {
+                if let n1 = groups[i].name, let n2 = groups[j].name, n1 != n2 { continue }
+
+                let faces1 = groups[i].faceIDs.compactMap { lookup[$0] }
+                let faces2 = groups[j].faceIDs.compactMap { lookup[$0] }
+                guard !faces1.isEmpty, !faces2.isEmpty else { continue }
+
+                var total: Float = 0
+                var count = 0
+                for a in faces1 {
+                    guard let v1 = identityVectors[a.id], let c1 = clothing[a.id] else { continue }
+                    for b in faces2 {
+                        guard let v2 = identityVectors[b.id], let c2 = clothing[b.id],
+                              let faceDistance = EmbeddingCodec.cosineDistance(v1, v2),
+                              let clothingDistance = Self.visionDistance(c1, c2) else { continue }
+                        total += faceDistance * faceWeight + clothingDistance * (1 - faceWeight)
+                        count += 1
+                    }
+                }
+                guard count > 0 else { continue }
+
+                let avgDistance = total / Float(count)
+                if avgDistance <= threshold {
+                    suggestions.append(MergeSuggestion(
+                        group1ID: groups[i].id,
+                        group2ID: groups[j].id,
+                        similarity: max(0, 1 - avgDistance)
+                    ))
+                }
+            }
+        }
+        return suggestions.sorted { $0.similarity > $1.similarity }
     }
 
     // MARK: - Appearance embeddings (Expression lens)
@@ -108,45 +158,31 @@ nonisolated struct FaceLensService: Sendable {
         return result
     }
 
-    // MARK: - Per-lens clustering
+    // MARK: - Expression clustering
 
-    /// Cluster the folder's faces for a secondary lens from stored embeddings. Quality-gated
-    /// two-pass like the Face pipeline: agglomerative average-linkage over high-quality faces,
-    /// then nearest-group assignment (or singleton) for the rest.
-    func cluster(lens: FaceLens, faces: [DetectedFace], qualityGateThreshold: Float = FaceRecognitionDefaults.qualityGateThreshold) -> [FaceGroup] {
-        guard !faces.isEmpty else { return [] }
-
-        let threshold: Float
-        let distance: (DetectedFace, DetectedFace) -> Float?
-
-        switch lens {
-        case .face:
-            // The Face lens is clustered by the scan pipeline, not here.
-            return []
-
-        case .expression:
-            threshold = FaceRecognitionDefaults.expressionClusteringThreshold
-            let observations = decodeObservations(faces, data: \.appearanceFeaturePrintData)
-            distance = { a, b in
-                guard let o1 = observations[a.id], let o2 = observations[b.id] else { return nil }
-                return Self.visionDistance(o1, o2)
-            }
-
-        case .redCarpet:
-            threshold = FaceRecognitionDefaults.redCarpetClusteringThreshold
-            let faceWeight = FaceRecognitionDefaults.redCarpetFaceWeight
-            let identityVectors = decodeIdentityVectors(faces)
-            let clothing = decodeObservations(faces, data: \.clothingFeaturePrintData)
-            distance = { a, b in
-                guard let v1 = identityVectors[a.id], let v2 = identityVectors[b.id],
-                      let faceDistance = EmbeddingCodec.cosineDistance(v1, v2) else { return nil }
-                // Missing clothing on either side falls back to the identity distance alone,
-                // mirroring the old Face+Clothing semantics.
-                guard let c1 = clothing[a.id], let c2 = clothing[b.id],
-                      let clothingDistance = Self.visionDistance(c1, c2) else { return faceDistance }
-                return faceDistance * faceWeight + clothingDistance * (1 - faceWeight)
-            }
+    /// Cluster faces by appearance (VNFeaturePrint on the stored crops) for the Expression
+    /// lens. Faces without an appearance print end up as singletons.
+    func clusterExpression(faces: [DetectedFace]) -> [FaceGroup] {
+        let observations = decodeObservations(faces, data: \.appearanceFeaturePrintData)
+        return clusterFaces(
+            faces,
+            threshold: FaceRecognitionDefaults.expressionClusteringThreshold
+        ) { a, b in
+            guard let o1 = observations[a.id], let o2 = observations[b.id] else { return nil }
+            return Self.visionDistance(o1, o2)
         }
+    }
+
+    /// Generic quality-gated two-pass clustering over an arbitrary distance: agglomerative
+    /// average-linkage over high-quality faces, then nearest-group assignment (or singleton)
+    /// for the rest. Mirrors the Face pipeline's structure.
+    func clusterFaces(
+        _ faces: [DetectedFace],
+        threshold: Float,
+        qualityGateThreshold: Float = FaceRecognitionDefaults.qualityGateThreshold,
+        distance: (DetectedFace, DetectedFace) -> Float?
+    ) -> [FaceGroup] {
+        guard !faces.isEmpty else { return [] }
 
         // Pass 1: agglomerative clustering over high-quality faces.
         var highQuality: [DetectedFace] = []

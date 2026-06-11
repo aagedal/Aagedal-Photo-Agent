@@ -22,16 +22,76 @@ nonisolated struct JerseyDetectionService: Sendable {
     }
 
     /// Detect plausible jersey numbers in the image.
+    ///
+    /// Runs OCR on the whole image **and** a grid of overlapping tiles, then merges. Vision
+    /// downsamples large frames internally, so small chest numbers (~3% of image height on a
+    /// 4–6k sports frame) are only found when a tile makes them large enough relative to the
+    /// input — the same reason face detection tiles.
+    ///
+    /// Known limitation: outline/keyline digits (hollow glyphs in the jersey's own colour with
+    /// a thin contrasting border) are not proposed by Vision's text detector at all, under any
+    /// preprocessing tried — those numbers cannot be recovered by OCR.
+    ///
     /// - Parameters:
     ///   - cgImage: the already-decoded, EXIF-oriented image.
     ///   - imageSize: full image dimensions (unused for normalised boxes, kept for symmetry).
-    ///   - ocrConfidenceThreshold: minimum OCR confidence (0...1).
-    ///   - minHeightFraction: minimum box height as a fraction of image height.
+    ///   - ocrConfidenceThreshold: minimum OCR confidence (0...1). Note Vision reports only
+    ///     coarse confidences (≈0.3 / 0.5 / 1.0).
+    ///   - minHeightFraction: minimum box height as a fraction of full-image height.
     func detectNumbers(
         in cgImage: CGImage,
         imageSize: CGSize,
         ocrConfidenceThreshold: Float,
         minHeightFraction: CGFloat
+    ) async throws -> [RawNumber] {
+        var candidates: [RawNumber] = []
+
+        // Whole image: catches large back numbers spanning tile boundaries.
+        candidates += try await recognizeNumbers(
+            in: cgImage,
+            mappedTo: CGRect(x: 0, y: 0, width: 1, height: 1),
+            ocrConfidenceThreshold: ocrConfidenceThreshold
+        )
+
+        // Overlapping tiles at two scales. Vision's text detector is framing-sensitive on
+        // isolated digits: empirically (5k sports frames) a 3×3 grid finds chest numbers a
+        // 4×4 misses and vice versa, so both run and the merge step deduplicates.
+        for grid in [3, 4] {
+            for region in Self.tileRegions(grid: grid) {
+                guard !Task.isCancelled else { break }
+                let pixelRect = CGRect(
+                    x: region.origin.x * CGFloat(cgImage.width),
+                    y: (1 - region.origin.y - region.height) * CGFloat(cgImage.height),
+                    width: region.width * CGFloat(cgImage.width),
+                    height: region.height * CGFloat(cgImage.height)
+                )
+                guard let tile = cgImage.cropping(to: pixelRect.integral) else { continue }
+                candidates += try await recognizeNumbers(
+                    in: tile,
+                    mappedTo: region,
+                    ocrConfidenceThreshold: ocrConfidenceThreshold
+                )
+            }
+        }
+
+        // Merge duplicates (the same number seen by several passes), apply the size floor,
+        // then sample the jersey colour once per surviving detection.
+        let merged = Self.deduplicate(candidates).filter { $0.box.height >= minHeightFraction }
+        return merged.map { raw in
+            var enriched = raw
+            enriched.color = sampleDominantColor(in: cgImage, near: raw.box)
+            return enriched
+        }
+    }
+
+    /// Run text recognition on one image (full frame or tile) and return jersey-number
+    /// candidates with boxes mapped into full-image normalised coordinates via `mappedTo`
+    /// (the region of the full image this input covers, Vision coords). Colour sampling
+    /// happens later, after deduplication.
+    private func recognizeNumbers(
+        in image: CGImage,
+        mappedTo region: CGRect,
+        ocrConfidenceThreshold: Float
     ) async throws -> [RawNumber] {
         // Parse into the Sendable `[RawNumber]` *inside* the completion handler —
         // `VNRecognizedTextObservation` is not Sendable and must not cross the
@@ -45,21 +105,22 @@ nonisolated struct JerseyDetectionService: Sendable {
                 let observations = (request.results as? [VNRecognizedTextObservation]) ?? []
                 var results: [RawNumber] = []
                 for observation in observations {
-                    guard observation.boundingBox.height >= minHeightFraction else { continue }
                     guard let candidate = observation.topCandidates(1).first,
-                          candidate.confidence >= ocrConfidenceThreshold else { continue }
+                          candidate.confidence >= ocrConfidenceThreshold,
+                          let value = Self.parseJerseyNumber(candidate.string) else { continue }
 
-                    let trimmed = candidate.string.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard trimmed.count >= 1, trimmed.count <= 2,
-                          trimmed.allSatisfy(\.isNumber),
-                          let value = Int(trimmed), (0...99).contains(value) else { continue }
-
-                    let color = self.sampleDominantColor(in: cgImage, near: observation.boundingBox)
+                    let box = observation.boundingBox
+                    let mappedBox = CGRect(
+                        x: region.origin.x + box.origin.x * region.width,
+                        y: region.origin.y + box.origin.y * region.height,
+                        width: box.width * region.width,
+                        height: box.height * region.height
+                    )
                     results.append(RawNumber(
                         value: value,
                         confidence: candidate.confidence,
-                        box: observation.boundingBox,
-                        color: color
+                        box: mappedBox,
+                        color: nil
                     ))
                 }
                 continuation.resume(returning: results)
@@ -67,13 +128,78 @@ nonisolated struct JerseyDetectionService: Sendable {
             request.recognitionLevel = .accurate
             request.usesLanguageCorrection = false
             request.recognitionLanguages = ["en"]
-            let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+            let handler = VNImageRequestHandler(cgImage: image, options: [:])
             do {
                 try handler.perform([request])
             } catch {
                 continuation.resume(throwing: error)
             }
         }
+    }
+
+    /// Extract a jersey number from an OCR string, tolerating a single junk character —
+    /// stylised kit fonts often read as "c17" or "d7". Rejects anything with more than one
+    /// non-digit (sponsor boards, dates, scoreboards: "TO26", "07.06.2026").
+    static func parseJerseyNumber(_ raw: String) -> Int? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.count <= 3 else { return nil }
+        guard trimmed.filter({ !$0.isNumber }).count <= 1 else { return nil }
+        let runs = trimmed.split(whereSeparator: { !$0.isNumber })
+        guard runs.count == 1, runs[0].count <= 2,
+              let value = Int(runs[0]), (0...99).contains(value) else { return nil }
+        return value
+    }
+
+    /// Overlapping grid in Vision-normalised coordinates (matches the face detector's
+    /// tiling scheme: each tile extends 15% of a tile size beyond its cell).
+    private static func tileRegions(grid: Int) -> [CGRect] {
+        var regions: [CGRect] = []
+        let tw = 1.0 / CGFloat(grid), th = 1.0 / CGFloat(grid)
+        let overlap: CGFloat = 0.15
+        for r in 0..<grid {
+            for c in 0..<grid {
+                let rect = CGRect(
+                    x: CGFloat(c) * tw - tw * overlap,
+                    y: CGFloat(r) * th - th * overlap,
+                    width: tw * (1 + 2 * overlap),
+                    height: th * (1 + 2 * overlap)
+                ).intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+                regions.append(rect)
+            }
+        }
+        return regions
+    }
+
+    /// Merge detections from overlapping passes. Candidates whose boxes coincide (IoU > 0.3
+    /// or either centre lies in the other) are one physical number — even when the values
+    /// differ: a one-digit read coinciding with a two-digit read is a partial read of the
+    /// same print ("4" inside "14", "7" inside "17"). Prefers two-digit reads, then higher
+    /// confidence, then larger boxes.
+    static func deduplicate(_ candidates: [RawNumber]) -> [RawNumber] {
+        let ranked = candidates.sorted { a, b in
+            let aDigits = a.value >= 10 ? 2 : 1
+            let bDigits = b.value >= 10 ? 2 : 1
+            if aDigits != bDigits { return aDigits > bDigits }
+            if a.confidence != b.confidence { return a.confidence > b.confidence }
+            return a.box.width * a.box.height > b.box.width * b.box.height
+        }
+        var merged: [RawNumber] = []
+        for candidate in ranked {
+            if !merged.contains(where: { boxesCoincide($0.box, candidate.box) }) {
+                merged.append(candidate)
+            }
+        }
+        return merged
+    }
+
+    private static func boxesCoincide(_ a: CGRect, _ b: CGRect) -> Bool {
+        let intersection = a.intersection(b)
+        guard !intersection.isNull, intersection.width > 0, intersection.height > 0 else { return false }
+        if a.contains(CGPoint(x: b.midX, y: b.midY)) || b.contains(CGPoint(x: a.midX, y: a.midY)) {
+            return true
+        }
+        let unionArea = a.width * a.height + b.width * b.height - intersection.width * intersection.height
+        return unionArea > 0 && (intersection.width * intersection.height) / unionArea > 0.3
     }
 
     /// Sample the dominant colour around a number's box — i.e. the surrounding

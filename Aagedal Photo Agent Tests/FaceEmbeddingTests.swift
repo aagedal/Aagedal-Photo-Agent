@@ -91,9 +91,13 @@ struct FaceEmbeddingTests {
 
     // MARK: - FaceLensService clustering
 
-    /// Red Carpet clustering with no clothing prints falls back to the identity distance:
-    /// two faces with near-identical ArcFace vectors group; an orthogonal one stays apart.
-    @Test func redCarpetLensClustersByIdentityWithoutClothing() {
+    /// Identity-distance closure over encoded ArcFace embeddings, as the lens clustering uses.
+    private static func identityDistance(_ a: DetectedFace, _ b: DetectedFace) -> Float? {
+        EmbeddingCodec.cosineDistance(a.featurePrintData, b.featurePrintData)
+    }
+
+    /// Two faces with near-identical vectors group; an orthogonal one stays apart.
+    @Test func lensClusteringGroupsByDistance() {
         func face(vector: [Float], quality: Float = 0.9) -> DetectedFace {
             DetectedFace(
                 id: UUID(),
@@ -109,7 +113,7 @@ struct FaceEmbeddingTests {
         let b = face(vector: [0.999, 0.0447, 0, 0])   // ~0.001 cosine distance from a
         let c = face(vector: [0, 1, 0, 0])            // orthogonal: distance 1 > threshold
 
-        let groups = FaceLensService().cluster(lens: .redCarpet, faces: [a, b, c])
+        let groups = FaceLensService().clusterFaces([a, b, c], threshold: 0.72, distance: Self.identityDistance)
 
         #expect(groups.count == 2)
         #expect(Set(groups.flatMap(\.faceIDs)) == Set([a.id, b.id, c.id]))
@@ -141,9 +145,10 @@ struct FaceEmbeddingTests {
         let lowFar = face(vector: [0, 0, 1, 0], quality: 0.1)            // below gate, far away
         let broken = face(vector: nil, quality: 0.9)                     // undecodable embedding
 
-        let groups = FaceLensService().cluster(
-            lens: .redCarpet,
-            faces: [anchor1, anchor2, lowNear, lowFar, broken]
+        let groups = FaceLensService().clusterFaces(
+            [anchor1, anchor2, lowNear, lowFar, broken],
+            threshold: 0.72,
+            distance: Self.identityDistance
         )
 
         #expect(Set(groups.flatMap(\.faceIDs)) == Set([anchor1.id, anchor2.id, lowNear.id, lowFar.id, broken.id]))

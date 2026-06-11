@@ -1332,6 +1332,7 @@ struct FullScreenImageView: View {
         if let faceVM = faceContext?.faceRecognitionViewModel,
            let url = currentImageFile?.url {
             let facesInImage = faceVM.facesForImage(url)
+            let standaloneNumbers = faceVM.numberDetectionsForImage(url)
             Canvas { context, _ in
                 for face in facesInImage {
                     let isHighlighted = face.id == highlightedFaceID
@@ -1342,9 +1343,69 @@ struct FullScreenImageView: View {
                     let path = Path(roundedRect: faceDisplayRect, cornerRadius: 4)
                     context.stroke(path, with: .color(groupColor.opacity(opacity)), lineWidth: lineWidth)
                 }
+
+                // Jersey-number debug boxes (sports tagging): solid orange for numbers
+                // attached to a face's torso, red for standalone (back-turned) detections.
+                for face in facesInImage {
+                    guard let number = face.jerseyNumber, let box = face.jerseyNumberBox else { continue }
+                    drawNumberBox(
+                        context: context,
+                        rect: convertFaceRect(box, toDisplayIn: imageDisplayRect),
+                        number: number,
+                        confidence: face.numberConfidence,
+                        color: .orange,
+                        imageDisplayRect: imageDisplayRect
+                    )
+                }
+                for detection in standaloneNumbers {
+                    drawNumberBox(
+                        context: context,
+                        rect: convertFaceRect(detection.boundingBox, toDisplayIn: imageDisplayRect),
+                        number: detection.number,
+                        confidence: detection.numberConfidence,
+                        color: .red,
+                        imageDisplayRect: imageDisplayRect
+                    )
+                }
             }
             .allowsHitTesting(false)
         }
+    }
+
+    /// Stroke a detected jersey-number box and draw a "#9 81%" tag above it (below it when
+    /// the box touches the top of the image).
+    private func drawNumberBox(
+        context: GraphicsContext,
+        rect: CGRect,
+        number: Int,
+        confidence: Float?,
+        color: Color,
+        imageDisplayRect: CGRect
+    ) {
+        context.stroke(Path(roundedRect: rect, cornerRadius: 2), with: .color(color.opacity(0.9)), lineWidth: 2)
+
+        var label = "#\(number)"
+        // Vision reports only coarse confidences (≈0.3/0.5/1.0); a full-confidence tag is
+        // pure noise, so only flag the uncertain ones.
+        if let confidence, confidence < 0.99 {
+            label += " \(Int(confidence * 100))%"
+        }
+        let resolved = context.resolve(
+            Text(label)
+                .font(.system(size: 11, weight: .bold))
+                .foregroundColor(.white)
+        )
+        let textSize = resolved.measure(in: CGSize(width: 200, height: 40))
+        let tagHeight = textSize.height + 2
+        let fitsAbove = rect.minY - tagHeight - 2 >= imageDisplayRect.minY
+        let tagRect = CGRect(
+            x: rect.minX,
+            y: fitsAbove ? rect.minY - tagHeight - 2 : rect.maxY + 2,
+            width: textSize.width + 8,
+            height: tagHeight
+        )
+        context.fill(Path(roundedRect: tagRect, cornerRadius: 3), with: .color(color.opacity(0.85)))
+        context.draw(resolved, at: CGPoint(x: tagRect.midX, y: tagRect.midY), anchor: .center)
     }
 
     private func colorLabelOverlay(for file: ImageFile) -> some View {

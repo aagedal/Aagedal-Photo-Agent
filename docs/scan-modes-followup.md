@@ -1,19 +1,30 @@
 # Follow-up plan: face lenses (always-scan, switch-view)
 
-**Status:** Phases 1–3 implemented (2026-06-11). Phase 1: per-lens `FolderFaceData` scaffolding
-(`FaceLens` / `FaceLensStatus` / `FaceLensState` in `FaceData.swift`, `recognitionMode` dropped),
-segmented lens switcher in `ExpandedFaceManagementView`, cog/sensitivity slider removed everywhere
-(popover, Settings tab, UserDefaults key, iCloud pref sync), rescan demoted to the scan button's
-context menu + an overflow menu in the expanded view. (Teams/Sports UI was already removed in
-commit 71f4e36.) Phases 2+3: `FaceLensService` prewarms Expression (VNFeaturePrint of the stored
-face thumbnails — no original re-decode) and Red Carpet (VNFeaturePrint of the torso region from a
-1536px downsampled decode, combined with ArcFace at weight 0.7/0.3) after the Face scan completes
-or on folder open if missing/stale; per-lens results/status persist in `face_data.json`; the
-secondary lens views are **read-only** grids (naming/merging/Known People stay in the Face lens —
-a divergence from the draft below, which allowed naming in Red Carpet). Thresholds
-(`expressionClusteringThreshold` 0.80, `redCarpetClusteringThreshold` 0.72 in
-`FaceRecognitionDefaults`) are starting points pending real-data calibration. Phase 4 (Sports)
-remains. Supersedes the earlier "pick a scan mode up front" draft.
+**Status:** implemented through the 2026-06-11 redesign, which **supersedes the lens semantics
+described below**. The "alternative groupings" model was revised after real use: Red Carpet and
+Sports are *not* separate clusterings — the goal is faster Person Shown tagging, so they share
+the one canonical, editable people grouping and differ only in which assist augments it.
+
+Current model (`FaceLens` in `FaceData.swift`, segments in this order):
+- **Face** — canonical ArcFace people grouping, full editing (naming, merging, Known People).
+- **Red Carpet** — same groups + clothing assist: `FaceLensService.clothingAssistedMergeSuggestions`
+  computes combined face+clothing distances (0.7/0.3, threshold 0.72) between existing groups and
+  surfaces one-click merge suggestions in a strip above the collection.
+- **Sports** — same groups + jersey assist (segment only appears when the folder has jersey data):
+  `FaceRecognitionViewModel.jerseyMergePlan` auto-merges groups sharing one number with agreeing
+  kit colours (never merges differently named groups or mixed-number groups; both-missing colours
+  block the merge); back-turned, face-less `NumberDetection`s show as "unmatched numbers" chips.
+  Assists run on lens switch and via a manual button; they only merge, so manual edits survive.
+- **Expression** — the only true alternative grouping (VNFeaturePrint appearance clustering,
+  threshold 0.80, prewarmed in the background; no identity/Known People). Click to select,
+  ⌘-click multi, double-click opens the photo, colour-label the selection. For fun collections.
+
+Phase 1's button cleanup (cog/sensitivity slider removed everywhere, rescan demoted to context/
+overflow menus) and the detect-once/embed-many prewarm (`FaceLensService.prewarm`: appearance
+prints from stored thumbnails, clothing prints from 1536px decodes, persisted in face_data.json)
+still stand. Thresholds in `FaceRecognitionDefaults` remain starting points pending real-data
+calibration. Remaining Sports work: assigning unmatched numbers to people, roster/team resolution
+(MatchRoster/TeamColorClusterer/PlayerResolver are in the codebase, unhooked).
 
 ## Context
 

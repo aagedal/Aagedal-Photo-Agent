@@ -281,6 +281,13 @@ struct SettingsView: View {
                 }
             }
 
+            Section("Sports Tagging (Experimental)") {
+                Toggle("Detect jersey numbers during scans", isOn: $settingsViewModel.sportsModeEnabled)
+                Text("Runs jersey-number OCR alongside face detection. Detected numbers show as boxes in the full-screen face overlay (press F): orange when attached to a player's face, red for back-turned players. Applies to new scans — force a full rescan to re-detect.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Data Management") {
                 Picker("Auto-delete face data", selection: $settingsViewModel.faceCleanupPolicy) {
                     ForEach(FaceCleanupPolicy.allCases, id: \.self) { policy in

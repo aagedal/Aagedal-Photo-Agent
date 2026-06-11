@@ -9,7 +9,9 @@
 [x] Fix iCloud sync regressions — container now visible in iCloud Drive (added NSUbiquitousContainers to Info.plist); container I/O routed through NSFileCoordinator (new CloudCoordinatedIO) so Templates/Lists folders no longer fork into "Templates 2"/"Lists 2" conflict duplicates that stranded files; .icloud placeholders are now downloaded + de-mangled on read
 [x] Make it possible to use variables in Keywords (Use case: I want my initials and todays date to be part of a single keyword) — keywords & Person Shown now resolve via Process Variables; added {initials} variable + Settings field
 [] Make it possible to sync and export presets. JSON in iCloud?
-[x] Face lenses (Face / Expression / Red Carpet) — see docs/scan-modes-followup.md. Phases 1–3 done: scan once, switch lens in the expanded view; Expression + Red Carpet prewarm in the background and re-cluster from stored embeddings (secondary lenses are read-only). Remaining: calibrate expression/redCarpet thresholds on real data; Phase 4 Sports as its own surface next release
+[x] Face lenses (Face / Red Carpet / Sports / Expression) — see docs/scan-modes-followup.md. Scan once; Face/Red Carpet/Sports share the editable people grouping (clothing suggests merges; jersey numbers auto-merge + unmatched back-turned numbers strip); Expression is its own appearance grouping with selection + colour labels
 [] Calibrate Expression (0.80) and Red Carpet (0.72) lens thresholds in FaceRecognitionDefaults on real labeled folders
-[] Consider making Red Carpet groups nameable (identity-bearing) — currently secondary lenses are read-only
+[x] Re-hook Teams/roster UI into the Sports lens — Match Setup… in the sports strip presents MatchSetupView (team pickers, Teams library, colour confirm/flip, ambiguous numbers); Resolve Names names groups + back-turned numbers from rosters; Apply writes Person Shown
+[] Sports lens follow-ups: manual "assign this unmatched number to a person" without a roster; consider teamSide in the jersey merge guard
+[] Expression lens follow-up: manual grouping (needs persistence that survives re-cluster on prewarm)
 [] Re-cluster from stored embeddings without re-embedding (makes mode/threshold changes instant)

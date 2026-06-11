@@ -86,7 +86,26 @@ final class FaceRecognitionViewModel {
             data.activeLens = newValue
             faceData = data
             try? storageService.saveFaceData(data)
+            lensDidChange(to: newValue)
         }
+    }
+
+    /// Lenses offered in the switcher for this folder. Sports only appears when the scan
+    /// produced jersey data (sports tagging enabled and numbers found).
+    var availableLenses: [FaceLens] {
+        FaceLens.allCases.filter { $0 != .sports || folderHasJerseyData }
+    }
+
+    var folderHasJerseyData: Bool {
+        guard let data = faceData else { return false }
+        if data.numberDetections?.isEmpty == false { return true }
+        return data.faces.contains { $0.jerseyNumber != nil }
+    }
+
+    /// Stored number detections with no associated face (back-turned players) — the
+    /// "unmatched numbers" shown in the Sports lens.
+    var standaloneNumberDetections: [NumberDetection] {
+        faceData?.numberDetections ?? []
     }
 
     func lensState(for lens: FaceLens) -> FaceLensState {
@@ -95,6 +114,121 @@ final class FaceRecognitionViewModel {
 
     func lensGroups(for lens: FaceLens) -> [FaceGroup] {
         faceData?.groups(for: lens) ?? []
+    }
+
+    /// Run the switched-to lens's assist over the people groups. Cheap: works entirely from
+    /// stored embeddings/detections, never re-detects or re-embeds.
+    private func lensDidChange(to lens: FaceLens) {
+        switch lens {
+        case .face:
+            updateMergeSuggestions()
+        case .redCarpet:
+            updateClothingMergeSuggestions()
+        case .sports:
+            lastJerseyMergeCount = applyJerseyNumberMerges()
+        case .expression:
+            break
+        }
+    }
+
+    // MARK: - Red Carpet assist
+
+    /// Replace the merge suggestions with clothing-assisted ones (combined face+clothing
+    /// distance between existing groups). Runs off-main; suggestions land asynchronously.
+    func updateClothingMergeSuggestions() {
+        guard let data = faceData else {
+            mergeSuggestions = []
+            return
+        }
+        let groups = data.groups
+        let faces = data.faces
+        let folderURL = data.folderURL
+        let service = lensService
+        Task(priority: .userInitiated) { [weak self] in
+            let suggestions = await service.clothingAssistedMergeSuggestions(groups: groups, faces: faces)
+            guard let self, self.faceData?.folderURL == folderURL, self.activeLens == .redCarpet else { return }
+            self.mergeSuggestions = suggestions
+        }
+    }
+
+    // MARK: - Sports assist
+
+    /// Number of groups merged by the last jersey-number assist run (transient, for UI feedback).
+    var lastJerseyMergeCount = 0
+
+    /// Merge people groups that share the same jersey number with agreeing kit colours.
+    /// Conservative: groups with mixed member numbers, differently named groups, or colour
+    /// disagreement never merge. Returns the number of merges applied.
+    @discardableResult
+    func applyJerseyNumberMerges() -> Int {
+        guard let data = faceData else { return 0 }
+        let plan = Self.jerseyMergePlan(groups: data.groups, faces: data.faces)
+        for merge in plan {
+            // Carry a name over before the source group is destroyed: mergeGroups keeps the
+            // target's name, so move the source's name across when the target is unnamed.
+            if let source = group(byID: merge.source), let target = group(byID: merge.target),
+               target.name == nil, let sourceName = source.name {
+                nameGroup(merge.target, name: sourceName)
+            }
+            mergeGroups(sourceID: merge.source, into: merge.target)
+        }
+        return plan.count
+    }
+
+    /// Decide which groups to merge based on jersey numbers. A group participates when its
+    /// numbered faces agree on exactly one number; two groups merge when they share that
+    /// number, are not named as different people, and their sampled kit colours agree
+    /// (both-missing colours also block the merge — the same number on the other team must
+    /// not collapse two players).
+    nonisolated static func jerseyMergePlan(
+        groups: [FaceGroup],
+        faces: [DetectedFace]
+    ) -> [(source: UUID, target: UUID)] {
+        let lookup = Dictionary(uniqueKeysWithValues: faces.map { ($0.id, $0) })
+
+        struct Entry {
+            let groupID: UUID
+            let number: Int
+            let name: String?
+            let size: Int
+            let color: ColorRGB?
+        }
+
+        var entries: [Entry] = []
+        for group in groups {
+            let members = group.faceIDs.compactMap { lookup[$0] }
+            let numbers = Set(members.compactMap(\.jerseyNumber))
+            guard numbers.count == 1, let number = numbers.first else { continue }
+            let colors = members.compactMap(\.jerseyColorRGB)
+            let avgColor: ColorRGB? = colors.isEmpty ? nil : ColorRGB(
+                r: colors.map(\.r).reduce(0, +) / Double(colors.count),
+                g: colors.map(\.g).reduce(0, +) / Double(colors.count),
+                b: colors.map(\.b).reduce(0, +) / Double(colors.count)
+            )
+            entries.append(Entry(groupID: group.id, number: number, name: group.name, size: group.faceIDs.count, color: avgColor))
+        }
+
+        func colorsAgree(_ a: ColorRGB?, _ b: ColorRGB?) -> Bool {
+            guard let a, let b else { return false }
+            let d = (a.r - b.r) * (a.r - b.r) + (a.g - b.g) * (a.g - b.g) + (a.b - b.b) * (a.b - b.b)
+            return d.squareRoot() < 0.25
+        }
+
+        var merges: [(source: UUID, target: UUID)] = []
+        for (_, candidates) in Dictionary(grouping: entries, by: \.number) where candidates.count >= 2 {
+            // Target preference: named first, then largest.
+            let ranked = candidates.sorted { a, b in
+                if (a.name != nil) != (b.name != nil) { return a.name != nil }
+                return a.size > b.size
+            }
+            guard let target = ranked.first else { continue }
+            for other in ranked.dropFirst() {
+                if let n1 = target.name, let n2 = other.name, n1 != n2 { continue }
+                guard colorsAgree(target.color, other.color) else { continue }
+                merges.append((source: other.groupID, target: target.groupID))
+            }
+        }
+        return merges
     }
 
     // MARK: - Secondary Lens Prewarm
@@ -108,7 +242,9 @@ final class FaceRecognitionViewModel {
 
         let staleLenses = FaceLens.allCases.filter { lens in
             switch lens {
-            case .face:
+            case .face, .sports:
+                // Face is clustered by the scan; Sports works from jersey detections the
+                // scan already stored — neither needs embedding prewarm.
                 false
             case .expression:
                 needsPrewarm(data.lensState(for: lens), version: FaceRecognitionDefaults.expressionEmbeddingVersion)
@@ -171,8 +307,10 @@ final class FaceRecognitionViewModel {
             embeddingVersion: FaceRecognitionDefaults.expressionEmbeddingVersion,
             lastUpdated: Date()
         ), for: .expression)
+        // Red Carpet keeps no groups of its own (it assists the canonical people groups);
+        // a complete state just records that the clothing embeddings are ready.
         data.setLensState(FaceLensState(
-            groups: Self.sanitizedLensGroups(outcome.redCarpetGroups, validFaceIDs: validIDs),
+            groups: [],
             status: .complete,
             embeddingVersion: FaceRecognitionDefaults.redCarpetEmbeddingVersion,
             lastUpdated: Date()
@@ -260,7 +398,7 @@ final class FaceRecognitionViewModel {
         let ocrConf = UserDefaults.standard.object(forKey: UserDefaultsKeys.sportsOCRConfidenceThreshold) as? Double
         config.sportsOCRConfidenceThreshold = Float(ocrConf ?? 0.5)
         let minHeight = UserDefaults.standard.object(forKey: UserDefaultsKeys.sportsNumberMinHeightFraction) as? Double
-        config.sportsNumberMinHeightFraction = CGFloat(minHeight ?? 0.04)
+        config.sportsNumberMinHeightFraction = CGFloat(minHeight ?? 0.02)
 
         return config
     }
@@ -2227,6 +2365,12 @@ final class FaceRecognitionViewModel {
     /// All detected faces in a specific image
     func facesForImage(_ imageURL: URL) -> [DetectedFace] {
         facesByImageURL[imageURL] ?? []
+    }
+
+    /// Standalone (back-turned) jersey-number detections for one image. Face-attached
+    /// numbers live on the faces themselves (`jerseyNumber`/`jerseyNumberBox`).
+    func numberDetectionsForImage(_ imageURL: URL) -> [NumberDetection] {
+        faceData?.numberDetections?.filter { $0.imageURL == imageURL } ?? []
     }
 
     /// Face+group pairs for an image, sorted named-first then by face rect position

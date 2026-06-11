@@ -247,6 +247,13 @@ final class SettingsViewModel {
         didSet { UserDefaults.standard.set(faceMinFaceSize, forKey: UserDefaultsKeys.faceMinFaceSize) }
     }
 
+    /// Sports tagging (experimental): run jersey-number OCR alongside face detection.
+    /// The scan pipeline reads the key from UserDefaults directly, so this takes effect
+    /// on the next scan without a restart.
+    var sportsModeEnabled: Bool {
+        didSet { UserDefaults.standard.set(sportsModeEnabled, forKey: UserDefaultsKeys.sportsModeEnabled) }
+    }
+
 
     // MARK: - Format & Compression
 
@@ -528,6 +535,8 @@ final class SettingsViewModel {
 
         let storedMinSize = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceMinFaceSize) as? Int
         self.faceMinFaceSize = storedMinSize ?? 50
+
+        self.sportsModeEnabled = UserDefaults.standard.bool(forKey: UserDefaultsKeys.sportsModeEnabled)
 
         let storedKnownPeopleMinConfidence = UserDefaults.standard.object(forKey: UserDefaultsKeys.knownPeopleMinConfidence) as? Double
         self.knownPeopleMinConfidence = storedKnownPeopleMinConfidence ?? Double(FaceRecognitionDefaults.knownPeopleMinConfidence)
