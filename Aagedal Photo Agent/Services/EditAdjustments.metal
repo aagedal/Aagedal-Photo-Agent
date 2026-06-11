@@ -345,12 +345,20 @@ kernel void editAdjustments(
     for (uint m = 0; m < params.maskCount && m < 8; m++) {
         constant MaskParams &mask = masks[m];
 
-        // Compute ellipse mask weight analytically
+        // Compute ellipse mask weight analytically. mask.radii carries ACR's
+        // SIGNED oriented-corner box half-extents (see EllipseMaskGeometry):
+        // un-rotating the aspect-corrected corner vector recovers the true
+        // semi-axes. All rotation happens in aspect-corrected (pixel) space —
+        // raw-UV rotation would shear the ellipse by the image aspect ratio.
+        float maskAspect = params.sourceSize.y > 0.0 ? params.sourceSize.x / params.sourceSize.y : 1.0;
         float cosR = cos(mask.rotation);
         float sinR = sin(mask.rotation);
-        float2 d = uv - mask.center;
+        float2 corner = mask.radii * float2(maskAspect, 1.0);
+        float2 ab = float2(corner.x * cosR + corner.y * sinR, -corner.x * sinR + corner.y * cosR);
+        if (ab.x <= 0.0 || ab.y <= 0.0) continue;   // degenerate — ACR renders nothing
+        float2 d = (uv - mask.center) * float2(maskAspect, 1.0);
         float2 local = float2(d.x * cosR + d.y * sinR, -d.x * sinR + d.y * cosR);
-        float dist = length(local / mask.radii);
+        float dist = length(local / ab);
         float inner = 1.0 - mask.feather;
         float weight = 1.0 - smoothstep(inner, 1.0, dist);
         if (mask.inverted > 0.5) weight = 1.0 - weight;

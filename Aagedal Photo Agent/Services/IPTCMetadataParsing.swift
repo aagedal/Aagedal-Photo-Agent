@@ -187,8 +187,14 @@ nonisolated func parseMaskGroupBasedCorrections(_ value: Any?) -> [MaskAdjustmen
             let right = parseDoubleValue(mask["Right"]) ?? 1
             geometry.centerX = (left + right) / 2
             geometry.centerY = (top + bottom) / 2
-            geometry.radiusX = abs(right - left) / 2
-            geometry.radiusY = abs(bottom - top) / 2
+            // ACR's (Left,Top)/(Right,Bottom) are opposite corners of the ellipse's
+            // ORIENTED bounding rect — the corner vector rotates with the ellipse in
+            // aspect-corrected (pixel) space, so for rotated masks Left can exceed
+            // Right and these half-extents are signed, NOT the semi-axes. The true
+            // radii are recovered by un-rotating the corner vector at render time
+            // (see EllipseMaskGeometry); at Angle=0 they coincide.
+            geometry.radiusX = (right - left) / 2
+            geometry.radiusY = (bottom - top) / 2
             geometry.rotation = parseDoubleValue(mask["Angle"]) ?? 0
             geometry.feather = parseDoubleValue(mask["Feather"]) ?? 50
             // ACR Flipped=true means effect applies inside the ellipse;

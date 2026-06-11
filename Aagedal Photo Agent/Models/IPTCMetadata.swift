@@ -51,6 +51,22 @@ nonisolated struct CameraRawCrop: Codable, Sendable, Equatable {
     }
 }
 
+/// Radial-gradient mask geometry, stored in ACR's XMP encoding so the values
+/// round-trip losslessly through `crs:MaskGroupBasedCorrections`.
+///
+/// `radiusX`/`radiusY` are the SIGNED half-extents of the box (Left,Top)-(Right,Bottom).
+/// ACR's box corners are the corners of the ellipse's ORIENTED bounding rect: the
+/// half-diagonal is the ellipse corner vector rotated by `rotation` in aspect-corrected
+/// (pixel-proportional) space. For rotated masks the corner can cross the center
+/// (Left > Right in real ACR files), so the half-extents go negative and are NOT the
+/// semi-axes. Decode (aspect = imageW/imageH, θ = rotation):
+///
+///     (a·aspect, b) = R(−θ) · (radiusX·aspect, radiusY)
+///
+/// where (a, b) are the true UV semi-axes; both must come out positive or the mask is
+/// degenerate (ACR renders nothing). At rotation 0 the box half-extents ARE the
+/// semi-axes — verified empirically against Camera Raw 18.3.2 (2026-06, two rotated
+/// samples decode to the authored ellipse within 4 decimals).
 nonisolated struct EllipseMaskGeometry: Codable, Sendable, Equatable {
     var centerX: Double = 0.5
     var centerY: Double = 0.5
@@ -58,6 +74,30 @@ nonisolated struct EllipseMaskGeometry: Codable, Sendable, Equatable {
     var radiusY: Double = 0.10
     var rotation: Double = 0
     var feather: Double = 50
+
+    /// True UV semi-axes, decoded from the oriented-corner box encoding.
+    /// Components ≤ 0 mean the stored values don't describe a valid ellipse
+    /// at this rotation (ACR renders nothing for these).
+    func trueRadii(aspect: Double) -> (x: Double, y: Double) {
+        guard aspect > 0 else { return (radiusX, radiusY) }
+        let theta = rotation * .pi / 180
+        let dx = radiusX * aspect
+        let dy = radiusY
+        let a = dx * cos(theta) + dy * sin(theta)
+        let b = -dx * sin(theta) + dy * cos(theta)
+        return (a / aspect, b)
+    }
+
+    /// Inverse of `trueRadii`: re-encode true UV semi-axes into the stored
+    /// oriented-corner half-extents for the current rotation.
+    mutating func setTrueRadii(x: Double, y: Double, aspect: Double) {
+        guard aspect > 0 else { radiusX = x; radiusY = y; return }
+        let theta = rotation * .pi / 180
+        let ax = x * aspect
+        let ay = y
+        radiusX = (ax * cos(theta) - ay * sin(theta)) / aspect
+        radiusY = ax * sin(theta) + ay * cos(theta)
+    }
 }
 
 nonisolated struct MaskAdjustment: Codable, Sendable, Equatable, Identifiable {

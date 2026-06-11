@@ -822,3 +822,57 @@ struct CropRotationGeometryTests {
         }
     }
 }
+
+@Suite("EllipseMaskGeometry ACR corner encoding")
+struct EllipseMaskGeometryCornerTests {
+    /// Camera Raw 18.3.2 ground truth: the same authored ellipse (center 0.5/0.5,
+    /// true UV radii 0.4 × 0.2 on a 3:2 image) saved at two rotations. The stored
+    /// box half-extents are the ellipse's oriented-corner vector, so un-rotating
+    /// must recover the authored semi-axes.
+    @Test("ACR rotated samples decode to the authored ellipse")
+    func acrSamplesDecode() {
+        let aspect = 1.5
+        var geo = EllipseMaskGeometry()
+        geo.centerX = 0.5
+        geo.centerY = 0.5
+
+        // Angle −6.337183°: Top 0.367451 Left 0.087725 Bottom 0.632549 Right 0.912275
+        geo.radiusX = (0.912275 - 0.087725) / 2
+        geo.radiusY = (0.632549 - 0.367451) / 2
+        geo.rotation = -6.337183
+        var radii = geo.trueRadii(aspect: aspect)
+        #expect(abs(radii.x - 0.4) < 0.0005)
+        #expect(abs(radii.y - 0.2) < 0.0005)
+
+        // Angle 40.044639°: Top −0.08809 Left 0.655375 Bottom 1.08809 Right 0.344625.
+        // Left > Right (corner crossed the center) — ACR stored the axes-swapped
+        // representation of the same ellipse, so the decode yields (0.2/aspect, 0.6).
+        geo.radiusX = (0.344625 - 0.655375) / 2
+        geo.radiusY = (1.08809 - -0.08809) / 2
+        geo.rotation = 40.044639
+        radii = geo.trueRadii(aspect: aspect)
+        #expect(abs(radii.x - 0.2 / aspect) < 0.0005)
+        #expect(abs(radii.y - 0.6) < 0.0005)
+    }
+
+    @Test("setTrueRadii is the exact inverse of trueRadii")
+    func encodeDecodeRoundTrip() {
+        var geo = EllipseMaskGeometry()
+        geo.rotation = 73.2
+        geo.setTrueRadii(x: 0.31, y: 0.12, aspect: 1.5)
+        let radii = geo.trueRadii(aspect: 1.5)
+        #expect(abs(radii.x - 0.31) < 1e-9)
+        #expect(abs(radii.y - 0.12) < 1e-9)
+    }
+
+    @Test("rotation 0 keeps box half-extents as the semi-axes")
+    func angleZeroIdentity() {
+        var geo = EllipseMaskGeometry()
+        geo.radiusX = 0.4
+        geo.radiusY = 0.2
+        geo.rotation = 0
+        let radii = geo.trueRadii(aspect: 1.5)
+        #expect(abs(radii.x - 0.4) < 1e-12)
+        #expect(abs(radii.y - 0.2) < 1e-12)
+    }
+}

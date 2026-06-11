@@ -50,11 +50,22 @@ cat FILENAME.xmp | grep -A5 "CircularGradient"
 # and run e.g. `exiftool -j -struct -XMP-crs:MaskGroupBasedCorrections FILENAME.JPG`.
 ```
 
+## SOLVED (2026-06-11): the Angle≠0 encoding
+
+Empirically reverse-engineered from Camera Raw 18.3.2 (rotation-only edits of a known
+ellipse, plus synthetic probe files): **(Left,Top)/(Right,Bottom) are opposite corners
+of the ellipse's ORIENTED bounding rect** — the corner half-diagonal is the corner
+vector `(rx·aspect, ry)` rotated by Angle in aspect-corrected (pixel) space. That's why
+Left can exceed Right (corner crosses the center) and why it's not a bounding box.
+Decode = un-rotate the half-diagonal; both components must come out positive or the
+mask is degenerate (ACR renders nothing). Both rotated ACR samples decoded to the
+authored ellipse within 4 decimals. Full model documented on `EllipseMaskGeometry`.
+
 ## Known Issues to Fix
 
 - [ ] **Orientation transform for masks** — masks need `transformedForDisplay(orientation:)` like crop does (`IPTCMetadataParsing.swift` → `parseMaskGroupBasedCorrections`)
-- [ ] **Rotated mask decoding** — current `radiusX = abs(right-left)/2` is wrong when Angle≠0
-- [ ] **Rotated mask rendering** — shader may need aspect-ratio-corrected rotation (not UV-space rotation)
+- [x] **Rotated mask decoding** — geometry now stores ACR's signed corner half-extents; shaders/overlay decode the true semi-axes per the corner model (`EllipseMaskGeometry.trueRadii`)
+- [x] **Rotated mask rendering** — all mask rotation now happens in aspect-corrected pixel space (edit shader, Metal overlay, AppKit overlay); UV-space rotation sheared by image aspect
 
 ## Files for Reference
 

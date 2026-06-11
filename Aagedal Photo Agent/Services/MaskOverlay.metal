@@ -67,12 +67,20 @@ kernel void maskOverlay(
     float pixelSizeV = params.viewportSize.y / params.drawableSize.y;
     float aa = max(pixelSizeU, pixelSizeV);
 
-    // Transform to ellipse local space
+    // Transform to ellipse local space. params.radii carries ACR's SIGNED
+    // oriented-corner box half-extents (see EllipseMaskGeometry): un-rotating
+    // the aspect-corrected corner vector recovers the true semi-axes. Rotation
+    // happens in aspect-corrected (pixel) space — a raw-UV rotation shears the
+    // ellipse by the image aspect ratio (see editAdjustments mask loop).
+    float aspect = params.sourceSize.y > 0.0 ? params.sourceSize.x / params.sourceSize.y : 1.0;
     float cosR = cos(params.rotation);
     float sinR = sin(params.rotation);
-    float2 d = uv - params.center;
+    float2 corner = params.radii * float2(aspect, 1.0);
+    float2 corrRadii = float2(corner.x * cosR + corner.y * sinR, -corner.x * sinR + corner.y * cosR);
+    if (corrRadii.x <= 0.0 || corrRadii.y <= 0.0) return;   // degenerate — nothing to draw
+    float2 d = (uv - params.center) * float2(aspect, 1.0);
     float2 local = float2(d.x * cosR + d.y * sinR, -d.x * sinR + d.y * cosR);
-    float dist = length(local / params.radii);
+    float dist = length(local / corrRadii);
 
     // Accumulate overlay alpha and color
     half4 existing = destination.read(gid);
@@ -89,7 +97,7 @@ kernel void maskOverlay(
         float innerScale = max(1.0 - params.feather, 0.05);
         float innerDist = dist / innerScale;
         // Arc position for dash pattern: use angle around ellipse
-        float angle = atan2(local.y / params.radii.y, local.x / params.radii.x);
+        float angle = atan2(local.y / corrRadii.y, local.x / corrRadii.x);
         float arcPos = (angle + M_PI_F) / (2.0 * M_PI_F); // [0,1]
         float dashLen = 0.04; // dash period in normalized arc units
         float innerAlpha = dashedLineAlpha(innerDist - 1.0, lineWidth * 0.5, aa, arcPos, dashLen);
@@ -105,12 +113,13 @@ kernel void maskOverlay(
     float handleRadius = 5.0 * aa; // ~5 drawable pixels
     float outlineRadius = handleRadius + 0.5 * aa;
 
-    // Handle positions: top, right, bottom, left on the ellipse
+    // Handle positions: top, right, bottom, left on the ellipse, computed in
+    // aspect-corrected space then mapped back to UV.
     float2 handleOffsets[4] = {
-        float2(0, -params.radii.y),  // top
-        float2(params.radii.x, 0),   // right
-        float2(0, params.radii.y),   // bottom
-        float2(-params.radii.x, 0),  // left
+        float2(0, -corrRadii.y),  // top
+        float2(corrRadii.x, 0),   // right
+        float2(0, corrRadii.y),   // bottom
+        float2(-corrRadii.x, 0),  // left
     };
 
     for (int i = 0; i < 4; i++) {
@@ -120,7 +129,7 @@ kernel void maskOverlay(
             hLocal.x * cosR - hLocal.y * sinR,
             hLocal.x * sinR + hLocal.y * cosR
         );
-        float2 hPos = params.center + hWorld;
+        float2 hPos = params.center + hWorld / float2(aspect, 1.0);
 
         // Dark outline
         float outline = circleAlpha(uv, hPos, outlineRadius, aa);

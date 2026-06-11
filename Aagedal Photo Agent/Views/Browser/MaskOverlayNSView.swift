@@ -162,64 +162,84 @@ final class MaskOverlayNSView: NSView {
 
     private var angleRadians: CGFloat { maskGeometry.rotation * .pi / 180 }
 
+    /// True semi-axes in screen points, decoded from the ACR oriented-corner box
+    /// half-extents stored in the geometry (see EllipseMaskGeometry). The screen
+    /// mapping is aspect-true, so the decode and all rotation happen directly in
+    /// screen points — rotating in UV space before the anisotropic UV→screen
+    /// scale would shear the ellipse by the image aspect ratio. Clamped so
+    /// degenerate foreign values stay grabbable.
+    private func trueScreenRadii(of geo: EllipseMaskGeometry) -> (x: CGFloat, y: CGFloat) {
+        let theta = geo.rotation * .pi / 180
+        let dx = geo.radiusX * uvToScreenScaleX
+        let dy = geo.radiusY * uvToScreenScaleY
+        let a = dx * cos(theta) + dy * sin(theta)
+        let b = -dx * sin(theta) + dy * cos(theta)
+        return (max(a, 2), max(b, 2))
+    }
+
+    /// Re-encode true screen-point semi-axes into the stored oriented-corner box
+    /// half-extents (UV), using the rotation already set on `geo`.
+    private func settingTrueScreenRadii(_ geo: EllipseMaskGeometry, x: CGFloat, y: CGFloat) -> EllipseMaskGeometry {
+        var out = geo
+        let theta = geo.rotation * .pi / 180
+        out.radiusX = (x * cos(theta) - y * sin(theta)) / uvToScreenScaleX
+        out.radiusY = (x * sin(theta) + y * cos(theta)) / uvToScreenScaleY
+        return out
+    }
+
+    private var screenRadiusX: CGFloat { trueScreenRadii(of: maskGeometry).x }
+    private var screenRadiusY: CGFloat { trueScreenRadii(of: maskGeometry).y }
+
     private func ellipseTransform(radiusScale: CGFloat = 1) -> CGAffineTransform {
-        CGAffineTransform(scaleX: maskGeometry.radiusX * radiusScale, y: maskGeometry.radiusY * radiusScale)
+        CGAffineTransform(scaleX: screenRadiusX * radiusScale, y: screenRadiusY * radiusScale)
             .concatenating(CGAffineTransform(rotationAngle: angleRadians))
-            .concatenating(CGAffineTransform(scaleX: uvToScreenScaleX, y: uvToScreenScaleY))
             .concatenating(CGAffineTransform(translationX: center.x, y: center.y))
     }
 
-    private func handlePosition(uvDx: CGFloat, uvDy: CGFloat) -> CGPoint {
+    private func handlePosition(screenDx: CGFloat, screenDy: CGFloat) -> CGPoint {
         let cosR = cos(angleRadians)
         let sinR = sin(angleRadians)
-        let rotX = uvDx * cosR - uvDy * sinR
-        let rotY = uvDx * sinR + uvDy * cosR
         return CGPoint(
-            x: rotX * uvToScreenScaleX + center.x,
-            y: rotY * uvToScreenScaleY + center.y
+            x: screenDx * cosR - screenDy * sinR + center.x,
+            y: screenDx * sinR + screenDy * cosR + center.y
         )
     }
 
-    private var topHandle: CGPoint { handlePosition(uvDx: 0, uvDy: -maskGeometry.radiusY) }
-    private var rightHandle: CGPoint { handlePosition(uvDx: maskGeometry.radiusX, uvDy: 0) }
-    private var bottomHandle: CGPoint { handlePosition(uvDx: 0, uvDy: maskGeometry.radiusY) }
-    private var leftHandle: CGPoint { handlePosition(uvDx: -maskGeometry.radiusX, uvDy: 0) }
+    private var topHandle: CGPoint { handlePosition(screenDx: 0, screenDy: -screenRadiusY) }
+    private var rightHandle: CGPoint { handlePosition(screenDx: screenRadiusX, screenDy: 0) }
+    private var bottomHandle: CGPoint { handlePosition(screenDx: 0, screenDy: screenRadiusY) }
+    private var leftHandle: CGPoint { handlePosition(screenDx: -screenRadiusX, screenDy: 0) }
 
-    private func isInRotationZone(_ point: CGPoint) -> Bool {
+    /// Point's offset from the mask center, unrotated into the ellipse's local
+    /// frame, in screen points.
+    private func localScreenOffset(_ point: CGPoint) -> CGPoint {
         let cosR = cos(angleRadians)
         let sinR = sin(angleRadians)
-        let uvDx = (point.x - center.x) / uvToScreenScaleX
-        let uvDy = (point.y - center.y) / uvToScreenScaleY
-        let localX = uvDx * cosR + uvDy * sinR
-        let localY = -uvDx * sinR + uvDy * cosR
+        let dx = point.x - center.x
+        let dy = point.y - center.y
+        return CGPoint(x: dx * cosR + dy * sinR, y: -dx * sinR + dy * cosR)
+    }
 
-        guard maskGeometry.radiusX > 0, maskGeometry.radiusY > 0 else { return false }
-        let marginX = 20.0 / uvToScreenScaleX
-        let marginY = 20.0 / uvToScreenScaleY
-        let innerRx = maskGeometry.radiusX + marginX
-        let innerRy = maskGeometry.radiusY + marginY
-        let innerNorm = (localX * localX) / (innerRx * innerRx)
-                      + (localY * localY) / (innerRy * innerRy)
-        let extentX = 84.0 / uvToScreenScaleX
-        let extentY = 84.0 / uvToScreenScaleY
-        let outerRx = maskGeometry.radiusX + extentX
-        let outerRy = maskGeometry.radiusY + extentY
-        let outerNorm = (localX * localX) / (outerRx * outerRx)
-                      + (localY * localY) / (outerRy * outerRy)
+    private func isInRotationZone(_ point: CGPoint) -> Bool {
+        guard screenRadiusX > 0, screenRadiusY > 0 else { return false }
+        let local = localScreenOffset(point)
+        let innerRx = screenRadiusX + 20
+        let innerRy = screenRadiusY + 20
+        let innerNorm = (local.x * local.x) / (innerRx * innerRx)
+                      + (local.y * local.y) / (innerRy * innerRy)
+        let outerRx = screenRadiusX + 84
+        let outerRy = screenRadiusY + 84
+        let outerNorm = (local.x * local.x) / (outerRx * outerRx)
+                      + (local.y * local.y) / (outerRy * outerRy)
         return innerNorm > 1.0 && outerNorm <= 1.0
     }
 
-    /// Ellipse distance in UV space — returns < 1 for inside, > 1 for outside.
+    /// Normalized ellipse distance — returns < 1 for inside, > 1 for outside.
     private func ellipseDistance(_ point: CGPoint) -> CGFloat {
-        let cosR = cos(angleRadians)
-        let sinR = sin(angleRadians)
-        let uvDx = (point.x - center.x) / uvToScreenScaleX
-        let uvDy = (point.y - center.y) / uvToScreenScaleY
-        let localX = uvDx * cosR + uvDy * sinR
-        let localY = -uvDx * sinR + uvDy * cosR
-        guard maskGeometry.radiusX > 0, maskGeometry.radiusY > 0 else { return .greatestFiniteMagnitude }
-        let nx = localX / maskGeometry.radiusX
-        let ny = localY / maskGeometry.radiusY
+        guard screenRadiusX > 0, screenRadiusY > 0 else { return .greatestFiniteMagnitude }
+        let local = localScreenOffset(point)
+        let nx = local.x / screenRadiusX
+        let ny = local.y / screenRadiusY
         return sqrt(nx * nx + ny * ny)
     }
 
@@ -272,6 +292,35 @@ final class MaskOverlayNSView: NSView {
             ctx.setStrokeColor(CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 0.3))
             ctx.setLineWidth(0.5)
             ctx.strokeEllipse(in: handleRect)
+        }
+
+        // Rotation readout while rotating
+        if coordinator?.isDragging == true, coordinator?.dragType == .rotate {
+            let text = String(format: "%.1f°", maskGeometry.rotation) as NSString
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
+                .foregroundColor: NSColor.white,
+            ]
+            let textSize = text.size(withAttributes: attributes)
+            let padding = CGSize(width: 8, height: 4)
+            let badgeRect = CGRect(
+                x: c.x - textSize.width / 2 - padding.width,
+                y: c.y + 16,
+                width: textSize.width + padding.width * 2,
+                height: textSize.height + padding.height * 2
+            )
+            let badge = CGPath(
+                roundedRect: badgeRect,
+                cornerWidth: 5, cornerHeight: 5,
+                transform: nil
+            )
+            ctx.addPath(badge)
+            ctx.setFillColor(CGColor(gray: 0, alpha: 0.65))
+            ctx.fillPath()
+            text.draw(
+                at: CGPoint(x: badgeRect.minX + padding.width, y: badgeRect.minY + padding.height),
+                withAttributes: attributes
+            )
         }
     }
 
@@ -392,8 +441,12 @@ final class MaskOverlayNSView: NSView {
             newAngle = newAngle.truncatingRemainder(dividingBy: 360)
             if newAngle < 0 { newAngle += 360 }
 
+            // Rotation keeps the true semi-axes fixed; the stored corner
+            // half-extents change with the angle, so re-encode them.
+            let radii = trueScreenRadii(of: startGeo)
             var geo = startGeo
             geo.rotation = newAngle
+            geo = settingTrueScreenRadii(geo, x: radii.x, y: radii.y)
             maskGeometry = geo
             needsDisplay = true
             coordinator.onChange?(geo)
@@ -452,44 +505,55 @@ final class MaskOverlayNSView: NSView {
     // MARK: - Drag computation
 
     private func computeDrag(startGeometry: EllipseMaskGeometry, translation: CGSize, dragType: DragType) -> EllipseMaskGeometry {
-        var geo = startGeometry
         let cosR = cos(startGeometry.rotation * .pi / 180)
         let sinR = sin(startGeometry.rotation * .pi / 180)
-        // Convert screen-space translation to UV delta via viewport
-        let uvDx = translation.width / uvToScreenScaleX
-        let uvDy = translation.height / uvToScreenScaleY
+        // Resize projections happen in screen space (where the rotation is rigid)
+        // on the DECODED true radii; the result re-encodes into the stored corner
+        // half-extents. Shift-uniform applies the same screen delta to both axes
+        // so a screen circle stays a circle.
+        let projX = translation.width * cosR + translation.height * sinR
+        let projY = -translation.width * sinR + translation.height * cosR
+        let start = trueScreenRadii(of: startGeometry)
 
         let uniform = NSEvent.modifierFlags.contains(.shift)
 
         switch dragType {
         case .move:
-            geo.centerX = startGeometry.centerX + uvDx
-            geo.centerY = startGeometry.centerY + uvDy
+            var geo = startGeometry
+            geo.centerX = startGeometry.centerX + translation.width / uvToScreenScaleX
+            geo.centerY = startGeometry.centerY + translation.height / uvToScreenScaleY
+            return geo
 
         case .resizeTop:
-            let proj = -uvDx * sinR + uvDy * cosR
-            geo.radiusY = max(startGeometry.radiusY - proj, 0.01)
-            if uniform { geo.radiusX = max(startGeometry.radiusX - proj, 0.01) }
+            return settingTrueScreenRadii(
+                startGeometry,
+                x: uniform ? max(start.x - projY, 2) : start.x,
+                y: max(start.y - projY, 2)
+            )
 
         case .resizeBottom:
-            let proj = -uvDx * sinR + uvDy * cosR
-            geo.radiusY = max(startGeometry.radiusY + proj, 0.01)
-            if uniform { geo.radiusX = max(startGeometry.radiusX + proj, 0.01) }
+            return settingTrueScreenRadii(
+                startGeometry,
+                x: uniform ? max(start.x + projY, 2) : start.x,
+                y: max(start.y + projY, 2)
+            )
 
         case .resizeRight:
-            let proj = uvDx * cosR + uvDy * sinR
-            geo.radiusX = max(startGeometry.radiusX + proj, 0.01)
-            if uniform { geo.radiusY = max(startGeometry.radiusY + proj, 0.01) }
+            return settingTrueScreenRadii(
+                startGeometry,
+                x: max(start.x + projX, 2),
+                y: uniform ? max(start.y + projX, 2) : start.y
+            )
 
         case .resizeLeft:
-            let proj = uvDx * cosR + uvDy * sinR
-            geo.radiusX = max(startGeometry.radiusX - proj, 0.01)
-            if uniform { geo.radiusY = max(startGeometry.radiusY - proj, 0.01) }
+            return settingTrueScreenRadii(
+                startGeometry,
+                x: max(start.x - projX, 2),
+                y: uniform ? max(start.y - projX, 2) : start.y
+            )
 
         case .rotate, .none:
-            break
+            return startGeometry
         }
-
-        return geo
     }
 }
