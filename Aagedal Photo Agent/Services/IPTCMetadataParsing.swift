@@ -1,4 +1,7 @@
 import Foundation
+import os
+
+nonisolated private let parsingLog = Logger(subsystem: "com.aagedal.photo-agent", category: "IPTCMetadataParsing")
 
 /// Field-name keys used in the metadata dictionaries that drive
 /// `IPTCMetadata` and `TechnicalMetadata` construction. The names match the
@@ -165,55 +168,68 @@ nonisolated func serializeToneCurvePoints(_ points: [ToneCurvePoint]) -> [String
     return points.map { "\(scaled($0.x)), \(scaled($0.y))" }
 }
 
+/// Look up an ACR correction/mask struct field. SwiftExif keys structured XMP
+/// fields as `<namespaceURI><Property>` (e.g. `http://ns.adobe.com/camera-raw-
+/// settings/1.0/Top`), while hand-built dicts (tests, JSON sidecars) use the
+/// bare property name — accept both.
+nonisolated private func crsMaskField(_ dict: [String: Any], _ name: String) -> Any? {
+    dict[name] ?? dict["http://ns.adobe.com/camera-raw-settings/1.0/" + name]
+}
+
 /// Parse Adobe Camera Raw `MaskGroupBasedCorrections` into `[MaskAdjustment]`.
 /// Each correction is a dictionary with `CorrectionMasks` as a nested array
-/// of mask geometry dictionaries.
+/// of mask geometry dictionaries. Corrections whose geometry can't be parsed
+/// (unsupported mask type, missing corner fields) are dropped — substituting a
+/// default ellipse would silently misrender them.
 nonisolated func parseMaskGroupBasedCorrections(_ value: Any?) -> [MaskAdjustment]? {
     guard let corrections = value as? [[String: Any]], !corrections.isEmpty else { return nil }
     var masks: [MaskAdjustment] = []
     for (index, corr) in corrections.enumerated() {
-        let active = parseBoolValue(corr["CorrectionActive"]) ?? true
-        let amount = parseDoubleValue(corr["CorrectionAmount"]) ?? 1.0
-        let name = corr["CorrectionName"] as? String ?? "Mask \(index + 1)"
+        let active = parseBoolValue(crsMaskField(corr, "CorrectionActive")) ?? true
+        let amount = parseDoubleValue(crsMaskField(corr, "CorrectionAmount")) ?? 1.0
+        let name = crsMaskField(corr, "CorrectionName") as? String ?? "Mask \(index + 1)"
+
+        guard let maskArray = crsMaskField(corr, "CorrectionMasks") as? [[String: Any]],
+              let maskDict = maskArray.first,
+              (crsMaskField(maskDict, "What") as? String) == "Mask/CircularGradient",
+              let top = parseDoubleValue(crsMaskField(maskDict, "Top")),
+              let left = parseDoubleValue(crsMaskField(maskDict, "Left")),
+              let bottom = parseDoubleValue(crsMaskField(maskDict, "Bottom")),
+              let right = parseDoubleValue(crsMaskField(maskDict, "Right"))
+        else {
+            parsingLog.warning("Dropping MaskGroupBasedCorrections[\(index)] (\(name, privacy: .public)): mask geometry failed to parse")
+            continue
+        }
 
         var geometry = EllipseMaskGeometry()
-        var inverted = false
-        if let maskArray = corr["CorrectionMasks"] as? [[String: Any]],
-           let mask = maskArray.first,
-           (mask["What"] as? String) == "Mask/CircularGradient" {
-            let top = parseDoubleValue(mask["Top"]) ?? 0
-            let left = parseDoubleValue(mask["Left"]) ?? 0
-            let bottom = parseDoubleValue(mask["Bottom"]) ?? 1
-            let right = parseDoubleValue(mask["Right"]) ?? 1
-            geometry.centerX = (left + right) / 2
-            geometry.centerY = (top + bottom) / 2
-            // ACR's (Left,Top)/(Right,Bottom) are opposite corners of the ellipse's
-            // ORIENTED bounding rect — the corner vector rotates with the ellipse in
-            // aspect-corrected (pixel) space, so for rotated masks Left can exceed
-            // Right and these half-extents are signed, NOT the semi-axes. The true
-            // radii are recovered by un-rotating the corner vector at render time
-            // (see EllipseMaskGeometry); at Angle=0 they coincide.
-            geometry.radiusX = (right - left) / 2
-            geometry.radiusY = (bottom - top) / 2
-            geometry.rotation = parseDoubleValue(mask["Angle"]) ?? 0
-            geometry.feather = parseDoubleValue(mask["Feather"]) ?? 50
-            // ACR Flipped=true means effect applies inside the ellipse;
-            // our inverted=true means effect applies outside. Negate.
-            inverted = !(parseBoolValue(mask["Flipped"]) ?? true)
-        }
+        geometry.centerX = (left + right) / 2
+        geometry.centerY = (top + bottom) / 2
+        // ACR's (Left,Top)/(Right,Bottom) are opposite corners of the ellipse's
+        // ORIENTED bounding rect — the corner vector rotates with the ellipse in
+        // aspect-corrected (pixel) space, so for rotated masks Left can exceed
+        // Right and these half-extents are signed, NOT the semi-axes. The true
+        // radii are recovered by un-rotating the corner vector at render time
+        // (see EllipseMaskGeometry); at Angle=0 they coincide.
+        geometry.radiusX = (right - left) / 2
+        geometry.radiusY = (bottom - top) / 2
+        geometry.rotation = parseDoubleValue(crsMaskField(maskDict, "Angle")) ?? 0
+        geometry.feather = parseDoubleValue(crsMaskField(maskDict, "Feather")) ?? 50
+        // ACR Flipped=true means effect applies inside the ellipse;
+        // our inverted=true means effect applies outside. Negate.
+        let inverted = !(parseBoolValue(crsMaskField(maskDict, "Flipped")) ?? true)
 
         // ACR stores all local adjustments as fractions of their full range (-1..+1).
         // Exposure range is -4..+4 EV, so XMP value × 4 = EV stops.
-        let exposure = parseDoubleValue(corr["LocalExposure2012"]).map { $0 * 4.0 }
-        let contrast = parsePercentInt(corr["LocalContrast2012"])
-        let highlights = parsePercentInt(corr["LocalHighlights2012"])
-        let shadows = parsePercentInt(corr["LocalShadows2012"])
-        let whites = parsePercentInt(corr["LocalWhites2012"])
-        let blacks = parsePercentInt(corr["LocalBlacks2012"])
-        let saturation = parsePercentInt(corr["LocalSaturation"])
-        let vibrance = parsePercentInt(corr["LocalVibrance"])
-        let temperature = parseDoubleValue(corr["LocalTemperature"]).map { $0 * 100 }
-        let tint = parseDoubleValue(corr["LocalTint"]).map { $0 * 100 }
+        let exposure = parseDoubleValue(crsMaskField(corr, "LocalExposure2012")).map { $0 * 4.0 }
+        let contrast = parsePercentInt(crsMaskField(corr, "LocalContrast2012"))
+        let highlights = parsePercentInt(crsMaskField(corr, "LocalHighlights2012"))
+        let shadows = parsePercentInt(crsMaskField(corr, "LocalShadows2012"))
+        let whites = parsePercentInt(crsMaskField(corr, "LocalWhites2012"))
+        let blacks = parsePercentInt(crsMaskField(corr, "LocalBlacks2012"))
+        let saturation = parsePercentInt(crsMaskField(corr, "LocalSaturation"))
+        let vibrance = parsePercentInt(crsMaskField(corr, "LocalVibrance"))
+        let temperature = parseDoubleValue(crsMaskField(corr, "LocalTemperature")).map { $0 * 100 }
+        let tint = parseDoubleValue(crsMaskField(corr, "LocalTint")).map { $0 * 100 }
 
         let mask = MaskAdjustment(
             name: name,

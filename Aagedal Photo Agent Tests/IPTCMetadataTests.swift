@@ -629,6 +629,78 @@ struct MalformedMetadataNumericTests {
         #expect(masks?.count == 1)
     }
 
+    /// SwiftExif keys structured XMP fields as `<namespaceURI><Property>`
+    /// (`http://ns.adobe.com/camera-raw-settings/1.0/Top`), not the bare name.
+    /// The parser used to look up only bare keys, so every mask read back from
+    /// disk silently fell back to the DEFAULT geometry — the "mask turns into a
+    /// generic ellipse after reopening the edit view" bug.
+    @Test("mask corrections parse SwiftExif's namespace-URI-prefixed field keys")
+    func maskCorrectionsParseURIPrefixedKeys() throws {
+        let crs = "http://ns.adobe.com/camera-raw-settings/1.0/"
+        let corrections: [[String: Any]] = [[
+            "\(crs)CorrectionActive": "true",
+            "\(crs)CorrectionAmount": "0.75",
+            "\(crs)CorrectionName": "Sky",
+            "\(crs)LocalExposure2012": "0.25",
+            "\(crs)LocalContrast2012": "0.3",
+            "\(crs)CorrectionMasks": [[
+                "\(crs)What": "Mask/CircularGradient",
+                "\(crs)Top": "0.3", "\(crs)Left": "0.35",
+                "\(crs)Bottom": "0.5", "\(crs)Right": "0.85",
+                "\(crs)Angle": "12.5", "\(crs)Feather": "40",
+                "\(crs)Flipped": "false"
+            ]]
+        ]]
+        let mask = try #require(parseMaskGroupBasedCorrections(corrections)?.first)
+        #expect(mask.name == "Sky")
+        #expect(mask.amount == 0.75)
+        #expect(abs(mask.geometry.centerX - 0.6) < 1e-9)
+        #expect(abs(mask.geometry.centerY - 0.4) < 1e-9)
+        #expect(abs(mask.geometry.radiusX - 0.25) < 1e-9)
+        #expect(abs(mask.geometry.radiusY - 0.1) < 1e-9)
+        #expect(mask.geometry.rotation == 12.5)
+        #expect(mask.geometry.feather == 40)
+        #expect(mask.inverted == true)
+        #expect(mask.exposure.map { abs($0 - 1.0) < 1e-9 } == true)
+        #expect(mask.contrast == 30)
+    }
+
+    /// A correction whose mask geometry can't be parsed (unsupported type or
+    /// missing corner fields) must be DROPPED, not substituted with the default
+    /// ellipse — a generic mask silently misrenders the image.
+    @Test("corrections with unparseable mask geometry are dropped, not defaulted")
+    func unparseableMaskGeometryIsDropped() {
+        // Unsupported mask type (ACR brush) alongside a valid radial mask.
+        let corrections: [[String: Any]] = [
+            [
+                "CorrectionActive": true,
+                "CorrectionMasks": [["What": "Mask/Paint"]]
+            ],
+            [
+                "CorrectionActive": true,
+                "CorrectionMasks": [[
+                    "What": "Mask/CircularGradient",
+                    "Top": 0.1, "Left": 0.2, "Bottom": 0.5, "Right": 0.6
+                ]]
+            ],
+            [
+                // Radial mask with a missing corner — geometry incomplete.
+                "CorrectionActive": true,
+                "CorrectionMasks": [[
+                    "What": "Mask/CircularGradient",
+                    "Top": 0.1, "Left": 0.2, "Bottom": 0.5
+                ]]
+            ]
+        ]
+        let masks = parseMaskGroupBasedCorrections(corrections)
+        #expect(masks?.count == 1)
+        #expect(masks?.first.map { abs($0.geometry.centerX - 0.4) < 1e-9 } == true)
+
+        // All corrections unparseable → nil, same as no masks at all.
+        let allBad: [[String: Any]] = [["CorrectionMasks": [["What": "Mask/Paint"]]]]
+        #expect(parseMaskGroupBasedCorrections(allBad) == nil)
+    }
+
     // MARK: Tone-curve serialization
 
     @Test("serializing a tone curve with non-finite points does not crash and clamps to 0...255")

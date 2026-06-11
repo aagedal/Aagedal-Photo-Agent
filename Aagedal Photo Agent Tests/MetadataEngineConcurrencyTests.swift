@@ -49,6 +49,50 @@ struct MetadataEngineConcurrencyTests {
         #expect(meta.title == "Hello")
     }
 
+    /// Radial-mask regression: a mask written by the engine must read back with
+    /// its authored geometry and local adjustments. SwiftExif returns structured
+    /// XMP fields under namespace-URI-prefixed keys; the parser used to miss
+    /// every one of them and silently fall back to the default ellipse, so a
+    /// mask "went generic" the moment the edit view was reopened.
+    @Test("radial mask roundtrips geometry and local adjustments through write then read")
+    func maskRoundtrip() async throws {
+        let engine = SwiftExifWriteEngine()
+        let reader = SwiftExifReadService()
+        let url = try makeTempJPEG()
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        var geometry = EllipseMaskGeometry()
+        geometry.centerX = 0.6
+        geometry.centerY = 0.4
+        geometry.radiusX = 0.25
+        geometry.radiusY = 0.1
+        geometry.rotation = 30
+        geometry.feather = 35
+        var mask = MaskAdjustment(name: "Face", geometry: geometry)
+        mask.inverted = true
+        mask.amount = 1.0
+        mask.exposure = 1.0
+        mask.contrast = 25
+
+        try await engine.writeFields(
+            [:], to: [url],
+            structuredData: StructuredWriteData(toneCurve: nil, masks: [mask])
+        )
+
+        let meta = try await reader.readFullMetadata(url: url)
+        let read = try #require(meta.cameraRaw?.localAdjustments?.first)
+        #expect(read.name == "Face")
+        #expect(read.inverted == true)
+        #expect(abs(read.geometry.centerX - 0.6) < 1e-5)
+        #expect(abs(read.geometry.centerY - 0.4) < 1e-5)
+        #expect(abs(read.geometry.radiusX - 0.25) < 1e-5)
+        #expect(abs(read.geometry.radiusY - 0.1) < 1e-5)
+        #expect(abs(read.geometry.rotation - 30) < 1e-5)
+        #expect(abs(read.geometry.feather - 35) < 1e-5)
+        #expect(read.exposure.map { abs($0 - 1.0) < 1e-5 } == true)
+        #expect(read.contrast == 25)
+    }
+
     /// GPS regression: callers split a signed coordinate into a positive magnitude
     /// (`.gpsLatitude`/`.gpsLongitude`) plus a hemisphere ref (`.gpsLatitudeRef`/
     /// `.gpsLongitudeRef`), exactly as `IPTCMetadata.toWriteFields()` does. The write

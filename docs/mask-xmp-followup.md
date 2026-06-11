@@ -37,37 +37,45 @@ CGImageDestinationCopyImageSource, merge=false). Key fact: **ACR ignores .xmp
 sidecars for JPEGs — only embedded XMP counts.** Inspect packets with:
 `perl -0777 -ne 'print $1 if /(<x:xmpmeta.*?<\/x:xmpmeta>)/s' FILE.jpg`
 
-## OPEN ISSUE 1 (priority): mask becomes "generic" after reopening edit view
+## ISSUE 1 RESOLVED (2026-06-11): mask becomes "generic" after reopening edit view
 
-Repro: create a mask in the edit view (renders correctly), close the edit view,
-reopen → mask shows wrong aspect ratio. Working theory (user's, plausible): the
-reload sometimes fails to parse the stored mask and silently falls back to default
-geometry. Mechanism: in `parseMaskGroupBasedCorrections`
-(Services/IPTCMetadataParsing.swift), `var geometry = EllipseMaskGeometry()`
-(defaults 0.5/0.5/0.15/0.10) is only overwritten if the nested `CorrectionMasks`
-parses AND `What == "Mask/CircularGradient"` — on failure the MaskAdjustment is
-still appended with DEFAULT geometry, i.e. a generic ellipse.
+Root cause (read-side, deterministic — no race): SwiftExif's `XMPReader` keys
+structured-XMP fields as `<namespaceURI><Property>` (e.g.
+`http://ns.adobe.com/camera-raw-settings/1.0/Top`) — its own
+XMPNestedStructureTests assert this. `unwrapXMPStruct` (SwiftExifDictAdapter)
+passes keys through verbatim, but `parseMaskGroupBasedCorrections` looked up
+BARE names (`mask["Top"]`, `corr["CorrectionMasks"]`), so every read from disk
+missed every field and silently fell back to the default 0.5/0.5/0.15/0.10
+ellipse. First render after creating a mask uses in-memory state (correct);
+any reload goes through the read path (generic). Also explains masks "losing"
+their slider values on reopen (the `Local*` lookups missed too).
 
-Investigate:
-1. Reproduce, then immediately dump the file's embedded XMP (perl above). If the
-   stored geometry is correct but the app shows generic → read-side parse failure
-   or a read/write race (the metadata write on close is async via
-   `metadataWriteTask`; reopening quickly may read mid-write — same race family
-   as the fixed orientation bug, see commit b5e3b02's message).
-2. If parse failure: the two-pass write (CGImageDestination then SwiftExif) means
-   ImageIO re-serializes the packet — real files contain Bag + attribute-form
-   `<rdf:Description crs:.../>` inside li, nested CorrectionMasks Bag. Add a
-   SwiftExif test with the exact shape from a real file, fix the reader (fork at
-   ~/Developer/SwiftExif, tests in Tests/SwiftExifTests/XMP/).
-3. Either way: make the parser DROP (and log) corrections whose mask geometry
-   fails to parse instead of silently substituting defaults.
+Fix (Services/IPTCMetadataParsing.swift):
+- `crsMaskField(_:_:)` helper — accepts bare AND URI-prefixed keys, used for
+  every correction/mask field lookup.
+- Parser now DROPS (and logs, category `IPTCMetadataParsing`) corrections whose
+  geometry fails to parse (unsupported mask type like Mask/Paint, missing
+  corner) instead of substituting the default ellipse.
+
+Tests: "mask corrections parse SwiftExif's namespace-URI-prefixed field keys" +
+"corrections with unparseable mask geometry are dropped, not defaulted"
+(IPTCMetadataTests.swift) and an end-to-end engine write→file→read roundtrip
+"radial mask roundtrips geometry and local adjustments through write then read"
+(MetadataEngineConcurrencyTests.swift). Full suite 240/240 green.
+
+Note: dropped corrections (e.g. ACR brush masks) are now invisible in our UI
+and will be REMOVED on our next mask write (applyMasks replaces the whole
+array) — same data-loss semantics as before (they were previously mangled into
+generic ellipses instead), but worth revisiting alongside open issue 4.
 
 ## Open issues 2–5 (queued)
 
 2. **Mask slider persistence**: user set exposure+contrast on a mask; written XMP
    had all mask Local* = 0, exposure landed GLOBAL (Exposure2012), contrast
-   nowhere. Re-test now that detection works; if it reproduces, trace mask-slider
-   bindings (EditWorkspaceView ~2790) → MaskAdjustment → write.
+   nowhere. Re-test now that detection works AND issue 1 is fixed (the read-side
+   key miss also wiped slider values on reload, which may have fed zeros back
+   into the next write); if it still reproduces, trace mask-slider bindings
+   (EditWorkspaceView ~2790) → MaskAdjustment → write.
 3. **Sidecar write skips masks**: the app's .xmp sidecar contained no mask block
    and wasn't rewritten on the last save (mtime older than the JPEG). Check the
    dual-write path for develop settings.
