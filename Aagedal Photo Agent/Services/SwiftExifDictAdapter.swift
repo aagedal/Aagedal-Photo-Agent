@@ -171,8 +171,8 @@ extension ImageMetadata {
                 dict["ExposureTime"] = Double(r.numerator) / Double(max(r.denominator, 1))
             }
             if let v = exif.isoSpeed { dict["ISO"] = Int(v) }
-            if let v = exif.pixelXDimension { dict["ImageWidth"] = Int(v) }
-            if let v = exif.pixelYDimension { dict["ImageHeight"] = Int(v) }
+            if let v = exif.pixelXDimension { dict[MetadataDictKey.imageWidth] = Int(v) }
+            if let v = exif.pixelYDimension { dict[MetadataDictKey.imageHeight] = Int(v) }
 
             // Raw IFD reads for fields not exposed via typed getters.
             // 0xA431 BodySerialNumber (ASCII), 0xA403 WhiteBalance (SHORT 0/1).

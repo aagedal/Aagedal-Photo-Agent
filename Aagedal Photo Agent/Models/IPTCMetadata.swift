@@ -51,6 +51,69 @@ nonisolated struct CameraRawCrop: Codable, Sendable, Equatable {
     }
 }
 
+// MARK: - ACR XMP boundary conversion
+//
+// In-app, `CameraRawCrop` stores the UPRIGHT actual crop rectangle in normalized
+// sensor-frame coordinates: width/height are the straightened crop's real
+// dimensions, and the rect's center — read as a point in the un-rotated image and
+// mapped through the straighten rotation about the image center — is the crop's
+// position (see CameraRawApproximation.applyCrop). Adobe's crs:CropLeft/Top/
+// Right/Bottom are different: two opposite corners of the crop's footprint in the
+// UN-ROTATED original frame — the same corner model the radial masks use (see
+// EllipseMaskGeometry). Rotating both stored corners about the image center by
+// −CropAngle in pixel space yields the axis-aligned crop in the straightened
+// canvas. Both conventions share the corner midpoint as the crop center, so only
+// the corner diagonal needs rotating; they coincide exactly at angle = 0.
+//
+// Authority: darktable's Lightroom-XMP importer (src/develop/lightroom.c).
+// Validated against Camera Raw 18.3.2: decoding the repro file's stored values
+// (CropAngle −12.786738 on 7008×4672) gives 4415×4649 px, matching ACR's render
+// aspect to 4 decimals (ACR auto-shrunk the out-of-bounds app-convention values
+// uniformly, preserving that aspect).
+nonisolated extension CameraRawCrop {
+    /// Convert Adobe-convention crs values (un-rotated-frame corners) to the
+    /// app's upright-rect convention. `aspect` is the sensor-frame (un-oriented)
+    /// imageWidth/imageHeight. Identity at angle 0 or when edges/aspect are missing.
+    func decodedFromACR(aspect: Double?) -> CameraRawCrop {
+        rotatedDiagonal(aspect: aspect, theta: -(angle ?? 0) * .pi / 180, absolute: true)
+    }
+
+    /// Inverse of `decodedFromACR`: re-encode the app's upright rect into Adobe's
+    /// un-rotated-frame corners for writing to crs fields.
+    func encodedForACR(aspect: Double?) -> CameraRawCrop {
+        rotatedDiagonal(aspect: aspect, theta: (angle ?? 0) * .pi / 180, absolute: false)
+    }
+
+    /// Shared core: rotate the corner diagonal by `theta` in pixel-proportional
+    /// space (x scaled by aspect, y-down) about the shared center. `absolute`
+    /// normalizes the result to positive extents (decoding must yield a real
+    /// rect; encoding keeps signed corners exactly as Adobe stores them).
+    private func rotatedDiagonal(aspect: Double?, theta: Double, absolute: Bool) -> CameraRawCrop {
+        guard let top, let left, let bottom, let right,
+              let aspect, aspect > 0,
+              abs(angle ?? 0) > 0.0001
+        else { return self }
+
+        let dx = (right - left) * aspect
+        let dy = bottom - top
+        var rx = dx * cos(theta) - dy * sin(theta)
+        var ry = dx * sin(theta) + dy * cos(theta)
+        if absolute {
+            rx = abs(rx)
+            ry = abs(ry)
+        }
+
+        let cx = (left + right) / 2
+        let cy = (top + bottom) / 2
+        var result = self
+        result.left = cx - rx / (2 * aspect)
+        result.right = cx + rx / (2 * aspect)
+        result.top = cy - ry / 2
+        result.bottom = cy + ry / 2
+        return result
+    }
+}
+
 /// Radial-gradient mask geometry, stored in ACR's XMP encoding so the values
 /// round-trip losslessly through `crs:MaskGroupBasedCorrections`.
 ///

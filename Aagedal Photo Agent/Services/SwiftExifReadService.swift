@@ -152,6 +152,15 @@ final class SwiftExifReadService {
             if let c2pa = metadata.c2pa, !c2pa.manifests.isEmpty {
                 dict["JUMD-c2pa-marker"] = "present"
             }
+            // The ACR crop-convention conversion needs the sensor-frame aspect.
+            // When the EXIF block doesn't carry dimensions but the file has an
+            // angled crop, back-fill them from the container header.
+            if dict[MetadataDictKey.imageWidth] == nil || dict[MetadataDictKey.imageHeight] == nil,
+               abs(parseDoubleValue(dict[MetadataDictKey.crsCropAngle]) ?? 0) > 0.0001,
+               let size = ImagePixelAspect.pixelSize(at: url) {
+                dict[MetadataDictKey.imageWidth] = size.width
+                dict[MetadataDictKey.imageHeight] = size.height
+            }
             return dict
         } catch {
             swiftExifReadLog.warning(

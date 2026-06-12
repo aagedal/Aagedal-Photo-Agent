@@ -3156,13 +3156,20 @@ struct EditWorkspaceView: View {
             fields[.crsVibrance] = cameraRaw.vibrance.map(String.init) ?? ""
             fields[.crsHasSettings] = "True"
 
-            if let crop = cameraRaw.crop, !crop.isEmpty {
-                fields[.crsCropTop] = crop.top.map { String(format: "%.6f", $0) } ?? ""
-                fields[.crsCropLeft] = crop.left.map { String(format: "%.6f", $0) } ?? ""
-                fields[.crsCropBottom] = crop.bottom.map { String(format: "%.6f", $0) } ?? ""
-                fields[.crsCropRight] = crop.right.map { String(format: "%.6f", $0) } ?? ""
-                fields[.crsCropAngle] = crop.angle.map { String(format: "%.6f", $0) } ?? ""
-                fields[.crsHasCrop] = "True"
+            func cropFields(for crop: CameraRawCrop) -> [MetadataFieldKey: String] {
+                [
+                    .crsCropTop: crop.top.map { String(format: "%.6f", $0) } ?? "",
+                    .crsCropLeft: crop.left.map { String(format: "%.6f", $0) } ?? "",
+                    .crsCropBottom: crop.bottom.map { String(format: "%.6f", $0) } ?? "",
+                    .crsCropRight: crop.right.map { String(format: "%.6f", $0) } ?? "",
+                    .crsCropAngle: crop.angle.map { String(format: "%.6f", $0) } ?? "",
+                    .crsHasCrop: "True",
+                ]
+            }
+            let crop = (cameraRaw.crop?.isEmpty == false) ? cameraRaw.crop : nil
+            let cropIsAngled = abs(crop?.angle ?? 0) > 0.0001
+            if let crop, !cropIsAngled {
+                fields.merge(cropFields(for: crop)) { _, new in new }
             }
 
             // Carry tone curve and masks too — a paste without them leaves the
@@ -3176,9 +3183,26 @@ struct EditWorkspaceView: View {
             )
 
             do {
-                try await browserViewModel.writeEngine.writeFields(
-                    fields, to: targetURLs, structuredData: structuredData
-                )
+                if let crop, cropIsAngled {
+                    // crs crop fields use Adobe's un-rotated-frame corner encoding,
+                    // which depends on each target's pixel aspect — encode per
+                    // aspect group instead of one shared field set.
+                    var aspectGroups: [Double?: [URL]] = [:]
+                    for url in targetURLs {
+                        aspectGroups[ImagePixelAspect.aspect(at: url), default: []].append(url)
+                    }
+                    for (aspect, urls) in aspectGroups {
+                        var groupFields = fields
+                        groupFields.merge(cropFields(for: crop.encodedForACR(aspect: aspect))) { _, new in new }
+                        try await browserViewModel.writeEngine.writeFields(
+                            groupFields, to: urls, structuredData: structuredData
+                        )
+                    }
+                } else {
+                    try await browserViewModel.writeEngine.writeFields(
+                        fields, to: targetURLs, structuredData: structuredData
+                    )
+                }
             } catch {
                 Logger(subsystem: "com.aagedal.photo-agent", category: "EditWorkspaceView")
                     .error("Failed to paste camera raw to multiple images: \(error.localizedDescription)")

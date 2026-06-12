@@ -926,6 +926,131 @@ struct CropRotationGeometryTests {
     }
 }
 
+// MARK: - ACR crop XMP boundary conversion
+
+/// Adobe's crs:CropLeft/Top/Right/Bottom are two opposite corners of the crop's
+/// footprint in the UN-ROTATED original frame (same corner model as the radial
+/// masks); the app stores the upright actual rect. `decodedFromACR`/`encodedForACR`
+/// convert at the XMP boundary. Ground truth: Camera Raw 18.3.2 rendering of the
+/// 2026-06-12 repro file (7008×4672, CropAngle −12.786738) — ACR's render aspect
+/// 0.9498 matches the corner decode to 4 decimals.
+@Suite("CameraRawCrop ACR boundary conversion")
+struct CameraRawCropACRConversionTests {
+    /// The repro file's stored crs values, written in the app's old (upright-rect)
+    /// convention. Decoding them under Adobe's corner model must give the rect
+    /// ACR actually renders: 4415.2 × 4648.9 px around the same center.
+    @Test("repro-file values decode to ACR's rendered rect")
+    func reproFileDecode() {
+        let aspect = 7008.0 / 4672.0
+        let stored = CameraRawCrop(
+            top: 0.116878, left: 0.046737,
+            bottom: 0.878094, right: 0.807953,
+            angle: -12.786738, hasCrop: true
+        )
+        let decoded = stored.decodedFromACR(aspect: aspect)
+
+        // Center is the corner midpoint in both conventions — unchanged.
+        #expect(abs((decoded.left! + decoded.right!) / 2 - 0.427345) < 1e-9)
+        #expect(abs((decoded.top! + decoded.bottom!) / 2 - 0.497486) < 1e-9)
+        // Dims = the corner diagonal rotated by −CropAngle in pixel space.
+        let widthPX = (decoded.right! - decoded.left!) * 7008
+        let heightPX = (decoded.bottom! - decoded.top!) * 4672
+        #expect(abs(widthPX - 4415.194) < 0.01)
+        #expect(abs(heightPX - 4648.873) < 0.01)
+        // ACR 18.3.2 rendered this crop at aspect 0.9498 (it auto-shrinks
+        // out-of-bounds crops uniformly, preserving aspect).
+        #expect(abs(widthPX / heightPX - 0.9497) < 0.001)
+        // Angle and flags pass through untouched.
+        #expect(decoded.angle == stored.angle)
+        #expect(decoded.hasCrop == true)
+    }
+
+    @Test("encode is the exact inverse of decode", arguments: [-44.0, -12.786738, -0.5, 7.25, 44.9])
+    func encodeDecodeRoundTrip(angle: Double) {
+        for aspect in [1.5, 2.0 / 3.0, 1.0] {
+            let internalCrop = CameraRawCrop(
+                top: 0.21, left: 0.13, bottom: 0.78, right: 0.69,
+                angle: angle, hasCrop: true
+            )
+            let roundTripped = internalCrop.encodedForACR(aspect: aspect).decodedFromACR(aspect: aspect)
+            #expect(abs(roundTripped.top! - internalCrop.top!) < 1e-12)
+            #expect(abs(roundTripped.left! - internalCrop.left!) < 1e-12)
+            #expect(abs(roundTripped.bottom! - internalCrop.bottom!) < 1e-12)
+            #expect(abs(roundTripped.right! - internalCrop.right!) < 1e-12)
+        }
+    }
+
+    @Test("conversion is the identity at angle 0 and for missing angle")
+    func identityAtZeroAngle() {
+        let straight = CameraRawCrop(top: 0.1, left: 0.2, bottom: 0.9, right: 0.8, angle: 0, hasCrop: true)
+        #expect(straight.decodedFromACR(aspect: 1.5) == straight)
+        #expect(straight.encodedForACR(aspect: 1.5) == straight)
+        let noAngle = CameraRawCrop(top: 0.1, left: 0.2, bottom: 0.9, right: 0.8, angle: nil, hasCrop: true)
+        #expect(noAngle.decodedFromACR(aspect: 1.5) == noAngle)
+    }
+
+    @Test("conversion is the identity when the aspect is unknown")
+    func identityWithoutAspect() {
+        let angled = CameraRawCrop(top: 0.1, left: 0.2, bottom: 0.9, right: 0.8, angle: -10, hasCrop: true)
+        #expect(angled.decodedFromACR(aspect: nil) == angled)
+        #expect(angled.encodedForACR(aspect: nil) == angled)
+    }
+
+    /// A bounds-fitted upright crop encodes to corners inside [0,1] — Adobe
+    /// rejects (auto-shrinks) crops whose footprint pokes outside the image,
+    /// so our writes must stay inside for any crop the editor can produce.
+    @Test("encoding a bounds-fitted crop stays inside the unit square")
+    func encodedCornersInBounds() {
+        let ar = 1.5
+        for angle in [-40.0, -15.0, 20.0, 44.0] {
+            let fitted = NormalizedCropRegion(top: 0.05, left: 0.05, bottom: 0.95, right: 0.95)
+                .fittingRotated(angleDegrees: angle, aspectRatio: ar)
+            let crop = CameraRawCrop(
+                top: fitted.top, left: fitted.left,
+                bottom: fitted.bottom, right: fitted.right,
+                angle: angle, hasCrop: true
+            )
+            let encoded = crop.encodedForACR(aspect: ar)
+            for value in [encoded.top!, encoded.left!, encoded.bottom!, encoded.right!] {
+                #expect(value >= -0.001 && value <= 1.001, "encoded corner \(value) out of bounds at \(angle)°")
+            }
+        }
+    }
+
+    @Test("iptcMetadataFromDict decodes angled crs crops using the dict's EXIF dimensions")
+    func dictParseDecodesWithDims() {
+        let dict: [String: Any] = [
+            MetadataDictKey.crsCropTop: "0.116878",
+            MetadataDictKey.crsCropLeft: "0.046737",
+            MetadataDictKey.crsCropBottom: "0.878094",
+            MetadataDictKey.crsCropRight: "0.807953",
+            MetadataDictKey.crsCropAngle: "-12.786738",
+            MetadataDictKey.crsHasCrop: "True",
+            MetadataDictKey.imageWidth: 7008,
+            MetadataDictKey.imageHeight: 4672,
+        ]
+        let crop = iptcMetadataFromDict(dict).cameraRaw?.crop
+        #expect(crop != nil)
+        let widthPX = (crop!.right! - crop!.left!) * 7008
+        #expect(abs(widthPX - 4415.194) < 0.01)
+    }
+
+    @Test("iptcMetadataFromDict leaves angled crops verbatim when dimensions are missing")
+    func dictParseWithoutDimsIsVerbatim() {
+        let dict: [String: Any] = [
+            MetadataDictKey.crsCropTop: "0.116878",
+            MetadataDictKey.crsCropLeft: "0.046737",
+            MetadataDictKey.crsCropBottom: "0.878094",
+            MetadataDictKey.crsCropRight: "0.807953",
+            MetadataDictKey.crsCropAngle: "-12.786738",
+            MetadataDictKey.crsHasCrop: "True",
+        ]
+        let crop = iptcMetadataFromDict(dict).cameraRaw?.crop
+        #expect(crop?.left == 0.046737)
+        #expect(crop?.right == 0.807953)
+    }
+}
+
 @Suite("EllipseMaskGeometry ACR corner encoding")
 struct EllipseMaskGeometryCornerTests {
     /// Camera Raw 18.3.2 ground truth: the same authored ellipse (center 0.5/0.5,

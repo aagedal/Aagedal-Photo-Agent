@@ -273,3 +273,71 @@ struct MetadataEngineConcurrencyTests {
         #expect(final.title == "Final")
     }
 }
+
+/// End-to-end XMP-sidecar coverage for the ACR crop-convention conversion: the
+/// .xmp on disk must hold Adobe's un-rotated-frame corner encoding (so ACR/LR
+/// render the same crop), while the app reads back its own upright-rect values.
+@MainActor
+@Suite("XMP sidecar angled-crop ACR conversion (real file)")
+struct XMPSidecarAngledCropTests {
+
+    /// 3:2 JPEG so the aspect-dependent conversion is exercised for real.
+    private func makeTempJPEG() throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apa-sidecar-crop-\(UUID().uuidString).jpg")
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: 30, pixelsHigh: 20,
+            bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false,
+            isPlanar: false, colorSpaceName: .deviceRGB,
+            bytesPerRow: 0, bitsPerPixel: 0
+        ), let data = rep.representation(using: .jpeg, properties: [:]) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        try data.write(to: url)
+        return url
+    }
+
+    @Test("angled crop is stored in Adobe's corner convention and roundtrips back")
+    func angledCropSidecarRoundtrip() throws {
+        let service = XMPSidecarService()
+        let url = try makeTempJPEG()
+        defer {
+            try? FileManager.default.removeItem(at: url)
+            try? FileManager.default.removeItem(at: service.sidecarURL(for: url))
+        }
+
+        let internalCrop = CameraRawCrop(
+            top: 0.2, left: 0.15, bottom: 0.8, right: 0.7,
+            angle: -12.5, hasCrop: true
+        )
+        var settings = CameraRawSettings()
+        settings.hasSettings = true
+        settings.crop = internalCrop
+        try service.saveCameraRawOnly(settings, orientation: 1, for: url)
+
+        // On disk: Adobe's encoding (the upright rect's diagonal rotated back
+        // into the original frame), not the app's verbatim values.
+        let xml = try String(contentsOf: service.sidecarURL(for: url), encoding: .utf8)
+        func storedValue(_ name: String) throws -> Double {
+            let pattern = "crs:\(name)(?:=\"|>)(-?[0-9.]+)"
+            let match = try #require(xml.range(of: pattern, options: .regularExpression))
+            let raw = xml[match].split(separator: "\"").last ?? xml[match].split(separator: ">").last ?? ""
+            return try #require(Double(raw))
+        }
+        let expected = internalCrop.encodedForACR(aspect: 1.5)
+        #expect(abs(try storedValue("CropLeft") - expected.left!) < 1e-5)
+        #expect(abs(try storedValue("CropTop") - expected.top!) < 1e-5)
+        #expect(abs(try storedValue("CropRight") - expected.right!) < 1e-5)
+        #expect(abs(try storedValue("CropBottom") - expected.bottom!) < 1e-5)
+        // And the encoding really differs from the internal rect at this angle.
+        #expect(abs(expected.left! - internalCrop.left!) > 1e-3)
+
+        // Read back: decoded to the app's upright-rect convention.
+        let loaded = try #require(service.loadSidecar(for: url)?.cameraRaw?.crop)
+        #expect(abs(loaded.top! - internalCrop.top!) < 1e-4)
+        #expect(abs(loaded.left! - internalCrop.left!) < 1e-4)
+        #expect(abs(loaded.bottom! - internalCrop.bottom!) < 1e-4)
+        #expect(abs(loaded.right! - internalCrop.right!) < 1e-4)
+        #expect(abs((loaded.angle ?? 0) - (-12.5)) < 1e-6)
+    }
+}

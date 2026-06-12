@@ -855,7 +855,10 @@ final class BrowserViewModel {
                 // to the synchronous read for other callers.
                 let xmpMeta: IPTCMetadata?
                 if let data = xmpDataMap[sourceURL] {
-                    xmpMeta = xmpSidecarService.loadSidecar(fromData: data)
+                    xmpMeta = xmpSidecarService.loadSidecar(
+                        fromData: data,
+                        imageAspect: { metadataDictPixelAspect(dict) ?? ImagePixelAspect.aspect(at: sourceURL) }
+                    )
                 } else {
                     xmpMeta = xmpSidecarService.loadSidecar(for: sourceURL)
                 }
@@ -983,6 +986,8 @@ final class BrowserViewModel {
 
     private func cropRegion(in dict: [String: Any], exifOrientation: Int = 1) -> ThumbnailCropRegion? {
         guard hasCropEdits(in: dict) else { return nil }
+        // crs values are Adobe's un-rotated-frame corner encoding; decode to the
+        // app's upright rect before the orientation transform (identity at angle 0).
         let sensorCrop = CameraRawCrop(
             top: parseDoubleValue(dict[MetadataDictKey.crsCropTop]),
             left: parseDoubleValue(dict[MetadataDictKey.crsCropLeft]),
@@ -990,7 +995,7 @@ final class BrowserViewModel {
             right: parseDoubleValue(dict[MetadataDictKey.crsCropRight]),
             angle: parseDoubleValue(dict[MetadataDictKey.crsCropAngle]),
             hasCrop: parseBoolValue(dict[MetadataDictKey.crsHasCrop])
-        )
+        ).decodedFromACR(aspect: metadataDictPixelAspect(dict))
         let displayCrop = sensorCrop.transformedForDisplay(orientation: exifOrientation)
         let top = displayCrop.top ?? 0
         let left = displayCrop.left ?? 0
@@ -1033,6 +1038,8 @@ final class BrowserViewModel {
     }
 
     private func cameraRawSettings(in dict: [String: Any]) -> CameraRawSettings? {
+        // crs values are Adobe's un-rotated-frame corner encoding; decode to the
+        // app's upright-rect convention (identity at angle 0).
         let crop = CameraRawCrop(
             top: parseDoubleValue(dict[MetadataDictKey.crsCropTop]),
             left: parseDoubleValue(dict[MetadataDictKey.crsCropLeft]),
@@ -1040,7 +1047,7 @@ final class BrowserViewModel {
             right: parseDoubleValue(dict[MetadataDictKey.crsCropRight]),
             angle: parseDoubleValue(dict[MetadataDictKey.crsCropAngle]),
             hasCrop: parseBoolValue(dict[MetadataDictKey.crsHasCrop])
-        )
+        ).decodedFromACR(aspect: metadataDictPixelAspect(dict))
         let cropValue = crop.isEmpty ? nil : crop
 
         let tcMaster = parseToneCurve(dict[MetadataDictKey.crsToneCurvePV2012])

@@ -973,7 +973,11 @@ final class MetadataViewModel {
         return normalized(a) != normalized(b)
     }
 
-    private func overwriteFields(from metadata: IPTCMetadata, includeCameraRaw: Bool = true) -> [MetadataFieldKey: String] {
+    private func overwriteFields(
+        from metadata: IPTCMetadata,
+        includeCameraRaw: Bool = true,
+        imageAspect: () -> Double? = { nil }
+    ) -> [MetadataFieldKey: String] {
         var fields: [MetadataFieldKey: String] = [:]
         fields[.headline] = metadata.title ?? ""
         fields[.description] = metadata.description ?? ""
@@ -1002,7 +1006,11 @@ final class MetadataViewModel {
             fields[.gpsLongitudeRef] = ""
         }
 
-        appendCameraRawFields(from: metadata, into: &fields)
+        // Caption-only saves must not touch the crs block at all — rewriting it
+        // (even merge-style) churns Adobe's develop settings for no reason.
+        if includeCameraRaw {
+            appendCameraRawFields(from: metadata, into: &fields, imageAspect: imageAspect)
+        }
         return fields
     }
 
@@ -1015,7 +1023,11 @@ final class MetadataViewModel {
         )
     }
 
-    private func appendCameraRawFields(from metadata: IPTCMetadata, into fields: inout [MetadataFieldKey: String]) {
+    private func appendCameraRawFields(
+        from metadata: IPTCMetadata,
+        into fields: inout [MetadataFieldKey: String],
+        imageAspect: () -> Double? = { nil }
+    ) {
         // When cameraRaw is nil (edits fully reset), check if the original image had CRS
         // fields and clear them. Writing "" removes the field.
         guard let cameraRaw = metadata.cameraRaw else {
@@ -1049,7 +1061,14 @@ final class MetadataViewModel {
         let hasSettings = cameraRaw.hasSettings ?? !cameraRaw.isEmpty
         fields[.crsHasSettings] = hasSettings ? "True" : "False"
 
-        if let crop = cameraRaw.crop {
+        if let internalCrop = cameraRaw.crop {
+            // crs crop fields carry Adobe's un-rotated-frame corner encoding, not
+            // the app's upright rect — convert at this write boundary. The aspect
+            // closure (a file-header read) is only invoked for angled crops; the
+            // conversion is the identity at angle 0.
+            let crop = abs(internalCrop.angle ?? 0) > 0.0001
+                ? internalCrop.encodedForACR(aspect: imageAspect())
+                : internalCrop
             fields[.crsCropTop] = crop.top.map { String(format: "%.6f", $0) } ?? ""
             fields[.crsCropLeft] = crop.left.map { String(format: "%.6f", $0) } ?? ""
             fields[.crsCropBottom] = crop.bottom.map { String(format: "%.6f", $0) } ?? ""
@@ -1156,7 +1175,11 @@ final class MetadataViewModel {
                 let developChanged = Self.developSettingsChanged(
                     edited.cameraRaw, self.originalImageMetadata?.cameraRaw
                 )
-                let fields = overwriteFields(from: edited, includeCameraRaw: developChanged)
+                let fields = overwriteFields(
+                    from: edited,
+                    includeCameraRaw: developChanged,
+                    imageAspect: { ImagePixelAspect.aspect(at: imageURL) }
+                )
                 let structuredData = developChanged
                     ? StructuredWriteData(
                         toneCurve: edited.cameraRaw?.toneCurve,
@@ -2131,7 +2154,11 @@ final class MetadataViewModel {
                 let developChanged = Self.developSettingsChanged(
                     edited.cameraRaw, self.originalImageMetadata?.cameraRaw
                 )
-                let fields = overwriteFields(from: edited, includeCameraRaw: developChanged)
+                let fields = overwriteFields(
+                    from: edited,
+                    includeCameraRaw: developChanged,
+                    imageAspect: { ImagePixelAspect.aspect(at: imageURL) }
+                )
                 let structuredData = developChanged
                     ? StructuredWriteData(
                         toneCurve: edited.cameraRaw?.toneCurve,
@@ -2202,7 +2229,11 @@ final class MetadataViewModel {
                 // means a metadata-only pending change, and the file's crs block
                 // (possibly Adobe-authored) must be left untouched.
                 let developChanged = edited.cameraRaw != nil
-                let fields = overwriteFields(from: edited, includeCameraRaw: developChanged)
+                let fields = overwriteFields(
+                    from: edited,
+                    includeCameraRaw: developChanged,
+                    imageAspect: { ImagePixelAspect.aspect(at: imageURL) }
+                )
                 let structuredData = developChanged
                     ? StructuredWriteData(
                         toneCurve: edited.cameraRaw?.toneCurve,

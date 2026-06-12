@@ -32,7 +32,7 @@ struct XMPSidecarService: Sendable {
 
     func loadSidecar(for imageURL: URL) -> IPTCMetadata? {
         guard let data = sidecarDataIfExists(for: imageURL) else { return nil }
-        return loadSidecar(fromData: data)
+        return loadSidecar(fromData: data, imageAspect: { ImagePixelAspect.aspect(at: imageURL) })
     }
 
     /// Reads the sidecar file's bytes if it exists. Pure file I/O — safe to call
@@ -46,10 +46,14 @@ struct XMPSidecarService: Sendable {
 
     /// Parses already-read XMP bytes into IPTCMetadata. Cheap — call on the main
     /// actor after preloading bytes off-main via `sidecarDataIfExists`.
-    func loadSidecar(fromData data: Data) -> IPTCMetadata? {
+    /// `imageAspect` supplies the image's sensor-frame width/height ratio for the
+    /// ACR crop-convention conversion; it is only invoked when the sidecar
+    /// carries an angled crop (an angled crop without it stays in Adobe's
+    /// corner convention, i.e. wrong — pass it whenever the image is known).
+    func loadSidecar(fromData data: Data, imageAspect: () -> Double? = { nil }) -> IPTCMetadata? {
         guard let document = parseXMLDocument(from: data) else { return nil }
         guard let description = findDescription(in: document) else { return nil }
-        return parseMetadata(from: description)
+        return parseMetadata(from: description, imageAspect: imageAspect)
     }
 
     /// Removes all IPTC/descriptive metadata from the sidecar while preserving
@@ -88,7 +92,11 @@ struct XMPSidecarService: Sendable {
         let document = try loadOrCreateDocument(at: url)
         let description = ensureDescription(in: document)
         ensureNamespaces(on: description)
-        updateDescription(description, with: metadata)
+        updateDescription(
+            description,
+            with: metadata,
+            imageAspect: imageAspectIfCropAngled(for: imageURL, crop: metadata.cameraRaw?.crop)
+        )
 
         let data = serializeXMP(document)
         try data.write(to: url, options: .atomic)
@@ -100,7 +108,11 @@ struct XMPSidecarService: Sendable {
             let document = try loadOrCreateDocument(at: url)
             let description = ensureDescription(in: document)
             ensureNamespaces(on: description)
-            updateCameraRawSettings(on: description, settings: settings)
+            updateCameraRawSettings(
+                on: description,
+                settings: settings,
+                imageAspect: imageAspectIfCropAngled(for: imageURL, crop: settings.crop)
+            )
             if let orientation {
                 setSimple(on: description, prefix: "exif", localName: "Orientation", value: String(orientation))
             }
@@ -113,6 +125,14 @@ struct XMPSidecarService: Sendable {
             let data = serializeXMP(document)
             try data.write(to: url, options: .atomic)
         }
+    }
+
+    /// Sensor-frame aspect for the ACR crop-convention conversion — read from the
+    /// image header only when the crop is angled (the conversion is the identity
+    /// at angle 0, so straight crops skip the file I/O).
+    private func imageAspectIfCropAngled(for imageURL: URL, crop: CameraRawCrop?) -> Double? {
+        guard let crop, abs(crop.angle ?? 0) > 0.0001 else { return nil }
+        return ImagePixelAspect.aspect(at: imageURL)
     }
 
     // MARK: - Document Helpers
@@ -270,7 +290,7 @@ struct XMPSidecarService: Sendable {
 
     // MARK: - Update
 
-    private func updateDescription(_ description: XMLElement, with metadata: IPTCMetadata) {
+    private func updateDescription(_ description: XMLElement, with metadata: IPTCMetadata, imageAspect: Double?) {
         setSimple(on: description, prefix: "photoshop", localName: "Headline", value: metadata.title)
         setAltText(on: description, prefix: "dc", localName: "title", value: metadata.title)
         setAltText(on: description, prefix: "dc", localName: "description", value: metadata.description)
@@ -303,10 +323,10 @@ struct XMPSidecarService: Sendable {
             setSimple(on: description, prefix: "exif", localName: "Orientation", value: nil)
         }
 
-        updateCameraRawSettings(on: description, settings: metadata.cameraRaw)
+        updateCameraRawSettings(on: description, settings: metadata.cameraRaw, imageAspect: imageAspect)
     }
 
-    private func updateCameraRawSettings(on description: XMLElement, settings: CameraRawSettings?) {
+    private func updateCameraRawSettings(on description: XMLElement, settings: CameraRawSettings?, imageAspect: Double?) {
         guard let settings else {
             removeCameraRawSettings(from: description)
             return
@@ -362,7 +382,9 @@ struct XMPSidecarService: Sendable {
         let hasSettings = settings.hasSettings ?? !settings.isEmpty
         setSimple(on: description, prefix: "crs", localName: "HasSettings", value: formatBool(hasSettings))
 
-        let crop = settings.crop
+        // crs fields carry Adobe's un-rotated-frame corner encoding, not the
+        // app's upright rect — convert at this write boundary (identity at angle 0).
+        let crop = settings.crop?.encodedForACR(aspect: imageAspect)
         let hasCrop: Bool? = {
             guard let crop else { return nil }
             return crop.hasCrop ?? !crop.isEmpty
@@ -599,7 +621,7 @@ struct XMPSidecarService: Sendable {
 
     // MARK: - Parse
 
-    private func parseMetadata(from description: XMLElement) -> IPTCMetadata {
+    private func parseMetadata(from description: XMLElement, imageAspect: () -> Double?) -> IPTCMetadata {
         let headline = parseSimple(from: description, prefix: "photoshop", localName: "Headline")
         let title = headline ?? parseAltText(from: description, prefix: "dc", localName: "title")
         let descriptionText = parseAltText(from: description, prefix: "dc", localName: "description")
@@ -628,7 +650,7 @@ struct XMPSidecarService: Sendable {
         let tiffOrientation = parseSimple(from: description, prefix: "tiff", localName: "Orientation")
         let exifOrientationRaw = parseSimple(from: description, prefix: "exif", localName: "Orientation")
         let orientationValue = tiffOrientation ?? exifOrientationRaw
-        let cameraRaw = parseCameraRawSettings(from: description)
+        let cameraRaw = parseCameraRawSettings(from: description, imageAspect: imageAspect)
 
         return IPTCMetadata(
             title: title,
@@ -654,7 +676,7 @@ struct XMPSidecarService: Sendable {
         )
     }
 
-    private func parseCameraRawSettings(from description: XMLElement) -> CameraRawSettings? {
+    private func parseCameraRawSettings(from description: XMLElement, imageAspect: () -> Double?) -> CameraRawSettings? {
         let version = parseSimple(from: description, prefix: "crs", localName: "Version")
         let processVersion = parseSimple(from: description, prefix: "crs", localName: "ProcessVersion")
         let whiteBalance = parseSimple(from: description, prefix: "crs", localName: "WhiteBalance")
@@ -680,7 +702,10 @@ struct XMPSidecarService: Sendable {
         let vibrance = parseSimple(from: description, prefix: "crs", localName: "Vibrance").flatMap(parseSignedInt)
         let hasSettings = parseSimple(from: description, prefix: "crs", localName: "HasSettings").flatMap(parseBool)
 
-        let crop = CameraRawCrop(
+        // Stored crs values use Adobe's un-rotated-frame corner encoding; convert
+        // to the app's upright rect. The aspect closure (a file-header read) is
+        // only invoked for angled crops — the conversion is the identity at angle 0.
+        let storedCrop = CameraRawCrop(
             top: parseSimple(from: description, prefix: "crs", localName: "CropTop").flatMap(Double.init),
             left: parseSimple(from: description, prefix: "crs", localName: "CropLeft").flatMap(Double.init),
             bottom: parseSimple(from: description, prefix: "crs", localName: "CropBottom").flatMap(Double.init),
@@ -688,6 +713,9 @@ struct XMPSidecarService: Sendable {
             angle: parseSimple(from: description, prefix: "crs", localName: "CropAngle").flatMap(Double.init),
             hasCrop: parseSimple(from: description, prefix: "crs", localName: "HasCrop").flatMap(parseBool)
         )
+        let crop = abs(storedCrop.angle ?? 0) > 0.0001
+            ? storedCrop.decodedFromACR(aspect: imageAspect())
+            : storedCrop
         let cropValue = crop.isEmpty ? nil : crop
 
         let hdrEditMode = parseSimple(from: description, prefix: "crs", localName: "HDREditMode").flatMap(parseSignedInt)

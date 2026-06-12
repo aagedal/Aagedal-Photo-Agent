@@ -114,8 +114,37 @@ generic ellipses instead), but worth revisiting alongside open issue 4.
    `transformedForDisplay(orientation:)` like crop has, for images with
    orientation ≠ 1.
 
-6. **ANGLED-CROP XMP ENCODING IS NOT ADOBE'S (found 2026-06-12, diagnosed,
-   NOT yet fixed)**. Repro: `~/Downloads/20260610_RødLøper/Tise Awards 16.jpg`
+6. **RESOLVED (2026-06-12 late evening): angled-crop XMP encoding converted to
+   Adobe's at the boundary.** `CameraRawCrop.encodedForACR(aspect:)` /
+   `decodedFromACR(aspect:)` (Models/IPTCMetadata.swift) rotate the corner
+   diagonal by ±CropAngle in pixel-proportional space about the shared center
+   (the corner midpoint is the crop center in BOTH conventions, so only the
+   diagonal rotates; identity at angle 0 and when aspect is unknown). Decode of
+   the repro values reproduces ACR's rendered aspect 0.94973 to 4 decimals.
+   Boundary sites wired: iptcMetadataFromDict + BrowserViewModel cropRegion/
+   cameraRawSettings (aspect from the dict's EXIF ImageWidth/Height;
+   SwiftExifReadService.readDict back-fills dims from the container header when
+   EXIF lacks them and an angled crop is present), XMPSidecarService read+write
+   (lazy header read via new Services/ImagePixelAspect.swift, only for angled
+   crops), MetadataViewModel appendCameraRawFields/overwriteFields (aspect
+   closure from the save's imageURL), EditWorkspaceView pasteToMultipleImages
+   (targets grouped by pixel aspect; per-group encode). JSON .photo_metadata
+   sidecars stay app-convention (Codable) as planned. Migration: pre-fix files
+   carry app-convention crs values — angled crops from old saves will read
+   slightly differently now (accepted; straight crops unaffected).
+   BONUS FIX: overwriteFields' `includeCameraRaw:` parameter from d054f90 was
+   declared but never applied — caption-only saves still rewrote the modeled
+   crs fields merge-style. The gate is now real (crs fields skipped entirely
+   when develop state is unchanged).
+   Tests: "CameraRawCrop ACR boundary conversion" suite (IPTCMetadataTests) —
+   repro-file decode, encode/decode inverses across angles/aspects, identity
+   cases, bounds-fitted encode stays in [0,1], dict parse with/without dims —
+   plus "XMP sidecar angled-crop ACR conversion (real file)" end-to-end
+   roundtrip (MetadataEngineConcurrencyTests.swift). 250/250 green.
+   NOT yet manually verified in ACR: write an angled crop in our app and
+   confirm Camera Raw 18.3.2 renders it identically (and vice versa).
+   Original diagnosis below for reference.
+   Repro: `~/Downloads/20260610_RødLøper/Tise Awards 16.jpg`
    (7008×4672, CropAngle −12.786738): our app renders its crop as 5335×3556
    (aspect 1.5), ACR 18.3.2 renders 3743×3941 (aspect 0.9498).
    - **Adobe's model — SAME CORNER MODEL AS THE MASKS**: stored

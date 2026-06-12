@@ -38,6 +38,8 @@ nonisolated enum MetadataDictKey {
     static let rating = "Rating"
     static let label = "Label"
     static let orientation = "Orientation"
+    static let imageWidth = "ImageWidth"
+    static let imageHeight = "ImageHeight"
 
     // Camera Raw (XMP-crs)
     static let crsVersion = "Version"
@@ -106,6 +108,17 @@ nonisolated func parseDoubleValue(_ value: Any?) -> Double? {
         return Double(stringValue.trimmingCharacters(in: .whitespacesAndNewlines))
     }
     return nil
+}
+
+/// Sensor-frame (un-oriented) pixel aspect ratio (width/height) from a metadata
+/// dict's EXIF dimensions. The crs crop/mask values live in this frame, so the
+/// ACR boundary conversion uses this aspect — not the display-oriented one.
+nonisolated func metadataDictPixelAspect(_ dict: [String: Any]) -> Double? {
+    guard let width = parseDoubleValue(dict[MetadataDictKey.imageWidth]),
+          let height = parseDoubleValue(dict[MetadataDictKey.imageHeight]),
+          width > 0, height > 0
+    else { return nil }
+    return width / height
 }
 
 /// Safely convert a Double (possibly parsed from corrupt metadata) to Int.
@@ -258,6 +271,8 @@ nonisolated func parseMaskGroupBasedCorrections(_ value: Any?) -> [MaskAdjustmen
 /// `MetadataDictKey` so callers can either build the dict from SwiftExif's
 /// typed model (`ImageMetadata`) or feed pre-existing JSON shaped that way.
 nonisolated func iptcMetadataFromDict(_ dict: [String: Any]) -> IPTCMetadata {
+    // crs fields hold Adobe's un-rotated-frame corner encoding; convert to the
+    // app's upright-rect convention at this read boundary (identity at angle 0).
     let crop = CameraRawCrop(
         top: parseDoubleValue(dict[MetadataDictKey.crsCropTop]),
         left: parseDoubleValue(dict[MetadataDictKey.crsCropLeft]),
@@ -265,7 +280,7 @@ nonisolated func iptcMetadataFromDict(_ dict: [String: Any]) -> IPTCMetadata {
         right: parseDoubleValue(dict[MetadataDictKey.crsCropRight]),
         angle: parseDoubleValue(dict[MetadataDictKey.crsCropAngle]),
         hasCrop: parseBoolValue(dict[MetadataDictKey.crsHasCrop])
-    )
+    ).decodedFromACR(aspect: metadataDictPixelAspect(dict))
     let cropValue = crop.isEmpty ? nil : crop
     let localAdjustments = parseMaskGroupBasedCorrections(dict[MetadataDictKey.maskGroupBasedCorrections])
 
