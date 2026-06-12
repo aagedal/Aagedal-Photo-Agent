@@ -2825,8 +2825,10 @@ final class BrowserViewModel {
             clearFields[.crsSDRWhites] = ""
             clearFields[.crsSDRBlend] = ""
 
-            // Clear masks via empty masks array in structured data
-            let structuredData = StructuredWriteData(masks: [])
+            // Replace the whole crs block: clears masks, tone curves, and any
+            // settings ACR wrote that the app doesn't manage — a reset means
+            // no develop settings remain, whoever authored them.
+            let structuredData = StructuredWriteData(masks: [], replaceCameraRawBlock: true)
 
             do {
                 try await writeEngine.writeFields(clearFields, to: urls, structuredData: structuredData)

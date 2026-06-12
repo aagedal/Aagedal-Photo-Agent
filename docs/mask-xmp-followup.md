@@ -79,12 +79,24 @@ generic ellipses instead), but worth revisiting alongside open issue 4.
 3. **Sidecar write skips masks**: the app's .xmp sidecar contained no mask block
    and wasn't rewritten on the last save (mtime older than the JPEG). Check the
    dual-write path for develop settings.
-4. **crs block replacement on write**: ACR, when editing a previously-exported
-   JPEG, ZEROES the baked globals (Texture, vignette, HSL…) rather than keeping
-   them. Our writer currently preserves them, so with AlreadyApplied=False ACR
-   re-applies them → ACR preview slightly more processed than ours. Adobe-faithful
-   fix: replace the whole crs namespace with our live state on write. Needs a
-   namespace-wide removal API in the SwiftExif fork (then tag 1.9.3, bump pin).
+4. **RESOLVED (2026-06-12): crs block replacement on write**. SwiftExif 1.9.3
+   shipped `removeAll(namespace:)` / `replaceAll(namespace:from:)` /
+   `properties(in:)`; app pin bumped to 1.9.3. `StructuredWriteData` gained
+   `replaceCameraRawBlock` — when true (the three full develop saves in
+   MetadataViewModel + the develop reset in BrowserViewModel), the engine
+   removes the entire crs namespace before applying live state, then stamps
+   AlreadyApplied="False" + CompatibleVersion whenever the new block carries
+   settings (masks or not). Partial crs writes (develop-settings paste in
+   EditWorkspaceView) stay merge-style, and a replacement write carrying no
+   crs content at all (caption-only save of a file with an unmodeled crs
+   block) skips the wipe. `copyMetadataToRenderedFile` now drops the whole
+   crs namespace on rendered exports instead of the hardcoded property list
+   (which leaked unlisted props like Texture/HSL into exports). Covered by
+   "full develop save replaces the crs block; partial writes preserve
+   unmanaged settings" in MetadataEngineConcurrencyTests.
+   NOTE for manual verification: a develop save from our app now intentionally
+   drops ACR-only settings (Texture, vignette, HSL, brush masks…) from the
+   file — Adobe-faithful, but worth seeing once on a real ACR-edited JPEG.
 5. **EXIF-orientation transform for masks** (UserTODO.md): masks need
    `transformedForDisplay(orientation:)` like crop has, for images with
    orientation ≠ 1.

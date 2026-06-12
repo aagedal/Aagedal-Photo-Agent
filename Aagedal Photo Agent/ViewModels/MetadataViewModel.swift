@@ -1136,7 +1136,8 @@ final class MetadataViewModel {
                 let fields = overwriteFields(from: edited)
                 let structuredData = StructuredWriteData(
                     toneCurve: edited.cameraRaw?.toneCurve,
-                    masks: edited.cameraRaw?.localAdjustments
+                    masks: edited.cameraRaw?.localAdjustments,
+                    replaceCameraRawBlock: true
                 )
                 try await writeEngine.writeFields(fields, to: [imageURL], structuredData: structuredData)
                 var sidecarMirrored = false
@@ -2103,7 +2104,8 @@ final class MetadataViewModel {
                 let fields = overwriteFields(from: edited)
                 let structuredData = StructuredWriteData(
                     toneCurve: edited.cameraRaw?.toneCurve,
-                    masks: edited.cameraRaw?.localAdjustments
+                    masks: edited.cameraRaw?.localAdjustments,
+                    replaceCameraRawBlock: true
                 )
                 try await writeEngine.writeFields(fields, to: [imageURL], structuredData: structuredData)
 
@@ -2165,7 +2167,8 @@ final class MetadataViewModel {
                 let fields = overwriteFields(from: edited)
                 let structuredData = StructuredWriteData(
                     toneCurve: edited.cameraRaw?.toneCurve,
-                    masks: edited.cameraRaw?.localAdjustments
+                    masks: edited.cameraRaw?.localAdjustments,
+                    replaceCameraRawBlock: true
                 )
 
                 do {

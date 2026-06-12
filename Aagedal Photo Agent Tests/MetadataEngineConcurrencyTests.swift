@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import AppKit
+import SwiftExif
 @testable import Aagedal_Photo_Agent
 
 /// End-to-end concurrency tests that drive the real write engine, read service,
@@ -91,6 +92,55 @@ struct MetadataEngineConcurrencyTests {
         #expect(abs(read.geometry.feather - 35) < 1e-5)
         #expect(read.exposure.map { abs($0 - 1.0) < 1e-5 } == true)
         #expect(read.contrast == 25)
+    }
+
+    /// Adobe-faithful crs block replacement: a full develop save replaces the
+    /// file's ENTIRE crs namespace with the write's live state, dropping
+    /// settings the app doesn't model (ACR's Texture, vignette, …) so ACR
+    /// can't re-apply them on top of our render — while a partial crs write
+    /// (develop-settings paste) keeps preserving what it doesn't carry.
+    @Test("full develop save replaces the crs block; partial writes preserve unmanaged settings")
+    func crsBlockReplacement() async throws {
+        let engine = SwiftExifWriteEngine()
+        let url = try makeTempJPEG()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let crs = "http://ns.adobe.com/camera-raw-settings/1.0/"
+
+        // Plant settings the app doesn't model, as an ACR session would have.
+        var planted = try SwiftExif.readMetadata(from: url)
+        if planted.xmp == nil { planted.xmp = XMPData() }
+        planted.xmp?.setValue(.simple("+40"), namespace: crs, property: "Texture")
+        planted.xmp?.setValue(.simple("-30"), namespace: crs, property: "PostCropVignetteAmount")
+        try planted.write(to: url)
+
+        // Partial crs write (paste semantics): unmanaged settings survive.
+        try await engine.writeFields([.crsExposure2012: "+0.50"], to: [url])
+        var meta = try SwiftExif.readMetadata(from: url)
+        #expect(meta.xmp?.simpleValue(namespace: crs, property: "Texture") == "+40")
+        #expect(meta.xmp?.simpleValue(namespace: crs, property: "Exposure2012") == "+0.50")
+
+        // Full develop save: block replaced, unmanaged settings dropped, ours
+        // land, and the edited markers are stamped even with no masks present.
+        try await engine.writeFields(
+            [.crsExposure2012: "+0.75", .crsHasSettings: "True"],
+            to: [url],
+            structuredData: StructuredWriteData(replaceCameraRawBlock: true)
+        )
+        meta = try SwiftExif.readMetadata(from: url)
+        #expect(meta.xmp?.simpleValue(namespace: crs, property: "Texture") == nil)
+        #expect(meta.xmp?.simpleValue(namespace: crs, property: "PostCropVignetteAmount") == nil)
+        #expect(meta.xmp?.simpleValue(namespace: crs, property: "Exposure2012") == "+0.75")
+        #expect(meta.xmp?.simpleValue(namespace: crs, property: "AlreadyApplied") == "False")
+        #expect(meta.xmp?.simpleValue(namespace: crs, property: "CompatibleVersion") == "234881024")
+
+        // Replacement flag without any crs content in the write (caption-only
+        // save of a file whose crs block we couldn't model) must not wipe it.
+        try await engine.writeFields(
+            [.headline: "Hello"], to: [url],
+            structuredData: StructuredWriteData(replaceCameraRawBlock: true)
+        )
+        meta = try SwiftExif.readMetadata(from: url)
+        #expect(meta.xmp?.simpleValue(namespace: crs, property: "Exposure2012") == "+0.75")
     }
 
     /// GPS regression: callers split a signed coordinate into a positive magnitude

@@ -5,6 +5,15 @@ struct StructuredWriteData: Sendable {
     var toneCurve: ToneCurve?
     var masks: [MaskAdjustment]?
 
+    /// Replace the file's ENTIRE Camera Raw (crs) namespace block with this
+    /// write's content — Adobe-faithful semantics: ACR drops settings it isn't
+    /// carrying (Texture, vignette, HSL, …) when it saves, so stale baked
+    /// globals from a previous export can't be re-applied on top of our render.
+    /// Opt in ONLY when the write carries the complete live develop state
+    /// (the edit-view save / develop reset); partial crs writes like the
+    /// develop-settings paste must leave fields they don't carry untouched.
+    var replaceCameraRawBlock: Bool = false
+
     var isEmpty: Bool {
         (toneCurve == nil || (toneCurve?.isEmpty ?? true)) && (masks == nil || (masks?.isEmpty ?? true))
     }

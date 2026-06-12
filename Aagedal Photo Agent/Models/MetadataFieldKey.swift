@@ -68,4 +68,7 @@ enum MetadataFieldKey: String, Sendable, CaseIterable {
     case crsSDRWhites
     case crsSDRBlend
     case crsToneCurveName2012
+
+    /// True for the Camera Raw (XMP-crs) develop-settings keys.
+    nonisolated var isCameraRawField: Bool { rawValue.hasPrefix("crs") }
 }

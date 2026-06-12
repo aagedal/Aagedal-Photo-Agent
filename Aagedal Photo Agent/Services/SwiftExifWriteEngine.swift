@@ -178,12 +178,12 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
             destMetadata.iptc = sourceMetadata.iptc
             destMetadata.xmp = sourceMetadata.xmp
 
-            // Drop every Adobe Camera Raw property the source may have carried.
-            // The rendered file is the baked-in result, so leaving these around
-            // would let editors apply the adjustments a second time.
-            for property in cameraRawPropertyNames {
-                destMetadata.xmp?.removeValue(namespace: crsNamespace, property: property)
-            }
+            // Drop the entire Adobe Camera Raw namespace the source may have
+            // carried. The rendered file is the baked-in result, so leaving any
+            // crs property around — including ones the app doesn't model, like
+            // ACR's Texture or HSL — would let editors apply adjustments a
+            // second time on top of the baked pixels.
+            destMetadata.xmp?.removeAll(namespace: crsNamespace)
 
             // Drop the IFD1 thumbnail and ICC profile from the source — the renderer
             // is expected to set its own profile and produce a fresh thumbnail when
@@ -222,6 +222,20 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
     ) throws {
         var metadata = try readMetadata(from: url)
 
+        // Adobe-faithful develop write: ACR replaces the file's whole crs block
+        // with its live state on save, dropping settings it isn't carrying —
+        // otherwise stale baked globals (Texture, vignette, HSL, …) left from a
+        // previously-exported JPEG survive next to AlreadyApplied="False" and
+        // ACR re-applies them on top of our render. Callers opt in only when
+        // the write carries the complete develop state. The crs-content check
+        // keeps a save that carries no develop state at all (e.g. captioning an
+        // image whose crs block we couldn't model) from wiping the block.
+        let writesCameraRaw = fields.keys.contains(where: \.isCameraRawField)
+            || structuredData.toneCurve != nil || structuredData.masks != nil
+        if structuredData.replaceCameraRawBlock && writesCameraRaw {
+            metadata.xmp?.removeAll(namespace: crsNamespace)
+        }
+
         // GPS coordinates are paired: SwiftExif's setGPS takes both at once and
         // derives the N/S and E/W refs from the *sign* of each value. Callers
         // (see IPTCMetadata.toWriteFields) store the magnitude in .gpsLatitude/
@@ -256,6 +270,17 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
 
         if let masks = structuredData.masks {
             applyMasks(masks, metadata: &metadata)
+        }
+
+        // After a block replacement that carries settings, re-stamp the edited
+        // markers: applyMasks sets them only when masks exist, and Bridge/ACR
+        // treat a crs block without an EXPLICIT AlreadyApplied="False" as not
+        // edited (absence is not enough; verified against ACR 18.3.2). A fully
+        // cleared block (develop reset) stays empty — no markers, no badge.
+        if structuredData.replaceCameraRawBlock, writesCameraRaw,
+           let xmp = metadata.xmp, !xmp.properties(in: crsNamespace).isEmpty {
+            metadata.xmp?.setValue(.simple("False"), namespace: crsNamespace, property: "AlreadyApplied")
+            metadata.xmp?.setValue(.simple("234881024"), namespace: crsNamespace, property: "CompatibleVersion")
         }
 
         // Sync IPTC → XMP to ensure both sides are consistent.
@@ -661,19 +686,3 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
     }
 }
 
-/// XMP-crs property names that get stripped when copying metadata onto a rendered file.
-nonisolated private let cameraRawPropertyNames: [String] = [
-    "Version", "ProcessVersion", "WhiteBalance",
-    "Temperature", "Tint", "IncrementalTemperature", "IncrementalTint",
-    "Exposure2012", "Contrast2012", "Highlights2012", "Shadows2012",
-    "Whites2012", "Blacks2012", "Saturation", "Vibrance",
-    "HasSettings", "HasCrop",
-    "CropTop", "CropLeft", "CropBottom", "CropRight", "CropAngle",
-    "CropConstrainToWarp", "CropConstrainToUnitSquare",
-    "HDREditMode", "HDRMaxValue",
-    "SDRBrightness", "SDRContrast", "SDRClarity",
-    "SDRHighlights", "SDRShadows", "SDRWhites", "SDRBlend",
-    "ToneCurvePV2012", "ToneCurvePV2012Red", "ToneCurvePV2012Green", "ToneCurvePV2012Blue",
-    "ToneCurveName2012",
-    "MaskGroupBasedCorrections"
-]
