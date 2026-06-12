@@ -165,6 +165,74 @@ nonisolated struct EllipseMaskGeometry: Codable, Sendable, Equatable {
         radiusX = (ax * cos(theta) - ay * sin(theta)) / aspect
         radiusY = ax * sin(theta) + ay * cos(theta)
     }
+
+    /// Transform mask geometry from sensor (XMP) orientation to display
+    /// orientation, mirroring `CameraRawCrop.transformedForDisplay`. The center
+    /// point-maps like the crop corners. The true semi-axes are frame-relative
+    /// fractions (x of width, y of height), so 90°-family orientations swap
+    /// them directly; flips negate the rotation angle (reflection), and the
+    /// ±90° of pure rotations is absorbed by the axis swap so the angle stays
+    /// in ACR's canonical (−45°, 45°] range. `sensorAspect` is the un-oriented
+    /// pixel width/height — needed to decode the oriented-corner box encoding.
+    func transformedForDisplay(orientation: Int, sensorAspect: Double) -> EllipseMaskGeometry {
+        let aspect = sensorAspect > 0 ? sensorAspect : 1
+        var result = self
+        var axes = trueRadii(aspect: aspect)
+        let cx = centerX, cy = centerY
+        switch orientation {
+        case 2:  // flip horizontal
+            result.centerX = 1 - cx
+            result.rotation = -rotation
+        case 3:  // rotate 180°
+            result.centerX = 1 - cx
+            result.centerY = 1 - cy
+        case 4:  // flip vertical
+            result.centerY = 1 - cy
+            result.rotation = -rotation
+        case 5:  // transpose
+            result.centerX = cy
+            result.centerY = cx
+            result.rotation = -rotation
+            axes = (axes.y, axes.x)
+        case 6:  // rotate 90° CW
+            result.centerX = 1 - cy
+            result.centerY = cx
+            axes = (axes.y, axes.x)
+        case 7:  // transverse
+            result.centerX = 1 - cy
+            result.centerY = 1 - cx
+            result.rotation = -rotation
+            axes = (axes.y, axes.x)
+        case 8:  // rotate 90° CCW
+            result.centerX = cy
+            result.centerY = 1 - cx
+            axes = (axes.y, axes.x)
+        default:
+            return self  // O=1 or unknown
+        }
+        // A flipped boundary angle can land exactly on −45°, which ACR rejects
+        // ((−45°, 45°] is the accepted range) — rotate a quarter turn into range.
+        if result.rotation <= -45 {
+            result.rotation += 90
+            axes = (axes.y, axes.x)
+        }
+        let displayAspect = orientation >= 5 ? 1 / aspect : aspect
+        result.setTrueRadii(x: axes.x, y: axes.y, aspect: displayAspect)
+        return result
+    }
+
+    /// Inverse: transform mask geometry from display orientation back to the
+    /// sensor (XMP) frame. `displayAspect` is the oriented pixel width/height
+    /// (the frame the geometry currently lives in).
+    func transformedForSensor(orientation: Int, displayAspect: Double) -> EllipseMaskGeometry {
+        let inverse: Int
+        switch orientation {
+        case 6: inverse = 8  // inverse of 90° CW = 90° CCW
+        case 8: inverse = 6  // inverse of 90° CCW = 90° CW
+        default: inverse = orientation  // flips, 180°, transpose, transverse are self-inverse
+        }
+        return transformedForDisplay(orientation: inverse, sensorAspect: displayAspect)
+    }
 }
 
 nonisolated struct MaskAdjustment: Codable, Sendable, Equatable, Identifiable {
@@ -191,6 +259,18 @@ nonisolated struct MaskAdjustment: Codable, Sendable, Equatable, Identifiable {
             || shadows != nil || whites != nil || blacks != nil
             || saturation != nil || vibrance != nil
             || temperature != nil || tint != nil
+    }
+
+    func transformedForDisplay(orientation: Int, sensorAspect: Double) -> MaskAdjustment {
+        var result = self
+        result.geometry = geometry.transformedForDisplay(orientation: orientation, sensorAspect: sensorAspect)
+        return result
+    }
+
+    func transformedForSensor(orientation: Int, displayAspect: Double) -> MaskAdjustment {
+        var result = self
+        result.geometry = geometry.transformedForSensor(orientation: orientation, displayAspect: displayAspect)
+        return result
     }
 }
 
@@ -335,6 +415,21 @@ nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
         if let value = override.toneCurve { result.toneCurve = value }
         if let value = override.localAdjustments { result.localAdjustments = value }
         if let value = override.hslAdjustments { result.hslAdjustments = value }
+        return result
+    }
+
+    /// Mask geometry is stored in the sensor (XMP) frame, but rendering happens
+    /// on display-oriented pixels — returns a copy with `localAdjustments`
+    /// transformed into the display frame (the crop is handled separately by
+    /// `CameraRawCrop.transformedForDisplay` at its consumers).
+    /// `displayAspect` is the oriented pixel width/height of the render target.
+    func masksTransformedForDisplay(orientation: Int, displayAspect: Double) -> CameraRawSettings {
+        guard orientation > 1, let masks = localAdjustments, !masks.isEmpty else { return self }
+        let sensorAspect = orientation >= 5 && displayAspect > 0 ? 1 / displayAspect : displayAspect
+        var result = self
+        result.localAdjustments = masks.map {
+            $0.transformedForDisplay(orientation: orientation, sensorAspect: sensorAspect)
+        }
         return result
     }
 }

@@ -415,6 +415,53 @@ struct XMPSidecarService: Sendable {
         updateToneCurveChannel(on: description, localName: "ToneCurvePV2012Blue", points: settings.toneCurve?.blue)
         let hasCustomCurve = settings.toneCurve != nil && !(settings.toneCurve?.isEmpty ?? true)
         setSimple(on: description, prefix: "crs", localName: "ToneCurveName2012", value: hasCustomCurve ? "Custom" : nil)
+
+        updateMaskCorrections(on: description, masks: settings.localAdjustments)
+    }
+
+    /// Write local mask adjustments as ACR's `crs:MaskGroupBasedCorrections`,
+    /// mirroring Adobe's own sidecar shape: an rdf:Seq whose items carry the
+    /// correction fields in attribute form, with the nested `CorrectionMasks`
+    /// array as a child element. Field content comes from the shared
+    /// `encodeMaskGroupBasedCorrections` (also used by the embedded-XMP writer).
+    private func updateMaskCorrections(on description: XMLElement, masks: [MaskAdjustment]?) {
+        removeProperty(from: description, prefix: "crs", localName: "MaskGroupBasedCorrections")
+        let corrections = encodeMaskGroupBasedCorrections(masks ?? [])
+        guard !corrections.isEmpty else { return }
+
+        let property = XMLElement(name: "crs:MaskGroupBasedCorrections")
+        let seq = XMLElement(name: "rdf:Seq")
+        for correction in corrections {
+            let li = XMLElement(name: "rdf:li")
+            let item = XMLElement(name: "rdf:Description")
+            for (name, value) in correction.correctionFields {
+                if let attr = XMLNode.attribute(withName: "crs:\(name)", stringValue: value) as? XMLNode {
+                    item.addAttribute(attr)
+                }
+            }
+
+            let masksProperty = XMLElement(name: "crs:CorrectionMasks")
+            let maskSeq = XMLElement(name: "rdf:Seq")
+            let maskLi = XMLElement(name: "rdf:li")
+            for (name, value) in correction.maskFields {
+                if let attr = XMLNode.attribute(withName: "crs:\(name)", stringValue: value) as? XMLNode {
+                    maskLi.addAttribute(attr)
+                }
+            }
+            maskSeq.addChild(maskLi)
+            masksProperty.addChild(maskSeq)
+            item.addChild(masksProperty)
+            li.addChild(item)
+            seq.addChild(li)
+        }
+        property.addChild(seq)
+        description.addChild(property)
+
+        // ACR ignores every crs setting in a block marked AlreadyApplied=True,
+        // and Bridge/ACR only badge a file as edited when the marker is
+        // EXPLICITLY False (see SwiftExifWriteEngine.applyMasks).
+        setSimple(on: description, prefix: "crs", localName: "AlreadyApplied", value: "False")
+        setSimple(on: description, prefix: "crs", localName: "CompatibleVersion", value: "234881024")
     }
 
     private func removeCameraRawSettings(from description: XMLElement) {
@@ -457,6 +504,9 @@ struct XMPSidecarService: Sendable {
             "ToneCurvePV2012Green",
             "ToneCurvePV2012Blue",
             "ToneCurveName2012",
+            "MaskGroupBasedCorrections",
+            "AlreadyApplied",
+            "CompatibleVersion",
             // HSL per-color adjustments
             "HueAdjustmentRed", "SaturationAdjustmentRed", "LuminanceAdjustmentRed",
             "HueAdjustmentYellow", "SaturationAdjustmentYellow", "LuminanceAdjustmentYellow",
@@ -486,6 +536,48 @@ struct XMPSidecarService: Sendable {
         let lum = parseSimple(from: description, prefix: "crs", localName: "LuminanceAdjustment\(color)").flatMap(parseSignedInt)
         guard hue != nil || sat != nil || lum != nil else { return nil }
         return HSLColorAdjustment(saturation: sat, luminance: lum, hueShift: hue)
+    }
+
+    /// Parse `crs:MaskGroupBasedCorrections` back into `[MaskAdjustment]` by
+    /// converting the rdf:Seq items into bare-key dictionaries and reusing the
+    /// shared `parseMaskGroupBasedCorrections` decoder.
+    private func parseMaskCorrections(from description: XMLElement) -> [MaskAdjustment]? {
+        guard let property = childElement(from: description, prefix: "crs", localName: "MaskGroupBasedCorrections"),
+              let seq = childElement(from: property, prefix: "rdf", localName: "Seq") else {
+            return nil
+        }
+        let corrections = childElements(from: seq, prefix: "rdf", localName: "li").map(structFields(from:))
+        return parseMaskGroupBasedCorrections(corrections)
+    }
+
+    /// Flatten an rdf:Seq struct item into a bare-key dictionary. Accepts both
+    /// shapes ACR emits: fields as attributes directly on rdf:li, or on a
+    /// wrapped rdf:Description. Child elements holding nested rdf:Seq arrays
+    /// (e.g. `CorrectionMasks`) recurse into arrays of dictionaries; simple
+    /// element-form fields become their string values.
+    private func structFields(from li: XMLElement) -> [String: Any] {
+        let node = childElement(from: li, prefix: "rdf", localName: "Description") ?? li
+        var fields: [String: Any] = [:]
+
+        for attribute in node.attributes ?? [] {
+            let name = attribute.name ?? ""
+            guard let localName = attribute.localName,
+                  let value = attribute.stringValue,
+                  attribute.uri != Namespace.rdf,
+                  !name.hasPrefix("xmlns"), !name.hasPrefix("xml:") else { continue }
+            fields[localName] = value
+        }
+
+        for child in (node.children ?? []).compactMap({ $0 as? XMLElement }) {
+            guard let localName = child.localName, child.uri != Namespace.rdf else { continue }
+            if let seq = childElement(from: child, prefix: "rdf", localName: "Seq") {
+                fields[localName] = childElements(from: seq, prefix: "rdf", localName: "li").map(structFields(from:))
+            } else if let value = child.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty {
+                fields[localName] = value
+            }
+        }
+
+        return fields
     }
 
     private func parseToneCurveChannel(from description: XMLElement, localName: String) -> [ToneCurvePoint]? {
@@ -750,6 +842,8 @@ struct XMPSidecarService: Sendable {
         )
         let hslAdjustments: HSLAdjustments? = hslRaw.isEmpty ? nil : hslRaw
 
+        let localAdjustments = parseMaskCorrections(from: description)
+
         let settings = CameraRawSettings(
             version: version,
             processVersion: processVersion,
@@ -778,6 +872,7 @@ struct XMPSidecarService: Sendable {
             sdrWhites: sdrWhites,
             sdrBlend: sdrBlend,
             toneCurve: toneCurve,
+            localAdjustments: localAdjustments,
             hslAdjustments: hslAdjustments
         )
         return settings.isEmpty ? nil : settings

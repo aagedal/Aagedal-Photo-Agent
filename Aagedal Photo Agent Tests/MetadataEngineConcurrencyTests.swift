@@ -341,3 +341,103 @@ struct XMPSidecarAngledCropTests {
         #expect(abs((loaded.angle ?? 0) - (-12.5)) < 1e-6)
     }
 }
+
+@Suite("XMP sidecar mask corrections (real file)")
+struct XMPSidecarMaskTests {
+
+    private func makeTempJPEG() throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apa-sidecar-mask-\(UUID().uuidString).jpg")
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: 16, pixelsHigh: 16,
+            bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false,
+            isPlanar: false, colorSpaceName: .deviceRGB,
+            bytesPerRow: 0, bitsPerPixel: 0
+        ), let data = rep.representation(using: .jpeg, properties: [:]) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        try data.write(to: url)
+        return url
+    }
+
+    /// Sidecar parity with the embedded-XMP write: masks must land in the .xmp
+    /// in ACR's `MaskGroupBasedCorrections` schema and read back with their
+    /// authored geometry and local adjustments. The sidecar writer used to skip
+    /// masks entirely, so dual-write mode desynced the two destinations.
+    @Test("radial mask roundtrips geometry and local adjustments through the sidecar")
+    func maskSidecarRoundtrip() throws {
+        let service = XMPSidecarService()
+        let url = try makeTempJPEG()
+        defer {
+            try? FileManager.default.removeItem(at: url)
+            try? FileManager.default.removeItem(at: service.sidecarURL(for: url))
+        }
+
+        var geometry = EllipseMaskGeometry()
+        geometry.centerX = 0.6
+        geometry.centerY = 0.4
+        geometry.radiusX = 0.25
+        geometry.radiusY = 0.1
+        geometry.rotation = 30
+        geometry.feather = 35
+        var mask = MaskAdjustment(name: "Face", geometry: geometry)
+        mask.inverted = true
+        mask.amount = 1.0
+        mask.exposure = 1.0
+        mask.contrast = 25
+
+        var settings = CameraRawSettings()
+        settings.hasSettings = true
+        settings.localAdjustments = [mask]
+        try service.saveCameraRawOnly(settings, orientation: 1, for: url)
+
+        // On disk: ACR's schema, with the edited markers Bridge/ACR require.
+        let xml = try String(contentsOf: service.sidecarURL(for: url), encoding: .utf8)
+        #expect(xml.contains("crs:MaskGroupBasedCorrections"))
+        #expect(xml.contains("crs:What=\"Mask/CircularGradient\""))
+        #expect(xml.contains("crs:AlreadyApplied=\"False\""))
+        #expect(xml.contains("crs:CompatibleVersion=\"234881024\""))
+
+        let read = try #require(service.loadSidecar(for: url)?.cameraRaw?.localAdjustments?.first)
+        #expect(read.name == "Face")
+        #expect(read.inverted == true)
+        #expect(abs(read.geometry.centerX - 0.6) < 1e-5)
+        #expect(abs(read.geometry.centerY - 0.4) < 1e-5)
+        #expect(abs(read.geometry.radiusX - 0.25) < 1e-5)
+        #expect(abs(read.geometry.radiusY - 0.1) < 1e-5)
+        #expect(abs(read.geometry.rotation - 30) < 1e-5)
+        #expect(abs(read.geometry.feather - 35) < 1e-5)
+        #expect(read.exposure.map { abs($0 - 1.0) < 1e-5 } == true)
+        #expect(read.contrast == 25)
+
+        // A follow-up save without masks removes the block from the sidecar.
+        var cleared = settings
+        cleared.localAdjustments = nil
+        try service.saveCameraRawOnly(cleared, orientation: 1, for: url)
+        let clearedXML = try String(contentsOf: service.sidecarURL(for: url), encoding: .utf8)
+        #expect(!clearedXML.contains("MaskGroupBasedCorrections"))
+        #expect(service.loadSidecar(for: url)?.cameraRaw?.localAdjustments == nil)
+    }
+
+    /// Disabled masks are not corrections ACR should apply — they stay out of
+    /// the sidecar just like the embedded write path leaves them out.
+    @Test("disabled masks are not written to the sidecar")
+    func disabledMaskSkipped() throws {
+        let service = XMPSidecarService()
+        let url = try makeTempJPEG()
+        defer {
+            try? FileManager.default.removeItem(at: url)
+            try? FileManager.default.removeItem(at: service.sidecarURL(for: url))
+        }
+
+        var mask = MaskAdjustment(name: "Off", geometry: EllipseMaskGeometry())
+        mask.enabled = false
+        var settings = CameraRawSettings()
+        settings.hasSettings = true
+        settings.localAdjustments = [mask]
+        try service.saveCameraRawOnly(settings, orientation: 1, for: url)
+
+        let xml = try String(contentsOf: service.sidecarURL(for: url), encoding: .utf8)
+        #expect(!xml.contains("MaskGroupBasedCorrections"))
+    }
+}

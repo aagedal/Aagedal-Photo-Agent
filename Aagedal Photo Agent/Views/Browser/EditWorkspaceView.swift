@@ -208,6 +208,29 @@ struct EditWorkspaceView: View {
         return (orientedCI, orientedNS)
     }
 
+    /// Mask geometry is stored in the sensor (XMP) frame; the overlay and its
+    /// drag interaction work on the display-oriented image. Aspect comes from
+    /// the displayed image (only the ratio matters, so the downscaled preview
+    /// is fine).
+    private var maskDisplayAspect: Double {
+        guard let size = currentImageSize, size.height > 0 else { return 1 }
+        return size.width / size.height
+    }
+
+    private func maskGeometryForDisplay(_ geometry: EllipseMaskGeometry) -> EllipseMaskGeometry {
+        let orientation = selectedImageOrientation
+        guard orientation > 1 else { return geometry }
+        let aspect = maskDisplayAspect
+        let sensorAspect = orientation >= 5 ? 1 / aspect : aspect
+        return geometry.transformedForDisplay(orientation: orientation, sensorAspect: sensorAspect)
+    }
+
+    private func maskGeometryForSensor(_ geometry: EllipseMaskGeometry) -> EllipseMaskGeometry {
+        let orientation = selectedImageOrientation
+        guard orientation > 1 else { return geometry }
+        return geometry.transformedForSensor(orientation: orientation, displayAspect: maskDisplayAspect)
+    }
+
     private var activeCrop: NormalizedCropRegion {
         guard let crop = metadataViewModel.editingMetadata.cameraRaw?.crop else { return .full }
         let displayCrop = crop.transformedForDisplay(orientation: selectedImageOrientation)
@@ -503,17 +526,19 @@ struct EditWorkspaceView: View {
                                         viewportOrigin: cropVpOrigin,
                                         viewportSize: cropVpSize,
                                         viewSize: geometry.size,
-                                        geometry: dragMaskGeometry ?? masks[maskIdx].geometry,
+                                        geometry: maskGeometryForDisplay(dragMaskGeometry ?? masks[maskIdx].geometry),
                                         inverted: masks[maskIdx].inverted,
                                         onStart: {
                                             isDraggingMask = true
                                             isDraggingEditSlider = true
                                         },
                                         onChange: { newGeometry in
-                                            dragMaskGeometry = newGeometry
+                                            // The overlay drags in the display frame; store sensor-frame.
+                                            let sensorGeometry = maskGeometryForSensor(newGeometry)
+                                            dragMaskGeometry = sensorGeometry
                                             if let pipeline = metalPipeline, pipeline.hasSourceTexture {
                                                 var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
-                                                settings.localAdjustments?[maskIdx].geometry = newGeometry
+                                                settings.localAdjustments?[maskIdx].geometry = sensorGeometry
                                                 pipeline.updateParams(settingsForPipeline(settings))
                                             }
                                         },
@@ -561,19 +586,21 @@ struct EditWorkspaceView: View {
                                     viewportOrigin: vpOrigin,
                                     viewportSize: vpSize,
                                     viewSize: geometry.size,
-                                    geometry: dragMaskGeometry ?? masks[maskIdx].geometry,
+                                    geometry: maskGeometryForDisplay(dragMaskGeometry ?? masks[maskIdx].geometry),
                                     inverted: masks[maskIdx].inverted,
                                     onStart: {
                                         isDraggingMask = true
                                         isDraggingEditSlider = true
                                     },
                                     onChange: { newGeometry in
+                                        // The overlay drags in the display frame; store sensor-frame.
                                         // Track drag geometry locally — bypass ViewModel
-                                        dragMaskGeometry = newGeometry
+                                        let sensorGeometry = maskGeometryForSensor(newGeometry)
+                                        dragMaskGeometry = sensorGeometry
                                         // Direct Metal update for real-time preview + scope
                                         if let pipeline = metalPipeline, pipeline.hasSourceTexture {
                                             var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
-                                            settings.localAdjustments?[maskIdx].geometry = newGeometry
+                                            settings.localAdjustments?[maskIdx].geometry = sensorGeometry
                                             pipeline.updateParams(settingsForPipeline(settings))
                                         }
                                     },
@@ -1201,7 +1228,7 @@ struct EditWorkspaceView: View {
                 // sourceCIImage is already target-oriented — no correction here.
                 if let ci = sourceCIImage, let pipeline = metalPipeline {
                     await Task.detached(priority: .medium) {
-                        pipeline.uploadSourceImage(ci)
+                        pipeline.uploadSourceImage(ci, exifOrientation: targetOrientation)
                     }.value
                     guard !Task.isCancelled else {
                         editLog.info("[\(filename)] Phase 1: cancelled during Metal upload")
@@ -1217,7 +1244,7 @@ struct EditWorkspaceView: View {
                 // After upload, materialize sourceCIImage at screen resolution to release
                 // the heavyweight CIRAWFilter pipeline (~260MB per instance).
                 if let pipeline = metalPipeline {
-                    let cachedWB = pipeline.applyCachedTexture(for: selectedImageURL)
+                    let cachedWB = pipeline.applyCachedTexture(for: selectedImageURL, exifOrientation: targetOrientation)
                     let cacheHit = cachedWB != nil
                     if let cachedWB {
                         // Apply cached as-shot WB from the flat RAW pre-decode so the
@@ -1273,7 +1300,7 @@ struct EditWorkspaceView: View {
                         let uploadStart = ContinuousClock.now
                         // Already target-oriented from the decode task.
                         await Task.detached(priority: .medium) {
-                            pipeline.uploadSourceImage(rawCIImage)
+                            pipeline.uploadSourceImage(rawCIImage, exifOrientation: targetOrientation)
                         }.value
                         let uploadElapsed = ContinuousClock.now - uploadStart
                         guard !Task.isCancelled else {
@@ -1388,7 +1415,7 @@ struct EditWorkspaceView: View {
                 // sourceCIImage is already target-oriented — no correction here.
                 if let ci = sourceCIImage, let pipeline = metalPipeline {
                     await Task.detached(priority: .medium) {
-                        pipeline.uploadSourceImage(ci)
+                        pipeline.uploadSourceImage(ci, exifOrientation: targetOrientation)
                     }.value
                     guard !Task.isCancelled else { return }
                     syncViewportToMetal()
@@ -1430,7 +1457,7 @@ struct EditWorkspaceView: View {
                         let uploadStart = ContinuousClock.now
                         // Already target-oriented from the decode task.
                         await Task.detached(priority: .medium) {
-                            pipeline.uploadSourceImage(fullResCIImage)
+                            pipeline.uploadSourceImage(fullResCIImage, exifOrientation: targetOrientation)
                         }.value
                         guard !Task.isCancelled else { return }
                         editLog.info("[\(filename)] Phase 2: texture uploaded in \(ContinuousClock.now - uploadStart)")
@@ -1725,7 +1752,7 @@ struct EditWorkspaceView: View {
         let hdr = isHDREnabled
         previewRenderTask = Task {
             let result = await Task.detached(priority: .userInitiated) { () -> (NSImage, CGImage, CGImage?)? in
-                let output = CameraRawApproximation.apply(to: fullSource, settings: settings)
+                let output = CameraRawApproximation.apply(to: fullSource, settings: settings, exifOrientation: orientation)
                 let ctx = CameraRawApproximation.ciContext
                 guard let cgImage = ctx.createCGImage(
                     output,
@@ -1802,7 +1829,7 @@ struct EditWorkspaceView: View {
         let extent = sourceCIImage.extent
         let scale = min(maxDim / extent.width, maxDim / extent.height, 1.0)
         let small = sourceCIImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-        let filtered = CameraRawApproximation.apply(to: small, settings: settings)
+        let filtered = CameraRawApproximation.apply(to: small, settings: settings, exifOrientation: orientation)
         let scopeSource = CameraRawApproximation.applyCrop(
             to: filtered, originalExtent: small.extent,
             settings: settings, exifOrientation: orientation
@@ -2870,6 +2897,8 @@ struct EditWorkspaceView: View {
         if let size = currentImageSize, size.height > 0 {
             geo.radiusY = geo.radiusX * size.width / size.height
         }
+        // The default geometry is authored in the display frame; storage is sensor-frame.
+        geo = maskGeometryForSensor(geo)
         let newMask = MaskAdjustment(name: "Mask \(existingCount + 1)", geometry: geo)
         updateCameraRaw { cameraRaw in
             if cameraRaw.localAdjustments == nil {

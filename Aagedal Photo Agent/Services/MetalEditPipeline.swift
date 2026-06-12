@@ -131,13 +131,26 @@ final class MetalEditPipeline: @unchecked Sendable {
 
     private let sourceTextureLock = NSLock()
     nonisolated(unsafe) private var _sourceTexture: MTLTexture?
+    /// EXIF orientation baked into the source texture's pixels. Mask geometry
+    /// arrives in the sensor (XMP) frame, so `updateParams` uses this to
+    /// transform masks into the texture's display frame. Guarded by
+    /// `sourceTextureLock` like the texture it describes.
+    nonisolated(unsafe) private var _sourceOrientation: Int = 1
 
     nonisolated var sourceTexture: MTLTexture? {
         sourceTextureLock.withLock { _sourceTexture }
     }
 
+    nonisolated var sourceOrientation: Int {
+        sourceTextureLock.withLock { _sourceOrientation }
+    }
+
     nonisolated private func setSourceTexture(_ value: MTLTexture?) {
         sourceTextureLock.withLock { _sourceTexture = value }
+    }
+
+    nonisolated private func setSourceOrientation(_ value: Int) {
+        sourceTextureLock.withLock { _sourceOrientation = value }
     }
     /// Pre-cached Metal textures for adjacent images (prev/next), keyed by URL.
     /// Limited to 2 entries to bound GPU memory. At full sensor resolution (e.g. 45MP),
@@ -343,7 +356,9 @@ final class MetalEditPipeline: @unchecked Sendable {
     // MARK: - Source Texture Upload
 
     /// Renders the source CIImage to an MTLTexture. Call once per image load (not per frame).
-    nonisolated func uploadSourceImage(_ ciImage: CIImage) {
+    /// `exifOrientation` is the orientation already baked into the CIImage's pixels —
+    /// used by `updateParams` to transform sensor-frame mask geometry to match.
+    nonisolated func uploadSourceImage(_ ciImage: CIImage, exifOrientation: Int = 1) {
         let extent = ciImage.extent
         guard extent.width > 0, extent.height > 0 else { return }
 
@@ -391,8 +406,10 @@ final class MetalEditPipeline: @unchecked Sendable {
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
         setSourceTexture(texture)
+        setSourceOrientation(exifOrientation)
         // Share the same texture object with the clean-feed mirror (zero-copy).
         mirror?.setSourceTexture(texture)
+        mirror?.setSourceOrientation(exifOrientation)
     }
 
     // MARK: - LUT Upload
@@ -493,8 +510,20 @@ final class MetalEditPipeline: @unchecked Sendable {
 
         params.activeFlags = flags
 
-        // 5. Local mask adjustments
-        let masks = settings.localAdjustments?.filter(\.enabled) ?? []
+        // 5. Local mask adjustments. Mask geometry is stored in the sensor (XMP)
+        // frame; the source texture is display-oriented (decoders bake the
+        // orientation in before upload) — transform here so every texture-backed
+        // consumer gets oriented masks. The mirror forward below passes the
+        // UNTRANSFORMED settings: the mirror transforms with its own state.
+        let displaySettings: CameraRawSettings = {
+            let orientation = sourceOrientation
+            guard orientation > 1, let size = sourceTextureSize, size.height > 0 else { return settings }
+            return settings.masksTransformedForDisplay(
+                orientation: orientation,
+                displayAspect: size.width / size.height
+            )
+        }()
+        let masks = displaySettings.localAdjustments?.filter(\.enabled) ?? []
         let maskCount = min(masks.count, Self.maxMasks)
         params.maskCount = UInt32(maskCount)
 
@@ -820,6 +849,7 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// mid-edit, after the source texture has already been uploaded.
     nonisolated func shareSourceTexture(with other: MetalEditPipeline) {
         other.setSourceTexture(sourceTexture)
+        other.setSourceOrientation(sourceOrientation)
     }
 
     // MARK: - Viewport
@@ -999,10 +1029,13 @@ final class MetalEditPipeline: @unchecked Sendable {
     }
 
     /// Promote a pre-cached texture to sourceTexture. Returns as-shot WB on hit, nil on miss.
-    nonisolated func applyCachedTexture(for url: URL) -> (neutralTemperature: Float, neutralTint: Float)? {
+    /// `exifOrientation` is the orientation baked into the cached texture's pixels.
+    nonisolated func applyCachedTexture(for url: URL, exifOrientation: Int = 1) -> (neutralTemperature: Float, neutralTint: Float)? {
         guard let wrapper = textureCache.object(forKey: url as NSURL) else { return nil }
         setSourceTexture(wrapper.texture)
+        setSourceOrientation(exifOrientation)
         mirror?.setSourceTexture(wrapper.texture)
+        mirror?.setSourceOrientation(exifOrientation)
         textureCache.removeObject(forKey: url as NSURL)
         return (neutralTemperature: wrapper.neutralTemperature, neutralTint: wrapper.neutralTint)
     }
@@ -1015,9 +1048,19 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// white balance, and highlight desaturation. No CIFilter approximation.
     nonisolated static func renderOffscreen(
         source: CIImage,
-        settings: CameraRawSettings?
+        settings: CameraRawSettings?,
+        exifOrientation: Int = 1
     ) -> CIImage? {
-        guard let settings, !isIdentitySettings(settings) else { return nil }
+        guard var settings, !isIdentitySettings(settings) else { return nil }
+        // `source` is display-oriented but mask geometry is sensor-frame —
+        // transform before the params upload (the ephemeral pipeline has no
+        // source texture of its own, so updateParams can't do it there).
+        if source.extent.height > 0 {
+            settings = settings.masksTransformedForDisplay(
+                orientation: exifOrientation,
+                displayAspect: source.extent.width / source.extent.height
+            )
+        }
         let maskCount = settings.localAdjustments?.filter(\.enabled).count ?? 0
         if maskCount > 0 {
             metalPipelineLog.info("renderOffscreen: \(maskCount) mask(s) in settings")

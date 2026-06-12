@@ -15,12 +15,16 @@ enum CameraRawApproximation {
     nonisolated private static let minKelvin = 2000.0
     nonisolated private static let maxKelvin = 50000.0
 
-    nonisolated static func apply(to input: CIImage, settings: CameraRawSettings?) -> CIImage {
+    nonisolated static func apply(to input: CIImage, settings: CameraRawSettings?, exifOrientation: Int = 1) -> CIImage {
         guard let settings else { return input }
 
         // Primary path: Metal compute shader renders all adjustments in one pass.
         // Uses the exact same shader as the live preview — guarantees pixel-perfect match.
-        if let metalResult = MetalEditPipeline.renderOffscreen(source: input, settings: settings) {
+        // `exifOrientation` is the orientation baked into `input`'s pixels; the
+        // renderer uses it to move sensor-frame mask geometry into that frame.
+        if let metalResult = MetalEditPipeline.renderOffscreen(
+            source: input, settings: settings, exifOrientation: exifOrientation
+        ) {
             return metalResult
         }
 
@@ -86,7 +90,7 @@ enum CameraRawApproximation {
     nonisolated static func applyWithCrop(to input: CIImage, settings: CameraRawSettings?, exifOrientation: Int = 1) -> CIImage {
         guard let settings else { return input }
         let originalExtent = input.extent
-        let adjusted = apply(to: input, settings: settings)
+        let adjusted = apply(to: input, settings: settings, exifOrientation: exifOrientation)
         return applyCrop(to: adjusted, originalExtent: originalExtent, settings: settings, exifOrientation: exifOrientation)
     }
 

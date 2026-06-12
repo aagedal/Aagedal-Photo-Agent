@@ -4,7 +4,7 @@
 
 Adobe Camera Raw stores radial gradient mask geometry (Top/Left/Bottom/Right/Angle) in an undocumented encoding. For **Angle=0** our parsing works correctly (simple bounding box). For **Angle≠0** the encoding is fundamentally different — `Left` can be greater than `Right`, proving it's not a bounding box. No public documentation or open-source implementation exists.
 
-Additionally, masks need an **orientation transform** (like crop already has) for images with EXIF orientation ≠ 1.
+Additionally, masks need an **orientation transform** (like crop already has) for images with EXIF orientation ≠ 1. — **DONE 2026-06-12**: `EllipseMaskGeometry.transformedForDisplay/ForSensor` + wiring through MetalEditPipeline (`sourceOrientation`), renderOffscreen, CameraRawApproximation.apply, and the EditWorkspaceView overlay/drag round-trip.
 
 ## Test Plan — Controlled ACR Experiments
 
@@ -63,7 +63,7 @@ authored ellipse within 4 decimals. Full model documented on `EllipseMaskGeometr
 
 ## Known Issues to Fix
 
-- [ ] **Orientation transform for masks** — masks need `transformedForDisplay(orientation:)` like crop does (`IPTCMetadataParsing.swift` → `parseMaskGroupBasedCorrections`)
+- [x] **Orientation transform for masks** (2026-06-12) — `EllipseMaskGeometry.transformedForDisplay(orientation:sensorAspect:)` / `transformedForSensor(orientation:displayAspect:)` (Models/IPTCMetadata.swift), applied in MetalEditPipeline.updateParams (via per-texture `sourceOrientation`), renderOffscreen, CameraRawApproximation.apply, and EditWorkspaceView's overlay + drag + addNewMask
 - [x] **Rotated mask decoding** — geometry now stores ACR's signed corner half-extents; shaders/overlay decode the true semi-axes per the corner model (`EllipseMaskGeometry.trueRadii`)
 - [x] **Rotated mask rendering** — all mask rotation now happens in aspect-corrected pixel space (edit shader, Metal overlay, AppKit overlay); UV-space rotation sheared by image aspect
 

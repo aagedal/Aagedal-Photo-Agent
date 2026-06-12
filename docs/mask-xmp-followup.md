@@ -76,9 +76,26 @@ generic ellipses instead), but worth revisiting alongside open issue 4.
    key miss also wiped slider values on reload, which may have fed zeros back
    into the next write); if it still reproduces, trace mask-slider bindings
    (EditWorkspaceView ~2790) → MaskAdjustment → write.
-3. **Sidecar write skips masks**: the app's .xmp sidecar contained no mask block
-   and wasn't rewritten on the last save (mtime older than the JPEG). Check the
-   dual-write path for develop settings.
+   CODE RE-VERIFIED 2026-06-12: maskDoubleBinding/maskIntBinding write straight
+   into localAdjustments[idx], fully separate from the global exposure2012
+   binding — almost certainly the issue-1 read bug feeding zeros back. Only the
+   manual re-test remains before closing.
+3. **RESOLVED (2026-06-12): sidecar write skips masks.** XMPSidecarService now
+   writes `crs:MaskGroupBasedCorrections` (Adobe sidecar shape: rdf:Seq →
+   rdf:li > rdf:Description with correction attrs + nested CorrectionMasks
+   rdf:Seq of attribute-form rdf:li) and stamps AlreadyApplied="False" +
+   CompatibleVersion when masks exist; parse side converts the XML back to
+   bare-key dicts and reuses parseMaskGroupBasedCorrections, so sidecar and
+   embedded decode are the same code. Field content for BOTH writers comes
+   from the shared `encodeMaskGroupBasedCorrections` (IPTCMetadataParsing.swift)
+   — SwiftExifWriteEngine.applyMasks was refactored onto it, so the two
+   destinations cannot drift. removeCameraRawSettings now also clears the
+   mask block + markers. Tests: "XMP sidecar mask corrections (real file)"
+   suite (roundtrip + disabled-mask skip) in MetadataEngineConcurrencyTests.
+   The "sidecar mtime older than JPEG" part of the original report was this
+   same bug (the sidecar WAS rewritten, just without masks); develop saves
+   funnel through saveSidecar/saveCameraRawOnly → updateCameraRawSettings,
+   which now carries masks.
 4. **RESOLVED (2026-06-12): crs block replacement on write**. SwiftExif 1.9.3
    shipped `removeAll(namespace:)` / `replaceAll(namespace:from:)` /
    `properties(in:)`; app pin bumped to 1.9.3. `StructuredWriteData` gained
@@ -110,9 +127,35 @@ generic ellipses instead), but worth revisiting alongside open issue 4.
      fresh UUIDs); paste-to-multiple writes toneCurve+masks via structuredData
      — masks only when the source HAS masks, merge-style (no replace flag), so
      pasting from a mask-less source can't strip targets' masks.
-5. **EXIF-orientation transform for masks** (UserTODO.md): masks need
-   `transformedForDisplay(orientation:)` like crop has, for images with
-   orientation ≠ 1.
+5. **RESOLVED (2026-06-12): EXIF-orientation transform for masks.**
+   `EllipseMaskGeometry.transformedForDisplay(orientation:sensorAspect:)` /
+   `transformedForSensor(orientation:displayAspect:)` (Models/IPTCMetadata.swift)
+   mirror the crop's 8-case maps: center point-maps like the crop corners, true
+   semi-axes (frame-relative fractions) swap on 90°-family orientations, flips
+   negate the rotation angle, and the ±90° of pure rotations is absorbed by the
+   axis swap so the angle stays in ACR's (−45°, 45°] range (a −45° boundary hit
+   is canonicalized by a quarter-turn axis swap). Decode/re-encode of the
+   corner-box encoding happens through trueRadii/setTrueRadii with the
+   respective frame's aspect. Wiring (masks stay sensor-frame in the model;
+   transforms happen at the pixel boundary):
+   - MetalEditPipeline: `sourceOrientation` stored alongside the source texture
+     (uploadSourceImage/applyCachedTexture gained an exifOrientation param;
+     shareSourceTexture copies it; mirror gets it forwarded). updateParams
+     transforms masks using the texture's aspect — one choke point for edit
+     view, clean-feed mirror, and scope. renderOffscreen (own ad-hoc texture)
+     takes exifOrientation and pre-transforms; CameraRawApproximation.apply
+     passes it through (applyWithCrop callers already supplied orientation).
+   - EditWorkspaceView: MaskOverlayRepresentable receives display-frame
+     geometry (maskGeometryForDisplay); drag onChange converts back via
+     maskGeometryForSensor (dragMaskGeometry stays sensor-frame); addNewMask
+     inverse-transforms its display-authored default ellipse.
+   Tests: "EllipseMaskGeometry EXIF orientation transform" suite
+   (IPTCMetadataTests) — boundary-point invariant through all orientations
+   2–8, display↔sensor roundtrip, identity at orientation 1, known-value 90°
+   check. 256/256 green.
+   NOT yet manually verified: open a portrait (orientation 6/8) image with an
+   ACR-authored radial mask and confirm placement matches ACR; drag a mask on
+   a portrait image and confirm ACR shows it where it was drawn.
 
 6. **RESOLVED (2026-06-12 late evening): angled-crop XMP encoding converted to
    Adobe's at the boundary.** `CameraRawCrop.encodedForACR(aspect:)` /

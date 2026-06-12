@@ -1104,3 +1104,123 @@ struct EllipseMaskGeometryCornerTests {
         #expect(abs(radii.y - 0.2) < 1e-12)
     }
 }
+
+@Suite("EllipseMaskGeometry EXIF orientation transform")
+struct EllipseMaskGeometryOrientationTests {
+    private let sensorAspect = 1.5
+
+    private func makeGeometry() -> EllipseMaskGeometry {
+        var geo = EllipseMaskGeometry()
+        geo.centerX = 0.6
+        geo.centerY = 0.4
+        geo.rotation = 20
+        geo.setTrueRadii(x: 0.2, y: 0.1, aspect: sensorAspect)
+        geo.feather = 35
+        return geo
+    }
+
+    /// The normalized-coordinate point map each EXIF orientation applies when
+    /// pixels go from the sensor frame to the display frame — same maps as
+    /// `CameraRawCrop.transformedForDisplay`.
+    private func orientationPointMap(_ orientation: Int, _ p: (x: Double, y: Double)) -> (x: Double, y: Double) {
+        switch orientation {
+        case 2: return (1 - p.x, p.y)
+        case 3: return (1 - p.x, 1 - p.y)
+        case 4: return (p.x, 1 - p.y)
+        case 5: return (p.y, p.x)
+        case 6: return (1 - p.y, p.x)
+        case 7: return (1 - p.y, 1 - p.x)
+        case 8: return (p.y, 1 - p.x)
+        default: return p
+        }
+    }
+
+    /// Evaluate the ellipse implicit equation at a normalized point: 1 on the
+    /// boundary, <1 inside. `aspect` is the frame's pixel width/height.
+    private func ellipseValue(_ geo: EllipseMaskGeometry, point: (x: Double, y: Double), aspect: Double) -> Double {
+        let radii = geo.trueRadii(aspect: aspect)
+        let theta = geo.rotation * .pi / 180
+        let dx = (point.x - geo.centerX) * aspect
+        let dy = point.y - geo.centerY
+        let ux = dx * cos(-theta) - dy * sin(-theta)
+        let uy = dx * sin(-theta) + dy * cos(-theta)
+        let nx = ux / (radii.x * aspect)
+        let ny = uy / radii.y
+        return nx * nx + ny * ny
+    }
+
+    /// Strongest invariant: every boundary point of the sensor-frame ellipse,
+    /// mapped through the orientation's pixel transform, must land on the
+    /// boundary of the display-frame ellipse.
+    @Test("boundary points stay on the ellipse through every orientation", arguments: 2...8)
+    func boundaryInvariant(orientation: Int) {
+        let geo = makeGeometry()
+        let display = geo.transformedForDisplay(orientation: orientation, sensorAspect: sensorAspect)
+        let displayAspect = orientation >= 5 ? 1 / sensorAspect : sensorAspect
+
+        let radii = geo.trueRadii(aspect: sensorAspect)
+        let theta = geo.rotation * .pi / 180
+        for i in 0..<12 {
+            let t = Double(i) / 12 * 2 * .pi
+            // Boundary point in sensor aspect-corrected space, rotated to the
+            // ellipse's orientation, then back to normalized coordinates.
+            let ex = radii.x * sensorAspect * cos(t)
+            let ey = radii.y * sin(t)
+            let px = geo.centerX + (ex * cos(theta) - ey * sin(theta)) / sensorAspect
+            let py = geo.centerY + (ex * sin(theta) + ey * cos(theta))
+            let mapped = orientationPointMap(orientation, (px, py))
+            let value = ellipseValue(display, point: mapped, aspect: displayAspect)
+            #expect(abs(value - 1) < 1e-9, "orientation \(orientation), boundary point \(i): \(value)")
+        }
+        // The angle must stay in ACR's accepted (−45°, 45°] range.
+        #expect(display.rotation > -45 && display.rotation <= 45)
+        #expect(display.feather == geo.feather)
+    }
+
+    @Test("display→sensor round-trips to the same ellipse", arguments: 2...8)
+    func roundTrip(orientation: Int) {
+        let geo = makeGeometry()
+        let displayAspect = orientation >= 5 ? 1 / sensorAspect : sensorAspect
+        let display = geo.transformedForDisplay(orientation: orientation, sensorAspect: sensorAspect)
+        let back = display.transformedForSensor(orientation: orientation, displayAspect: displayAspect)
+        #expect(abs(back.centerX - geo.centerX) < 1e-9)
+        #expect(abs(back.centerY - geo.centerY) < 1e-9)
+        // Compare as ellipses: boundary points of the original must lie on the
+        // round-tripped one (the encoding may legitimately come back with the
+        // axis-swapped quarter-turn representation of the same ellipse).
+        let radii = geo.trueRadii(aspect: sensorAspect)
+        let theta = geo.rotation * .pi / 180
+        for i in 0..<12 {
+            let t = Double(i) / 12 * 2 * .pi
+            let ex = radii.x * sensorAspect * cos(t)
+            let ey = radii.y * sin(t)
+            let px = geo.centerX + (ex * cos(theta) - ey * sin(theta)) / sensorAspect
+            let py = geo.centerY + (ex * sin(theta) + ey * cos(theta))
+            let value = ellipseValue(back, point: (px, py), aspect: sensorAspect)
+            #expect(abs(value - 1) < 1e-9, "orientation \(orientation), boundary point \(i): \(value)")
+        }
+    }
+
+    @Test("orientation 1 is the identity")
+    func upIsIdentity() {
+        let geo = makeGeometry()
+        #expect(geo.transformedForDisplay(orientation: 1, sensorAspect: sensorAspect) == geo)
+        #expect(geo.transformedForSensor(orientation: 1, displayAspect: sensorAspect) == geo)
+    }
+
+    @Test("90° CW maps center and swaps the frame-relative radii")
+    func quarterTurnKnownValues() {
+        var geo = EllipseMaskGeometry()
+        geo.centerX = 0.6
+        geo.centerY = 0.4
+        geo.rotation = 0
+        geo.radiusX = 0.2   // at angle 0 the box half-extents ARE the semi-axes
+        geo.radiusY = 0.1
+        let display = geo.transformedForDisplay(orientation: 6, sensorAspect: sensorAspect)
+        #expect(abs(display.centerX - 0.6) < 1e-12)  // 1 − cy
+        #expect(abs(display.centerY - 0.6) < 1e-12)  // cx
+        let radii = display.trueRadii(aspect: 1 / sensorAspect)
+        #expect(abs(radii.x - 0.1) < 1e-12)
+        #expect(abs(radii.y - 0.2) < 1e-12)
+    }
+}

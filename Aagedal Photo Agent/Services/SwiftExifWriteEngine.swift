@@ -509,94 +509,26 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
     /// Serialize local mask adjustments to ACR's `MaskGroupBasedCorrections`
     /// schema as a recursive XMP structured array. Each correction is a
     /// `[String: XMPValue]` dict whose `CorrectionMasks` field is itself a
-    /// nested `XMPValue.structuredArray`.
+    /// nested `XMPValue.structuredArray`. Field content comes from the shared
+    /// `encodeMaskGroupBasedCorrections` (also used by the .xmp sidecar writer).
     private func applyMasks(_ masks: [MaskAdjustment], metadata: inout ImageMetadata) {
-        let enabled = masks.filter(\.enabled)
-        if enabled.isEmpty {
+        let encoded = encodeMaskGroupBasedCorrections(masks)
+        if encoded.isEmpty {
             metadata.xmp?.removeValue(namespace: crsNamespace, property: "MaskGroupBasedCorrections")
             return
         }
 
         if metadata.xmp == nil { metadata.xmp = XMPData() }
 
-        let corrections: [[String: XMPValue]] = enabled.enumerated().map { index, mask in
-            let geo = mask.geometry
-            let top = geo.centerY - geo.radiusY
-            let left = geo.centerX - geo.radiusX
-            let bottom = geo.centerY + geo.radiusY
-            let right = geo.centerX + geo.radiusX
-
-            let corrSyncID = mask.id.uuidString.replacingOccurrences(of: "-", with: "")
-            let maskSyncID = UUID().uuidString.replacingOccurrences(of: "-", with: "")
-
-            let maskStruct: [String: XMPValue] = [
-                "\(crsNamespace)What": .simple("Mask/CircularGradient"),
-                "\(crsNamespace)Top": .simple(acrNum(top)),
-                "\(crsNamespace)Left": .simple(acrNum(left)),
-                "\(crsNamespace)Bottom": .simple(acrNum(bottom)),
-                "\(crsNamespace)Right": .simple(acrNum(right)),
-                "\(crsNamespace)Angle": .simple(acrNum(geo.rotation)),
-                "\(crsNamespace)Feather": .simple(acrNum(geo.feather)),
-                "\(crsNamespace)Midpoint": .simple("50"),
-                "\(crsNamespace)Roundness": .simple("0"),
-                // ACR Flipped=true means effect applies inside the ellipse;
-                // our `inverted=true` means effect applies outside. Negate.
-                "\(crsNamespace)Flipped": .simple(mask.inverted ? "false" : "true"),
-                "\(crsNamespace)MaskActive": .simple("true"),
-                "\(crsNamespace)MaskBlendMode": .simple("0"),
-                "\(crsNamespace)MaskInverted": .simple("false"),
-                "\(crsNamespace)MaskName": .simple("Radial Gradient \(index + 1)"),
-                "\(crsNamespace)MaskSyncID": .simple(maskSyncID),
-                "\(crsNamespace)MaskValue": .simple("1"),
-                "\(crsNamespace)Version": .simple("2")
-            ]
-
-            // ACR stores all local adjustments as fractions of their full range
-            // (-1..+1). Exposure is on a -4..+4 EV range, so divide by 4.
-            let exp = (mask.exposure ?? 0) / 4.0
-            let con = Double(mask.contrast ?? 0) / 100.0
-            let hi = Double(mask.highlights ?? 0) / 100.0
-            let sh = Double(mask.shadows ?? 0) / 100.0
-            let wh = Double(mask.whites ?? 0) / 100.0
-            let bl = Double(mask.blacks ?? 0) / 100.0
-            let sat = Double(mask.saturation ?? 0) / 100.0
-            let vib = Double(mask.vibrance ?? 0) / 100.0
-            let temp = (mask.temperature ?? 0) / 100.0
-            let tint = (mask.tint ?? 0) / 100.0
-
-            return [
-                "\(crsNamespace)CorrectionActive": .simple("true"),
-                "\(crsNamespace)CorrectionAmount": .simple(acrNum(mask.amount)),
-                "\(crsNamespace)CorrectionName": .simple(mask.name),
-                "\(crsNamespace)CorrectionSyncID": .simple(corrSyncID),
-                "\(crsNamespace)What": .simple("Correction"),
-                "\(crsNamespace)CorrectionMasks": .structuredArray([maskStruct]),
-                "\(crsNamespace)LocalExposure2012": .simple(acrNum(exp)),
-                "\(crsNamespace)LocalContrast2012": .simple(acrNum(con)),
-                "\(crsNamespace)LocalHighlights2012": .simple(acrNum(hi)),
-                "\(crsNamespace)LocalShadows2012": .simple(acrNum(sh)),
-                "\(crsNamespace)LocalWhites2012": .simple(acrNum(wh)),
-                "\(crsNamespace)LocalBlacks2012": .simple(acrNum(bl)),
-                "\(crsNamespace)LocalSaturation": .simple(acrNum(sat)),
-                "\(crsNamespace)LocalVibrance": .simple(acrNum(vib)),
-                "\(crsNamespace)LocalTemperature": .simple(acrNum(temp)),
-                "\(crsNamespace)LocalTint": .simple(acrNum(tint)),
-                // Legacy fields ACR still expects, all zero.
-                "\(crsNamespace)LocalExposure": .simple("0"),
-                "\(crsNamespace)LocalContrast": .simple("0"),
-                "\(crsNamespace)LocalBrightness": .simple("0"),
-                "\(crsNamespace)LocalClarity": .simple("0"),
-                "\(crsNamespace)LocalClarity2012": .simple("0"),
-                "\(crsNamespace)LocalSharpness": .simple("0"),
-                "\(crsNamespace)LocalLuminanceNoise": .simple("0"),
-                "\(crsNamespace)LocalMoire": .simple("0"),
-                "\(crsNamespace)LocalDefringe": .simple("0"),
-                "\(crsNamespace)LocalDehaze": .simple("0"),
-                "\(crsNamespace)LocalTexture": .simple("0"),
-                "\(crsNamespace)LocalHue": .simple("0"),
-                "\(crsNamespace)LocalToningHue": .simple("0"),
-                "\(crsNamespace)LocalToningSaturation": .simple("0")
-            ]
+        let corrections: [[String: XMPValue]] = encoded.map { corr in
+            var fields = Dictionary(uniqueKeysWithValues: corr.correctionFields.map {
+                (crsNamespace + $0.name, XMPValue.simple($0.value))
+            })
+            let maskStruct = Dictionary(uniqueKeysWithValues: corr.maskFields.map {
+                (crsNamespace + $0.name, XMPValue.simple($0.value))
+            })
+            fields[crsNamespace + "CorrectionMasks"] = .structuredArray([maskStruct])
+            return fields
         }
 
         // ACR ignores every crs setting in a block marked AlreadyApplied=True

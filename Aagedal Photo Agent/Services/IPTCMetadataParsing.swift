@@ -266,6 +266,103 @@ nonisolated func parseMaskGroupBasedCorrections(_ value: Any?) -> [MaskAdjustmen
     return masks.isEmpty ? nil : masks
 }
 
+/// One ACR `MaskGroupBasedCorrections` entry encoded as bare-name field/value
+/// pairs: the correction-level fields (without the nested `CorrectionMasks`
+/// array) plus the fields of its single `Mask/CircularGradient` struct.
+/// Shared by the embedded-XMP writer (`SwiftExifWriteEngine.applyMasks`, which
+/// namespace-prefixes the keys) and the .xmp sidecar writer
+/// (`XMPSidecarService`, which writes them as `crs:` attributes) so the two
+/// destinations encode masks identically.
+nonisolated struct ACRMaskCorrection {
+    var correctionFields: [(name: String, value: String)]
+    var maskFields: [(name: String, value: String)]
+}
+
+/// Encode enabled masks into ACR's `MaskGroupBasedCorrections` schema —
+/// the exact inverse of `parseMaskGroupBasedCorrections`.
+nonisolated func encodeMaskGroupBasedCorrections(_ masks: [MaskAdjustment]) -> [ACRMaskCorrection] {
+    masks.filter(\.enabled).enumerated().map { index, mask in
+        let geo = mask.geometry
+        let top = geo.centerY - geo.radiusY
+        let left = geo.centerX - geo.radiusX
+        let bottom = geo.centerY + geo.radiusY
+        let right = geo.centerX + geo.radiusX
+
+        let corrSyncID = mask.id.uuidString.replacingOccurrences(of: "-", with: "")
+        let maskSyncID = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+
+        let maskFields: [(name: String, value: String)] = [
+            ("What", "Mask/CircularGradient"),
+            ("Top", acrNum(top)),
+            ("Left", acrNum(left)),
+            ("Bottom", acrNum(bottom)),
+            ("Right", acrNum(right)),
+            ("Angle", acrNum(geo.rotation)),
+            ("Feather", acrNum(geo.feather)),
+            ("Midpoint", "50"),
+            ("Roundness", "0"),
+            // ACR Flipped=true means effect applies inside the ellipse;
+            // our `inverted=true` means effect applies outside. Negate.
+            ("Flipped", mask.inverted ? "false" : "true"),
+            ("MaskActive", "true"),
+            ("MaskBlendMode", "0"),
+            ("MaskInverted", "false"),
+            ("MaskName", "Radial Gradient \(index + 1)"),
+            ("MaskSyncID", maskSyncID),
+            ("MaskValue", "1"),
+            ("Version", "2"),
+        ]
+
+        // ACR stores all local adjustments as fractions of their full range
+        // (-1..+1). Exposure is on a -4..+4 EV range, so divide by 4.
+        let exp = (mask.exposure ?? 0) / 4.0
+        let con = Double(mask.contrast ?? 0) / 100.0
+        let hi = Double(mask.highlights ?? 0) / 100.0
+        let sh = Double(mask.shadows ?? 0) / 100.0
+        let wh = Double(mask.whites ?? 0) / 100.0
+        let bl = Double(mask.blacks ?? 0) / 100.0
+        let sat = Double(mask.saturation ?? 0) / 100.0
+        let vib = Double(mask.vibrance ?? 0) / 100.0
+        let temp = (mask.temperature ?? 0) / 100.0
+        let tint = (mask.tint ?? 0) / 100.0
+
+        let correctionFields: [(name: String, value: String)] = [
+            ("CorrectionActive", "true"),
+            ("CorrectionAmount", acrNum(mask.amount)),
+            ("CorrectionName", mask.name),
+            ("CorrectionSyncID", corrSyncID),
+            ("What", "Correction"),
+            ("LocalExposure2012", acrNum(exp)),
+            ("LocalContrast2012", acrNum(con)),
+            ("LocalHighlights2012", acrNum(hi)),
+            ("LocalShadows2012", acrNum(sh)),
+            ("LocalWhites2012", acrNum(wh)),
+            ("LocalBlacks2012", acrNum(bl)),
+            ("LocalSaturation", acrNum(sat)),
+            ("LocalVibrance", acrNum(vib)),
+            ("LocalTemperature", acrNum(temp)),
+            ("LocalTint", acrNum(tint)),
+            // Legacy fields ACR still expects, all zero.
+            ("LocalExposure", "0"),
+            ("LocalContrast", "0"),
+            ("LocalBrightness", "0"),
+            ("LocalClarity", "0"),
+            ("LocalClarity2012", "0"),
+            ("LocalSharpness", "0"),
+            ("LocalLuminanceNoise", "0"),
+            ("LocalMoire", "0"),
+            ("LocalDefringe", "0"),
+            ("LocalDehaze", "0"),
+            ("LocalTexture", "0"),
+            ("LocalHue", "0"),
+            ("LocalToningHue", "0"),
+            ("LocalToningSaturation", "0"),
+        ]
+
+        return ACRMaskCorrection(correctionFields: correctionFields, maskFields: maskFields)
+    }
+}
+
 /// Construct an `IPTCMetadata` from a flat tag-name dictionary.
 /// The dictionary keys match the canonical IPTC / XMP / EXIF tag names used by
 /// `MetadataDictKey` so callers can either build the dict from SwiftExif's
