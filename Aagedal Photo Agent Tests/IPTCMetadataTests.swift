@@ -701,6 +701,37 @@ struct MalformedMetadataNumericTests {
         #expect(parseMaskGroupBasedCorrections(allBad) == nil)
     }
 
+    /// Gates whether a metadata save touches the file's crs block at all —
+    /// a caption-only save on an ACR-edited file must not rewrite (and, with
+    /// replaceCameraRawBlock, wipe) Adobe's develop settings.
+    @Test("developSettingsChanged ignores render-time fields, detects real edits")
+    func developSettingsChangedGating() {
+        var a = CameraRawSettings()
+        a.exposure2012 = 0.5
+        a.contrast2012 = 18
+
+        // Identical snapshots differing only in render-time-only fields → unchanged.
+        var b = a
+        b.asShotNeutralTemperature = 5204
+        b.asShotNeutralTint = 11
+        b.sourceHasHDRHeadroom = true
+        #expect(MetadataViewModel.developSettingsChanged(a, b) == false)
+
+        // A real slider change → changed.
+        b.exposure2012 = 0.75
+        #expect(MetadataViewModel.developSettingsChanged(a, b) == true)
+
+        // nil vs nil → unchanged; nil vs settings (reset / first edit) → changed.
+        #expect(MetadataViewModel.developSettingsChanged(nil, nil) == false)
+        #expect(MetadataViewModel.developSettingsChanged(a, nil) == true)
+        #expect(MetadataViewModel.developSettingsChanged(nil, a) == true)
+
+        // Mask edits count as develop changes.
+        var c = a
+        c.localAdjustments = [MaskAdjustment(name: "Sky")]
+        #expect(MetadataViewModel.developSettingsChanged(a, c) == true)
+    }
+
     // MARK: Tone-curve serialization
 
     @Test("serializing a tone curve with non-finite points does not crash and clamps to 0...255")

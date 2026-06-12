@@ -956,7 +956,24 @@ final class MetadataViewModel {
         }
     }
 
-    private func overwriteFields(from metadata: IPTCMetadata) -> [MetadataFieldKey: String] {
+    /// True when the develop (Camera Raw) state differs between two snapshots,
+    /// ignoring render-time-only fields the edit pipeline stamps on local copies
+    /// (as-shot white balance, HDR-headroom flag). Gates whether a metadata save
+    /// touches the file's crs block at all: a caption-only save on an ACR-edited
+    /// file must not rewrite (and with replaceCameraRawBlock, wipe) Adobe's
+    /// develop settings.
+    nonisolated static func developSettingsChanged(_ a: CameraRawSettings?, _ b: CameraRawSettings?) -> Bool {
+        func normalized(_ s: CameraRawSettings?) -> CameraRawSettings? {
+            guard var s else { return nil }
+            s.asShotNeutralTemperature = nil
+            s.asShotNeutralTint = nil
+            s.sourceHasHDRHeadroom = nil
+            return s
+        }
+        return normalized(a) != normalized(b)
+    }
+
+    private func overwriteFields(from metadata: IPTCMetadata, includeCameraRaw: Bool = true) -> [MetadataFieldKey: String] {
         var fields: [MetadataFieldKey: String] = [:]
         fields[.headline] = metadata.title ?? ""
         fields[.description] = metadata.description ?? ""
@@ -1133,12 +1150,20 @@ final class MetadataViewModel {
         writeTask?.cancel()
         writeTask = Task {
             do {
-                let fields = overwriteFields(from: edited)
-                let structuredData = StructuredWriteData(
-                    toneCurve: edited.cameraRaw?.toneCurve,
-                    masks: edited.cameraRaw?.localAdjustments,
-                    replaceCameraRawBlock: true
+                // Touch the crs block only when develop settings actually changed:
+                // a caption-only save on an ACR-edited file must not rewrite (and,
+                // with replaceCameraRawBlock, wipe) Adobe's develop settings.
+                let developChanged = Self.developSettingsChanged(
+                    edited.cameraRaw, self.originalImageMetadata?.cameraRaw
                 )
+                let fields = overwriteFields(from: edited, includeCameraRaw: developChanged)
+                let structuredData = developChanged
+                    ? StructuredWriteData(
+                        toneCurve: edited.cameraRaw?.toneCurve,
+                        masks: edited.cameraRaw?.localAdjustments,
+                        replaceCameraRawBlock: true
+                    )
+                    : .empty
                 try await writeEngine.writeFields(fields, to: [imageURL], structuredData: structuredData)
                 var sidecarMirrored = false
                 if alsoWriteXMPSidecar || xmpSidecarService.sidecarExists(for: imageURL) {
@@ -2101,12 +2126,19 @@ final class MetadataViewModel {
         writeTask = Task {
             do {
                 let edited = editingMetadata
-                let fields = overwriteFields(from: edited)
-                let structuredData = StructuredWriteData(
-                    toneCurve: edited.cameraRaw?.toneCurve,
-                    masks: edited.cameraRaw?.localAdjustments,
-                    replaceCameraRawBlock: true
+                // See writeMetadataAndPreserveHistory — leave the crs block alone
+                // unless develop settings actually changed.
+                let developChanged = Self.developSettingsChanged(
+                    edited.cameraRaw, self.originalImageMetadata?.cameraRaw
                 )
+                let fields = overwriteFields(from: edited, includeCameraRaw: developChanged)
+                let structuredData = developChanged
+                    ? StructuredWriteData(
+                        toneCurve: edited.cameraRaw?.toneCurve,
+                        masks: edited.cameraRaw?.localAdjustments,
+                        replaceCameraRawBlock: true
+                    )
+                    : .empty
                 try await writeEngine.writeFields(fields, to: [imageURL], structuredData: structuredData)
 
                 do {
@@ -2164,12 +2196,20 @@ final class MetadataViewModel {
                 }
 
                 let edited = sidecar.metadata
-                let fields = overwriteFields(from: edited)
-                let structuredData = StructuredWriteData(
-                    toneCurve: edited.cameraRaw?.toneCurve,
-                    masks: edited.cameraRaw?.localAdjustments,
-                    replaceCameraRawBlock: true
-                )
+                // Batch pending writes have no per-file baseline to diff against
+                // (originalImageMetadata tracks only the selected image), so gate on
+                // whether the sidecar recorded develop edits at all: cameraRaw == nil
+                // means a metadata-only pending change, and the file's crs block
+                // (possibly Adobe-authored) must be left untouched.
+                let developChanged = edited.cameraRaw != nil
+                let fields = overwriteFields(from: edited, includeCameraRaw: developChanged)
+                let structuredData = developChanged
+                    ? StructuredWriteData(
+                        toneCurve: edited.cameraRaw?.toneCurve,
+                        masks: edited.cameraRaw?.localAdjustments,
+                        replaceCameraRawBlock: true
+                    )
+                    : .empty
 
                 do {
                     try await writeEngine.writeFields(fields, to: [imageURL], structuredData: structuredData)

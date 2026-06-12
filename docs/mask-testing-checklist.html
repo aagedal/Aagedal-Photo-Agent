@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mask XMP — Manual Test Checklist</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9;
+    --card: #ffffff;
+    --text: #1c1e21;
+    --muted: #6b7280;
+    --border: #e2e5ea;
+    --accent: #2563eb;
+    --green: #16a34a;
+    --amber: #d97706;
+    --code-bg: #f0f1f4;
+    --done-bg: #f2faf4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181c;
+      --card: #1f2228;
+      --text: #e8eaed;
+      --muted: #9aa0a8;
+      --border: #34383f;
+      --accent: #5b8def;
+      --green: #4ade80;
+      --amber: #fbbf24;
+      --code-bg: #15171b;
+      --done-bg: #1c2620;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    padding: 32px 16px 80px;
+  }
+  .wrap { max-width: 780px; margin: 0 auto; }
+  header { margin-bottom: 8px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 16px; }
+  .progress-row {
+    position: sticky; top: 0; z-index: 5;
+    background: var(--bg);
+    padding: 10px 0 14px;
+    display: flex; align-items: center; gap: 14px;
+  }
+  .bar {
+    flex: 1; height: 8px; border-radius: 4px;
+    background: var(--border); overflow: hidden;
+  }
+  .bar > div {
+    height: 100%; width: 0%;
+    background: var(--green);
+    border-radius: 4px;
+    transition: width .25s ease;
+  }
+  .count { font-size: 13px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .reset {
+    font-size: 12px; color: var(--muted);
+    background: none; border: 1px solid var(--border);
+    border-radius: 6px; padding: 4px 10px; cursor: pointer;
+  }
+  .reset:hover { color: var(--text); border-color: var(--muted); }
+
+  .global-cmd {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 12px 14px; margin-bottom: 22px;
+    font-size: 13px;
+  }
+  .global-cmd .label { color: var(--muted); margin-bottom: 6px; }
+
+  section { margin-bottom: 26px; }
+  h2 {
+    font-size: 15px; margin: 0 0 10px;
+    display: flex; align-items: baseline; gap: 8px;
+  }
+  h2 .closes { font-size: 12px; font-weight: 400; color: var(--muted); }
+
+  .item {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 14px;
+    margin-bottom: 8px;
+    transition: background .2s ease, opacity .2s ease;
+  }
+  .item.done { background: var(--done-bg); }
+  .item.done .title { text-decoration: line-through; color: var(--muted); }
+  .item-head { display: flex; gap: 12px; align-items: flex-start; cursor: pointer; }
+  .item-head input[type="checkbox"] {
+    width: 19px; height: 19px; margin-top: 2px;
+    accent-color: var(--green);
+    cursor: pointer; flex-shrink: 0;
+  }
+  .title { font-weight: 600; }
+  .num { color: var(--muted); font-weight: 400; margin-right: 4px; }
+  .detail { color: var(--muted); font-size: 13.5px; margin: 6px 0 0 31px; }
+  .detail .expect { color: var(--text); }
+  .detail .expect b { color: var(--green); font-weight: 600; }
+  .tag {
+    display: inline-block; font-size: 11px; font-weight: 600;
+    border-radius: 4px; padding: 1px 7px; margin-left: 8px;
+    vertical-align: 1px;
+  }
+  .tag.fail { background: color-mix(in srgb, var(--amber) 18%, transparent); color: var(--amber); }
+  .tag.new { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
+
+  code, pre {
+    font: 12px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
+    background: var(--code-bg);
+    border-radius: 5px;
+  }
+  code { padding: 1px 5px; }
+  pre {
+    padding: 8px 10px; margin: 8px 0 0;
+    overflow-x: auto; position: relative;
+    border: 1px solid var(--border);
+    white-space: pre-wrap; word-break: break-all;
+  }
+  .copy {
+    position: absolute; top: 6px; right: 6px;
+    font-size: 11px; border: 1px solid var(--border);
+    background: var(--card); color: var(--muted);
+    border-radius: 5px; padding: 2px 8px; cursor: pointer;
+  }
+  .copy:hover { color: var(--text); }
+
+  textarea.notes {
+    width: 100%; margin: 10px 0 0 31px; width: calc(100% - 31px);
+    background: var(--code-bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+    font: 13px/1.4 inherit; padding: 6px 9px;
+    resize: vertical; min-height: 30px;
+  }
+  textarea.notes::placeholder { color: var(--muted); opacity: .7; }
+  footer { color: var(--muted); font-size: 12.5px; margin-top: 30px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Mask XMP — Manual Test Checklist</h1>
+    <div class="sub">
+      Aagedal Photo Agent · fixes under test: mask-reopen parse fix (<code>1788a1f</code>) &amp; crs block replacement (<code>54c25eb</code>, SwiftExif 1.9.3) ·
+      assets: <code>~/Downloads/NorgeMarokko/MaskXMPTests/</code>
+    </div>
+  </header>
+
+  <div class="progress-row">
+    <div class="bar"><div id="barfill"></div></div>
+    <span class="count" id="count"></span>
+    <button class="reset" id="resetBtn" title="Clear all checkmarks and notes">Reset</button>
+  </div>
+
+  <div class="global-cmd">
+    <div class="label">Dump a file's embedded XMP packet:</div>
+    <pre>perl -0777 -ne 'print $1 if /(&lt;x:xmpmeta.*?&lt;\/x:xmpmeta&gt;)/s' FILE.jpg<button class="copy">Copy</button></pre>
+  </div>
+
+  <section data-section="A">
+    <h2>A · Mask reopen fix <span class="closes">— closes issue 1 if all pass</span></h2>
+
+    <div class="item" data-id="a1">
+      <div class="item-head"><input type="checkbox"><div>
+        <div class="title"><span class="num">1.</span>Mask survives close + reopen</div>
+        <div class="detail">Create a radial mask in the edit view — move it off-center, stretch it, rotate it. Close the edit view, reopen.
+        <div class="expect">Expect: <b>identical geometry</b> — not a generic centered ellipse.</div></div>
+      </div></div>
+      <textarea class="notes" placeholder="notes…"></textarea>
+    </div>
+
+    <div class="item" data-id="a2">
+      <div class="item-head"><input type="checkbox"><div>
+        <div class="title"><span class="num">2.</span>Fast close + reopen (race probe)</div>
+        <div class="detail">Same as #1, but close and reopen as quickly as possible. Probes the async-write race (<code>metadataWriteTask</code>) the handoff doc suspected — unit tests can't rule this out.
+        <div class="expect">Expect: <b>geometry still correct</b>.</div></div>
+      </div></div>
+      <textarea class="notes" placeholder="notes…"></textarea>
+    </div>
+
+    <div class="item" data-id="a3">
+      <div class="item-head"><input type="checkbox"><div>
+        <div class="title"><span class="num">3.</span>Mask + crop + rotation together</div>
+        <div class="detail">Repeat #1 on an image that also has a crop and straighten angle — they share the crs block.
+        <div class="expect">Expect: <b>mask, crop, and angle all survive reopen</b>.</div></div>
+      </div></div>
+      <textarea class="notes" placeholder="notes…"></textarea>
+    </div>
+  </section>
+
+  <section data-section="B">
+    <h2>B · Mask slider persistence <span class="closes">— closes issue 2 if it passes</span></h2>
+
+    <div class="item" data-id="b4">
+      <div class="item-head"><input type="checkbox"><div>
+        <div class="title"><span class="num">4.</span>Mask exposure + contrast persist to XMP and back</div>
+        <div class="detail">Set exposure and contrast on a mask, save, dump the XMP. Then reopen the edit view.
+        <div class="expect">Expect: <b>non-zero</b> <code>crs:LocalExposure2012</code> / <code>crs:LocalContrast2012</code> inside the correction; global <code>crs:Exposure2012</code> has <b>not</b> absorbed the mask exposure; sliders show your values on reopen.</div>
+        If it fails: write-side bug — start at the mask-slider bindings, <code>EditWorkspaceView</code> ~2790.</div>
+      </div></div>
+      <textarea class="notes" placeholder="notes…"></textarea>
+    </div>
+  </section>
+
+  <section data-section="C">
+    <h2>C · crs block replacement <span class="closes">— confirms issue 4's implementation</span></h2>
+
+    <div class="item" data-id="c5">
+      <div class="item-head"><input type="checkbox"><div>
+        <div class="title"><span class="num">5.</span>Develop save drops ACR-only settings <span class="tag new">intentional change</span></div>
+        <div class="detail">Take a JPEG edited in ACR with settings the app doesn't model (Texture, vignette, HSL). Make any develop edit in the app, save, dump XMP. Then open in ACR.
+        <div class="expect">Expect: ACR-only props <b>gone</b>; our settings present; <code>crs:AlreadyApplied="False"</code> and <code>crs:CompatibleVersion</code> present; ACR preview <b>matches our render</b> (no double-processing).</div></div>
+      </div></div>
+      <textarea class="notes" placeholder="notes…"></textarea>
+    </div>
+
+    <div class="item" data-id="c6">
+      <div class="item-head"><input type="checkbox"><div>
+        <div class="title"><span class="num">6.</span>Caption-only save preserves ACR settings <span class="tag new">fixed — re-test</span></div>
+        <div class="detail">Same kind of file, but only edit the caption — never open the edit view — and save.
+        <div class="expect">Expect: ACR settings <b>survive</b>. FAILED on first pass (every save rewrote the crs block); fixed 2026-06-12 — saves now skip the crs block entirely unless develop settings actually changed vs the loaded baseline.</div></div>
+      </div></div>
+      <textarea class="notes" placeholder="notes…"></textarea>
+    </div>
+
+    <div class="item" data-id="c7">
+      <div class="item-head"><input type="checkbox"><div>
+        <div class="title"><span class="num">7.</span>Develop reset wipes the whole block</div>
+        <div class="detail">Run a develop reset on an ACR-edited image, dump XMP.
+        <div class="expect">Expect: crs block <b>essentially empty</b> — no masks, no tone curve, no ACR leftovers.</div></div>
+      </div></div>
+      <textarea class="notes" placeholder="notes…"></textarea>
+    </div>
+
+    <div class="item" data-id="c8">
+      <div class="item-head"><input type="checkbox"><div>
+        <div class="title"><span class="num">8.</span>Paste develop settings — masks &amp; tone curve <span class="tag new">fixed — re-test</span></div>
+        <div class="detail">Cmd+C on an image WITH masks, Cmd+V onto one and several targets. Then also paste from a mask-LESS source onto a target that has masks.
+        <div class="expect">Expect: pasting from a masked source <b>lands the masks (and tone curve)</b> on the targets; pasting from a mask-less source <b>leaves the targets' masks alone</b> (merge-style). Originally paste dropped masks/tone curve entirely; fixed 2026-06-12.</div></div>
+      </div></div>
+      <textarea class="notes" placeholder="notes…"></textarea>
+    </div>
+
+    <div class="item" data-id="c9">
+      <div class="item-head"><input type="checkbox"><div>
+        <div class="title"><span class="num">9.</span>Exports carry zero crs</div>
+        <div class="detail">Export/render an image whose source had ACR settings, dump the exported file's XMP.
+        <div class="expect">Expect: <b>zero</b> <code>crs:</code> properties in the export.</div></div>
+      </div></div>
+      <textarea class="notes" placeholder="notes…"></textarea>
+    </div>
+  </section>
+
+  <section data-section="D">
+    <h2>D · Bridge / ACR regression checks</h2>
+
+    <div class="item" data-id="d10">
+      <div class="item-head"><input type="checkbox"><div>
+        <div class="title"><span class="num">10.</span>Bridge badges app-edited files</div>
+        <div class="detail">Check both a file with masks and one with only global develop edits — the no-mask case is newly stamped with <code>AlreadyApplied="False"</code>.
+        <div class="expect">Expect: <b>edited badge on both</b>.</div></div>
+      </div></div>
+      <textarea class="notes" placeholder="notes…"></textarea>
+    </div>
+
+    <div class="item" data-id="d11">
+      <div class="item-head"><input type="checkbox"><div>
+        <div class="title"><span class="num">11.</span>App-made mask renders correctly in ACR 18.3.2</div>
+        <div class="detail">Open one app-made mask in ACR.
+        <div class="expect">Expect: <b>same position, same strength</b>.</div></div>
+      </div></div>
+      <textarea class="notes" placeholder="notes…"></textarea>
+    </div>
+  </section>
+
+  <section data-section="E">
+    <h2>E · Known-broken — confirm scope only <span class="closes">(open issues 3 &amp; 5)</span></h2>
+
+    <div class="item" data-id="e12">
+      <div class="item-head"><input type="checkbox"><div>
+        <div class="title"><span class="num">12.</span>Sidecar still lacks masks <span class="tag fail">expected failure</span></div>
+        <div class="detail">Dual-write mode: the <code>.xmp</code> sidecar won't contain masks — <code>XMPSidecarService</code> doesn't serialize them yet (issue 3).</div>
+      </div></div>
+      <textarea class="notes" placeholder="notes…"></textarea>
+    </div>
+
+    <div class="item" data-id="e13">
+      <div class="item-head"><input type="checkbox"><div>
+        <div class="title"><span class="num">13.</span>Mask misplaced on orientation ≠ 1 <span class="tag fail">expected failure</span></div>
+        <div class="detail">Mask on an image with EXIF orientation ≠ 1 — no orientation transform yet (issue 5).</div>
+      </div></div>
+      <textarea class="notes" placeholder="notes…"></textarea>
+    </div>
+  </section>
+
+  <section data-section="F">
+    <h2>F · Rotation fixes <span class="closes">— added 2026-06-12 after your mid-testing report</span></h2>
+
+    <div class="item" data-id="f14">
+      <div class="item-head"><input type="checkbox"><div>
+        <div class="title"><span class="num">14.</span>Edit view after browser rotation (the reported bug)</div>
+        <div class="detail">Rotate a 3:2 image 90° in the thumbnail view, open the edit view.
+        <div class="expect">Expect: <b>correctly rotated, no stretch</b> — surface and pixels agree. Test both a C2PA file (file's EXIF flag never updates — the persistent case you hit) and a plain JPEG opened immediately after rotating (the race case).</div></div>
+      </div></div>
+      <textarea class="notes" placeholder="notes…"></textarea>
+    </div>
+
+    <div class="item" data-id="f15">
+      <div class="item-head"><input type="checkbox"><div>
+        <div class="title"><span class="num">15.</span>Spacebar preview after rotation</div>
+        <div class="detail">Rotate in thumbnail view, then hit space — including on an image you previewed BEFORE rotating (that's the stale-cache case).
+        <div class="expect">Expect: <b>preview shows the new orientation</b>.</div></div>
+      </div></div>
+      <textarea class="notes" placeholder="notes…"></textarea>
+    </div>
+
+    <div class="item" data-id="f16">
+      <div class="item-head"><input type="checkbox"><div>
+        <div class="title"><span class="num">16.</span>Rotated RAW via neighbor precache</div>
+        <div class="detail">Rotate a RAW in the browser, open its NEIGHBOR in the edit view, then navigate to the rotated RAW (it arrives via the precached texture).
+        <div class="expect">Expect: <b>correct orientation</b>.</div></div>
+      </div></div>
+      <textarea class="notes" placeholder="notes…"></textarea>
+    </div>
+
+    <div class="item" data-id="f17">
+      <div class="item-head"><input type="checkbox"><div>
+        <div class="title"><span class="num">17.</span>Scopes + before-toggle on a rotated image</div>
+        <div class="detail">On a rotated image in the edit view: check the waveform scope and the before/after toggle (both read the now-corrected source image).
+        <div class="expect">Expect: <b>both show the rotated frame</b>, before-toggle doesn't snap back to unrotated.</div></div>
+      </div></div>
+      <textarea class="notes" placeholder="notes…"></textarea>
+    </div>
+  </section>
+
+  <footer>
+    If 1–4 pass → issues 1 &amp; 2 close. If 5–9 pass → issue 4 confirmed; remaining work is issues 3 &amp; 5.
+    State is saved in this browser (localStorage).
+  </footer>
+</div>
+
+<script>
+(function () {
+  const KEY = "mask-xmp-checklist-v1";
+  let state = {};
+  try { state = JSON.parse(localStorage.getItem(KEY)) || {}; } catch (e) {}
+
+  const items = Array.from(document.querySelectorAll(".item"));
+  const barfill = document.getElementById("barfill");
+  const count = document.getElementById("count");
+
+  function save() { localStorage.setItem(KEY, JSON.stringify(state)); }
+
+  function refresh() {
+    let done = 0;
+    items.forEach(it => {
+      const id = it.dataset.id;
+      const checked = !!(state[id] && state[id].done);
+      it.classList.toggle("done", checked);
+      it.querySelector("input[type=checkbox]").checked = checked;
+      if (checked) done++;
+    });
+    barfill.style.width = (done / items.length * 100) + "%";
+    count.textContent = done + " / " + items.length;
+  }
+
+  items.forEach(it => {
+    const id = it.dataset.id;
+    const cb = it.querySelector("input[type=checkbox]");
+    const notes = it.querySelector("textarea.notes");
+
+    cb.addEventListener("change", () => {
+      state[id] = state[id] || {};
+      state[id].done = cb.checked;
+      save(); refresh();
+    });
+
+    // Clicking the row (not the textarea/checkbox) toggles too.
+    it.querySelector(".item-head").addEventListener("click", e => {
+      if (e.target.tagName === "INPUT" || e.target.tagName === "BUTTON") return;
+      cb.checked = !cb.checked;
+      cb.dispatchEvent(new Event("change"));
+    });
+
+    if (state[id] && state[id].notes) notes.value = state[id].notes;
+    notes.addEventListener("input", () => {
+      state[id] = state[id] || {};
+      state[id].notes = notes.value;
+      save();
+    });
+  });
+
+  document.querySelectorAll(".copy").forEach(btn => {
+    btn.addEventListener("click", e => {
+      e.stopPropagation();
+      const text = btn.parentElement.textContent.replace(/Copy$/, "").trim();
+      navigator.clipboard.writeText(text).then(() => {
+        btn.textContent = "Copied!";
+        setTimeout(() => (btn.textContent = "Copy"), 1200);
+      });
+    });
+  });
+
+  document.getElementById("resetBtn").addEventListener("click", () => {
+    if (!confirm("Clear all checkmarks and notes?")) return;
+    state = {};
+    items.forEach(it => { it.querySelector("textarea.notes").value = ""; });
+    save(); refresh();
+  });
+
+  refresh();
+})();
+</script>
+</body>
+</html>

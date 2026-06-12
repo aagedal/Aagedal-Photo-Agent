@@ -1355,6 +1355,9 @@ final class BrowserViewModel {
         )
         for url in selectedImages.map(\.url) {
             thumbnailService.rotateThumbnailInCache(for: url, clockwise: true)
+            // Cached full-screen decodes were corrected for the OLD orientation —
+            // without this, the spacebar preview keeps showing the unrotated image.
+            fullScreenImageCache.invalidateImage(for: url)
         }
     }
 
@@ -1395,6 +1398,8 @@ final class BrowserViewModel {
         )
         for url in selectedImages.map(\.url) {
             thumbnailService.rotateThumbnailInCache(for: url, clockwise: false)
+            // See rotateClockwise — stale full-screen decodes carry the old orientation.
+            fullScreenImageCache.invalidateImage(for: url)
         }
     }
 

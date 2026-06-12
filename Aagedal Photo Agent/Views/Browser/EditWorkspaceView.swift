@@ -183,6 +183,31 @@ struct EditWorkspaceView: View {
         selectedImage?.exifOrientation ?? 1
     }
 
+    /// Orient a freshly decoded preview to the in-memory target orientation.
+    /// Decodes bake the FILE's orientation tag into the pixels, but a rotation
+    /// done in the browser may not have reached the file yet (async write, or
+    /// withheld entirely for C2PA-protected files) — leaving file ≠ target.
+    /// `sourceCIImage`/`sourceImage` feed layout, the Metal upload, the scope,
+    /// and the CIImage fallback, so they must ALL share the target frame —
+    /// correcting only the texture upload leaves the fallback and layout on the
+    /// file's frame and a rotated image renders stretched into the swapped canvas.
+    nonisolated private static func orientedToTarget(
+        ciImage: CIImage?, nsImage: NSImage?, from fileOrientation: Int, to targetOrientation: Int
+    ) -> (ciImage: CIImage?, nsImage: NSImage?) {
+        let correction = ImageFile.orientationCorrection(from: fileOrientation, to: targetOrientation)
+        guard correction != .up else { return (ciImage, nsImage) }
+        guard let orientedCI = ciImage?.oriented(correction) else { return (ciImage, nsImage) }
+        var orientedNS = nsImage
+        if nsImage != nil,
+           let cg = CameraRawApproximation.ciContext.createCGImage(
+               orientedCI, from: orientedCI.extent, format: .RGBAh,
+               colorSpace: CameraRawApproximation.workingColorSpace
+           ) {
+            orientedNS = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+        }
+        return (orientedCI, orientedNS)
+    }
+
     private var activeCrop: NormalizedCropRegion {
         guard let crop = metadataViewModel.editingMetadata.cameraRaw?.crop else { return .full }
         let displayCrop = crop.transformedForDisplay(orientation: selectedImageOrientation)
@@ -1124,9 +1149,10 @@ struct EditWorkspaceView: View {
                 // RAW two-phase load: embedded JPEG preview (instant), then
                 // full-quality CIRAWFilter decode at full sensor resolution.
 
-                // Phase 1: Extract embedded JPEG preview from RAW container (no RAW decode)
+                // Phase 1: Extract embedded JPEG preview from RAW container (no RAW decode).
+                // Oriented to the in-memory target inside the task — see orientedToTarget.
                 let phase1Start = ContinuousClock.now
-                let quickPreview = await Task.detached(priority: .userInitiated) { () -> (image: NSImage, ciImage: CIImage, orientation: Int)? in
+                let quickPreview = await Task.detached(priority: .userInitiated) { () -> (image: NSImage?, ciImage: CIImage?)? in
                     guard let result = FullScreenImageCache.extractEmbeddedPreviewWithOrientation(
                         from: selectedImageURL
                     ) else { return nil }
@@ -1134,7 +1160,11 @@ struct EditWorkspaceView: View {
                         cgImage: result.image,
                         size: NSSize(width: result.image.width, height: result.image.height)
                     )
-                    return (image: nsImage, ciImage: CIImage(cgImage: result.image), orientation: result.orientation)
+                    let oriented = Self.orientedToTarget(
+                        ciImage: CIImage(cgImage: result.image), nsImage: nsImage,
+                        from: result.orientation, to: targetOrientation
+                    )
+                    return (image: oriented.nsImage, ciImage: oriented.ciImage)
                 }.value
                 let phase1Elapsed = ContinuousClock.now - phase1Start
 
@@ -1143,14 +1173,12 @@ struct EditWorkspaceView: View {
                     return
                 }
 
-                // Thumbnails are kept rotated to match the in-memory orientation, so the
-                // fallback needs no correction (decoded == target).
-                var phase1Orientation = targetOrientation
-                if let quickPreview {
-                    editLog.info("[\(filename)] Phase 1: embedded preview in \(phase1Elapsed) (\(quickPreview.image.size.width)x\(quickPreview.image.size.height))")
-                    sourceImage = quickPreview.image
+                // Thumbnail fallback needs no correction either — thumbnails are
+                // kept rotated to match the in-memory orientation.
+                if let quickPreview, let image = quickPreview.image {
+                    editLog.info("[\(filename)] Phase 1: embedded preview in \(phase1Elapsed) (\(image.size.width)x\(image.size.height))")
+                    sourceImage = image
                     sourceCIImage = quickPreview.ciImage
-                    phase1Orientation = quickPreview.orientation
                 } else {
                     editLog.info("[\(filename)] Phase 1: no embedded preview, falling back to thumbnail")
                     let thumbnail = await browserViewModel.thumbnailService.loadThumbnail(for: selectedImageURL)
@@ -1170,11 +1198,10 @@ struct EditWorkspaceView: View {
                 // Upload Phase 1 preview to Metal for immediate interactive editing
                 // (mirrors non-RAW path so WB/tonal adjustments render as soon as
                 // metadata loads, even before the full RAW decode completes).
+                // sourceCIImage is already target-oriented — no correction here.
                 if let ci = sourceCIImage, let pipeline = metalPipeline {
-                    let correction = ImageFile.orientationCorrection(from: phase1Orientation, to: targetOrientation)
-                    let uploadCI = correction != .up ? ci.oriented(correction) : ci
                     await Task.detached(priority: .medium) {
-                        pipeline.uploadSourceImage(uploadCI)
+                        pipeline.uploadSourceImage(ci)
                     }.value
                     guard !Task.isCancelled else {
                         editLog.info("[\(filename)] Phase 1: cancelled during Metal upload")
@@ -1204,16 +1231,23 @@ struct EditWorkspaceView: View {
                     editLog.info("[\(filename)] Phase 2: starting (cacheHit=\(cacheHit))")
 
                     let phase2Start = ContinuousClock.now
-                    let rawDecode: (result: FullScreenImageCache.RAWDecodeResult, orientation: Int)? = await Task.detached(priority: .userInitiated) {
-                        // Read the tag adjacent to the decode so the correction below matches
+                    let rawResult: FullScreenImageCache.RAWDecodeResult? = await Task.detached(priority: .userInitiated) {
+                        // Read the tag adjacent to the decode so the correction matches
                         // these bytes even if a pending rotation write lands mid-load.
                         let orientation = FullScreenImageCache.fileEXIFOrientation(at: selectedImageURL)
                         guard let result = FullScreenImageCache.loadRAWImage(
                             from: selectedImageURL, draftMode: false
                         ) else { return nil }
-                        return (result, orientation)
+                        let oriented = Self.orientedToTarget(
+                            ciImage: result.image, nsImage: nil,
+                            from: orientation, to: targetOrientation
+                        ).ciImage ?? result.image
+                        return FullScreenImageCache.RAWDecodeResult(
+                            image: oriented,
+                            neutralTemperature: result.neutralTemperature,
+                            neutralTint: result.neutralTint
+                        )
                     }.value
-                    let rawResult = rawDecode?.result
                     let rawCIImage = rawResult?.image
                     let decodeElapsed = ContinuousClock.now - phase2Start
 
@@ -1237,12 +1271,9 @@ struct EditWorkspaceView: View {
                             editLog.info("[\(filename)] Phase 2: upgrading cached texture to full resolution")
                         }
                         let uploadStart = ContinuousClock.now
-                        let correction = ImageFile.orientationCorrection(
-                            from: rawDecode?.orientation ?? targetOrientation, to: targetOrientation
-                        )
-                        let uploadRAW = correction != .up ? rawCIImage.oriented(correction) : rawCIImage
+                        // Already target-oriented from the decode task.
                         await Task.detached(priority: .medium) {
-                            pipeline.uploadSourceImage(uploadRAW)
+                            pipeline.uploadSourceImage(rawCIImage)
                         }.value
                         let uploadElapsed = ContinuousClock.now - uploadStart
                         guard !Task.isCancelled else {
@@ -1298,12 +1329,16 @@ struct EditWorkspaceView: View {
                 // Phase 1: HDR-preserving path (keeps float values >1.0 for HEIC-HLG, AVIF, JXL).
                 // Falls back to SDR CGImageSource path for formats CIImage can't decode.
                 let phase1Start = ContinuousClock.now
-                let previewSource = await Task.detached(priority: .userInitiated) { () -> (image: NSImage?, ciImage: CIImage?, orientation: Int) in
+                // Oriented to the in-memory target inside the task — see orientedToTarget.
+                let previewSource = await Task.detached(priority: .userInitiated) { () -> (image: NSImage?, ciImage: CIImage?) in
                     if let result = FullScreenImageCache.loadHDRPreviewWithOrientation(from: selectedImageURL, maxPixelSize: previewMaxPixelSize) {
+                        // Orient BEFORE rendering the NSImage so it comes out corrected for free.
+                        let correction = ImageFile.orientationCorrection(from: result.orientation, to: targetOrientation)
+                        let ci = correction != .up ? result.image.oriented(correction) : result.image
                         let ctx = CameraRawApproximation.ciContext
-                        if let cgImage = ctx.createCGImage(result.image, from: result.image.extent, format: .RGBAh, colorSpace: CameraRawApproximation.workingColorSpace) {
+                        if let cgImage = ctx.createCGImage(ci, from: ci.extent, format: .RGBAh, colorSpace: CameraRawApproximation.workingColorSpace) {
                             let nsImage = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
-                            return (image: nsImage, ciImage: result.image, orientation: result.orientation)
+                            return (image: nsImage, ciImage: ci)
                         }
                     }
                     if let result = FullScreenImageCache.loadDownsampledWithOrientation(
@@ -1314,26 +1349,32 @@ struct EditWorkspaceView: View {
                             cgImage: result.image,
                             size: NSSize(width: result.image.width, height: result.image.height)
                         )
-                        return (image: image, ciImage: CIImage(cgImage: result.image), orientation: result.orientation)
+                        let oriented = Self.orientedToTarget(
+                            ciImage: CIImage(cgImage: result.image), nsImage: image,
+                            from: result.orientation, to: targetOrientation
+                        )
+                        return (image: oriented.nsImage, ciImage: oriented.ciImage)
                     }
                     if let image = NSImage(contentsOf: selectedImageURL) {
                         let orientation = FullScreenImageCache.fileEXIFOrientation(at: selectedImageURL)
                         let ciImage = image.tiffRepresentation.flatMap { CIImage(data: $0) }
-                        return (image: image, ciImage: ciImage, orientation: orientation)
+                        let oriented = Self.orientedToTarget(
+                            ciImage: ciImage, nsImage: nil,
+                            from: orientation, to: targetOrientation
+                        )
+                        return (image: image, ciImage: oriented.ciImage)
                     }
-                    return (image: nil, ciImage: nil, orientation: 1)
+                    return (image: nil, ciImage: nil)
                 }.value
                 let phase1Elapsed = ContinuousClock.now - phase1Start
 
                 guard !Task.isCancelled else { return }
 
-                // Thumbnails are kept rotated to match the in-memory orientation, so the
-                // fallback needs no correction (decoded == target).
-                var phase1Orientation = targetOrientation
+                // Thumbnail fallback needs no correction either — thumbnails are
+                // kept rotated to match the in-memory orientation.
                 if let image = previewSource.image {
                     sourceImage = image
                     sourceCIImage = previewSource.ciImage
-                    phase1Orientation = previewSource.orientation
                     editLog.info("[\(filename)] Phase 1: preview in \(phase1Elapsed) (\(image.size.width)x\(image.size.height))")
                 } else {
                     let thumbnail = await browserViewModel.thumbnailService.loadThumbnail(for: selectedImageURL)
@@ -1343,12 +1384,11 @@ struct EditWorkspaceView: View {
                     editLog.info("[\(filename)] Phase 1: thumbnail fallback in \(phase1Elapsed)")
                 }
 
-                // Upload Phase 1 preview to Metal for immediate interactive editing
+                // Upload Phase 1 preview to Metal for immediate interactive editing.
+                // sourceCIImage is already target-oriented — no correction here.
                 if let ci = sourceCIImage, let pipeline = metalPipeline {
-                    let correction = ImageFile.orientationCorrection(from: phase1Orientation, to: targetOrientation)
-                    let uploadCI = correction != .up ? ci.oriented(correction) : ci
                     await Task.detached(priority: .medium) {
-                        pipeline.uploadSourceImage(uploadCI)
+                        pipeline.uploadSourceImage(ci)
                     }.value
                     guard !Task.isCancelled else { return }
                     syncViewportToMetal()
@@ -1363,28 +1403,34 @@ struct EditWorkspaceView: View {
                 // the full-resolution CIImage graph (same strategy as RAW path).
                 if let pipeline = metalPipeline {
                     let phase2Start = ContinuousClock.now
-                    let fullRes: (image: CIImage, orientation: Int)? = await Task.detached(priority: .userInitiated) {
+                    // Oriented to the in-memory target inside the task — see orientedToTarget.
+                    let fullRes: CIImage? = await Task.detached(priority: .userInitiated) {
+                        let decoded: (image: CIImage, orientation: Int)?
                         if let result = FullScreenImageCache.loadHDRFullResolutionWithOrientation(from: selectedImageURL) {
-                            return result
+                            decoded = result
+                        } else if let result = FullScreenImageCache.loadFullResolutionWithOrientation(from: selectedImageURL) {
+                            decoded = (CIImage(cgImage: result.image), result.orientation)
+                        } else {
+                            decoded = nil
                         }
-                        if let result = FullScreenImageCache.loadFullResolutionWithOrientation(from: selectedImageURL) {
-                            return (CIImage(cgImage: result.image), result.orientation)
-                        }
-                        return nil
+                        guard let decoded else { return nil }
+                        return Self.orientedToTarget(
+                            ciImage: decoded.image, nsImage: nil,
+                            from: decoded.orientation, to: targetOrientation
+                        ).ciImage
                     }.value
 
                     guard !Task.isCancelled else { return }
 
                     if let fullRes {
-                        let fullResCIImage = fullRes.image
+                        let fullResCIImage = fullRes
                         let extent = fullResCIImage.extent
                         editLog.info("[\(filename)] Phase 2: full-res decoded in \(ContinuousClock.now - phase2Start) (\(Int(extent.width))x\(Int(extent.height)))")
 
                         let uploadStart = ContinuousClock.now
-                        let correction = ImageFile.orientationCorrection(from: fullRes.orientation, to: targetOrientation)
-                        let uploadFull = correction != .up ? fullResCIImage.oriented(correction) : fullResCIImage
+                        // Already target-oriented from the decode task.
                         await Task.detached(priority: .medium) {
-                            pipeline.uploadSourceImage(uploadFull)
+                            pipeline.uploadSourceImage(fullResCIImage)
                         }.value
                         guard !Task.isCancelled else { return }
                         editLog.info("[\(filename)] Phase 2: texture uploaded in \(ContinuousClock.now - uploadStart)")
@@ -1433,22 +1479,26 @@ struct EditWorkspaceView: View {
 
         // RAW decode is HDR-state independent (always full EDR headroom), so precached
         // textures stay valid regardless of each neighbor's HDR edit mode.
-        var adjacentRAWURLs: [URL] = []
+        var adjacentRAWs: [(url: URL, targetOrientation: Int)] = []
         if currentIndex > 0 {
             let prev = images[currentIndex - 1]
-            if SupportedImageFormats.isRaw(url: prev.url) { adjacentRAWURLs.append(prev.url) }
+            if SupportedImageFormats.isRaw(url: prev.url) {
+                adjacentRAWs.append((prev.url, prev.exifOrientation))
+            }
         }
         if currentIndex < images.count - 1 {
             let next = images[currentIndex + 1]
-            if SupportedImageFormats.isRaw(url: next.url) { adjacentRAWURLs.append(next.url) }
+            if SupportedImageFormats.isRaw(url: next.url) {
+                adjacentRAWs.append((next.url, next.exifOrientation))
+            }
         }
 
-        guard !adjacentRAWURLs.isEmpty else { return }
+        guard !adjacentRAWs.isEmpty else { return }
         let screenMaxPx = previewWorkingMaxPixelSize
-        editLog.info("[\(currentURL.lastPathComponent)] precacheAdjacent: \(adjacentRAWURLs.map(\.lastPathComponent)) at \(Int(screenMaxPx))px")
+        editLog.info("[\(currentURL.lastPathComponent)] precacheAdjacent: \(adjacentRAWs.map(\.url.lastPathComponent)) at \(Int(screenMaxPx))px")
 
         Task.detached(priority: .background) {
-            for url in adjacentRAWURLs {
+            for (url, neighborOrientation) in adjacentRAWs {
                 guard !Task.isCancelled else {
                     editLog.info("[\(url.lastPathComponent)] precache: cancelled")
                     return
@@ -1456,13 +1506,21 @@ struct EditWorkspaceView: View {
                 let start = ContinuousClock.now
                 // Use the same flat CIRAWFilter decode as Phase 2 so the precached
                 // texture matches the final render (no auto-boost / tone mismatch).
+                // Read the tag adjacent to the decode (see Phase 2).
+                let fileOrientation = FullScreenImageCache.fileEXIFOrientation(at: url)
                 guard let rawResult = FullScreenImageCache.loadRAWImage(
                     from: url, draftMode: false
                 ) else {
                     editLog.info("[\(url.lastPathComponent)] precache: decode failed")
                     continue
                 }
-                let ciImage = FullScreenImageCache.downsample(rawResult.image, maxPixelSize: screenMaxPx)
+                // Textures are target-oriented (see orientedToTarget) — a neighbor
+                // rotated in the browser may have a pending orientation write.
+                let oriented = Self.orientedToTarget(
+                    ciImage: rawResult.image, nsImage: nil,
+                    from: fileOrientation, to: neighborOrientation
+                ).ciImage ?? rawResult.image
+                let ciImage = FullScreenImageCache.downsample(oriented, maxPixelSize: screenMaxPx)
                 pipeline.precacheTexture(
                     for: url, ciImage: ciImage,
                     neutralTemperature: rawResult.neutralTemperature,
@@ -3036,6 +3094,19 @@ struct EditWorkspaceView: View {
             cameraRaw.whites2012 = source.whites2012
             cameraRaw.blacks2012 = source.blacks2012
             cameraRaw.saturation = source.saturation
+            cameraRaw.vibrance = source.vibrance
+            cameraRaw.toneCurve = source.toneCurve
+            cameraRaw.hslAdjustments = source.hslAdjustments
+            // Paste masks only when the source carries some — pasting from a
+            // mask-less image shouldn't strip the target's masks. Fresh IDs so
+            // the pasted masks are independent of the source's.
+            if let masks = source.localAdjustments, !masks.isEmpty {
+                cameraRaw.localAdjustments = masks.map { mask in
+                    var copy = mask
+                    copy.id = UUID()
+                    return copy
+                }
+            }
             if includeCrop {
                 cameraRaw.crop = source.crop
             }
@@ -3082,6 +3153,7 @@ struct EditWorkspaceView: View {
             fields[.crsWhites2012] = cameraRaw.whites2012.map(String.init) ?? ""
             fields[.crsBlacks2012] = cameraRaw.blacks2012.map(String.init) ?? ""
             fields[.crsSaturation] = cameraRaw.saturation.map(String.init) ?? ""
+            fields[.crsVibrance] = cameraRaw.vibrance.map(String.init) ?? ""
             fields[.crsHasSettings] = "True"
 
             if let crop = cameraRaw.crop, !crop.isEmpty {
@@ -3093,8 +3165,20 @@ struct EditWorkspaceView: View {
                 fields[.crsHasCrop] = "True"
             }
 
+            // Carry tone curve and masks too — a paste without them leaves the
+            // targets rendering differently from the source. Masks only when the
+            // source has some (merge-style, no replaceCameraRawBlock): pasting
+            // from a mask-less image must not strip the targets' masks or other
+            // settings the paste doesn't carry.
+            let structuredData = StructuredWriteData(
+                toneCurve: cameraRaw.toneCurve,
+                masks: (cameraRaw.localAdjustments?.isEmpty == false) ? cameraRaw.localAdjustments : nil
+            )
+
             do {
-                try await browserViewModel.writeEngine.writeFields(fields, to: targetURLs)
+                try await browserViewModel.writeEngine.writeFields(
+                    fields, to: targetURLs, structuredData: structuredData
+                )
             } catch {
                 Logger(subsystem: "com.aagedal.photo-agent", category: "EditWorkspaceView")
                     .error("Failed to paste camera raw to multiple images: \(error.localizedDescription)")

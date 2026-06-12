@@ -97,9 +97,58 @@ generic ellipses instead), but worth revisiting alongside open issue 4.
    NOTE for manual verification: a develop save from our app now intentionally
    drops ACR-only settings (Texture, vignette, HSL, brush masks…) from the
    file — Adobe-faithful, but worth seeing once on a real ACR-edited JPEG.
+   FOLLOW-UP FIXES from manual testing (2026-06-12 evening):
+   - Caption-only saves were wiping ACR develop settings (every metadata save
+     wrote the full crs field set, which with the replace flag nuked the
+     block). All three MetadataViewModel save sites now gate on
+     `developSettingsChanged(edited, baseline)` (render-time-only fields
+     ignored) and skip crs fields + structuredData entirely when develop
+     state is unchanged; the batch pending-writes path gates on the sidecar
+     carrying cameraRaw at all (no per-file baseline exists there).
+   - Develop-settings paste (Cmd+C/V in edit view) dropped masks, tone curve,
+     HSL and vibrance. Single-image paste now carries all of them (masks get
+     fresh UUIDs); paste-to-multiple writes toneCurve+masks via structuredData
+     — masks only when the source HAS masks, merge-style (no replace flag), so
+     pasting from a mask-less source can't strip targets' masks.
 5. **EXIF-orientation transform for masks** (UserTODO.md): masks need
    `transformedForDisplay(orientation:)` like crop has, for images with
    orientation ≠ 1.
+
+6. **ANGLED-CROP XMP ENCODING IS NOT ADOBE'S (found 2026-06-12, diagnosed,
+   NOT yet fixed)**. Repro: `~/Downloads/20260610_RødLøper/Tise Awards 16.jpg`
+   (7008×4672, CropAngle −12.786738): our app renders its crop as 5335×3556
+   (aspect 1.5), ACR 18.3.2 renders 3743×3941 (aspect 0.9498).
+   - **Adobe's model — SAME CORNER MODEL AS THE MASKS**: stored
+     CropLeft/Top/Right/Bottom are the crop rect's two opposite corners in the
+     UN-ROTATED original frame (normalized by original W/H, image-centered when
+     converted to px). Rotate both corners about the IMAGE CENTER by CropAngle
+     → the actual axis-aligned crop rect in the straightened canvas. Decoded
+     this way, the stored values give 4415×4649 (aspect 0.94973) — ACR's render
+     matches that aspect to 4 decimals.
+   - Authority: darktable `src/develop/lightroom.c` (LR-XMP import) decodes
+     exactly this (image-centered px → rotate_xy both corners by the angle →
+     normalize by the rotated-AABB canvas). Validated against the repro file.
+   - The 4415→3743 difference is ACR **auto-shrinking an invalid crop**
+     (uniform 0.8477 both axes, aspect preserved): under Adobe's reading our
+     values poke outside the valid rotated pixels. Authentic Adobe crops are
+     always inside, so this is a tell that OUR writer produced the values.
+   - Our app writes its INTERNAL "upright actual rect" (see
+     crop-rotation-representation memory — that representation was chosen to
+     fix in-app drag drift and is fine INTERNALLY) verbatim into the crs
+     fields, and parses them the same way. Conventions coincide ONLY at
+     angle = 0, which is why straight crops round-trip fine.
+   - **Fix plan**: convert at the XMP boundary only (keep the internal
+     representation): write = rotate the upright rect's corners from the
+     straightened canvas back into the original frame (inverse of darktable's
+     decode), read = the forward decode. Needs image dims (aspect) at the
+     boundary — mirror how `EllipseMaskGeometry.trueRadii(aspect:)` handles
+     the same problem for masks. Touch points: parseMaskGroupBasedCorrections'
+     sibling crop parse in iptcMetadataFromDict, MetadataViewModel
+     appendCameraRawFields, EditWorkspaceView pasteToMultipleImages,
+     XMPSidecarService. JSON .photo_metadata sidecars keep the app convention
+     (Codable, internal). Migration caveat: previously-written files carry
+     app-convention values in crs fields — indistinguishable from Adobe ones;
+     accept the breakage for angled crops or detect via our Version "15.4".
 
 ## Memory
 
