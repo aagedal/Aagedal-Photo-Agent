@@ -3,9 +3,10 @@ import Foundation
 /// Top-level metadata-write preset shown as a single picker in Settings. Resolves down to a
 /// concrete `MetadataWriteMode` per file (via `MetadataWriteMode.current(forC2PA:isRaw:)`).
 enum MetadataWritePreset: String, CaseIterable, Identifiable, Sendable {
-    /// Always write metadata directly into the image file, for every file. Simple
-    /// deliberately ignores C2PA: the file is written without warnings even though
-    /// that invalidates content credentials. RAW gets a best-effort embed.
+    /// Write metadata directly into the image file. Simple deliberately ignores C2PA:
+    /// the file is written without warnings even though that invalidates content
+    /// credentials. RAW is the exception — embedding into a proprietary RAW container
+    /// corrupts maker-private data, so RAW always gets an XMP sidecar.
     case simple
     /// Mirrors Photo Mechanic: sidecar for RAW files (and C2PA, which we treat like RAW
     /// because writing into the file would invalidate the credential); embed directly
@@ -27,7 +28,7 @@ enum MetadataWritePreset: String, CaseIterable, Identifiable, Sendable {
     var summary: String {
         switch self {
         case .simple:
-            return "Always write metadata directly into the image file — including C2PA-protected files."
+            return "Write metadata into the image file, including C2PA-protected files. RAW still uses an XMP sidecar."
         case .professional:
             return "Sidecar for RAW and C2PA files. Write into the image file for everything else, like Photo Mechanic."
         case .custom:
