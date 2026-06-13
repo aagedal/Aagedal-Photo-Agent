@@ -12,6 +12,13 @@ nonisolated enum FaceRecognitionDefaults {
     /// Known People schema starts that database fresh.
     static let embeddingVersion = 3
 
+    /// Master switch for the secondary face lenses (Expression / Red Carpet / Sports). Off for the
+    /// 2.0 release: only the canonical Face lens ships, with no lens switcher. The lens code and
+    /// per-lens storage stay intact — flip this to `true` to bring the switcher, assist strips, and
+    /// background prewarm back for 2.1. Gates `availableLenses`, the `activeLens` getter (so a
+    /// folder with a persisted secondary lens still opens on Face), and `prewarmSecondaryLensesIfNeeded`.
+    static let multiLensEnabled = false
+
     // MARK: - Clustering (cosine distance)
     //
     // Calibrated against AuraFace on labeled faces: same-person pairs cluster around cosine

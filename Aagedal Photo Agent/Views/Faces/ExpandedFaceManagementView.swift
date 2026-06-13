@@ -217,18 +217,21 @@ struct ExpandedFaceManagementView: View {
     private var toolbar: some View {
         HStack {
             // Lens switcher. Face/Red Carpet/Sports share the editable people grouping with
-            // different assists; Expression is its own appearance grouping.
-            Picker("Lens", selection: $viewModel.activeLens) {
-                ForEach(viewModel.availableLenses, id: \.self) { lens in
-                    Text(lens.displayName).tag(lens)
+            // different assists; Expression is its own appearance grouping. Hidden when only one
+            // lens is available (e.g. the 2.0 Face-only build), so no lone segment shows.
+            if viewModel.availableLenses.count > 1 {
+                Picker("Lens", selection: $viewModel.activeLens) {
+                    ForEach(viewModel.availableLenses, id: \.self) { lens in
+                        Text(lens.displayName).tag(lens)
+                    }
                 }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .fixedSize()
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
 
-            Divider()
-                .frame(height: 16)
+                Divider()
+                    .frame(height: 16)
+            }
 
             if viewModel.activeLens.isPeopleLens {
                 Button {

@@ -80,7 +80,12 @@ final class FaceRecognitionViewModel {
     /// re-detects or re-embeds — it only changes which stored grouping is displayed (secondary
     /// lenses re-cluster from stored embeddings when they land).
     var activeLens: FaceLens {
-        get { faceData?.currentLens ?? .face }
+        get {
+            let stored = faceData?.currentLens ?? .face
+            // Never surface a lens that isn't available (multi-lens off, or Sports without
+            // jersey data) — a stale persisted value falls back to Face.
+            return availableLenses.contains(stored) ? stored : .face
+        }
         set {
             guard var data = faceData, data.currentLens != newValue else { return }
             data.activeLens = newValue
@@ -93,7 +98,8 @@ final class FaceRecognitionViewModel {
     /// Lenses offered in the switcher for this folder. Sports only appears when the scan
     /// produced jersey data (sports tagging enabled and numbers found).
     var availableLenses: [FaceLens] {
-        FaceLens.allCases.filter { $0 != .sports || folderHasJerseyData }
+        guard FaceRecognitionDefaults.multiLensEnabled else { return [.face] }
+        return FaceLens.allCases.filter { $0 != .sports || folderHasJerseyData }
     }
 
     var folderHasJerseyData: Bool {
@@ -238,6 +244,8 @@ final class FaceRecognitionViewModel {
     /// stale). Lens switches never wait on this — they show whatever grouping is stored, with
     /// an in-progress state until this pass lands.
     private func prewarmSecondaryLensesIfNeeded() {
+        // No secondary lenses ship in 2.0, so skip the background embedding passes entirely.
+        guard FaceRecognitionDefaults.multiLensEnabled else { return }
         guard let data = faceData, data.scanComplete, !data.faces.isEmpty else { return }
 
         let staleLenses = FaceLens.allCases.filter { lens in
