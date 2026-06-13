@@ -367,7 +367,11 @@ final class BrowserViewModel {
         guard selectedImageIDs.count == 1,
               let url = selectedImageIDs.first,
               let index = urlToImageIndex[url] else { return }
-        guard fullScreenImageCache.cachedImage(for: url) == nil else { return }
+        // Full screen opens with edits rendered unless "show originals" is on —
+        // pre-cache into the matching slot (an edited render must NEVER land in
+        // the unedited slot, or stale edits shadow the original).
+        let isEdited = !showOriginalThumbnails
+        guard fullScreenImageCache.cachedImage(for: url, isEdited: isEdited) == nil else { return }
 
         let imageFile = images[index]
         let screenScale = NSScreen.main?.backingScaleFactor ?? 2.0
@@ -395,7 +399,7 @@ final class BrowserViewModel {
                 image = loaded
             }
             guard let image, !Task.isCancelled else { return }
-            self.fullScreenImageCache.store(image, for: url)
+            self.fullScreenImageCache.store(image, for: url, isEdited: isEdited)
         }
     }
 

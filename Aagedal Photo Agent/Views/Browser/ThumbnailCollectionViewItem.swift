@@ -37,7 +37,7 @@ final class ThumbnailCollectionViewItem: NSCollectionViewItem {
         thumbnailLoadTask?.cancel()
         let url = data.url
         let needsEditedRender = !showOriginals
-            && imageFile.cameraRawSettings?.crop?.isEmpty == false
+            && imageFile.cameraRawSettings?.isEmpty == false
 
         // Synchronous cache check — prefer edited unless showOriginals
         if let cached = thumbnailService.thumbnail(for: url, preferOriginal: showOriginals) {
@@ -67,8 +67,8 @@ final class ThumbnailCollectionViewItem: NSCollectionViewItem {
                   self.currentURL == url else { return }
             self.thumbnailView.setThumbnailNSImage(image)
 
-            // If this image has a crop, render the cropped thumbnail
-            if let settings, settings.crop?.isEmpty == false {
+            // If this image has develop edits, render the edited thumbnail
+            if let settings, !settings.isEmpty {
                 let edited = await thumbnailService.renderEditedThumbnail(
                     for: url, settings: settings, exifOrientation: orientation)
                 guard !Task.isCancelled, self.currentURL == url else { return }

@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mask XMP — Manual ACR/Bridge Test Checklist</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f6f7;
+    --card: #ffffff;
+    --text: #1d1d1f;
+    --muted: #6e6e73;
+    --accent: #0a84ff;
+    --done: #30a14e;
+    --border: #d2d2d7;
+    --code-bg: #eeeef0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1c1c1e;
+      --card: #2c2c2e;
+      --text: #f2f2f7;
+      --muted: #98989f;
+      --done: #32d74b;
+      --border: #3a3a3c;
+      --code-bg: #1c1c1e;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0 auto;
+    max-width: 780px;
+    padding: 2rem 1.25rem 4rem;
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+  }
+  h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
+  .subtitle { color: var(--muted); margin: 0 0 1.5rem; }
+  .progress-wrap {
+    position: sticky; top: 0; z-index: 10;
+    background: var(--bg);
+    padding: .75rem 0 1rem;
+  }
+  .progress-bar {
+    height: 8px; border-radius: 4px;
+    background: var(--border); overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%; width: 0%;
+    background: var(--done);
+    border-radius: 4px;
+    transition: width .25s ease;
+  }
+  .progress-label { font-size: .85rem; color: var(--muted); margin-top: .35rem; }
+  section {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1rem 1.25rem;
+    margin-bottom: 1.25rem;
+  }
+  section h2 { font-size: 1.05rem; margin: .25rem 0 .15rem; }
+  .issue-ref { font-size: .8rem; color: var(--muted); margin-bottom: .75rem; }
+  .item {
+    display: flex; gap: .75rem; align-items: flex-start;
+    padding: .6rem 0;
+    border-top: 1px solid var(--border);
+  }
+  .item:first-of-type { border-top: none; }
+  .item input[type="checkbox"] {
+    width: 20px; height: 20px; margin-top: .15rem;
+    accent-color: var(--done);
+    flex-shrink: 0;
+    cursor: pointer;
+  }
+  .item-body { flex: 1; }
+  .item-title { cursor: pointer; }
+  .item.done .item-title { color: var(--muted); text-decoration: line-through; }
+  .item-detail { font-size: .85rem; color: var(--muted); margin-top: .15rem; }
+  .item.done .stamp { font-size: .78rem; color: var(--done); margin-top: .2rem; }
+  .notes {
+    width: 100%; margin-top: .45rem;
+    border: 1px solid var(--border); border-radius: 6px;
+    background: transparent; color: var(--text);
+    font: inherit; font-size: .85rem;
+    padding: .35rem .5rem;
+    resize: vertical; min-height: 1.9em;
+  }
+  .notes::placeholder { color: var(--muted); opacity: .6; }
+  code, pre {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: .82rem;
+    background: var(--code-bg);
+    border-radius: 5px;
+  }
+  code { padding: .1em .35em; }
+  pre {
+    padding: .6rem .75rem; overflow-x: auto;
+    border: 1px solid var(--border);
+    margin: .4rem 0 0;
+  }
+  footer {
+    display: flex; justify-content: space-between; align-items: center;
+    color: var(--muted); font-size: .82rem;
+  }
+  button.reset {
+    border: 1px solid var(--border); border-radius: 6px;
+    background: transparent; color: var(--muted);
+    font: inherit; font-size: .82rem;
+    padding: .3rem .7rem; cursor: pointer;
+  }
+  button.reset:hover { color: #ff453a; border-color: #ff453a; }
+</style>
+</head>
+<body>
+
+<h1>Mask XMP — Manual Test Checklist</h1>
+<p class="subtitle">
+  Verification against Camera Raw 18.3.2 / Bridge after the fixes in
+  <code>24f21ef</code> (sidecar masks + orientation transform),
+  <code>f3ba197</code> (angled crop) and <code>54c25eb</code> (crs block replacement).
+  State is saved in this browser (localStorage).
+</p>
+
+<div class="progress-wrap">
+  <div class="progress-bar"><div class="progress-fill" id="fill"></div></div>
+  <div class="progress-label" id="label"></div>
+</div>
+
+<section>
+  <h2>Mask slider persistence</h2>
+  <div class="issue-ref">Issue 2 — code re-verified 2026-06-12; this re-test closes it</div>
+
+  <div class="item" data-id="sliders-roundtrip">
+    <input type="checkbox">
+    <div class="item-body">
+      <div class="item-title">Sliders survive reopen</div>
+      <div class="item-detail">
+        Add a radial mask to a JPEG, set <strong>exposure + contrast</strong> on the mask,
+        save, close and reopen the edit view. Both sliders should keep their values.
+      </div>
+    </div>
+  </div>
+
+  <div class="item" data-id="sliders-packet">
+    <input type="checkbox">
+    <div class="item-body">
+      <div class="item-title">Written packet is correct</div>
+      <div class="item-detail">
+        Inspect the embedded XMP: <code>LocalExposure2012</code> / <code>LocalContrast2012</code>
+        non-zero <em>inside</em> the mask correction, and the global <code>Exposure2012</code>
+        did <em>not</em> pick up the mask's value.
+        <pre>perl -0777 -ne 'print $1 if /(&lt;x:xmpmeta.*?&lt;\/x:xmpmeta&gt;)/s' FILE.jpg</pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>Angled-crop ACR round-trip</h2>
+  <div class="issue-ref">Issue 6 — conversion implemented + unit-tested, not yet eyeballed in ACR</div>
+
+  <div class="item" data-id="crop-ours-to-acr">
+    <input type="checkbox">
+    <div class="item-body">
+      <div class="item-title">Our app → ACR</div>
+      <div class="item-detail">
+        Make an <strong>angled</strong> crop in our app, save, open in Camera Raw —
+        the crop should render identically (no auto-shrink, same aspect).
+      </div>
+    </div>
+  </div>
+
+  <div class="item" data-id="crop-acr-to-ours">
+    <input type="checkbox">
+    <div class="item-body">
+      <div class="item-title">ACR → our app</div>
+      <div class="item-detail">
+        Make an angled crop in ACR, then open the file in our app — same rendered crop.
+        Reference repro file: <code>~/Downloads/20260610_RødLøper/Tise Awards 16.jpg</code>.
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>Mask orientation transform (portrait images)</h2>
+  <div class="issue-ref">Issue 5 — fixed 2026-06-12, needs empirical confirmation on orientation 6/8 files</div>
+
+  <div class="item" data-id="orient-acr-to-ours">
+    <input type="checkbox">
+    <div class="item-body">
+      <div class="item-title">ACR mask placement matches in our app</div>
+      <div class="item-detail">
+        Open a <strong>portrait-orientation</strong> (EXIF 6 or 8) image that has an
+        ACR-authored radial mask — the mask must sit on the same subject in our edit view
+        (overlay <em>and</em> rendered effect).
+      </div>
+    </div>
+  </div>
+
+  <div class="item" data-id="orient-ours-to-acr">
+    <input type="checkbox">
+    <div class="item-body">
+      <div class="item-title">Our mask placement matches in ACR</div>
+      <div class="item-detail">
+        Drag a mask onto a specific subject on a portrait image in our app, save,
+        open in ACR — mask is where you drew it.
+      </div>
+    </div>
+  </div>
+
+  <div class="item" data-id="orient-new-mask">
+    <input type="checkbox">
+    <div class="item-body">
+      <div class="item-title">New mask defaults look right on portrait</div>
+      <div class="item-detail">
+        Add a new mask on a portrait image — it should appear as a centered
+        <strong>circle</strong> (the display-authored default is now inverse-transformed
+        before storage).
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>Sidecar mask write (dual-write parity)</h2>
+  <div class="issue-ref">Issue 3 — fixed 2026-06-12 with round-trip tests; quick on-disk sanity check</div>
+
+  <div class="item" data-id="sidecar-block">
+    <input type="checkbox">
+    <div class="item-body">
+      <div class="item-title">.xmp sidecar carries the mask block</div>
+      <div class="item-detail">
+        In dual-write (Professional) mode, save a develop edit with a mask and confirm the
+        <code>.xmp</code> next to the file contains <code>crs:MaskGroupBasedCorrections</code>
+        with <code>crs:AlreadyApplied="False"</code> — and that the sidecar mtime updated.
+      </div>
+    </div>
+  </div>
+
+  <div class="item" data-id="sidecar-raw-acr">
+    <input type="checkbox">
+    <div class="item-body">
+      <div class="item-title">ACR reads our RAW sidecar masks</div>
+      <div class="item-detail">
+        For a RAW file (ACR <em>does</em> read .xmp sidecars for RAWs, unlike JPEGs):
+        mask written by our app shows up in ACR with correct geometry and slider values.
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>Mask overlay follows crop straighten</h2>
+  <div class="issue-ref">Issue 7 — found 2026-06-12 during orientation testing, fixed same day; re-verify in-app</div>
+
+  <div class="item" data-id="straighten-overlay-matches">
+    <input type="checkbox">
+    <div class="item-body">
+      <div class="item-title">Overlay outline sits on the brightened region</div>
+      <div class="item-detail">
+        Apply an <strong>angled crop</strong> (straighten), then add a radial mask with a
+        visible effect (e.g. +1 exposure). The white overlay ellipse must align with the
+        actual brightened region — previously they were rotated apart by the straighten angle.
+      </div>
+    </div>
+  </div>
+
+  <div class="item" data-id="straighten-drag-tracks">
+    <input type="checkbox">
+    <div class="item-body">
+      <div class="item-title">Dragging/rotating tracks the cursor on a straightened image</div>
+      <div class="item-detail">
+        With an angled crop active, move and rotate the mask — the effect should follow the
+        overlay exactly during and after the drag (no drift, correct orientation on commit/reopen).
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>Edited previews everywhere (Bridge-style)</h2>
+  <div class="issue-ref">Issue 8 — fixed 2026-06-13: fullscreen defaults to edited, thumbnails render develop edits</div>
+
+  <div class="item" data-id="fullscreen-default-edited">
+    <input type="checkbox">
+    <div class="item-body">
+      <div class="item-title">Fullscreen shows fresh edits by default</div>
+      <div class="item-detail">
+        Open an edited image in full screen — the edited version (with current mask placement)
+        shows immediately, the <strong>Edits</strong> badge is on, and <strong>E</strong>
+        toggles to the original. Edit the mask, return to fullscreen — no stale render.
+      </div>
+    </div>
+  </div>
+
+  <div class="item" data-id="thumbs-show-edits">
+    <input type="checkbox">
+    <div class="item-body">
+      <div class="item-title">Grid thumbnails reflect develop edits</div>
+      <div class="item-detail">
+        Thumbnails show tonal + mask + crop edits (RAW thumbs are approximate — rendered on the
+        camera preview), and refresh after editing. The "show originals" setting still bypasses.
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>crs block replacement (one-time look)</h2>
+  <div class="issue-ref">Issue 4 — Adobe-faithful by design; just confirm the behavior is acceptable</div>
+
+  <div class="item" data-id="crs-drop">
+    <input type="checkbox">
+    <div class="item-body">
+      <div class="item-title">Intentional drop of ACR-only settings</div>
+      <div class="item-detail">
+        Develop-save in our app on a real ACR-edited JPEG that has
+        <strong>Texture / vignette / HSL / brush masks</strong> — those settings are removed
+        from the file (replaced by our full develop state). Confirm you're OK with how that
+        looks in practice.
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <span id="updated"></span>
+  <button class="reset" id="reset">Reset all</button>
+</footer>
+
+<script>
+(function () {
+  const KEY = "mask-xmp-manual-tests-v1";
+  const load = () => { try { return JSON.parse(localStorage.getItem(KEY)) || {}; } catch { return {}; } };
+  const save = (s) => localStorage.setItem(KEY, JSON.stringify(s));
+  let state = load();
+
+  const items = Array.from(document.querySelectorAll(".item"));
+  const fill = document.getElementById("fill");
+  const label = document.getElementById("label");
+  const updated = document.getElementById("updated");
+
+  function render() {
+    let done = 0;
+    for (const el of items) {
+      const id = el.dataset.id;
+      const entry = state[id] || {};
+      const box = el.querySelector("input[type=checkbox]");
+      box.checked = !!entry.done;
+      el.classList.toggle("done", !!entry.done);
+
+      let stamp = el.querySelector(".stamp");
+      if (entry.done && entry.at) {
+        if (!stamp) {
+          stamp = document.createElement("div");
+          stamp.className = "stamp";
+          el.querySelector(".item-body").appendChild(stamp);
+        }
+        stamp.textContent = "✓ " + new Date(entry.at).toLocaleString();
+      } else if (stamp) {
+        stamp.remove();
+      }
+
+      const notes = el.querySelector(".notes");
+      if (notes && document.activeElement !== notes) notes.value = entry.notes || "";
+      if (entry.done) done++;
+    }
+    const pct = items.length ? Math.round(done / items.length * 100) : 0;
+    fill.style.width = pct + "%";
+    label.textContent = done + " of " + items.length + " tests done (" + pct + "%)";
+    updated.textContent = state._touched ? "Last change: " + new Date(state._touched).toLocaleString() : "";
+  }
+
+  for (const el of items) {
+    const id = el.dataset.id;
+    const box = el.querySelector("input[type=checkbox]");
+
+    // Notes field per item
+    const notes = document.createElement("textarea");
+    notes.className = "notes";
+    notes.placeholder = "Notes / observations…";
+    notes.rows = 1;
+    el.querySelector(".item-body").appendChild(notes);
+
+    box.addEventListener("change", () => {
+      state[id] = state[id] || {};
+      state[id].done = box.checked;
+      state[id].at = box.checked ? Date.now() : null;
+      state._touched = Date.now();
+      save(state); render();
+    });
+    el.querySelector(".item-title").addEventListener("click", () => {
+      box.checked = !box.checked;
+      box.dispatchEvent(new Event("change"));
+    });
+    notes.addEventListener("input", () => {
+      state[id] = state[id] || {};
+      state[id].notes = notes.value;
+      state._touched = Date.now();
+      save(state);
+    });
+  }
+
+  document.getElementById("reset").addEventListener("click", () => {
+    if (confirm("Clear all check states and notes?")) {
+      state = {};
+      save(state); render();
+    }
+  });
+
+  render();
+})();
+</script>
+
+</body>
+</html>

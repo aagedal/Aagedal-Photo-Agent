@@ -183,6 +183,36 @@ generic ellipses instead), but worth revisiting alongside open issue 4.
    NOT yet manually verified: apply an angled crop, add/drag a radial mask, and
    confirm the overlay outline now sits exactly on the brightened region.
 
+8. **RESOLVED (2026-06-13): full-screen preview showed stale/edited render by
+   default; thumbnails ignored develop edits.** Two intertwined bugs found in
+   manual testing:
+   - BrowserViewModel.preCacheSelectedRetinaImage rendered the selected image
+     WITH develop settings but stored it in the UNEDITED full-screen cache slot
+     (`store(image, for: url)` without `isEdited:`). FullScreenImageView opened
+     with renderEdits=false, hit that entry, and showed edits anyway — and
+     develop saves only invalidate the EDITED slots, so the polluted entry went
+     stale (old mask geometry → "mask shows by default but rotation is wrong").
+     Fixed: pre-cache stores under `isEdited: !showOriginalThumbnails`.
+   - Full screen now shows the EDITED version by default (Bridge-style):
+     renderEdits starts as `!viewModel.showOriginalThumbnails`; E still toggles
+     to the original. The existing `.onChange(of: cameraRawSettings)` reload
+     covers live edits while open.
+   - Thumbnails (Bridge-style): ThumbnailService.renderEditedThumbnail now
+     applies the FULL develop pipeline via applyWithCrop (was crop-only with a
+     `crop.hasCrop` guard). All four gates updated from "has crop" to
+     "settings non-empty" (ThumbnailCollectionViewItem ×2,
+     CollectionViewGridController prefetch, EditWorkspaceView post-edit
+     re-render). Caveat: for RAW files the QL thumb is the camera-rendered
+     preview, so tonal/WB on thumbs is approximate — accepted (full-screen and
+     export renders stay exact).
+   - Develop-settings sync (EditWorkspaceView syncCameraRawToImageFile + the
+     paste-to-multiple path) now also calls
+     fullScreenImageCache.invalidateEditedImage alongside
+     invalidateEditedThumbnail.
+   MANUAL CHECK: select an edited image → fullscreen shows edits with correct
+   mask placement immediately; E toggles original; grid thumbs show tonal+mask
+   edits, and update after editing.
+
 6. **RESOLVED (2026-06-12 late evening): angled-crop XMP encoding converted to
    Adobe's at the boundary.** `CameraRawCrop.encodedForACR(aspect:)` /
    `decodedFromACR(aspect:)` (Models/IPTCMetadata.swift) rotate the corner

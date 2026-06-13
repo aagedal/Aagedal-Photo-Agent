@@ -1028,7 +1028,7 @@ struct EditWorkspaceView: View {
         if let url = selectedImageURL,
            let index = browserViewModel.urlToImageIndex[url] {
             let imageFile = browserViewModel.images[index]
-            if let settings = imageFile.cameraRawSettings, settings.crop?.isEmpty == false {
+            if let settings = imageFile.cameraRawSettings, !settings.isEmpty {
                 let orientation = imageFile.exifOrientation
                 let thumbnailService = browserViewModel.thumbnailService
                 thumbnailService.invalidateEditedThumbnail(for: url)
@@ -1910,6 +1910,8 @@ struct EditWorkspaceView: View {
         browserViewModel.images[index].hasDevelopEdits = newSettings != nil && !newSettings!.isEmpty
         browserViewModel.images[index].hasCropEdits = newSettings?.crop?.isEmpty == false
         browserViewModel.thumbnailService.invalidateEditedThumbnail(for: url)
+        // The full-screen cache's edited render was baked under the old settings.
+        browserViewModel.fullScreenImageCache.invalidateEditedImage(for: url)
     }
 
     private func fittedImageRect(in containerSize: CGSize, imageSize: CGSize) -> CGRect {
@@ -3175,6 +3177,7 @@ struct EditWorkspaceView: View {
                     browserViewModel.images[index].hasCropEdits = true
                 }
                 browserViewModel.thumbnailService.invalidateEditedThumbnail(for: url)
+                browserViewModel.fullScreenImageCache.invalidateEditedImage(for: url)
             }
         }
 

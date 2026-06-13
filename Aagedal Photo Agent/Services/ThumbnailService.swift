@@ -103,13 +103,13 @@ final class ThumbnailService {
             }
 
             // Unwrap the CGImage on the current actor (cheap — the thumbnail is
-            // already a bitmap rep), then render the crop off-main. The CoreImage
+            // already a bitmap rep), then render the edits off-main. The CoreImage
             // render must not run on the MainActor or it hitches grid scrolling.
-            guard settings.crop?.hasCrop == true,
+            guard !settings.isEmpty,
                   let cgImage = original.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
                 return nil
             }
-            guard let outputCG = await Self.renderCroppedThumbnail(
+            guard let outputCG = await Self.renderEditedThumbnail(
                 cgImage: cgImage, settings: settings, exifOrientation: exifOrientation) else {
                 return nil
             }
@@ -183,25 +183,27 @@ final class ThumbnailService {
         }
     }
 
-    /// Applies only crop/rotation to a thumbnail — skips tonal and color adjustments.
-    /// The QL thumbnail already has camera processing baked in, so applying the full
-    /// CameraRaw pipeline would produce incorrect white balance and color.
+    /// Applies the full develop pipeline (tonal + masks + crop/rotation) to a
+    /// thumbnail so grid thumbs reflect edits, Bridge-style. For RAW files the QL
+    /// thumbnail is the camera-rendered preview (camera processing baked in), so
+    /// tonal/WB results are approximate there — an accepted trade-off: an
+    /// approximate edited thumb beats an untouched one, and the full-screen and
+    /// export renders stay exact.
     ///
     /// `nonisolated static async` so the CoreImage render runs on the cooperative
     /// pool, off the MainActor. Takes/returns `CGImage` (Sendable) to cross the
     /// isolation boundary cleanly.
-    nonisolated private static func renderCroppedThumbnail(
+    nonisolated private static func renderEditedThumbnail(
         cgImage: CGImage, settings: CameraRawSettings, exifOrientation: Int
     ) async -> CGImage? {
         let ciImage = CIImage(cgImage: cgImage)
-        let extent = ciImage.extent
-        let cropped = CameraRawApproximation.applyCrop(
-            to: ciImage, originalExtent: extent, settings: settings, exifOrientation: exifOrientation)
-        let croppedExtent = cropped.extent
-        guard croppedExtent.width > 0, croppedExtent.height > 0 else { return nil }
+        let edited = CameraRawApproximation.applyWithCrop(
+            to: ciImage, settings: settings, exifOrientation: exifOrientation)
+        let editedExtent = edited.extent
+        guard editedExtent.width > 0, editedExtent.height > 0 else { return nil }
 
         return CameraRawApproximation.ciContext.createCGImage(
-            cropped, from: croppedExtent, format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB()
+            edited, from: editedExtent, format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB()
         )
     }
 

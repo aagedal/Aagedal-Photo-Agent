@@ -527,8 +527,10 @@ struct FullScreenImageView: View {
         .focusEffectDisabled()
         .onAppear {
             isFocused = true
-            // Full screen always starts with originals; press E to toggle edits
-            renderEdits = false
+            // Full screen shows the edited version by default (Bridge-style);
+            // press E to toggle back to the original. Respects the global
+            // "show originals" preference.
+            renderEdits = !viewModel.showOriginalThumbnails
             // Initialize face rectangles from context (visible by default when opened from face view)
             showFaceRectangles = viewModel.fullScreenFaceContext?.highlightedFaceID != nil
             // Register actions with the controller
