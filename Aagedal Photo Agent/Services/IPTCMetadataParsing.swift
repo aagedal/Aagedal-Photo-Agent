@@ -58,6 +58,7 @@ nonisolated enum MetadataDictKey {
     static let crsSaturation = "Saturation"
     static let crsVibrance = "Vibrance"
     static let crsHasSettings = "HasSettings"
+    static let crsAlreadyApplied = "AlreadyApplied"
     static let crsCropTop = "CropTop"
     static let crsCropLeft = "CropLeft"
     static let crsCropBottom = "CropBottom"
@@ -450,9 +451,19 @@ nonisolated func iptcMetadataFromDict(_ dict: [String: Any]) -> IPTCMetadata {
         event: dict[MetadataDictKey.event] as? String,
         rating: dict[MetadataDictKey.rating] as? Int,
         label: ColorLabel.canonicalMetadataLabel(dict[MetadataDictKey.label] as? String),
-        cameraRaw: cameraRaw.isEmpty ? nil : cameraRaw,
+        cameraRaw: (cameraRaw.isEmpty || crsIsAlreadyApplied(in: dict)) ? nil : cameraRaw,
         exifOrientation: parseIntValue(dict[MetadataDictKey.orientation])
     )
+}
+
+/// True when a file's crs block is marked `AlreadyApplied="True"` — the develop
+/// settings are already baked into the pixels (e.g. our own export, or a JPEG ACR
+/// rendered from RAW), so they must NOT be re-loaded as live edits or they would be
+/// applied a second time on top of the baked render. Absence or `"False"` means the
+/// settings are live and editable.
+nonisolated func crsIsAlreadyApplied(in dict: [String: Any]) -> Bool {
+    guard let raw = dict[MetadataDictKey.crsAlreadyApplied] as? String else { return false }
+    return raw.caseInsensitiveCompare("True") == .orderedSame
 }
 
 /// Detect a Description vs IPTC Caption-Abstract conflict.

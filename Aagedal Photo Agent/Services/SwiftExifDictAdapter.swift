@@ -110,7 +110,7 @@ extension ImageMetadata {
                 MetadataDictKey.crsHighlights2012, MetadataDictKey.crsShadows2012,
                 MetadataDictKey.crsWhites2012, MetadataDictKey.crsBlacks2012,
                 MetadataDictKey.crsSaturation, MetadataDictKey.crsVibrance,
-                MetadataDictKey.crsHasSettings,
+                MetadataDictKey.crsHasSettings, MetadataDictKey.crsAlreadyApplied,
                 MetadataDictKey.crsCropTop, MetadataDictKey.crsCropLeft,
                 MetadataDictKey.crsCropBottom, MetadataDictKey.crsCropRight,
                 MetadataDictKey.crsCropAngle, MetadataDictKey.crsHasCrop,

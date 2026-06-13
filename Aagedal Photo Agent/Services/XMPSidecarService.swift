@@ -809,6 +809,14 @@ struct XMPSidecarService: Sendable {
     }
 
     private func parseCameraRawSettings(from description: XMLElement, imageAspect: () -> Double?) -> CameraRawSettings? {
+        // A block marked AlreadyApplied="True" describes edits already baked into the
+        // pixels (documentation, not live state) — never load it as editable settings,
+        // or they'd be applied a second time. Our own RAW sidecars write "False".
+        if let applied = parseSimple(from: description, prefix: "crs", localName: "AlreadyApplied"),
+           applied.caseInsensitiveCompare("True") == .orderedSame {
+            return nil
+        }
+
         let version = parseSimple(from: description, prefix: "crs", localName: "Version")
         let processVersion = parseSimple(from: description, prefix: "crs", localName: "ProcessVersion")
         let whiteBalance = parseSimple(from: description, prefix: "crs", localName: "WhiteBalance")

@@ -163,7 +163,11 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         }
     }
 
-    func copyMetadataToRenderedFile(from source: URL, to destination: URL) async throws {
+    func copyMetadataToRenderedFile(
+        from source: URL,
+        to destination: URL,
+        bakedCameraRaw: CameraRawSettings?
+    ) async throws {
         // Read the source under its own lock so it can't be read mid-write while the user
         // edits the original. Locks are released between the two phases (source and destination
         // are distinct files / keys), which avoids any same-key re-entrancy.
@@ -203,12 +207,27 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
             destMetadata.iptc = sourceMetadata.iptc
             destMetadata.xmp = sourceMetadata.xmp
 
-            // Drop the entire Adobe Camera Raw namespace the source may have
-            // carried. The rendered file is the baked-in result, so leaving any
-            // crs property around — including ones the app doesn't model, like
-            // ACR's Texture or HSL — would let editors apply adjustments a
-            // second time on top of the baked pixels.
+            // Drop the entire Adobe Camera Raw namespace the source may have carried —
+            // including settings the app doesn't model (ACR's Texture, HSL, …) and any
+            // live AlreadyApplied="False" marker from the source — so the rendered file
+            // starts from a clean crs slate.
             destMetadata.xmp?.removeAll(namespace: crsNamespace)
+
+            // Re-emit the develop settings that were baked into the rendered pixels as a
+            // crs block marked AlreadyApplied="True". This documents how the image was
+            // edited; the True marker means ACR/Bridge — and our own reader (see
+            // crsIsAlreadyApplied) — treat the settings as already applied and never
+            // re-apply them on top of the baked render. When there were no edits, the crs
+            // block stays empty.
+            if let baked = bakedCameraRaw, !baked.isEmpty {
+                self.embedBakedCameraRaw(baked, sourceURL: source, into: &destMetadata)
+            }
+
+            // Stamp the producing application so the export records that it was rendered
+            // by this app and version. xmp:CreatorTool is the Adobe/Lightroom convention
+            // for "software that produced this rendition"; it does not clobber the
+            // camera's original EXIF/TIFF Software string copied above.
+            self.stampCreatorTool(into: &destMetadata)
 
             // Drop the IFD1 thumbnail and ICC profile from the source — the renderer
             // is expected to set its own profile and produce a fresh thumbnail when
@@ -589,6 +608,43 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
             if metadata.xmp == nil { metadata.xmp = XMPData() }
             metadata.xmp?.setValue(.simple(value), namespace: crsNamespace, property: property)
         }
+    }
+
+    /// Re-emit the develop settings baked into a rendered export as a crs block marked
+    /// `AlreadyApplied="True"`. Reuses the same simple-field / tone-curve / mask writers as
+    /// a live develop write, then overrides the marker to True (the live writers stamp
+    /// "False"). The caller is expected to have cleared the crs namespace first.
+    private func embedBakedCameraRaw(
+        _ settings: CameraRawSettings,
+        sourceURL: URL,
+        into metadata: inout ImageMetadata
+    ) {
+        let fields = settings.developWriteFields(imageAspect: { ImagePixelAspect.aspect(at: sourceURL) })
+        for (key, value) in fields {
+            applyField(key: key, value: value, metadata: &metadata)
+        }
+        if let tc = settings.toneCurve, !tc.isEmpty {
+            applyToneCurves(tc, metadata: &metadata)
+        }
+        if let masks = settings.localAdjustments, !masks.isEmpty {
+            applyMasks(masks, metadata: &metadata)
+        }
+        if metadata.xmp == nil { metadata.xmp = XMPData() }
+        metadata.xmp?.setValue(.simple("True"), namespace: crsNamespace, property: "AlreadyApplied")
+        metadata.xmp?.setValue(.simple("234881024"), namespace: crsNamespace, property: "CompatibleVersion")
+    }
+
+    /// `xmp:CreatorTool` value identifying the producing app + version, e.g.
+    /// "Aagedal Photo Agent 2.0.0".
+    nonisolated static let creatorTool: String = {
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
+        return version.isEmpty ? "Aagedal Photo Agent" : "Aagedal Photo Agent \(version)"
+    }()
+
+    /// Stamp `xmp:CreatorTool` so a rendered export records which app/version produced it.
+    private func stampCreatorTool(into metadata: inout ImageMetadata) {
+        if metadata.xmp == nil { metadata.xmp = XMPData() }
+        metadata.xmp?.setValue(.simple(Self.creatorTool), namespace: XMPNamespace.xmp, property: "CreatorTool")
     }
 
     // MARK: - List Operations

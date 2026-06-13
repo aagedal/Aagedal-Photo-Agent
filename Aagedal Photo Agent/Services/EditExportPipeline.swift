@@ -75,7 +75,8 @@ enum EditExportPipeline {
         let isHDR = (cameraRaw?.hdrEditMode == 1)
         let copier: EditedImageRenderer.MetadataCopier = { src, dst in
             do {
-                try await writeEngine.copyMetadataToRenderedFile(from: src, to: dst)
+                try await writeEngine.copyMetadataToRenderedFile(
+                    from: src, to: dst, bakedCameraRaw: cameraRaw)
             } catch {
                 await failureTracker.recordCopyFailure(src.lastPathComponent)
             }

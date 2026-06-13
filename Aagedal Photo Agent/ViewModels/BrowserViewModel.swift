@@ -1120,6 +1120,10 @@ final class BrowserViewModel {
             sdrBlend: parseIntValue(dict[MetadataDictKey.crsSDRBlend]),
             toneCurve: toneCurve
         )
+        // A crs block marked AlreadyApplied="True" is baked into the pixels (our own
+        // export, or an ACR-rendered-from-RAW JPEG) — treat it as unedited so the
+        // settings aren't applied a second time on top of the already-baked render.
+        if crsIsAlreadyApplied(in: dict) { return nil }
         return settings.isEmpty ? nil : settings
     }
 

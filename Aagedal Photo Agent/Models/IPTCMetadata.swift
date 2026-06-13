@@ -458,6 +458,83 @@ nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
         }
         return result
     }
+
+    /// Canonical serialization of the *simple* (non-array) crs develop settings to a
+    /// metadata write-key dictionary in ACR's value style (signed ints, +exposure,
+    /// 6-decimal crop). Tone curves and masks are array-typed and written separately by
+    /// the engine (`applyToneCurves` / `applyMasks`). HSL is sidecar-only and not emitted
+    /// here. `imageAspect` is read only for an angled crop (un-rotated-frame ACR encoding);
+    /// the conversion is the identity at angle 0, so the closure is left uncalled otherwise.
+    nonisolated func developWriteFields(imageAspect: () -> Double? = { nil }) -> [MetadataFieldKey: String] {
+        func signedInt(_ value: Int) -> String { value > 0 ? "+\(value)" : "\(value)" }
+        func signedDouble(_ value: Double, precision: Int) -> String {
+            let absValue = String(format: "%.\(precision)f", abs(value))
+            if value > 0 { return "+\(absValue)" }
+            if value < 0 { return "-\(absValue)" }
+            return absValue
+        }
+
+        var fields: [MetadataFieldKey: String] = [:]
+        // ACR requires Version and ProcessVersion to recognize settings.
+        fields[.crsVersion] = version ?? "15.4"
+        fields[.crsProcessVersion] = processVersion ?? "15.4"
+
+        // Present values are written; nils are emitted empty so a partial reset clears
+        // any stale value rather than leaving it behind.
+        fields[.crsWhiteBalance] = whiteBalance ?? ""
+        fields[.crsTemperature] = temperature.map(String.init) ?? ""
+        fields[.crsTint] = tint.map(signedInt) ?? ""
+        fields[.crsIncrementalTemperature] = incrementalTemperature.map(signedInt) ?? ""
+        fields[.crsIncrementalTint] = incrementalTint.map(signedInt) ?? ""
+        fields[.crsExposure2012] = exposure2012.map { signedDouble($0, precision: 2) } ?? ""
+        fields[.crsContrast2012] = contrast2012.map(signedInt) ?? ""
+        fields[.crsHighlights2012] = highlights2012.map(signedInt) ?? ""
+        fields[.crsShadows2012] = shadows2012.map(signedInt) ?? ""
+        fields[.crsWhites2012] = whites2012.map(signedInt) ?? ""
+        fields[.crsBlacks2012] = blacks2012.map(signedInt) ?? ""
+        fields[.crsSaturation] = saturation.map(signedInt) ?? ""
+        fields[.crsVibrance] = vibrance.map(signedInt) ?? ""
+
+        let settingsPresent = hasSettings ?? !isEmpty
+        fields[.crsHasSettings] = settingsPresent ? "True" : "False"
+
+        if let internalCrop = crop {
+            // crs crop fields carry Adobe's un-rotated-frame corner encoding, not the
+            // app's upright rect — convert at this write boundary (identity at angle 0).
+            let acrCrop = abs(internalCrop.angle ?? 0) > 0.0001
+                ? internalCrop.encodedForACR(aspect: imageAspect())
+                : internalCrop
+            fields[.crsCropTop] = acrCrop.top.map { String(format: "%.6f", $0) } ?? ""
+            fields[.crsCropLeft] = acrCrop.left.map { String(format: "%.6f", $0) } ?? ""
+            fields[.crsCropBottom] = acrCrop.bottom.map { String(format: "%.6f", $0) } ?? ""
+            fields[.crsCropRight] = acrCrop.right.map { String(format: "%.6f", $0) } ?? ""
+            fields[.crsCropAngle] = acrCrop.angle.map { String(format: "%.6f", $0) } ?? ""
+            let hasCrop = acrCrop.hasCrop ?? !acrCrop.isEmpty
+            fields[.crsHasCrop] = hasCrop ? "True" : "False"
+            fields[.crsCropConstrainToWarp] = "0"
+            fields[.crsCropConstrainToUnitSquare] = "1"
+        } else {
+            fields[.crsCropTop] = ""
+            fields[.crsCropLeft] = ""
+            fields[.crsCropBottom] = ""
+            fields[.crsCropRight] = ""
+            fields[.crsCropAngle] = ""
+            fields[.crsHasCrop] = "False"
+            fields[.crsCropConstrainToWarp] = ""
+            fields[.crsCropConstrainToUnitSquare] = ""
+        }
+
+        fields[.crsHDREditMode] = hdrEditMode.map(String.init) ?? ""
+        fields[.crsHDRMaxValue] = hdrMaxValue ?? ""
+        fields[.crsSDRBrightness] = sdrBrightness.map(signedInt) ?? ""
+        fields[.crsSDRContrast] = sdrContrast.map(signedInt) ?? ""
+        fields[.crsSDRClarity] = sdrClarity.map(signedInt) ?? ""
+        fields[.crsSDRHighlights] = sdrHighlights.map(signedInt) ?? ""
+        fields[.crsSDRShadows] = sdrShadows.map(signedInt) ?? ""
+        fields[.crsSDRWhites] = sdrWhites.map(signedInt) ?? ""
+        fields[.crsSDRBlend] = sdrBlend.map(signedInt) ?? ""
+        return fields
+    }
 }
 
 extension CameraRawCrop {

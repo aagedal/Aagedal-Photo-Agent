@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import AppKit
+import SwiftExif
 @testable import Aagedal_Photo_Agent
 
 /// Verifies the shared export pipeline both renders a file AND overlays pending IPTC
@@ -60,6 +61,70 @@ struct EditExportPipelineTests {
         let meta = try await SwiftExifReadService().readFullMetadata(url: rendered)
         #expect(Set(meta.keywords) == Set(["aurora", "fjord"]))
         #expect(meta.title == "Aurora over the fjord")
+    }
+
+    /// On export the develop settings that were baked into the pixels are re-emitted as a
+    /// crs block marked AlreadyApplied="True" (documentation of how the image was edited),
+    /// the app/version is stamped via xmp:CreatorTool, and — crucially — re-reading that
+    /// rendered file yields NO live cameraRaw, so the baked edits are never applied twice.
+    @Test("export embeds baked crs marked AlreadyApplied=True + CreatorTool, and re-reads as un-edited")
+    func renderItemEmbedsBakedCRS() async throws {
+        let (dir, source) = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        var baked = CameraRawSettings()
+        baked.exposure2012 = 0.5
+        baked.contrast2012 = 20
+
+        let outDir = dir.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+
+        let tracker = MetadataFailureTracker()
+        let rendered = try await EditExportPipeline.renderItem(
+            sourceURL: source, cameraRaw: baked, kind: .jpeg,
+            outputFolder: outDir, folderURL: source.deletingLastPathComponent(),
+            writeEngine: SwiftExifWriteEngine(), failureTracker: tracker)
+
+        let crsNS = "http://ns.adobe.com/camera-raw-settings/1.0/"
+        let xmpNS = "http://ns.adobe.com/xap/1.0/"
+        let embedded = try SwiftExif.readMetadata(from: rendered)
+        // The baked develop settings are present, but flagged as already applied.
+        #expect(embedded.xmp?.simpleValue(namespace: crsNS, property: "AlreadyApplied") == "True")
+        #expect(embedded.xmp?.simpleValue(namespace: crsNS, property: "Exposure2012") == "+0.50")
+        #expect(embedded.xmp?.simpleValue(namespace: crsNS, property: "Contrast2012") == "+20")
+        // The producing app + version is recorded.
+        let creatorTool = embedded.xmp?.simpleValue(namespace: xmpNS, property: "CreatorTool")
+        #expect(creatorTool?.hasPrefix("Aagedal Photo Agent") == true)
+
+        // The guard: reading the exported file back must NOT surface the settings as live
+        // edits — otherwise they'd be re-applied on top of the already-baked pixels.
+        let reread = try await SwiftExifReadService().readFullMetadata(url: rendered)
+        #expect(reread.cameraRaw == nil)
+    }
+
+    /// An unedited export (no cameraRaw) carries no crs block but is still stamped with the
+    /// producing app via xmp:CreatorTool.
+    @Test("unedited export writes no crs block but still stamps CreatorTool")
+    func renderItemStampsCreatorToolWithoutEdits() async throws {
+        let (dir, source) = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let outDir = dir.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+
+        let tracker = MetadataFailureTracker()
+        let rendered = try await EditExportPipeline.renderItem(
+            sourceURL: source, cameraRaw: nil, kind: .jpeg,
+            outputFolder: outDir, folderURL: source.deletingLastPathComponent(),
+            writeEngine: SwiftExifWriteEngine(), failureTracker: tracker)
+
+        let crsNS = "http://ns.adobe.com/camera-raw-settings/1.0/"
+        let xmpNS = "http://ns.adobe.com/xap/1.0/"
+        let embedded = try SwiftExif.readMetadata(from: rendered)
+        #expect(embedded.xmp?.simpleValue(namespace: crsNS, property: "AlreadyApplied") == nil)
+        #expect(embedded.xmp?.simpleValue(namespace: crsNS, property: "Exposure2012") == nil)
+        #expect(embedded.xmp?.simpleValue(namespace: xmpNS, property: "CreatorTool")?
+            .hasPrefix("Aagedal Photo Agent") == true)
     }
 
     /// The sidecar is the authoritative edited state on export: a descriptive field the

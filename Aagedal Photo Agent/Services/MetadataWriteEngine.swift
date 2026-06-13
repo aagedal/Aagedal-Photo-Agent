@@ -51,7 +51,23 @@ protocol MetadataWriteEngine: AnyObject, Sendable {
     func stripIPTCAndXMP(from urls: [URL]) async throws
 
     /// Copy all metadata from source to rendered destination with standard exclusions.
-    func copyMetadataToRenderedFile(from source: URL, to destination: URL) async throws
+    ///
+    /// `bakedCameraRaw` are the develop settings that were applied into the rendered
+    /// pixels. When provided, they're re-emitted into the destination's crs block marked
+    /// `AlreadyApplied="True"` — documenting how the image was edited without letting any
+    /// reader re-apply them on top of the baked render. When nil (no edits), the crs block
+    /// is left empty.
+    func copyMetadataToRenderedFile(
+        from source: URL,
+        to destination: URL,
+        bakedCameraRaw: CameraRawSettings?
+    ) async throws
+}
+
+extension MetadataWriteEngine {
+    func copyMetadataToRenderedFile(from source: URL, to destination: URL) async throws {
+        try await copyMetadataToRenderedFile(from: source, to: destination, bakedCameraRaw: nil)
+    }
 }
 
 extension MetadataWriteEngine {

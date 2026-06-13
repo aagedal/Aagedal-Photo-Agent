@@ -3092,7 +3092,8 @@ struct EditWorkspaceView: View {
                 let failureTracker = MetadataFailureTracker()
                 let copier: EditedImageRenderer.MetadataCopier = { src, dst in
                     do {
-                        try await engine.copyMetadataToRenderedFile(from: src, to: dst)
+                        try await engine.copyMetadataToRenderedFile(
+                            from: src, to: dst, bakedCameraRaw: settings)
                     } catch {
                         await failureTracker.recordCopyFailure(src.lastPathComponent)
                     }
