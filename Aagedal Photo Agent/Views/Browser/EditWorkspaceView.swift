@@ -3680,6 +3680,24 @@ struct EditWorkspaceView: View {
             return nil
         }
 
+        // Option+V — paste develop settings including crop (crop is opt-in,
+        // matching Adobe's copy-dialog default of leaving crop unchecked).
+        // Exclude Cmd+Option+V, which is reserved for Paste IPTC Metadata.
+        if chars == "v" && modifiers.contains(.option) && !modifiers.contains(.command) {
+            guard let copied = browserViewModel.copiedCameraRawSettings else { return event }
+            let selectedURLs = browserViewModel.selectedImageIDs
+            guard !selectedURLs.isEmpty else { return event }
+
+            if selectedURLs.count == 1 {
+                pasteCameraRawSettings(copied, includeCrop: true)
+                showCopyPasteFeedback("Pasted (with crop)")
+            } else {
+                pasteToMultipleImages(copied, urls: selectedURLs, includeCrop: true)
+                showCopyPasteFeedback("Pasted to \(selectedURLs.count) images (with crop)")
+            }
+            return nil
+        }
+
         // Cmd+Z / Cmd+Shift+Z — undo/redo
         if chars == "z" && modifiers.contains(.command) {
             if modifiers.contains(.shift) {

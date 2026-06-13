@@ -51,6 +51,7 @@ struct KeyboardShortcutsSettingsView: View {
             ("\u{2318}C", "Copy Develop Settings"),
             ("C", "Toggle Crop Controls"),
             ("\u{2318}V", "Paste Develop Settings"),
+            ("\u{2325}V", "Paste with Crop"),
             ("\u{2318}\u{21E7}V", "Paste with Crop"),
             ("\u{2318}Z", "Undo"),
             ("\u{2318}\u{21E7}Z", "Redo"),
