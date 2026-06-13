@@ -190,11 +190,21 @@ struct FullScreenImageView: View {
     @State private var currentImage: LoadedImage?
     @State private var originalCGImage: CGImage?
     @State private var isLoading = false
+    /// True while the zoom-triggered full-resolution decode is in flight. Drives
+    /// the "Loading hires…" overlay, which is shown only while zoomed — the
+    /// retina/preview background upgrades stay silent.
+    @State private var isLoadingHires = false
     @State private var loadError: String?
     @State private var fullLoadTask: Task<Void, Never>?
     @State private var phase05Task: Task<CGImage?, Never>?
     @State private var fullResTask: Task<Void, Never>?
     @State private var isFullResLoaded = false
+    /// Set once the retina Phase 2 decode has applied its result for the current
+    /// load generation. Phase 0.5 (the quick low-res preview) runs concurrently
+    /// and finishes its `await` after Phase 2 in some cases (cached/fast retina
+    /// decode) — without this guard it would overwrite the sharp image with the
+    /// 960px preview, leaving the view stuck on low-res.
+    @State private var hiResApplied = false
     @State private var showLabelPicker = false
     @State private var hideOverlays = false
     @FocusState private var isFocused: Bool
@@ -384,17 +394,16 @@ struct FullScreenImageView: View {
                 }
 
                 if !hideOverlays {
-                    if isLoading {
-                        VStack(spacing: 8) {
-                            ProgressView()
-                                .controlSize(.small)
-                                .tint(.white)
-                            Text("Loading\u{2026}")
-                                .font(.caption)
-                                .foregroundStyle(.white.opacity(0.7))
-                        }
-                        .padding(12)
-                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                    // Cold load only: while there's nothing on screen yet. Once any
+                    // preview is up, background quality upgrades (retina Phase 2)
+                    // happen silently — no overlay.
+                    if isLoading && currentImage == nil {
+                        loadingOverlay(text: "Loading\u{2026}")
+                    } else if isLoadingHires && zoomScale > 1.0 {
+                        // Zoom-triggered full-resolution decode: the fit-view image is
+                        // already sharp enough, so this overlay only appears when the
+                        // user has zoomed in and is waiting for full detail.
+                        loadingOverlay(text: "Loading hires\u{2026}")
                     }
 
                     if let loadError, currentImage == nil {
@@ -583,6 +592,7 @@ struct FullScreenImageView: View {
                 isZoomedTo100 = false
             }
             isFullResLoaded = false
+            isLoadingHires = false
             fullResTask?.cancel()
             fullResTask = nil
             phase05Task?.cancel()
@@ -824,6 +834,20 @@ struct FullScreenImageView: View {
         return result
     }
 
+    @ViewBuilder
+    private func loadingOverlay(text: String) -> some View {
+        VStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+                .tint(.white)
+            Text(text)
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.7))
+        }
+        .padding(12)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+    }
+
     private func loadImage() async {
         let filename = currentImageFile?.url.lastPathComponent ?? "nil"
         imageLogger.info("loadImage called for \(filename)")
@@ -836,6 +860,8 @@ struct FullScreenImageView: View {
         // Bump generation so any in-flight Phase 2 detached tasks discard their results
         renderGeneration += 1
         let expectedGeneration = renderGeneration
+        // New load: no retina result applied yet for this generation.
+        hiResApplied = false
 
         // Cancel any in-flight loads from the previous image / render mode
         if fullLoadTask != nil {
@@ -984,6 +1010,7 @@ struct FullScreenImageView: View {
                           currentImageFile?.url == url else { return }
                     imageLogger.info("\(filename): Phase 2 done in \(String(format: "%.1f", fullElapsed * 1000))ms (\(image.width)x\(image.height))")
                     currentImage = makeLoadedImage(from: image)
+                    hiResApplied = true
                     lastLoadedOrientation = imageOrientation
                     imageCache.store(image, for: url, isEdited: isEdited)
                     triggerPrefetch(for: url)
@@ -1067,6 +1094,7 @@ struct FullScreenImageView: View {
                 if currentImageFile?.url == url {
                     imageLogger.info("\(filename): Phase 2 done in \(String(format: "%.1f", fullElapsed * 1000))ms (\(image.width)x\(image.height))")
                     currentImage = makeLoadedImage(from: image)
+                    hiResApplied = true
                     lastLoadedOrientation = imageOrientation
                     isLoading = false
                     loadError = nil
@@ -1108,9 +1136,15 @@ struct FullScreenImageView: View {
         let previewElapsed = CFAbsoluteTimeGetCurrent() - previewStart
         guard !Task.isCancelled else { return }
         if let preview, currentImageFile?.url == url {
-            imageLogger.info("\(filename): Phase 0.5 in \(String(format: "%.1f", previewElapsed * 1000))ms (\(preview.width)x\(preview.height))")
-            currentImage = makeLoadedImage(from: preview)
+            // Always cache the preview, but only show it if Phase 2 (retina) hasn't
+            // already won the race — otherwise we'd downgrade a sharp image.
             imageCache.storeDisplayPreview(preview, for: url, isEdited: isEdited)
+            if !hiResApplied {
+                imageLogger.info("\(filename): Phase 0.5 in \(String(format: "%.1f", previewElapsed * 1000))ms (\(preview.width)x\(preview.height))")
+                currentImage = makeLoadedImage(from: preview)
+            } else {
+                imageLogger.info("\(filename): Phase 0.5 ready but retina already applied — keeping hi-res")
+            }
         }
         // defer { isLoading = false } at function entry handles clearing the loading overlay.
         // Phase 2 upgrades quality silently in the background.
@@ -1142,16 +1176,16 @@ struct FullScreenImageView: View {
         let zoomFileOrientation = lastLoadedOrientation
         let expectedGeneration = renderGeneration
         imageLogger.info("\(filename): Loading full resolution for zoom")
-        isLoading = true
+        // Hi-res overlay (not the cold-load overlay): the fit-view image is
+        // already on screen and sharp enough; this only signals the zoom upgrade.
+        isLoadingHires = true
         fullResTask = Task.detached(priority: .medium) {
-            guard !Task.isCancelled else { return }
             let fullStart = CFAbsoluteTimeGetCurrent()
             var image: CGImage?
-            if needsHDRFullRes {
+            if !Task.isCancelled, needsHDRFullRes {
                 if isRAWFile {
                     // Use CIRAWFilter for flat/neutral full-res decode — get as-shot WB
-                    if let rawResult = FullScreenImageCache.loadRAWImage(from: url, draftMode: false) {
-                        guard !Task.isCancelled else { return }
+                    if let rawResult = FullScreenImageCache.loadRAWImage(from: url, draftMode: false), !Task.isCancelled {
                         var settings = cameraRaw
                         settings?.asShotNeutralTemperature = Double(rawResult.neutralTemperature)
                         settings?.asShotNeutralTint = Double(rawResult.neutralTint)
@@ -1159,29 +1193,25 @@ struct FullScreenImageView: View {
                         image = Self.applyCameraRaw(to: rawResult.image, settings: settings, exifOrientation: orientation, fileOrientation: zoomFileOrientation)
                     }
                 } else {
-                    if let ciImage = FullScreenImageCache.loadHDRFullResolution(from: url) {
-                        guard !Task.isCancelled else { return }
+                    if let ciImage = FullScreenImageCache.loadHDRFullResolution(from: url), !Task.isCancelled {
                         image = Self.applyCameraRaw(to: ciImage, settings: cameraRaw, exifOrientation: orientation, fileOrientation: zoomFileOrientation)
                     }
                 }
             }
-            guard !Task.isCancelled else { return }
-            if image == nil {
-                guard var loaded = FullScreenImageCache.loadFullResolution(from: url) else { return }
-                guard !Task.isCancelled else { return }
-                loaded = Self.applyCameraRaw(to: loaded, settings: cameraRaw, exifOrientation: orientation, fileOrientation: zoomFileOrientation)
-                image = loaded
+            if image == nil, !Task.isCancelled, let loaded = FullScreenImageCache.loadFullResolution(from: url), !Task.isCancelled {
+                image = Self.applyCameraRaw(to: loaded, settings: cameraRaw, exifOrientation: orientation, fileOrientation: zoomFileOrientation)
             }
-            guard let image else { return }
             let elapsed = CFAbsoluteTimeGetCurrent() - fullStart
-            guard !Task.isCancelled else { return }
+            // Always hop to main to clear the overlay, even on cancel/failure, so
+            // "Loading hires…" can never get stuck.
             await MainActor.run {
                 guard expectedGeneration == renderGeneration,
                       currentImageFile?.url == url else { return }
+                isLoadingHires = false
+                guard let image else { return }
                 imageLogger.info("\(filename): Full resolution loaded in \(String(format: "%.1f", elapsed * 1000))ms (\(image.width)x\(image.height))")
                 currentImage = makeLoadedImage(from: image)
                 isFullResLoaded = true
-                isLoading = false
             }
         }
     }
