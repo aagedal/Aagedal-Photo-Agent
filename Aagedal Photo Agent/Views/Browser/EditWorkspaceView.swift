@@ -3185,23 +3185,19 @@ struct EditWorkspaceView: View {
         // Write camera raw settings to XMP in the image files
         let targetURLs = Array(urls)
         Task {
-            var fields: [MetadataFieldKey: String] = [:]
-            fields[.crsVersion] = cameraRaw.version ?? "15.4"
-            fields[.crsProcessVersion] = cameraRaw.processVersion ?? "15.4"
-            fields[.crsWhiteBalance] = cameraRaw.whiteBalance ?? ""
-            fields[.crsTemperature] = cameraRaw.temperature.map(String.init) ?? ""
-            fields[.crsTint] = cameraRaw.tint.map(String.init) ?? ""
-            fields[.crsIncrementalTemperature] = cameraRaw.incrementalTemperature.map(String.init) ?? ""
-            fields[.crsIncrementalTint] = cameraRaw.incrementalTint.map(String.init) ?? ""
-            fields[.crsExposure2012] = cameraRaw.exposure2012.map { String(format: "%.2f", $0) } ?? ""
-            fields[.crsContrast2012] = cameraRaw.contrast2012.map(String.init) ?? ""
-            fields[.crsHighlights2012] = cameraRaw.highlights2012.map(String.init) ?? ""
-            fields[.crsShadows2012] = cameraRaw.shadows2012.map(String.init) ?? ""
-            fields[.crsWhites2012] = cameraRaw.whites2012.map(String.init) ?? ""
-            fields[.crsBlacks2012] = cameraRaw.blacks2012.map(String.init) ?? ""
-            fields[.crsSaturation] = cameraRaw.saturation.map(String.init) ?? ""
-            fields[.crsVibrance] = cameraRaw.vibrance.map(String.init) ?? ""
-            fields[.crsHasSettings] = "True"
+            // Simple crs scalar fields via the canonical serializer (ACR-style signed
+            // ints, +exposure) — shared with the export engine and MetadataViewModel so
+            // the three write paths can't drift. Crop is written separately below
+            // (merge-style, per aspect group), so serialize a crop-less copy and drop the
+            // empty crop keys it emits; the per-group crop handling adds them back.
+            var bare = cameraRaw
+            bare.crop = nil
+            var fields = bare.developWriteFields()
+            for key in [MetadataFieldKey.crsCropTop, .crsCropLeft, .crsCropBottom,
+                        .crsCropRight, .crsCropAngle, .crsHasCrop,
+                        .crsCropConstrainToWarp, .crsCropConstrainToUnitSquare] {
+                fields.removeValue(forKey: key)
+            }
 
             func cropFields(for crop: CameraRawCrop) -> [MetadataFieldKey: String] {
                 [

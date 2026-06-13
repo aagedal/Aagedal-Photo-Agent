@@ -1051,67 +1051,10 @@ final class MetadataViewModel {
             return
         }
 
-        // ACR requires Version and ProcessVersion to recognize settings.
-        // ProcessVersion 15.4 corresponds to the 2012-era tags we write.
-        fields[.crsVersion] = cameraRaw.version ?? "15.4"
-        fields[.crsProcessVersion] = cameraRaw.processVersion ?? "15.4"
-
-        // Write values when set, clear (empty string) when nil so old values
-        // don't persist in the image after a partial reset.
-        fields[.crsWhiteBalance] = cameraRaw.whiteBalance ?? ""
-        fields[.crsTemperature] = cameraRaw.temperature.map(String.init) ?? ""
-        fields[.crsTint] = cameraRaw.tint.map(formatSignedInt) ?? ""
-        fields[.crsIncrementalTemperature] = cameraRaw.incrementalTemperature.map(formatSignedInt) ?? ""
-        fields[.crsIncrementalTint] = cameraRaw.incrementalTint.map(formatSignedInt) ?? ""
-        fields[.crsExposure2012] = cameraRaw.exposure2012.map { formatSignedDouble($0, precision: 2) } ?? ""
-        fields[.crsContrast2012] = cameraRaw.contrast2012.map(formatSignedInt) ?? ""
-        fields[.crsHighlights2012] = cameraRaw.highlights2012.map(formatSignedInt) ?? ""
-        fields[.crsShadows2012] = cameraRaw.shadows2012.map(formatSignedInt) ?? ""
-        fields[.crsWhites2012] = cameraRaw.whites2012.map(formatSignedInt) ?? ""
-        fields[.crsBlacks2012] = cameraRaw.blacks2012.map(formatSignedInt) ?? ""
-        fields[.crsSaturation] = cameraRaw.saturation.map(formatSignedInt) ?? ""
-        fields[.crsVibrance] = cameraRaw.vibrance.map(formatSignedInt) ?? ""
-
-        let hasSettings = cameraRaw.hasSettings ?? !cameraRaw.isEmpty
-        fields[.crsHasSettings] = hasSettings ? "True" : "False"
-
-        if let internalCrop = cameraRaw.crop {
-            // crs crop fields carry Adobe's un-rotated-frame corner encoding, not
-            // the app's upright rect — convert at this write boundary. The aspect
-            // closure (a file-header read) is only invoked for angled crops; the
-            // conversion is the identity at angle 0.
-            let crop = abs(internalCrop.angle ?? 0) > 0.0001
-                ? internalCrop.encodedForACR(aspect: imageAspect())
-                : internalCrop
-            fields[.crsCropTop] = crop.top.map { String(format: "%.6f", $0) } ?? ""
-            fields[.crsCropLeft] = crop.left.map { String(format: "%.6f", $0) } ?? ""
-            fields[.crsCropBottom] = crop.bottom.map { String(format: "%.6f", $0) } ?? ""
-            fields[.crsCropRight] = crop.right.map { String(format: "%.6f", $0) } ?? ""
-            fields[.crsCropAngle] = crop.angle.map { String(format: "%.6f", $0) } ?? ""
-            let hasCrop = crop.hasCrop ?? !crop.isEmpty
-            fields[.crsHasCrop] = hasCrop ? "True" : "False"
-            fields[.crsCropConstrainToWarp] = "0"
-            fields[.crsCropConstrainToUnitSquare] = "1"
-        } else {
-            fields[.crsCropTop] = ""
-            fields[.crsCropLeft] = ""
-            fields[.crsCropBottom] = ""
-            fields[.crsCropRight] = ""
-            fields[.crsCropAngle] = ""
-            fields[.crsHasCrop] = "False"
-            fields[.crsCropConstrainToWarp] = ""
-            fields[.crsCropConstrainToUnitSquare] = ""
-        }
-
-        fields[.crsHDREditMode] = cameraRaw.hdrEditMode.map(String.init) ?? ""
-        fields[.crsHDRMaxValue] = cameraRaw.hdrMaxValue ?? ""
-        fields[.crsSDRBrightness] = cameraRaw.sdrBrightness.map(formatSignedInt) ?? ""
-        fields[.crsSDRContrast] = cameraRaw.sdrContrast.map(formatSignedInt) ?? ""
-        fields[.crsSDRClarity] = cameraRaw.sdrClarity.map(formatSignedInt) ?? ""
-        fields[.crsSDRHighlights] = cameraRaw.sdrHighlights.map(formatSignedInt) ?? ""
-        fields[.crsSDRShadows] = cameraRaw.sdrShadows.map(formatSignedInt) ?? ""
-        fields[.crsSDRWhites] = cameraRaw.sdrWhites.map(formatSignedInt) ?? ""
-        fields[.crsSDRBlend] = cameraRaw.sdrBlend.map(formatSignedInt) ?? ""
+        // Canonical serialization of the simple crs fields (signed ints, +exposure,
+        // 6-decimal ACR-encoded crop). Shared with the export engine via
+        // CameraRawSettings.developWriteFields to keep the two write paths from drifting.
+        fields.merge(cameraRaw.developWriteFields(imageAspect: imageAspect)) { _, new in new }
     }
 
     private func clearAllCameraRawFields(into fields: inout [MetadataFieldKey: String]) {
@@ -1149,18 +1092,6 @@ final class MetadataViewModel {
         fields[.crsSDRWhites] = ""
         fields[.crsSDRBlend] = ""
         fields[.crsToneCurveName2012] = ""
-    }
-
-    private func formatSignedInt(_ value: Int) -> String {
-        value > 0 ? "+\(value)" : "\(value)"
-    }
-
-    private func formatSignedDouble(_ value: Double, precision: Int) -> String {
-        let format = "%.\(precision)f"
-        let absValue = String(format: format, abs(value))
-        if value > 0 { return "+\(absValue)" }
-        if value < 0 { return "-\(absValue)" }
-        return absValue
     }
 
     private func writeMetadataAndPreserveHistory(alsoWriteXMPSidecar: Bool = false, onComplete: (() -> Void)? = nil) {
