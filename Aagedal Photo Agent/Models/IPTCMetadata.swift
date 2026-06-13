@@ -166,6 +166,32 @@ nonisolated struct EllipseMaskGeometry: Codable, Sendable, Equatable {
         radiusY = ax * sin(theta) + ay * cos(theta)
     }
 
+    /// Rigidly rotate the whole ellipse by `degrees` about the frame center
+    /// (0.5, 0.5) — the continuous analogue of `transformedForDisplay`, used to
+    /// follow a crop STRAIGHTEN angle. The display path renders the mask effect
+    /// in source space and then rotates the whole image view by the straighten
+    /// angle, so the overlay (a non-rotated sibling) must bake the same rotation
+    /// in to stay aligned. Rotation happens in aspect-corrected (pixel) space so
+    /// the ellipse isn't sheared; the true semi-axes are preserved and re-encoded
+    /// at the new angle. `aspect` is the display frame's pixel width/height.
+    /// `degrees` uses the screen convention (positive = clockwise, matching
+    /// SwiftUI's `.rotationEffect(.degrees(_:))`). Inverse: negate `degrees`.
+    func rotatedInDisplay(byDegrees degrees: Double, aspect: Double) -> EllipseMaskGeometry {
+        guard abs(degrees) > 1e-12 else { return self }
+        let a = aspect > 0 ? aspect : 1
+        let rad = degrees * .pi / 180
+        let semi = trueRadii(aspect: a)   // rotation-invariant ellipse shape
+        var result = self
+        // Rotate the center about (0.5, 0.5) in aspect-corrected space.
+        let dx = (centerX - 0.5) * a
+        let dy = centerY - 0.5
+        result.centerX = 0.5 + (dx * cos(rad) - dy * sin(rad)) / a
+        result.centerY = 0.5 + (dx * sin(rad) + dy * cos(rad))
+        result.rotation = rotation + degrees
+        result.setTrueRadii(x: semi.x, y: semi.y, aspect: a)
+        return result
+    }
+
     /// Transform mask geometry from sensor (XMP) orientation to display
     /// orientation, mirroring `CameraRawCrop.transformedForDisplay`. The center
     /// point-maps like the crop corners. The true semi-axes are frame-relative

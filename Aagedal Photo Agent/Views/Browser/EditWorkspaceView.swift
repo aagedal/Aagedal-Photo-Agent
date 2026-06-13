@@ -217,18 +217,32 @@ struct EditWorkspaceView: View {
         return size.width / size.height
     }
 
+    /// Sensor (stored) → display geometry for the overlay. Two stacked
+    /// transforms, applied in pipeline order: (1) EXIF orientation (the source
+    /// texture is display-oriented), then (2) the crop STRAIGHTEN angle (the
+    /// image view is rotated by `.rotationEffect(.degrees(-displayCropAngle))`,
+    /// so the overlay must bake the same rotation). The straighten step is the
+    /// identity when no angled crop is active (`displayCropAngle` == 0).
     private func maskGeometryForDisplay(_ geometry: EllipseMaskGeometry) -> EllipseMaskGeometry {
+        var g = geometry
         let orientation = selectedImageOrientation
-        guard orientation > 1 else { return geometry }
-        let aspect = maskDisplayAspect
-        let sensorAspect = orientation >= 5 ? 1 / aspect : aspect
-        return geometry.transformedForDisplay(orientation: orientation, sensorAspect: sensorAspect)
+        if orientation > 1 {
+            let aspect = maskDisplayAspect
+            let sensorAspect = orientation >= 5 ? 1 / aspect : aspect
+            g = g.transformedForDisplay(orientation: orientation, sensorAspect: sensorAspect)
+        }
+        return g.rotatedInDisplay(byDegrees: -displayCropAngle, aspect: maskDisplayAspect)
     }
 
+    /// Display → sensor geometry on store: exact inverse of
+    /// `maskGeometryForDisplay`, undoing the straighten first, then EXIF.
     private func maskGeometryForSensor(_ geometry: EllipseMaskGeometry) -> EllipseMaskGeometry {
+        var g = geometry.rotatedInDisplay(byDegrees: displayCropAngle, aspect: maskDisplayAspect)
         let orientation = selectedImageOrientation
-        guard orientation > 1 else { return geometry }
-        return geometry.transformedForSensor(orientation: orientation, displayAspect: maskDisplayAspect)
+        if orientation > 1 {
+            g = g.transformedForSensor(orientation: orientation, displayAspect: maskDisplayAspect)
+        }
+        return g
     }
 
     private var activeCrop: NormalizedCropRegion {

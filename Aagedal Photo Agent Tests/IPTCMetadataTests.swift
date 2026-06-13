@@ -1224,3 +1224,99 @@ struct EllipseMaskGeometryOrientationTests {
         #expect(abs(radii.y - 0.2) < 1e-12)
     }
 }
+
+@Suite("EllipseMaskGeometry crop-straighten rotation")
+struct EllipseMaskGeometryStraightenTests {
+    private let aspect = 1.5
+
+    private func makeGeometry() -> EllipseMaskGeometry {
+        var geo = EllipseMaskGeometry()
+        geo.centerX = 0.65
+        geo.centerY = 0.35
+        geo.rotation = 12
+        geo.setTrueRadii(x: 0.22, y: 0.09, aspect: aspect)
+        geo.feather = 40
+        return geo
+    }
+
+    @Test("rotate then unrotate is the identity", arguments: [-30.0, -12.5, 7.0, 25.0, 44.0])
+    func roundTrip(angle: Double) {
+        let geo = makeGeometry()
+        let display = geo.rotatedInDisplay(byDegrees: angle, aspect: aspect)
+        let back = display.rotatedInDisplay(byDegrees: -angle, aspect: aspect)
+        #expect(abs(back.centerX - geo.centerX) < 1e-9)
+        #expect(abs(back.centerY - geo.centerY) < 1e-9)
+        #expect(abs(back.rotation - geo.rotation) < 1e-9)
+        let r0 = geo.trueRadii(aspect: aspect), r1 = back.trueRadii(aspect: aspect)
+        #expect(abs(r1.x - r0.x) < 1e-9)
+        #expect(abs(r1.y - r0.y) < 1e-9)
+    }
+
+    @Test("adds to the ellipse angle and preserves the true semi-axes")
+    func anglePlusShapePreserved() {
+        let geo = makeGeometry()
+        let rotated = geo.rotatedInDisplay(byDegrees: 20, aspect: aspect)
+        #expect(abs(rotated.rotation - 32) < 1e-9)  // 12 + 20
+        let r0 = geo.trueRadii(aspect: aspect), r1 = rotated.trueRadii(aspect: aspect)
+        #expect(abs(r1.x - r0.x) < 1e-9)
+        #expect(abs(r1.y - r0.y) < 1e-9)
+    }
+
+    @Test("a centered mask only changes orientation, not position")
+    func centeredMaskStaysCentered() {
+        var geo = EllipseMaskGeometry()
+        geo.centerX = 0.5
+        geo.centerY = 0.5
+        geo.rotation = 0
+        let rotated = geo.rotatedInDisplay(byDegrees: -15, aspect: aspect)
+        #expect(abs(rotated.centerX - 0.5) < 1e-12)
+        #expect(abs(rotated.centerY - 0.5) < 1e-12)
+        #expect(abs(rotated.rotation - (-15)) < 1e-12)
+    }
+
+    @Test("zero degrees is the identity")
+    func zeroIsIdentity() {
+        let geo = makeGeometry()
+        #expect(geo.rotatedInDisplay(byDegrees: 0, aspect: aspect) == geo)
+    }
+
+    /// The center rotation must be a rigid SCREEN rotation once mapped through the
+    /// anisotropic UV→pixel scale — i.e. a boundary point of the original ellipse,
+    /// taken to pixel space and rigidly rotated about the center, must lie on the
+    /// rotated ellipse. Guards against shearing from rotating in raw UV space.
+    @Test("boundary points rigidly rotate in pixel space")
+    func pixelSpaceRigidRotation() {
+        let geo = makeGeometry()
+        let deg = -18.0
+        let rad = deg * .pi / 180
+        let rotated = geo.rotatedInDisplay(byDegrees: deg, aspect: aspect)
+
+        // Original boundary point in pixel space, rigidly rotated about center.
+        let semi = geo.trueRadii(aspect: aspect)
+        let th = geo.rotation * .pi / 180
+        for i in 0..<10 {
+            let t = Double(i) / 10 * 2 * .pi
+            // boundary point (pixel space) of the original ellipse
+            let ex = semi.x * aspect * cos(t)
+            let ey = semi.y * sin(t)
+            let bxp = ex * cos(th) - ey * sin(th)
+            let byp = ex * sin(th) + ey * cos(th)
+            // center in pixel space
+            let cxp = geo.centerX * aspect, cyp = geo.centerY
+            let px = cxp + bxp, py = cyp + byp
+            // rigid rotation about the frame center (0.5*aspect, 0.5) in pixel space
+            let ox = px - 0.5 * aspect, oy = py - 0.5
+            let rxp = ox * cos(rad) - oy * sin(rad) + 0.5 * aspect
+            let ryp = ox * sin(rad) + oy * cos(rad) + 0.5
+            // evaluate the rotated ellipse implicit value at (rxp/aspect, ryp)
+            let rsemi = rotated.trueRadii(aspect: aspect)
+            let rth = rotated.rotation * .pi / 180
+            let ddx = rxp - rotated.centerX * aspect
+            let ddy = ryp - rotated.centerY
+            let ux = ddx * cos(-rth) - ddy * sin(-rth)
+            let uy = ddx * sin(-rth) + ddy * cos(-rth)
+            let val = (ux / (rsemi.x * aspect)) * (ux / (rsemi.x * aspect)) + (uy / rsemi.y) * (uy / rsemi.y)
+            #expect(abs(val - 1) < 1e-9, "boundary point \(i): \(val)")
+        }
+    }
+}

@@ -157,6 +157,32 @@ generic ellipses instead), but worth revisiting alongside open issue 4.
    ACR-authored radial mask and confirm placement matches ACR; drag a mask on
    a portrait image and confirm ACR shows it where it was drawn.
 
+7. **RESOLVED (2026-06-12, found during issue-5 manual testing): mask overlay
+   didn't follow the crop STRAIGHTEN angle.** With an angled crop applied, the
+   mask EFFECT and the mask OVERLAY were rotated differently. Root cause: in the
+   crop-applied edit branch the `MetalPreviewView` is rotated by SwiftUI
+   `.rotationEffect(.degrees(-displayCropAngle))` (so the source-space mask
+   effect rotates with the straightened image), but the `MaskOverlayRepresentable`
+   is a non-rotated sibling — it drew the ellipse at the mask's own angle only,
+   off by exactly the straighten angle (and the center was off for non-centered
+   masks). Fix: `EllipseMaskGeometry.rotatedInDisplay(byDegrees:aspect:)`
+   (Models/IPTCMetadata.swift) rigidly rotates the whole ellipse about the frame
+   center in aspect-corrected space (center rotate + angle add + radii re-encode
+   preserving true semi-axes). Composed into EditWorkspaceView's
+   `maskGeometryForDisplay` (apply EXIF, then `-displayCropAngle`) and inverted
+   in `maskGeometryForSensor` (`+displayCropAngle`, then EXIF). No shader/overlay/
+   export changes — the export & scope paths already rotate the baked effect via
+   `applyCrop`, and there's no overlay there. Identity when no angled crop is
+   active. Tests: "EllipseMaskGeometry crop-straighten rotation" suite
+   (IPTCMetadataTests) — rotate/unrotate round-trip across angles, angle-add +
+   shape preservation, centered-mask-only-reorients, and a pixel-space
+   rigid-rotation boundary invariant. Full suite 261/261 green after a CLEAN
+   build (note: the test target needs `xcodebuild clean` to pick up a brand-new
+   @Suite even when added to an existing member file — an incremental run silently
+   kept the old bundle).
+   NOT yet manually verified: apply an angled crop, add/drag a radial mask, and
+   confirm the overlay outline now sits exactly on the brightened region.
+
 6. **RESOLVED (2026-06-12 late evening): angled-crop XMP encoding converted to
    Adobe's at the boundary.** `CameraRawCrop.encodedForACR(aspect:)` /
    `decodedFromACR(aspect:)` (Models/IPTCMetadata.swift) rotate the corner
