@@ -794,12 +794,14 @@ struct MetadataWriteModePresetTests {
         body()
     }
 
-    @Test("Simple writes embedded for every file (incl. RAW and C2PA)")
+    @Test("Simple embeds for every file incl. C2PA, except RAW which uses an XMP sidecar")
     func simple() {
         withPreset(.simple) {
             #expect(MetadataWriteMode.current(forC2PA: false, isRaw: false) == .writeToFile)
             #expect(MetadataWriteMode.current(forC2PA: true, isRaw: false) == .writeToFile)
-            #expect(MetadataWriteMode.current(forC2PA: false, isRaw: true) == .writeToFile)
+            // RAW never embeds (embedding corrupts maker-private data) — always a sidecar.
+            #expect(MetadataWriteMode.current(forC2PA: false, isRaw: true) == .writeToXMPSidecar)
+            #expect(MetadataWriteMode.current(forC2PA: true, isRaw: true) == .writeToXMPSidecar)
         }
     }
 

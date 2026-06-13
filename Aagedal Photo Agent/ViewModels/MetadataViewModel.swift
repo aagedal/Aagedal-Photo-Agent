@@ -2054,8 +2054,11 @@ final class MetadataViewModel {
             do {
                 try sidecarService.saveSidecar(sidecar, for: imageURL, in: folderURL)
                 if pendingChanges {
-                    // C2PA: save full metadata to XMP sidecar for render+sign overlay
-                    try xmpSidecarService.saveSidecar(metadata: existingMeta, for: imageURL)
+                    // C2PA: save full metadata to XMP sidecar for render+sign overlay.
+                    // `existingMeta` is JSON-sourced (no crs) — preserve any develop
+                    // edits already in the .xmp so a batch rating/keyword edit on a
+                    // C2PA RAW doesn't wipe them.
+                    try xmpSidecarService.saveSidecarPreservingDevelopSettings(metadata: existingMeta, for: imageURL)
                 }
             } catch {
                 saveError = "Failed to save metadata sidecar: \(error.localizedDescription)"

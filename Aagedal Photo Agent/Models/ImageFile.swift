@@ -29,6 +29,11 @@ struct ImageFile: Identifiable, Hashable, Sendable {
     let fileSize: Int64
     let dateModified: Date
     let dateAdded: Date
+    /// Modification date of the adjacent `.xmp` sidecar (nil when none). Tracked so the
+    /// folder refresh can notice an external sidecar edit (e.g. ACR rotating a RAW) even
+    /// though the image file itself is untouched. Not part of `==` — it drives the refresh
+    /// diff, not cell redraw.
+    let sidecarModified: Date?
 
     var starRating: StarRating
     var colorLabel: ColorLabel
@@ -53,6 +58,13 @@ struct ImageFile: Identifiable, Hashable, Sendable {
 
     var isImageFile: Bool { SupportedImageFormats.isSupported(url: url) }
 
+    /// Modification date of the adjacent `<name>.xmp` sidecar, or nil if there is none.
+    /// Metadata-only stat — does not download/read the file, so it's cheap and safe on iCloud.
+    nonisolated static func sidecarModificationDate(for url: URL) -> Date? {
+        let sidecar = url.deletingPathExtension().appendingPathExtension("xmp")
+        return try? sidecar.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+    }
+
     nonisolated init(url: URL) {
         self.url = url
         self.filename = url.lastPathComponent
@@ -63,6 +75,7 @@ struct ImageFile: Identifiable, Hashable, Sendable {
         self.fileSize = Int64(values?.fileSize ?? 0)
         self.dateModified = values?.contentModificationDate ?? Date.distantPast
         self.dateAdded = values?.addedToDirectoryDate ?? Date.distantPast
+        self.sidecarModified = Self.sidecarModificationDate(for: url)
 
         self.starRating = .none
         self.colorLabel = .none
@@ -91,6 +104,7 @@ struct ImageFile: Identifiable, Hashable, Sendable {
         self.fileSize = Int64(values?.fileSize ?? 0)
         self.dateModified = values?.contentModificationDate ?? Date.distantPast
         self.dateAdded = values?.addedToDirectoryDate ?? Date.distantPast
+        self.sidecarModified = Self.sidecarModificationDate(for: url)
 
         self.starRating = source.starRating
         self.colorLabel = source.colorLabel

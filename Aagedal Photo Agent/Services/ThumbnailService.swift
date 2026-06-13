@@ -38,6 +38,14 @@ final class ThumbnailService {
     }
 
     /// Loads or generates the original (unedited) thumbnail for a URL.
+    ///
+    /// QuickLook/CGImageSource bake the FILE's embedded orientation into the bitmap. When the
+    /// authoritative display orientation lives in an XMP sidecar instead — a RAW (always) or a
+    /// C2PA file rotated without touching the original — the file tag is unchanged, so the grid
+    /// (and the full-screen instant preview, which reuses this cached thumbnail) would show the
+    /// wrong orientation. `orientedToTarget` rotates the bitmap to the sidecar orientation when it
+    /// differs. Reading the sidecar at generation time keeps this correct regardless of when the
+    /// in-memory orientation is populated, and is a no-op for files with no sidecar (normal JPEG).
     func loadThumbnail(for url: URL) async -> NSImage? {
         if let cached = cache.object(forKey: url as NSURL) {
             return cached
@@ -68,8 +76,9 @@ final class ThumbnailService {
             return nil as NSImage?
         }
 
-            cache.setObject(image, forKey: url as NSURL)
-            return image
+            let oriented = Self.orientedToSidecar(image, fileURL: url)
+            cache.setObject(oriented, forKey: url as NSURL)
+            return oriented
         }
 
         inFlightTasks[url] = task
@@ -77,6 +86,27 @@ final class ThumbnailService {
         inFlightTasks.removeValue(forKey: url)
 
         return result
+    }
+
+    /// Rotate a freshly generated (file-oriented) thumbnail to the orientation recorded
+    /// in the image's XMP sidecar, when that differs from the file's embedded tag (which
+    /// QuickLook already baked in). No-op when there's no sidecar orientation or it matches
+    /// the file — so normal JPEGs (orientation in the file) are untouched, while sidecar-only
+    /// rotations (RAW, C2PA) are corrected. Authoritative at generation time, so it doesn't
+    /// depend on when `ImageFile.exifOrientation` gets populated during folder load.
+    nonisolated private static func orientedToSidecar(_ image: NSImage, fileURL: URL) -> NSImage {
+        guard let sidecarOrientation = XMPSidecarService().sidecarOrientation(for: fileURL) else {
+            return image
+        }
+        let fileOrientation = FullScreenImageCache.fileEXIFOrientation(at: fileURL)
+        let correction = ImageFile.orientationCorrection(from: fileOrientation, to: sidecarOrientation)
+        guard correction != .up,
+              let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return image }
+        let rotated = CIImage(cgImage: cg).oriented(correction)
+        guard let out = CameraRawApproximation.ciContext.createCGImage(rotated, from: rotated.extent) else {
+            return image
+        }
+        return NSImage(cgImage: out, size: NSSize(width: out.width, height: out.height))
     }
 
     /// Renders an edited thumbnail by applying CameraRaw settings to the original thumbnail.
@@ -93,6 +123,9 @@ final class ThumbnailService {
 
         let task = Task<NSImage?, Never> {
             // Get or load the original thumbnail
+            // `loadThumbnail` already brings the base to the sidecar orientation, so the
+            // crop and mask geometry below (applied in the display frame) line up on a
+            // sidecar-rotated RAW.
             let original: NSImage
             if let cached = cache.object(forKey: url as NSURL) {
                 original = cached

@@ -44,6 +44,27 @@ struct XMPSidecarService: Sendable {
         return try? Data(contentsOf: url)
     }
 
+    /// Nonisolated, lightweight read of just the display orientation from the `.xmp`
+    /// sidecar — `tiff:Orientation` (Adobe's authoritative tag), falling back to
+    /// `exif:Orientation`. For off-main thumbnail generation, which needs only the
+    /// orientation and must not touch the MainActor-isolated full parse. Returns nil
+    /// when there's no sidecar or it carries no orientation. Reads both the attribute
+    /// form (how we and ACR write it) and the child-element form.
+    nonisolated func sidecarOrientation(for imageURL: URL) -> Int? {
+        guard let data = sidecarDataIfExists(for: imageURL),
+              let document = try? XMLDocument(data: data, options: [.nodePreserveWhitespace]),
+              let description = (try? document.nodes(forXPath: "//*[local-name()='Description']"))?.first as? XMLElement
+        else { return nil }
+
+        func value(_ localName: String, _ prefix: String) -> String? {
+            if let attr = description.attribute(forName: "\(prefix):\(localName)")?.stringValue { return attr }
+            let child = description.elements(forName: "\(prefix):\(localName)").first
+            return child?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let raw = value("Orientation", "tiff") ?? value("Orientation", "exif")
+        return raw.flatMap { Int($0) }
+    }
+
     /// Parses already-read XMP bytes into IPTCMetadata. Cheap — call on the main
     /// actor after preloading bytes off-main via `sidecarDataIfExists`.
     /// `imageAspect` supplies the image's sensor-frame width/height ratio for the
@@ -100,6 +121,25 @@ struct XMPSidecarService: Sendable {
 
         let data = serializeXMP(document)
         try data.write(to: url, options: .atomic)
+    }
+
+    /// Writes a descriptive-metadata record to the `.xmp` sidecar WITHOUT disturbing
+    /// any develop (`crs`) block already on disk.
+    ///
+    /// `saveSidecar(metadata:)` rebuilds the whole sidecar and treats a nil
+    /// `cameraRaw` as "clear", stripping the crs block. That's correct for the
+    /// develop editor (where nil genuinely means the user removed all edits), but
+    /// wrong for descriptive writes — rating, label, orientation, keywords, batch
+    /// edits — whose `metadata` is sourced from the JSON sidecar or the image file
+    /// and therefore NEVER carries `cameraRaw`. Those callers must use this method so
+    /// a caption change doesn't wipe the user's exposure/crop/mask edits. Develop
+    /// edits are cleared explicitly via `saveCameraRawOnly(nil, …)`, never here.
+    func saveSidecarPreservingDevelopSettings(metadata: IPTCMetadata, for imageURL: URL) throws {
+        var merged = metadata
+        if merged.cameraRaw == nil {
+            merged.cameraRaw = loadSidecar(for: imageURL)?.cameraRaw
+        }
+        try saveSidecar(metadata: merged, for: imageURL)
     }
 
     func saveCameraRawOnly(_ settings: CameraRawSettings?, orientation: Int?, for imageURL: URL) throws {
@@ -875,7 +915,13 @@ struct XMPSidecarService: Sendable {
             localAdjustments: localAdjustments,
             hslAdjustments: hslAdjustments
         )
-        return settings.isEmpty ? nil : settings
+        // Ignore a lone `HasSettings` flag: ACR writes `crs:HasSettings="False"` (and our
+        // own writer derives it from emptiness) on a RAW with no develop adjustments — e.g.
+        // after a reset, or a rotation-only edit. A CRS carrying nothing but that flag has
+        // no actual edits and must read as nil, not as an edited image.
+        var probe = settings
+        probe.hasSettings = nil
+        return probe.isEmpty ? nil : settings
     }
 
     private func parseSimple(from description: XMLElement, prefix: String, localName: String) -> String? {

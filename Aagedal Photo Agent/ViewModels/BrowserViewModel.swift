@@ -604,11 +604,20 @@ final class BrowserViewModel {
             merged.reserveCapacity(scanned.count)
             var newURLs: [URL] = []
             var modifiedURLs: [URL] = []
+            // Sidecar-only changes (e.g. ACR rotated/edited a RAW): the image file's
+            // size/mtime are untouched, only the adjacent `.xmp` moved. Handled apart
+            // from content changes so we re-read the sidecar *in place* instead of
+            // pre-clearing develop state — pre-clearing would flash the develop-edited
+            // RAWs on our own sidecar writes (rotate/rating/caption), which also bump
+            // the sidecar mtime.
+            var sidecarChangedURLs: [URL] = []
 
             for item in scanned {
                 if let existing = existingByURL[item.url] {
-                    let isModified = existing.fileSize != item.fileSize
+                    let contentModified = existing.fileSize != item.fileSize
                         || existing.dateModified != item.dateModified
+                    let sidecarChanged = !contentModified
+                        && existing.sidecarModified != item.sidecarModified
                     var updated = item
                     updated.starRating = existing.starRating
                     updated.colorLabel = existing.colorLabel
@@ -624,7 +633,7 @@ final class BrowserViewModel {
                     updated.metadata = existing.metadata
                     updated.personShown = existing.personShown
                     updated.keywords = existing.keywords
-                    if isModified {
+                    if contentModified {
                         // File changed on disk — clear stale develop/crop state so
                         // thumbnails reflect the actual file content
                         updated.cameraRawSettings = nil
@@ -632,6 +641,11 @@ final class BrowserViewModel {
                         updated.hasCropEdits = false
                         updated.cropRegion = nil
                         modifiedURLs.append(item.url)
+                    } else if sidecarChanged {
+                        // Keep the in-memory develop/orientation state as-is; the metadata
+                        // reload below re-reads the sidecar and updates it in place, so a
+                        // value that didn't actually change (our own write) causes no churn.
+                        sidecarChangedURLs.append(item.url)
                     }
                     merged.append(updated)
                 } else {
@@ -648,7 +662,7 @@ final class BrowserViewModel {
             }
 
             let removedURLs = existingURLs.subtracting(scannedURLs)
-            if newURLs.isEmpty && modifiedURLs.isEmpty && removedURLs.isEmpty {
+            if newURLs.isEmpty && modifiedURLs.isEmpty && sidecarChangedURLs.isEmpty && removedURLs.isEmpty {
                 return
             }
             guard self.currentFolderURL == folderURL else { return }
@@ -667,14 +681,20 @@ final class BrowserViewModel {
 
             self.images = merged
 
-            // Invalidate thumbnail cache for modified files so they regenerate
-            for url in modifiedURLs {
+            // Invalidate thumbnail + full-screen caches for changed files so they
+            // regenerate with the current pixels/orientation (a sidecar rotation
+            // changes the rendered orientation without touching the file). For
+            // sidecar-only changes this is a one-time drop — the new mtime is now
+            // stored, so an unchanged value won't re-trigger next cycle.
+            let changedURLs = modifiedURLs + sidecarChangedURLs
+            for url in changedURLs {
                 thumbnailService.invalidateThumbnail(for: url)
+                fullScreenImageCache.invalidateImage(for: url)
             }
 
-            self.lastRefreshModifiedURLs = Set(modifiedURLs)
+            self.lastRefreshModifiedURLs = Set(changedURLs)
 
-            let metadataRefreshURLs = newURLs + modifiedURLs
+            let metadataRefreshURLs = newURLs + changedURLs
             if !metadataRefreshURLs.isEmpty {
                 pendingMetadataURLs.formUnion(metadataRefreshURLs)
                 drainPendingMetadataIfNeeded()
@@ -872,16 +892,24 @@ final class BrowserViewModel {
                 // For RAW files, the XMP sidecar is the authoritative CRS source —
                 // replace rather than merge to avoid stale embedded values leaking
                 // through nil sidecar fields (e.g. Adobe omitting Temperature).
-                if SupportedImageFormats.isRaw(url: sourceURL),
-                   let xmpCRS = xmpMeta?.cameraRaw, !xmpCRS.isEmpty {
-                    var finalCRS = xmpCRS
-                    // Preserve in-memory localAdjustments (written to image, not sidecar)
-                    if (xmpCRS.localAdjustments?.isEmpty ?? true),
-                       let masks = updated[index].cameraRawSettings?.localAdjustments, !masks.isEmpty {
-                        finalCRS.localAdjustments = masks
+                if SupportedImageFormats.isRaw(url: sourceURL) {
+                    if let xmpCRS = xmpMeta?.cameraRaw, !xmpCRS.isEmpty {
+                        var finalCRS = xmpCRS
+                        // Preserve in-memory localAdjustments (written to image, not sidecar)
+                        if (xmpCRS.localAdjustments?.isEmpty ?? true),
+                           let masks = updated[index].cameraRawSettings?.localAdjustments, !masks.isEmpty {
+                            finalCRS.localAdjustments = masks
+                        }
+                        updated[index].cameraRawSettings = finalCRS
+                        applySidecarCropState(to: &updated[index], cameraRaw: finalCRS)
+                    } else {
+                        // The sidecar holds no develop settings — the RAW is unedited or
+                        // was cleared externally (e.g. an ACR reset). Since the sidecar is
+                        // authoritative for RAW, drop any stale in-memory edits rather than
+                        // leaving them. (No-op on first load, where CRS is already nil.)
+                        updated[index].cameraRawSettings = nil
+                        applySidecarCropState(to: &updated[index], cameraRaw: nil)
                     }
-                    updated[index].cameraRawSettings = finalCRS
-                    applySidecarCropState(to: &updated[index], cameraRaw: finalCRS)
                 }
 
                 // XMP sidecar rating/label/orientation overrides — written by
@@ -1659,8 +1687,12 @@ final class BrowserViewModel {
         }
 
         if writeXmpSidecar {
+            // `metadata` is sourced from the JSON sidecar (or an embedded snapshot),
+            // neither of which carries `cameraRaw` — crs lives only in the .xmp.
+            // Use the develop-preserving write so a rating/label/orientation change
+            // doesn't strip the user's exposure/crop/mask edits from the sidecar.
             do {
-                try xmpSidecarService.saveSidecar(metadata: metadata, for: url)
+                try xmpSidecarService.saveSidecarPreservingDevelopSettings(metadata: metadata, for: url)
             } catch {
                 errorMessage = "Failed to save XMP sidecar: \(error.localizedDescription)"
             }
