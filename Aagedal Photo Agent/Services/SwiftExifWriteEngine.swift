@@ -13,11 +13,31 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
 
     init() {}
 
+    /// RAW containers must NEVER be embedded into. Rewriting a proprietary RAW via
+    /// SwiftExif/libexif cannot preserve maker-private structures — e.g. Sony's
+    /// `SR2Private` block, which holds the encrypted white-balance calibration — so the
+    /// rewrite corrupts the file (mangled WB → garbage decode) and bloats it with orphaned
+    /// data. Camera-raw and IPTC metadata for RAW always lives in an XMP sidecar instead
+    /// (see `MetadataWriteMode` / Photo Mechanic + Adobe convention). This guards every
+    /// file-writing path so a stray caller can never damage a RAW, regardless of preset.
+    private func embeddableURLs(_ urls: [URL]) -> [URL] {
+        var embeddable: [URL] = []
+        var skipped: [URL] = []
+        for url in urls {
+            if SupportedImageFormats.isRaw(url: url) { skipped.append(url) } else { embeddable.append(url) }
+        }
+        if !skipped.isEmpty {
+            swiftExifLog.error("Refusing to embed metadata into \(skipped.count) RAW file(s) — RAW uses XMP sidecars; skipping \(skipped.map(\.lastPathComponent).joined(separator: ", "), privacy: .public)")
+        }
+        return embeddable
+    }
+
     func writeFields(
         _ fields: [MetadataFieldKey: String],
         to urls: [URL],
         structuredData: StructuredWriteData
     ) async throws {
+        let urls = embeddableURLs(urls)
         guard !urls.isEmpty, !fields.isEmpty || !structuredData.isEmpty else { return }
 
         for url in urls {
@@ -35,6 +55,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         remove: [MetadataFieldKey: [String]],
         to urls: [URL]
     ) async throws {
+        let urls = embeddableURLs(urls)
         guard !urls.isEmpty else { return }
         let hasAdd = add.values.contains { !$0.isEmpty }
         let hasRemove = remove.values.contains { !$0.isEmpty }
@@ -64,6 +85,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
     }
 
     func writeRating(_ rating: StarRating, to urls: [URL]) async throws {
+        let urls = embeddableURLs(urls)
         guard !urls.isEmpty else { return }
 
         let value = rating == .none ? "" : String(rating.rawValue)
@@ -86,6 +108,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
     }
 
     func writeLabel(_ label: ColorLabel, to urls: [URL]) async throws {
+        let urls = embeddableURLs(urls)
         guard !urls.isEmpty else { return }
 
         let value = label.xmpLabelValue ?? ""
@@ -108,6 +131,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
     }
 
     func writeOrientation(_ orientation: Int, to urls: [URL]) async throws {
+        let urls = embeddableURLs(urls)
         guard !urls.isEmpty else { return }
 
         for url in urls {
@@ -123,6 +147,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
     }
 
     func stripIPTCAndXMP(from urls: [URL]) async throws {
+        let urls = embeddableURLs(urls)
         guard !urls.isEmpty else { return }
 
         for url in urls {

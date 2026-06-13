@@ -117,8 +117,11 @@ enum MetadataWriteMode: String, CaseIterable, Identifiable, Sendable {
         switch MetadataWritePreset.current {
         case .simple:
             // Literal: always embed, for every file. C2PA is ignored — the write
-            // proceeds without warnings (invalidating the credential is accepted);
-            // RAW is a best-effort embed.
+            // proceeds without warnings (invalidating the credential is accepted).
+            // RAW is the exception: embedding into a proprietary RAW container
+            // corrupts maker-private data (e.g. Sony's SR2Private WB block), so RAW
+            // always routes to an XMP sidecar regardless of preset.
+            if isRaw { return .writeToXMPSidecar }
             return .writeToFile
         case .professional:
             // Photo Mechanic semantics: RAW gets a sidecar; everything else (incl. JPEG)

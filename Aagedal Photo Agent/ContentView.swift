@@ -256,7 +256,15 @@ struct ContentView: View {
             .alert("Reset All Edits", isPresented: $browserViewModel.showResetEditsConfirmation) {
                 Button("Cancel", role: .cancel) { }
                 Button("Reset", role: .destructive) {
+                    let affected = browserViewModel.selectedImageIDs
                     browserViewModel.resetAllEditsOnSelected()
+                    // If the live edit session is showing image(s) that were just reset,
+                    // clear their CRS in memory too — otherwise the develop editor keeps
+                    // (or reloads) the stale edits until the async XMP rewrite lands.
+                    if !metadataViewModel.selectedURLs.isEmpty,
+                       metadataViewModel.selectedURLs.allSatisfy({ affected.contains($0) }) {
+                        metadataViewModel.resetCameraRawEdits()
+                    }
                 }
             } message: {
                 let count = browserViewModel.selectedImageIDs.count

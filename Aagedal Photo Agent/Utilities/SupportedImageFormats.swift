@@ -34,7 +34,7 @@ enum SupportedImageFormats {
         "dng", "rw2", "orf", "pef", "srw",
     ]
 
-    static let rawExtensions: Set<String> = [
+    nonisolated static let rawExtensions: Set<String> = [
         "raw", "cr2", "cr3", "nef", "nrw", "arw", "raf",
         "dng", "rw2", "orf", "pef", "srw",
     ]
@@ -53,7 +53,7 @@ enum SupportedImageFormats {
         fileExtensions.contains(url.pathExtension.lowercased())
     }
 
-    static func isRaw(url: URL) -> Bool {
+    nonisolated static func isRaw(url: URL) -> Bool {
         rawExtensions.contains(url.pathExtension.lowercased())
     }
 

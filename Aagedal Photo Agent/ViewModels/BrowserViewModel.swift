@@ -2791,6 +2791,10 @@ final class BrowserViewModel {
             images[index].hasCropEdits = false
             images[index].cropRegion = nil
             thumbnailService.invalidateThumbnail(for: url)
+            // Drop the rendered (edited) full-screen entries too — otherwise the
+            // full-screen viewer can serve a cached image still carrying the old
+            // edits if it's reopened before the async XMP rewrite lands.
+            fullScreenImageCache.invalidateEditedImage(for: url)
         }
 
         // Clear CRS from XMP sidecars for RAW files — the sidecar is the
@@ -2846,8 +2850,13 @@ final class BrowserViewModel {
             // no develop settings remain, whoever authored them.
             let structuredData = StructuredWriteData(masks: [], replaceCameraRawBlock: true)
 
+            // RAW files keep their CRS in the XMP sidecar (cleared above) — never embed
+            // into the RAW container, which corrupts proprietary maker data (e.g. Sony's
+            // SR2Private WB block) and breaks the decode. Only write into non-RAW files.
+            let fileURLs = urls.filter { !SupportedImageFormats.isRaw(url: $0) }
+            guard !fileURLs.isEmpty else { return }
             do {
-                try await writeEngine.writeFields(clearFields, to: urls, structuredData: structuredData)
+                try await writeEngine.writeFields(clearFields, to: fileURLs, structuredData: structuredData)
             } catch {
                 logger.error("Failed to clear camera raw XMP fields: \(error.localizedDescription)")
             }

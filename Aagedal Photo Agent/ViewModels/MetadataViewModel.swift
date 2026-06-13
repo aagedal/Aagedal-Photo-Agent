@@ -612,6 +612,20 @@ final class MetadataViewModel {
         markChanged()
     }
 
+    /// Clears Camera Raw develop + crop edits from the live editing session in memory.
+    /// Call right after `BrowserViewModel.resetAllEditsOnSelected` so the develop editor
+    /// reflects the reset immediately — without this, reopening the editor reads the
+    /// not-yet-rewritten file/sidecar and resurrects the just-removed edits (the async
+    /// XMP rewrite can land seconds later). Mirrors the clear across the reference copies
+    /// so it isn't seen as a pending change, and bumps the generation to force a re-render.
+    func resetCameraRawEdits() {
+        editingMetadata.cameraRaw = nil
+        originalImageMetadata?.cameraRaw = nil
+        metadata?.cameraRaw = nil
+        previousEditingMetadata?.cameraRaw = nil
+        metadataLoadGeneration += 1
+    }
+
     func importEmbeddedCrop() {
         guard let embeddedCrop = embeddedMetadata?.cameraRaw?.crop,
               embeddedCrop.hasCrop == true else { return }
