@@ -213,8 +213,8 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// Shared pipeline for offscreen (export) renders. Built once and reused so we don't
     /// rebuild the MTLDevice / CIContext / compute pipeline state (expensive — pipeline-state
     /// compilation alone can take hundreds of ms) on every exported image. The pipeline carries
-    /// mutable per-render state (LUT, params buffer, cached WB matrix), so `renderOffscreen`
-    /// serializes on `offscreenLock`; that also bounds GPU memory during batch export by
+    /// mutable per-render state (LUT, params buffer, cached WB matrix), so all renders are
+    /// serialized on `offscreenRenderQueue`; that also bounds GPU memory during batch export by
     /// preventing many full-resolution textures from being live at once.
     nonisolated private static let sharedOffscreen: (device: MTLDevice, queue: MTLCommandQueue, pipeline: MetalEditPipeline)? = {
         guard let device = MTLCreateSystemDefaultDevice(),
@@ -224,7 +224,33 @@ final class MetalEditPipeline: @unchecked Sendable {
         }
         return (device, queue, pipeline)
     }()
-    nonisolated private static let offscreenLock = NSLock()
+
+    /// Dedicated serial queue that owns the shared offscreen pipeline. This replaces the
+    /// old `NSLock`: serializing on a real, dedicated thread (rather than blocking whichever
+    /// caller thread holds a lock across `waitUntilCompleted`) lets async callers `await`
+    /// `renderOffscreenAsync` and *suspend* instead of blocking. A slow or stalled GPU wait
+    /// can then never tie up — and exhaust — Swift concurrency's fixed-width cooperative
+    /// thread pool, which was the cause of the freeze-on-rotate hang.
+    nonisolated private static let offscreenRenderQueue = DispatchQueue(
+        label: "com.aagedal.photo-agent.offscreen-render", qos: .userInitiated
+    )
+
+    /// Carries a non-Sendable `CIImage` across the render-queue hop. The render only reads the
+    /// image and the box is never shared, so transferring the reference is safe.
+    nonisolated private struct CIImageBox: @unchecked Sendable {
+        let image: CIImage?
+    }
+
+    /// Thread-safe cancellation flag for `renderOffscreenAsync`. The serial queue runs FIFO, so
+    /// a cancelled job (e.g. a prefetch the user navigated past) would otherwise still execute its
+    /// full GPU render once it reached the head — letting a backlog of stale renders starve the
+    /// foreground. Checking this flag when the job dequeues lets cancelled renders bail in µs.
+    nonisolated private final class CancelFlag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var cancelled = false
+        var isCancelled: Bool { lock.withLock { cancelled } }
+        func cancel() { lock.withLock { cancelled = true } }
+    }
 
     /// Max 2D texture dimension. Metal exposes no runtime query for this; every macOS GPU
     /// family (Apple and Mac2) caps a 2D texture at 16384 px per side, so we use that.
@@ -1043,14 +1069,64 @@ final class MetalEditPipeline: @unchecked Sendable {
     // MARK: - Offscreen Rendering
 
     /// Renders tonal adjustments via the Metal compute shader and returns the result as CIImage.
-    /// Creates an ephemeral pipeline instance — safe to call from any thread.
-    /// Uses the exact same shader as the live preview: LUT, vibrance, saturation,
-    /// white balance, and highlight desaturation. No CIFilter approximation.
+    /// Synchronous entry: serializes on `offscreenRenderQueue` and **blocks** the caller until
+    /// the render completes. Safe, but from an async context prefer `renderOffscreenAsync` so the
+    /// caller suspends rather than tying up a cooperative-pool thread across the GPU wait.
     nonisolated static func renderOffscreen(
         source: CIImage,
         settings: CameraRawSettings?,
         exifOrientation: Int = 1
     ) -> CIImage? {
+        offscreenRenderQueue.sync {
+            renderOffscreenSerial(source: source, settings: settings, exifOrientation: exifOrientation)
+        }
+    }
+
+    /// Asynchronous entry: runs the render on `offscreenRenderQueue` and **suspends** the caller
+    /// while it executes, so the blocking GPU wait happens on the dedicated render thread and
+    /// never starves Swift concurrency's cooperative thread pool. Prefer this from any `Task`.
+    ///
+    /// Honors cancellation: because the queue is FIFO and unbounded, a cancelled job (e.g. a
+    /// prefetch the user navigated past) would otherwise still run its full GPU render once it
+    /// reached the head, letting a backlog of stale renders starve the foreground. We instead
+    /// short-circuit such jobs in µs when they dequeue.
+    nonisolated static func renderOffscreenAsync(
+        source: CIImage,
+        settings: CameraRawSettings?,
+        exifOrientation: Int = 1
+    ) async -> CIImage? {
+        if Task.isCancelled { return nil }
+        let inBox = CIImageBox(image: source)
+        let flag = CancelFlag()
+        let outBox: CIImageBox = await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                offscreenRenderQueue.async {
+                    guard !flag.isCancelled else {
+                        continuation.resume(returning: CIImageBox(image: nil))
+                        return
+                    }
+                    let result = renderOffscreenSerial(
+                        source: inBox.image, settings: settings, exifOrientation: exifOrientation
+                    )
+                    continuation.resume(returning: CIImageBox(image: result))
+                }
+            }
+        } onCancel: {
+            flag.cancel()
+        }
+        return outBox.image
+    }
+
+    /// The actual render. Assumes it is running on `offscreenRenderQueue` (the serial owner of
+    /// the shared pipeline's mutable LUT/params/WB-cache state); never call it directly off-queue.
+    /// Uses the exact same shader as the live preview: LUT, vibrance, saturation,
+    /// white balance, and highlight desaturation. No CIFilter approximation.
+    nonisolated private static func renderOffscreenSerial(
+        source: CIImage?,
+        settings: CameraRawSettings?,
+        exifOrientation: Int = 1
+    ) -> CIImage? {
+        guard let source else { return nil }
         guard var settings, !isIdentitySettings(settings) else { return nil }
         // `source` is display-oriented but mask geometry is sensor-frame —
         // transform before the params upload (the ephemeral pipeline has no
@@ -1091,9 +1167,8 @@ final class MetalEditPipeline: @unchecked Sendable {
         let height = Int(extent.height)
         guard width > 0, height > 0 else { return nil }
 
-        // Serialize use of the shared pipeline's mutable state (LUT, params, WB cache).
-        offscreenLock.lock()
-        defer { offscreenLock.unlock() }
+        // Serialized by `offscreenRenderQueue` (this function only runs there), so the shared
+        // pipeline's mutable state (LUT, params, WB cache) is never touched concurrently.
 
         // 1. Upload source CIImage to Metal texture
         let srcDesc = MTLTextureDescriptor.texture2DDescriptor(

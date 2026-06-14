@@ -27,8 +27,24 @@ enum CameraRawApproximation {
         ) {
             return metalResult
         }
+        return metalUnavailableFallback(to: input, settings: settings)
+    }
 
-        // Fallback: CIFilter chain (if Metal is unavailable)
+    /// Async sibling of `apply`. Suspends on the dedicated render queue instead of blocking the
+    /// caller's thread — use this from `Task`s (prefetch, thumbnail generation) so a slow GPU
+    /// render can't starve the cooperative thread pool. Produces identical pixels to `apply`.
+    nonisolated static func applyAsync(to input: CIImage, settings: CameraRawSettings?, exifOrientation: Int = 1) async -> CIImage {
+        guard let settings else { return input }
+        if let metalResult = await MetalEditPipeline.renderOffscreenAsync(
+            source: input, settings: settings, exifOrientation: exifOrientation
+        ) {
+            return metalResult
+        }
+        return metalUnavailableFallback(to: input, settings: settings)
+    }
+
+    /// CIFilter fallback path shared by `apply` / `applyAsync` (used only when Metal is unavailable).
+    nonisolated private static func metalUnavailableFallback(to input: CIImage, settings: CameraRawSettings) -> CIImage {
         if !(settings.localAdjustments?.isEmpty ?? true) {
             Logger(subsystem: "com.aagedal.photo-agent", category: "CameraRawApproximation")
                 .warning("CIFilter fallback: mask adjustments will not be applied")
@@ -91,6 +107,15 @@ enum CameraRawApproximation {
         guard let settings else { return input }
         let originalExtent = input.extent
         let adjusted = apply(to: input, settings: settings, exifOrientation: exifOrientation)
+        return applyCrop(to: adjusted, originalExtent: originalExtent, settings: settings, exifOrientation: exifOrientation)
+    }
+
+    /// Async sibling of `applyWithCrop` — suspends on the render queue for the tonal pass, then
+    /// applies the (cheap, CPU-only) crop/rotation. Use from `Task`s to avoid blocking the pool.
+    nonisolated static func applyWithCropAsync(to input: CIImage, settings: CameraRawSettings?, exifOrientation: Int = 1) async -> CIImage {
+        guard let settings else { return input }
+        let originalExtent = input.extent
+        let adjusted = await applyAsync(to: input, settings: settings, exifOrientation: exifOrientation)
         return applyCrop(to: adjusted, originalExtent: originalExtent, settings: settings, exifOrientation: exifOrientation)
     }
 

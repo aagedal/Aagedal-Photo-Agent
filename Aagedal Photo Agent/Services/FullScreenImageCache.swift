@@ -255,7 +255,14 @@ final class FullScreenImageCache: @unchecked Sendable {
                             guard !Task.isCancelled else { return }
                         }
                         if let ciImage {
-                            let processed = settings.map { CameraRawApproximation.applyWithCrop(to: ciImage, settings: $0, exifOrientation: orientation) } ?? ciImage
+                            let processed: CIImage
+                            if let settings {
+                                // Async: suspends on the dedicated render queue rather than blocking
+                                // this prefetch task's cooperative-pool thread across the GPU wait.
+                                processed = await CameraRawApproximation.applyWithCropAsync(to: ciImage, settings: settings, exifOrientation: orientation)
+                            } else {
+                                processed = ciImage
+                            }
                             guard !Task.isCancelled else { return }
                             image = CameraRawApproximation.ciContext.createCGImage(
                                 processed, from: processed.extent,

@@ -230,7 +230,9 @@ final class ThumbnailService {
         cgImage: CGImage, settings: CameraRawSettings, exifOrientation: Int
     ) async -> CGImage? {
         let ciImage = CIImage(cgImage: cgImage)
-        let edited = CameraRawApproximation.applyWithCrop(
+        // Async: suspends on the dedicated render queue instead of blocking this thumbnail
+        // task's cooperative-pool thread — grid scrolling can spawn many of these at once.
+        let edited = await CameraRawApproximation.applyWithCropAsync(
             to: ciImage, settings: settings, exifOrientation: exifOrientation)
         let editedExtent = edited.extent
         guard editedExtent.width > 0, editedExtent.height > 0 else { return nil }

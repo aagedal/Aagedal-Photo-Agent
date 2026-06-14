@@ -154,7 +154,7 @@ struct XMPSidecarService: Sendable {
                 imageAspect: imageAspectIfCropAngled(for: imageURL, crop: settings.crop)
             )
             if let orientation {
-                setSimple(on: description, prefix: "exif", localName: "Orientation", value: String(orientation))
+                setOrientation(on: description, value: orientation)
             }
             let data = serializeXMP(document)
             try data.write(to: url, options: .atomic)
@@ -268,6 +268,7 @@ struct XMPSidecarService: Sendable {
         ensureNamespace(description, prefix: "Iptc4xmpCore", uri: Namespace.iptcCore)
         ensureNamespace(description, prefix: "Iptc4xmpExt", uri: Namespace.iptcExt)
         ensureNamespace(description, prefix: "exif", uri: Namespace.exif)
+        ensureNamespace(description, prefix: "tiff", uri: Namespace.tiff)
         ensureNamespace(description, prefix: "crs", uri: Namespace.crs)
         if let rdf = description.parent as? XMLElement {
             ensureNamespace(rdf, prefix: "rdf", uri: Namespace.rdf)
@@ -357,11 +358,7 @@ struct XMPSidecarService: Sendable {
             setSimple(on: description, prefix: "exif", localName: "GPSLongitude", value: nil)
         }
 
-        if let orientation = metadata.exifOrientation {
-            setSimple(on: description, prefix: "exif", localName: "Orientation", value: String(orientation))
-        } else {
-            setSimple(on: description, prefix: "exif", localName: "Orientation", value: nil)
-        }
+        setOrientation(on: description, value: metadata.exifOrientation)
 
         updateCameraRawSettings(on: description, settings: metadata.cameraRaw, imageAspect: imageAspect)
     }
@@ -631,6 +628,16 @@ struct XMPSidecarService: Sendable {
 
     private func formatBool(_ value: Bool) -> String {
         value ? "True" : "False"
+    }
+
+    /// Writes orientation to BOTH `tiff:Orientation` and `exif:Orientation`. The reader treats
+    /// `tiff:Orientation` as authoritative (Adobe's convention — see `parseMetadata`), so writing
+    /// only `exif:Orientation` lets a stale Adobe-authored `tiff:Orientation` win on read-back and
+    /// silently revert the rotation. Keep the two tags in lockstep. `nil` clears both.
+    private func setOrientation(on description: XMLElement, value: Int?) {
+        let str = value.map(String.init)
+        setSimple(on: description, prefix: "tiff", localName: "Orientation", value: str)
+        setSimple(on: description, prefix: "exif", localName: "Orientation", value: str)
     }
 
     private func setSimple(on description: XMLElement, prefix: String, localName: String, value: String?) {
