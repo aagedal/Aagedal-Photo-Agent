@@ -94,6 +94,40 @@ struct MetadataEngineConcurrencyTests {
         #expect(read.contrast == 25)
     }
 
+    /// HSL regression: per-color HSL adjustments written through the structured
+    /// write path must read back with their authored hue/saturation/luminance.
+    /// `developWriteFields` deliberately excludes HSL, so the live (non-export)
+    /// file write used to drop it from a JPEG's own crs block — a JPEG edited
+    /// in-app then opened directly in ACR (no sidecar) rendered without the HSL
+    /// edit. `StructuredWriteData.hslAdjustments` closes that Adobe-parity gap.
+    @Test("HSL adjustments roundtrip through the structured write then read")
+    func hslRoundtrip() async throws {
+        let engine = SwiftExifWriteEngine()
+        let reader = SwiftExifReadService()
+        let url = try makeTempJPEG()
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        var hsl = HSLAdjustments()
+        hsl.red = HSLColorAdjustment(saturation: 30, luminance: -10, hueShift: 5)
+        hsl.blue = HSLColorAdjustment(saturation: -20, luminance: 15, hueShift: -8)
+
+        try await engine.writeFields(
+            [:], to: [url],
+            structuredData: StructuredWriteData(hslAdjustments: hsl)
+        )
+
+        let meta = try await reader.readFullMetadata(url: url)
+        let read = try #require(meta.cameraRaw?.hslAdjustments)
+        let red = try #require(read.red)
+        #expect(red.saturation == 30)
+        #expect(red.luminance == -10)
+        #expect(red.hueShift == 5)
+        let blue = try #require(read.blue)
+        #expect(blue.saturation == -20)
+        #expect(blue.luminance == 15)
+        #expect(blue.hueShift == -8)
+    }
+
     /// Adobe-faithful crs block replacement: a full develop save replaces the
     /// file's ENTIRE crs namespace with the write's live state, dropping
     /// settings the app doesn't model (ACR's Texture, vignette, …) so ACR

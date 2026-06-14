@@ -3222,7 +3222,8 @@ struct EditWorkspaceView: View {
             // settings the paste doesn't carry.
             let structuredData = StructuredWriteData(
                 toneCurve: cameraRaw.toneCurve,
-                masks: (cameraRaw.localAdjustments?.isEmpty == false) ? cameraRaw.localAdjustments : nil
+                masks: (cameraRaw.localAdjustments?.isEmpty == false) ? cameraRaw.localAdjustments : nil,
+                hslAdjustments: (cameraRaw.hslAdjustments?.isEmpty == false) ? cameraRaw.hslAdjustments : nil
             )
 
             do {

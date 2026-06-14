@@ -1129,6 +1129,7 @@ final class MetadataViewModel {
                     ? StructuredWriteData(
                         toneCurve: edited.cameraRaw?.toneCurve,
                         masks: edited.cameraRaw?.localAdjustments,
+                        hslAdjustments: edited.cameraRaw?.hslAdjustments,
                         replaceCameraRawBlock: true
                     )
                     : .empty
@@ -2111,6 +2112,7 @@ final class MetadataViewModel {
                     ? StructuredWriteData(
                         toneCurve: edited.cameraRaw?.toneCurve,
                         masks: edited.cameraRaw?.localAdjustments,
+                        hslAdjustments: edited.cameraRaw?.hslAdjustments,
                         replaceCameraRawBlock: true
                     )
                     : .empty
@@ -2186,6 +2188,7 @@ final class MetadataViewModel {
                     ? StructuredWriteData(
                         toneCurve: edited.cameraRaw?.toneCurve,
                         masks: edited.cameraRaw?.localAdjustments,
+                        hslAdjustments: edited.cameraRaw?.hslAdjustments,
                         replaceCameraRawBlock: true
                     )
                     : .empty

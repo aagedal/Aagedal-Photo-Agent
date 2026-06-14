@@ -276,6 +276,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         // image whose crs block we couldn't model) from wiping the block.
         let writesCameraRaw = fields.keys.contains(where: \.isCameraRawField)
             || structuredData.toneCurve != nil || structuredData.masks != nil
+            || structuredData.hslAdjustments != nil
         if structuredData.replaceCameraRawBlock && writesCameraRaw {
             metadata.xmp?.removeAll(namespace: crsNamespace)
         }
@@ -314,6 +315,10 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
 
         if let masks = structuredData.masks {
             applyMasks(masks, metadata: &metadata)
+        }
+
+        if let hsl = structuredData.hslAdjustments {
+            applyHSL(hsl, metadata: &metadata)
         }
 
         // After a block replacement that carries settings, re-stamp the edited
