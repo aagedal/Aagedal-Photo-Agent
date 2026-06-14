@@ -17,6 +17,7 @@ struct FolderTreeRow: View {
     let revealInFinder: (URL) -> Void
 
     @State private var isDropHighlighted = false
+    @State private var isHovered = false
 
     private var isCurrent: Bool {
         url == viewModel.currentFolderURL
@@ -106,7 +107,7 @@ struct FolderTreeRow: View {
                 .foregroundStyle(isCurrent ? Color.accentColor : Color.primary)
             Spacer()
 
-            if isRootOfSection && section == .openRoot {
+            if isRootOfSection && section == .openRoot && isHovered {
                 Button {
                     viewModel.closeOpenFolder(url)
                 } label: {
@@ -130,6 +131,9 @@ struct FolderTreeRow: View {
                 .stroke(isDropHighlighted ? Color.accentColor : Color.clear, lineWidth: 2)
         )
         .contentShape(Rectangle())
+        .onHover { hovering in
+            isHovered = hovering
+        }
         // Photo Mechanic semantics: a single click on the name opens the
         // folder; only the disclosure chevron expands/collapses. A paired
         // double-tap gesture would also delay every single click by the

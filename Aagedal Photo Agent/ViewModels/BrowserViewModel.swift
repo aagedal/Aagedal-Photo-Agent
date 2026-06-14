@@ -502,8 +502,13 @@ final class BrowserViewModel {
 
         restoreFilterState(for: url)
 
-        // Add to open folders if not already there, unless it's a subfolder of an existing open folder
-        if addToOpenFolders && !openFolders.contains(url) && !isSubfolderOfOpenFolder(url) {
+        // Add to open folders if not already there, unless it's a subfolder of
+        // an existing open folder, or a favorite (root or descendant) — favorites
+        // already have a home in the Favorites section and must not duplicate
+        // into Open Folders, no matter which entry point opened them (tap,
+        // Open Recent, drag-and-drop, import).
+        let isFavoriteRoot = favoriteFolders.contains { $0.url == url }
+        if addToOpenFolders && !isFavoriteRoot && !openFolders.contains(url) && !isSubfolderOfOpenFolder(url) {
             openFolders.append(url)
         }
 
