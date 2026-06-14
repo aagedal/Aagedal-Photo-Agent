@@ -1051,6 +1051,25 @@ struct CameraRawCropACRConversionTests {
         #expect(crop?.left == 0.046737)
         #expect(crop?.right == 0.807953)
     }
+
+    /// Embedded HSL crs documentation must surface through the full dict parser
+    /// into `cameraRaw.hslAdjustments`, mapping the ACR `Aqua` (cyan) and custom
+    /// `SkinTone` names back to their channels and leaving unset fields nil.
+    @Test("iptcMetadataFromDict decodes HSL adjustments into cameraRaw")
+    func dictParseDecodesHSL() throws {
+        let dict: [String: Any] = [
+            "HueAdjustmentRed": "+10",
+            "SaturationAdjustmentRed": "+25",
+            "LuminanceAdjustmentRed": "-15",
+            "SaturationAdjustmentAqua": "-40",
+            "LuminanceAdjustmentSkinTone": "+12",
+        ]
+        let hsl = try #require(iptcMetadataFromDict(dict).cameraRaw?.hslAdjustments)
+        #expect(hsl.red == HSLColorAdjustment(saturation: 25, luminance: -15, hueShift: 10))
+        #expect(hsl.cyan == HSLColorAdjustment(saturation: -40, luminance: nil, hueShift: nil))
+        #expect(hsl.skinTone == HSLColorAdjustment(saturation: nil, luminance: 12, hueShift: nil))
+        #expect(hsl.green == nil)
+    }
 }
 
 @Suite("EllipseMaskGeometry ACR corner encoding")

@@ -75,6 +75,12 @@ struct EditExportPipelineTests {
         var baked = CameraRawSettings()
         baked.exposure2012 = 0.5
         baked.contrast2012 = 20
+        // HSL is part of the develop edit and must be documented in the baked crs
+        // too — including the ACR `Aqua` alias for cyan and a partial channel.
+        baked.hslAdjustments = HSLAdjustments(
+            red: HSLColorAdjustment(saturation: 25, luminance: -15, hueShift: 10),
+            cyan: HSLColorAdjustment(saturation: -40, luminance: nil, hueShift: nil)
+        )
 
         let outDir = dir.appendingPathComponent("out", isDirectory: true)
         try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
@@ -92,6 +98,12 @@ struct EditExportPipelineTests {
         #expect(embedded.xmp?.simpleValue(namespace: crsNS, property: "AlreadyApplied") == "True")
         #expect(embedded.xmp?.simpleValue(namespace: crsNS, property: "Exposure2012") == "+0.50")
         #expect(embedded.xmp?.simpleValue(namespace: crsNS, property: "Contrast2012") == "+20")
+        // HSL: signed ints, ACR `Aqua` for cyan, and only the authored channels.
+        #expect(embedded.xmp?.simpleValue(namespace: crsNS, property: "HueAdjustmentRed") == "+10")
+        #expect(embedded.xmp?.simpleValue(namespace: crsNS, property: "SaturationAdjustmentRed") == "+25")
+        #expect(embedded.xmp?.simpleValue(namespace: crsNS, property: "LuminanceAdjustmentRed") == "-15")
+        #expect(embedded.xmp?.simpleValue(namespace: crsNS, property: "SaturationAdjustmentAqua") == "-40")
+        #expect(embedded.xmp?.simpleValue(namespace: crsNS, property: "HueAdjustmentAqua") == nil)
         // The producing app + version is recorded.
         let creatorTool = embedded.xmp?.simpleValue(namespace: xmpNS, property: "CreatorTool")
         #expect(creatorTool?.hasPrefix("Aagedal Photo Agent") == true)
@@ -100,6 +112,44 @@ struct EditExportPipelineTests {
         // edits — otherwise they'd be re-applied on top of the already-baked pixels.
         let reread = try await SwiftExifReadService().readFullMetadata(url: rendered)
         #expect(reread.cameraRaw == nil)
+    }
+
+    /// The embedded crs HSL documentation must read back losslessly through the
+    /// same dict adapter + shared decoder the app uses on import: a baked JPEG
+    /// carrying HSL round-trips every authored channel — including the ACR
+    /// `Aqua` (cyan) and custom `SkinTone` aliases and partially-set channels.
+    @Test("baked HSL survives an embedded JPEG round-trip through the dict adapter")
+    func embeddedHSLRoundtrips() async throws {
+        let (dir, source) = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        var baked = CameraRawSettings()
+        baked.hslAdjustments = HSLAdjustments(
+            red: HSLColorAdjustment(saturation: 25, luminance: -15, hueShift: 10),
+            cyan: HSLColorAdjustment(saturation: -40, luminance: nil, hueShift: nil),
+            skinTone: HSLColorAdjustment(saturation: nil, luminance: 12, hueShift: -3)
+        )
+
+        let outDir = dir.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+
+        let tracker = MetadataFailureTracker()
+        let rendered = try await EditExportPipeline.renderItem(
+            sourceURL: source, cameraRaw: baked, kind: .jpeg,
+            outputFolder: outDir, folderURL: source.deletingLastPathComponent(),
+            writeEngine: SwiftExifWriteEngine(), failureTracker: tracker)
+
+        // Read the embedded crs back through the dict adapter + shared decoder.
+        // (The block is AlreadyApplied="True", so the full parser intentionally
+        // nils cameraRaw; decode the documented HSL directly to verify it survived.)
+        let embedded = try SwiftExif.readMetadata(from: rendered)
+        let dict = embedded.asMetadataDict()
+        let hsl = try #require(decodeHSLAdjustments { parseIntValue(dict[$0]) })
+
+        #expect(hsl.red == HSLColorAdjustment(saturation: 25, luminance: -15, hueShift: 10))
+        #expect(hsl.cyan == HSLColorAdjustment(saturation: -40, luminance: nil, hueShift: nil))
+        #expect(hsl.skinTone == HSLColorAdjustment(saturation: nil, luminance: 12, hueShift: -3))
+        #expect(hsl.green == nil)
     }
 
     /// An unedited export (no cameraRaw) carries no crs block but is still stamped with the

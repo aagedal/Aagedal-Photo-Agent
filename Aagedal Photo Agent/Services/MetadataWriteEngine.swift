@@ -4,6 +4,7 @@ import Foundation
 struct StructuredWriteData: Sendable {
     var toneCurve: ToneCurve?
     var masks: [MaskAdjustment]?
+    var hslAdjustments: HSLAdjustments?
 
     /// Replace the file's ENTIRE Camera Raw (crs) namespace block with this
     /// write's content — Adobe-faithful semantics: ACR drops settings it isn't
@@ -15,7 +16,9 @@ struct StructuredWriteData: Sendable {
     var replaceCameraRawBlock: Bool = false
 
     var isEmpty: Bool {
-        (toneCurve == nil || (toneCurve?.isEmpty ?? true)) && (masks == nil || (masks?.isEmpty ?? true))
+        (toneCurve == nil || (toneCurve?.isEmpty ?? true))
+            && (masks == nil || (masks?.isEmpty ?? true))
+            && (hslAdjustments == nil || (hslAdjustments?.isEmpty ?? true))
     }
 
     static let empty = StructuredWriteData()

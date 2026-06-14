@@ -1118,7 +1118,8 @@ final class BrowserViewModel {
             sdrShadows: parseIntValue(dict[MetadataDictKey.crsSDRShadows]),
             sdrWhites: parseIntValue(dict[MetadataDictKey.crsSDRWhites]),
             sdrBlend: parseIntValue(dict[MetadataDictKey.crsSDRBlend]),
-            toneCurve: toneCurve
+            toneCurve: toneCurve,
+            hslAdjustments: decodeHSLAdjustments { parseIntValue(dict[$0]) }
         )
         // A crs block marked AlreadyApplied="True" is baked into the pixels (our own
         // export, or an ACR-rendered-from-RAW JPEG) — treat it as unedited so the

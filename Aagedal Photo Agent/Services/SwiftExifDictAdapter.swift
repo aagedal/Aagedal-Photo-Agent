@@ -125,6 +125,14 @@ extension ImageMetadata {
                 }
             }
 
+            // HSL per-color adjustments — 21 simple signed-int crs properties
+            // (HueAdjustment*/SaturationAdjustment*/LuminanceAdjustment* per color).
+            for property in acrHSLPropertyNames {
+                if let v = xmp.simpleValue(namespace: crsNamespaceURI, property: property) {
+                    dict[property] = v
+                }
+            }
+
             // Tone curve arrays — rdf:Seq of "x, y" strings.
             for property in [
                 MetadataDictKey.crsToneCurvePV2012,

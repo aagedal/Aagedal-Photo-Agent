@@ -364,6 +364,67 @@ nonisolated func encodeMaskGroupBasedCorrections(_ masks: [MaskAdjustment]) -> [
     }
 }
 
+// MARK: - HSL per-color adjustments (shared encode/decode)
+
+/// The seven Adobe Camera Raw HSL color channels: the ACR property-name suffix
+/// (note `Aqua` for cyan and the ACR-custom `SkinTone`) paired with the writable
+/// key path into `HSLAdjustments`. The single source of truth for the channel set
+/// and its names — shared by every HSL read/write path so the embedded-file and
+/// .xmp sidecar encodings can't drift. A function rather than a stored global
+/// because `WritableKeyPath` isn't `Sendable`; the value is built fresh per call
+/// and only used locally, never shared across isolation domains.
+nonisolated func acrHSLChannels() -> [(acrName: String, keyPath: WritableKeyPath<HSLAdjustments, HSLColorAdjustment?>)] {
+    [
+        ("Red", \.red),
+        ("Yellow", \.yellow),
+        ("Green", \.green),
+        ("Aqua", \.cyan),
+        ("Blue", \.blue),
+        ("Magenta", \.magenta),
+        ("SkinTone", \.skinTone),
+    ]
+}
+
+/// All 21 ACR HSL crs property names (e.g. `HueAdjustmentRed`) — the seven
+/// channels × hue/saturation/luminance. Drives the embedded-file dict read loop
+/// and the sidecar's clear-then-set write so neither hardcodes the name list.
+nonisolated let acrHSLPropertyNames: [String] = acrHSLChannels().flatMap { channel in
+    ["HueAdjustment", "SaturationAdjustment", "LuminanceAdjustment"].map { $0 + channel.acrName }
+}
+
+/// Encode per-color HSL adjustments into ACR `crs:` property name/value pairs
+/// (signed-int strings, e.g. `+15`); only non-nil fields are emitted. Shared by
+/// the embedded-XMP writer (`SwiftExifWriteEngine.applyHSL`) and the .xmp sidecar
+/// writer (`XMPSidecarService`) so both destinations encode HSL identically.
+nonisolated func encodeHSLAdjustments(_ hsl: HSLAdjustments) -> [(name: String, value: String)] {
+    func signedInt(_ value: Int) -> String { value > 0 ? "+\(value)" : "\(value)" }
+    var out: [(name: String, value: String)] = []
+    for channel in acrHSLChannels() {
+        guard let adj = hsl[keyPath: channel.keyPath] else { continue }
+        if let hue = adj.hueShift { out.append(("HueAdjustment\(channel.acrName)", signedInt(hue))) }
+        if let sat = adj.saturation { out.append(("SaturationAdjustment\(channel.acrName)", signedInt(sat))) }
+        if let lum = adj.luminance { out.append(("LuminanceAdjustment\(channel.acrName)", signedInt(lum))) }
+    }
+    return out
+}
+
+/// Decode per-color HSL adjustments from a property-name → signed-int `lookup` —
+/// the exact inverse of `encodeHSLAdjustments`. Returns nil when no channel
+/// carries a value. Shared by the embedded-file dict parsers
+/// (`iptcMetadataFromDict`, `BrowserViewModel.cameraRawSettings`) and the .xmp
+/// sidecar reader so every read path reconstructs HSL identically.
+nonisolated func decodeHSLAdjustments(_ lookup: (String) -> Int?) -> HSLAdjustments? {
+    var hsl = HSLAdjustments()
+    for channel in acrHSLChannels() {
+        let hue = lookup("HueAdjustment\(channel.acrName)")
+        let sat = lookup("SaturationAdjustment\(channel.acrName)")
+        let lum = lookup("LuminanceAdjustment\(channel.acrName)")
+        guard hue != nil || sat != nil || lum != nil else { continue }
+        hsl[keyPath: channel.keyPath] = HSLColorAdjustment(saturation: sat, luminance: lum, hueShift: hue)
+    }
+    return hsl.isEmpty ? nil : hsl
+}
+
 /// Construct an `IPTCMetadata` from a flat tag-name dictionary.
 /// The dictionary keys match the canonical IPTC / XMP / EXIF tag names used by
 /// `MetadataDictKey` so callers can either build the dict from SwiftExif's
@@ -419,7 +480,8 @@ nonisolated func iptcMetadataFromDict(_ dict: [String: Any]) -> IPTCMetadata {
         sdrWhites: parseIntValue(dict[MetadataDictKey.crsSDRWhites]),
         sdrBlend: parseIntValue(dict[MetadataDictKey.crsSDRBlend]),
         toneCurve: toneCurve,
-        localAdjustments: localAdjustments
+        localAdjustments: localAdjustments,
+        hslAdjustments: decodeHSLAdjustments { parseIntValue(dict[$0]) }
     )
 
     return IPTCMetadata(

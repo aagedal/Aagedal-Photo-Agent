@@ -590,6 +590,19 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         )
     }
 
+    /// Apply per-color HSL adjustments as simple XMP-crs properties
+    /// (`HueAdjustmentRed`, `SaturationAdjustmentAqua`, …). Field content comes
+    /// from the shared `encodeHSLAdjustments` (also used by the .xmp sidecar
+    /// writer) so the embedded-file and sidecar HSL encodings stay identical.
+    private func applyHSL(_ hsl: HSLAdjustments, metadata: inout ImageMetadata) {
+        let encoded = encodeHSLAdjustments(hsl)
+        guard !encoded.isEmpty else { return }
+        if metadata.xmp == nil { metadata.xmp = XMPData() }
+        for (name, value) in encoded {
+            metadata.xmp?.setValue(.simple(value), namespace: crsNamespace, property: name)
+        }
+    }
+
     /// Set an XMP field, creating XMPData if needed. Pass nil value to remove.
     private func setXMPField(_ metadata: inout ImageMetadata, namespace: String, property: String, value: XMPValue?) {
         if let value {
@@ -628,6 +641,9 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         }
         if let masks = settings.localAdjustments, !masks.isEmpty {
             applyMasks(masks, metadata: &metadata)
+        }
+        if let hsl = settings.hslAdjustments, !hsl.isEmpty {
+            applyHSL(hsl, metadata: &metadata)
         }
         if metadata.xmp == nil { metadata.xmp = XMPData() }
         metadata.xmp?.setValue(.simple("True"), namespace: crsNamespace, property: "AlreadyApplied")

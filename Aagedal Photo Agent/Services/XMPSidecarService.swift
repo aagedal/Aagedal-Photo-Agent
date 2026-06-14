@@ -404,20 +404,16 @@ struct XMPSidecarService: Sendable {
         setSimple(on: description, prefix: "crs", localName: "Saturation", value: settings.saturation.map(formatSignedInt))
         setSimple(on: description, prefix: "crs", localName: "Vibrance", value: settings.vibrance.map(formatSignedInt))
 
-        // HSL per-color adjustments (ACR-compatible tags + custom SkinTone)
-        func writeHSLChannel(_ adj: HSLColorAdjustment?, color: String) {
-            setSimple(on: description, prefix: "crs", localName: "HueAdjustment\(color)", value: adj?.hueShift.map(formatSignedInt))
-            setSimple(on: description, prefix: "crs", localName: "SaturationAdjustment\(color)", value: adj?.saturation.map(formatSignedInt))
-            setSimple(on: description, prefix: "crs", localName: "LuminanceAdjustment\(color)", value: adj?.luminance.map(formatSignedInt))
+        // HSL per-color adjustments (ACR-compatible tags + custom SkinTone).
+        // Clear every channel, then set the present ones via the shared encoder
+        // so the sidecar and embedded-file HSL encodings can't drift.
+        let hslValues = Dictionary(
+            uniqueKeysWithValues: (settings.hslAdjustments.map(encodeHSLAdjustments) ?? [])
+                .map { ($0.name, $0.value) }
+        )
+        for name in acrHSLPropertyNames {
+            setSimple(on: description, prefix: "crs", localName: name, value: hslValues[name])
         }
-        let hsl = settings.hslAdjustments
-        writeHSLChannel(hsl?.red, color: "Red")
-        writeHSLChannel(hsl?.yellow, color: "Yellow")
-        writeHSLChannel(hsl?.green, color: "Green")
-        writeHSLChannel(hsl?.cyan, color: "Aqua")
-        writeHSLChannel(hsl?.blue, color: "Blue")
-        writeHSLChannel(hsl?.magenta, color: "Magenta")
-        writeHSLChannel(hsl?.skinTone, color: "SkinTone")
 
         let hasSettings = settings.hasSettings ?? !settings.isEmpty
         setSimple(on: description, prefix: "crs", localName: "HasSettings", value: formatBool(hasSettings))
@@ -547,15 +543,7 @@ struct XMPSidecarService: Sendable {
             "MaskGroupBasedCorrections",
             "AlreadyApplied",
             "CompatibleVersion",
-            // HSL per-color adjustments
-            "HueAdjustmentRed", "SaturationAdjustmentRed", "LuminanceAdjustmentRed",
-            "HueAdjustmentYellow", "SaturationAdjustmentYellow", "LuminanceAdjustmentYellow",
-            "HueAdjustmentGreen", "SaturationAdjustmentGreen", "LuminanceAdjustmentGreen",
-            "HueAdjustmentAqua", "SaturationAdjustmentAqua", "LuminanceAdjustmentAqua",
-            "HueAdjustmentBlue", "SaturationAdjustmentBlue", "LuminanceAdjustmentBlue",
-            "HueAdjustmentMagenta", "SaturationAdjustmentMagenta", "LuminanceAdjustmentMagenta",
-            "HueAdjustmentSkinTone", "SaturationAdjustmentSkinTone", "LuminanceAdjustmentSkinTone",
-        ]
+        ] + acrHSLPropertyNames // HSL per-color adjustments
         for field in fields {
             removeProperty(from: description, prefix: "crs", localName: field)
         }
@@ -568,14 +556,6 @@ struct XMPSidecarService: Sendable {
         } else {
             removeProperty(from: description, prefix: "crs", localName: localName)
         }
-    }
-
-    private func parseHSLChannel(from description: XMLElement, color: String) -> HSLColorAdjustment? {
-        let hue = parseSimple(from: description, prefix: "crs", localName: "HueAdjustment\(color)").flatMap(parseSignedInt)
-        let sat = parseSimple(from: description, prefix: "crs", localName: "SaturationAdjustment\(color)").flatMap(parseSignedInt)
-        let lum = parseSimple(from: description, prefix: "crs", localName: "LuminanceAdjustment\(color)").flatMap(parseSignedInt)
-        guard hue != nil || sat != nil || lum != nil else { return nil }
-        return HSLColorAdjustment(saturation: sat, luminance: lum, hueShift: hue)
     }
 
     /// Parse `crs:MaskGroupBasedCorrections` back into `[MaskAdjustment]` by
@@ -878,17 +858,11 @@ struct XMPSidecarService: Sendable {
             return tc.isEmpty ? nil : tc
         }()
 
-        // HSL per-color adjustments (ACR-compatible tags + custom SkinTone)
-        let hslRaw = HSLAdjustments(
-            red: parseHSLChannel(from: description, color: "Red"),
-            yellow: parseHSLChannel(from: description, color: "Yellow"),
-            green: parseHSLChannel(from: description, color: "Green"),
-            cyan: parseHSLChannel(from: description, color: "Aqua"),
-            blue: parseHSLChannel(from: description, color: "Blue"),
-            magenta: parseHSLChannel(from: description, color: "Magenta"),
-            skinTone: parseHSLChannel(from: description, color: "SkinTone")
-        )
-        let hslAdjustments: HSLAdjustments? = hslRaw.isEmpty ? nil : hslRaw
+        // HSL per-color adjustments (ACR-compatible tags + custom SkinTone),
+        // reconstructed via the shared decoder (inverse of the sidecar write).
+        let hslAdjustments = decodeHSLAdjustments { name in
+            parseSimple(from: description, prefix: "crs", localName: name).flatMap(parseSignedInt)
+        }
 
         let localAdjustments = parseMaskCorrections(from: description)
 
