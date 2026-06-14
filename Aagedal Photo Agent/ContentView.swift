@@ -1484,7 +1484,12 @@ struct ContentView: View {
 
         // Load scope for browse mode (edit mode posts its own notification)
         if mainViewMode != .editing {
-            loadScopeImage(for: image.url, isNativeHDR: image.isNativeHDR)
+            loadScopeImage(
+                for: image.url,
+                isNativeHDR: image.isNativeHDR,
+                settings: image.cameraRawSettings,
+                exifOrientation: image.exifOrientation
+            )
         }
 
         if let cached = technicalMetadataCache[image.url] {
@@ -1524,7 +1529,12 @@ struct ContentView: View {
         }
     }
 
-    private func loadScopeImage(for url: URL?, isNativeHDR: Bool = false) {
+    private func loadScopeImage(
+        for url: URL?,
+        isNativeHDR: Bool = false,
+        settings: CameraRawSettings? = nil,
+        exifOrientation: Int = 1
+    ) {
         scopeImageTask?.cancel()
         scopeImageTask = nil
         scopeViewModel.waveformScale = isNativeHDR ? .nits : .percentage
@@ -1535,19 +1545,34 @@ struct ContentView: View {
             return
         }
 
+        // Mirror the edit-view scope: when the browse-mode image carries develop edits,
+        // bake them (and the crop) into the scope source so the waveform matches what the
+        // user sees in the develop view and in the edited thumbnail. Without this the scope
+        // reads the unedited pixels and looks very different across the two views.
+        let editSettings = (settings?.isEmpty == false) ? settings : nil
+
         scopeImageTask = Task {
             let cgImage: CGImage? = await Task.detached(priority: .utility) {
                 if isNativeHDR {
                     // HDR-preserving path: keeps float values >1.0 for correct nits waveform
                     if let ciImage = FullScreenImageCache.loadHDRPreview(from: url, maxPixelSize: 720) {
+                        let processed = editSettings.map {
+                            CameraRawApproximation.applyWithCrop(to: ciImage, settings: $0, exifOrientation: exifOrientation)
+                        } ?? ciImage
                         return CameraRawApproximation.ciContext.createCGImage(
-                            ciImage, from: ciImage.extent,
+                            processed, from: processed.extent,
                             format: .RGBAh,
                             colorSpace: CameraRawApproximation.workingColorSpace
                         )
                     }
                 }
-                return FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: 720)
+                guard let base = FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: 720) else {
+                    return nil
+                }
+                guard let editSettings else { return base }
+                return FullScreenImageCache.applyCameraRaw(
+                    to: base, settings: editSettings, exifOrientation: exifOrientation
+                )
             }.value
             guard !Task.isCancelled else { return }
             scopeViewModel.updateImage(cgImage)
