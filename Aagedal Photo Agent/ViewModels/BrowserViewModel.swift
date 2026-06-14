@@ -1847,6 +1847,29 @@ final class BrowserViewModel {
         }
     }
 
+    /// After an export writes files into a sub-folder, re-scan that sub-folder's
+    /// parent so the sidebar tree reflects the (possibly newly created) sub-folder
+    /// without a manual close/reopen, then expand the parent so it's visible.
+    /// The cached child list is otherwise only built on first expand and never
+    /// refreshed, so a folder created on disk by an export would stay hidden.
+    func revealExportedSubfolder(_ outputFolderURL: URL) {
+        let parentURL = outputFolderURL.deletingLastPathComponent()
+        let service = fileSystemService
+        Task.detached(priority: .userInitiated) {
+            let discovered = (try? service.listSubfolders(at: parentURL)) ?? []
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.subfoldersByOpenFolder[parentURL] = discovered
+                self.prefetchGrandchildren(of: parentURL)
+                // Expand the parent so the freshly created sub-folder is on screen.
+                // Each set is only consulted for folders actually rendered in that
+                // tree, so inserting a URL absent from one tree is harmless.
+                self.expandedOpenFolders.insert(parentURL)
+                self.expandedFavoriteFolders.insert(parentURL)
+            }
+        }
+    }
+
     /// Recursively removes all cached subfolder entries rooted at a URL.
     private func removeSubfolderCacheRecursively(for url: URL) {
         guard let children = subfoldersByOpenFolder.removeValue(forKey: url) else { return }

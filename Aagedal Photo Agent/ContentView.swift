@@ -1340,6 +1340,9 @@ struct ContentView: View {
             // Files written next to the originals land in the current folder — refresh to show them.
             if locationMode == .sameAsOriginal {
                 browserViewModel.refreshCurrentFolderIfNeeded()
+            } else if let outputFolder = lastOutputFolder, outputFolder != folderURL {
+                // Files went into a sub-folder — surface it in the sidebar tree.
+                browserViewModel.revealExportedSubfolder(outputFolder)
             }
 
             let copyFailures = await failureTracker.metadataCopyFailures
@@ -1781,11 +1784,19 @@ struct ContentView: View {
 
             isRenderingEditedFolder = false
 
-            // Add saved files to browser if they're in the same folder
+            // Add saved files to browser if they're in the same folder; otherwise
+            // surface the sub-folder(s) they landed in within the sidebar tree.
+            let destinationFolders = Set(savedURLs.map { $0.deletingLastPathComponent() })
             if let folderURL = browserViewModel.currentFolderURL {
-                let newFiles = savedURLs.filter { $0.deletingLastPathComponent() == folderURL }
-                if !newFiles.isEmpty {
+                if destinationFolders.contains(folderURL) {
                     browserViewModel.refreshCurrentFolderIfNeeded()
+                }
+                for subfolder in destinationFolders where subfolder != folderURL {
+                    browserViewModel.revealExportedSubfolder(subfolder)
+                }
+            } else {
+                for subfolder in destinationFolders {
+                    browserViewModel.revealExportedSubfolder(subfolder)
                 }
             }
 
@@ -1900,6 +1911,9 @@ struct ContentView: View {
             // Files written next to the originals land in the current folder — refresh to show them.
             if locationMode == .sameAsOriginal {
                 browserViewModel.refreshCurrentFolderIfNeeded()
+            } else if let outputFolder = lastOutputFolder, outputFolder != folderURL {
+                // Files went into a sub-folder — surface it in the sidebar tree.
+                browserViewModel.revealExportedSubfolder(outputFolder)
             }
 
             let copyFailures = await failureTracker.metadataCopyFailures
