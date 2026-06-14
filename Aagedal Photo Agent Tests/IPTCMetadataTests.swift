@@ -1341,3 +1341,70 @@ struct EllipseMaskGeometryStraightenTests {
         }
     }
 }
+
+@Suite("Layer order")
+struct LayerOrderTests {
+    private func mask(_ name: String) -> MaskAdjustment {
+        MaskAdjustment(name: name, geometry: EllipseMaskGeometry())
+    }
+
+    @Test("nil order resolves to canonical [global, masks…]")
+    func nilOrderIsCanonical() {
+        let m1 = mask("Mask 1"); let m2 = mask("Mask 2")
+        var settings = CameraRawSettings()
+        settings.localAdjustments = [m1, m2]
+        #expect(settings.resolvedLayerOrder() == [.global, .mask(m1.id), .mask(m2.id)])
+    }
+
+    @Test("no masks resolves to just [global]")
+    func noMasksJustGlobal() {
+        #expect(CameraRawSettings().resolvedLayerOrder() == [.global])
+    }
+
+    @Test("global can be reordered after a mask")
+    func globalAfterMask() {
+        let m1 = mask("Mask 1")
+        var settings = CameraRawSettings()
+        settings.localAdjustments = [m1]
+        settings.layerOrder = [.mask(m1.id), .global]
+        #expect(settings.resolvedLayerOrder() == [.mask(m1.id), .global])
+    }
+
+    @Test("resolver drops stale mask refs and appends new ones, keeping one global")
+    func resolverSanitizes() {
+        let m1 = mask("Mask 1"); let m2 = mask("Mask 2")
+        let stale = UUID()
+        var settings = CameraRawSettings()
+        settings.localAdjustments = [m1, m2]
+        // Stored order references a deleted mask, omits m2, and duplicates global.
+        settings.layerOrder = [.global, .mask(stale), .mask(m1.id), .global]
+        let resolved = settings.resolvedLayerOrder()
+        #expect(resolved == [.global, .mask(m1.id), .mask(m2.id)])
+        #expect(resolved.filter { $0 == .global }.count == 1)
+    }
+
+    @Test("resolver inserts a missing global at the front")
+    func resolverInsertsGlobal() {
+        let m1 = mask("Mask 1")
+        var settings = CameraRawSettings()
+        settings.localAdjustments = [m1]
+        settings.layerOrder = [.mask(m1.id)]   // no global stored
+        #expect(settings.resolvedLayerOrder() == [.global, .mask(m1.id)])
+    }
+
+    @Test("LayerRef round-trips through Codable")
+    func layerRefCodable() throws {
+        let id = UUID()
+        let refs: [LayerRef] = [.global, .mask(id)]
+        let data = try JSONEncoder().encode(refs)
+        let decoded = try JSONDecoder().decode([LayerRef].self, from: data)
+        #expect(decoded == refs)
+    }
+
+    @Test("layerOrder is excluded from isEmpty (ordering alone is not an edit)")
+    func orderingAloneIsEmpty() {
+        var settings = CameraRawSettings()
+        settings.layerOrder = [.global]
+        #expect(settings.isEmpty)
+    }
+}

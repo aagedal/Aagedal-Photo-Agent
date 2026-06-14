@@ -298,6 +298,56 @@ nonisolated struct MaskAdjustment: Codable, Sendable, Equatable, Identifiable {
         result.geometry = geometry.transformedForSensor(orientation: orientation, displayAspect: displayAspect)
         return result
     }
+
+    /// The layer kind for icon/affordance purposes. Today every mask is an ellipse;
+    /// when more geometry types arrive, switch on `geometry` here.
+    var layerKind: LayerKind { .ellipseMask }
+}
+
+/// Visual classification of an editing layer, used to pick an icon in the layer strip.
+/// Extend with new cases as mask geometry types are added — keep it the single source
+/// of truth for layer→icon mapping so new kinds don't require touching the UI call sites.
+nonisolated enum LayerKind: Sendable, Equatable {
+    case global
+    case ellipseMask
+
+    /// SF Symbol name representing this layer kind.
+    var systemImage: String {
+        switch self {
+        case .global:      return "circle.lefthalf.filled"
+        case .ellipseMask: return "circle.dashed"
+        }
+    }
+}
+
+/// A stable reference to a node in the editing layer chain. `.global` is the single
+/// global-adjustment node; `.mask` points at a `MaskAdjustment` by its UUID (stable across
+/// reordering, unlike an array index). Encoded as a compact string for clean JSON sidecars:
+/// `"global"` or `"mask:<uuid>"`.
+nonisolated enum LayerRef: Sendable, Equatable, Hashable, Codable {
+    case global
+    case mask(UUID)
+
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        if raw == "global" {
+            self = .global
+        } else if raw.hasPrefix("mask:"), let uuid = UUID(uuidString: String(raw.dropFirst(5))) {
+            self = .mask(uuid)
+        } else {
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: decoder.codingPath,
+                debugDescription: "Unrecognized LayerRef \"\(raw)\""))
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .global:        try container.encode("global")
+        case .mask(let id):  try container.encode("mask:\(id.uuidString)")
+        }
+    }
 }
 
 nonisolated struct HSLColorAdjustment: Codable, Sendable, Equatable {
@@ -357,6 +407,13 @@ nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
     var toneCurve: ToneCurve?
     var localAdjustments: [MaskAdjustment]?
     var hslAdjustments: HSLAdjustments?
+
+    /// Explicit processing order of the editing layer chain, interleaving the global
+    /// adjustment node among the masks. `nil` (all legacy edits) means the canonical
+    /// order `[.global] + masks`, which reproduces the historical "global is the fixed
+    /// base, masks on top in array order" behavior exactly. Resolve via
+    /// `resolvedLayerOrder()` rather than reading this directly — it sanitizes stale refs.
+    var layerOrder: [LayerRef]?
 
     /// As-shot neutral white balance from the RAW decoder (CIRAWFilter.neutralTemperature/Tint).
     /// Used as the reference point for white balance correction in renderOffscreen().
@@ -441,6 +498,42 @@ nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
         if let value = override.toneCurve { result.toneCurve = value }
         if let value = override.localAdjustments { result.localAdjustments = value }
         if let value = override.hslAdjustments { result.hslAdjustments = value }
+        if let value = override.layerOrder { result.layerOrder = value }
+        return result
+    }
+
+    /// The processing order of the layer chain, sanitized against the current masks.
+    /// Drops refs to masks that no longer exist, appends any masks missing from the
+    /// stored order (new masks land at the end), and guarantees exactly one `.global`
+    /// (prepended if the stored order somehow lacks it). When `layerOrder` is nil this
+    /// returns the canonical `[.global] + masks` order — identical to legacy rendering.
+    func resolvedLayerOrder() -> [LayerRef] {
+        let masks = localAdjustments ?? []
+        let maskIDs = masks.map(\.id)
+        guard let stored = layerOrder, !stored.isEmpty else {
+            return [.global] + maskIDs.map(LayerRef.mask)
+        }
+        let validIDs = Set(maskIDs)
+        var seenMaskIDs = Set<UUID>()
+        var sawGlobal = false
+        var result: [LayerRef] = []
+        for ref in stored {
+            switch ref {
+            case .global:
+                guard !sawGlobal else { continue }   // collapse duplicate globals
+                sawGlobal = true
+                result.append(.global)
+            case .mask(let id):
+                guard validIDs.contains(id), !seenMaskIDs.contains(id) else { continue }
+                seenMaskIDs.insert(id)
+                result.append(.mask(id))
+            }
+        }
+        if !sawGlobal { result.insert(.global, at: 0) }
+        // Append any masks not referenced by the stored order (e.g. just added).
+        for id in maskIDs where !seenMaskIDs.contains(id) {
+            result.append(.mask(id))
+        }
         return result
     }
 

@@ -15,6 +15,9 @@ struct XMPSidecarService: Sendable {
         static let tiff = "http://ns.adobe.com/tiff/1.0/"
         static let exif = "http://ns.adobe.com/exif/1.0/"
         static let crs = "http://ns.adobe.com/camera-raw-settings/1.0/"
+        /// App-private namespace for settings Adobe's schema can't represent (e.g. the
+        /// reorderable-global layer chain). Adobe tools ignore unknown namespaces.
+        static let aaphoto = "http://aagedal.me/ns/photo/1.0/"
     }
 
     private enum XMPPacket {
@@ -270,6 +273,7 @@ struct XMPSidecarService: Sendable {
         ensureNamespace(description, prefix: "exif", uri: Namespace.exif)
         ensureNamespace(description, prefix: "tiff", uri: Namespace.tiff)
         ensureNamespace(description, prefix: "crs", uri: Namespace.crs)
+        ensureNamespace(description, prefix: "aaphoto", uri: Namespace.aaphoto)
         if let rdf = description.parent as? XMLElement {
             ensureNamespace(rdf, prefix: "rdf", uri: Namespace.rdf)
         }
@@ -449,7 +453,52 @@ struct XMPSidecarService: Sendable {
         let hasCustomCurve = settings.toneCurve != nil && !(settings.toneCurve?.isEmpty ?? true)
         setSimple(on: description, prefix: "crs", localName: "ToneCurveName2012", value: hasCustomCurve ? "Custom" : nil)
 
-        updateMaskCorrections(on: description, masks: settings.localAdjustments)
+        // Masks are written exactly as ACR would — in render-stack order — so the crs block
+        // stays fully ACR-compatible and Adobe honors the user's mask stacking.
+        updateMaskCorrections(on: description, masks: masksInResolvedOrder(settings))
+
+        // ACR has no global-adjustment node, so the ONLY thing we add is where Global sits in
+        // the stack: the number of masks that precede it. 0 (global first) is canonical and
+        // written as absent. The masks themselves come back from the crs block on read.
+        setSimple(on: description, prefix: "aaphoto", localName: "GlobalLayerIndex",
+                  value: globalLayerIndex(settings).flatMap { $0 > 0 ? String($0) : nil })
+    }
+
+    /// Masks reordered to match the mask sub-sequence of the resolved layer chain, so the crs
+    /// block is written in ACR's render-stack order. Returns the array unchanged when there's
+    /// no custom order.
+    private func masksInResolvedOrder(_ settings: CameraRawSettings) -> [MaskAdjustment]? {
+        guard let masks = settings.localAdjustments, settings.layerOrder != nil else {
+            return settings.localAdjustments
+        }
+        let byID = Dictionary(masks.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        var ordered: [MaskAdjustment] = []
+        for case .mask(let id) in settings.resolvedLayerOrder() {
+            if let mask = byID[id] { ordered.append(mask) }
+        }
+        return ordered.isEmpty ? settings.localAdjustments : ordered
+    }
+
+    /// Number of masks that precede the global node in the resolved chain, or nil when there's
+    /// no custom order (⇒ canonical global-first).
+    private func globalLayerIndex(_ settings: CameraRawSettings) -> Int? {
+        guard settings.layerOrder != nil else { return nil }
+        let resolved = settings.resolvedLayerOrder()
+        guard let gi = resolved.firstIndex(of: .global) else { return 0 }
+        return resolved[..<gi].reduce(0) { count, ref in
+            if case .mask = ref { return count + 1 }
+            return count
+        }
+    }
+
+    /// Rebuilds `layerOrder` from the crs mask order (already in render-stack order) plus the
+    /// stored global position. nil when no `GlobalLayerIndex` tag ⇒ canonical global-first.
+    private func reconstructLayerOrder(masks: [MaskAdjustment]?, from description: XMLElement) -> [LayerRef]? {
+        guard let raw = parseSimple(from: description, prefix: "aaphoto", localName: "GlobalLayerIndex"),
+              let index = Int(raw) else { return nil }
+        var order = (masks ?? []).map { LayerRef.mask($0.id) }
+        order.insert(.global, at: max(0, min(index, order.count)))
+        return order
     }
 
     /// Write local mask adjustments as ACR's `crs:MaskGroupBasedCorrections`,
@@ -733,6 +782,8 @@ struct XMPSidecarService: Sendable {
             return Namespace.exif
         case "crs":
             return Namespace.crs
+        case "aaphoto":
+            return Namespace.aaphoto
         default:
             return ""
         }
@@ -873,7 +924,7 @@ struct XMPSidecarService: Sendable {
 
         let localAdjustments = parseMaskCorrections(from: description)
 
-        let settings = CameraRawSettings(
+        var settings = CameraRawSettings(
             version: version,
             processVersion: processVersion,
             whiteBalance: whiteBalance,
@@ -904,6 +955,10 @@ struct XMPSidecarService: Sendable {
             localAdjustments: localAdjustments,
             hslAdjustments: hslAdjustments
         )
+        // Restore the chain: masks already came back from crs in render-stack order; our
+        // private GlobalLayerIndex says where the global node sits among them. nil ⇒ resolver
+        // falls back to canonical global-first.
+        settings.layerOrder = reconstructLayerOrder(masks: localAdjustments, from: description)
         // Ignore a lone `HasSettings` flag: ACR writes `crs:HasSettings="False"` (and our
         // own writer derives it from emptiness) on a RAW with no develop adjustments — e.g.
         // after a reset, or a rotation-only edit. A CRS carrying nothing but that flag has

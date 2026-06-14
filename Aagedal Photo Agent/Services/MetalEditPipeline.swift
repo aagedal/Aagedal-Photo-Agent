@@ -104,6 +104,13 @@ struct EditParams {
     // region samples in-bounds image, so without this the crop edges wouldn't show).
     // (0.5, 0.5) = no crop mask (full drawable).
     var cropHalfExtent: SIMD2<Float> = SIMD2<Float>(0.5, 0.5)
+
+    // Number of entries in the layer-order buffer (buffer index 3). Each entry is either
+    // `globalOrderSentinel` (run the global adjustment block) or a mask index into the mask
+    // buffer. Drives the per-pixel processing sequence so the global node can be reordered
+    // among the masks. Always ≥ 1 (the global node is always present).
+    var orderCount: UInt32 = 0
+    var _padOrder: UInt32 = 0
 }
 
 /// Manages the Metal compute pipeline for real-time edit preview.
@@ -165,6 +172,10 @@ final class MetalEditPipeline: @unchecked Sendable {
     nonisolated(unsafe) private let identityLutTexture: MTLTexture
     nonisolated(unsafe) private(set) var maskBuffer: MTLBuffer?
     nonisolated(unsafe) private(set) var hslBuffer: MTLBuffer?
+    /// Layer-processing order (buffer index 3): a sequence of `orderCount` UInt32 entries,
+    /// each either `globalOrderSentinel` or a mask index into `maskBuffer`. Populated by
+    /// `updateParams` from `CameraRawSettings.resolvedLayerOrder()`.
+    nonisolated(unsafe) private(set) var orderBuffer: MTLBuffer?
 
     /// Gamut clipping mode for soft proof preview. 0=off, 1=sRGB, 2=P3, 3=Rec.2020.
     nonisolated(unsafe) var gamutClipMode: UInt32 = 0 {
@@ -203,6 +214,10 @@ final class MetalEditPipeline: @unchecked Sendable {
     nonisolated(unsafe) private var lutInterleaveBuffer = [Float](repeating: 0, count: ToneCurveGenerator.lutSize * 4)
 
     nonisolated private static let maxMasks = 8
+    /// Max layer-order entries: every mask plus the single global node.
+    nonisolated private static let maxOrderEntries = maxMasks + 1
+    /// Order-buffer entry meaning "run the global adjustment block here" (any value ≥ maxMasks).
+    nonisolated private static let globalOrderSentinel: UInt32 = 0xFFFF_FFFF
 
     // Overlay pipeline (mask overlay rendering)
     private let overlayPipelineState: MTLComputePipelineState?
@@ -343,6 +358,10 @@ final class MetalEditPipeline: @unchecked Sendable {
         )
         self.hslBuffer = device.makeBuffer(
             length: MemoryLayout<HSLParams>.stride,
+            options: .storageModeShared
+        )
+        self.orderBuffer = device.makeBuffer(
+            length: MemoryLayout<UInt32>.stride * Self.maxOrderEntries,
             options: .storageModeShared
         )
         metalPipelineLog.info("MaskParams stride=\(MemoryLayout<MaskParams>.stride) size=\(MemoryLayout<MaskParams>.size) alignment=\(MemoryLayout<MaskParams>.alignment)")
@@ -488,6 +507,8 @@ final class MetalEditPipeline: @unchecked Sendable {
         var flags: UInt32 = 0
 
         guard let settings else {
+            // No settings → the chain is just the (no-op) global node.
+            params.orderCount = uploadLayerOrder([.global], maskIndexByID: [:])
             let ptr = buffer.contents().bindMemory(to: EditParams.self, capacity: 1)
             ptr.pointee = params
             ptr.pointee.gamutClipMode = gamutClipMode
@@ -560,10 +581,14 @@ final class MetalEditPipeline: @unchecked Sendable {
             }
         }
 
+        // Maps each enabled mask's UUID → its slot in the mask buffer, so the layer-order
+        // build below can translate `.mask(id)` refs into GPU mask indices.
+        var maskIndexByID: [UUID: Int] = [:]
         if maskCount > 0, let maskBuf = maskBuffer {
             let maskPtr = maskBuf.contents().bindMemory(to: MaskParams.self, capacity: Self.maxMasks)
             for i in 0..<maskCount {
                 let mask = masks[i]
+                maskIndexByID[mask.id] = i
                 var mp = MaskParams()
                 mp.center = SIMD2<Float>(Float(mask.geometry.centerX), Float(mask.geometry.centerY))
                 mp.radii = SIMD2<Float>(Float(mask.geometry.radiusX), Float(mask.geometry.radiusY))
@@ -642,6 +667,14 @@ final class MetalEditPipeline: @unchecked Sendable {
             hslPtr.pointee = hslP
         }
 
+        // Build the processing order: interleave the global node among the masks per the
+        // resolved layer order. `.mask` refs to disabled/overflow masks (absent from
+        // maskIndexByID) are skipped; the global node is always present.
+        params.orderCount = uploadLayerOrder(
+            displaySettings.resolvedLayerOrder(),
+            maskIndexByID: maskIndexByID
+        )
+
         let ptr = buffer.contents().bindMemory(to: EditParams.self, capacity: 1)
         ptr.pointee = params
         ptr.pointee.gamutClipMode = gamutClipMode
@@ -661,6 +694,31 @@ final class MetalEditPipeline: @unchecked Sendable {
         if elapsed > .milliseconds(1) {
             metalPipelineLog.debug("updateParams: \(elapsed) (flags: \(flags))")
         }
+    }
+
+    /// Writes the layer-processing order into `orderBuffer` and returns the entry count.
+    /// Each resolved `.global` becomes `globalOrderSentinel`; each `.mask(id)` becomes its
+    /// GPU mask index via `maskIndexByID` (refs with no mapping — disabled or overflow masks
+    /// — are skipped). Capped at `maxOrderEntries`.
+    nonisolated private func uploadLayerOrder(
+        _ resolved: [LayerRef],
+        maskIndexByID: [UUID: Int]
+    ) -> UInt32 {
+        guard let orderBuf = orderBuffer else { return 0 }
+        let ptr = orderBuf.contents().bindMemory(to: UInt32.self, capacity: Self.maxOrderEntries)
+        var count = 0
+        for ref in resolved where count < Self.maxOrderEntries {
+            switch ref {
+            case .global:
+                ptr[count] = Self.globalOrderSentinel
+                count += 1
+            case .mask(let id):
+                guard let idx = maskIndexByID[id] else { continue }
+                ptr[count] = UInt32(idx)
+                count += 1
+            }
+        }
+        return UInt32(count)
     }
 
     // MARK: - Overlay
@@ -724,6 +782,9 @@ final class MetalEditPipeline: @unchecked Sendable {
         }
         if let hslBuf = hslBuffer {
             encoder.setBuffer(hslBuf, offset: 0, index: 2)
+        }
+        if let orderBuf = orderBuffer {
+            encoder.setBuffer(orderBuf, offset: 0, index: 3)
         }
 
         let threadgroupSize = MTLSize(width: 16, height: 16, depth: 1)
@@ -1249,6 +1310,9 @@ final class MetalEditPipeline: @unchecked Sendable {
         }
         if let hslBuf = pipeline.hslBuffer {
             encoder.setBuffer(hslBuf, offset: 0, index: 2)
+        }
+        if let orderBuf = pipeline.orderBuffer {
+            encoder.setBuffer(orderBuf, offset: 0, index: 3)
         }
 
         let threadgroupSize = MTLSize(width: 16, height: 16, depth: 1)

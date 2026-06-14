@@ -2,6 +2,7 @@ import AppKit
 import CoreImage
 import os
 import SwiftUI
+import UniformTypeIdentifiers
 
 nonisolated private let editLog = Logger(
     subsystem: "com.aagedal.photo-agent", category: "EditWorkspace"
@@ -50,7 +51,12 @@ struct EditWorkspaceView: View {
     @State private var editUndoManager = UndoManager()
     @State private var metalPipeline: MetalEditPipeline?
     @State private var metalCoordinator = MetalPreviewView.Coordinator()
-    @State private var selectedMaskIndex: Int? = nil
+    /// The selected node in the layer chain. `.global` shows the global adjustment sliders;
+    /// `.mask(id)` shows that mask's sliders and overlay. Identity-based so it survives reorder.
+    @State private var selectedLayer: LayerRef = .global
+    /// The layer card currently being dragged for reorder, and the card it's hovering over.
+    @State private var draggingLayer: LayerRef?
+    @State private var dropTargetLayer: LayerRef?
     @State private var isDraggingMask = false
     @State private var dragMaskGeometry: EllipseMaskGeometry?
     @State private var scopeThrottleTask: Task<Void, Never>?
@@ -361,7 +367,7 @@ struct EditWorkspaceView: View {
             syncViewportToMetal()
             renderPreview()
         }
-        .onChange(of: selectedMaskIndex) { _, _ in
+        .onChange(of: selectedLayer) { _, _ in
             // Clear Metal overlay — the AppKit MaskOverlayNSView handles
             // static display with interactive handles. Metal overlay is only used
             // during active mask drags for real-time feedback.
@@ -1155,7 +1161,7 @@ struct EditWorkspaceView: View {
         metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
         resetCropZoom()
         resetEditZoom()
-        selectedMaskIndex = nil
+        selectedLayer = .global
         if !isCropEnabled {
             showCropControls = false
         }
@@ -2262,7 +2268,7 @@ struct EditWorkspaceView: View {
         showCropControls.toggle()
         if showCropControls {
             // Deselect mask and reset edit zoom when entering crop mode
-            selectedMaskIndex = nil
+            selectedLayer = .global
             metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
             resetEditZoom()
         }
@@ -2650,59 +2656,192 @@ struct EditWorkspaceView: View {
 
     // MARK: - Mask UI
 
+    /// The editing layer chain shown as a horizontal strip of cards — input (leftmost) to
+    /// output (rightmost). Each card is a muted thumbnail with a type icon; cards select on
+    /// tap, drag to reorder (the global node included), and expose mute/invert/delete via a
+    /// context menu and the action row below.
     private var maskSelectorBar: some View {
-        HStack(spacing: 6) {
-            Button {
-                addNewMask()
-            } label: {
-                Image(systemName: "plus.circle")
-                    .font(.system(size: 14))
+        let order = resolvedLayerOrder
+        return VStack(alignment: .leading, spacing: 4) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    addLayerButton
+                    ForEach(order, id: \.self) { ref in
+                        layerCard(ref)
+                    }
+                }
+                .padding(.vertical, 2)
+                .padding(.horizontal, 1)
+            }
+            if let id = selectedMaskID {
+                maskActionRow(id)
+            }
+        }
+    }
+
+    /// Resolved processing order of the current edit (defaults to `[.global]` when there are
+    /// no settings yet), driving both the card strip and the render pipeline.
+    private var resolvedLayerOrder: [LayerRef] {
+        (metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()).resolvedLayerOrder()
+    }
+
+    /// UUID of the selected mask, or nil when Global is selected / the mask was deleted.
+    private var selectedMaskID: UUID? {
+        if case .mask(let id) = selectedLayer,
+           metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?.contains(where: { $0.id == id }) == true {
+            return id
+        }
+        return nil
+    }
+
+    private var addLayerButton: some View {
+        Button {
+            addNewMask()
+        } label: {
+            VStack(spacing: 3) {
+                RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [3]))
                     .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .help("Add mask adjustment")
-
-            let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments ?? []
-            Picker("", selection: $selectedMaskIndex) {
-                Text("Global").tag(nil as Int?)
-                ForEach(Array(masks.enumerated()), id: \.offset) { idx, mask in
-                    Text(mask.name).tag(idx as Int?)
-                }
-            }
-            .pickerStyle(.menu)
-            .frame(maxWidth: .infinity)
-
-            if let idx = selectedMaskIndex {
-                let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments ?? []
-                if idx < masks.count {
-                    Button {
-                        let inverted = masks[idx].inverted
-                        updateCameraRaw { cameraRaw in
-                            cameraRaw.localAdjustments?[idx].inverted = !inverted
-                        }
-                        commitEditAdjustments()
-                    } label: {
-                        Image(systemName: masks[idx].inverted ? "circle.dashed.inset.filled" : "circle.dashed")
-                            .font(.system(size: 11))
+                    .frame(width: 56, height: 56)
+                    .overlay(
+                        Image(systemName: "plus")
+                            .font(.system(size: 18))
                             .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .help(masks[idx].inverted ? "Invert: adjustments apply outside ellipse" : "Normal: adjustments apply inside ellipse")
+                    )
+                Text("Add")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 60)
+            }
+        }
+        .buttonStyle(.plain)
+        .help("Add mask adjustment")
+    }
 
-                    Button {
-                        let enabled = masks[idx].enabled
-                        updateCameraRaw { cameraRaw in
-                            cameraRaw.localAdjustments?[idx].enabled = !enabled
-                        }
-                        commitEditAdjustments()
-                    } label: {
-                        Image(systemName: masks[idx].enabled ? "eye" : "eye.slash")
-                            .font(.system(size: 11))
-                            .foregroundStyle(masks[idx].enabled ? Color.secondary : Color.red)
+    @ViewBuilder
+    private func layerCard(_ ref: LayerRef) -> some View {
+        let mask = maskFor(ref)
+        let isSelected = ref == selectedLayer
+        let muted = mask.map { !$0.enabled } ?? false
+        let kind: LayerKind = mask?.layerKind ?? .global
+
+        VStack(spacing: 3) {
+            ZStack {
+                Group {
+                    if let img = sourceImage {
+                        Image(nsImage: img)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                    } else {
+                        Rectangle().fill(Color.secondary.opacity(0.25))
                     }
-                    .buttonStyle(.plain)
-                    .help(masks[idx].enabled ? "Mute mask effect" : "Enable mask effect")
                 }
+                .frame(width: 56, height: 56)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .saturation(0)
+                .brightness(-0.05)
+                .opacity(muted ? 0.3 : 0.6)
+
+                Image(systemName: kind.systemImage)
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundStyle(.white)
+                    .shadow(color: .black.opacity(0.6), radius: 1.5)
+            }
+            .frame(width: 56, height: 56)
+            .overlay(alignment: .topLeading) {
+                if mask?.inverted == true {
+                    Image(systemName: "circle.righthalf.filled")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.white)
+                        .shadow(color: .black.opacity(0.7), radius: 1)
+                        .padding(3)
+                }
+            }
+            .overlay(alignment: .topTrailing) {
+                if muted {
+                    Image(systemName: "eye.slash.fill")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.red)
+                        .shadow(color: .black.opacity(0.7), radius: 1)
+                        .padding(3)
+                }
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(isSelected ? Color.accentColor : .clear, lineWidth: 2)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(dropTargetLayer == ref && draggingLayer != ref ? Color.accentColor.opacity(0.7) : .clear, lineWidth: 2)
+            )
+
+            Text(layerName(ref, mask: mask))
+                .font(.system(size: 9))
+                .foregroundStyle(isSelected ? Color.primary : Color.secondary)
+                .lineLimit(1)
+                .frame(width: 60)
+        }
+        .contentShape(Rectangle())
+        .opacity(draggingLayer == ref ? 0.4 : 1)
+        .onTapGesture { selectedLayer = ref }
+        .onDrag {
+            draggingLayer = ref
+            return NSItemProvider(object: layerRefString(ref) as NSString)
+        }
+        .onDrop(
+            of: [.text],
+            isTargeted: Binding(
+                get: { dropTargetLayer == ref },
+                set: { dropTargetLayer = $0 ? ref : (dropTargetLayer == ref ? nil : dropTargetLayer) }
+            )
+        ) { _ in
+            defer { draggingLayer = nil; dropTargetLayer = nil }
+            guard let dragged = draggingLayer else { return false }
+            dropLayer(dragged, onto: ref)
+            return true
+        }
+        .contextMenu {
+            if let mask {
+                Button(mask.enabled ? "Mute" : "Enable") { toggleMaskEnabled(mask.id) }
+                Button(mask.inverted ? "Normal (inside ellipse)" : "Invert (outside ellipse)") {
+                    toggleMaskInverted(mask.id)
+                }
+                Divider()
+                Button("Delete", role: .destructive) {
+                    selectedLayer = ref
+                    deleteSelectedMask()
+                }
+            }
+        }
+        .help(layerName(ref, mask: mask))
+    }
+
+    /// Mute / invert / delete controls for the selected mask, shown beneath the strip.
+    @ViewBuilder
+    private func maskActionRow(_ id: UUID) -> some View {
+        if let mask = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?.first(where: { $0.id == id }) {
+            HStack(spacing: 10) {
+                Button {
+                    toggleMaskInverted(id)
+                } label: {
+                    Image(systemName: mask.inverted ? "circle.dashed.inset.filled" : "circle.dashed")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help(mask.inverted ? "Invert: adjustments apply outside ellipse" : "Normal: adjustments apply inside ellipse")
+
+                Button {
+                    toggleMaskEnabled(id)
+                } label: {
+                    Image(systemName: mask.enabled ? "eye" : "eye.slash")
+                        .font(.system(size: 11))
+                        .foregroundStyle(mask.enabled ? Color.secondary : Color.red)
+                }
+                .buttonStyle(.plain)
+                .help(mask.enabled ? "Mute mask effect" : "Enable mask effect")
+
+                Spacer()
 
                 Button {
                     deleteSelectedMask()
@@ -2714,7 +2853,58 @@ struct EditWorkspaceView: View {
                 .buttonStyle(.plain)
                 .help("Delete mask")
             }
+            .padding(.horizontal, 2)
         }
+    }
+
+    private func maskFor(_ ref: LayerRef) -> MaskAdjustment? {
+        guard case .mask(let id) = ref else { return nil }
+        return metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?.first { $0.id == id }
+    }
+
+    private func layerName(_ ref: LayerRef, mask: MaskAdjustment?) -> String {
+        switch ref {
+        case .global: return "Global"
+        case .mask:   return mask?.name ?? "Mask"
+        }
+    }
+
+    private func layerRefString(_ ref: LayerRef) -> String {
+        switch ref {
+        case .global:        return "global"
+        case .mask(let id):  return "mask:\(id.uuidString)"
+        }
+    }
+
+    /// Reorders the layer chain so `dragged` takes `target`'s slot. A single `updateCameraRaw`
+    /// keeps it to one undo step.
+    private func dropLayer(_ dragged: LayerRef, onto target: LayerRef) {
+        guard dragged != target else { return }
+        updateCameraRaw { cameraRaw in
+            var order = cameraRaw.resolvedLayerOrder()
+            guard let from = order.firstIndex(of: dragged) else { return }
+            order.remove(at: from)
+            guard let to = order.firstIndex(of: target) else { return }
+            order.insert(dragged, at: to)
+            cameraRaw.layerOrder = order
+        }
+        commitEditAdjustments()
+    }
+
+    private func toggleMaskInverted(_ id: UUID) {
+        updateCameraRaw { cameraRaw in
+            guard let i = cameraRaw.localAdjustments?.firstIndex(where: { $0.id == id }) else { return }
+            cameraRaw.localAdjustments?[i].inverted.toggle()
+        }
+        commitEditAdjustments()
+    }
+
+    private func toggleMaskEnabled(_ id: UUID) {
+        updateCameraRaw { cameraRaw in
+            guard let i = cameraRaw.localAdjustments?.firstIndex(where: { $0.id == id }) else { return }
+            cameraRaw.localAdjustments?[i].enabled.toggle()
+        }
+        commitEditAdjustments()
     }
 
     @ViewBuilder
@@ -2873,6 +3063,14 @@ struct EditWorkspaceView: View {
         )
     }
 
+    /// Live array index of the selected mask in `localAdjustments`, or nil when Global is
+    /// selected (or the selected mask was deleted). Resolved by UUID every access so it stays
+    /// correct after reordering — callers index `localAdjustments` with the current value.
+    private var selectedMaskIndex: Int? {
+        guard case .mask(let id) = selectedLayer else { return nil }
+        return metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?.firstIndex { $0.id == id }
+    }
+
     private func maskDoubleBinding(_ maskIndex: Int, _ keyPath: WritableKeyPath<MaskAdjustment, Double?>) -> Binding<Double> {
         Binding(
             get: {
@@ -2921,26 +3119,33 @@ struct EditWorkspaceView: View {
                 cameraRaw.localAdjustments = []
             }
             cameraRaw.localAdjustments?.append(newMask)
+            // Only extend an explicit order; a nil order means "canonical" and the resolver
+            // appends new masks at the end automatically.
+            if cameraRaw.layerOrder != nil {
+                cameraRaw.layerOrder?.append(.mask(newMask.id))
+            }
         }
-        selectedMaskIndex = existingCount
+        selectedLayer = .mask(newMask.id)
         commitEditAdjustments()
     }
 
     private func deleteSelectedMask() {
-        guard let idx = selectedMaskIndex,
+        guard case .mask(let id) = selectedLayer,
               let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
-              idx < masks.count else { return }
+              let idx = masks.firstIndex(where: { $0.id == id }) else { return }
         updateCameraRaw { cameraRaw in
-            cameraRaw.localAdjustments?.remove(at: idx)
+            cameraRaw.localAdjustments?.removeAll { $0.id == id }
+            cameraRaw.layerOrder?.removeAll { $0 == .mask(id) }
             if cameraRaw.localAdjustments?.isEmpty == true {
                 cameraRaw.localAdjustments = nil
             }
         }
-        let remaining = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?.count ?? 0
-        if remaining == 0 {
-            selectedMaskIndex = nil
+        // Select the mask that now occupies the deleted slot (or the last one), else Global.
+        let remaining = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments ?? []
+        if remaining.isEmpty {
+            selectedLayer = .global
         } else {
-            selectedMaskIndex = min(idx, remaining - 1)
+            selectedLayer = .mask(remaining[min(idx, remaining.count - 1)].id)
         }
         commitEditAdjustments()
     }
@@ -3008,7 +3213,7 @@ struct EditWorkspaceView: View {
 
     private func resetDevelopAdjustments() {
         resetCropZoom()
-        selectedMaskIndex = nil
+        selectedLayer = .global
         updateCameraRaw { cameraRaw in
             cameraRaw.whiteBalance = isSelectedImageRaw ? "As Shot" : nil
             cameraRaw.temperature = nil
@@ -3054,7 +3259,7 @@ struct EditWorkspaceView: View {
             cameraRaw.toneCurve = nil
             cameraRaw.localAdjustments = nil
         }
-        selectedMaskIndex = nil
+        selectedLayer = .global
         commitEditAdjustments()
     }
 

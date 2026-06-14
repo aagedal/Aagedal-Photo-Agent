@@ -44,6 +44,9 @@ enum CameraRawApproximation {
     }
 
     /// CIFilter fallback path shared by `apply` / `applyAsync` (used only when Metal is unavailable).
+    /// This path applies global adjustments only — it already drops masks entirely, so the
+    /// layer-order (reorderable global node) has no effect here. True layer ordering is a
+    /// Metal-only feature; the fallback always renders global-as-base.
     nonisolated private static func metalUnavailableFallback(to input: CIImage, settings: CameraRawSettings) -> CIImage {
         if !(settings.localAdjustments?.isEmpty ?? true) {
             Logger(subsystem: "com.aagedal.photo-agent", category: "CameraRawApproximation")

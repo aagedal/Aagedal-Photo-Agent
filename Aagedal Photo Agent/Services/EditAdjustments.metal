@@ -66,6 +66,9 @@ struct EditParams {
 
     float2 cropHalfExtent;   // crop rect half-size as fraction of drawable, centered.
                              // (0.5,0.5) = no crop mask. Pixels beyond → background.
+
+    uint orderCount;         // entries in the layer-order buffer (buffer 3); always ≥ 1
+    uint _padOrder;
 };
 
 // ============================================================
@@ -109,58 +112,22 @@ constant float3x3 AdobeRGBtoSRGB_edit = float3x3(
     float3( 0.0000000,  0.0000000,  1.0427550)
 );
 
-kernel void editAdjustments(
-    texture2d<half, access::sample> source [[texture(0)]],
-    texture2d<half, access::write> destination [[texture(1)]],
-    texture1d<float, access::sample> toneLUT [[texture(2)]],
-    constant EditParams &params [[buffer(0)]],
-    constant MaskParams *masks [[buffer(1)]],
-    constant HSLParams &hslParams [[buffer(2)]],
-    uint2 gid [[thread_position_in_grid]])
+// ============================================================
+// Layer nodes — global adjustments and per-mask adjustments are
+// each factored into a device function so the kernel can apply
+// them in a data-driven order (the global node is reorderable
+// among the masks). Pulling a node out of the chain or moving it
+// is a change to the order buffer, not the math.
+// ============================================================
+
+/// Global adjustment block: white balance → tone LUT (+highlight desat) → per-color HSL
+/// → vibrance → saturation. Each step is gated by params.activeFlags, so an inactive
+/// global node is a no-op. Returns the adjusted color.
+static half3 applyGlobal(half3 rgb,
+                         constant EditParams &params,
+                         texture1d<float, access::sample> toneLUT,
+                         constant HSLParams &hslParams)
 {
-    if (gid.x >= uint(params.drawableSize.x) || gid.y >= uint(params.drawableSize.y)) {
-        return;
-    }
-
-    // Map drawable pixel through viewport to source UV
-    float2 drawableNorm = float2(gid) / params.drawableSize;
-
-    // Crop mask: black out (background) outside the confirmed crop rectangle. The viewport
-    // letterbox-fits the crop, so the margin between the crop rect and the drawable edge
-    // still samples in-bounds image — this is what actually "cuts" the crop. (0.5,0.5) ⇒
-    // no mask (full-image render).
-    float2 cropCentered = drawableNorm - 0.5;
-    if (abs(cropCentered.x) > params.cropHalfExtent.x ||
-        abs(cropCentered.y) > params.cropHalfExtent.y) {
-        destination.write(half4(0.0197, 0.0197, 0.0197, 1), gid);
-        return;
-    }
-
-    float2 uv;
-    if (params.viewportRotation != 0.0) {
-        // Clean-feed crop straighten: rotate the centered offset around the crop center.
-        // Rotation must happen in pixel space (sourceSize) so it isn't skewed by the
-        // image's aspect ratio, then convert back to normalized UV.
-        float2 off = (drawableNorm - 0.5) * params.viewportSize * params.sourceSize;
-        float c = cos(params.viewportRotation);
-        float s = sin(params.viewportRotation);
-        float2 r = float2(off.x * c - off.y * s, off.x * s + off.y * c);
-        uv = params.viewportCenter + r / params.sourceSize;
-    } else {
-        uv = params.viewportOrigin + drawableNorm * params.viewportSize;
-    }
-
-    // Letterbox: dark gray for pixels outside source bounds
-    // 0.0197 linear ≈ sRGB 0.15, matching SwiftUI previewBackground
-    if (uv.x < 0.0 || uv.x >= 1.0 || uv.y < 0.0 || uv.y >= 1.0) {
-        destination.write(half4(0.0197, 0.0197, 0.0197, 1), gid);
-        return;
-    }
-
-    constexpr sampler bilinear(filter::linear, address::clamp_to_edge);
-    half4 color = source.sample(bilinear, uv);
-    half3 rgb = color.rgb;
-
     // 1. White Balance (3x3 matrix) — chromatic adaptation before tonal (matches ACR)
     if (params.activeFlags & (1u << 3)) {
         float3 rgbF = float3(rgb);
@@ -341,123 +308,202 @@ kernel void editAdjustments(
         rgb = mix(half3(lum), rgb, (half)params.saturation);
     }
 
-    // 5. Local mask adjustments — analytical ellipse masks
-    for (uint m = 0; m < params.maskCount && m < 8; m++) {
-        constant MaskParams &mask = masks[m];
+    return rgb;
+}
 
-        // Compute ellipse mask weight analytically. mask.radii carries ACR's
-        // SIGNED oriented-corner box half-extents (see EllipseMaskGeometry):
-        // un-rotating the aspect-corrected corner vector recovers the true
-        // semi-axes. All rotation happens in aspect-corrected (pixel) space —
-        // raw-UV rotation would shear the ellipse by the image aspect ratio.
-        float maskAspect = params.sourceSize.y > 0.0 ? params.sourceSize.x / params.sourceSize.y : 1.0;
-        float cosR = cos(mask.rotation);
-        float sinR = sin(mask.rotation);
-        float2 corner = mask.radii * float2(maskAspect, 1.0);
-        float2 ab = float2(corner.x * cosR + corner.y * sinR, -corner.x * sinR + corner.y * cosR);
-        if (ab.x <= 0.0 || ab.y <= 0.0) continue;   // degenerate — ACR renders nothing
-        float2 d = (uv - mask.center) * float2(maskAspect, 1.0);
-        float2 local = float2(d.x * cosR + d.y * sinR, -d.x * sinR + d.y * cosR);
-        float dist = length(local / ab);
-        float inner = 1.0 - mask.feather;
-        float weight = 1.0 - smoothstep(inner, 1.0, dist);
-        if (mask.inverted > 0.5) weight = 1.0 - weight;
-        weight *= mask.amount;
-        if (weight < 0.001) continue;
+/// Analytical ellipse-mask coverage weight at `uv` (0 = outside / no effect). mask.radii
+/// carries ACR's SIGNED oriented-corner box half-extents (see EllipseMaskGeometry):
+/// un-rotating the aspect-corrected corner vector recovers the true semi-axes. All
+/// rotation happens in aspect-corrected (pixel) space — raw-UV rotation would shear the
+/// ellipse by the image aspect ratio. Includes inversion and overall amount.
+static float maskWeight(constant MaskParams &mask, float2 uv, float2 sourceSize)
+{
+    float maskAspect = sourceSize.y > 0.0 ? sourceSize.x / sourceSize.y : 1.0;
+    float cosR = cos(mask.rotation);
+    float sinR = sin(mask.rotation);
+    float2 corner = mask.radii * float2(maskAspect, 1.0);
+    float2 ab = float2(corner.x * cosR + corner.y * sinR, -corner.x * sinR + corner.y * cosR);
+    if (ab.x <= 0.0 || ab.y <= 0.0) return 0.0;   // degenerate — ACR renders nothing
+    float2 d = (uv - mask.center) * float2(maskAspect, 1.0);
+    float2 local = float2(d.x * cosR + d.y * sinR, -d.x * sinR + d.y * cosR);
+    float dist = length(local / ab);
+    float inner = 1.0 - mask.feather;
+    float weight = 1.0 - smoothstep(inner, 1.0, dist);
+    if (mask.inverted > 0.5) weight = 1.0 - weight;
+    weight *= mask.amount;
+    return weight;
+}
 
-        half3 adjusted = rgb;
+/// Per-mask local tonal adjustments applied to `rgb` (returns the fully-adjusted color;
+/// the kernel blends it back by the mask weight). Each adjustment is gated by mask.activeFlags.
+static half3 applyMaskColor(half3 rgb, constant MaskParams &mask)
+{
+    half3 adjusted = rgb;
 
-        // Exposure: multiplicative EV shift
-        if (mask.activeFlags & (1u << 0)) {
-            adjusted *= half(exp2(mask.exposure));
+    // Exposure: multiplicative EV shift
+    if (mask.activeFlags & (1u << 0)) {
+        adjusted *= half(exp2(mask.exposure));
+    }
+    // Contrast: ACR parametric sigmoid — gain peaks at midtones, falls at extremes
+    if (mask.activeFlags & (1u << 1)) {
+        for (int c = 0; c < 3; c++) {
+            float x = float(adjusted[c]);
+            float centered = x - 0.5;
+            float falloff = min(4.0 * centered * centered, 1.0);
+            float gain = 1.0 + mask.contrast * 0.7 * (1.0 - falloff);
+            adjusted[c] = half(0.5 + centered * max(gain, 0.1));
         }
-        // Contrast: ACR parametric sigmoid — gain peaks at midtones, falls at extremes
-        if (mask.activeFlags & (1u << 1)) {
-            for (int c = 0; c < 3; c++) {
-                float x = float(adjusted[c]);
-                float centered = x - 0.5;
-                float falloff = min(4.0 * centered * centered, 1.0);
-                float gain = 1.0 + mask.contrast * 0.7 * (1.0 - falloff);
-                adjusted[c] = half(0.5 + centered * max(gain, 0.1));
+    }
+    // Blacks: tapered shadow-region adjustment in sqrt-space
+    if (mask.activeFlags & (1u << 5)) {
+        for (int c = 0; c < 3; c++) {
+            float x = float(adjusted[c]);
+            float px = sqrt(max(0.0, x));
+            float boundary = mask.blacks < 0 ? 0.50 : 0.35;
+            float amplitude = mask.blacks < 0 ? 0.14 : 0.10;
+            float shadowRegion = max(0.0, 1.0 - px / boundary);
+            float delta = mask.blacks * amplitude * shadowRegion;
+            float pxNew = max(0.0, px + delta);
+            adjusted[c] = half(pxNew * pxNew);
+        }
+    }
+    // Shadows: Gaussian-weighted lift in sqrt-space
+    if (mask.activeFlags & (1u << 3)) {
+        for (int c = 0; c < 3; c++) {
+            float x = float(adjusted[c]);
+            float px = sqrt(max(0.0, x));
+            float ctr = 0.15;
+            float w = 0.15;
+            float d = (px - ctr) / w;
+            float delta = mask.shadows * 0.08 * exp(-0.5 * d * d);
+            float pxNew = max(0.0, px + delta);
+            adjusted[c] = half(pxNew * pxNew);
+        }
+    }
+    // Highlights: one-sided ramp for upper tones
+    if (mask.activeFlags & (1u << 2)) {
+        float knee = 0.15;
+        for (int c = 0; c < 3; c++) {
+            float x = float(adjusted[c]);
+            if (x > knee) {
+                float t = min((x - knee) / 0.85, 1.0);
+                float wt = t * t * (3.0 - 2.0 * t) * (1.0 - t * t * 0.3);
+                adjusted[c] = half(x + mask.highlights * 0.30 * wt);
             }
         }
-        // Blacks: tapered shadow-region adjustment in sqrt-space
-        if (mask.activeFlags & (1u << 5)) {
-            for (int c = 0; c < 3; c++) {
-                float x = float(adjusted[c]);
-                float px = sqrt(max(0.0, x));
-                float boundary = mask.blacks < 0 ? 0.50 : 0.35;
-                float amplitude = mask.blacks < 0 ? 0.14 : 0.10;
-                float shadowRegion = max(0.0, 1.0 - px / boundary);
-                float delta = mask.blacks * amplitude * shadowRegion;
-                float pxNew = max(0.0, px + delta);
-                adjusted[c] = half(pxNew * pxNew);
-            }
-        }
-        // Shadows: Gaussian-weighted lift in sqrt-space
-        if (mask.activeFlags & (1u << 3)) {
-            for (int c = 0; c < 3; c++) {
-                float x = float(adjusted[c]);
-                float px = sqrt(max(0.0, x));
-                float ctr = 0.15;
-                float w = 0.15;
-                float d = (px - ctr) / w;
-                float delta = mask.shadows * 0.08 * exp(-0.5 * d * d);
-                float pxNew = max(0.0, px + delta);
-                adjusted[c] = half(pxNew * pxNew);
-            }
-        }
-        // Highlights: one-sided ramp for upper tones
-        if (mask.activeFlags & (1u << 2)) {
-            float knee = 0.15;
-            for (int c = 0; c < 3; c++) {
-                float x = float(adjusted[c]);
-                if (x > knee) {
-                    float t = min((x - knee) / 0.85, 1.0);
-                    float wt = t * t * (3.0 - 2.0 * t) * (1.0 - t * t * 0.3);
-                    adjusted[c] = half(x + mask.highlights * 0.30 * wt);
+    }
+    // Whites: upper tone range adjustment
+    if (mask.activeFlags & (1u << 4)) {
+        float knee = 0.45;
+        for (int c = 0; c < 3; c++) {
+            float x = float(adjusted[c]);
+            if (x > knee) {
+                float t = (x - knee) / (1.0 - knee);
+                float tClamped = min(t, 2.0);
+                if (mask.whites > 0) {
+                    float tSat = min(tClamped, 1.0);
+                    float wt = tSat * tSat * (3.0 - 2.0 * tSat);
+                    x += mask.whites * 1.2 * wt;
+                } else {
+                    float pull = sqrt(tClamped) * 0.25;
+                    x -= abs(mask.whites) * pull * (1.0 - knee);
                 }
+                adjusted[c] = half(x);
             }
         }
-        // Whites: upper tone range adjustment
-        if (mask.activeFlags & (1u << 4)) {
-            float knee = 0.45;
-            for (int c = 0; c < 3; c++) {
-                float x = float(adjusted[c]);
-                if (x > knee) {
-                    float t = (x - knee) / (1.0 - knee);
-                    float tClamped = min(t, 2.0);
-                    if (mask.whites > 0) {
-                        float tSat = min(tClamped, 1.0);
-                        float wt = tSat * tSat * (3.0 - 2.0 * tSat);
-                        x += mask.whites * 1.2 * wt;
-                    } else {
-                        float pull = sqrt(tClamped) * 0.25;
-                        x -= abs(mask.whites) * pull * (1.0 - knee);
-                    }
-                    adjusted[c] = half(x);
-                }
-            }
-        }
-        // Saturation
-        if (mask.activeFlags & (1u << 6)) {
-            half lum = dot(adjusted, half3(0.2126h, 0.7152h, 0.0722h));
-            adjusted = mix(half3(lum), adjusted, half(mask.saturation));
-        }
-        // Vibrance: selective saturation boost
-        if (mask.activeFlags & (1u << 7)) {
-            half lum = dot(adjusted, half3(0.2126h, 0.7152h, 0.0722h));
-            half maxC = max3(adjusted.r, adjusted.g, adjusted.b);
-            half minC = min3(adjusted.r, adjusted.g, adjusted.b);
-            half sat = (maxC > 0.001h) ? ((maxC - minC) / maxC) : 0.0h;
-            half boost = half(mask.vibrance) * (1.0h - sat);
-            adjusted = mix(half3(lum), adjusted, 1.0h + boost);
-        }
-
-        rgb = mix(rgb, adjusted, half(weight));
+    }
+    // Saturation
+    if (mask.activeFlags & (1u << 6)) {
+        half lum = dot(adjusted, half3(0.2126h, 0.7152h, 0.0722h));
+        adjusted = mix(half3(lum), adjusted, half(mask.saturation));
+    }
+    // Vibrance: selective saturation boost
+    if (mask.activeFlags & (1u << 7)) {
+        half lum = dot(adjusted, half3(0.2126h, 0.7152h, 0.0722h));
+        half maxC = max3(adjusted.r, adjusted.g, adjusted.b);
+        half minC = min3(adjusted.r, adjusted.g, adjusted.b);
+        half sat = (maxC > 0.001h) ? ((maxC - minC) / maxC) : 0.0h;
+        half boost = half(mask.vibrance) * (1.0h - sat);
+        adjusted = mix(half3(lum), adjusted, 1.0h + boost);
     }
 
-    // 6. Gamut-clip soft proof: simulate target gamut by clamping out-of-gamut values
+    return adjusted;
+}
+
+kernel void editAdjustments(
+    texture2d<half, access::sample> source [[texture(0)]],
+    texture2d<half, access::write> destination [[texture(1)]],
+    texture1d<float, access::sample> toneLUT [[texture(2)]],
+    constant EditParams &params [[buffer(0)]],
+    constant MaskParams *masks [[buffer(1)]],
+    constant HSLParams &hslParams [[buffer(2)]],
+    constant uint *order [[buffer(3)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    if (gid.x >= uint(params.drawableSize.x) || gid.y >= uint(params.drawableSize.y)) {
+        return;
+    }
+
+    // Map drawable pixel through viewport to source UV
+    float2 drawableNorm = float2(gid) / params.drawableSize;
+
+    // Crop mask: black out (background) outside the confirmed crop rectangle. The viewport
+    // letterbox-fits the crop, so the margin between the crop rect and the drawable edge
+    // still samples in-bounds image — this is what actually "cuts" the crop. (0.5,0.5) ⇒
+    // no mask (full-image render).
+    float2 cropCentered = drawableNorm - 0.5;
+    if (abs(cropCentered.x) > params.cropHalfExtent.x ||
+        abs(cropCentered.y) > params.cropHalfExtent.y) {
+        destination.write(half4(0.0197, 0.0197, 0.0197, 1), gid);
+        return;
+    }
+
+    float2 uv;
+    if (params.viewportRotation != 0.0) {
+        // Clean-feed crop straighten: rotate the centered offset around the crop center.
+        // Rotation must happen in pixel space (sourceSize) so it isn't skewed by the
+        // image's aspect ratio, then convert back to normalized UV.
+        float2 off = (drawableNorm - 0.5) * params.viewportSize * params.sourceSize;
+        float c = cos(params.viewportRotation);
+        float s = sin(params.viewportRotation);
+        float2 r = float2(off.x * c - off.y * s, off.x * s + off.y * c);
+        uv = params.viewportCenter + r / params.sourceSize;
+    } else {
+        uv = params.viewportOrigin + drawableNorm * params.viewportSize;
+    }
+
+    // Letterbox: dark gray for pixels outside source bounds
+    // 0.0197 linear ≈ sRGB 0.15, matching SwiftUI previewBackground
+    if (uv.x < 0.0 || uv.x >= 1.0 || uv.y < 0.0 || uv.y >= 1.0) {
+        destination.write(half4(0.0197, 0.0197, 0.0197, 1), gid);
+        return;
+    }
+
+    constexpr sampler bilinear(filter::linear, address::clamp_to_edge);
+    half4 color = source.sample(bilinear, uv);
+    half3 rgb = color.rgb;
+
+    // Layer chain: apply each node in the order given by the order buffer. The global
+    // adjustment block (kGlobalOrderSentinel) is reorderable among the masks — every node
+    // transforms the running color in sequence, so moving the global node before/after a
+    // mask changes the result. Legacy edits resolve to [global, mask0, mask1, …], which
+    // reproduces the previous fixed "global first, then masks" behavior exactly.
+    for (uint k = 0; k < params.orderCount; k++) {
+        uint entry = order[k];
+        if (entry >= params.maskCount) {
+            // Global node: the order buffer uses 0xFFFFFFFF as the global sentinel
+            // (MetalEditPipeline.globalOrderSentinel); any index ≥ maskCount is global.
+            rgb = applyGlobal(rgb, params, toneLUT, hslParams);
+        } else {
+            constant MaskParams &mask = masks[entry];
+            float weight = maskWeight(mask, uv, params.sourceSize);
+            if (weight < 0.001) continue;
+            half3 adjusted = applyMaskColor(rgb, mask);
+            rgb = mix(rgb, adjusted, half(weight));
+        }
+    }
+
+    // Gamut-clip soft proof: simulate target gamut by clamping out-of-gamut values
     //    In HDR mode, only clamp negative values (out-of-gamut chromaticity) — values > 1.0
     //    represent HDR brightness, not out-of-gamut colors, so the upper bound stays unclamped.
     bool isHDRGamut = (params.activeFlags & (1u << 4)) != 0;
