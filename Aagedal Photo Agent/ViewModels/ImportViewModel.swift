@@ -69,6 +69,12 @@ final class ImportViewModel {
     var errorMessage: String?
     var failureRecords: [ImportFailureRecord] = []
 
+    /// Sticky completion banner shown in the inspector until the user confirms it.
+    /// A new import clears any previous (un-dismissed) banner.
+    var showCompletionBanner: Bool = false
+    /// Backs the current completion banner (summary text + clean/problem state).
+    private(set) var lastCompletionEntry: ActivityEntry?
+
     /// Capture-date groups detected from source files.
     var dateGroups: [ImportDateGroup] = []
     /// Whether the user wants to sort files into per-date folders.
@@ -84,6 +90,10 @@ final class ImportViewModel {
 
     private let readService: SwiftExifReadService
     private let writeEngine: any MetadataWriteEngine
+    @ObservationIgnored private let activityHistory: ActivityHistoryStore?
+    /// Per-file copy results accumulated during the current run, used to build the
+    /// activity-history entry (per-file destination + verification) on finish.
+    @ObservationIgnored private var copyResults: [ImportCopyService.CopyResult] = []
     private let interpolator = PresetVariableInterpolator()
     @ObservationIgnored private var scanTask: Task<Void, Never>?
     @ObservationIgnored private var dateScanTask: Task<Void, Never>?
@@ -91,9 +101,10 @@ final class ImportViewModel {
     @ObservationIgnored private let copyService = ImportCopyService()
     private let importLog = Logger(subsystem: "com.aagedal.photo-agent", category: "Import")
 
-    init(readService: SwiftExifReadService, writeEngine: any MetadataWriteEngine) {
+    init(readService: SwiftExifReadService, writeEngine: any MetadataWriteEngine, activityHistory: ActivityHistoryStore? = nil) {
         self.readService = readService
         self.writeEngine = writeEngine
+        self.activityHistory = activityHistory
 
         // Restore last-used verification mode (default = .on).
         if let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.importVerificationMode),
@@ -258,6 +269,10 @@ final class ImportViewModel {
         importSummary = ""
         errorMessage = nil
         failureRecords = []
+        // A fresh import replaces any previous (un-dismissed) completion banner.
+        copyResults = []
+        showCompletionBanner = false
+        lastCompletionEntry = nil
 
         // Persist verification mode for next run.
         UserDefaults.standard.set(configuration.verificationMode.rawValue, forKey: UserDefaultsKeys.importVerificationMode)
@@ -398,9 +413,11 @@ final class ImportViewModel {
                         if self.skippedFiles > 0 {
                             self.importPhase = .complete
                             self.importSummary = self.buildImportSummary()
+                            self.recordCompletion(cancelled: false)
                         } else if self.failedFiles > 0 || self.mismatchedFiles > 0 {
                             self.importPhase = .complete
                             self.importSummary = self.buildImportSummary()
+                            self.recordCompletion(cancelled: false)
                         } else {
                             self.importPhase = .failed("No files were imported.")
                             self.errorMessage = "No files were imported."
@@ -442,6 +459,7 @@ final class ImportViewModel {
                     self.importPhase = .complete
                     self.importSummary = self.buildImportSummary()
                     importLog.info("Import complete: \(self.importSummary)")
+                    self.recordCompletion(cancelled: false)
                     NotificationCenter.default.post(name: .importCompleted, object: destURL)
                 }
             } catch is CancellationError {
@@ -449,6 +467,7 @@ final class ImportViewModel {
                     self.importPhase = .cancelled
                     self.importSummary = self.buildImportSummary()
                     importLog.info("Import cancelled: \(self.importSummary)")
+                    self.recordCompletion(cancelled: true)
                     NotificationCenter.default.post(name: .importCompleted, object: destURL)
                 }
             } catch {
@@ -471,6 +490,7 @@ final class ImportViewModel {
     @MainActor
     private func applyProgress(_ result: ImportCopyService.CopyResult) {
         currentFile = result.source.lastPathComponent
+        copyResults.append(result)
 
         switch result.primary {
         case .copied(_, let renamed, _):
@@ -508,6 +528,58 @@ final class ImportViewModel {
                 break
             }
         }
+    }
+
+    /// Builds an activity-history entry from the accumulated per-file results,
+    /// records it to the shared history, and raises the sticky completion banner.
+    @MainActor
+    private func recordCompletion(cancelled: Bool) {
+        let verificationEnabled = configuration.verificationMode == .on
+        let files: [ActivityFileRecord] = copyResults.map { result in
+            let destination: String
+            let succeeded: Bool
+            if let url = result.primaryURL {
+                destination = url.deletingLastPathComponent().path
+                succeeded = true
+            } else {
+                destination = ""
+                succeeded = false
+            }
+            let verification: ActivityVerification
+            switch result.primaryVerification {
+            case .verified: verification = .verified
+            case .mismatch, .failed: verification = .failed
+            case .skipped: verification = .notApplicable
+            }
+            return ActivityFileRecord(
+                fileName: result.source.lastPathComponent,
+                destination: destination,
+                succeeded: succeeded,
+                verification: verification
+            )
+        }
+
+        let trimmedTitle = configuration.importTitle.trimmingCharacters(in: .whitespaces)
+        let entry = ActivityEntry(
+            kind: .importJob,
+            date: Date(),
+            title: trimmedTitle.isEmpty ? nil : trimmedTitle,
+            successCount: copiedFiles,
+            totalCount: totalFiles,
+            verificationFailures: mismatchedFiles,
+            verificationEnabled: verificationEnabled,
+            wasCancelled: cancelled,
+            files: files
+        )
+
+        activityHistory?.record(entry)
+        lastCompletionEntry = entry
+        showCompletionBanner = true
+    }
+
+    /// Dismisses the sticky completion banner (the green-check confirm action).
+    func dismissCompletionBanner() {
+        showCompletionBanner = false
     }
 
     nonisolated static func relativePath(of url: URL, under root: URL) -> String? {

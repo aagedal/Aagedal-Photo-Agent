@@ -56,6 +56,8 @@ struct ContentView: View {
     @State private var ftpViewModel = FTPViewModel()
     @State private var settingsViewModel = SettingsViewModel()
     @State private var importViewModel: ImportViewModel
+    /// Shared, persisted log of recent imports and uploads.
+    @State private var activityHistory: ActivityHistoryStore
 
     @State private var isShowingTemplateEditor = false
     @State private var isShowingTemplatePicker = false
@@ -106,7 +108,9 @@ struct ContentView: View {
         _browserViewModel = State(initialValue: browser)
         _metadataViewModel = State(initialValue: MetadataViewModel(readService: browser.metadataReadService, writeEngine: browser.writeEngine))
         _faceRecognitionViewModel = State(initialValue: faceRecognition)
-        _importViewModel = State(initialValue: ImportViewModel(readService: browser.metadataReadService, writeEngine: browser.writeEngine))
+        let history = ActivityHistoryStore()
+        _activityHistory = State(initialValue: history)
+        _importViewModel = State(initialValue: ImportViewModel(readService: browser.metadataReadService, writeEngine: browser.writeEngine, activityHistory: history))
     }
 
     @Environment(\.openWindow) private var openWindow
@@ -473,6 +477,7 @@ struct ContentView: View {
                 browserViewModel.loadFavoriteTopLevelSubfolders()
                 templateViewModel.loadTemplates()
                 ftpViewModel.loadConnections()
+                ftpViewModel.activityHistory = activityHistory
             }
     }
 
@@ -971,6 +976,27 @@ struct ContentView: View {
                         ProgressView()
                             .controlSize(.small)
                     }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 4)
+            }
+
+            if importViewModel.showCompletionBanner, let entry = importViewModel.lastCompletionEntry {
+                Divider()
+                CompletionBannerView(
+                    isClean: entry.isClean,
+                    message: entry.summary,
+                    onConfirm: { importViewModel.dismissCompletionBanner() }
+                )
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+            }
+
+            if !activityHistory.entries.isEmpty {
+                Divider()
+                HStack {
+                    ActivityHistoryButton(history: activityHistory)
+                    Spacer()
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 4)

@@ -74,8 +74,8 @@ struct FTPUploadProgressView: View {
 
     private var completedHeader: some View {
         HStack(spacing: 4) {
-            Image(systemName: "checkmark.circle.fill")
-                .foregroundStyle(.green)
+            Image(systemName: viewModel.errorMessages.isEmpty ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                .foregroundStyle(viewModel.errorMessages.isEmpty ? Color.green : Color.orange)
             Text("Upload complete")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -84,6 +84,16 @@ struct FTPUploadProgressView: View {
                     .font(.caption)
                     .foregroundStyle(.red)
             }
+            Spacer(minLength: 4)
+            Button {
+                viewModel.dismissUploadCompletion()
+            } label: {
+                Image(systemName: "checkmark")
+                    .font(.caption.weight(.semibold))
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.green)
+            .help("Dismiss")
         }
     }
 }

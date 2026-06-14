@@ -29,6 +29,9 @@ final class FTPViewModel {
 
     var uploadHistory = FTPUploadHistory()
 
+    /// Shared import/upload activity log. Assigned by the owner (ContentView).
+    @ObservationIgnored var activityHistory: ActivityHistoryStore?
+
     private let ftpService = FTPService()
     private let connectionsKey = UserDefaultsKeys.ftpConnections
     @ObservationIgnored private var uploadTask: Task<Void, Never>?
@@ -221,7 +224,7 @@ final class FTPViewModel {
                 }
             }
             self.recordUploadCompletion(id: historyID)
-            self.showCompletionBriefly()
+            self.showCompletion(serverName: connection.name)
         }
     }
 
@@ -348,7 +351,7 @@ final class FTPViewModel {
             }
 
             self.recordUploadCompletion(id: historyID)
-            self.showCompletionBriefly()
+            self.showCompletion(serverName: connection.name)
         }
     }
 
@@ -381,18 +384,43 @@ final class FTPViewModel {
         overallProgress = uploadWeightOffset + (perFileContribution / count) * uploadWeightRange
     }
 
-    /// Shows a brief completion state before hiding the overlay.
-    private func showCompletionBriefly() {
+    /// Shows the sticky completion state and records the upload to the shared
+    /// activity history. The banner stays until the user confirms it (a new
+    /// upload also replaces it), so the confirmation can't be missed.
+    private func showCompletion(serverName: String) {
         isUploading = false
         isRendering = false
         uploadCompleted = true
         overallProgress = 1.0
+        recordActivity(serverName: serverName)
+    }
 
+    /// Dismisses the sticky upload-completion banner (the green-check confirm action).
+    func dismissUploadCompletion() {
         completionTask?.cancel()
-        completionTask = Task {
-            try? await Task.sleep(for: .seconds(3))
-            guard !isUploading, !isRendering else { return }
-            uploadCompleted = false
-        }
+        uploadCompleted = false
+    }
+
+    private func recordActivity(serverName: String) {
+        let records: [ActivityFileRecord] = uploadProgress.values
+            .sorted { $0.fileName.localizedStandardCompare($1.fileName) == .orderedAscending }
+            .map { progress in
+                ActivityFileRecord(
+                    fileName: progress.fileName,
+                    destination: serverName,
+                    succeeded: progress.isComplete,
+                    verification: .notApplicable
+                )
+            }
+
+        let entry = ActivityEntry(
+            kind: .upload,
+            date: Date(),
+            title: serverName,
+            successCount: completedCount,
+            totalCount: totalCount,
+            files: records
+        )
+        activityHistory?.record(entry)
     }
 }
