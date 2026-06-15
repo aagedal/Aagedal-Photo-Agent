@@ -211,14 +211,15 @@ final class FTPViewModel {
                         password: password
                     ) { progress in
                         Task { @MainActor in
-                            let wasComplete = self.uploadProgress[progress.fileName]?.isComplete ?? false
                             self.uploadProgress[progress.fileName] = progress
-                            if !wasComplete && progress.isComplete {
-                                self.completedCount += 1
-                            }
                             self.updateSmoothedProgress()
                         }
                     }
+                    // Count completion here, on the awaited result, rather than from the
+                    // background progress callback: the callback is delivered via an
+                    // unstructured Task that may not have drained by the time the loop
+                    // finishes and recordActivity() reads completedCount.
+                    self.markFileComplete(url.lastPathComponent)
                 } catch {
                     self.errorMessages.append("Failed to upload \(url.lastPathComponent): \(error.localizedDescription)")
                 }
@@ -337,14 +338,11 @@ final class FTPViewModel {
                         password: password
                     ) { progress in
                         Task { @MainActor in
-                            let wasComplete = self.uploadProgress[progress.fileName]?.isComplete ?? false
                             self.uploadProgress[progress.fileName] = progress
-                            if !wasComplete && progress.isComplete {
-                                self.completedCount += 1
-                            }
                             self.updateSmoothedProgress(uploadWeightOffset: 0.5, uploadWeightRange: 0.5)
                         }
                     }
+                    self.markFileComplete(url.lastPathComponent, uploadWeightOffset: 0.5, uploadWeightRange: 0.5)
                 } catch {
                     self.errorMessages.append("Failed to upload \(url.lastPathComponent): \(error.localizedDescription)")
                 }
@@ -376,6 +374,24 @@ final class FTPViewModel {
     }
 
     // MARK: - Progress Helpers
+
+    /// Deterministically marks a file as fully uploaded once its `uploadFile` call has
+    /// returned without throwing. Folds the per-file completion into both the visible
+    /// progress map and `completedCount` synchronously on the main actor, so the activity
+    /// record written right after the loop reflects every successful file — the trailing
+    /// `isComplete` progress callback is delivered out-of-band and can't be relied on here.
+    private func markFileComplete(_ fileName: String, uploadWeightOffset: Double = 0, uploadWeightRange: Double = 1.0) {
+        let bytes = uploadProgress[fileName]?.totalBytes ?? 0
+        uploadProgress[fileName] = FTPUploadProgress(
+            fileName: fileName,
+            bytesUploaded: bytes,
+            totalBytes: bytes,
+            fractionCompleted: 1.0,
+            isComplete: true
+        )
+        completedCount += 1
+        updateSmoothedProgress(uploadWeightOffset: uploadWeightOffset, uploadWeightRange: uploadWeightRange)
+    }
 
     /// Computes smooth overall progress by interpolating per-file fractions.
     private func updateSmoothedProgress(uploadWeightOffset: Double = 0, uploadWeightRange: Double = 1.0) {

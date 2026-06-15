@@ -113,6 +113,18 @@ struct FTPRemoteURLTests {
         let conn = FTPConnection(host: "h", port: 21, remotePath: "/d", useSFTP: false)
         #expect(url("a.jpg", conn) == "ftp://h:21/d/a.jpg")
     }
+
+    @Test("remote directory specials are encoded while / separators stay intact")
+    func encodesRemotePathSpecials() {
+        // A space in a remote directory would break the URL, and a '#'/'?' would
+        // truncate it at the fragment/query — the directory must be encoded like the
+        // filename, but its '/' separators must survive.
+        let spaced = FTPConnection(host: "h", port: 21, remotePath: "/My Photos/2026", useSFTP: false)
+        #expect(url("a.jpg", spaced) == "ftp://h:21/My%20Photos/2026/a.jpg")
+
+        let hashed = FTPConnection(host: "h", port: 21, remotePath: "/in#box/", useSFTP: false)
+        #expect(url("a.jpg", hashed) == "ftp://h:21/in%23box/a.jpg")
+    }
 }
 
 @Suite("FTPConnection Codable")

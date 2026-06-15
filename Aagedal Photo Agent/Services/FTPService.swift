@@ -174,16 +174,20 @@ struct FTPService: Sendable {
     /// path for both FTP and SFTP before issuing the transfer command, so the file
     /// lands on the server under its real name.
     ///
-    /// The configured remote directory is left unencoded (its `/` are real path
-    /// separators); `--globoff` in `curlArguments` keeps any `[]`/`{}` there from
-    /// being misread as glob patterns.
+    /// The configured remote directory is percent-encoded with `.urlPathAllowed`, which
+    /// keeps its `/` path separators intact but encodes characters the URL parser would
+    /// otherwise act on — `#` (fragment) and `?` (query) would truncate the directory the
+    /// same way they truncate filenames, and a space would break the URL. `--globoff` in
+    /// `curlArguments` additionally keeps any `[]`/`{}` there from being misread as glob
+    /// patterns. curl percent-decodes the path before issuing the transfer command.
     nonisolated static func remoteUploadURL(for filename: String, connection: FTPConnection) -> String {
         let scheme = connection.useSFTP ? "sftp" : "ftp"
-        let remotePath = connection.remotePath.hasSuffix("/")
+        let rawPath = connection.remotePath.hasSuffix("/")
             ? connection.remotePath
             : connection.remotePath + "/"
+        let encodedPath = rawPath.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? rawPath
         let encodedName = filename.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? filename
-        return "\(scheme)://\(connection.host):\(connection.port)\(remotePath)\(encodedName)"
+        return "\(scheme)://\(connection.host):\(connection.port)\(encodedPath)\(encodedName)"
     }
 
     /// Builds the curl argument vector for an upload. Extracted as a pure function
