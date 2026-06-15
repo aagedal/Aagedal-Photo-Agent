@@ -1407,4 +1407,158 @@ struct LayerOrderTests {
         settings.layerOrder = [.global]
         #expect(settings.isEmpty)
     }
+
+    @Test("masksInRenderOrder reorders to the resolved mask sub-order")
+    func masksInRenderOrderReorders() {
+        let m1 = mask("Mask 1"); let m2 = mask("Mask 2"); let m3 = mask("Mask 3")
+        var settings = CameraRawSettings()
+        settings.localAdjustments = [m1, m2, m3]
+        settings.layerOrder = [.mask(m3.id), .global, .mask(m1.id), .mask(m2.id)]
+        #expect(settings.masksInRenderOrder()?.map(\.id) == [m3.id, m1.id, m2.id])
+    }
+
+    @Test("globalLayerIndex counts masks before global")
+    func globalLayerIndexCounts() {
+        let m1 = mask("Mask 1"); let m2 = mask("Mask 2")
+        var settings = CameraRawSettings()
+        settings.localAdjustments = [m1, m2]
+        settings.layerOrder = [.mask(m1.id), .mask(m2.id), .global]
+        #expect(settings.globalLayerIndex() == 2)
+        settings.layerOrder = nil
+        #expect(settings.globalLayerIndex() == nil)
+    }
+
+    @Test("rewriting an existing sidecar that lacks the aaphoto namespace, adding a mask, does not corrupt the XML tree")
+    func rewriteExistingSidecarAddingMask() throws {
+        let svc = XMPSidecarService()
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let imageURL = tmp.appendingPathComponent("test.jpg")
+        let xmpURL = svc.sidecarURL(for: imageURL)
+
+        // A pre-existing sidecar from before the aaphoto namespace existed: crs global
+        // data, no masks, no aaphoto declaration.
+        let existing = """
+        <?xpacket begin="\u{FEFF}" id="W5M0MpCehiHzreSzNTczkc9d"?>
+        <x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="Aagedal Photo Agent">
+         <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+          <rdf:Description rdf:about=""
+           xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
+           crs:Version="15.4" crs:ProcessVersion="15.4" crs:Exposure2012="+1.00" crs:HasSettings="True"/>
+         </rdf:RDF>
+        </x:xmpmeta>
+        <?xpacket end="w"?>
+        """
+        try existing.data(using: .utf8)!.write(to: xmpURL)
+
+        var settings = CameraRawSettings()
+        settings.exposure2012 = 1.0
+        settings.localAdjustments = [MaskAdjustment(name: "Mask 1", geometry: EllipseMaskGeometry())]
+
+        // Loop with autorelease drains to provoke the reported dealloc crash.
+        for _ in 0..<100 {
+            autoreleasepool {
+                try? svc.saveCameraRawOnly(settings, orientation: nil, for: imageURL)
+                _ = svc.loadSidecar(for: imageURL)
+            }
+        }
+        // Round-trips cleanly and the reload still sees the mask.
+        #expect(svc.loadSidecar(for: imageURL)?.cameraRaw?.localAdjustments?.count == 1)
+    }
+
+    @Test("re-saving a complex existing sidecar (nested Alt/Bag/Seq + MaskGroupBasedCorrections) repeatedly does not corrupt the XML tree")
+    func resaveComplexSidecarRepeatedly() throws {
+        let svc = XMPSidecarService()
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let imageURL = tmp.appendingPathComponent("test.jpg")
+        let xmpURL = svc.sidecarURL(for: imageURL)
+
+        // Faithful copy of a real already-edited sidecar: many namespaces (incl. aaphoto),
+        // nested descriptive Alt/Bag/Seq elements, and an existing MaskGroupBasedCorrections.
+        let existing = """
+        <?xpacket begin="\u{FEFF}" id="W5M0MpCehiHzreSzNTczkc9d"?>
+        <x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="Aagedal Photo Agent">
+            <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+                <rdf:Description xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/" xmlns:Iptc4xmpCore="http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/" xmlns:Iptc4xmpExt="http://iptc.org/std/Iptc4xmpExt/2008-02-29/" xmlns:exif="http://ns.adobe.com/exif/1.0/" xmlns:tiff="http://ns.adobe.com/tiff/1.0/" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" xmlns:aaphoto="http://aagedal.me/ns/photo/1.0/" rdf:about="" photoshop:Headline="Headline" xmp:Rating="5" xmp:Label="Select" Iptc4xmpExt:DigitalSourceType="digitalCapture" photoshop:Credit="TV 2" photoshop:City="Oslo" photoshop:Country="Norway" tiff:Orientation="1" exif:Orientation="1" crs:ProcessVersion="15.4" crs:Temperature="5069" crs:Exposure2012="+0.38" crs:Contrast2012="-15" crs:Highlights2012="+10" crs:Shadows2012="+16" crs:Whites2012="+9" crs:Blacks2012="-24" crs:HasSettings="True" crs:CropTop="0.062056" crs:CropLeft="0.174746" crs:CropBottom="0.705758" crs:CropRight="0.818448" crs:CropAngle="0.000000" crs:HasCrop="True" crs:AlreadyApplied="False" crs:CompatibleVersion="234881024">
+                    <dc:title><rdf:Alt><rdf:li xml:lang="x-default">Headline</rdf:li></rdf:Alt></dc:title>
+                    <dc:description><rdf:Alt><rdf:li xml:lang="x-default">Norway, Oslo.</rdf:li></rdf:Alt></dc:description>
+                    <Iptc4xmpCore:ExtDescrAccessibility><rdf:Alt><rdf:li xml:lang="x-default">Norway, Oslo.</rdf:li></rdf:Alt></Iptc4xmpCore:ExtDescrAccessibility>
+                    <dc:subject><rdf:Bag><rdf:li>kjendiser</rdf:li><rdf:li>underholdning</rdf:li><rdf:li>TV serie</rdf:li></rdf:Bag></dc:subject>
+                    <Iptc4xmpExt:PersonInImage><rdf:Bag><rdf:li>Tonje Brenna</rdf:li><rdf:li>Jane Smith</rdf:li></rdf:Bag></Iptc4xmpExt:PersonInImage>
+                    <dc:creator><rdf:Seq><rdf:li>Truls Aagedal</rdf:li></rdf:Seq></dc:creator>
+                    <dc:rights><rdf:Alt><rdf:li xml:lang="x-default">Truls Aagedal / TV 2</rdf:li></rdf:Alt></dc:rights>
+                    <crs:MaskGroupBasedCorrections><rdf:Seq><rdf:li>
+                        <rdf:Description crs:CorrectionActive="true" crs:CorrectionAmount="1" crs:CorrectionName="Mask 1" crs:CorrectionSyncID="ACF2BFE8FD5D46329471E2FA3B909912" crs:What="Correction" crs:LocalExposure2012="0">
+                            <crs:CorrectionMasks><rdf:Seq><rdf:li crs:What="Mask/CircularGradient" crs:Top="0.27507" crs:Left="0.35" crs:Bottom="0.72493" crs:Right="0.65" crs:Angle="0" crs:Feather="50" crs:Flipped="true" crs:MaskActive="true" crs:MaskInverted="false" crs:MaskName="Radial Gradient 1" crs:MaskValue="1" crs:Version="2"></rdf:li></rdf:Seq></crs:CorrectionMasks>
+                        </rdf:Description>
+                    </rdf:li></rdf:Seq></crs:MaskGroupBasedCorrections>
+                </rdf:Description>
+            </rdf:RDF>
+        </x:xmpmeta>
+        <?xpacket end="w"?>
+        """
+        try existing.data(using: .utf8)!.write(to: xmpURL)
+
+        // Mimic the edit loop: load the sidecar, add/modify a mask, save — repeatedly.
+        // NO explicit autoreleasepool here, mirroring the app's write Task: autoreleased
+        // NSXML child arrays must not outlive the document built inside saveSidecar.
+        for i in 0..<200 {
+            guard var meta = svc.loadSidecar(for: imageURL) else { continue }
+            var crs = meta.cameraRaw ?? CameraRawSettings()
+            var masks = crs.localAdjustments ?? []
+            masks.append(MaskAdjustment(name: "Mask \(i + 2)", geometry: EllipseMaskGeometry()))
+            crs.localAdjustments = masks
+            meta.cameraRaw = crs
+            try? svc.saveSidecar(metadata: meta, for: imageURL)
+        }
+        #expect(svc.loadSidecar(for: imageURL)?.cameraRaw != nil)
+    }
+
+    @Test("saveCameraRawOnly(nil) clears global develop + mask from an existing sidecar")
+    func clearDevelopFromSidecar() throws {
+        let svc = XMPSidecarService()
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let imageURL = tmp.appendingPathComponent("test.jpg")
+        let xmpURL = svc.sidecarURL(for: imageURL)
+        let existing = """
+        <?xpacket begin="\u{FEFF}" id="W5M0MpCehiHzreSzNTczkc9d"?>
+        <x:xmpmeta xmlns:x="adobe:ns:meta/">
+            <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+                <rdf:Description xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" rdf:about=""
+                    crs:Exposure2012="+0.38" crs:Contrast2012="-15" crs:Temperature="5069"
+                    crs:HasSettings="True" crs:CropTop="0.06" crs:HasCrop="True"/>
+            </rdf:RDF>
+        </x:xmpmeta>
+        <?xpacket end="w"?>
+        """
+        try existing.data(using: .utf8)!.write(to: xmpURL)
+        #expect(svc.loadSidecar(for: imageURL)?.cameraRaw != nil)
+
+        try svc.saveCameraRawOnly(nil, orientation: nil, for: imageURL)
+
+        #expect(svc.loadSidecar(for: imageURL)?.cameraRaw == nil, "develop must be cleared after reset")
+    }
+
+    @Test("persistence round-trips: settings → (render-order masks, index) → resolved order")
+    func persistenceRoundTrip() {
+        let m1 = mask("Mask 1"); let m2 = mask("Mask 2")
+        var settings = CameraRawSettings()
+        settings.localAdjustments = [m1, m2]
+        settings.layerOrder = [.mask(m2.id), .global, .mask(m1.id)]
+
+        // Simulate write → read: masks stored in render order, global index persisted.
+        let storedMasks = settings.masksInRenderOrder()
+        let storedIndex = settings.globalLayerIndex()
+        let restored = CameraRawSettings.layerOrder(masks: storedMasks, globalIndex: storedIndex)
+
+        var reread = CameraRawSettings()
+        reread.localAdjustments = storedMasks
+        reread.layerOrder = restored
+        #expect(reread.resolvedLayerOrder() == [.mask(m2.id), .global, .mask(m1.id)])
+    }
 }

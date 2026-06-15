@@ -60,6 +60,9 @@ final class MetalScopePipeline: @unchecked Sendable {
     nonisolated(unsafe) private let binCountBuffer: MTLBuffer
     /// Zero-filled HSL params buffer used when the edit pipeline has no HSL buffer.
     nonisolated(unsafe) private let emptyHSLBuffer: MTLBuffer
+    /// Fallback layer-order buffer (all global-sentinel) bound when the edit pipeline passes
+    /// none, so index 5 is never unbound. Real ordering comes from the edit pipeline's buffer.
+    nonisolated(unsafe) private let emptyOrderBuffer: MTLBuffer
 
     // Output texture (720×720, reused)
     nonisolated(unsafe) private(set) var outputTexture: MTLTexture
@@ -127,17 +130,20 @@ final class MetalScopePipeline: @unchecked Sendable {
               let paramsBuf = device.makeBuffer(length: MemoryLayout<ScopeParams>.stride, options: .storageModeShared),
               let maxBuf = device.makeBuffer(length: MemoryLayout<UInt32>.size, options: .storageModeShared),
               let binCountBuf = device.makeBuffer(length: MemoryLayout<UInt32>.size, options: .storageModeShared),
-              let emptyHSL = device.makeBuffer(length: MemoryLayout<HSLParams>.stride, options: .storageModeShared)
+              let emptyHSL = device.makeBuffer(length: MemoryLayout<HSLParams>.stride, options: .storageModeShared),
+              let emptyOrder = device.makeBuffer(length: MemoryLayout<UInt32>.size * 16, options: .storageModeShared)
         else {
             scopePipelineLog.error("MetalScopePipeline: buffer allocation failed")
             return nil
         }
         memset(emptyHSL.contents(), 0, MemoryLayout<HSLParams>.stride)
+        memset(emptyOrder.contents(), 0xFF, MemoryLayout<UInt32>.size * 16)  // all global-sentinel
         self.binBuffer = binBuf
         self.scopeParamsBuffer = paramsBuf
         self.maxCountBuffer = maxBuf
         self.binCountBuffer = binCountBuf
         self.emptyHSLBuffer = emptyHSL
+        self.emptyOrderBuffer = emptyOrder
 
         // Output texture
         let texDesc = MTLTextureDescriptor.texture2DDescriptor(
@@ -165,6 +171,7 @@ final class MetalScopePipeline: @unchecked Sendable {
         lutTexture: MTLTexture,
         maskBuffer: MTLBuffer?,
         hslBuffer: MTLBuffer?,
+        orderBuffer: MTLBuffer?,
         mode: ScopeViewModel.ScopeMode,
         scale: WaveformScale,
         clipMode: Bool = false,
@@ -207,7 +214,7 @@ final class MetalScopePipeline: @unchecked Sendable {
             return encodeWaveform(commandBuffer: commandBuffer, params: params,
                                  sourceTexture: sourceTexture, editParamsBuffer: editParamsBuffer,
                                  lutTexture: lutTexture, maskBuffer: maskBuffer,
-                                 hslBuffer: hslBuffer,
+                                 hslBuffer: hslBuffer, orderBuffer: orderBuffer,
                                  drawable: drawable, drawableSize: drawableSize)
 
         case .parade:
@@ -224,7 +231,7 @@ final class MetalScopePipeline: @unchecked Sendable {
             return encodeParade(commandBuffer: commandBuffer, params: params,
                                sourceTexture: sourceTexture, editParamsBuffer: editParamsBuffer,
                                lutTexture: lutTexture, maskBuffer: maskBuffer,
-                               hslBuffer: hslBuffer,
+                               hslBuffer: hslBuffer, orderBuffer: orderBuffer,
                                drawable: drawable, drawableSize: drawableSize)
 
         case .vectorscope:
@@ -234,7 +241,7 @@ final class MetalScopePipeline: @unchecked Sendable {
             return encodeVectorscope(commandBuffer: commandBuffer, params: params,
                                     sourceTexture: sourceTexture, editParamsBuffer: editParamsBuffer,
                                     lutTexture: lutTexture, maskBuffer: maskBuffer,
-                                    hslBuffer: hslBuffer,
+                                    hslBuffer: hslBuffer, orderBuffer: orderBuffer,
                                     drawable: drawable, drawableSize: drawableSize)
 
         case .chromaticity:
@@ -247,7 +254,7 @@ final class MetalScopePipeline: @unchecked Sendable {
             return encodeChromaticity(commandBuffer: commandBuffer, params: params,
                                      sourceTexture: sourceTexture, editParamsBuffer: editParamsBuffer,
                                      lutTexture: lutTexture, maskBuffer: maskBuffer,
-                                     hslBuffer: hslBuffer,
+                                     hslBuffer: hslBuffer, orderBuffer: orderBuffer,
                                      drawable: drawable, drawableSize: drawableSize)
         }
     }
@@ -262,6 +269,7 @@ final class MetalScopePipeline: @unchecked Sendable {
         lutTexture: MTLTexture,
         maskBuffer: MTLBuffer?,
         hslBuffer: MTLBuffer?,
+        orderBuffer: MTLBuffer?,
         drawable: CAMetalDrawable,
         drawableSize: CGSize
     ) -> Bool {
@@ -290,6 +298,7 @@ final class MetalScopePipeline: @unchecked Sendable {
             accum.setBuffer(maskBuf, offset: 0, index: 3)
         }
         accum.setBuffer(hslBuffer ?? emptyHSLBuffer, offset: 0, index: 4)
+        accum.setBuffer(orderBuffer ?? emptyOrderBuffer, offset: 0, index: 5)
         let accumGrid = MTLSize(width: Int(params.sampleWidth), height: Int(params.sampleHeight), depth: 1)
         let accumTG = MTLSize(width: 16, height: 16, depth: 1)
         accum.dispatchThreads(accumGrid, threadsPerThreadgroup: accumTG)
@@ -323,6 +332,7 @@ final class MetalScopePipeline: @unchecked Sendable {
         lutTexture: MTLTexture,
         maskBuffer: MTLBuffer?,
         hslBuffer: MTLBuffer?,
+        orderBuffer: MTLBuffer?,
         drawable: CAMetalDrawable,
         drawableSize: CGSize
     ) -> Bool {
@@ -350,6 +360,7 @@ final class MetalScopePipeline: @unchecked Sendable {
             accum.setBuffer(maskBuf, offset: 0, index: 3)
         }
         accum.setBuffer(hslBuffer ?? emptyHSLBuffer, offset: 0, index: 4)
+        accum.setBuffer(orderBuffer ?? emptyOrderBuffer, offset: 0, index: 5)
         let accumGrid = MTLSize(width: Int(params.channelWidth), height: Int(params.sampleHeight), depth: 1)
         accum.dispatchThreads(accumGrid, threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
         accum.endEncoding()
@@ -381,6 +392,7 @@ final class MetalScopePipeline: @unchecked Sendable {
         lutTexture: MTLTexture,
         maskBuffer: MTLBuffer?,
         hslBuffer: MTLBuffer?,
+        orderBuffer: MTLBuffer?,
         drawable: CAMetalDrawable,
         drawableSize: CGSize
     ) -> Bool {
@@ -408,6 +420,7 @@ final class MetalScopePipeline: @unchecked Sendable {
             accum.setBuffer(maskBuf, offset: 0, index: 3)
         }
         accum.setBuffer(hslBuffer ?? emptyHSLBuffer, offset: 0, index: 4)
+        accum.setBuffer(orderBuffer ?? emptyOrderBuffer, offset: 0, index: 5)
         let accumGrid = MTLSize(width: Int(params.sampleWidth), height: Int(params.sampleHeight), depth: 1)
         accum.dispatchThreads(accumGrid, threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
         accum.endEncoding()
@@ -439,6 +452,7 @@ final class MetalScopePipeline: @unchecked Sendable {
         lutTexture: MTLTexture,
         maskBuffer: MTLBuffer?,
         hslBuffer: MTLBuffer?,
+        orderBuffer: MTLBuffer?,
         drawable: CAMetalDrawable,
         drawableSize: CGSize
     ) -> Bool {
@@ -466,6 +480,7 @@ final class MetalScopePipeline: @unchecked Sendable {
             accum.setBuffer(maskBuf, offset: 0, index: 3)
         }
         accum.setBuffer(hslBuffer ?? emptyHSLBuffer, offset: 0, index: 4)
+        accum.setBuffer(orderBuffer ?? emptyOrderBuffer, offset: 0, index: 5)
         let accumGrid = MTLSize(width: Int(params.sampleWidth), height: Int(params.sampleHeight), depth: 1)
         accum.dispatchThreads(accumGrid, threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
         accum.endEncoding()

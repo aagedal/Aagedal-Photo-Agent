@@ -537,6 +537,45 @@ nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
         return result
     }
 
+    // MARK: - Persistence helpers for the layer chain
+    //
+    // ACR's schema can't express the global node's position, so persistence (both the .xmp
+    // sidecar and the embedded-XMP writer) stores masks in render-stack order and adds only
+    // the global node's index. These pure helpers are the shared source of truth for that.
+
+    /// Masks reordered to match the resolved chain's mask sub-order (ACR render-stack order).
+    /// Returns `localAdjustments` unchanged when there's no custom order.
+    func masksInRenderOrder() -> [MaskAdjustment]? {
+        guard let masks = localAdjustments, layerOrder != nil else { return localAdjustments }
+        let byID = Dictionary(masks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var ordered: [MaskAdjustment] = []
+        for case .mask(let id) in resolvedLayerOrder() {
+            if let mask = byID[id] { ordered.append(mask) }
+        }
+        return ordered.isEmpty ? localAdjustments : ordered
+    }
+
+    /// Number of masks that precede the global node in the resolved chain. nil when there's
+    /// no custom order; 0 means global-first (canonical) and need not be persisted.
+    func globalLayerIndex() -> Int? {
+        guard layerOrder != nil else { return nil }
+        let resolved = resolvedLayerOrder()
+        guard let gi = resolved.firstIndex(of: .global) else { return 0 }
+        return resolved[..<gi].reduce(0) { count, ref in
+            if case .mask = ref { return count + 1 }
+            return count
+        }
+    }
+
+    /// Rebuilds a `layerOrder` from masks (already in render-stack order) plus the stored
+    /// global position. nil `globalIndex` ⇒ nil (canonical global-first).
+    static func layerOrder(masks: [MaskAdjustment]?, globalIndex: Int?) -> [LayerRef]? {
+        guard let globalIndex else { return nil }
+        var order = (masks ?? []).map { LayerRef.mask($0.id) }
+        order.insert(.global, at: max(0, min(globalIndex, order.count)))
+        return order
+    }
+
     /// Mask geometry is stored in the sensor (XMP) frame, but rendering happens
     /// on display-oriented pixels — returns a copy with `localAdjustments`
     /// transformed into the display frame (the crop is handled separately by

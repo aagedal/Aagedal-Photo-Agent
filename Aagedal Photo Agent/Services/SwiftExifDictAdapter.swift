@@ -3,6 +3,7 @@ import SwiftExif
 
 /// XMP namespace URI for Adobe Camera Raw Settings.
 nonisolated private let crsNamespaceURI = "http://ns.adobe.com/camera-raw-settings/1.0/"
+nonisolated private let aaphotoNamespaceURI = "http://aagedal.me/ns/photo/1.0/"
 
 private extension MakerNoteValue {
     /// The value as an `Int` when it is an integer (signed or unsigned), else nil.
@@ -152,6 +153,12 @@ extension ImageMetadata {
                 property: MetadataDictKey.maskGroupBasedCorrections
             ) {
                 dict[MetadataDictKey.maskGroupBasedCorrections] = masks.map(unwrapXMPStruct)
+            }
+
+            // App-private global-node position (ACR can't express it).
+            if let v = xmp.simpleValue(namespace: aaphotoNamespaceURI,
+                                       property: MetadataDictKey.globalLayerIndex) {
+                dict[MetadataDictKey.globalLayerIndex] = v
             }
         }
 

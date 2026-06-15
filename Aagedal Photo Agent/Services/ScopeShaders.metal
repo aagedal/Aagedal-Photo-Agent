@@ -25,6 +25,15 @@ struct ScopeEditParams {
 
     float lutDomainMin;
     float lutDomainMax;
+
+    // Tail fields kept so the scope can read the SAME EditParams buffer the edit pipeline
+    // fills (it binds editPipeline.paramsBuffer directly). Only orderCount is used here.
+    float2 viewportCenter;   // unused by scopes
+    float viewportRotation;  // unused by scopes
+    float _padViewport;
+    float2 cropHalfExtent;   // unused by scopes
+    uint orderCount;         // entries in the layer-order buffer (0 ⇒ legacy global-then-masks)
+    uint _padOrder;
 };
 
 // ============================================================
@@ -135,12 +144,13 @@ inline float linearToSRGB(float x) {
 // Apply edit adjustments (same logic as editAdjustments kernel)
 // ============================================================
 
-inline float3 applyEdits(
+// Global adjustment block (white balance, tone LUT, vibrance, saturation, HSL) — the
+// scope's mirror of EditAdjustments.metal's applyGlobal. Factored out so the kernel can
+// apply it at its ordered position relative to the masks (see applyEdits).
+inline float3 applyScopeGlobal(
     float3 rgb,
-    float2 uv,
     constant ScopeEditParams &params,
     texture1d<float, access::sample> toneLUT,
-    constant MaskParams *masks,
     constant HSLParams &hslParams)
 {
     // 1. White Balance
@@ -272,113 +282,151 @@ inline float3 applyEdits(
         }
     }
 
-    // 6. Local mask adjustments — mirrors EditAdjustments.metal
-    for (uint m = 0; m < params.maskCount && m < 8; m++) {
-        constant MaskParams &mask = masks[m];
+    return rgb;
+}
 
-        float cosR = cos(mask.rotation);
-        float sinR = sin(mask.rotation);
-        float2 d = uv - mask.center;
-        float2 local = float2(d.x * cosR + d.y * sinR, -d.x * sinR + d.y * cosR);
-        float dist = length(local / mask.radii);
-        float inner = 1.0 - mask.feather;
-        float weight = 1.0 - smoothstep(inner, 1.0, dist);
-        if (mask.inverted > 0.5) weight = 1.0 - weight;
-        weight *= mask.amount;
-        if (weight < 0.001) continue;
+// Ellipse-mask coverage weight at `uv` (0 ⇒ no effect). Mirrors the scope's prior inline
+// formula; kept separate from the color application so the kernel can sequence nodes.
+inline float applyScopeMaskWeight(constant MaskParams &mask, float2 uv) {
+    float cosR = cos(mask.rotation);
+    float sinR = sin(mask.rotation);
+    float2 d = uv - mask.center;
+    float2 local = float2(d.x * cosR + d.y * sinR, -d.x * sinR + d.y * cosR);
+    float dist = length(local / mask.radii);
+    float inner = 1.0 - mask.feather;
+    float weight = 1.0 - smoothstep(inner, 1.0, dist);
+    if (mask.inverted > 0.5) weight = 1.0 - weight;
+    weight *= mask.amount;
+    return weight;
+}
 
-        float3 adjusted = rgb;
+// Per-mask local tonal adjustments (returns the adjusted color; the kernel blends by weight).
+inline float3 applyScopeMaskColor(float3 rgb, constant MaskParams &mask) {
+    float3 adjusted = rgb;
 
-        // Exposure: multiplicative EV shift
-        if (mask.activeFlags & (1u << 0)) {
-            adjusted *= exp2(mask.exposure);
+    // Exposure: multiplicative EV shift
+    if (mask.activeFlags & (1u << 0)) {
+        adjusted *= exp2(mask.exposure);
+    }
+    // Contrast: ACR parametric sigmoid — gain peaks at midtones, falls at extremes
+    if (mask.activeFlags & (1u << 1)) {
+        for (int c = 0; c < 3; c++) {
+            float x = adjusted[c];
+            float centered = x - 0.5;
+            float falloff = min(4.0 * centered * centered, 1.0);
+            float gain = 1.0 + mask.contrast * 0.7 * (1.0 - falloff);
+            adjusted[c] = 0.5 + centered * max(gain, 0.1f);
         }
-        // Contrast: ACR parametric sigmoid — gain peaks at midtones, falls at extremes
-        if (mask.activeFlags & (1u << 1)) {
-            for (int c = 0; c < 3; c++) {
-                float x = adjusted[c];
-                float centered = x - 0.5;
-                float falloff = min(4.0 * centered * centered, 1.0);
-                float gain = 1.0 + mask.contrast * 0.7 * (1.0 - falloff);
-                adjusted[c] = 0.5 + centered * max(gain, 0.1f);
+    }
+    // Blacks: tapered shadow-region adjustment in sqrt-space
+    if (mask.activeFlags & (1u << 5)) {
+        for (int c = 0; c < 3; c++) {
+            float x = adjusted[c];
+            float px = sqrt(max(0.0, x));
+            float boundary = mask.blacks < 0 ? 0.50 : 0.35;
+            float amplitude = mask.blacks < 0 ? 0.14 : 0.10;
+            float shadowRegion = max(0.0, 1.0 - px / boundary);
+            float delta = mask.blacks * amplitude * shadowRegion;
+            float pxNew = max(0.0, px + delta);
+            adjusted[c] = pxNew * pxNew;
+        }
+    }
+    // Shadows: Gaussian-weighted lift in sqrt-space
+    if (mask.activeFlags & (1u << 3)) {
+        for (int c = 0; c < 3; c++) {
+            float x = adjusted[c];
+            float px = sqrt(max(0.0, x));
+            float ctr = 0.15;
+            float w = 0.15;
+            float d = (px - ctr) / w;
+            float delta = mask.shadows * 0.08 * exp(-0.5 * d * d);
+            float pxNew = max(0.0, px + delta);
+            adjusted[c] = pxNew * pxNew;
+        }
+    }
+    // Highlights: one-sided ramp for upper tones
+    if (mask.activeFlags & (1u << 2)) {
+        float knee = 0.15;
+        for (int c = 0; c < 3; c++) {
+            float x = adjusted[c];
+            if (x > knee) {
+                float t = min((x - knee) / 0.85, 1.0);
+                float wt = t * t * (3.0 - 2.0 * t) * (1.0 - t * t * 0.3);
+                adjusted[c] = x + mask.highlights * 0.30 * wt;
             }
         }
-        // Blacks: tapered shadow-region adjustment in sqrt-space
-        if (mask.activeFlags & (1u << 5)) {
-            for (int c = 0; c < 3; c++) {
-                float x = adjusted[c];
-                float px = sqrt(max(0.0, x));
-                float boundary = mask.blacks < 0 ? 0.50 : 0.35;
-                float amplitude = mask.blacks < 0 ? 0.14 : 0.10;
-                float shadowRegion = max(0.0, 1.0 - px / boundary);
-                float delta = mask.blacks * amplitude * shadowRegion;
-                float pxNew = max(0.0, px + delta);
-                adjusted[c] = pxNew * pxNew;
-            }
-        }
-        // Shadows: Gaussian-weighted lift in sqrt-space
-        if (mask.activeFlags & (1u << 3)) {
-            for (int c = 0; c < 3; c++) {
-                float x = adjusted[c];
-                float px = sqrt(max(0.0, x));
-                float ctr = 0.15;
-                float w = 0.15;
-                float d = (px - ctr) / w;
-                float delta = mask.shadows * 0.08 * exp(-0.5 * d * d);
-                float pxNew = max(0.0, px + delta);
-                adjusted[c] = pxNew * pxNew;
-            }
-        }
-        // Highlights: one-sided ramp for upper tones
-        if (mask.activeFlags & (1u << 2)) {
-            float knee = 0.15;
-            for (int c = 0; c < 3; c++) {
-                float x = adjusted[c];
-                if (x > knee) {
-                    float t = min((x - knee) / 0.85, 1.0);
-                    float wt = t * t * (3.0 - 2.0 * t) * (1.0 - t * t * 0.3);
-                    adjusted[c] = x + mask.highlights * 0.30 * wt;
+    }
+    // Whites: upper tone range adjustment
+    if (mask.activeFlags & (1u << 4)) {
+        float knee = 0.45;
+        for (int c = 0; c < 3; c++) {
+            float x = adjusted[c];
+            if (x > knee) {
+                float t = (x - knee) / (1.0 - knee);
+                float tClamped = min(t, 2.0);
+                if (mask.whites > 0) {
+                    float tSat = min(tClamped, 1.0);
+                    float wt = tSat * tSat * (3.0 - 2.0 * tSat);
+                    x += mask.whites * 1.2 * wt;
+                } else {
+                    float pull = sqrt(tClamped) * 0.25;
+                    x -= abs(mask.whites) * pull * (1.0 - knee);
                 }
+                adjusted[c] = x;
             }
         }
-        // Whites: upper tone range adjustment
-        if (mask.activeFlags & (1u << 4)) {
-            float knee = 0.45;
-            for (int c = 0; c < 3; c++) {
-                float x = adjusted[c];
-                if (x > knee) {
-                    float t = (x - knee) / (1.0 - knee);
-                    float tClamped = min(t, 2.0);
-                    if (mask.whites > 0) {
-                        float tSat = min(tClamped, 1.0);
-                        float wt = tSat * tSat * (3.0 - 2.0 * tSat);
-                        x += mask.whites * 1.2 * wt;
-                    } else {
-                        float pull = sqrt(tClamped) * 0.25;
-                        x -= abs(mask.whites) * pull * (1.0 - knee);
-                    }
-                    adjusted[c] = x;
-                }
-            }
-        }
-        // Saturation
-        if (mask.activeFlags & (1u << 6)) {
-            float lum = dot(adjusted, float3(0.2126, 0.7152, 0.0722));
-            adjusted = mix(float3(lum), adjusted, mask.saturation);
-        }
-        // Vibrance: selective saturation boost
-        if (mask.activeFlags & (1u << 7)) {
-            float lum = dot(adjusted, float3(0.2126, 0.7152, 0.0722));
-            float maxC = max3(adjusted.r, adjusted.g, adjusted.b);
-            float minC = min3(adjusted.r, adjusted.g, adjusted.b);
-            float sat = (maxC > 0.001) ? ((maxC - minC) / maxC) : 0.0;
-            float boost = mask.vibrance * (1.0 - sat);
-            adjusted = mix(float3(lum), adjusted, 1.0 + boost);
-        }
-
-        rgb = mix(rgb, adjusted, weight);
+    }
+    // Saturation
+    if (mask.activeFlags & (1u << 6)) {
+        float lum = dot(adjusted, float3(0.2126, 0.7152, 0.0722));
+        adjusted = mix(float3(lum), adjusted, mask.saturation);
+    }
+    // Vibrance: selective saturation boost
+    if (mask.activeFlags & (1u << 7)) {
+        float lum = dot(adjusted, float3(0.2126, 0.7152, 0.0722));
+        float maxC = max3(adjusted.r, adjusted.g, adjusted.b);
+        float minC = min3(adjusted.r, adjusted.g, adjusted.b);
+        float sat = (maxC > 0.001) ? ((maxC - minC) / maxC) : 0.0;
+        float boost = mask.vibrance * (1.0 - sat);
+        adjusted = mix(float3(lum), adjusted, 1.0 + boost);
     }
 
+    return adjusted;
+}
+
+// Full edit applied to one sampled pixel, honoring the reorderable layer chain so the
+// scope matches the preview after Global is moved among the masks. The order buffer holds
+// `orderCount` entries: each is a mask index, or ≥ maskCount for the global node.
+// orderCount == 0 ⇒ legacy fixed order (global first, then masks) for safety.
+inline float3 applyEdits(
+    float3 rgb,
+    float2 uv,
+    constant ScopeEditParams &params,
+    texture1d<float, access::sample> toneLUT,
+    constant MaskParams *masks,
+    constant HSLParams &hslParams,
+    constant uint *order)
+{
+    if (params.orderCount == 0) {
+        rgb = applyScopeGlobal(rgb, params, toneLUT, hslParams);
+        for (uint m = 0; m < params.maskCount && m < 8; m++) {
+            float weight = applyScopeMaskWeight(masks[m], uv);
+            if (weight < 0.001) continue;
+            rgb = mix(rgb, applyScopeMaskColor(rgb, masks[m]), weight);
+        }
+        return rgb;
+    }
+
+    for (uint k = 0; k < params.orderCount; k++) {
+        uint entry = order[k];
+        if (entry >= params.maskCount) {
+            rgb = applyScopeGlobal(rgb, params, toneLUT, hslParams);
+        } else {
+            float weight = applyScopeMaskWeight(masks[entry], uv);
+            if (weight < 0.001) continue;
+            rgb = mix(rgb, applyScopeMaskColor(rgb, masks[entry]), weight);
+        }
+    }
     return rgb;
 }
 
@@ -394,6 +442,7 @@ kernel void waveformAccumulate(
     constant ScopeParams &scopeParams [[buffer(2)]],
     constant MaskParams *masks [[buffer(3)]],
     constant HSLParams &hslParams [[buffer(4)]],
+    constant uint *order [[buffer(5)]],
     uint2 gid [[thread_position_in_grid]])
 {
     if (gid.x >= scopeParams.sampleWidth || gid.y >= scopeParams.sampleHeight) return;
@@ -407,7 +456,7 @@ kernel void waveformAccumulate(
     constexpr sampler bilinear(filter::linear, address::clamp_to_edge);
     half4 color = source.sample(bilinear, uv);
     float3 rgb = float3(color.rgb);
-    rgb = applyEdits(rgb, uv, editParams, toneLUT, masks, hslParams);
+    rgb = applyEdits(rgb, uv, editParams, toneLUT, masks, hslParams, order);
 
     int levels = int(scopeParams.levels);
     int level;
@@ -576,6 +625,7 @@ kernel void paradeAccumulate(
     constant ScopeParams &scopeParams [[buffer(2)]],
     constant MaskParams *masks [[buffer(3)]],
     constant HSLParams &hslParams [[buffer(4)]],
+    constant uint *order [[buffer(5)]],
     uint2 gid [[thread_position_in_grid]])
 {
     uint sW = scopeParams.channelWidth;
@@ -591,7 +641,7 @@ kernel void paradeAccumulate(
     constexpr sampler bilinear(filter::linear, address::clamp_to_edge);
     half4 color = source.sample(bilinear, uv);
     float3 rgb = float3(color.rgb);
-    rgb = applyEdits(rgb, uv, editParams, toneLUT, masks, hslParams);
+    rgb = applyEdits(rgb, uv, editParams, toneLUT, masks, hslParams, order);
 
     // Convert linear → sRGB before binning (matches CPU scope path)
     float r = linearToSRGB(saturate(rgb.r));
@@ -749,6 +799,7 @@ kernel void vectorscopeAccumulate(
     constant ScopeParams &scopeParams [[buffer(2)]],
     constant MaskParams *masks [[buffer(3)]],
     constant HSLParams &hslParams [[buffer(4)]],
+    constant uint *order [[buffer(5)]],
     uint2 gid [[thread_position_in_grid]])
 {
     if (gid.x >= scopeParams.sampleWidth || gid.y >= scopeParams.sampleHeight) return;
@@ -762,7 +813,7 @@ kernel void vectorscopeAccumulate(
     constexpr sampler bilinear(filter::linear, address::clamp_to_edge);
     half4 color = source.sample(bilinear, uv);
     float3 rgb = float3(color.rgb);
-    rgb = applyEdits(rgb, uv, editParams, toneLUT, masks, hslParams);
+    rgb = applyEdits(rgb, uv, editParams, toneLUT, masks, hslParams, order);
 
     // Convert linear → sRGB before CbCr computation (matches CPU scope path)
     float r = linearToSRGB(saturate(rgb.r));
@@ -1057,6 +1108,7 @@ kernel void chromaticityAccumulate(
     constant ScopeParams &scopeParams [[buffer(2)]],
     constant MaskParams *masks [[buffer(3)]],
     constant HSLParams &hslParams [[buffer(4)]],
+    constant uint *order [[buffer(5)]],
     uint2 gid [[thread_position_in_grid]])
 {
     if (gid.x >= scopeParams.sampleWidth || gid.y >= scopeParams.sampleHeight) return;
@@ -1070,7 +1122,7 @@ kernel void chromaticityAccumulate(
     constexpr sampler bilinear(filter::linear, address::clamp_to_edge);
     half4 color = source.sample(bilinear, uv);
     float3 rgb = float3(color.rgb);
-    rgb = applyEdits(rgb, uv, editParams, toneLUT, masks, hslParams);
+    rgb = applyEdits(rgb, uv, editParams, toneLUT, masks, hslParams, order);
 
     // Work in linear space for chromaticity — do NOT apply linearToSRGB
     float3 linearRGB = rgb;

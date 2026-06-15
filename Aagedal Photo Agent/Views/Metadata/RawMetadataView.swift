@@ -216,11 +216,12 @@ struct RawMetadataView: View {
             }
             do {
                 let data = try Data(contentsOf: url)
-                let text: String
-                if let xmlDoc = try? XMLDocument(data: data, options: [.nodePrettyPrint]) {
-                    text = xmlDoc.xmlString(options: [.nodePrettyPrint])
-                } else {
-                    text = String(data: data, encoding: .utf8) ?? "Unable to read XMP sidecar"
+                // Contain the parsed NSXML temporaries (see XMPSidecarService.saveSidecar).
+                let text: String = autoreleasepool {
+                    if let xmlDoc = try? XMLDocument(data: data, options: [.nodePrettyPrint]) {
+                        return xmlDoc.xmlString(options: [.nodePrettyPrint])
+                    }
+                    return String(data: data, encoding: .utf8) ?? "Unable to read XMP sidecar"
                 }
                 return (true, text)
             } catch {

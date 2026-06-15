@@ -79,6 +79,8 @@ nonisolated enum MetadataDictKey {
     static let crsToneCurvePV2012Green = "ToneCurvePV2012Green"
     static let crsToneCurvePV2012Blue = "ToneCurvePV2012Blue"
     static let maskGroupBasedCorrections = "MaskGroupBasedCorrections"
+    /// App-private (aaphoto namespace): the global node's position in the layer chain.
+    static let globalLayerIndex = "GlobalLayerIndex"
 }
 
 nonisolated func parseStringOrArray(_ value: Any?) -> [String] {
@@ -452,7 +454,7 @@ nonisolated func iptcMetadataFromDict(_ dict: [String: Any]) -> IPTCMetadata {
         return tc.isEmpty ? nil : tc
     }()
 
-    let cameraRaw = CameraRawSettings(
+    var cameraRaw = CameraRawSettings(
         version: dict[MetadataDictKey.crsVersion] as? String,
         processVersion: dict[MetadataDictKey.crsProcessVersion] as? String,
         whiteBalance: dict[MetadataDictKey.crsWhiteBalance] as? String,
@@ -482,6 +484,12 @@ nonisolated func iptcMetadataFromDict(_ dict: [String: Any]) -> IPTCMetadata {
         toneCurve: toneCurve,
         localAdjustments: localAdjustments,
         hslAdjustments: decodeHSLAdjustments { parseIntValue(dict[$0]) }
+    )
+    // Reconstruct the reorderable layer chain: masks are already in render-stack order; the
+    // app-private GlobalLayerIndex (if present) says where the global node sits among them.
+    cameraRaw.layerOrder = CameraRawSettings.layerOrder(
+        masks: localAdjustments,
+        globalIndex: parseIntValue(dict[MetadataDictKey.globalLayerIndex])
     )
 
     return IPTCMetadata(

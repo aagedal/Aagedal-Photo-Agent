@@ -2862,9 +2862,12 @@ final class BrowserViewModel {
             fullScreenImageCache.invalidateEditedImage(for: url)
         }
 
-        // Clear CRS from XMP sidecars for RAW files — the sidecar is the
-        // authoritative CRS source and would re-set hasDevelopEdits on next load.
-        for url in urls where SupportedImageFormats.isRaw(url: url) {
+        // Clear CRS from the XMP sidecar for EVERY file (not just RAW). Develop edits now
+        // persist to the sidecar during editing for non-RAW too (the sidecar is authoritative
+        // and wins over embedded crs on load), so a reset that only cleared the embedded file
+        // crs would leave the sidecar's develop behind and resurface it on next load.
+        // saveCameraRawOnly(nil,…) is a no-op when no sidecar exists, so this is safe for all.
+        for url in urls {
             do {
                 try xmpSidecarService.saveCameraRawOnly(nil, orientation: nil, for: url)
             } catch {

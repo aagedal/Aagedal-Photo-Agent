@@ -1876,27 +1876,41 @@ struct EditWorkspaceView: View {
 
     private func commitEditAdjustments() {
         guard metadataViewModel.hasChanges else { return }
-        let hasC2PA = browserViewModel.selectedImages.contains { $0.hasC2PA }
-        let isRaw = selectedImageURL.map { SupportedImageFormats.isRaw(url: $0) }
-            ?? browserViewModel.selectedImages.contains { SupportedImageFormats.isRaw(url: $0.url) }
-        let mode = MetadataWriteMode.current(forC2PA: hasC2PA, isRaw: isRaw)
-        let effectiveMode: MetadataWriteMode = {
-            guard mode == .writeToXMPSidecar,
-                  !hasC2PA,  // C2PA keeps the sidecar — an embed would invalidate the credential
-                  let selectedURL = selectedImageURL,
-                  !SupportedImageFormats.isRaw(url: selectedURL) else {
-                return mode
-            }
-            // ACR-compatible behavior for non-RAW files: write XMP into the file.
-            return .writeToFile
-        }()
+
+        // Develop edits persist to the .xmp sidecar during editing — the source file is NEVER
+        // rewritten in place by the editor. Embedding XMP into the source on every tweak races
+        // with the full-res mmap decode (CGImageSourceCreateWithURL) and crashes; edits bake
+        // into a file only on Export, which renders a separate output. RAW was already
+        // sidecar-only; this makes non-RAW match. (Sidecar wins over embedded crs on reload.)
+        let effectiveMode: MetadataWriteMode = .writeToXMPSidecar
 
         // Sync cameraRaw to ImageFile so the thumbnail reflects edits immediately
         syncCameraRawToImageFile()
 
-        // Simple resolves C2PA to .writeToFile and deliberately ignores content
-        // credentials, so the mode is committed as-is.
         metadataViewModel.commitEdits(mode: effectiveMode) {
+            onPendingStatusChanged?()
+        }
+    }
+
+    /// Commit a develop RESET. Like `commitEditAdjustments` it writes the cleared state to the
+    /// sidecar, but for a non-RAW source that still carries embedded `crs` (edited under the old
+    /// in-file model, or imported from ACR) it also clears the file's embedded crs in one write
+    /// — otherwise the empty sidecar crs would let the embedded edits resurface on reload (the
+    /// load merge applies the sidecar's cameraRaw only when it's non-empty). Resets are rare and
+    /// user-initiated, so this one-off file write carries negligible decode-race risk. RAW is
+    /// never written to the file.
+    private func commitDevelopReset() {
+        guard metadataViewModel.hasChanges else { return }
+        syncCameraRawToImageFile()
+
+        let sourceHasEmbeddedCRS: Bool = {
+            guard let url = selectedImageURL, !SupportedImageFormats.isRaw(url: url),
+                  let crs = metadataViewModel.embeddedMetadata?.cameraRaw else { return false }
+            return !crs.isEmpty
+        }()
+        let mode: MetadataWriteMode = sourceHasEmbeddedCRS ? .writeToFileAndXMPSidecar : .writeToXMPSidecar
+
+        metadataViewModel.commitEdits(mode: mode) {
             onPendingStatusChanged?()
         }
     }
@@ -3238,7 +3252,7 @@ struct EditWorkspaceView: View {
                 hasCrop: false
             )
         }
-        commitEditAdjustments()
+        commitDevelopReset()
     }
 
     private func resetDevelopAdjustmentsKeepingCrop() {
@@ -3260,7 +3274,7 @@ struct EditWorkspaceView: View {
             cameraRaw.localAdjustments = nil
         }
         selectedLayer = .global
-        commitEditAdjustments()
+        commitDevelopReset()
     }
 
     private var saveButtonLabel: String {
@@ -3428,7 +3442,8 @@ struct EditWorkspaceView: View {
             let structuredData = StructuredWriteData(
                 toneCurve: cameraRaw.toneCurve,
                 masks: (cameraRaw.localAdjustments?.isEmpty == false) ? cameraRaw.localAdjustments : nil,
-                hslAdjustments: (cameraRaw.hslAdjustments?.isEmpty == false) ? cameraRaw.hslAdjustments : nil
+                hslAdjustments: (cameraRaw.hslAdjustments?.isEmpty == false) ? cameraRaw.hslAdjustments : nil,
+                layerOrder: cameraRaw.layerOrder
             )
 
             do {

@@ -7,6 +7,10 @@ nonisolated private let swiftExifLog = Logger(subsystem: "com.aagedal.photo-agen
 /// XMP namespace URI for Adobe Camera Raw Settings.
 nonisolated private let crsNamespace = "http://ns.adobe.com/camera-raw-settings/1.0/"
 
+/// App-private XMP namespace for settings ACR can't represent — currently the global node's
+/// position in the reorderable layer chain (mirrors XMPSidecarService's `aaphoto`).
+nonisolated private let aaphotoNamespace = "http://aagedal.me/ns/photo/1.0/"
+
 /// Native, in-process metadata write engine. Reads and re-emits the image file
 /// via SwiftExif. There is no external process and no fallback path.
 nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Sendable {
@@ -279,6 +283,9 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
             || structuredData.hslAdjustments != nil
         if structuredData.replaceCameraRawBlock && writesCameraRaw {
             metadata.xmp?.removeAll(namespace: crsNamespace)
+            // Our private global-position tag tracks develop state — clear it with the block
+            // so a reset/replace can't leave a stale GlobalLayerIndex behind.
+            metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: "GlobalLayerIndex")
         }
 
         // GPS coordinates are paired: SwiftExif's setGPS takes both at once and
@@ -314,7 +321,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         }
 
         if let masks = structuredData.masks {
-            applyMasks(masks, metadata: &metadata)
+            applyLayerChain(masks: masks, layerOrder: structuredData.layerOrder, metadata: &metadata)
         }
 
         if let hsl = structuredData.hslAdjustments {
@@ -595,6 +602,24 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         )
     }
 
+    /// Write the local-mask block in render-stack order plus the app-private
+    /// `aaphoto:GlobalLayerIndex` for the global node's position — the embedded-XMP mirror of
+    /// XMPSidecarService's persistence. Reuses the shared model helpers so both stores agree.
+    private func applyLayerChain(masks: [MaskAdjustment], layerOrder: [LayerRef]?, metadata: inout ImageMetadata) {
+        var chain = CameraRawSettings()
+        chain.localAdjustments = masks
+        chain.layerOrder = layerOrder
+        applyMasks(chain.masksInRenderOrder() ?? masks, metadata: &metadata)
+
+        if let globalIndex = chain.globalLayerIndex(), globalIndex > 0 {
+            if metadata.xmp == nil { metadata.xmp = XMPData() }
+            metadata.xmp?.setValue(.simple(String(globalIndex)),
+                                   namespace: aaphotoNamespace, property: "GlobalLayerIndex")
+        } else {
+            metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: "GlobalLayerIndex")
+        }
+    }
+
     /// Apply per-color HSL adjustments as simple XMP-crs properties
     /// (`HueAdjustmentRed`, `SaturationAdjustmentAqua`, …). Field content comes
     /// from the shared `encodeHSLAdjustments` (also used by the .xmp sidecar
@@ -645,7 +670,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
             applyToneCurves(tc, metadata: &metadata)
         }
         if let masks = settings.localAdjustments, !masks.isEmpty {
-            applyMasks(masks, metadata: &metadata)
+            applyLayerChain(masks: masks, layerOrder: settings.layerOrder, metadata: &metadata)
         }
         if let hsl = settings.hslAdjustments, !hsl.isEmpty {
             applyHSL(hsl, metadata: &metadata)

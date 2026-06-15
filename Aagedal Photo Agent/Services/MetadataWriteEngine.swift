@@ -5,6 +5,10 @@ struct StructuredWriteData: Sendable {
     var toneCurve: ToneCurve?
     var masks: [MaskAdjustment]?
     var hslAdjustments: HSLAdjustments?
+    /// The reorderable layer chain (incl. the global node's position). nil ⇒ canonical
+    /// global-first. Carried so the embedded-XMP writer can persist `aaphoto:GlobalLayerIndex`
+    /// and write masks in render-stack order, matching the .xmp sidecar.
+    var layerOrder: [LayerRef]?
 
     /// Replace the file's ENTIRE Camera Raw (crs) namespace block with this
     /// write's content — Adobe-faithful semantics: ACR drops settings it isn't

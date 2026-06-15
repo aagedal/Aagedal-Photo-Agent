@@ -1130,6 +1130,7 @@ final class MetadataViewModel {
                         toneCurve: edited.cameraRaw?.toneCurve,
                         masks: edited.cameraRaw?.localAdjustments,
                         hslAdjustments: edited.cameraRaw?.hslAdjustments,
+                        layerOrder: edited.cameraRaw?.layerOrder,
                         replaceCameraRawBlock: true
                     )
                     : .empty
@@ -2113,6 +2114,7 @@ final class MetadataViewModel {
                         toneCurve: edited.cameraRaw?.toneCurve,
                         masks: edited.cameraRaw?.localAdjustments,
                         hslAdjustments: edited.cameraRaw?.hslAdjustments,
+                        layerOrder: edited.cameraRaw?.layerOrder,
                         replaceCameraRawBlock: true
                     )
                     : .empty
@@ -2189,6 +2191,7 @@ final class MetadataViewModel {
                         toneCurve: edited.cameraRaw?.toneCurve,
                         masks: edited.cameraRaw?.localAdjustments,
                         hslAdjustments: edited.cameraRaw?.hslAdjustments,
+                        layerOrder: edited.cameraRaw?.layerOrder,
                         replaceCameraRawBlock: true
                     )
                     : .empty

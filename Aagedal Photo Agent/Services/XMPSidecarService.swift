@@ -54,18 +54,21 @@ struct XMPSidecarService: Sendable {
     /// when there's no sidecar or it carries no orientation. Reads both the attribute
     /// form (how we and ACR write it) and the child-element form.
     nonisolated func sidecarOrientation(for imageURL: URL) -> Int? {
-        guard let data = sidecarDataIfExists(for: imageURL),
-              let document = try? XMLDocument(data: data, options: [.nodePreserveWhitespace]),
-              let description = (try? document.nodes(forXPath: "//*[local-name()='Description']"))?.first as? XMLElement
-        else { return nil }
+        guard let data = sidecarDataIfExists(for: imageURL) else { return nil }
+        // Keep the parsed NSXML tree's temporaries inside an explicit pool (see saveSidecar).
+        return autoreleasepool { () -> Int? in
+            guard let document = try? XMLDocument(data: data, options: [.nodePreserveWhitespace]),
+                  let description = (try? document.nodes(forXPath: "//*[local-name()='Description']"))?.first as? XMLElement
+            else { return nil }
 
-        func value(_ localName: String, _ prefix: String) -> String? {
-            if let attr = description.attribute(forName: "\(prefix):\(localName)")?.stringValue { return attr }
-            let child = description.elements(forName: "\(prefix):\(localName)").first
-            return child?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+            func value(_ localName: String, _ prefix: String) -> String? {
+                if let attr = description.attribute(forName: "\(prefix):\(localName)")?.stringValue { return attr }
+                let child = description.elements(forName: "\(prefix):\(localName)").first
+                return child?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            let raw = value("Orientation", "tiff") ?? value("Orientation", "exif")
+            return raw.flatMap { Int($0) }
         }
-        let raw = value("Orientation", "tiff") ?? value("Orientation", "exif")
-        return raw.flatMap { Int($0) }
     }
 
     /// Parses already-read XMP bytes into IPTCMetadata. Cheap — call on the main
@@ -75,9 +78,14 @@ struct XMPSidecarService: Sendable {
     /// carries an angled crop (an angled crop without it stays in Adobe's
     /// corner convention, i.e. wrong — pass it whenever the image is known).
     func loadSidecar(fromData data: Data, imageAspect: () -> Double? = { nil }) -> IPTCMetadata? {
-        guard let document = parseXMLDocument(from: data) else { return nil }
-        guard let description = findDescription(in: document) else { return nil }
-        return parseMetadata(from: description, imageAspect: imageAspect)
+        // Contain the parsed NSXML tree's autoreleased temporaries in an explicit pool — on the
+        // main actor they would otherwise drain at the job boundary (see saveSidecar). Only the
+        // value-type IPTCMetadata escapes.
+        autoreleasepool {
+            guard let document = parseXMLDocument(from: data) else { return nil }
+            guard let description = findDescription(in: document) else { return nil }
+            return parseMetadata(from: description, imageAspect: imageAspect)
+        }
     }
 
     /// Removes all IPTC/descriptive metadata from the sidecar while preserving
@@ -113,16 +121,22 @@ struct XMPSidecarService: Sendable {
 
     func saveSidecar(metadata: IPTCMetadata, for imageURL: URL) throws {
         let url = sidecarURL(for: imageURL)
-        let document = try loadOrCreateDocument(at: url)
-        let description = ensureDescription(in: document)
-        ensureNamespaces(on: description)
-        updateDescription(
-            description,
-            with: metadata,
-            imageAspect: imageAspectIfCropAngled(for: imageURL, crop: metadata.cameraRaw?.crop)
-        )
-
-        let data = serializeXMP(document)
+        // Build + serialize the NSXML tree inside an explicit autoreleasepool. The write runs
+        // in a @MainActor Task whose autoreleased NSXML temporaries would otherwise drain at
+        // the main-queue job boundary (after the local document is gone), over-releasing nodes
+        // — a crash in `objc_autoreleasePoolPop`. Draining them synchronously here avoids it;
+        // only the value-type Data escapes the pool.
+        let data: Data = try autoreleasepool {
+            let document = try loadOrCreateDocument(at: url)
+            let description = ensureDescription(in: document)
+            ensureNamespaces(on: description)
+            updateDescription(
+                description,
+                with: metadata,
+                imageAspect: imageAspectIfCropAngled(for: imageURL, crop: metadata.cameraRaw?.crop)
+            )
+            return serializeXMP(document)
+        }
         try data.write(to: url, options: .atomic)
     }
 
@@ -147,25 +161,30 @@ struct XMPSidecarService: Sendable {
 
     func saveCameraRawOnly(_ settings: CameraRawSettings?, orientation: Int?, for imageURL: URL) throws {
         let url = sidecarURL(for: imageURL)
+        // NSXML build+serialize stays inside an autoreleasepool — see saveSidecar for why.
         if let settings, !settings.isEmpty {
-            let document = try loadOrCreateDocument(at: url)
-            let description = ensureDescription(in: document)
-            ensureNamespaces(on: description)
-            updateCameraRawSettings(
-                on: description,
-                settings: settings,
-                imageAspect: imageAspectIfCropAngled(for: imageURL, crop: settings.crop)
-            )
-            if let orientation {
-                setOrientation(on: description, value: orientation)
+            let data: Data = try autoreleasepool {
+                let document = try loadOrCreateDocument(at: url)
+                let description = ensureDescription(in: document)
+                ensureNamespaces(on: description)
+                updateCameraRawSettings(
+                    on: description,
+                    settings: settings,
+                    imageAspect: imageAspectIfCropAngled(for: imageURL, crop: settings.crop)
+                )
+                if let orientation {
+                    setOrientation(on: description, value: orientation)
+                }
+                return serializeXMP(document)
             }
-            let data = serializeXMP(document)
             try data.write(to: url, options: .atomic)
         } else if FileManager.default.fileExists(atPath: url.path) {
-            let document = try loadOrCreateDocument(at: url)
-            let description = ensureDescription(in: document)
-            removeCameraRawSettings(from: description)
-            let data = serializeXMP(document)
+            let data: Data = try autoreleasepool {
+                let document = try loadOrCreateDocument(at: url)
+                let description = ensureDescription(in: document)
+                removeCameraRawSettings(from: description)
+                return serializeXMP(document)
+            }
             try data.write(to: url, options: .atomic)
         }
     }
@@ -455,50 +474,21 @@ struct XMPSidecarService: Sendable {
 
         // Masks are written exactly as ACR would — in render-stack order — so the crs block
         // stays fully ACR-compatible and Adobe honors the user's mask stacking.
-        updateMaskCorrections(on: description, masks: masksInResolvedOrder(settings))
+        updateMaskCorrections(on: description, masks: settings.masksInRenderOrder())
 
         // ACR has no global-adjustment node, so the ONLY thing we add is where Global sits in
         // the stack: the number of masks that precede it. 0 (global first) is canonical and
         // written as absent. The masks themselves come back from the crs block on read.
         setSimple(on: description, prefix: "aaphoto", localName: "GlobalLayerIndex",
-                  value: globalLayerIndex(settings).flatMap { $0 > 0 ? String($0) : nil })
-    }
-
-    /// Masks reordered to match the mask sub-sequence of the resolved layer chain, so the crs
-    /// block is written in ACR's render-stack order. Returns the array unchanged when there's
-    /// no custom order.
-    private func masksInResolvedOrder(_ settings: CameraRawSettings) -> [MaskAdjustment]? {
-        guard let masks = settings.localAdjustments, settings.layerOrder != nil else {
-            return settings.localAdjustments
-        }
-        let byID = Dictionary(masks.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        var ordered: [MaskAdjustment] = []
-        for case .mask(let id) in settings.resolvedLayerOrder() {
-            if let mask = byID[id] { ordered.append(mask) }
-        }
-        return ordered.isEmpty ? settings.localAdjustments : ordered
-    }
-
-    /// Number of masks that precede the global node in the resolved chain, or nil when there's
-    /// no custom order (⇒ canonical global-first).
-    private func globalLayerIndex(_ settings: CameraRawSettings) -> Int? {
-        guard settings.layerOrder != nil else { return nil }
-        let resolved = settings.resolvedLayerOrder()
-        guard let gi = resolved.firstIndex(of: .global) else { return 0 }
-        return resolved[..<gi].reduce(0) { count, ref in
-            if case .mask = ref { return count + 1 }
-            return count
-        }
+                  value: settings.globalLayerIndex().flatMap { $0 > 0 ? String($0) : nil })
     }
 
     /// Rebuilds `layerOrder` from the crs mask order (already in render-stack order) plus the
-    /// stored global position. nil when no `GlobalLayerIndex` tag ⇒ canonical global-first.
+    /// stored `GlobalLayerIndex`. nil when the tag is absent ⇒ canonical global-first.
     private func reconstructLayerOrder(masks: [MaskAdjustment]?, from description: XMLElement) -> [LayerRef]? {
         guard let raw = parseSimple(from: description, prefix: "aaphoto", localName: "GlobalLayerIndex"),
               let index = Int(raw) else { return nil }
-        var order = (masks ?? []).map { LayerRef.mask($0.id) }
-        order.insert(.global, at: max(0, min(index, order.count)))
-        return order
+        return CameraRawSettings.layerOrder(masks: masks, globalIndex: index)
     }
 
     /// Write local mask adjustments as ACR's `crs:MaskGroupBasedCorrections`,
