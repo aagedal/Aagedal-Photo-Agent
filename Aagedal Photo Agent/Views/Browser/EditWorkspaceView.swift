@@ -2679,10 +2679,10 @@ struct EditWorkspaceView: View {
         return VStack(alignment: .leading, spacing: 4) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
-                    addLayerButton
                     ForEach(order, id: \.self) { ref in
                         layerCard(ref)
                     }
+                    addLayerButton
                 }
                 .padding(.vertical, 2)
                 .padding(.horizontal, 1)
