@@ -915,6 +915,21 @@ final class BrowserViewModel {
                         updated[index].cameraRawSettings = nil
                         applySidecarCropState(to: &updated[index], cameraRaw: nil)
                     }
+                } else if let xmpCRS = xmpMeta?.cameraRaw, !xmpCRS.isEmpty {
+                    // Non-RAW develop edits also persist to the .xmp sidecar — the file is
+                    // never rewritten by the editor. Apply the sidecar CRS so the in-memory
+                    // state (and the develop-edit badge via applySidecarCropState) survive a
+                    // background folder reload, which otherwise resets them to the file's
+                    // embedded crs (empty for sidecar-only edits). Unlike RAW we DON'T clear
+                    // on an absent/empty sidecar: a non-RAW file can legitimately carry
+                    // embedded crs (e.g. an ACR-edited JPEG), already loaded from the dict above.
+                    var finalCRS = xmpCRS
+                    if (xmpCRS.localAdjustments?.isEmpty ?? true),
+                       let masks = updated[index].cameraRawSettings?.localAdjustments, !masks.isEmpty {
+                        finalCRS.localAdjustments = masks
+                    }
+                    updated[index].cameraRawSettings = finalCRS
+                    applySidecarCropState(to: &updated[index], cameraRaw: finalCRS)
                 }
 
                 // XMP sidecar rating/label/orientation overrides — written by
