@@ -153,8 +153,12 @@ struct MetalPreviewView: NSViewRepresentable {
         /// Call when slider drag ends — avoids burning GPU cycles when idle.
         func stopContinuousRendering() {
             guard let mtkView else { return }
-            let totalMs = (ContinuousClock.now - drawLogStart).components.attoseconds / 1_000_000_000_000_000
-            let rate = drawCount > 0 && totalMs > 0 ? Double(drawCount) / (Double(totalMs) / 1000.0) : 0
+            // `.components.attoseconds` is only the sub-second remainder — must add `.seconds`
+            // or any drag past 1s under-reports the elapsed time and wildly inflates the FPS.
+            let elapsed = ContinuousClock.now - drawLogStart
+            let totalSeconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
+            let totalMs = Int(totalSeconds * 1000)
+            let rate = drawCount > 0 && totalSeconds > 0 ? Double(drawCount) / totalSeconds : 0
             metalPreviewLog.info("⏱ Continuous rendering stopped: \(self.drawCount) draws over \(totalMs)ms = \(rate, format: .fixed(precision: 1)) FPS")
             mtkView.isPaused = true
             mtkView.enableSetNeedsDisplay = true
@@ -178,7 +182,9 @@ struct MetalPreviewView: NSViewRepresentable {
 
             drawCount += 1
             let now = ContinuousClock.now
-            let sinceLastMs = (now - lastDrawTimestamp).components.attoseconds / 1_000_000_000_000_000
+            let sinceLast = now - lastDrawTimestamp
+            let sinceLastMs = Int((Double(sinceLast.components.seconds)
+                + Double(sinceLast.components.attoseconds) / 1e18) * 1000)
             lastDrawTimestamp = now
             if drawCount % 10 == 0 {
                 metalPreviewLog.info("⏱ Draw #\(self.drawCount) — \(sinceLastMs)ms since last")
