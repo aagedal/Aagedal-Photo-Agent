@@ -25,6 +25,25 @@ struct XMPSidecarService: Sendable {
         static let bom = "\u{FEFF}"
     }
 
+    /// Foundation's NSXML is a thin wrapper over libxml2, which is NOT thread-safe: two
+    /// `XMLDocument` parse/serialize operations running on different threads race on libxml2's
+    /// process-global state (error handler + allocator hooks) and crash with EXC_BAD_ACCESS deep
+    /// inside `xmlString` (often surfacing as an `objc_autoreleasePoolPop` over-release). The
+    /// develop editor builds + serializes a sidecar on the main actor while thumbnail-orientation
+    /// reads (`sidecarOrientation`) and the RAW-metadata inspector parse on background tasks —
+    /// so EVERY NSXML critical section in the app must run under this single lock. These are the
+    /// only libxml2 consumers in the app (SwiftExif's embedded writes use libexif, not NSXML, and
+    /// don't run during sidecar-only editing). Recursive so a gated method that calls another
+    /// gated method can't self-deadlock. Hold it only around the in-memory NSXML work, never the
+    /// `.atomic` disk write.
+    nonisolated private static let xmlLock = NSRecursiveLock()
+
+    nonisolated private static func withXMLLock<T>(_ body: () throws -> T) rethrows -> T {
+        xmlLock.lock()
+        defer { xmlLock.unlock() }
+        return try body()
+    }
+
     nonisolated func sidecarURL(for imageURL: URL) -> URL {
         imageURL.deletingPathExtension().appendingPathExtension("xmp")
     }
@@ -55,8 +74,10 @@ struct XMPSidecarService: Sendable {
     /// form (how we and ACR write it) and the child-element form.
     nonisolated func sidecarOrientation(for imageURL: URL) -> Int? {
         guard let data = sidecarDataIfExists(for: imageURL) else { return nil }
-        // Keep the parsed NSXML tree's temporaries inside an explicit pool (see saveSidecar).
-        return autoreleasepool { () -> Int? in
+        // Runs off the main actor, so the NSXML parse must take the shared lock (libxml2 is not
+        // thread-safe and the editor builds/serializes concurrently — see `xmlLock`). The parsed
+        // tree's temporaries stay inside an explicit pool.
+        return Self.withXMLLock { autoreleasepool { () -> Int? in
             guard let document = try? XMLDocument(data: data, options: [.nodePreserveWhitespace]),
                   let description = (try? document.nodes(forXPath: "//*[local-name()='Description']"))?.first as? XMLElement
             else { return nil }
@@ -68,7 +89,21 @@ struct XMPSidecarService: Sendable {
             }
             let raw = value("Orientation", "tiff") ?? value("Orientation", "exif")
             return raw.flatMap { Int($0) }
-        }
+        } }
+    }
+
+    /// Pretty-prints the sidecar's raw XML for the metadata inspector. Reads the bytes off-main
+    /// (safe), then parses + re-serializes under the shared NSXML lock so it can't race the
+    /// editor's concurrent sidecar writes (libxml2 is not thread-safe — see `xmlLock`). Returns
+    /// nil when there's no sidecar; falls back to the raw UTF-8 bytes if the XML won't parse.
+    nonisolated func prettyPrintedSidecarXML(for imageURL: URL) -> String? {
+        guard let data = sidecarDataIfExists(for: imageURL) else { return nil }
+        return Self.withXMLLock { autoreleasepool { () -> String in
+            if let xmlDoc = try? XMLDocument(data: data, options: [.nodePrettyPrint]) {
+                return xmlDoc.xmlString(options: [.nodePrettyPrint])
+            }
+            return String(data: data, encoding: .utf8) ?? "Unable to read XMP sidecar"
+        } }
     }
 
     /// Parses already-read XMP bytes into IPTCMetadata. Cheap — call on the main
@@ -78,14 +113,15 @@ struct XMPSidecarService: Sendable {
     /// carries an angled crop (an angled crop without it stays in Adobe's
     /// corner convention, i.e. wrong — pass it whenever the image is known).
     func loadSidecar(fromData data: Data, imageAspect: () -> Double? = { nil }) -> IPTCMetadata? {
-        // Contain the parsed NSXML tree's autoreleased temporaries in an explicit pool — on the
-        // main actor they would otherwise drain at the job boundary (see saveSidecar). Only the
-        // value-type IPTCMetadata escapes.
-        autoreleasepool {
+        // Take the shared NSXML lock (libxml2 is not thread-safe; this may be reached off-main
+        // and the editor parses/serializes concurrently — see `xmlLock`). The parsed tree's
+        // autoreleased temporaries stay in an explicit pool; only the value-type IPTCMetadata
+        // escapes.
+        Self.withXMLLock { autoreleasepool {
             guard let document = parseXMLDocument(from: data) else { return nil }
             guard let description = findDescription(in: document) else { return nil }
             return parseMetadata(from: description, imageAspect: imageAspect)
-        }
+        } }
     }
 
     /// Removes all IPTC/descriptive metadata from the sidecar while preserving
@@ -121,12 +157,12 @@ struct XMPSidecarService: Sendable {
 
     func saveSidecar(metadata: IPTCMetadata, for imageURL: URL) throws {
         let url = sidecarURL(for: imageURL)
-        // Build + serialize the NSXML tree inside an explicit autoreleasepool. The write runs
-        // in a @MainActor Task whose autoreleased NSXML temporaries would otherwise drain at
-        // the main-queue job boundary (after the local document is gone), over-releasing nodes
-        // — a crash in `objc_autoreleasePoolPop`. Draining them synchronously here avoids it;
-        // only the value-type Data escapes the pool.
-        let data: Data = try autoreleasepool {
+        // Build + serialize the NSXML tree under the shared lock (libxml2 is not thread-safe and
+        // background readers — thumbnail orientation, the RAW inspector — parse concurrently; see
+        // `xmlLock`). The explicit autoreleasepool drains the NSXML temporaries synchronously
+        // before the lock is released; only the value-type Data escapes. The `.atomic` disk write
+        // stays outside the lock.
+        let data: Data = try Self.withXMLLock { try autoreleasepool {
             let document = try loadOrCreateDocument(at: url)
             let description = ensureDescription(in: document)
             ensureNamespaces(on: description)
@@ -136,7 +172,7 @@ struct XMPSidecarService: Sendable {
                 imageAspect: imageAspectIfCropAngled(for: imageURL, crop: metadata.cameraRaw?.crop)
             )
             return serializeXMP(document)
-        }
+        } }
         try data.write(to: url, options: .atomic)
     }
 
@@ -161,9 +197,10 @@ struct XMPSidecarService: Sendable {
 
     func saveCameraRawOnly(_ settings: CameraRawSettings?, orientation: Int?, for imageURL: URL) throws {
         let url = sidecarURL(for: imageURL)
-        // NSXML build+serialize stays inside an autoreleasepool — see saveSidecar for why.
+        // NSXML build+serialize runs under the shared lock inside an autoreleasepool — see
+        // saveSidecar for why.
         if let settings, !settings.isEmpty {
-            let data: Data = try autoreleasepool {
+            let data: Data = try Self.withXMLLock { try autoreleasepool {
                 let document = try loadOrCreateDocument(at: url)
                 let description = ensureDescription(in: document)
                 ensureNamespaces(on: description)
@@ -176,15 +213,15 @@ struct XMPSidecarService: Sendable {
                     setOrientation(on: description, value: orientation)
                 }
                 return serializeXMP(document)
-            }
+            } }
             try data.write(to: url, options: .atomic)
         } else if FileManager.default.fileExists(atPath: url.path) {
-            let data: Data = try autoreleasepool {
+            let data: Data = try Self.withXMLLock { try autoreleasepool {
                 let document = try loadOrCreateDocument(at: url)
                 let description = ensureDescription(in: document)
                 removeCameraRawSettings(from: description)
                 return serializeXMP(document)
-            }
+            } }
             try data.write(to: url, options: .atomic)
         }
     }

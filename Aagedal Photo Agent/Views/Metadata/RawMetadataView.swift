@@ -29,10 +29,6 @@ struct RawMetadataView: View {
     @State private var displayedText = ""
     @FocusState private var isSearchFocused: Bool
 
-    private var sidecarURL: URL {
-        imageURL.deletingPathExtension().appendingPathExtension("xmp")
-    }
-
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -209,24 +205,13 @@ struct RawMetadataView: View {
     }
 
     private func loadXMPSidecar() async {
-        let url = sidecarURL
+        let imageURL = self.imageURL
+        // Parse off-main through the service so the NSXML work runs under its shared lock —
+        // libxml2 is not thread-safe and the develop editor writes sidecars concurrently.
         let result: (exists: Bool, text: String) = await Task.detached(priority: .utility) {
-            guard FileManager.default.fileExists(atPath: url.path) else {
-                return (false, "")
-            }
-            do {
-                let data = try Data(contentsOf: url)
-                // Contain the parsed NSXML temporaries (see XMPSidecarService.saveSidecar).
-                let text: String = autoreleasepool {
-                    if let xmlDoc = try? XMLDocument(data: data, options: [.nodePrettyPrint]) {
-                        return xmlDoc.xmlString(options: [.nodePrettyPrint])
-                    }
-                    return String(data: data, encoding: .utf8) ?? "Unable to read XMP sidecar"
-                }
-                return (true, text)
-            } catch {
-                return (true, "Error reading XMP sidecar: \(error.localizedDescription)")
-            }
+            let service = XMPSidecarService()
+            guard service.sidecarExists(for: imageURL) else { return (false, "") }
+            return (true, service.prettyPrintedSidecarXML(for: imageURL) ?? "Unable to read XMP sidecar")
         }.value
         hasXMPSidecar = result.exists
         xmpText = result.text
