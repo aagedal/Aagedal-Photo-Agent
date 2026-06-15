@@ -369,13 +369,39 @@ nonisolated enum EditedImageRenderer {
             return sourceURL.deletingLastPathComponent()
         case .customSubfolder:
             let customName = UserDefaults.standard.string(forKey: UserDefaultsKeys.exportCustomSubfolderName) ?? "Exports"
-            let trimmed = customName.trimmingCharacters(in: .whitespacesAndNewlines)
-            return rootFolder.appendingPathComponent(trimmed.isEmpty ? "Exports" : trimmed, isDirectory: true)
+            return customSubfolder(in: rootFolder, name: customName)
         case .formatSubfolder:
             return rootFolder.appendingPathComponent(formatFolderName(prefix: formatPrefix, isHDR: isHDR), isDirectory: true)
         case .askOnSave:
             return askedFolder ?? rootFolder
         }
+    }
+
+    /// Resolves the `.customSubfolder` destination from a user-entered name, extracted
+    /// as a pure function so the path-containment guard is unit-testable.
+    ///
+    /// The Settings UI offers a single "Sub-folder Name" field, so the destination must
+    /// stay inside the source folder. A name is taken verbatim (nested names like
+    /// `Edited/2026` are honored) *unless* it resolves outside `rootFolder` — e.g.
+    /// `../..`, an absolute path, or a name that climbs out via `..`. Such names would
+    /// otherwise silently write exports over unrelated files outside the source folder,
+    /// so they fall back to a safe `Exports` sub-folder. An empty name also defaults to
+    /// `Exports`.
+    static func customSubfolder(in rootFolder: URL, name: String) -> URL {
+        let safeDefault = rootFolder.appendingPathComponent("Exports", isDirectory: true)
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return safeDefault }
+
+        // An absolute path escapes immediately; reject before it replaces rootFolder.
+        guard !trimmed.hasPrefix("/") else { return safeDefault }
+
+        // `standardizedFileURL` resolves `.`/`..` lexically (no disk access), so an
+        // escaping name collapses to a path outside rootFolder that the prefix check
+        // below catches.
+        let candidate = rootFolder.appendingPathComponent(trimmed, isDirectory: true).standardizedFileURL
+        let root = rootFolder.standardizedFileURL
+        guard candidate.path.hasPrefix(root.path + "/") else { return safeDefault }
+        return candidate
     }
 
     // MARK: - Output URL

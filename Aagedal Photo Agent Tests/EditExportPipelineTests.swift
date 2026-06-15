@@ -362,3 +362,53 @@ struct SidecarReconciliationTests {
         #expect(!SidecarReconciliation.descriptiveFieldsDiffer(a, b))
     }
 }
+
+@Suite("EditedImageRenderer.customSubfolder containment")
+struct CustomSubfolderTests {
+    private let root = URL(fileURLWithPath: "/Volumes/Photos/Shoot", isDirectory: true)
+
+    private func sub(_ name: String) -> URL {
+        EditedImageRenderer.customSubfolder(in: root, name: name)
+    }
+
+    @Test("a plain name nests directly under the source folder")
+    func plainName() {
+        #expect(sub("Edited").path == "/Volumes/Photos/Shoot/Edited")
+    }
+
+    @Test("surrounding whitespace is trimmed")
+    func trimsWhitespace() {
+        #expect(sub("  Edited  ").path == "/Volumes/Photos/Shoot/Edited")
+    }
+
+    @Test("a nested name stays inside the source folder")
+    func nestedName() {
+        #expect(sub("Edited/2026").path == "/Volumes/Photos/Shoot/Edited/2026")
+    }
+
+    @Test("an empty or whitespace-only name falls back to Exports")
+    func emptyFallsBack() {
+        #expect(sub("").path == "/Volumes/Photos/Shoot/Exports")
+        #expect(sub("   ").path == "/Volumes/Photos/Shoot/Exports")
+    }
+
+    @Test("a name that climbs out via .. falls back to Exports")
+    func parentTraversalBlocked() {
+        #expect(sub("../..").path == "/Volumes/Photos/Shoot/Exports")
+        #expect(sub("../../Photos").path == "/Volumes/Photos/Shoot/Exports")
+        #expect(sub("Edited/../../escape").path == "/Volumes/Photos/Shoot/Exports")
+    }
+
+    @Test("an absolute path falls back to Exports rather than replacing the root")
+    func absolutePathBlocked() {
+        #expect(sub("/etc").path == "/Volumes/Photos/Shoot/Exports")
+        #expect(sub("/Volumes/Other").path == "/Volumes/Photos/Shoot/Exports")
+    }
+
+    @Test("a name resolving to exactly the source folder falls back to Exports")
+    func selfReferenceBlocked() {
+        // "." resolves to rootFolder itself — exporting into the source folder could
+        // overwrite originals, so it must not be used as the destination.
+        #expect(sub(".").path == "/Volumes/Photos/Shoot/Exports")
+    }
+}
