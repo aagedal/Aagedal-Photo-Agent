@@ -24,6 +24,16 @@ struct FaceGroupDetailView: View {
         viewModel.sortedGroups.filter { $0.id != group.id }
     }
 
+    private var isUnmatched: Bool {
+        group.id == FaceRecognitionViewModel.unmatchedGroupID
+    }
+
+    /// Faces a per-face context-menu action should apply to: the whole selection when the
+    /// right-clicked face is part of it, otherwise just the clicked face.
+    private func menuTargets(_ faceID: UUID) -> Set<UUID> {
+        selectedFaceIDs.contains(faceID) ? selectedFaceIDs : [faceID]
+    }
+
     private var trimmedName: String {
         editingName.trimmingCharacters(in: .whitespaces)
     }
@@ -142,6 +152,13 @@ struct FaceGroupDetailView: View {
 
             // Icon action row
             HStack(spacing: 10) {
+                if isUnmatched {
+                    iconAction("square.split.2x2", help: "Add all unmatched faces to their own separate groups") {
+                        viewModel.splitAllUnmatchedIntoGroups()
+                        dismiss()
+                    }
+                }
+
                 if isExpanded {
                     iconAction("arrow.down.to.line", help: "Scroll to group") {
                         onScrollToGroup?(group.id)
@@ -258,9 +275,28 @@ struct FaceGroupDetailView: View {
 
                 Spacer()
 
-                iconAction("rectangle.badge.minus", help: "Remove from group", disabled: faceCount <= 1) {
-                    for faceID in selectedFaceIDs { viewModel.ungroupFace(faceID) }
+                // Move selection into a single new group.
+                iconAction("rectangle.badge.plus", help: "Move to new group", disabled: !isUnmatched && faceCount <= 1) {
+                    viewModel.createNewGroup(withFaces: selectedFaceIDs)
                     selectedFaceIDs.removeAll()
+                    dismiss()
+                }
+
+                // One new group per selected face.
+                if selectedFaceIDs.count > 1 {
+                    iconAction("square.split.2x2", help: "Add each face to its own new group") {
+                        viewModel.createSeparateGroups(forFaces: selectedFaceIDs)
+                        selectedFaceIDs.removeAll()
+                        dismiss()
+                    }
+                }
+
+                // "Remove from group" is meaningless for the synthetic unmatched pool.
+                if !isUnmatched {
+                    iconAction("rectangle.badge.minus", help: "Remove from group", disabled: faceCount <= 1) {
+                        for faceID in selectedFaceIDs { viewModel.ungroupFace(faceID) }
+                        selectedFaceIDs.removeAll()
+                    }
                 }
 
                 iconAction("trash", help: "Delete selected faces", role: .destructive) {
@@ -377,22 +413,40 @@ struct FaceGroupDetailView: View {
             }
         }
 
-        if canUngroup {
-            thumbnail
-                .contextMenu {
-                    Button("Remove from Group") {
-                        viewModel.ungroupFace(face.id)
-                        selectedFaceIDs.remove(face.id)
-                    }
-                    Divider()
-                    Button("Delete Face", role: .destructive) {
-                        selectedFaceIDs.remove(face.id)
-                        viewModel.deleteFaces([face.id])
+        thumbnail
+            .contextMenu {
+                let targets = menuTargets(face.id)
+                let plural = targets.count > 1
+
+                if isUnmatched || canUngroup {
+                    Button(plural ? "Move \(targets.count) to New Group" : "Move to New Group") {
+                        viewModel.createNewGroup(withFaces: targets)
+                        selectedFaceIDs.subtract(targets)
+                        dismiss()
                     }
                 }
-        } else {
-            thumbnail
-        }
+
+                if plural {
+                    Button("Add \(targets.count) to Separate Groups") {
+                        viewModel.createSeparateGroups(forFaces: targets)
+                        selectedFaceIDs.subtract(targets)
+                        dismiss()
+                    }
+                }
+
+                if !isUnmatched && canUngroup {
+                    Button(plural ? "Remove \(targets.count) from Group" : "Remove from Group") {
+                        for faceID in targets { viewModel.ungroupFace(faceID) }
+                        selectedFaceIDs.subtract(targets)
+                    }
+                }
+
+                Divider()
+                Button(plural ? "Delete \(targets.count) Faces" : "Delete Face", role: .destructive) {
+                    selectedFaceIDs.subtract(targets)
+                    viewModel.deleteFaces(targets)
+                }
+            }
     }
 
     private func applyName() {

@@ -1288,6 +1288,55 @@ final class FaceRecognitionViewModel {
         return newSuggestions.count
     }
 
+    /// Run refinement and immediately merge every confident match into its named group,
+    /// in a single mutation + save. Returns the number of unnamed groups absorbed.
+    /// Refinement suggestions always pair a named group (group1) with an unnamed one
+    /// (group2), and each unnamed group appears at most once, so merges never conflict.
+    @discardableResult
+    func refineAndApplyMatches() -> Int {
+        guard var data = faceData else { return 0 }
+        guard data.groups.contains(where: { $0.name != nil }) else { return 0 }
+
+        let config = detectionConfig
+        let suggestions = detectionService.computeRefinementSuggestions(
+            groups: data.groups,
+            faces: data.faces,
+            threshold: config.clusteringThreshold
+        )
+        guard !suggestions.isEmpty else { return 0 }
+
+        let faceIdx = faceIndexMap(from: data)
+        let groupIdx = groupIndexMap(from: data)
+        var removedSourceIDs: Set<UUID> = []
+
+        for suggestion in suggestions {
+            // group2 (unnamed) folds into group1 (named).
+            guard let targetIndex = groupIdx[suggestion.group1ID],
+                  let sourceIndex = groupIdx[suggestion.group2ID],
+                  suggestion.group1ID != suggestion.group2ID,
+                  !removedSourceIDs.contains(suggestion.group2ID) else { continue }
+
+            let sourceFaceIDs = data.groups[sourceIndex].faceIDs
+            data.groups[targetIndex].faceIDs.append(contentsOf: sourceFaceIDs)
+            for faceID in sourceFaceIDs {
+                if let fi = faceIdx[faceID] { data.faces[fi].groupID = suggestion.group1ID }
+            }
+            removedSourceIDs.insert(suggestion.group2ID)
+        }
+
+        guard !removedSourceIDs.isEmpty else { return 0 }
+        data.groups.removeAll { removedSourceIDs.contains($0.id) }
+
+        faceData = data
+        mergeSuggestions.removeAll()
+        do {
+            try storageService.saveFaceData(data)
+        } catch {
+            errorMessage = "Failed to save face data: \(error.localizedDescription)"
+        }
+        return removedSourceIDs.count
+    }
+
     /// Whether refinement is available (at least one named group and one unnamed group)
     private(set) var canRefine: Bool = false
 
@@ -2199,6 +2248,63 @@ final class FaceRecognitionViewModel {
                 data.faces[fi].groupID = newGroup.id
             }
         }
+
+        faceData = data
+        do {
+            try storageService.saveFaceData(data)
+        } catch {
+            errorMessage = "Failed to save face data: \(error.localizedDescription)"
+        }
+    }
+
+    /// Place each given face into its own brand-new user-created group (one group per face).
+    /// Used by "Add to Separate Groups" — pulls faces out of the unmatched pool (or any group)
+    /// so each becomes an individual unnamed group rather than landing together.
+    func createSeparateGroups(forFaces faceIDs: Set<UUID>) {
+        guard var data = faceData, !faceIDs.isEmpty else { return }
+
+        // Detach from current groups, cleaning up empties/representatives.
+        removeFacesFromGroups(faceIDs, in: &data)
+
+        // faceIndexMap is stable across group appends, and removeFacesFromGroups
+        // doesn't reorder the faces array, so this lookup stays valid below.
+        let faceIdx = faceIndexMap(from: data)
+        for faceID in faceIDs {
+            guard let fi = faceIdx[faceID] else { continue }
+            let newGroup = FaceGroup(
+                id: UUID(),
+                name: nil,
+                representativeFaceID: faceID,
+                faceIDs: [faceID],
+                userCreated: true
+            )
+            data.groups.append(newGroup)
+            data.faces[fi].groupID = newGroup.id
+        }
+
+        faceData = data
+        do {
+            try storageService.saveFaceData(data)
+        } catch {
+            errorMessage = "Failed to save face data: \(error.localizedDescription)"
+        }
+    }
+
+    /// Promote every unmatched (auto-generated singleton) face into its own user-created
+    /// group, emptying the synthetic "Unmatched Faces" pool. Singletons are already solo
+    /// groups, so this just flips `userCreated` so they leave the pool.
+    func splitAllUnmatchedIntoGroups() {
+        guard var data = faceData else { return }
+
+        var changed = false
+        for i in data.groups.indices
+        where data.groups[i].name == nil
+            && data.groups[i].userCreated != true
+            && data.groups[i].faceIDs.count == 1 {
+            data.groups[i].userCreated = true
+            changed = true
+        }
+        guard changed else { return }
 
         faceData = data
         do {

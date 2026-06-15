@@ -714,11 +714,21 @@ final class FaceGroupCardView: NSView {
         }
 
         // Move to New Group
+        let targetCount = menuTargetFaceIDs(clicked: faceID).count
         if let group = currentGroup, group.faceIDs.count > 1 || isUnmatched {
-            let moveItem = NSMenuItem(title: "Move to New Group", action: #selector(faceMenuMoveToNewGroup(_:)), keyEquivalent: "")
+            let title = targetCount > 1 ? "Move \(targetCount) to New Group" : "Move to New Group"
+            let moveItem = NSMenuItem(title: title, action: #selector(faceMenuMoveToNewGroup(_:)), keyEquivalent: "")
             moveItem.representedObject = faceID
             moveItem.target = self
             menu.addItem(moveItem)
+        }
+
+        // Add each selected face to its own separate new group
+        if targetCount > 1 {
+            let separateItem = NSMenuItem(title: "Add \(targetCount) to Separate Groups", action: #selector(faceMenuSeparateGroups(_:)), keyEquivalent: "")
+            separateItem.representedObject = faceID
+            separateItem.target = self
+            menu.addItem(separateItem)
         }
 
         // Ungroup (move to Unmatched Faces)
@@ -753,6 +763,11 @@ final class FaceGroupCardView: NSView {
     @objc private func faceMenuMoveToNewGroup(_ sender: NSMenuItem) {
         guard let faceID = sender.representedObject as? UUID else { return }
         viewModel?.createNewGroup(withFaces: menuTargetFaceIDs(clicked: faceID))
+    }
+
+    @objc private func faceMenuSeparateGroups(_ sender: NSMenuItem) {
+        guard let faceID = sender.representedObject as? UUID else { return }
+        viewModel?.createSeparateGroups(forFaces: menuTargetFaceIDs(clicked: faceID))
     }
 
     /// Faces a context-menu action should apply to: the whole selection when the
@@ -838,6 +853,18 @@ final class FaceGroupCardView: NSView {
         let menu = NSMenu()
         guard let group = currentGroup else { return menu }
 
+        // The synthetic "Unmatched Faces" pool isn't a real group — rename/merge/delete
+        // don't apply. Offer the bulk split instead.
+        if group.id == FaceRecognitionViewModel.unmatchedGroupID {
+            let splitAllItem = NSMenuItem(title: "Add All Faces to Separate Groups", action: #selector(menuSplitAllUnmatched), keyEquivalent: "")
+            splitAllItem.target = self
+            if (viewModel?.faces(in: group).count ?? 0) == 0 {
+                splitAllItem.isEnabled = false
+            }
+            menu.addItem(splitAllItem)
+            return menu
+        }
+
         let renameItem = NSMenuItem(title: "Rename", action: #selector(menuRename), keyEquivalent: "")
         renameItem.target = self
         menu.addItem(renameItem)
@@ -874,6 +901,10 @@ final class FaceGroupCardView: NSView {
 
     @objc private func menuRename() {
         startEditing()
+    }
+
+    @objc private func menuSplitAllUnmatched() {
+        viewModel?.splitAllUnmatchedIntoGroups()
     }
 
     @objc private func menuApplyName() {

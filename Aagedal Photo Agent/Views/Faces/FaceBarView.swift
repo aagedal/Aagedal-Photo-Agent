@@ -19,6 +19,11 @@ struct FaceBarView: View {
     @State private var refinementCount = 0
     @State private var highlightedGroupID: UUID?
     @State private var isDraggingOverBar: Bool = false
+    /// Set once Refine has been run this session with no further matches to apply, so the
+    /// button settles into its "done" green checkmark. Reset when groups are (re)named or a
+    /// new scan finishes, since that can make fresh matches available again.
+    @State private var didRefine = false
+    @State private var isHoveringDone = false
 
     /// Height of the face bar
     private let barHeight: CGFloat = 100
@@ -185,6 +190,12 @@ struct FaceBarView: View {
         .padding(.vertical, 4)
         .frame(height: barHeight)
         .background(.bar)
+        // Naming a group can unlock fresh refinements; offer Refine again.
+        .onChange(of: namedGroups.count) { _, _ in didRefine = false }
+        // A new scan reshuffles groups — start fresh.
+        .onChange(of: viewModel.isScanning) { _, scanning in
+            if scanning { didRefine = false }
+        }
     }
 
     // MARK: - Face Group Thumbnail with Actions
@@ -244,101 +255,146 @@ struct FaceBarView: View {
     private var scanButton: some View {
         Group {
             if viewModel.isScanning {
-                // Scanning in progress — click to cancel
-                Button {
-                    viewModel.cancelScan()
-                } label: {
-                    VStack(spacing: 2) {
-                        Image(systemName: "stop.circle.fill")
-                            .font(.system(size: 20))
-                            .foregroundStyle(.red)
-                        Text(viewModel.scanProgress)
-                            .font(.system(size: 9))
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(width: 56, height: 56)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("Click to cancel face scan")
-            } else if viewModel.scanComplete && viewModel.canRefine {
-                // Scan done + has both named & unnamed → Refine button
-                Button {
-                    refinementCount = viewModel.refineWithNamedGroups()
-                    if refinementCount > 0 {
-                        Task {
-                            try? await Task.sleep(for: .seconds(5))
-                            await MainActor.run {
-                                refinementCount = 0
-                            }
-                        }
-                    }
-                } label: {
-                    ZStack(alignment: .topTrailing) {
-                        VStack(spacing: 2) {
-                            Image(systemName: "arrow.triangle.2.circlepath")
-                                .font(.system(size: 20))
-                                .foregroundStyle(.blue)
-                            Text("Refine")
-                                .font(.system(size: 10))
-                        }
-                        .frame(width: 56, height: 56)
-
-                        if refinementCount > 0 {
-                            Text("\(refinementCount)")
-                                .font(.system(size: 9, weight: .bold))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 2)
-                                .background(Color.blue)
-                                .clipShape(Capsule())
-                                .offset(x: 4, y: -2)
-                        }
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("Find matches for unnamed groups using named groups as reference")
-                .contextMenu {
-                    Button("Rescan Folder (Force Full)") {
-                        guard let folderURL else { return }
-                        viewModel.scanFolder(imageURLs: imageURLs, folderURL: folderURL, forceFullScan: true)
-                    }
-                    Button("Delete Face Data", role: .destructive) {
-                        guard let folderURL else { return }
-                        viewModel.deleteFaceData(for: folderURL)
-                    }
-                }
+                scanningButton
+            } else if !viewModel.scanComplete {
+                scanCameraButton
+            } else if viewModel.canRefine && !didRefine {
+                refineButton
             } else {
-                // Not scanned yet, or scan done with all groups named/unnamed → Scan button
-                Button {
-                    guard let folderURL else { return }
-                    let forceFullScan = NSEvent.modifierFlags.contains(.option)
-                    viewModel.scanFolder(imageURLs: imageURLs, folderURL: folderURL, forceFullScan: forceFullScan)
-                } label: {
-                    VStack(spacing: 2) {
-                        Image(systemName: viewModel.scanComplete ? "checkmark.circle.fill" : "camera.viewfinder")
-                            .font(.system(size: 20))
-                            .foregroundStyle(viewModel.scanComplete ? .green : .primary)
-                        Text("Scan")
-                            .font(.system(size: 10))
-                    }
-                    .frame(width: 56, height: 56)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("Click to scan new images. Option+click to force full rescan.")
-                .contextMenu {
-                    Button("Rescan Folder (Force Full)") {
-                        guard let folderURL else { return }
-                        viewModel.scanFolder(imageURLs: imageURLs, folderURL: folderURL, forceFullScan: true)
-                    }
-                    Button("Delete Face Data", role: .destructive) {
-                        guard let folderURL else { return }
-                        viewModel.deleteFaceData(for: folderURL)
-                    }
+                doneButton
+            }
+        }
+    }
+
+    /// Scanning in progress — click to cancel.
+    private var scanningButton: some View {
+        Button {
+            viewModel.cancelScan()
+        } label: {
+            VStack(spacing: 2) {
+                Image(systemName: "stop.circle.fill")
+                    .font(.system(size: 20))
+                    .foregroundStyle(.red)
+                Text(viewModel.scanProgress)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(width: 56, height: 56)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Click to cancel face scan")
+    }
+
+    /// Not scanned yet → camera scan button.
+    private var scanCameraButton: some View {
+        Button {
+            guard let folderURL else { return }
+            let forceFullScan = NSEvent.modifierFlags.contains(.option)
+            viewModel.scanFolder(imageURLs: imageURLs, folderURL: folderURL, forceFullScan: forceFullScan)
+        } label: {
+            VStack(spacing: 2) {
+                Image(systemName: "camera.viewfinder")
+                    .font(.system(size: 20))
+                Text("Scan")
+                    .font(.system(size: 10))
+            }
+            .frame(width: 56, height: 56)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Click to scan new images. Option+click to force full rescan.")
+        .contextMenu { rescanMenuItems }
+    }
+
+    /// Scan done with both named & unnamed groups → Refine. Auto-merges confident matches,
+    /// shows how many were absorbed, then settles into the green checkmark "done" state.
+    private var refineButton: some View {
+        Button {
+            let applied = viewModel.refineAndApplyMatches()
+            refinementCount = applied
+            didRefine = true
+            if applied > 0 {
+                Task {
+                    try? await Task.sleep(for: .seconds(5))
+                    await MainActor.run { refinementCount = 0 }
                 }
             }
+        } label: {
+            ZStack(alignment: .topTrailing) {
+                VStack(spacing: 2) {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.system(size: 20))
+                        .foregroundStyle(.blue)
+                    Text("Refine")
+                        .font(.system(size: 10))
+                }
+                .frame(width: 56, height: 56)
+
+                if refinementCount > 0 {
+                    Text("\(refinementCount)")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(Color.blue)
+                        .clipShape(Capsule())
+                        .offset(x: 4, y: -2)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Auto-merge unnamed groups into matching named groups")
+        .contextMenu { rescanMenuItems }
+    }
+
+    /// Refine complete (or nothing to refine) → green checkmark. Hover reveals a Rescan
+    /// affordance; clicking scans for new images (Option-click forces a full rescan).
+    private var doneButton: some View {
+        Button {
+            guard let folderURL else { return }
+            let forceFullScan = NSEvent.modifierFlags.contains(.option)
+            viewModel.scanFolder(imageURLs: imageURLs, folderURL: folderURL, forceFullScan: forceFullScan)
+        } label: {
+            ZStack {
+                if refinementCount > 0 {
+                    Text("+\(refinementCount)")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(Color.green)
+                        .clipShape(Capsule())
+                        .offset(x: 16, y: -16)
+                }
+                VStack(spacing: 2) {
+                    Image(systemName: isHoveringDone ? "arrow.clockwise.circle" : "checkmark.circle.fill")
+                        .font(.system(size: 20))
+                        .foregroundStyle(isHoveringDone ? Color.accentColor : .green)
+                    Text(isHoveringDone ? "Rescan" : "Done")
+                        .font(.system(size: 10))
+                        .foregroundStyle(isHoveringDone ? Color.accentColor : .secondary)
+                }
+                .frame(width: 56, height: 56)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHoveringDone = $0 }
+        .help("Scan for new images. Option+click to force a full rescan.")
+        .contextMenu { rescanMenuItems }
+    }
+
+    @ViewBuilder
+    private var rescanMenuItems: some View {
+        Button("Rescan Folder (Force Full)") {
+            guard let folderURL else { return }
+            viewModel.scanFolder(imageURLs: imageURLs, folderURL: folderURL, forceFullScan: true)
+        }
+        Button("Delete Face Data", role: .destructive) {
+            guard let folderURL else { return }
+            viewModel.deleteFaceData(for: folderURL)
         }
     }
 
