@@ -134,6 +134,11 @@ final class BrowserViewModel {
     let metadataReadService = SwiftExifReadService()
     @ObservationIgnored private(set) var writeEngine: any MetadataWriteEngine = SwiftExifWriteEngine()
     @ObservationIgnored let fullScreenImageCache = FullScreenImageCache()
+    /// Content token (size+mtime) the thumbnail caches were last populated under, per
+    /// URL, surviving folder navigation. Lets `loadFolder` drop a stale thumbnail when a
+    /// file was replaced at a path it previously occupied (delete + re-export) while the
+    /// folder was inactive — the URL-keyed caches alone can't tell the file changed.
+    @ObservationIgnored private var thumbnailContentTokens: [URL: String] = [:]
     private let sidecarService = MetadataSidecarService()
     private let xmpSidecarService = XMPSidecarService()
 
@@ -517,6 +522,7 @@ final class BrowserViewModel {
                 // Phase 1: Scan folder and show grid immediately
                 let files = try await fileSystemService.scanFolder(at: url, includeAllFiles: showAllFiles)
                 guard !Task.isCancelled, self.currentFolderURL == url else { return }
+                self.reconcileThumbnailCaches(against: files)
                 self.images = files
                 self.rebuildNow()
                 self.isLoading = false
@@ -582,6 +588,27 @@ final class BrowserViewModel {
                 self.errorMessage = error.localizedDescription
                 self.isLoading = false
             }
+        }
+    }
+
+    /// Stable identity of a file's bytes, from the scan's size+mtime (no extra I/O).
+    /// Note: an in-browser develop edit doesn't touch the file, so its token is
+    /// unchanged and its edited thumbnail survives navigation; a re-export changes it.
+    nonisolated private static func thumbnailContentToken(for file: ImageFile) -> String {
+        "\(file.fileSize)|\(file.dateModified.timeIntervalSinceReferenceDate)"
+    }
+
+    /// Drop URL-keyed thumbnail caches for files whose bytes changed since we last
+    /// cached them (e.g. a render deleted and re-exported to the same path while this
+    /// folder was inactive). Unchanged files keep their cache. Tokens persist across
+    /// navigation, so this catches changes the in-place auto-refresh diff never saw.
+    private func reconcileThumbnailCaches(against files: [ImageFile]) {
+        for file in files {
+            let token = Self.thumbnailContentToken(for: file)
+            if let previous = thumbnailContentTokens[file.url], previous != token {
+                thumbnailService.invalidateThumbnail(for: file.url)
+            }
+            thumbnailContentTokens[file.url] = token
         }
     }
 
