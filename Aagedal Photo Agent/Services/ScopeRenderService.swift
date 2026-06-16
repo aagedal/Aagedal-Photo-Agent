@@ -170,7 +170,8 @@ nonisolated struct ScopeRenderService: Sendable {
                     let sdrFraction = WaveformScale.nitsFraction(WaveformScale.sdrWhiteNits)
                     let sdrLevel = Int(Float(levels - 1) * sdrFraction)
                     if level > sdrLevel {
-                        let hdrBlend: Float = 0.4
+                        // Light warm hint only — keep the trace bright so it stays readable
+                        let hdrBlend: Float = 0.18
                         finalR = finalR * (1 - hdrBlend) + 1.0 * hdrBlend
                         finalG = finalG * (1 - hdrBlend) + 0.7 * hdrBlend
                         finalB = finalB * (1 - hdrBlend) + 0.2 * hdrBlend
@@ -1068,12 +1069,13 @@ nonisolated struct ScopeRenderService: Sendable {
             ctx.addLine(to: CGPoint(x: CGFloat(width), y: sdrY))
             ctx.strokePath()
 
-            // HDR region tint overlay (subtle warm tint above SDR)
+            // HDR region marker: a very faint warm wash above the SDR line so the
+            // band stays identifiable without washing out the (already orange-hinted) trace.
             if hasHDR {
                 let topY = vm + dataHeight
                 let hdrRegionHeight = topY - sdrY
                 if hdrRegionHeight > 0 {
-                    ctx.setFillColor(red: 0.15, green: 0.12, blue: 0.08, alpha: 1.0)
+                    ctx.setFillColor(red: 0.03, green: 0.022, blue: 0.012, alpha: 1.0)
                     ctx.fill(CGRect(x: CGFloat(dataXOffset), y: sdrY, width: CGFloat(width - dataXOffset), height: hdrRegionHeight))
                 }
             }
