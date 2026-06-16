@@ -3,6 +3,9 @@ import SwiftUI
 struct TechnicalMetadataView: View {
     let metadata: TechnicalMetadata?
     let fileSize: Int64
+    /// Current EXIF orientation of the selected image, used to display oriented
+    /// (rather than stored) resolution. Defaults to 1 (no swap).
+    var orientation: Int = 1
     var croppedResolution: String?
 
     var body: some View {
@@ -50,7 +53,7 @@ struct TechnicalMetadataView: View {
                 if let ct = m.cameraTemperature {
                     row("Camera Temp.", "\(ct) °C")
                 }
-                if let res = m.resolution {
+                if let res = m.resolution(orientation: orientation) {
                     row("Resolution", res)
                 }
                 if let cropped = croppedResolution {

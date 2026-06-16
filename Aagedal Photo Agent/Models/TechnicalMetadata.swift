@@ -57,9 +57,17 @@ struct TechnicalMetadata {
     var c2paAuthor: String?
     var c2paEdited: Bool
 
-    var resolution: String? {
+    /// Displayed resolution, swapping width/height for transposed EXIF
+    /// orientations (5–8) so a 90°-rotated 3840×2160 reads 2160×3840. Matches
+    /// Photo Mechanic, which reports oriented (not stored) dimensions: an
+    /// orientation-only rotate (⌘R) flips the EXIF tag without transposing the
+    /// stored pixel buffer, so the swap must happen at display time.
+    func resolution(orientation: Int) -> String? {
         guard let w = imageWidth, let h = imageHeight else { return nil }
-        return "\(w) x \(h)"
+        switch orientation {
+        case 5, 6, 7, 8: return "\(h) x \(w)"
+        default: return "\(w) x \(h)"
+        }
     }
 
     /// Check whether a metadata dict contains C2PA data.

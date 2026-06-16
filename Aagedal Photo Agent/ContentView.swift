@@ -1045,6 +1045,7 @@ struct ContentView: View {
                     TechnicalMetadataView(
                         metadata: technicalMetadata,
                         fileSize: selectedImage.fileSize,
+                        orientation: selectedImage.exifOrientation,
                         croppedResolution: croppedResolutionString(
                             metadata: technicalMetadata,
                             orientation: selectedImage.exifOrientation
