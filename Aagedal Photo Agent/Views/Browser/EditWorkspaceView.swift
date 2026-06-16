@@ -2131,7 +2131,10 @@ struct EditWorkspaceView: View {
             get: { Double(metadataViewModel.editingMetadata.cameraRaw?[keyPath: keyPath] ?? 0) },
             set: { newValue in
                 updateCameraRaw { cameraRaw in
-                    cameraRaw[keyPath: keyPath] = Int(newValue.rounded())
+                    // Neutral (0) means "no adjustment" — store nil, not 0, so resetting a
+                    // slider to centre doesn't read as an edit (and light the edit badge).
+                    let rounded = Int(newValue.rounded())
+                    cameraRaw[keyPath: keyPath] = rounded == 0 ? nil : rounded
                 }
             }
         )
@@ -2153,7 +2156,10 @@ struct EditWorkspaceView: View {
             get: { metadataViewModel.editingMetadata.cameraRaw?.exposure2012 ?? 0.0 },
             set: { newValue in
                 updateCameraRaw { cameraRaw in
-                    cameraRaw.exposure2012 = (newValue * 100).rounded() / 100
+                    // Neutral (0) means "no adjustment" — store nil so a reset-to-centre
+                    // exposure doesn't read as an edit (and light the edit badge).
+                    let rounded = (newValue * 100).rounded() / 100
+                    cameraRaw.exposure2012 = rounded == 0 ? nil : rounded
                 }
             }
         )
