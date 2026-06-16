@@ -68,6 +68,11 @@ struct EditWorkspaceView: View {
     @State private var previewPaneFrame: CGRect = .zero
     @State private var isHoveringHDR = false
     @State private var asShotWhiteBalance: (temperature: Float, tint: Float)?
+    /// White-balance eyedropper mode: when on, the preview shows a crosshair and a
+    /// click (or drag-rectangle) sets the WB from the sampled area.
+    @State private var isPickingWhiteBalance = false
+    /// Live marquee rectangle (preview-pane coordinates) drawn while dragging a WB sample.
+    @State private var wbPickDragRect: CGRect?
     @FocusState private var isWorkspaceFocused: Bool
 
     private static let previewBackground = Color(red: 0.15, green: 0.15, blue: 0.15)
@@ -575,6 +580,34 @@ struct EditWorkspaceView: View {
                                         }
                                     )
                                 }
+
+                                // White-balance eyedropper over the crop-framed preview.
+                                if isPickingWhiteBalance, !isShowingBefore {
+                                    let cropVpOrigin = SIMD2<Float>(
+                                        Float(-imageRect.minX / imageRect.width),
+                                        Float(-imageRect.minY / imageRect.height)
+                                    )
+                                    let cropVpSize = SIMD2<Float>(
+                                        Float(geometry.size.width / imageRect.width),
+                                        Float(geometry.size.height / imageRect.height)
+                                    )
+                                    WhiteBalancePickOverlay(
+                                        marquee: $wbPickDragRect,
+                                        probe: { rect in
+                                            probeLinearRGB(
+                                                forPaneRect: rect, paneSize: geometry.size,
+                                                viewportOrigin: cropVpOrigin, viewportSize: cropVpSize
+                                            )
+                                        },
+                                        onPick: { rect in
+                                            performWhiteBalancePick(
+                                                inPaneRect: rect, paneSize: geometry.size,
+                                                viewportOrigin: cropVpOrigin, viewportSize: cropVpSize
+                                            )
+                                        }
+                                    )
+                                    .frame(width: geometry.size.width, height: geometry.size.height)
+                                }
                             }
                             .frame(width: geometry.size.width, height: geometry.size.height)
                             .scaleEffect(editZoomScale)
@@ -637,6 +670,27 @@ struct EditWorkspaceView: View {
                                         commitEditAdjustments()
                                     }
                                 )
+                            }
+
+                            // White-balance eyedropper: click a neutral grey or drag a
+                            // rectangle to average an area, then solve for temperature/tint.
+                            if isPickingWhiteBalance, !isShowingBefore {
+                                WhiteBalancePickOverlay(
+                                    marquee: $wbPickDragRect,
+                                    probe: { rect in
+                                        probeLinearRGB(
+                                            forPaneRect: rect, paneSize: geometry.size,
+                                            viewportOrigin: vpOrigin, viewportSize: vpSize
+                                        )
+                                    },
+                                    onPick: { rect in
+                                        performWhiteBalancePick(
+                                            inPaneRect: rect, paneSize: geometry.size,
+                                            viewportOrigin: vpOrigin, viewportSize: vpSize
+                                        )
+                                    }
+                                )
+                                .frame(width: geometry.size.width, height: geometry.size.height)
                             }
                         }
                         .frame(width: geometry.size.width, height: geometry.size.height)
@@ -1151,6 +1205,8 @@ struct EditWorkspaceView: View {
         sourceImage = nil
         sourceCIImage = nil
         asShotWhiteBalance = nil
+        isPickingWhiteBalance = false
+        wbPickDragRect = nil
         metalPipeline?.asShotTemperature = 6500
         metalPipeline?.asShotTint = 0
         previewCIImage = nil
@@ -2455,7 +2511,7 @@ struct EditWorkspaceView: View {
     @ViewBuilder
     private var globalAdjustmentSliders: some View {
         // ── Color ──
-        sectionHeader("Color", isMuted: $isMutingColor, hasAdjustments: hasColorAdjustments, onReset: resetColorAdjustments)
+        colorSectionHeader
         Divider()
 
         if usesIncrementalWhiteBalance {
@@ -2630,6 +2686,154 @@ struct EditWorkspaceView: View {
                 .help("Reset \(title.lowercased())")
             }
         }
+    }
+
+    /// Color section header — like `sectionHeader("Color", …)` but with the white-balance
+    /// eyedropper toggle next to the title (Camera Raw places the WB tool atop the panel).
+    private var colorSectionHeader: some View {
+        HStack(spacing: 6) {
+            Text("Color")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.secondary)
+                .onTapGesture(count: 2) {
+                    if hasColorAdjustments { resetColorAdjustments() }
+                }
+            Button {
+                toggleWhiteBalancePicker()
+            } label: {
+                Image(systemName: "eyedropper.halffull")
+                    .font(.system(size: 11))
+                    .foregroundStyle(isPickingWhiteBalance ? Color.accentColor : .secondary)
+            }
+            .buttonStyle(.plain)
+            .disabled(!canEditSingleImage || metalPipeline?.hasSourceTexture != true)
+            .help("Set white balance from the image — click a neutral grey, or drag to average an area")
+            Spacer()
+            Button {
+                isMutingColor.toggle()
+                renderPreview()
+            } label: {
+                Image(systemName: isMutingColor ? "eye.slash" : "eye")
+                    .font(.system(size: 11))
+                    .foregroundStyle(isMutingColor ? .orange : .secondary)
+            }
+            .buttonStyle(.plain)
+            .help(isMutingColor ? "Show color" : "Hide color")
+            Button {
+                resetColorAdjustments()
+            } label: {
+                Image(systemName: "arrow.counterclockwise")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .disabled(!hasColorAdjustments)
+            .help("Reset color")
+        }
+    }
+
+    private func toggleWhiteBalancePicker() {
+        isPickingWhiteBalance.toggle()
+        wbPickDragRect = nil
+        // Picking samples the full-frame preview; the crop tool reframes the layout, so
+        // close it first to keep the screen→image mapping the simple fitted viewport.
+        if isPickingWhiteBalance, showCropControls {
+            toggleCropControls()
+        }
+    }
+
+    /// Map a preview-pane rectangle to source pixels, average it, and solve for the WB
+    /// temperature/tint that neutralises that colour. Sampling + solve run off-main; the
+    /// resulting values are applied back on the main actor.
+    /// Map a preview-pane rectangle to a region of `sourceCIImage` (the pre-WB source the
+    /// shader samples). Pane → viewport UV (`uv = origin + norm·size`, matching the shader),
+    /// then UV (top-left origin) → CIImage extent (bottom-left origin) with a Y flip.
+    private func sourceRegion(
+        forPaneRect rect: CGRect, paneSize: CGSize,
+        viewportOrigin vpOrigin: SIMD2<Float>, viewportSize vpSize: SIMD2<Float>
+    ) -> CGRect? {
+        guard let source = sourceCIImage, paneSize.width > 0, paneSize.height > 0 else { return nil }
+        func uvX(_ x: CGFloat) -> Double { Double(vpOrigin.x) + Double(x / paneSize.width) * Double(vpSize.x) }
+        func uvY(_ y: CGFloat) -> Double { Double(vpOrigin.y) + Double(y / paneSize.height) * Double(vpSize.y) }
+        let uvMinX = min(max(uvX(rect.minX), 0), 1)
+        let uvMaxX = min(max(uvX(rect.maxX), 0), 1)
+        let uvMinY = min(max(uvY(rect.minY), 0), 1)   // top
+        let uvMaxY = min(max(uvY(rect.maxY), 0), 1)   // bottom
+        guard uvMaxX > uvMinX, uvMaxY > uvMinY else { return nil }
+        let extent = source.extent
+        return CGRect(
+            x: extent.minX + uvMinX * extent.width,
+            y: extent.minY + (1 - uvMaxY) * extent.height,
+            width: (uvMaxX - uvMinX) * extent.width,
+            height: (uvMaxY - uvMinY) * extent.height
+        )
+    }
+
+    /// Synchronous averaged-colour probe for the eyedropper's live readout (debug HUD).
+    /// Returns the same linear value that would be fed to the solver for this pane rect.
+    private func probeLinearRGB(
+        forPaneRect rect: CGRect, paneSize: CGSize,
+        viewportOrigin vpOrigin: SIMD2<Float>, viewportSize vpSize: SIMD2<Float>
+    ) -> SIMD3<Float>? {
+        guard let source = sourceCIImage,
+              let region = sourceRegion(forPaneRect: rect, paneSize: paneSize,
+                                        viewportOrigin: vpOrigin, viewportSize: vpSize) else { return nil }
+        return Self.averageLinearRGB(of: source, in: region)
+    }
+
+    private func performWhiteBalancePick(
+        inPaneRect rect: CGRect, paneSize: CGSize,
+        viewportOrigin vpOrigin: SIMD2<Float>, viewportSize vpSize: SIMD2<Float>
+    ) {
+        guard let source = sourceCIImage, let pipeline = metalPipeline, pipeline.hasSourceTexture,
+              let region = sourceRegion(forPaneRect: rect, paneSize: paneSize,
+                                        viewportOrigin: vpOrigin, viewportSize: vpSize) else { return }
+
+        Task {
+            let solved = await Task.detached(priority: .userInitiated) { () -> (temperature: Double, tint: Double)? in
+                guard let rgb = Self.averageLinearRGB(of: source, in: region) else { return nil }
+                return pipeline.solveWhiteBalance(forNeutralLinearRGB: rgb)
+            }.value
+            guard let solved else { return }
+            applyPickedWhiteBalance(temperatureKelvin: solved.temperature, tint: solved.tint)
+        }
+    }
+
+    private func applyPickedWhiteBalance(temperatureKelvin: Double, tint: Double) {
+        let clampedTint = min(max(tint, -150), 150)
+        updateCameraRaw { cameraRaw in
+            cameraRaw.whiteBalance = "Custom"
+            if usesIncrementalWhiteBalance {
+                // Invert the non-RAW slope: temp = 6500 + incr * (5000 / 150).
+                let incremental = (temperatureKelvin - 6500) * (150.0 / 5000.0)
+                let range = Self.nonRawIncrementalTempRange
+                cameraRaw.incrementalTemperature = Int(min(max(incremental, range.lowerBound), range.upperBound).rounded())
+                cameraRaw.incrementalTint = Int(clampedTint.rounded())
+            } else {
+                let clampedTemp = min(max(temperatureKelvin, Self.minKelvin), Self.maxKelvin)
+                cameraRaw.temperature = Int(clampedTemp.rounded())
+                cameraRaw.tint = Int(clampedTint.rounded())
+            }
+        }
+        commitEditAdjustments()
+    }
+
+    /// Average a region of a linear extended-sRGB CIImage to a single colour, returned in
+    /// the same working space the WB matrix operates in.
+    nonisolated private static func averageLinearRGB(of image: CIImage, in region: CGRect) -> SIMD3<Float>? {
+        let clipped = region.intersection(image.extent)
+        guard !clipped.isNull, clipped.width >= 1, clipped.height >= 1,
+              let filter = CIFilter(name: "CIAreaAverage") else { return nil }
+        filter.setValue(image, forKey: kCIInputImageKey)
+        filter.setValue(CIVector(cgRect: clipped), forKey: kCIInputExtentKey)
+        guard let output = filter.outputImage else { return nil }
+        var pixel = [Float](repeating: 0, count: 4)
+        CameraRawApproximation.ciContext.render(
+            output, toBitmap: &pixel, rowBytes: 16,
+            bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+            format: .RGBAf, colorSpace: CameraRawApproximation.workingColorSpace
+        )
+        return SIMD3<Float>(pixel[0], pixel[1], pixel[2])
     }
 
     private var exposureSectionHeader: some View {
@@ -3974,5 +4178,146 @@ private struct DisplayGamutObserver: View {
             .onAppear {
                 scopeViewModel.displayGamut = gamut
             }
+    }
+}
+
+/// Transparent gesture catcher for the white-balance eyedropper. A tap samples a small
+/// spot; a drag sweeps a marquee whose area is averaged. Reports the chosen rectangle in
+/// its own (preview-pane) coordinate space; the workspace maps that to source pixels.
+private struct WhiteBalancePickOverlay: View {
+    @Binding var marquee: CGRect?
+    /// Synchronous averaged-colour probe (linear) for the rect — drives the debug readout.
+    let probe: (CGRect) -> SIMD3<Float>?
+    let onPick: (CGRect) -> Void
+    @State private var start: CGPoint?
+    @State private var cursor: CGPoint?
+    @State private var readout: SIMD3<Float>?
+
+    /// Below this drag distance (points) a gesture counts as a spot tap.
+    private static let tapThreshold: CGFloat = 4
+    /// Spot-tap sample box (points) centred on the tap.
+    private static let spotSize: CGFloat = 9
+
+    private func rect(from a: CGPoint, to b: CGPoint) -> CGRect {
+        CGRect(x: min(a.x, b.x), y: min(a.y, b.y),
+               width: abs(b.x - a.x), height: abs(b.y - a.y))
+    }
+
+    private func spotRect(at p: CGPoint) -> CGRect {
+        CGRect(x: p.x - Self.spotSize / 2, y: p.y - Self.spotSize / 2,
+               width: Self.spotSize, height: Self.spotSize)
+    }
+
+    var body: some View {
+        Rectangle()
+            .fill(Color.white.opacity(0.001))   // effectively invisible, still hit-testable
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        if start == nil { start = value.startLocation }
+                        let r = rect(from: start ?? value.startLocation, to: value.location)
+                        marquee = r
+                        cursor = value.location
+                        let big = r.width > Self.spotSize || r.height > Self.spotSize
+                        readout = probe(big ? r : spotRect(at: value.location))
+                    }
+                    .onEnded { value in
+                        let s = start ?? value.startLocation
+                        let distance = hypot(value.location.x - s.x, value.location.y - s.y)
+                        onPick(distance > Self.tapThreshold ? rect(from: s, to: value.location)
+                                                            : spotRect(at: value.location))
+                        marquee = nil
+                        start = nil
+                    }
+            )
+            .onContinuousHover(coordinateSpace: .local) { phase in
+                switch phase {
+                case .active(let p):
+                    if marquee == nil {
+                        cursor = p
+                        readout = probe(spotRect(at: p))
+                    }
+                case .ended:
+                    if marquee == nil { cursor = nil; readout = nil }
+                }
+            }
+            .overlay {
+                if let m = marquee {
+                    Rectangle()
+                        .strokeBorder(Color.white, lineWidth: 1)
+                        .background(Color.white.opacity(0.08))
+                        .frame(width: m.width, height: m.height)
+                        .position(x: m.midX, y: m.midY)
+                        .allowsHitTesting(false)
+                }
+            }
+            .overlay(alignment: .topLeading) {
+                if let cursor, let readout {
+                    WhiteBalanceReadout(color: readout)
+                        .allowsHitTesting(false)
+                        .alignmentGuide(.leading) { _ in -(cursor.x + 16) }
+                        .alignmentGuide(.top) { _ in -(cursor.y + 16) }
+                }
+            }
+            // Crosshair cursor on top: a cursorUpdate tracking area re-asserts the cursor on
+            // every mouse-move, so the Metal view's own tracking area can't reset it to the
+            // arrow (a one-shot NSCursor.push does get overridden).
+            .overlay { CrosshairCursorView().allowsHitTesting(false) }
+    }
+}
+
+/// Debug HUD beside the eyedropper: the averaged linear-RGB sample fed to the solver, plus
+/// its R/G and B/G ratios (which reveal a colour cast at a glance) and a colour swatch.
+private struct WhiteBalanceReadout: View {
+    let color: SIMD3<Float>
+
+    private func clamp(_ v: Float) -> Double { Double(min(max(v, 0), 1)) }
+
+    var body: some View {
+        let g = max(color.y, 1e-6)
+        HStack(spacing: 6) {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(Color(.sRGBLinear, red: clamp(color.x), green: clamp(color.y), blue: clamp(color.z)))
+                .frame(width: 20, height: 20)
+                .overlay(RoundedRectangle(cornerRadius: 2).stroke(.white.opacity(0.5), lineWidth: 0.5))
+            VStack(alignment: .leading, spacing: 1) {
+                Text(String(format: "lin %.3f %.3f %.3f", color.x, color.y, color.z))
+                Text(String(format: "R/G %.2f   B/G %.2f", color.x / g, color.z / g))
+                    .foregroundStyle(.white.opacity(0.7))
+            }
+            .font(.system(size: 10, weight: .medium).monospaced())
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .background(.black.opacity(0.75), in: RoundedRectangle(cornerRadius: 4))
+        .foregroundStyle(.white)
+        .fixedSize()
+    }
+}
+
+/// Forces the crosshair cursor across its bounds via a `cursorUpdate` tracking area —
+/// robust against sibling AppKit views that manage their own cursor.
+private struct CrosshairCursorView: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { TrackingView() }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    private final class TrackingView: NSView {
+        private var area: NSTrackingArea?
+
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            if let area { removeTrackingArea(area) }
+            let area = NSTrackingArea(
+                rect: bounds,
+                options: [.activeInActiveApp, .mouseEnteredAndExited, .cursorUpdate, .inVisibleRect],
+                owner: self, userInfo: nil
+            )
+            addTrackingArea(area)
+            self.area = area
+        }
+
+        override func cursorUpdate(with event: NSEvent) { NSCursor.crosshair.set() }
+        override func mouseEntered(with event: NSEvent) { NSCursor.crosshair.set() }
     }
 }

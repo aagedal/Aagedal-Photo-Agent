@@ -906,6 +906,77 @@ final class MetalEditPipeline: @unchecked Sendable {
         return simd_float3x3(colR, colG, colB)
     }
 
+    /// White-balance eyedropper: solves for the (temperature, tint) that renders the
+    /// supplied linear extended-sRGB color neutral under the current as-shot reference.
+    /// `rgb` is the averaged source-pixel value the user clicked/dragged over (sampled
+    /// BEFORE the WB matrix, matching how Camera Raw's eyedropper works on the underlying
+    /// data, so the same patch always yields the same WB regardless of the current slider
+    /// position). Returns absolute Kelvin (clamped to the representable 2000–50000 K range)
+    /// and tint (−150…150), or nil for a degenerate (near-black) sample. Coarse-to-fine
+    /// grid over a log-temperature / linear-tint space minimizing post-transform chroma.
+    ///
+    /// Candidates are evaluated with `extractWBMatrix` — the SAME linearized 3×3 the live
+    /// pipeline applies in the shader — not by pushing the colour through CITemperatureAndTint
+    /// directly. CITemperatureAndTint is not a pure linear matrix, so the two diverge for
+    /// bright samples; matching the pipeline's matrix is what makes the solved WB actually
+    /// neutralise the displayed pixel (a single-colour render left a green cast on highlights).
+    nonisolated func solveWhiteBalance(forNeutralLinearRGB rgb: SIMD3<Float>) -> (temperature: Double, tint: Double)? {
+        guard max(rgb.x, max(rgb.y, rgb.z)) > 1e-5 else { return nil }
+        let sample = rgb
+
+        // Search floor sits ABOVE CITemperatureAndTint's 2000 K identity clamp: at that floor
+        // the matrix is rank-deficient and can map a mild-cast sample *exactly* to grey (chroma
+        // 0), beating any well-behaved interior matrix — so near-neutral picks railed to 2000 K.
+        // 2500 K stays clear of the degenerate edge while still covering real tungsten (~2800 K+);
+        // the final value is clamped to the representable range by the caller.
+        let logMin = log(2500.0), logMax = log(50000.0)
+        let logNeutral = log(6500.0)
+        let logSpan = log(50000.0) - log(2000.0)
+        // Regularization toward neutral. Among candidates that neutralize comparably, prefer the
+        // smallest correction (as ACR does) — this also stops a degenerate near-zero chroma from
+        // winning over a sane interior solution. λ is far below any real cast's chroma gradient,
+        // so genuine tungsten/shade corrections are unaffected.
+        let lambda: Float = 0.006
+
+        // Matrix-transformed chroma (0 when R == G == B) plus the neutral regularizer.
+        func cost(_ temp: Double, _ tint: Double) -> Float {
+            let o = extractWBMatrix(temperature: temp, tint: tint) * sample
+            let mean = (o.x + o.y + o.z) / 3
+            guard mean > 1e-6 else { return .greatestFiniteMagnitude }
+            let dr = o.x - o.y, db = o.z - o.y
+            let chroma = (dr * dr + db * db) / (mean * mean)
+            let dLogT = Float((log(temp) - logNeutral) / logSpan)
+            let nTint = Float(tint / 150)
+            return chroma + lambda * (dLogT * dLogT + nTint * nTint)
+        }
+
+        var bestTemp = 6500.0, bestTint = 0.0
+        var loLogT = logMin, hiLogT = logMax
+        var loTint = -150.0, hiTint = 150.0
+
+        // Decreasing grid resolution per pass: a coarse global sweep, then two refinements
+        // that zoom into a ±1-step window around the running best.
+        let passes: [(temp: Int, tint: Int)] = [(14, 14), (8, 8), (8, 8)]
+        for grid in passes {
+            var bestCost = Float.greatestFiniteMagnitude
+            for i in 0...grid.temp {
+                let temp = exp(loLogT + (hiLogT - loLogT) * Double(i) / Double(grid.temp))
+                for j in 0...grid.tint {
+                    let tint = loTint + (hiTint - loTint) * Double(j) / Double(grid.tint)
+                    let c = cost(temp, tint)
+                    if c < bestCost {
+                        bestCost = c; bestTemp = temp; bestTint = tint
+                    }
+                }
+            }
+            let tStep = (hiLogT - loLogT) / Double(grid.temp)
+            let nStep = (hiTint - loTint) / Double(grid.tint)
+            loLogT = max(logMin, log(bestTemp) - tStep); hiLogT = min(logMax, log(bestTemp) + tStep)
+            loTint = max(-150, bestTint - nStep); hiTint = min(150, bestTint + nStep)
+        }
+        return (bestTemp, bestTint)
+    }
+
     /// Pre-warms the CIContext by rendering a dummy CITemperatureAndTint filter.
     /// Core Image JIT-compiles its internal Metal kernels on first use, which takes ~5s.
     /// Call once from a background task after pipeline creation so the user doesn't hit
