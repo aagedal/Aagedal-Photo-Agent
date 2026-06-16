@@ -2082,7 +2082,10 @@ struct EditWorkspaceView: View {
         var cameraRaw = oldSettings ?? CameraRawSettings()
         update(&cameraRaw)
         cameraRaw.hasSettings = cameraRawHasEdits(cameraRaw) ? true : nil
-        let newSettings = cameraRawHasEdits(cameraRaw) ? cameraRaw : nil
+        // Keep the settings alive while the crop tool is active (crop.hasCrop) even if
+        // the crop is still a full-frame no-op — the overlay reads `crop.hasCrop` — but
+        // an identity crop must NOT set hasSettings above, or it lights the edit badge.
+        let newSettings = (cameraRawHasEdits(cameraRaw) || cameraRaw.crop?.hasCrop == true) ? cameraRaw : nil
         metadataViewModel.editingMetadata.cameraRaw = newSettings
         metadataViewModel.markChanged()
 
@@ -2107,7 +2110,7 @@ struct EditWorkspaceView: View {
             || cameraRaw.saturation != nil
             || cameraRaw.vibrance != nil
             || cameraRaw.toneCurve != nil
-            || (cameraRaw.crop?.isEmpty == false)
+            || (cameraRaw.crop?.isEffectiveCrop == true)
             || !(cameraRaw.localAdjustments?.isEmpty ?? true)
             || !(cameraRaw.hslAdjustments?.isEmpty ?? true)
     }
