@@ -1059,9 +1059,13 @@ struct ContentView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 .onReceive(NotificationCenter.default.publisher(for: .scopeSourceImageDidChange)) { notification in
-                    if let info = notification.userInfo, let image = info["cgImage"] {
-                        // Force cast is safe: internal notification always sends CGImage
-                        scopeViewModel.updateImage((image as! CGImage))
+                    // The internal notification always posts a CGImage; cast defensively
+                    // (a missing/wrong-type payload clears the scope instead of crashing).
+                    // CGImage is a CoreFoundation type, so `as?` isn't allowed — verify
+                    // the type id before the forced bridge.
+                    if let payload = notification.userInfo?["cgImage"],
+                       CFGetTypeID(payload as CFTypeRef) == CGImage.typeID {
+                        scopeViewModel.updateImage((payload as! CGImage))
                     } else {
                         scopeViewModel.updateImage(nil)
                     }

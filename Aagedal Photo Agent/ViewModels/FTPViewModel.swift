@@ -201,7 +201,8 @@ final class FTPViewModel {
         overallProgress = 0
 
         uploadTask?.cancel()
-        uploadTask = Task {
+        uploadTask = Task { [weak self] in
+            guard let self else { return }
             for url in urls {
                 guard !Task.isCancelled else { break }
                 do {
@@ -249,7 +250,8 @@ final class FTPViewModel {
         overallProgress = 0
 
         uploadTask?.cancel()
-        uploadTask = Task {
+        uploadTask = Task { [weak self] in
+            guard let self else { return }
             let tempDir = FileManager.default.temporaryDirectory
                 .appendingPathComponent("FTPRender_\(UUID().uuidString)")
             do {
