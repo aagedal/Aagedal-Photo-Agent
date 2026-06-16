@@ -49,6 +49,19 @@ nonisolated struct CameraRawCrop: Codable, Sendable, Equatable {
             && angle == nil
             && hasCrop == nil
     }
+
+    /// A crop the user can actually see — a non-full-frame rectangle or a straighten
+    /// angle. Merely opening the crop tool persists `hasCrop = true` with a full-frame
+    /// identity rect (top/left = 0, bottom/right = 1, angle = 0); that is a no-op and
+    /// must not light the crop badge, so `hasCrop` alone is not enough.
+    var isEffectiveCrop: Bool {
+        let epsilon = 0.0001
+        return abs(top ?? 0) > epsilon
+            || abs(left ?? 0) > epsilon
+            || abs((bottom ?? 1) - 1) > epsilon
+            || abs((right ?? 1) - 1) > epsilon
+            || abs(angle ?? 0) > epsilon
+    }
 }
 
 // MARK: - ACR XMP boundary conversion
@@ -459,6 +472,17 @@ nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
             && (toneCurve?.isEmpty ?? true)
             && (localAdjustments?.isEmpty ?? true)
             && (hslAdjustments?.isEmpty ?? true)
+    }
+
+    /// True when the settings contain at least one edit the user can see. Unlike
+    /// `isEmpty`, a full-frame identity crop (from merely opening the crop tool) does
+    /// not count. Use for edit-badge decisions only — not for write/merge gating.
+    var hasEffectiveEdits: Bool {
+        if isEmpty { return false }
+        var withoutCrop = self
+        withoutCrop.crop = nil
+        if !withoutCrop.isEmpty { return true }
+        return crop?.isEffectiveCrop ?? false
     }
 
     func merged(preferring override: CameraRawSettings) -> CameraRawSettings {

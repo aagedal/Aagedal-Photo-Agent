@@ -1927,8 +1927,8 @@ struct EditWorkspaceView: View {
         let oldSettings = browserViewModel.images[index].cameraRawSettings
         guard newSettings != oldSettings else { return }
         browserViewModel.images[index].cameraRawSettings = newSettings
-        browserViewModel.images[index].hasDevelopEdits = newSettings != nil && !newSettings!.isEmpty
-        browserViewModel.images[index].hasCropEdits = newSettings?.crop?.isEmpty == false
+        browserViewModel.images[index].hasDevelopEdits = newSettings?.hasEffectiveEdits == true
+        browserViewModel.images[index].hasCropEdits = newSettings?.crop?.isEffectiveCrop == true
         browserViewModel.thumbnailService.invalidateEditedThumbnail(for: url)
         // The full-screen cache's edited render was baked under the old settings.
         browserViewModel.fullScreenImageCache.invalidateEditedImage(for: url)
@@ -3393,7 +3393,7 @@ struct EditWorkspaceView: View {
             if let index = browserViewModel.urlToImageIndex[url] {
                 browserViewModel.images[index].cameraRawSettings = cameraRaw
                 browserViewModel.images[index].hasDevelopEdits = true
-                if includeCrop, cameraRaw.crop?.hasCrop == true {
+                if includeCrop, cameraRaw.crop?.isEffectiveCrop == true {
                     browserViewModel.images[index].hasCropEdits = true
                 }
                 browserViewModel.thumbnailService.invalidateEditedThumbnail(for: url)

@@ -987,12 +987,18 @@ final class BrowserViewModel {
     }
 
     private func hasDevelopEdits(in dict: [String: Any]) -> Bool {
+        // A crs block marked AlreadyApplied="True" is baked into the exported pixels
+        // (our own export, or ACR's rendered JPEG from RAW) — it documents history,
+        // not live develop edits, so it must not light up the edited badge.
+        if crsIsAlreadyApplied(in: dict) {
+            return false
+        }
         if parseBoolValue(dict[MetadataDictKey.crsHasSettings]) == true {
             return true
         }
-        if parseBoolValue(dict[MetadataDictKey.crsHasCrop]) == true {
-            return true
-        }
+        // Crop is handled by the identity-aware check below — a full-frame crop (or
+        // merely opening the crop tool, which persists crsHasCrop=True with a
+        // 0,0,1,1 rect) is a no-op and must not light the edited badge.
         let numericKeys: [String] = [
             MetadataDictKey.crsExposure2012,
             MetadataDictKey.crsContrast2012,
@@ -1004,24 +1010,23 @@ final class BrowserViewModel {
             MetadataDictKey.crsTint,
             MetadataDictKey.crsIncrementalTemperature,
             MetadataDictKey.crsIncrementalTint,
-            MetadataDictKey.crsCropTop,
-            MetadataDictKey.crsCropLeft,
-            MetadataDictKey.crsCropBottom,
-            MetadataDictKey.crsCropRight,
         ]
         for key in numericKeys {
             if let value = parseDoubleValue(dict[key]), abs(value) > 0.0001 {
                 return true
             }
         }
-        return false
+        return hasCropEdits(in: dict)
     }
 
     private func hasCropEdits(in dict: [String: Any]) -> Bool {
-        if parseBoolValue(dict[MetadataDictKey.crsHasCrop]) == true {
-            return true
+        // A crs block marked AlreadyApplied="True" is baked into the pixels, so its
+        // crop is history, not a live edit — don't badge it.
+        if crsIsAlreadyApplied(in: dict) {
+            return false
         }
-
+        // crsHasCrop alone is not enough: opening the crop tool persists it with a
+        // full-frame 0,0,1,1 rect. Only a non-identity rect or angle is a real crop.
         let top = parseDoubleValue(dict[MetadataDictKey.crsCropTop]) ?? 0
         let left = parseDoubleValue(dict[MetadataDictKey.crsCropLeft]) ?? 0
         let bottom = parseDoubleValue(dict[MetadataDictKey.crsCropBottom]) ?? 1
@@ -1623,7 +1628,7 @@ final class BrowserViewModel {
     }
 
     private func applySidecarCropState(to imageFile: inout ImageFile, cameraRaw: CameraRawSettings?) {
-        if let cameraRaw, let crop = cameraRaw.crop, !crop.isEmpty {
+        if let cameraRaw, let crop = cameraRaw.crop, crop.isEffectiveCrop {
             imageFile.hasCropEdits = true
             imageFile.hasDevelopEdits = true
             let displayCrop = crop.transformedForDisplay(orientation: imageFile.exifOrientation)
@@ -1637,7 +1642,7 @@ final class BrowserViewModel {
         } else {
             imageFile.hasCropEdits = false
             imageFile.cropRegion = nil
-            if let cameraRaw, !cameraRaw.isEmpty {
+            if let cameraRaw, cameraRaw.hasEffectiveEdits {
                 imageFile.hasDevelopEdits = true
             }
         }
