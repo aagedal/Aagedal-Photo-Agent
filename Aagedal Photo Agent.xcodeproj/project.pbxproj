@@ -508,7 +508,7 @@
 				CODE_SIGN_ENTITLEMENTS = "Aagedal Photo Agent/Aagedal Photo Agent.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 293;
+				CURRENT_PROJECT_VERSION = 356;
 				DEVELOPMENT_TEAM = 3R5QGG9DW6;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -542,7 +542,7 @@
 				CODE_SIGN_ENTITLEMENTS = "Aagedal Photo Agent/Aagedal Photo Agent.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 293;
+				CURRENT_PROJECT_VERSION = 356;
 				DEVELOPMENT_TEAM = 3R5QGG9DW6;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -632,7 +632,7 @@
 			repositoryURL = "https://codeberg.org/taagedal/SwiftExif.git";
 			requirement = {
 				kind = upToNextMajorVersion;
-				minimumVersion = 1.9.3;
+				minimumVersion = 1.9.6;
 			};
 		};
 		8ED36A022F8CF03000FB9A33 /* XCRemoteSwiftPackageReference "Sparkle" */ = {

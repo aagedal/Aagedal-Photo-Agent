@@ -1,0 +1,258 @@
+import Foundation
+import SwiftExif
+
+/// Builds an `IPTCMetadata` value into a SwiftExif `XMPData` tree — the pure-Swift replacement
+/// for the old NSXML (`XMLElement`) construction in `XMPSidecarService`. Used by the `.xmp`
+/// sidecar writer; the crs/mask/tone encoders are shared with the embedded-file
+/// `SwiftExifWriteEngine` so the two stores can't drift (see `applyMasks`/`applyToneCurves`).
+///
+/// Everything here is value-level and `nonisolated`: `XMPData` is a `Sendable` struct, so writing
+/// is pure (no shared state, no libxml2) and safe from any thread.
+enum XMPDataBuilder {
+
+    /// App-private XMP namespace for settings ACR can't represent — the global node's position in
+    /// the reorderable layer chain. (crs uses `XMPNamespace.crs`.)
+    nonisolated static let aaphotoNamespace = "http://aagedal.me/ns/photo/1.0/"
+
+    // MARK: - Descriptive fields
+
+    /// Write the IPTC/descriptive fields directly as XMP, mirroring the old NSXML `updateDescription`.
+    /// Uses `XMPData`'s symmetric convenience setters where they exist, so `asMetadataDict` reads
+    /// every field back identically. nil/empty ⇒ remove (clears propagate). Orientation,
+    /// GPS and photoshop:DateCreated have no convenience setter, so they go through `setSimpleOrRemove`
+    /// (and are read back via the service's `fillXMPOnlyGaps`).
+    nonisolated static func applyDescriptive(_ m: IPTCMetadata, into xmp: inout XMPData) {
+        // Title is written to BOTH photoshop:Headline and dc:title (the reader prefers Headline).
+        xmp.headline = nilIfEmpty(m.title)
+        xmp.title = nilIfEmpty(m.title)
+        xmp.description = nilIfEmpty(m.description)
+        xmp.extendedDescription = nilIfEmpty(m.extendedDescription)
+        setArrayOrRemove(&xmp, m.keywords, namespace: XMPNamespace.dc, property: "subject")
+        setArrayOrRemove(&xmp, m.personShown, namespace: XMPNamespace.iptcExt, property: "PersonInImage")
+        xmp.rating = m.rating.map(Double.init)
+        xmp.label = nilIfEmpty(m.label)
+        xmp.digitalSourceType = nilIfEmpty(m.digitalSourceType?.rawValue)
+        setArrayOrRemove(&xmp, m.creator.map { [$0] } ?? [], namespace: XMPNamespace.dc, property: "creator")
+        xmp.credit = nilIfEmpty(m.credit)
+        xmp.jobId = nilIfEmpty(m.jobId)
+        xmp.rights = nilIfEmpty(m.copyright)
+        // photoshop:DateCreated (the IPTC date) — distinct from xmp:CreateDate; no convenience setter.
+        setSimpleOrRemove(&xmp, m.dateCreated, namespace: XMPNamespace.photoshop, property: "DateCreated")
+        xmp.city = nilIfEmpty(m.city)
+        xmp.country = nilIfEmpty(m.country)
+        xmp.event = nilIfEmpty(m.event)
+
+        // GPS is additive/paired: write both as %.6f decimal degrees (the old wire format), or clear both.
+        if let lat = m.latitude, let lon = m.longitude {
+            xmp.setValue(.simple(String(format: "%.6f", lat)), namespace: XMPNamespace.exif, property: "GPSLatitude")
+            xmp.setValue(.simple(String(format: "%.6f", lon)), namespace: XMPNamespace.exif, property: "GPSLongitude")
+        } else {
+            xmp.removeValue(namespace: XMPNamespace.exif, property: "GPSLatitude")
+            xmp.removeValue(namespace: XMPNamespace.exif, property: "GPSLongitude")
+        }
+
+        // Orientation to BOTH tiff (authoritative on read) and exif, in lockstep. nil clears both.
+        let orientation = m.exifOrientation.map(String.init)
+        setSimpleOrRemove(&xmp, orientation, namespace: XMPNamespace.tiff, property: "Orientation")
+        setSimpleOrRemove(&xmp, orientation, namespace: XMPNamespace.exif, property: "Orientation")
+    }
+
+    // MARK: - Camera Raw (crs) block
+
+    /// Write the develop (`crs`) block, mirroring the old NSXML `updateCameraRawSettings`. nil ⇒
+    /// clear the block. Managed fields are set/removed individually (preserving any unmodeled
+    /// third-party crs props on a settings write, exactly as the old writer did). `imageAspect` is
+    /// the sensor-frame aspect for the ACR angled-crop conversion (identity at angle 0).
+    nonisolated static func applyCameraRaw(_ settings: CameraRawSettings?, imageAspect: Double?, into xmp: inout XMPData) {
+        guard let settings else {
+            removeCRSBlock(&xmp)
+            return
+        }
+
+        // ACR requires Version + ProcessVersion to recognize the block.
+        setCRS(&xmp, "Version", settings.version ?? "15.4")
+        setCRS(&xmp, "ProcessVersion", settings.processVersion ?? "15.4")
+        setCRS(&xmp, "WhiteBalance", settings.whiteBalance)
+        setCRS(&xmp, "Temperature", settings.temperature.map(String.init))
+        setCRS(&xmp, "Tint", settings.tint.map(formatSignedInt))
+        setCRS(&xmp, "IncrementalTemperature", settings.incrementalTemperature.map(formatSignedInt))
+        setCRS(&xmp, "IncrementalTint", settings.incrementalTint.map(formatSignedInt))
+        setCRS(&xmp, "Exposure2012", settings.exposure2012.map { formatSignedDouble($0, precision: 2) })
+        setCRS(&xmp, "Contrast2012", settings.contrast2012.map(formatSignedInt))
+        setCRS(&xmp, "Highlights2012", settings.highlights2012.map(formatSignedInt))
+        setCRS(&xmp, "Shadows2012", settings.shadows2012.map(formatSignedInt))
+        setCRS(&xmp, "Whites2012", settings.whites2012.map(formatSignedInt))
+        setCRS(&xmp, "Blacks2012", settings.blacks2012.map(formatSignedInt))
+        setCRS(&xmp, "Saturation", settings.saturation.map(formatSignedInt))
+        setCRS(&xmp, "Vibrance", settings.vibrance.map(formatSignedInt))
+
+        let hasSettings = settings.hasSettings ?? !settings.isEmpty
+        setCRS(&xmp, "HasSettings", formatBool(hasSettings))
+
+        // HSL: clear every channel, then set the present ones via the shared encoder — so a
+        // smaller new HSL set can't leave stale channels behind (matches the old writer).
+        let hslValues = Dictionary(
+            uniqueKeysWithValues: (settings.hslAdjustments.map(encodeHSLAdjustments) ?? [])
+                .map { ($0.name, $0.value) }
+        )
+        for name in acrHSLPropertyNames {
+            setCRS(&xmp, name, hslValues[name])
+        }
+
+        // crs crop carries Adobe's un-rotated-frame corner encoding — convert at this boundary.
+        let crop = settings.crop?.encodedForACR(aspect: imageAspect)
+        let hasCrop: Bool? = crop.map { $0.hasCrop ?? !$0.isEmpty }
+        setCRS(&xmp, "CropTop", crop?.top.map { formatUnsignedDouble($0, precision: 6) })
+        setCRS(&xmp, "CropLeft", crop?.left.map { formatUnsignedDouble($0, precision: 6) })
+        setCRS(&xmp, "CropBottom", crop?.bottom.map { formatUnsignedDouble($0, precision: 6) })
+        setCRS(&xmp, "CropRight", crop?.right.map { formatUnsignedDouble($0, precision: 6) })
+        setCRS(&xmp, "CropAngle", crop?.angle.map { formatUnsignedDouble($0, precision: 6) })
+        setCRS(&xmp, "HasCrop", hasCrop.map(formatBool))
+        setCRS(&xmp, "CropConstrainToWarp", hasCrop == true ? "0" : nil)
+        setCRS(&xmp, "CropConstrainToUnitSquare", hasCrop == true ? "1" : nil)
+
+        setCRS(&xmp, "HDREditMode", settings.hdrEditMode.map(String.init))
+        setCRS(&xmp, "HDRMaxValue", settings.hdrMaxValue)
+        setCRS(&xmp, "SDRBrightness", settings.sdrBrightness.map(formatSignedInt))
+        setCRS(&xmp, "SDRContrast", settings.sdrContrast.map(formatSignedInt))
+        setCRS(&xmp, "SDRClarity", settings.sdrClarity.map(formatSignedInt))
+        setCRS(&xmp, "SDRHighlights", settings.sdrHighlights.map(formatSignedInt))
+        setCRS(&xmp, "SDRShadows", settings.sdrShadows.map(formatSignedInt))
+        setCRS(&xmp, "SDRWhites", settings.sdrWhites.map(formatSignedInt))
+        setCRS(&xmp, "SDRBlend", settings.sdrBlend.map(formatSignedInt))
+
+        applyToneCurves(settings.toneCurve, into: &xmp)
+        applyLayerChain(masks: settings.localAdjustments ?? [], layerOrder: settings.layerOrder, into: &xmp)
+    }
+
+    /// Clear the develop block — the same fixed field list the old NSXML `removeCameraRawSettings`
+    /// deleted, plus the HSL channels and the app-private GlobalLayerIndex. Scoped to the fields we
+    /// manage so unmodeled third-party crs props (Texture/Dehaze…) survive, matching prior behavior.
+    nonisolated static func removeCRSBlock(_ xmp: inout XMPData) {
+        let fields = [
+            "Version", "ProcessVersion", "WhiteBalance", "Temperature", "Tint",
+            "IncrementalTemperature", "IncrementalTint", "Exposure2012", "Contrast2012",
+            "Highlights2012", "Shadows2012", "Whites2012", "Blacks2012", "Saturation", "Vibrance",
+            "HasSettings", "CropTop", "CropLeft", "CropBottom", "CropRight", "CropAngle", "HasCrop",
+            "CropConstrainToWarp", "CropConstrainToUnitSquare", "HDREditMode", "HDRMaxValue",
+            "SDRBrightness", "SDRContrast", "SDRClarity", "SDRHighlights", "SDRShadows", "SDRWhites",
+            "SDRBlend", "ToneCurvePV2012", "ToneCurvePV2012Red", "ToneCurvePV2012Green",
+            "ToneCurvePV2012Blue", "ToneCurveName2012", "MaskGroupBasedCorrections", "AlreadyApplied",
+            "CompatibleVersion",
+        ] + acrHSLPropertyNames
+        for field in fields {
+            xmp.removeValue(namespace: XMPNamespace.crs, property: field)
+        }
+        xmp.removeValue(namespace: aaphotoNamespace, property: "GlobalLayerIndex")
+    }
+
+    // MARK: - Shared develop encoders (also used by the embedded SwiftExifWriteEngine)
+
+    /// Tone curves as crs rdf:Seq arrays of "x, y" strings (ACR 0–255 scale). A channel with ≤2
+    /// points is the identity and is removed. Sets ToneCurveName2012="Custom" when any curve is set.
+    nonisolated static func applyToneCurves(_ tc: ToneCurve?, into xmp: inout XMPData) {
+        func setChannel(_ property: String, _ points: [ToneCurvePoint]?) {
+            if let points, points.count > 2 {
+                xmp.setValue(.array(serializeToneCurvePoints(points)), namespace: XMPNamespace.crs, property: property)
+            } else {
+                xmp.removeValue(namespace: XMPNamespace.crs, property: property)
+            }
+        }
+        setChannel("ToneCurvePV2012", tc?.master)
+        setChannel("ToneCurvePV2012Red", tc?.red)
+        setChannel("ToneCurvePV2012Green", tc?.green)
+        setChannel("ToneCurvePV2012Blue", tc?.blue)
+        if let tc, !tc.isEmpty {
+            xmp.setValue(.simple("Custom"), namespace: XMPNamespace.crs, property: "ToneCurveName2012")
+        } else {
+            xmp.removeValue(namespace: XMPNamespace.crs, property: "ToneCurveName2012")
+        }
+    }
+
+    /// Local masks as ACR's `crs:MaskGroupBasedCorrections` — a structured array whose items each
+    /// carry a nested `crs:CorrectionMasks` structured array. Field content comes from the shared
+    /// `encodeMaskGroupBasedCorrections`; this exact nesting is what `parseMaskGroupBasedCorrections`
+    /// expects on read-back. Stamps AlreadyApplied="False"/CompatibleVersion so Bridge/ACR badge the
+    /// file as edited (only when masks exist).
+    nonisolated static func applyMasks(_ masks: [MaskAdjustment], into xmp: inout XMPData) {
+        let encoded = encodeMaskGroupBasedCorrections(masks)
+        if encoded.isEmpty {
+            xmp.removeValue(namespace: XMPNamespace.crs, property: "MaskGroupBasedCorrections")
+            return
+        }
+        let corrections: [[String: XMPValue]] = encoded.map { corr in
+            var fields = Dictionary(uniqueKeysWithValues: corr.correctionFields.map {
+                (XMPNamespace.crs + $0.name, XMPValue.simple($0.value))
+            })
+            let maskStruct = Dictionary(uniqueKeysWithValues: corr.maskFields.map {
+                (XMPNamespace.crs + $0.name, XMPValue.simple($0.value))
+            })
+            fields[XMPNamespace.crs + "CorrectionMasks"] = .structuredArray([maskStruct])
+            return fields
+        }
+        xmp.setValue(.simple("False"), namespace: XMPNamespace.crs, property: "AlreadyApplied")
+        xmp.setValue(.simple("234881024"), namespace: XMPNamespace.crs, property: "CompatibleVersion")
+        xmp.setValue(.structuredArray(corrections), namespace: XMPNamespace.crs, property: "MaskGroupBasedCorrections")
+    }
+
+    /// Write masks in render-stack order plus the app-private `aaphoto:GlobalLayerIndex` (the global
+    /// node's position in the reorderable chain). Reuses the shared model helpers so both stores agree.
+    nonisolated static func applyLayerChain(masks: [MaskAdjustment], layerOrder: [LayerRef]?, into xmp: inout XMPData) {
+        var chain = CameraRawSettings()
+        chain.localAdjustments = masks
+        chain.layerOrder = layerOrder
+        applyMasks(chain.masksInRenderOrder() ?? masks, into: &xmp)
+        if let globalIndex = chain.globalLayerIndex(), globalIndex > 0 {
+            xmp.setValue(.simple(String(globalIndex)), namespace: aaphotoNamespace, property: "GlobalLayerIndex")
+        } else {
+            xmp.removeValue(namespace: aaphotoNamespace, property: "GlobalLayerIndex")
+        }
+    }
+
+    // MARK: - Helpers
+
+    nonisolated private static func setCRS(_ xmp: inout XMPData, _ property: String, _ value: String?) {
+        setSimpleOrRemove(&xmp, value, namespace: XMPNamespace.crs, property: property)
+    }
+
+    nonisolated private static func setSimpleOrRemove(_ xmp: inout XMPData, _ value: String?, namespace: String, property: String) {
+        if let value, !value.isEmpty {
+            xmp.setValue(.simple(value), namespace: namespace, property: property)
+        } else {
+            xmp.removeValue(namespace: namespace, property: property)
+        }
+    }
+
+    nonisolated private static func setArrayOrRemove(_ xmp: inout XMPData, _ values: [String], namespace: String, property: String) {
+        let cleaned = values.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        if cleaned.isEmpty {
+            xmp.removeValue(namespace: namespace, property: property)
+        } else {
+            xmp.setValue(.array(cleaned), namespace: namespace, property: property)
+        }
+    }
+
+    nonisolated private static func nilIfEmpty(_ value: String?) -> String? {
+        guard let value, !value.isEmpty else { return nil }
+        return value
+    }
+
+    nonisolated static func formatSignedInt(_ value: Int) -> String {
+        value > 0 ? "+\(value)" : "\(value)"
+    }
+
+    nonisolated static func formatSignedDouble(_ value: Double, precision: Int) -> String {
+        let absValue = String(format: "%.\(precision)f", abs(value))
+        if value > 0 { return "+\(absValue)" }
+        if value < 0 { return "-\(absValue)" }
+        return absValue
+    }
+
+    nonisolated static func formatUnsignedDouble(_ value: Double, precision: Int) -> String {
+        String(format: "%.\(precision)f", value)
+    }
+
+    nonisolated static func formatBool(_ value: Bool) -> String {
+        value ? "True" : "False"
+    }
+}

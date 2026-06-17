@@ -537,87 +537,26 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         }
     }
 
-    /// Apply tone curves as XMP-crs array values.
-    private func applyToneCurves(_ tc: ToneCurve, metadata: inout ImageMetadata) {
-        if metadata.xmp == nil { metadata.xmp = XMPData() }
-
-        func setChannel(_ property: String, _ points: [ToneCurvePoint]?) {
-            if let points, points.count > 2 {
-                let values = serializeToneCurvePoints(points)
-                metadata.xmp?.setValue(.array(values), namespace: crsNamespace, property: property)
-            } else {
-                metadata.xmp?.removeValue(namespace: crsNamespace, property: property)
-            }
-        }
-
-        setChannel("ToneCurvePV2012", tc.master)
-        setChannel("ToneCurvePV2012Red", tc.red)
-        setChannel("ToneCurvePV2012Green", tc.green)
-        setChannel("ToneCurvePV2012Blue", tc.blue)
-
-        if !tc.isEmpty {
-            metadata.xmp?.setValue(.simple("Custom"), namespace: crsNamespace, property: "ToneCurveName2012")
-        } else {
-            metadata.xmp?.removeValue(namespace: crsNamespace, property: "ToneCurveName2012")
-        }
+    /// Mutate `metadata.xmp` in place, creating an empty `XMPData` first if absent — the bridge for
+    /// calling the shared `XMPDataBuilder` (which works on `inout XMPData`) from the engine, whose
+    /// `xmp` is optional.
+    private func mutateXMP(_ metadata: inout ImageMetadata, _ body: (inout XMPData) -> Void) {
+        var xmp = metadata.xmp ?? XMPData()
+        body(&xmp)
+        metadata.xmp = xmp
     }
 
-    /// Serialize local mask adjustments to ACR's `MaskGroupBasedCorrections`
-    /// schema as a recursive XMP structured array. Each correction is a
-    /// `[String: XMPValue]` dict whose `CorrectionMasks` field is itself a
-    /// nested `XMPValue.structuredArray`. Field content comes from the shared
-    /// `encodeMaskGroupBasedCorrections` (also used by the .xmp sidecar writer).
-    private func applyMasks(_ masks: [MaskAdjustment], metadata: inout ImageMetadata) {
-        let encoded = encodeMaskGroupBasedCorrections(masks)
-        if encoded.isEmpty {
-            metadata.xmp?.removeValue(namespace: crsNamespace, property: "MaskGroupBasedCorrections")
-            return
-        }
-
-        if metadata.xmp == nil { metadata.xmp = XMPData() }
-
-        let corrections: [[String: XMPValue]] = encoded.map { corr in
-            var fields = Dictionary(uniqueKeysWithValues: corr.correctionFields.map {
-                (crsNamespace + $0.name, XMPValue.simple($0.value))
-            })
-            let maskStruct = Dictionary(uniqueKeysWithValues: corr.maskFields.map {
-                (crsNamespace + $0.name, XMPValue.simple($0.value))
-            })
-            fields[crsNamespace + "CorrectionMasks"] = .structuredArray([maskStruct])
-            return fields
-        }
-
-        // ACR ignores every crs setting in a block marked AlreadyApplied=True
-        // (the marker means "baked into the pixels during export", common on JPEGs
-        // ACR rendered from RAW). Our edits are live settings — and Bridge/ACR only
-        // badge a file as edited when the marker is EXPLICITLY False (removing it
-        // entirely is not enough; verified against ACR 18.3.2 output 2026-06).
-        metadata.xmp?.setValue(.simple("False"), namespace: crsNamespace, property: "AlreadyApplied")
-        metadata.xmp?.setValue(.simple("234881024"), namespace: crsNamespace, property: "CompatibleVersion")
-
-        metadata.xmp?.setValue(
-            .structuredArray(corrections),
-            namespace: crsNamespace,
-            property: "MaskGroupBasedCorrections"
-        )
+    /// Apply tone curves as XMP-crs array values — shared with the `.xmp` sidecar writer via
+    /// `XMPDataBuilder` so the two stores can't drift.
+    private func applyToneCurves(_ tc: ToneCurve, metadata: inout ImageMetadata) {
+        mutateXMP(&metadata) { XMPDataBuilder.applyToneCurves(tc, into: &$0) }
     }
 
     /// Write the local-mask block in render-stack order plus the app-private
-    /// `aaphoto:GlobalLayerIndex` for the global node's position — the embedded-XMP mirror of
-    /// XMPSidecarService's persistence. Reuses the shared model helpers so both stores agree.
+    /// `aaphoto:GlobalLayerIndex` for the global node's position — shared with the `.xmp` sidecar
+    /// writer via `XMPDataBuilder` (one implementation of the `MaskGroupBasedCorrections` nesting).
     private func applyLayerChain(masks: [MaskAdjustment], layerOrder: [LayerRef]?, metadata: inout ImageMetadata) {
-        var chain = CameraRawSettings()
-        chain.localAdjustments = masks
-        chain.layerOrder = layerOrder
-        applyMasks(chain.masksInRenderOrder() ?? masks, metadata: &metadata)
-
-        if let globalIndex = chain.globalLayerIndex(), globalIndex > 0 {
-            if metadata.xmp == nil { metadata.xmp = XMPData() }
-            metadata.xmp?.setValue(.simple(String(globalIndex)),
-                                   namespace: aaphotoNamespace, property: "GlobalLayerIndex")
-        } else {
-            metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: "GlobalLayerIndex")
-        }
+        mutateXMP(&metadata) { XMPDataBuilder.applyLayerChain(masks: masks, layerOrder: layerOrder, into: &$0) }
     }
 
     /// Apply per-color HSL adjustments as simple XMP-crs properties

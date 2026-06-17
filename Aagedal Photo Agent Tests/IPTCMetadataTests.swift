@@ -1467,6 +1467,51 @@ struct LayerOrderTests {
         #expect(svc.loadSidecar(for: imageURL)?.cameraRaw?.localAdjustments?.count == 1)
     }
 
+    @Test("unknown third-party XMP (foreign namespace + unmodeled crs prop) survives sidecar writes")
+    func unknownXMPSurvivesSidecarWrites() throws {
+        let svc = XMPSidecarService()
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let imageURL = tmp.appendingPathComponent("test.jpg")
+        let xmpURL = svc.sidecarURL(for: imageURL)
+
+        // A sidecar carrying data the app doesn't model: a foreign Lightroom namespace
+        // (lr:hierarchicalSubject) and an unmodeled crs property (crs:Texture).
+        let existing = """
+        <?xpacket begin="\u{FEFF}" id="W5M0MpCehiHzreSzNTczkc9d"?>
+        <x:xmpmeta xmlns:x="adobe:ns:meta/">
+         <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+          <rdf:Description rdf:about=""
+           xmlns:lr="http://ns.adobe.com/lightroom/1.0/"
+           xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
+           crs:Texture="+40" crs:Exposure2012="+0.50" crs:HasSettings="True">
+           <lr:hierarchicalSubject><rdf:Bag><rdf:li>Sport|Football</rdf:li></rdf:Bag></lr:hierarchicalSubject>
+          </rdf:Description>
+         </rdf:RDF>
+        </x:xmpmeta>
+        <?xpacket end="w"?>
+        """
+        try existing.data(using: .utf8)!.write(to: xmpURL)
+
+        // A descriptive-only write (cameraRaw=nil) must NOT wipe the foreign namespace. The modeled
+        // crs block is cleared, but the unmodeled crs:Texture is left intact (removeCRSBlock clears
+        // only the fields we manage — matching the prior NSXML behavior).
+        try svc.saveSidecar(metadata: IPTCMetadata(title: "Caption"), for: imageURL)
+        let afterDescriptive = svc.prettyPrintedSidecarXML(for: imageURL) ?? ""
+        #expect(afterDescriptive.contains("hierarchicalSubject"))
+        #expect(afterDescriptive.contains("Sport|Football"))
+        #expect(afterDescriptive.contains("Texture"))
+
+        // A develop write that carries settings still preserves the foreign namespace.
+        var settings = CameraRawSettings()
+        settings.exposure2012 = 0.5
+        try svc.saveCameraRawOnly(settings, orientation: nil, for: imageURL)
+        let afterDevelop = svc.prettyPrintedSidecarXML(for: imageURL) ?? ""
+        #expect(afterDevelop.contains("hierarchicalSubject"))
+        #expect(afterDevelop.contains("Exposure2012"))
+    }
+
     @Test("re-saving a complex existing sidecar (nested Alt/Bag/Seq + MaskGroupBasedCorrections) repeatedly does not corrupt the XML tree")
     func resaveComplexSidecarRepeatedly() throws {
         let svc = XMPSidecarService()
