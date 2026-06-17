@@ -18,6 +18,11 @@ final class ThumbnailService {
     var preGenerateCompleted = 0
     var preGenerateTotal = 0
     @ObservationIgnored private var backgroundGenerationTask: Task<Void, Never>?
+    /// When true, the speculative background sweep is suspended. Set while the develop editor is
+    /// active: background thumbnail decodes call ImageIO's XMP parsing, which races the editor's
+    /// concurrent NSXML sidecar write on libxml2's process-global state. On-demand `loadThumbnail`
+    /// is left ungated (the filmstrip is user-visible).
+    @ObservationIgnored private var backgroundGenerationSuppressed = false
 
     init() {
         cache.countLimit = 500
@@ -320,7 +325,16 @@ final class ThumbnailService {
 
     // MARK: - Background Pre-generation
 
+    /// Suspend (and cancel) the speculative background sweep while the develop editor is active so
+    /// its ImageIO XMP parsing can't race the editor's NSXML sidecar write — see
+    /// `backgroundGenerationSuppressed`.
+    func suppressBackgroundGeneration(_ suppressed: Bool) {
+        backgroundGenerationSuppressed = suppressed
+        if suppressed { cancelBackgroundGeneration() }
+    }
+
     func startBackgroundGeneration(for images: [ImageFile]) {
+        guard !backgroundGenerationSuppressed else { return }
         cancelBackgroundGeneration()
         let uncached = images.filter { cache.object(forKey: $0.url as NSURL) == nil }
         guard !uncached.isEmpty else { return }

@@ -68,6 +68,28 @@ struct FullScreenImageCacheTests {
         #expect(cache.cachedImage(for: url) != nil)
     }
 
+    @Test("Suppressed prefetch is a no-op; un-suppressing restores it")
+    func suppressedPrefetchIsNoOp() async throws {
+        let cache = FullScreenImageCache()
+        let url = try makeTempPNG()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let placeholder = URL(fileURLWithPath: "/tmp/placeholder-\(UUID().uuidString).jpg")
+
+        // While suppressed (as during develop editing), startPrefetch registers no task —
+        // so its ImageIO XMP parsing can't race the editor's concurrent NSXML sidecar write.
+        cache.setPrefetchSuppressed(true)
+        #expect(cache.isPrefetchSuppressed)
+        cache.startPrefetch(currentIndex: 0, images: [placeholder, url], direction: .forward, screenMaxPx: 256)
+        #expect(await cache.awaitPrefetchedImage(for: url) == nil)
+        #expect(cache.cachedImage(for: url) == nil)
+
+        // Un-suppressing (returning to the browser) restores prefetching.
+        cache.setPrefetchSuppressed(false)
+        #expect(!cache.isPrefetchSuppressed)
+        cache.startPrefetch(currentIndex: 0, images: [placeholder, url], direction: .forward, screenMaxPx: 256)
+        #expect(await cache.awaitPrefetchedImage(for: url) != nil)
+    }
+
     @Test("Edit-variant mismatch falls through to a fresh decode")
     func mismatchedEditVariantReturnsNil() async throws {
         let cache = FullScreenImageCache()

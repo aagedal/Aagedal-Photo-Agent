@@ -25,6 +25,12 @@ final class FullScreenImageCache: @unchecked Sendable {
     nonisolated(unsafe) private var _previewsCompleted = 0
     nonisolated(unsafe) private var _previewsTotal = 0
     nonisolated(unsafe) private var _previewGeneration: UInt64 = 0
+    /// When true, `startPrefetch` is a no-op and in-flight prefetch is cancelled. Set while the
+    /// develop editor is active: speculative prefetch decodes call ImageIO's XMP parsing
+    /// (`CGImageSourceCopyPropertiesAtIndex`), which races the editor's concurrent NSXML sidecar
+    /// write on libxml2's process-global state and crashes with EXC_BAD_ACCESS. Suppressing
+    /// prefetch removes that out-of-band libxml2 consumer for the duration of editing.
+    nonisolated(unsafe) private var _prefetchSuppressed = false
     private let lock = NSLock()
 
     init() {
@@ -110,6 +116,35 @@ final class FullScreenImageCache: @unchecked Sendable {
         lock.withLock { _isGeneratingPreviews }
     }
 
+    // MARK: - Prefetch Suppression (develop editor)
+
+    nonisolated var isPrefetchSuppressed: Bool {
+        lock.withLock { _prefetchSuppressed }
+    }
+
+    /// Suppress (and immediately cancel) speculative prefetch while the develop editor is active,
+    /// so its ImageIO XMP parsing can't race the editor's concurrent NSXML sidecar write — see
+    /// `_prefetchSuppressed`. Idempotent.
+    nonisolated func setPrefetchSuppressed(_ suppressed: Bool) {
+        lock.withLock { _prefetchSuppressed = suppressed }
+        if suppressed { cancelAllPrefetch() }
+    }
+
+    /// Tighten the edited-image cache limits while editing, then restore them on exit. Prefetch is
+    /// suppressed during editing (`setPrefetchSuppressed`), so the editor only needs the current
+    /// image cached; shrinking the cache evicts the retina HDR images that were exhausting IOSurface
+    /// memory (`IOSurface creation failed: e00002c2`) during heavy edit sessions. Lowering an
+    /// NSCache limit evicts immediately.
+    nonisolated func setEditingMemoryProfile(_ editing: Bool) {
+        if editing {
+            editedCache.countLimit = 2
+            editedCache.totalCostLimit = 64 * 1024 * 1024              // 64 MB
+        } else {
+            editedCache.countLimit = 12
+            editedCache.totalCostLimit = 256 * 1024 * 1024             // 256 MB — matches init()
+        }
+    }
+
     nonisolated var previewsCompleted: Int {
         lock.withLock { _previewsCompleted }
     }
@@ -191,6 +226,10 @@ final class FullScreenImageCache: @unchecked Sendable {
     /// Prefetch adjacent images based on navigation direction.
     /// Loads 4 images ahead in travel direction and 2 behind, at medium priority.
     nonisolated func startPrefetch(currentIndex: Int, images: [URL], direction: NavigationDirection, screenMaxPx: CGFloat, isEdited: Bool = false, settingsForURL: (@Sendable (URL) -> CameraRawSettings?)? = nil, orientationForURL: (@Sendable (URL) -> Int)? = nil) {
+        // Suppressed while the develop editor is active so prefetch's ImageIO XMP parsing can't
+        // race the editor's concurrent NSXML sidecar write — see `_prefetchSuppressed`.
+        if isPrefetchSuppressed { return }
+
         let ahead: [Int]
         let behind: [Int]
 
