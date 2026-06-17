@@ -141,11 +141,16 @@ final class MetadataViewModel {
     ) -> IPTCMetadata? {
         switch source {
         case .embedded:
-            // For RAW files, CRS edits live exclusively in the XMP sidecar
-            // (the image file is never modified for C2PA). Override embedded
-            // CRS with XMP CRS even when the user prefers embedded IPTC.
-            if let embedded, let url = imageURL,
-               SupportedImageFormats.isRaw(url: url),
+            // Develop (CRS) edits made in this app always persist to the XMP
+            // sidecar — the image file itself is never rewritten by the editor
+            // (mandatory for RAW/C2PA, and the default for non-RAW too). So even
+            // when the user prefers embedded IPTC, the sidecar is authoritative
+            // for develop settings: override embedded CRS with non-empty XMP CRS
+            // for ALL file types. This mirrors the grid loader
+            // (BrowserViewModel.applyBatchMetadataResults); previously this was
+            // gated to RAW only, which dropped develop edits for JPEG/JXL on
+            // reload and left the develop view showing the unedited original.
+            if let embedded,
                let xmpCRS = xmp?.cameraRaw, !xmpCRS.isEmpty {
                 var result = embedded
                 var finalCRS = xmpCRS

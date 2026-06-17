@@ -392,9 +392,10 @@ final class BrowserViewModel {
             if cameraRaw != nil,
                let ciImage = FullScreenImageCache.loadHDRPreview(from: url, maxPixelSize: screenMaxPx) {
                 let processed = CameraRawApproximation.applyWithCrop(to: ciImage, settings: cameraRaw!, exifOrientation: orientation)
-                image = CameraRawApproximation.ciContext.createCGImage(
-                    processed, from: processed.extent,
-                    format: .RGBAh, colorSpace: CameraRawApproximation.workingColorSpace)
+                // Stamp content headroom so this pre-cached retina image engages EDR when
+                // full-screen reads it on first open (otherwise it shows SDR until a
+                // navigate-away-and-back re-renders it through the fixed paths).
+                image = CameraRawApproximation.createDisplayCGImage(processed, from: processed.extent)
             }
             if image == nil {
                 guard var loaded = FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: screenMaxPx) else { return }

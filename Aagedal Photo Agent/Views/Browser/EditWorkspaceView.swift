@@ -1438,8 +1438,10 @@ struct EditWorkspaceView: View {
                         // Orient BEFORE rendering the NSImage so it comes out corrected for free.
                         let correction = ImageFile.orientationCorrection(from: result.orientation, to: targetOrientation)
                         let ci = correction != .up ? result.image.oriented(correction) : result.image
-                        let ctx = CameraRawApproximation.ciContext
-                        if let cgImage = ctx.createCGImage(ci, from: ci.extent, format: .RGBAh, colorSpace: CameraRawApproximation.workingColorSpace) {
+                        // Stamp content headroom so the Phase-1 NSImage preview engages EDR
+                        // before the Metal texture is ready (otherwise the develop view briefly
+                        // flips to SDR). See CameraRawApproximation.createDisplayCGImage.
+                        if let cgImage = CameraRawApproximation.createDisplayCGImage(ci, from: ci.extent) {
                             let nsImage = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
                             return (image: nsImage, ciImage: ci)
                         }

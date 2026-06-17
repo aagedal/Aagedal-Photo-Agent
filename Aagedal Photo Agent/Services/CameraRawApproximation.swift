@@ -15,6 +15,43 @@ enum CameraRawApproximation {
     nonisolated private static let minKelvin = 2000.0
     nonisolated private static let maxKelvin = 50000.0
 
+    /// Render a processed CIImage to an HDR CGImage that *advertises its content headroom*.
+    ///
+    /// A plain `CALayer` (e.g. the full-screen `HDRImageView`) decides whether to engage EDR
+    /// from the CGImage's content-headroom **metadata**, not from a scan of the pixel values.
+    /// A CGImage created from a Metal-texture-backed CIImage has *unknown* headroom (0.0), and
+    /// per CoreGraphics "an image with unknown content headroom is excluded from tone mapping"
+    /// — so an edited HDR image displays clamped to SDR even though it holds >1.0 float values,
+    /// while the decoded original (which carries the file's headroom) engages EDR normally.
+    ///
+    /// We measure the peak channel value (extendedLinearSRGB reference white = 1.0, so the peak
+    /// IS the headroom) and stamp it onto the CGImage so the edited preview engages EDR too.
+    /// The live develop view is unaffected — it presents the float texture via CAMetalLayer.
+    nonisolated static func createDisplayCGImage(_ image: CIImage, from rect: CGRect) -> CGImage? {
+        guard let cg = ciContext.createCGImage(
+            image, from: rect, format: .RGBAh, colorSpace: workingColorSpace
+        ) else { return nil }
+        guard #available(macOS 15.0, *) else { return cg }
+        let peak = peakChannelValue(of: image, extent: rect)
+        guard peak > 1.0 else { return cg }
+        return CGImageCreateCopyWithContentHeadroom(peak, cg) ?? cg
+    }
+
+    /// Peak (max) R/G/B channel value over `extent`, via a 1×1 CIAreaMaximum reduction.
+    nonisolated private static func peakChannelValue(of image: CIImage, extent: CGRect) -> Float {
+        guard let maxFilter = CIFilter(name: "CIAreaMaximum", parameters: [
+            kCIInputImageKey: image,
+            kCIInputExtentKey: CIVector(cgRect: extent)
+        ]), let maxOut = maxFilter.outputImage else { return 0 }
+        var px: [Float] = [0, 0, 0, 0]
+        ciContext.render(
+            maxOut, toBitmap: &px, rowBytes: 16,
+            bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+            format: .RGBAf, colorSpace: workingColorSpace
+        )
+        return max(px[0], px[1], px[2])
+    }
+
     nonisolated static func apply(to input: CIImage, settings: CameraRawSettings?, exifOrientation: Int = 1) -> CIImage {
         guard let settings else { return input }
 

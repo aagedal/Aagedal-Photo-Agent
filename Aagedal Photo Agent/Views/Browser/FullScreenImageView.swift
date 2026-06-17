@@ -747,15 +747,7 @@ struct FullScreenImageView: View {
         let extent = processed.extent
         guard extent.width > 0, extent.height > 0 else { return cgImage }
 
-        guard let result = CameraRawApproximation.ciContext.createCGImage(
-            processed,
-            from: extent,
-            format: .RGBAh,
-            colorSpace: CameraRawApproximation.workingColorSpace
-        ) else {
-            return cgImage
-        }
-        return result
+        return CameraRawApproximation.createDisplayCGImage(processed, from: extent) ?? cgImage
     }
 
     /// Apply gamut clipping to a CGImage by rendering through a target color space CGContext.
@@ -791,6 +783,19 @@ struct FullScreenImageView: View {
         return finalCtx.makeImage() ?? clipped
     }
 
+    /// Mirror `EditWorkspaceView.autoEnableHDRIfNeeded`: a native-HDR image renders in HDR
+    /// by default. The Metal edit shader only keeps super-white (>1.0) detail when the
+    /// `hdrEditMode` flag is set — otherwise it gamut-clamps the output to SDR (see
+    /// EditAdjustments.metal). The develop view force-enables this for native-HDR files, so
+    /// the full-screen render must do the same: without it an *edited* native-HDR image gets
+    /// SDR-clipped (it runs through the shader) while the *unedited* one stays HDR (it bypasses
+    /// the shader entirely). Only fills an unset flag, so an explicit HDR-off (`0`) is honored.
+    nonisolated private static func hdrNormalized(_ settings: CameraRawSettings?, isNativeHDR: Bool) -> CameraRawSettings? {
+        guard isNativeHDR, var s = settings, s.hdrEditMode == nil else { return settings }
+        s.hdrEditMode = 1
+        return s
+    }
+
     /// Apply CameraRaw adjustments + crop to a CIImage source, preserving HDR float values.
     nonisolated private static func applyCameraRaw(to ciImage: CIImage, settings: CameraRawSettings?, exifOrientation: Int = 1, fileOrientation: Int = 0) -> CGImage? {
         let cropOrientation = fileOrientation > 0 ? fileOrientation : exifOrientation
@@ -806,11 +811,10 @@ struct FullScreenImageView: View {
 
         let extent = processed.extent
         guard extent.width > 0, extent.height > 0 else { return nil }
-        return CameraRawApproximation.ciContext.createCGImage(
-            processed, from: extent,
-            format: .RGBAh,
-            colorSpace: CameraRawApproximation.workingColorSpace
-        )
+        // Stamp the rendered HDR pixels with their content headroom so the CALayer engages EDR
+        // (a Metal-rendered CGImage otherwise reports unknown headroom and is excluded from
+        // tone mapping → clamped to SDR). See CameraRawApproximation.createDisplayCGImage.
+        return CameraRawApproximation.createDisplayCGImage(processed, from: extent)
     }
 
     /// Correct a CGImage's orientation when the file's baked-in orientation
@@ -893,8 +897,8 @@ struct FullScreenImageView: View {
         }
 
         let isEdited = renderEdits
-        let cameraRaw = renderEdits ? currentImageFile?.cameraRawSettings : nil
         let isNativeHDR = currentImageFile?.isNativeHDR == true
+        let cameraRaw = Self.hdrNormalized(renderEdits ? currentImageFile?.cameraRawSettings : nil, isNativeHDR: isNativeHDR)
         let needsHDRLoad = cameraRaw != nil || isNativeHDR
         let maskCount = cameraRaw?.localAdjustments?.count ?? 0
         let enabledMaskCount = cameraRaw?.localAdjustments?.filter(\.enabled).count ?? 0
@@ -1169,8 +1173,9 @@ struct FullScreenImageView: View {
         guard zoomScale > 1.0 else { return }
 
         let filename = url.lastPathComponent
-        let cameraRaw = renderEdits ? currentImageFile?.cameraRawSettings : nil
-        let needsHDRFullRes = cameraRaw != nil || currentImageFile?.isNativeHDR == true
+        let isNativeHDR = currentImageFile?.isNativeHDR == true
+        let cameraRaw = Self.hdrNormalized(renderEdits ? currentImageFile?.cameraRawSettings : nil, isNativeHDR: isNativeHDR)
+        let needsHDRFullRes = cameraRaw != nil || isNativeHDR
         let isRAWFile = SupportedImageFormats.isRaw(url: url)
         let orientation = currentImageFile?.exifOrientation ?? 1
         let zoomFileOrientation = lastLoadedOrientation
@@ -1242,7 +1247,9 @@ struct FullScreenImageView: View {
         let settingsLookup: [URL: CameraRawSettings] = {
             var dict: [URL: CameraRawSettings] = [:]
             for image in visibleImages {
-                if let settings = image.cameraRawSettings {
+                // Match the foreground render's HDR normalization so prefetched edited
+                // images aren't SDR-clipped (see hdrNormalized).
+                if let settings = Self.hdrNormalized(image.cameraRawSettings, isNativeHDR: image.isNativeHDR) {
                     dict[image.url] = settings
                 }
             }

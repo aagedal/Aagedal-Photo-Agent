@@ -303,11 +303,9 @@ final class FullScreenImageCache: @unchecked Sendable {
                                 processed = ciImage
                             }
                             guard !Task.isCancelled else { return }
-                            image = CameraRawApproximation.ciContext.createCGImage(
-                                processed, from: processed.extent,
-                                format: .RGBAh,
-                                colorSpace: CameraRawApproximation.workingColorSpace
-                            )
+                            // Stamp content headroom so the prefetched edited HDR image engages
+                            // EDR on display (matches the foreground render path).
+                            image = CameraRawApproximation.createDisplayCGImage(processed, from: processed.extent)
                         }
                     }
                     guard !Task.isCancelled else { return }
@@ -372,15 +370,7 @@ final class FullScreenImageCache: @unchecked Sendable {
         let extent = processed.extent
         guard extent.width > 0, extent.height > 0 else { return cgImage }
 
-        guard let result = CameraRawApproximation.ciContext.createCGImage(
-            processed,
-            from: extent,
-            format: .RGBAh,
-            colorSpace: CameraRawApproximation.workingColorSpace
-        ) else {
-            return cgImage
-        }
-        return result
+        return CameraRawApproximation.createDisplayCGImage(processed, from: extent) ?? cgImage
     }
 
     // MARK: - Shared Image Loading
