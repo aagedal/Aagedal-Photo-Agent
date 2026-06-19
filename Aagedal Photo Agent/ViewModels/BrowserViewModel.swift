@@ -332,6 +332,12 @@ final class BrowserViewModel {
         isBatchUpdating = true
         block()
         isBatchUpdating = false
+        // The per-property didSets are gated on `!isBatchUpdating`, so the changes above
+        // requested no rebuild. Mark one explicitly, otherwise `rebuildNow()` finds no
+        // pending flag and the grid keeps showing the pre-batch filtered set (e.g. Clear
+        // Filters appeared to do nothing). A pending sort rebuild still takes precedence
+        // in `flushRebuild()` and also refreshes the visible cache.
+        needsVisibleRebuild = true
         rebuildNow()
     }
 
@@ -1015,6 +1021,21 @@ final class BrowserViewModel {
                             in: dict, exifOrientation: xmpOrientation)
                     }
                 }
+
+                // Populate the descriptive IPTC record for the grid. Without this, `metadata`
+                // stays nil on a fresh folder load — only the inspector filled it lazily on
+                // selection — so the metadata search blob was empty and the Required Metadata
+                // filter judged every image "incomplete" (hiding them all under "Has required
+                // metadata"). Mirror the inspector's merge (`loadMetadataSnapshot`): a
+                // descriptive sidecar IS the record (clears stick), a develop-only sidecar
+                // overlays additively.
+                var descriptive = iptcMetadataFromDict(dict)
+                if let xmpMeta {
+                    descriptive = xmpMeta.hasDescriptiveContent
+                        ? descriptive.replacingDescriptiveFields(from: xmpMeta)
+                        : descriptive.merged(preferring: xmpMeta)
+                }
+                updated[index].metadata = descriptive
 
                 applyPendingSidecarOverrides(to: &updated, for: sourceURL, index: index, cachedSidecar: cachedSidecars[sourceURL])
             }
