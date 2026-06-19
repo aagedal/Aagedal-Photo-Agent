@@ -5,7 +5,7 @@ struct ScopeDisplayView: View {
     @State private var hoveredMode: ScopeViewModel.ScopeMode?
 
     /// Fixed height of the scope area — independent of the sidebar width.
-    private let scopeHeight: CGFloat = 300
+    private let scopeHeight: CGFloat = 225
     /// Gamut may stretch, but not without bound.
     private let gamutMaxWidth: CGFloat = 520
 
