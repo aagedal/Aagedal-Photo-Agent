@@ -230,7 +230,17 @@ final class FTPViewModel {
         }
     }
 
-    func renderAndUploadFiles(_ urls: [URL], to connection: FTPConnection, readService: SwiftExifReadService, writeEngine: any MetadataWriteEngine, inMemoryCameraRaw: @escaping @MainActor (URL) -> CameraRawSettings?) {
+    /// Uploads `urls`, rendering to JPEG only the files in `renderURLs` and sending every other
+    /// file as its original. Rendered output names are de-duplicated in a temp dir; non-rendered
+    /// originals upload in place unless a name collision forces staging a safe hard-link/copy
+    /// (the user's real files are never moved or renamed). Falls back to the plain
+    /// `uploadFiles(_:to:)` fast path when nothing in the batch needs rendering.
+    func uploadFiles(_ urls: [URL], renderURLs: Set<URL>, to connection: FTPConnection, readService: SwiftExifReadService, writeEngine: any MetadataWriteEngine, inMemoryCameraRaw: @escaping @MainActor (URL) -> CameraRawSettings?) {
+        let renderTargets = urls.filter { renderURLs.contains($0) }
+        guard !renderTargets.isEmpty else {
+            uploadFiles(urls, to: connection)
+            return
+        }
         guard let password = KeychainService.load(forKey: connection.keychainKey) else {
             errorMessages = ["No password found for \(connection.name). Edit the connection to set a password."]
             return
@@ -243,7 +253,7 @@ final class FTPViewModel {
         uploadCompleted = false
         errorMessages = []
         renderCompletedCount = 0
-        renderTotalCount = urls.count
+        renderTotalCount = renderTargets.count
         completedCount = 0
         totalCount = urls.count
         uploadProgress = [:]
@@ -266,40 +276,49 @@ final class FTPViewModel {
                 try? FileManager.default.removeItem(at: tempDir)
             }
 
-            // Read batch metadata for camera raw settings
+            // Read batch metadata + resolve edit settings only for the files we'll render,
+            // the same way the local export paths do: prefer the live in-memory CameraRaw,
+            // falling back to the XMP sidecar for RAW files.
             var metadataMap: [URL: IPTCMetadata] = [:]
             do {
-                metadataMap = try await readService.readBatchFullMetadata(urls: urls)
+                metadataMap = try await readService.readBatchFullMetadata(urls: renderTargets)
             } catch {
                 // Continue without camera raw — renders will use defaults
             }
+            EditExportPipeline.resolveCameraRaw(into: &metadataMap, urls: renderTargets, inMemory: inMemoryCameraRaw)
 
-            // Resolve edit settings the same way the local export paths do: prefer the
-            // live in-memory CameraRaw, falling back to the XMP sidecar for RAW files.
-            EditExportPipeline.resolveCameraRaw(into: &metadataMap, urls: urls, inMemory: inMemoryCameraRaw)
-
-            // Render phase (0–50% of overall progress)
+            // Render phase (0–50% of overall progress). Files not in renderURLs are interleaved
+            // in source order as their originals, so the upload list preserves the user's order.
             let failureTracker = MetadataFailureTracker()
-            var renderedURLs: [URL] = []
+            var uploadURLs: [URL] = []
             // Tracks upload filenames already taken in this batch so two sources that
             // share a basename across folders (e.g. /A/img.jpg and /B/img.jpg, both →
             // img_jpg.jpg) don't end up overwriting each other on the remote server.
             var usedNames: Set<String> = []
             for (index, url) in urls.enumerated() {
                 guard !Task.isCancelled else { break }
+                guard renderURLs.contains(url) else {
+                    // Upload the untouched original (staged only on a name collision).
+                    do {
+                        uploadURLs.append(try self.stagedOriginal(url, avoiding: &usedNames, in: tempDir, index: index))
+                    } catch {
+                        self.errorMessages.append("Failed to prepare \(url.lastPathComponent): \(error.localizedDescription)")
+                    }
+                    continue
+                }
                 do {
                     // Render each file into its own subfolder. The render output name is
                     // derived from the source basename only, so a shared temp dir would let
                     // a later render clobber an earlier one on disk — losing the first photo
                     // and uploading the second twice. Per-item folders make every render path
                     // unique regardless of basename collisions.
-                    let itemDir = tempDir.appendingPathComponent(String(index), isDirectory: true)
+                    let itemDir = tempDir.appendingPathComponent("r\(index)", isDirectory: true)
                     try FileManager.default.createDirectory(at: itemDir, withIntermediateDirectories: true)
                     let outputURL = try await EditExportPipeline.renderItem(
                         sourceURL: url, cameraRaw: metadataMap[url]?.cameraRaw, kind: .jpeg,
                         outputFolder: itemDir, folderURL: url.deletingLastPathComponent(),
                         writeEngine: writeEngine, failureTracker: failureTracker)
-                    renderedURLs.append(try uniqueUploadName(for: outputURL, avoiding: &usedNames))
+                    uploadURLs.append(try uniqueUploadName(for: outputURL, avoiding: &usedNames))
                 } catch {
                     self.errorMessages.append("Failed to render \(url.lastPathComponent): \(error.localizedDescription)")
                 }
@@ -328,10 +347,10 @@ final class FTPViewModel {
             // Upload phase (50–100% of overall progress)
             self.isRendering = false
             self.isUploading = true
-            self.totalCount = renderedURLs.count
+            self.totalCount = uploadURLs.count
             self.completedCount = 0
 
-            for url in renderedURLs {
+            for url in uploadURLs {
                 guard !Task.isCancelled else { break }
                 do {
                     try await ftpService.uploadFile(
@@ -352,6 +371,29 @@ final class FTPViewModel {
 
             self.recordUploadCompletion(id: historyID)
             self.showCompletion(serverName: connection.name)
+        }
+    }
+
+    /// Returns the URL to upload for a non-rendered original. The original is uploaded in
+    /// place while its filename is still free; on a collision it's hard-linked (or copied on
+    /// failure, e.g. across volumes) into `tempDir` under a de-duplicated name, so the user's
+    /// real file is never moved or renamed.
+    private func stagedOriginal(_ url: URL, avoiding usedNames: inout Set<String>, in tempDir: URL, index: Int) throws -> URL {
+        if usedNames.insert(url.lastPathComponent).inserted { return url }
+        let base = url.deletingPathExtension().lastPathComponent
+        let ext = url.pathExtension
+        let itemDir = tempDir.appendingPathComponent("o\(index)", isDirectory: true)
+        try FileManager.default.createDirectory(at: itemDir, withIntermediateDirectories: true)
+        var counter = 2
+        while true {
+            let candidate = ext.isEmpty ? "\(base)-\(counter)" : "\(base)-\(counter).\(ext)"
+            if usedNames.insert(candidate).inserted {
+                let dest = itemDir.appendingPathComponent(candidate)
+                do { try FileManager.default.linkItem(at: url, to: dest) }
+                catch { try FileManager.default.copyItem(at: url, to: dest) }
+                return dest
+            }
+            counter += 1
         }
     }
 

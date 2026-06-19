@@ -1,27 +1,36 @@
 import SwiftUI
 
-/// Settings section for choosing which IPTC fields an image must carry to count as "complete".
-/// Drives the browser's Filters ▸ Required Metadata check. Persists straight to UserDefaults via
-/// `MetadataRequirements` — the same store the filter reads — so it stays consistent regardless of
-/// which `SettingsViewModel` instance is live (the app keeps two; see settings-viewmodel notes).
+/// Settings section for choosing how strictly each IPTC field is enforced: Optional, Warn if empty,
+/// or Require. One global config drives both the browser's Filters ▸ Required Metadata check and the
+/// FTP upload checks. Persists straight to UserDefaults via `MetadataRequirements` — the same store
+/// those checks read — so it stays consistent regardless of which `SettingsViewModel` instance is
+/// live (the app keeps two; see settings-viewmodel notes).
 struct RequiredMetadataFieldsSection: View {
-    @State private var required: Set<IPTCMetadata.FieldKey> = MetadataRequirements.load()
+    @State private var levels: MetadataRequirements.Levels = MetadataRequirements.load()
 
     var body: some View {
         Section("Required Metadata") {
-            Text("Fields an image must have to count as complete. The browser's Filters ▸ Required Metadata uses this to find images missing any of them.")
+            Text("How strictly each field is enforced. Require marks images incomplete and blocks FTP upload when empty; Warn flags them without blocking. Used by the browser's Filters ▸ Required Metadata and the upload checks.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
             ForEach(IPTCMetadata.FieldKey.userSelectable, id: \.self) { field in
-                Toggle(field.displayName, isOn: Binding(
-                    get: { required.contains(field) },
-                    set: { isOn in
-                        if isOn { required.insert(field) } else { required.remove(field) }
-                        MetadataRequirements.save(required)
-                    }
-                ))
+                Picker(field.displayName, selection: binding(for: field)) {
+                    Text("Optional").tag(MetadataRequirementLevel.optional)
+                    Text("Warn if empty").tag(MetadataRequirementLevel.warnOnEmpty)
+                    Text("Require").tag(MetadataRequirementLevel.require)
+                }
             }
         }
+    }
+
+    private func binding(for field: IPTCMetadata.FieldKey) -> Binding<MetadataRequirementLevel> {
+        Binding(
+            get: { levels[field] ?? .optional },
+            set: { newValue in
+                if newValue == .optional { levels[field] = nil } else { levels[field] = newValue }
+                MetadataRequirements.save(levels)
+            }
+        )
     }
 }

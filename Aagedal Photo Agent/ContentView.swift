@@ -195,6 +195,7 @@ struct ContentView: View {
                     readService: browserViewModel.metadataReadService,
                     writeEngine: browserViewModel.writeEngine,
                     inMemoryCameraRaw: browserViewModel.currentCameraRawSettings,
+                    thumbnailService: browserViewModel.thumbnailService,
                     onStartUpload: { ftpUploadItem = nil }
                 )
             }

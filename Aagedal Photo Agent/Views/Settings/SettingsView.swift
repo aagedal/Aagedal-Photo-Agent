@@ -6,6 +6,7 @@ struct SettingsView: View {
     @State private var settingsViewModel = SettingsViewModel()
     @AppStorage(UserDefaultsKeys.creatorInitials) private var creatorInitials = ""
     @State private var ftpViewModel = FTPViewModel()
+    @AppStorage(UserDefaultsKeys.ftpAlwaysRenderRAW) private var ftpAlwaysRenderRAW = true
     @State private var templateViewModel = TemplateViewModel()
     @StateObject private var sparkle = SparkleUpdaterService.shared
 
@@ -1470,6 +1471,15 @@ struct SettingsView: View {
                         }
                     }
                 }
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle("Always render RAW files to JPEG before upload", isOn: $ftpAlwaysRenderRAW)
+                Text("When off, the upload dialog's “Skip automatic rendering” option also sends RAW files as their original containers.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .padding()

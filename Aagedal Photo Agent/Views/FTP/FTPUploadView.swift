@@ -1,4 +1,34 @@
 import SwiftUI
+import AppKit
+
+/// Render-relevant facts about a queued upload file, resolved once the dialog opens.
+struct UploadFileInfo: Equatable {
+    var isRaw: Bool
+    var hasDevelop: Bool
+    var hasCrop: Bool
+    /// Any visible edit (develop adjustment or effective crop) that warrants a JPEG render.
+    var hasAnyEdit: Bool { hasDevelop || hasCrop }
+}
+
+/// Per-file metadata-requirement evaluation for the upload list: which non-optional fields are
+/// empty, split by severity. `error` (a missing Require field) blocks upload; `warn` does not.
+struct UploadMetadataStatus: Equatable {
+    var missingRequired: [String]
+    var missingWarn: [String]
+
+    enum Severity { case ok, warn, error }
+    var severity: Severity {
+        if !missingRequired.isEmpty { return .error }
+        if !missingWarn.isEmpty { return .warn }
+        return .ok
+    }
+}
+
+/// Per-file face-scan facts used by the Person Shown requirement rule.
+private struct FaceInfo {
+    var scanned: Bool
+    var faceCount: Int
+}
 
 struct FTPUploadView: View {
     @Environment(\.dismiss) private var dismiss
@@ -7,10 +37,19 @@ struct FTPUploadView: View {
     let readService: SwiftExifReadService
     let writeEngine: any MetadataWriteEngine
     let inMemoryCameraRaw: @MainActor (URL) -> CameraRawSettings?
+    let thumbnailService: ThumbnailService
     var onStartUpload: (() -> Void)?
+
+    @AppStorage(UserDefaultsKeys.ftpAlwaysRenderRAW) private var alwaysRenderRAW = true
 
     @State private var activeFiles: [URL]
     @State private var selectedServerID: UUID?
+    @State private var skipRenderingEdited = false
+    /// Per-file render-relevant facts (RAW?, edited?, cropped?), resolved once the dialog opens.
+    @State private var fileInfo: [URL: UploadFileInfo] = [:]
+    /// Per-file metadata-requirement evaluation (missing Require / Warn fields), resolved on open
+    /// against the global config with the Person Shown face-scan rule applied.
+    @State private var metadataStatus: [URL: UploadMetadataStatus] = [:]
     @State private var processVariablesBeforeUpload = false
     @State private var signWithC2PABeforeUpload = false
     @State private var isProcessingVariables = false
@@ -19,33 +58,16 @@ struct FTPUploadView: View {
     @State private var c2paSignProgress = ""
     @State private var expandedHistoryID: UUID?
     @State private var preprocessErrors: [String] = []
-    @State private var isFileListExpanded = false
-    @State private var checkIPTCBeforeUpload: Bool
-    @State private var checkedIPTCFields: Set<IPTCMetadata.FieldKey>
-    @State private var isCheckingIPTC = false
-    @State private var iptcCheckProgress = ""
-    @State private var showIPTCCheckResults = false
-    @State private var iptcCheckResults: [IPTCCheckResult] = []
-    @State private var pendingUploadRenderFirst = false
 
-    init(viewModel: FTPViewModel, files: [URL], readService: SwiftExifReadService, writeEngine: any MetadataWriteEngine, inMemoryCameraRaw: @escaping @MainActor (URL) -> CameraRawSettings?, onStartUpload: (() -> Void)? = nil) {
+    init(viewModel: FTPViewModel, files: [URL], readService: SwiftExifReadService, writeEngine: any MetadataWriteEngine, inMemoryCameraRaw: @escaping @MainActor (URL) -> CameraRawSettings?, thumbnailService: ThumbnailService, onStartUpload: (() -> Void)? = nil) {
         self.viewModel = viewModel
         self.files = files
         self.readService = readService
         self.writeEngine = writeEngine
         self.inMemoryCameraRaw = inMemoryCameraRaw
+        self.thumbnailService = thumbnailService
         self.onStartUpload = onStartUpload
         self._activeFiles = State(initialValue: files)
-
-        let storedCheck = UserDefaults.standard.bool(forKey: UserDefaultsKeys.ftpCheckIPTCBeforeUpload)
-        self._checkIPTCBeforeUpload = State(initialValue: storedCheck)
-
-        if let data = UserDefaults.standard.data(forKey: UserDefaultsKeys.ftpCheckedIPTCFields),
-           let keys = try? JSONDecoder().decode([IPTCMetadata.FieldKey].self, from: data) {
-            self._checkedIPTCFields = State(initialValue: Set(keys))
-        } else {
-            self._checkedIPTCFields = State(initialValue: IPTCMetadata.FieldKey.defaultCheckedFields)
-        }
     }
 
     var body: some View {
@@ -65,157 +87,17 @@ struct FTPUploadView: View {
                 .buttonStyle(.plain)
             }
 
-            // Current Upload section
+            // Current Upload section — two columns: file list (left) + options/action (right)
             GroupBox {
-                VStack(alignment: .leading, spacing: 12) {
-                    DisclosureGroup(isExpanded: $isFileListExpanded) {
-                        ScrollView {
-                            VStack(alignment: .leading, spacing: 2) {
-                                ForEach(activeFiles, id: \.self) { url in
-                                    Text(url.lastPathComponent)
-                                        .font(.caption)
-                                        .lineLimit(1)
-                                        .truncationMode(.middle)
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .frame(maxHeight: 120)
-                    } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: "doc.on.doc")
-                                .foregroundStyle(.secondary)
-                            Text("\(activeFiles.count) file\(activeFiles.count == 1 ? "" : "s") selected")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                        }
+                HStack(alignment: .top, spacing: 16) {
+                    fileListColumn
+                    Divider()
+                    VStack(alignment: .leading, spacing: 12) {
+                        uploadOptions
+                        Spacer(minLength: 0)
+                        uploadActionBar
                     }
-
-                    // Server selection
-                    if viewModel.connections.isEmpty {
-                        HStack {
-                            Text("No FTP servers configured")
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Button("Add Server") {
-                                viewModel.startEditingConnection()
-                            }
-                        }
-                    } else {
-                        Picker("Server", selection: $selectedServerID) {
-                            Text("Select...").tag(nil as UUID?)
-                            ForEach(viewModel.connections) { conn in
-                                Text(conn.name).tag(conn.id as UUID?)
-                            }
-                        }
-                        .onChange(of: selectedServerID) { _, newValue in
-                            viewModel.selectedConnectionID = newValue
-                        }
-                    }
-
-                    // Process metadata variables option
-                    Toggle("Process metadata variables before upload", isOn: $processVariablesBeforeUpload)
-                        .font(.subheadline)
-
-                    if isProcessingVariables {
-                        HStack(spacing: 8) {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text("Processing variables... \(variablesProcessProgress)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-
-                    // C2PA signing option (hidden if no certificate)
-                    if SettingsViewModel.hasC2PASigningCertificate {
-                        Toggle("Sign with C2PA before upload", isOn: $signWithC2PABeforeUpload)
-                            .font(.subheadline)
-
-                        if isSigningC2PA {
-                            HStack(spacing: 8) {
-                                ProgressView()
-                                    .controlSize(.small)
-                                Text("Signing... \(c2paSignProgress)")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-
-                    // IPTC metadata check option
-                    Toggle("Check IPTC metadata before upload", isOn: $checkIPTCBeforeUpload)
-                        .font(.subheadline)
-                        .onChange(of: checkIPTCBeforeUpload) { _, newValue in
-                            UserDefaults.standard.set(newValue, forKey: UserDefaultsKeys.ftpCheckIPTCBeforeUpload)
-                        }
-
-                    if checkIPTCBeforeUpload {
-                        DisclosureGroup("Required fields") {
-                            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 4) {
-                                ForEach(IPTCMetadata.FieldKey.allCases, id: \.self) { field in
-                                    Toggle(field.displayName, isOn: Binding(
-                                        get: { checkedIPTCFields.contains(field) },
-                                        set: { isOn in
-                                            if isOn { checkedIPTCFields.insert(field) }
-                                            else { checkedIPTCFields.remove(field) }
-                                            persistCheckedFields()
-                                        }
-                                    ))
-                                    .font(.caption)
-                                    .toggleStyle(.checkbox)
-                                }
-                            }
-                        }
-                        .font(.caption)
-
-                        if isCheckingIPTC {
-                            HStack(spacing: 8) {
-                                ProgressView()
-                                    .controlSize(.small)
-                                Text("Checking metadata... \(iptcCheckProgress)")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-
-                    if !preprocessErrors.isEmpty {
-                        VStack(alignment: .leading, spacing: 2) {
-                            ForEach(preprocessErrors, id: \.self) { error in
-                                Text(error)
-                                    .font(.caption)
-                                    .foregroundStyle(.orange)
-                                    .lineLimit(2)
-                            }
-                        }
-                    }
-
-                    if !viewModel.errorMessages.isEmpty {
-                        VStack(alignment: .leading, spacing: 2) {
-                            ForEach(viewModel.errorMessages, id: \.self) { error in
-                                Text(error)
-                                    .font(.caption)
-                                    .foregroundStyle(.red)
-                                    .lineLimit(2)
-                            }
-                        }
-                    }
-
-                    HStack {
-                        Spacer()
-                        Button("Upload") {
-                            startUpload(renderFirst: false)
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(uploadDisabled)
-
-                        Button("Render JPEG & Upload") {
-                            startUpload(renderFirst: true)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(uploadDisabled)
-                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             } label: {
                 Label("Current Upload", systemImage: "arrow.up.circle")
@@ -240,35 +122,292 @@ struct FTPUploadView: View {
             }
         }
         .padding()
-        .frame(minWidth: 480)
+        .frame(minWidth: 720)
         .onAppear {
             activeFiles = files
             viewModel.loadConnections()
             viewModel.loadHistory()
             selectedServerID = viewModel.selectedConnectionID
         }
+        .task(id: activeFiles) {
+            await detectFileInfo()
+        }
         .onChange(of: files) { _, newFiles in
             activeFiles = newFiles
         }
-        .sheet(isPresented: $showIPTCCheckResults) {
-            IPTCCheckResultsView(
-                results: iptcCheckResults,
-                totalFileCount: activeFiles.count,
-                onCancel: {
-                    showIPTCCheckResults = false
-                    iptcCheckResults = []
-                },
-                onProceed: {
-                    showIPTCCheckResults = false
-                    iptcCheckResults = []
-                    guard let id = selectedServerID,
-                          let connection = viewModel.connections.first(where: { $0.id == id }) else { return }
-                    Task {
-                        await continueUpload(renderFirst: pendingUploadRenderFirst, connection: connection)
+        .onChange(of: viewModel.isShowingServerForm) { _, showing in
+            // When the server form closes after adding a server from this dialog, the
+            // freshly-saved connection is in editingConnection. Auto-select it so the
+            // Upload button isn't left disabled (uploadDisabled requires a selection).
+            guard !showing,
+                  selectedServerID == nil,
+                  viewModel.connections.contains(where: { $0.id == viewModel.editingConnection.id }) else { return }
+            selectedServerID = viewModel.editingConnection.id
+            viewModel.selectedConnectionID = selectedServerID
+        }
+        .sheet(isPresented: $viewModel.isShowingServerForm) {
+            FTPServerForm(viewModel: viewModel)
+        }
+    }
+
+    // MARK: - File List (left column)
+
+    private var fileListColumn: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "photo.on.rectangle")
+                    .foregroundStyle(.secondary)
+                Text("\(activeFiles.count) file\(activeFiles.count == 1 ? "" : "s")")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 1) {
+                    ForEach(activeFiles, id: \.self) { url in
+                        UploadFileRow(
+                            url: url,
+                            info: fileInfo[url],
+                            status: metadataStatus[url],
+                            willRender: needsRender(url),
+                            thumbnailService: thumbnailService
+                        )
                     }
                 }
-            )
+                .padding(4)
+            }
+            .frame(maxWidth: .infinity, maxHeight: 320, alignment: .leading)
+            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 6))
+
+            Toggle("Skip automatic rendering of edited files", isOn: $skipRenderingEdited)
+                .font(.caption)
+                .toggleStyle(.checkbox)
+                .help("When on, edited files upload as their originals instead of being rendered to JPEG. RAW files still render unless changed in Settings ▸ FTP.")
         }
+        .frame(width: 300)
+    }
+
+    // MARK: - Options (right column)
+
+    @ViewBuilder
+    private var uploadOptions: some View {
+        // Server selection
+        if viewModel.connections.isEmpty {
+            HStack {
+                Text("No FTP servers configured")
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Add Server") {
+                    viewModel.startEditingConnection()
+                }
+            }
+        } else {
+            Picker("Server", selection: $selectedServerID) {
+                Text("Select...").tag(nil as UUID?)
+                ForEach(viewModel.connections) { conn in
+                    Text(conn.name).tag(conn.id as UUID?)
+                }
+            }
+            .onChange(of: selectedServerID) { _, newValue in
+                viewModel.selectedConnectionID = newValue
+            }
+        }
+
+        // Process metadata variables option
+        Toggle("Process metadata variables before upload", isOn: $processVariablesBeforeUpload)
+            .font(.subheadline)
+        if isProcessingVariables {
+            progressRow("Processing variables... \(variablesProcessProgress)")
+        }
+
+        // C2PA signing option (hidden if no certificate)
+        if SettingsViewModel.hasC2PASigningCertificate {
+            Toggle("Sign with C2PA before upload", isOn: $signWithC2PABeforeUpload)
+                .font(.subheadline)
+            if isSigningC2PA {
+                progressRow("Signing... \(c2paSignProgress)")
+            }
+        }
+
+        // Metadata-requirement rules are configured globally; the file list shows per-image
+        // warnings and Upload is blocked while any Require field is empty.
+        Label("Required-metadata rules are set in Settings ▸ Library & Metadata.", systemImage: "checkmark.seal")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+        if !preprocessErrors.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(preprocessErrors, id: \.self) { error in
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .lineLimit(2)
+                }
+            }
+        }
+
+        if !viewModel.errorMessages.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(viewModel.errorMessages, id: \.self) { error in
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .lineLimit(2)
+                }
+            }
+        }
+    }
+
+    private func progressRow(_ text: String) -> some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+            Text(text)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: - Action
+
+    private var uploadActionBar: some View {
+        let renderCount = activeFiles.reduce(into: 0) { $0 += needsRender($1) ? 1 : 0 }
+        let requiredMissing = metadataViolationCount(.error)
+        let warnMissing = metadataViolationCount(.warn)
+        return VStack(alignment: .trailing, spacing: 4) {
+            if requiredMissing > 0 {
+                Label("\(requiredMissing) file\(requiredMissing == 1 ? "" : "s") missing required metadata", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            } else if warnMissing > 0 {
+                Label("\(warnMissing) file\(warnMissing == 1 ? "" : "s") missing recommended metadata", systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+            if !activeFiles.isEmpty {
+                Text(uploadSummary(renderCount: renderCount))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+            Button("Upload") {
+                startUpload(renderURLs: Set(activeFiles.filter { needsRender($0) }))
+            }
+            .buttonStyle(.borderedProminent)
+            .keyboardShortcut(.defaultAction)
+            .disabled(uploadDisabled)
+        }
+    }
+
+    private func metadataViolationCount(_ severity: UploadMetadataStatus.Severity) -> Int {
+        activeFiles.reduce(into: 0) { $0 += (metadataStatus[$1]?.severity == severity ? 1 : 0) }
+    }
+
+    private func uploadSummary(renderCount: Int) -> String {
+        let total = activeFiles.count
+        if renderCount == 0 {
+            return "Upload \(total) file\(total == 1 ? "" : "s") as-is"
+        } else if renderCount == total {
+            return "Render \(total) file\(total == 1 ? "" : "s") to JPEG, then upload"
+        } else {
+            return "Render \(renderCount), upload \(total - renderCount) as-is"
+        }
+    }
+
+    // MARK: - Render Decision
+
+    /// A file is rendered to JPEG before upload when it's a RAW (and the always-render-RAW
+    /// setting is on) or when it carries visible develop/crop edits (unless the user opted to
+    /// skip rendering edited files). Already-finished JPEGs with no edits upload untouched.
+    private func needsRender(_ url: URL) -> Bool {
+        let info = fileInfo[url] ?? UploadFileInfo(isRaw: SupportedImageFormats.isRaw(url: url), hasDevelop: false, hasCrop: false)
+        if info.isRaw && alwaysRenderRAW { return true }
+        return info.hasAnyEdit && !skipRenderingEdited
+    }
+
+    /// Resolves RAW/edit/crop facts for every queued file using the same camera-raw resolution
+    /// the render pipeline uses (batch metadata read + in-memory override + RAW sidecar), so the
+    /// dialog's badges and render decisions match exactly what an upload would produce.
+    @MainActor
+    private func detectFileInfo() async {
+        let urls = activeFiles
+        var metadataMap = (try? await readService.readBatchFullMetadata(urls: urls)) ?? [:]
+        EditExportPipeline.resolveCameraRaw(into: &metadataMap, urls: urls, inMemory: inMemoryCameraRaw)
+        guard !Task.isCancelled else { return }
+
+        var info: [URL: UploadFileInfo] = [:]
+        info.reserveCapacity(urls.count)
+        for url in urls {
+            let settings = metadataMap[url]?.cameraRaw ?? inMemoryCameraRaw(url)
+            let hasCrop = settings?.crop?.isEffectiveCrop ?? false
+            var hasDevelop = false
+            if var noCrop = settings {
+                noCrop.crop = nil
+                hasDevelop = !noCrop.isEmpty
+            }
+            info[url] = UploadFileInfo(isRaw: SupportedImageFormats.isRaw(url: url), hasDevelop: hasDevelop, hasCrop: hasCrop)
+        }
+        fileInfo = info
+
+        // Evaluate metadata requirements against the global config, with the Person Shown
+        // face-scan rule. Face data is loaded off the main actor (per-folder file I/O).
+        let levels = MetadataRequirements.load()
+        let faceInfo = await Self.loadFaceInfo(for: urls)
+        guard !Task.isCancelled else { return }
+        var status: [URL: UploadMetadataStatus] = [:]
+        status.reserveCapacity(urls.count)
+        for url in urls {
+            status[url] = Self.evaluateRequirements(url: url, metadata: metadataMap[url], levels: levels, face: faceInfo[url])
+        }
+        metadataStatus = status
+    }
+
+    /// Loads per-file face-scan facts (was it scanned, how many faces) for the Person Shown rule.
+    /// Groups by parent folder so each folder's `.face_data/face_data.json` is read once.
+    nonisolated private static func loadFaceInfo(for urls: [URL]) async -> [URL: FaceInfo] {
+        let storage = FaceDataStorageService()
+        var byFolder: [URL: FolderFaceData?] = [:]
+        var result: [URL: FaceInfo] = [:]
+        for url in urls {
+            let folder = url.deletingLastPathComponent()
+            let data: FolderFaceData?
+            if let cached = byFolder[folder] {
+                data = cached
+            } else {
+                data = storage.loadFaceData(for: folder)
+                byFolder[folder] = data
+            }
+            guard let data else { result[url] = FaceInfo(scanned: false, faceCount: 0); continue }
+            let count = data.faces.reduce(into: 0) { $0 += ($1.imageURL.path == url.path ? 1 : 0) }
+            // A scannedFiles entry marks "examined" even when zero faces were found; legacy data may
+            // only carry faces, so treat any detected face as proof the file was scanned too.
+            let scanned = data.scannedFiles[url.path] != nil || count > 0
+            result[url] = FaceInfo(scanned: scanned, faceCount: count)
+        }
+        return result
+    }
+
+    /// Computes which non-optional fields are empty for one file. Person Shown is suppressed when the
+    /// image was scanned and has no faces — requiring a name on a faceless photo is meaningless and
+    /// would otherwise permanently block its upload.
+    nonisolated private static func evaluateRequirements(url: URL, metadata: IPTCMetadata?, levels: MetadataRequirements.Levels, face: FaceInfo?) -> UploadMetadataStatus {
+        var missingRequired: [String] = []
+        var missingWarn: [String] = []
+        for field in IPTCMetadata.FieldKey.userSelectable {
+            guard let level = levels[field], level != .optional else { continue }
+            let empty = metadata.map { field.isEmpty(in: $0) } ?? true
+            guard empty else { continue }
+            if field == .personShown, let face, face.scanned, face.faceCount == 0 { continue }
+            switch level {
+            case .require: missingRequired.append(field.displayName)
+            case .warnOnEmpty: missingWarn.append(field.displayName)
+            case .optional: break
+            }
+        }
+        return UploadMetadataStatus(missingRequired: missingRequired, missingWarn: missingWarn)
     }
 
     // MARK: - History Entry
@@ -367,10 +506,12 @@ struct FTPUploadView: View {
     // MARK: - Upload Logic
 
     private var uploadDisabled: Bool {
-        selectedServerID == nil || viewModel.isUploading || viewModel.isRendering || isProcessingVariables || isSigningC2PA || isCheckingIPTC || activeFiles.isEmpty
+        selectedServerID == nil || viewModel.isUploading || viewModel.isRendering
+            || isProcessingVariables || isSigningC2PA || activeFiles.isEmpty
+            || metadataViolationCount(.error) > 0
     }
 
-    private func startUpload(renderFirst: Bool) {
+    private func startUpload(renderURLs: Set<URL>) {
         guard let id = selectedServerID,
               let connection = viewModel.connections.first(where: { $0.id == id }) else { return }
 
@@ -378,21 +519,11 @@ struct FTPUploadView: View {
 
         Task {
             preprocessErrors = []
-
-            // IPTC metadata check (before any side effects)
-            if checkIPTCBeforeUpload && !checkedIPTCFields.isEmpty {
-                let passed = await performIPTCCheck(files: activeFiles)
-                if !passed {
-                    pendingUploadRenderFirst = renderFirst
-                    return
-                }
-            }
-
-            await continueUpload(renderFirst: renderFirst, connection: connection)
+            await continueUpload(renderURLs: renderURLs, connection: connection)
         }
     }
 
-    private func continueUpload(renderFirst: Bool, connection: FTPConnection) async {
+    private func continueUpload(renderURLs: Set<URL>, connection: FTPConnection) async {
         if processVariablesBeforeUpload {
             isProcessingVariables = true
             variablesProcessProgress = "0/\(activeFiles.count)"
@@ -405,56 +536,7 @@ struct FTPUploadView: View {
             await signFilesWithC2PA(activeFiles)
         }
 
-        beginUpload(files: activeFiles, connection: connection, renderFirst: renderFirst)
-    }
-
-    private func performIPTCCheck(files: [URL]) async -> Bool {
-        isCheckingIPTC = true
-        iptcCheckProgress = ""
-        defer { isCheckingIPTC = false; iptcCheckProgress = "" }
-
-        do {
-            iptcCheckProgress = "Reading metadata..."
-            let metadataMap = try await readService.readBatchFullMetadata(urls: files)
-
-            var results: [IPTCCheckResult] = []
-            for url in files {
-                guard let metadata = metadataMap[url] else {
-                    results.append(IPTCCheckResult(
-                        fileName: url.lastPathComponent,
-                        url: url,
-                        missingFields: Array(checkedIPTCFields).sorted { $0.displayName < $1.displayName }
-                    ))
-                    continue
-                }
-                let missing = checkedIPTCFields.filter { $0.isEmpty(in: metadata) }
-                    .sorted { $0.displayName < $1.displayName }
-                if !missing.isEmpty {
-                    results.append(IPTCCheckResult(
-                        fileName: url.lastPathComponent,
-                        url: url,
-                        missingFields: missing
-                    ))
-                }
-            }
-
-            if results.isEmpty {
-                return true
-            }
-
-            iptcCheckResults = results
-            showIPTCCheckResults = true
-            return false
-        } catch {
-            preprocessErrors.append("IPTC check failed: \(error.localizedDescription)")
-            return true // Don't block upload on check failure
-        }
-    }
-
-    private func persistCheckedFields() {
-        if let data = try? JSONEncoder().encode(Array(checkedIPTCFields)) {
-            UserDefaults.standard.set(data, forKey: UserDefaultsKeys.ftpCheckedIPTCFields)
-        }
+        beginUpload(files: activeFiles, connection: connection, renderURLs: renderURLs)
     }
 
     private func signFilesWithC2PA(_ files: [URL]) async {
@@ -487,12 +569,10 @@ struct FTPUploadView: View {
         c2paSignProgress = ""
     }
 
-    private func beginUpload(files: [URL], connection: FTPConnection, renderFirst: Bool) {
-        if renderFirst {
-            viewModel.renderAndUploadFiles(files, to: connection, readService: readService, writeEngine: writeEngine, inMemoryCameraRaw: inMemoryCameraRaw)
-        } else {
-            viewModel.uploadFiles(files, to: connection)
-        }
+    private func beginUpload(files: [URL], connection: FTPConnection, renderURLs: Set<URL>) {
+        // The view model renders only the files in renderURLs and uploads the rest as-is
+        // (and short-circuits to the plain upload path when nothing needs rendering).
+        viewModel.uploadFiles(files, renderURLs: renderURLs, to: connection, readService: readService, writeEngine: writeEngine, inMemoryCameraRaw: inMemoryCameraRaw)
         onStartUpload?()
     }
 
@@ -559,5 +639,106 @@ struct FTPUploadView: View {
         let resolved = interpolator.resolve(value, filename: filename, existingMetadata: ref, sequenceIndex: sequenceIndex)
         if resolved != value { changed = true }
         return resolved.isEmpty ? nil : resolved
+    }
+}
+
+// MARK: - Upload File Row
+
+/// One row in the upload file list: a tiny square thumbnail, the filename, and badges
+/// indicating RAW / develop edits / crop, plus whether the file will be rendered to JPEG.
+private struct UploadFileRow: View {
+    let url: URL
+    let info: UploadFileInfo?
+    let status: UploadMetadataStatus?
+    let willRender: Bool
+    let thumbnailService: ThumbnailService
+
+    @State private var thumbnail: NSImage?
+
+    var body: some View {
+        HStack(spacing: 8) {
+            thumbView
+            metadataIcon
+                .frame(width: 14)
+            Text(url.lastPathComponent)
+                .font(.caption)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 4)
+            badges
+        }
+        .padding(.vertical, 2)
+        .padding(.horizontal, 4)
+        .task(id: url) {
+            thumbnail = await thumbnailService.loadThumbnail(for: url)
+        }
+    }
+
+    @ViewBuilder
+    private var metadataIcon: some View {
+        switch status?.severity {
+        case .error:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 11))
+                .foregroundStyle(.red)
+                .help("Missing required metadata: \(status?.missingRequired.joined(separator: ", ") ?? "")")
+        case .warn:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 11))
+                .foregroundStyle(.orange)
+                .help("Missing recommended metadata: \(status?.missingWarn.joined(separator: ", ") ?? "")")
+        case .ok, .none:
+            EmptyView()
+        }
+    }
+
+    private var thumbView: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 3)
+                .fill(.quaternary)
+            if let thumbnail {
+                Image(nsImage: thumbnail)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                Image(systemName: "photo")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .frame(width: 32, height: 32)
+        .clipShape(RoundedRectangle(cornerRadius: 3))
+    }
+
+    @ViewBuilder
+    private var badges: some View {
+        HStack(spacing: 4) {
+            if info?.isRaw == true {
+                Text("RAW")
+                    .font(.system(size: 8, weight: .semibold))
+                    .padding(.horizontal, 3)
+                    .padding(.vertical, 1)
+                    .background(.secondary.opacity(0.18), in: Capsule())
+                    .foregroundStyle(.secondary)
+            }
+            if info?.hasDevelop == true {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.orange)
+                    .help("Has develop edits")
+            }
+            if info?.hasCrop == true {
+                Image(systemName: "crop")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.blue)
+                    .help("Cropped")
+            }
+            if willRender {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.green)
+                    .help("Will be rendered to JPEG before upload")
+            }
+        }
     }
 }

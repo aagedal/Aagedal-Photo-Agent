@@ -489,7 +489,7 @@ final class BrowserViewModel {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         // Read the configured required set once per rebuild (not per image) so the filter always
         // reflects the latest Settings without the view model observing UserDefaults.
-        let requiredFields = requiredMetadataFilter == .any ? [] : MetadataRequirements.load()
+        let requiredFields = requiredMetadataFilter == .any ? [] : MetadataRequirements.requireFields()
         return images.filter { imagePassesFilter($0, query: query, requiredFields: requiredFields) }
     }
 
@@ -1568,7 +1568,7 @@ final class BrowserViewModel {
 
             if affectsFilterKey || isFilteringActive {
                 let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                let requiredFields = requiredMetadataFilter == .any ? [] : MetadataRequirements.load()
+                let requiredFields = requiredMetadataFilter == .any ? [] : MetadataRequirements.requireFields()
                 var needsFullRebuild = false
                 for url in selectedImageIDs {
                     guard let imageIdx = urlToImageIndex[url] else { continue }

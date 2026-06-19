@@ -62,13 +62,18 @@ nonisolated enum UserDefaultsKeys {
     static let lastUsedFTPConnectionID = "lastUsedFTPConnectionID"
     static let ftpUploadHistory = "ftpUploadHistory"
     static let activityHistory = "activityHistory"
-    static let ftpCheckIPTCBeforeUpload = "ftpCheckIPTCBeforeUpload"
-    static let ftpCheckedIPTCFields = "ftpCheckedIPTCFields"
+    /// When set (default true), RAW files are always rendered to JPEG before upload, even
+    /// when the "skip automatic rendering of edited files" toggle is on in the upload dialog.
+    static let ftpAlwaysRenderRAW = "ftpAlwaysRenderRAW"
 
     // MARK: - Required Metadata
-    /// JSON-encoded `[IPTCMetadata.FieldKey]` the user considers mandatory. Drives the browser's
-    /// "Required metadata" filter (Complete / Incomplete). Absent → `FieldKey.defaultCheckedFields`.
+    /// Legacy: JSON-encoded `[IPTCMetadata.FieldKey]` the user considered mandatory. Superseded by
+    /// `metadataRequirementLevels`; still read once to migrate those fields to `.require`.
     static let requiredMetadataFields = "requiredMetadataFields"
+    /// JSON-encoded `[FieldKey.rawValue: MetadataRequirementLevel.rawValue]`. The global 3-state
+    /// (Optional / Warn / Require) config driving the browser's Required Metadata filter and the FTP
+    /// upload checks. Fields absent from the map are `.optional`.
+    static let metadataRequirementLevels = "metadataRequirementLevels"
 
     // MARK: - Browser
     static let rawRenderAsHDR = "rawRenderAsHDR"
