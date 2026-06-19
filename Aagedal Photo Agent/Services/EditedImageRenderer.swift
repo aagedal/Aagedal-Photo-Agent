@@ -408,10 +408,8 @@ nonisolated enum EditedImageRenderer {
 
     static func outputURL(for sourceURL: URL, in outputFolder: URL, extension ext: String) -> URL {
         let base = sourceURL.deletingPathExtension().lastPathComponent
-        let sourceExt = sourceURL.pathExtension.lowercased()
-        let filenameBase = sourceExt.isEmpty ? base : "\(base)_\(sourceExt)"
         return outputFolder
-            .appendingPathComponent(filenameBase)
+            .appendingPathComponent(base)
             .appendingPathExtension(ext)
     }
 
