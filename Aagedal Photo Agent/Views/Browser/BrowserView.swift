@@ -171,6 +171,24 @@ struct BrowserView: View {
                 }
             }
 
+            Picker("Required Metadata", selection: $viewModel.requiredMetadataFilter) {
+                ForEach(BrowserViewModel.RequiredMetadataFilter.allCases, id: \.self) { filter in
+                    Text(filter.displayName).tag(filter)
+                }
+            }
+
+            Menu("Missing Field") {
+                ForEach(IPTCMetadata.FieldKey.userSelectable, id: \.self) { field in
+                    Toggle(field.displayName, isOn: Binding(
+                        get: { viewModel.missingFieldFilters.contains(field) },
+                        set: { isOn in
+                            if isOn { viewModel.missingFieldFilters.insert(field) }
+                            else { viewModel.missingFieldFilters.remove(field) }
+                        }
+                    ))
+                }
+            }
+
             Divider()
 
             Button("Clear Filters") {

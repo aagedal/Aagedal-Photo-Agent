@@ -104,6 +104,15 @@ final class BrowserViewModel {
     var editedFilter: EditedFilter = .any {
         didSet { if !isBatchUpdating { setNeedsVisibleRebuild() } }
     }
+    /// Completeness check against the user's required-metadata fields (configured in Settings).
+    var requiredMetadataFilter: RequiredMetadataFilter = .any {
+        didSet { if !isBatchUpdating { setNeedsVisibleRebuild() } }
+    }
+    /// Fields the browser should filter to "missing". OR semantics, matching color-label selection:
+    /// an image passes when it's missing at least one of these. Empty → inactive.
+    var missingFieldFilters: Set<IPTCMetadata.FieldKey> = [] {
+        didSet { if !isBatchUpdating { setNeedsVisibleRebuild() } }
+    }
 
     @ObservationIgnored private var folderFilterStates: [URL: FolderFilterState] = [:]
 
@@ -184,6 +193,8 @@ final class BrowserViewModel {
             || !selectedColorLabels.isEmpty
             || personShownFilter != .any
             || editedFilter != .any
+            || requiredMetadataFilter != .any
+            || !missingFieldFilters.isEmpty
     }
 
     @ObservationIgnored private(set) var selectedImagesCache: [ImageFile] = []
@@ -409,7 +420,7 @@ final class BrowserViewModel {
         }
     }
 
-    private func imagePassesFilter(_ image: ImageFile, query: String) -> Bool {
+    private func imagePassesFilter(_ image: ImageFile, query: String, requiredFields: Set<IPTCMetadata.FieldKey>) -> Bool {
         if image.starRating.rawValue < minimumStarRating.rawValue {
             return false
         }
@@ -432,6 +443,29 @@ final class BrowserViewModel {
         case .unedited:
             if image.hasDevelopEdits || image.hasCropEdits { return false }
         }
+        // Required-metadata completeness against the user's configured fields. A nil metadata record
+        // counts every field as missing, so such images are "incomplete" unless nothing is required.
+        if requiredMetadataFilter != .any {
+            let missingAny: Bool
+            if let meta = image.metadata {
+                missingAny = requiredFields.contains { $0.isEmpty(in: meta) }
+            } else {
+                missingAny = !requiredFields.isEmpty
+            }
+            switch requiredMetadataFilter {
+            case .any: break
+            case .complete: if missingAny { return false }
+            case .incomplete: if !missingAny { return false }
+            }
+        }
+        // "Missing field" submenu — OR semantics: pass if missing at least one selected field.
+        if !missingFieldFilters.isEmpty {
+            let meta = image.metadata
+            let missesOne = missingFieldFilters.contains { field in
+                meta.map { field.isEmpty(in: $0) } ?? true
+            }
+            if !missesOne { return false }
+        }
         guard !query.isEmpty else { return true }
         if image.filenameLowercased.contains(query) {
             return true
@@ -442,21 +476,21 @@ final class BrowserViewModel {
         if image.keywordsLowercased.contains(where: { $0.contains(query) }) {
             return true
         }
-        // Search IPTC metadata fields (title, description, creator, city, country, event)
-        if let meta = image.metadata {
-            if let title = meta.title, title.localizedCaseInsensitiveContains(query) { return true }
-            if let desc = meta.description, desc.localizedCaseInsensitiveContains(query) { return true }
-            if let creator = meta.creator, creator.localizedCaseInsensitiveContains(query) { return true }
-            if let city = meta.city, city.localizedCaseInsensitiveContains(query) { return true }
-            if let country = meta.country, country.localizedCaseInsensitiveContains(query) { return true }
-            if let event = meta.event, event.localizedCaseInsensitiveContains(query) { return true }
+        // Search IPTC metadata fields (title, description, creator, city, country, event) via the
+        // pre-lowercased blob built when metadata was assigned — `query` is already lowercased, so
+        // this is a single substring scan instead of six locale-folding searches per image.
+        if image.metadataSearchLowercased.contains(query) {
+            return true
         }
         return false
     }
 
     private func applyFilters(to images: [ImageFile]) -> [ImageFile] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return images.filter { imagePassesFilter($0, query: query) }
+        // Read the configured required set once per rebuild (not per image) so the filter always
+        // reflects the latest Settings without the view model observing UserDefaults.
+        let requiredFields = requiredMetadataFilter == .any ? [] : MetadataRequirements.load()
+        return images.filter { imagePassesFilter($0, query: query, requiredFields: requiredFields) }
     }
 
     func clearFilters() {
@@ -466,6 +500,8 @@ final class BrowserViewModel {
             selectedColorLabels.removeAll()
             personShownFilter = .any
             editedFilter = .any
+            requiredMetadataFilter = .any
+            missingFieldFilters.removeAll()
         }
     }
 
@@ -1532,11 +1568,12 @@ final class BrowserViewModel {
 
             if affectsFilterKey || isFilteringActive {
                 let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                let requiredFields = requiredMetadataFilter == .any ? [] : MetadataRequirements.load()
                 var needsFullRebuild = false
                 for url in selectedImageIDs {
                     guard let imageIdx = urlToImageIndex[url] else { continue }
                     let updatedImage = images[imageIdx]
-                    let passes = imagePassesFilter(updatedImage, query: query)
+                    let passes = imagePassesFilter(updatedImage, query: query, requiredFields: requiredFields)
                     if let visibleIdx = urlToVisibleIndex[url] {
                         if passes {
                             visibleImages[visibleIdx] = updatedImage
@@ -3113,11 +3150,27 @@ final class BrowserViewModel {
         }
     }
 
+    enum RequiredMetadataFilter: String, CaseIterable {
+        case any = "Any"
+        case complete = "Complete"
+        case incomplete = "Incomplete"
+
+        var displayName: String {
+            switch self {
+            case .any: return "Any"
+            case .complete: return "Has Required Metadata"
+            case .incomplete: return "Missing Required Metadata"
+            }
+        }
+    }
+
     struct FolderFilterState {
         var minimumStarRating: StarRating = .none
         var selectedColorLabels: Set<ColorLabel> = []
         var personShownFilter: PersonShownFilter = .any
         var editedFilter: EditedFilter = .any
+        var requiredMetadataFilter: RequiredMetadataFilter = .any
+        var missingFieldFilters: Set<IPTCMetadata.FieldKey> = []
         var searchText: String = ""
     }
 
@@ -3128,6 +3181,8 @@ final class BrowserViewModel {
             selectedColorLabels: selectedColorLabels,
             personShownFilter: personShownFilter,
             editedFilter: editedFilter,
+            requiredMetadataFilter: requiredMetadataFilter,
+            missingFieldFilters: missingFieldFilters,
             searchText: searchText
         )
     }
@@ -3139,12 +3194,16 @@ final class BrowserViewModel {
                 selectedColorLabels = saved.selectedColorLabels
                 personShownFilter = saved.personShownFilter
                 editedFilter = saved.editedFilter
+                requiredMetadataFilter = saved.requiredMetadataFilter
+                missingFieldFilters = saved.missingFieldFilters
                 searchText = saved.searchText
             } else {
                 minimumStarRating = .none
                 selectedColorLabels = []
                 personShownFilter = .any
                 editedFilter = .any
+                requiredMetadataFilter = .any
+                missingFieldFilters = []
                 searchText = ""
             }
         }

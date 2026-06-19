@@ -566,6 +566,8 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            RequiredMetadataFieldsSection()
+
             Section("Write Behavior") {
                 Picker("Mode", selection: $settingsViewModel.metadataWritePreset) {
                     ForEach(MetadataWritePreset.allCases) { preset in

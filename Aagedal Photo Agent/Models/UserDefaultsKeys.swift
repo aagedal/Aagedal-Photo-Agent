@@ -65,6 +65,11 @@ nonisolated enum UserDefaultsKeys {
     static let ftpCheckIPTCBeforeUpload = "ftpCheckIPTCBeforeUpload"
     static let ftpCheckedIPTCFields = "ftpCheckedIPTCFields"
 
+    // MARK: - Required Metadata
+    /// JSON-encoded `[IPTCMetadata.FieldKey]` the user considers mandatory. Drives the browser's
+    /// "Required metadata" filter (Complete / Incomplete). Absent → `FieldKey.defaultCheckedFields`.
+    static let requiredMetadataFields = "requiredMetadataFields"
+
     // MARK: - Browser
     static let rawRenderAsHDR = "rawRenderAsHDR"
     static let showAllFiles = "showAllFiles"

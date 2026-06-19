@@ -45,7 +45,15 @@ struct ImageFile: Identifiable, Hashable, Sendable {
     var exifOrientation: Int
     var hasPendingMetadataChanges: Bool
     var pendingFieldNames: [String] = []
-    var metadata: IPTCMetadata?
+    var metadata: IPTCMetadata? {
+        didSet { metadataSearchLowercased = Self.searchableText(from: metadata) }
+    }
+    /// Pre-lowercased concatenation of the searchable IPTC fields (title, description, creator,
+    /// city, country, event). Built once when `metadata` is assigned so the search filter can use a
+    /// single plain `.contains` instead of six `localizedCaseInsensitiveContains` calls per image
+    /// per keystroke — the latter folds Unicode and allocates, which janked the MainActor rebuild on
+    /// large folders. Matches the `keywordsLowercased` / `personShownLowercased` pattern.
+    var metadataSearchLowercased: String = ""
     var isNativeHDR: Bool
     var personShown: [String] {
         didSet { personShownLowercased = personShown.map { $0.lowercased() } }
@@ -118,10 +126,21 @@ struct ImageFile: Identifiable, Hashable, Sendable {
         self.pendingFieldNames = source.pendingFieldNames
         self.isNativeHDR = source.isNativeHDR
         self.metadata = source.metadata
+        self.metadataSearchLowercased = source.metadataSearchLowercased
         self.personShown = source.personShown
         self.personShownLowercased = source.personShownLowercased
         self.keywords = source.keywords
         self.keywordsLowercased = source.keywordsLowercased
+    }
+
+    /// Lowercased, newline-joined blob of the IPTC fields the browser search filters on. Built once
+    /// per metadata assignment so the per-keystroke filter is a single substring scan. `nil`/empty
+    /// fields are dropped; returns "" when there's nothing searchable.
+    static func searchableText(from metadata: IPTCMetadata?) -> String {
+        guard let metadata else { return "" }
+        let fields = [metadata.title, metadata.description, metadata.creator,
+                      metadata.city, metadata.country, metadata.event]
+        return fields.compactMap { $0 }.joined(separator: "\n").lowercased()
     }
 
     /// Compute next EXIF orientation after 90° CW rotation.

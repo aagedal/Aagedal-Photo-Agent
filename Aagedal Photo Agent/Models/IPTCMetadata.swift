@@ -1123,6 +1123,11 @@ extension IPTCMetadata {
         }
 
         static let defaultCheckedFields: Set<FieldKey> = [.title, .description, .creator, .copyright]
+
+        /// Fields offered in the required-metadata settings and the browser's "Missing Field" filter.
+        /// Excludes `dateCreated`, which has no editor in the metadata panel — requiring or filtering
+        /// on it would be meaningless. The case itself is kept so stored prefs still decode.
+        static let userSelectable: [FieldKey] = allCases.filter { $0 != .dateCreated }
     }
 }
 
