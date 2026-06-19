@@ -204,7 +204,7 @@ struct StructuredKeywordEditor: View {
                 .focused($renameFieldFocused)
                 .onAppear { renameFieldFocused = true }
                 .onSubmit { renamingID = nil }
-                .onExitCommand { renamingID = nil }
+                .onExitCommand { cancelRename(node) }
             } else {
                 Text(node.name.isEmpty ? "(empty)" : node.name)
                     .foregroundStyle(node.name.isEmpty ? .secondary : (node.isContainer ? .secondary : .primary))
@@ -438,6 +438,17 @@ struct StructuredKeywordEditor: View {
         focusedID = node.id
         renamingID = node.id
         renameFieldFocused = true
+    }
+
+    /// Exits rename mode on Esc. If the node was never given a name (and has no
+    /// children), it's a leftover blank row from an aborted add — remove it
+    /// rather than leave an empty keyword in the list.
+    private func cancelRename(_ node: EditableStructuredKeyword) {
+        renamingID = nil
+        if node.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && node.children.isEmpty {
+            delete(node)
+        }
     }
 
     // MARK: - Keyboard helpers
