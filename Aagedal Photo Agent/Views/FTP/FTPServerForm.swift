@@ -69,9 +69,20 @@ struct FTPServerForm: View {
                 }
             }
 
+            connectionTestStatus
+
             Divider()
 
             HStack {
+                Button("Test Connection") {
+                    viewModel.testConnection()
+                }
+                .disabled(
+                    viewModel.editingConnection.host.isEmpty ||
+                    viewModel.editingConnection.username.isEmpty ||
+                    viewModel.editingPassword.isEmpty ||
+                    viewModel.connectionTest == .testing
+                )
                 Spacer()
                 Button("Cancel") {
                     viewModel.isShowingServerForm = false
@@ -85,5 +96,32 @@ struct FTPServerForm: View {
         }
         .padding()
         .frame(minWidth: 380)
+        // A stale "Connected"/error result is misleading once any field changes.
+        .onChange(of: viewModel.editingConnection) { viewModel.resetConnectionTest() }
+        .onChange(of: viewModel.editingPassword) { viewModel.resetConnectionTest() }
+    }
+
+    @ViewBuilder
+    private var connectionTestStatus: some View {
+        switch viewModel.connectionTest {
+        case .idle:
+            EmptyView()
+        case .testing:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Testing connection…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        case .success:
+            Label("Connected", systemImage: "checkmark.circle.fill")
+                .font(.caption)
+                .foregroundStyle(.green)
+        case .failure(let message):
+            Label(message, systemImage: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(.red)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }

@@ -58,6 +58,9 @@ struct FTPUploadView: View {
     @State private var c2paSignProgress = ""
     @State private var expandedHistoryID: UUID?
     @State private var preprocessErrors: [String] = []
+    /// Files that will upload as-is and whose `.xmp` sidecar holds non-optional metadata the
+    /// embedded file is missing — the row offers a one-click sync from sidecar into the file.
+    @State private var sidecarMergeableURLs: Set<URL> = []
 
     init(viewModel: FTPViewModel, files: [URL], readService: SwiftExifReadService, writeEngine: any MetadataWriteEngine, inMemoryCameraRaw: @escaping @MainActor (URL) -> CameraRawSettings?, thumbnailService: ThumbnailService, onStartUpload: (() -> Void)? = nil) {
         self.viewModel = viewModel
@@ -125,6 +128,8 @@ struct FTPUploadView: View {
         .frame(minWidth: 720)
         .onAppear {
             activeFiles = files
+            // Don't carry errors from a previous upload session into a fresh dialog.
+            viewModel.errorMessages = []
             viewModel.loadConnections()
             viewModel.loadHistory()
             selectedServerID = viewModel.selectedConnectionID
@@ -134,6 +139,11 @@ struct FTPUploadView: View {
         }
         .onChange(of: files) { _, newFiles in
             activeFiles = newFiles
+        }
+        .onChange(of: skipRenderingEdited) {
+            // The render decision flips which metadata source the check evaluates
+            // (embedded-only as-is vs embedded∪sidecar when rendered), so re-evaluate.
+            Task { await detectFileInfo() }
         }
         .onChange(of: viewModel.isShowingServerForm) { _, showing in
             // When the server form closes after adding a server from this dialog, the
@@ -171,6 +181,8 @@ struct FTPUploadView: View {
                             info: fileInfo[url],
                             status: metadataStatus[url],
                             willRender: needsRender(url),
+                            canMergeSidecar: sidecarMergeableURLs.contains(url),
+                            onMergeSidecar: { mergeSidecar(for: url) },
                             thumbnailService: thumbnailService
                         )
                     }
@@ -324,6 +336,12 @@ struct FTPUploadView: View {
     /// skip rendering edited files). Already-finished JPEGs with no edits upload untouched.
     private func needsRender(_ url: URL) -> Bool {
         let info = fileInfo[url] ?? UploadFileInfo(isRaw: SupportedImageFormats.isRaw(url: url), hasDevelop: false, hasCrop: false)
+        return Self.willRender(info: info, alwaysRenderRAW: alwaysRenderRAW, skipRenderingEdited: skipRenderingEdited)
+    }
+
+    /// Pure render-decision rule, shared by `needsRender` (view) and `detectFileInfo`
+    /// (metadata evaluation) so the warning logic and the badges can't disagree.
+    private static func willRender(info: UploadFileInfo, alwaysRenderRAW: Bool, skipRenderingEdited: Bool) -> Bool {
         if info.isRaw && alwaysRenderRAW { return true }
         return info.hasAnyEdit && !skipRenderingEdited
     }
@@ -353,16 +371,77 @@ struct FTPUploadView: View {
         fileInfo = info
 
         // Evaluate metadata requirements against the global config, with the Person Shown
-        // face-scan rule. Face data is loaded off the main actor (per-folder file I/O).
+        // face-scan rule. Face data and XMP sidecars are loaded off the main actor (file I/O).
         let levels = MetadataRequirements.load()
         let faceInfo = await Self.loadFaceInfo(for: urls)
+        let sidecars = Self.loadSidecars(for: urls)
         guard !Task.isCancelled else { return }
         var status: [URL: UploadMetadataStatus] = [:]
         status.reserveCapacity(urls.count)
+        var mergeable: Set<URL> = []
         for url in urls {
-            status[url] = Self.evaluateRequirements(url: url, metadata: metadataMap[url], levels: levels, face: faceInfo[url])
+            let embedded = metadataMap[url]
+            let sidecar = sidecars[url]
+            // Render-aware: a rendered file inherits the sidecar's descriptive metadata via
+            // the export overlay (SidecarIPTCOverlay), so evaluate against embedded ∪ sidecar.
+            // A file uploaded as-is carries only its embedded metadata over FTP (the sidecar
+            // doesn't travel), so evaluate against embedded alone.
+            let renders = Self.willRender(info: info[url] ?? UploadFileInfo(isRaw: SupportedImageFormats.isRaw(url: url), hasDevelop: false, hasCrop: false),
+                                          alwaysRenderRAW: alwaysRenderRAW, skipRenderingEdited: skipRenderingEdited)
+            status[url] = Self.evaluateRequirements(url: url, embedded: embedded, sidecar: sidecar, willRender: renders, levels: levels, face: faceInfo[url])
+            // Offer a sidecar→file sync for as-is files whose sidecar holds non-optional
+            // fields the embedded copy is missing (the JXL/JPEG drift case).
+            if !renders, let sidecar, Self.sidecarFillsMissing(embedded: embedded, sidecar: sidecar, levels: levels, face: faceInfo[url]) {
+                mergeable.insert(url)
+            }
         }
         metadataStatus = status
+        sidecarMergeableURLs = mergeable
+    }
+
+    /// Loads the `.xmp` sidecar metadata for each file (descriptive IPTC + rating/label),
+    /// grouped off the main actor. Mirrors how the panel and export pipeline source sidecars.
+    private static func loadSidecars(for urls: [URL]) -> [URL: IPTCMetadata] {
+        let service = XMPSidecarService()
+        var result: [URL: IPTCMetadata] = [:]
+        for url in urls {
+            if let meta = service.loadSidecar(for: url) { result[url] = meta }
+        }
+        return result
+    }
+
+    /// True when the sidecar carries a value for a non-optional field that the embedded
+    /// file is missing — i.e. syncing the sidecar into the file would reduce the warnings.
+    nonisolated private static func sidecarFillsMissing(embedded: IPTCMetadata?, sidecar: IPTCMetadata, levels: MetadataRequirements.Levels, face: FaceInfo?) -> Bool {
+        for field in IPTCMetadata.FieldKey.userSelectable {
+            guard let level = levels[field], level != .optional else { continue }
+            if field == .personShown, let face, face.scanned, face.faceCount == 0 { continue }
+            let embeddedEmpty = embedded.map { field.isEmpty(in: $0) } ?? true
+            if embeddedEmpty && !field.isEmpty(in: sidecar) { return true }
+        }
+        return false
+    }
+
+    /// Writes the `.xmp` sidecar's authoritative descriptive metadata into the image file so an
+    /// as-is upload carries what the metadata panel shows. Uses the same overwrite semantics as
+    /// the export overlay (`toOverwriteFields` + rating/label), so the file ends up consistent
+    /// with the sidecar rather than just gap-filled. Re-evaluates afterward.
+    private func mergeSidecar(for url: URL) {
+        Task {
+            let service = XMPSidecarService()
+            guard let sidecar = service.loadSidecar(for: url),
+                  sidecar.hasDescriptiveContent || sidecar.rating != nil || sidecar.label != nil else { return }
+            var fields = sidecar.hasDescriptiveContent ? sidecar.toOverwriteFields() : [:]
+            if let rating = sidecar.rating { fields[.rating] = String(rating) }
+            if let label = sidecar.label, !label.isEmpty { fields[.label] = label }
+            guard !fields.isEmpty else { return }
+            do {
+                try await writeEngine.writeFields(fields, to: [url])
+            } catch {
+                preprocessErrors.append("Failed to sync sidecar metadata into \(url.lastPathComponent): \(error.localizedDescription)")
+            }
+            await detectFileInfo()
+        }
     }
 
     /// Loads per-file face-scan facts (was it scanned, how many faces) for the Person Shown rule.
@@ -393,12 +472,21 @@ struct FTPUploadView: View {
     /// Computes which non-optional fields are empty for one file. Person Shown is suppressed when the
     /// image was scanned and has no faces — requiring a name on a faceless photo is meaningless and
     /// would otherwise permanently block its upload.
-    nonisolated private static func evaluateRequirements(url: URL, metadata: IPTCMetadata?, levels: MetadataRequirements.Levels, face: FaceInfo?) -> UploadMetadataStatus {
+    nonisolated private static func evaluateRequirements(url: URL, embedded: IPTCMetadata?, sidecar: IPTCMetadata?, willRender: Bool, levels: MetadataRequirements.Levels, face: FaceInfo?) -> UploadMetadataStatus {
         var missingRequired: [String] = []
         var missingWarn: [String] = []
         for field in IPTCMetadata.FieldKey.userSelectable {
             guard let level = levels[field], level != .optional else { continue }
-            let empty = metadata.map { field.isEmpty(in: $0) } ?? true
+            let embeddedEmpty = embedded.map { field.isEmpty(in: $0) } ?? true
+            // For a rendered upload the sidecar's value reaches the output, so the field is
+            // satisfied if either source has it. For an as-is upload only the embedded value
+            // ships, so the sidecar can't satisfy the requirement.
+            let empty: Bool
+            if willRender, let sidecar {
+                empty = embeddedEmpty && field.isEmpty(in: sidecar)
+            } else {
+                empty = embeddedEmpty
+            }
             guard empty else { continue }
             if field == .personShown, let face, face.scanned, face.faceCount == 0 { continue }
             switch level {
@@ -651,6 +739,8 @@ private struct UploadFileRow: View {
     let info: UploadFileInfo?
     let status: UploadMetadataStatus?
     let willRender: Bool
+    let canMergeSidecar: Bool
+    let onMergeSidecar: () -> Void
     let thumbnailService: ThumbnailService
 
     @State private var thumbnail: NSImage?
@@ -665,6 +755,16 @@ private struct UploadFileRow: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer(minLength: 4)
+            if canMergeSidecar {
+                Button(action: onMergeSidecar) {
+                    Label("Sync from sidecar", systemImage: "arrow.down.doc")
+                        .font(.system(size: 9))
+                        .labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+                .help("Write the .xmp sidecar's metadata (shown in the panel) into this file, so an as-is upload carries it.")
+            }
             badges
         }
         .padding(.vertical, 2)

@@ -76,11 +76,11 @@ struct ActivityHistoryView: View {
                         }
                     }
                 }
-                .frame(maxHeight: 360)
+                .frame(maxHeight: 480)
             }
         }
         .padding(12)
-        .frame(width: 480)
+        .frame(width: 560)
     }
 
     private func toggle(_ id: UUID) {

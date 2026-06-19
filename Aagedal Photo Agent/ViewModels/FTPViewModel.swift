@@ -27,6 +27,14 @@ final class FTPViewModel {
     var editingConnection = FTPConnection()
     var editingPassword = ""
 
+    enum ConnectionTestState: Equatable {
+        case idle
+        case testing
+        case success
+        case failure(String)
+    }
+    var connectionTest: ConnectionTestState = .idle
+
     var uploadHistory = FTPUploadHistory()
 
     /// Shared import/upload activity log. Assigned by the owner (ContentView).
@@ -36,10 +44,12 @@ final class FTPViewModel {
     private let connectionsKey = UserDefaultsKeys.ftpConnections
     @ObservationIgnored private var uploadTask: Task<Void, Never>?
     @ObservationIgnored private var completionTask: Task<Void, Never>?
+    @ObservationIgnored private var connectionTestTask: Task<Void, Never>?
 
     deinit {
         uploadTask?.cancel()
         completionTask?.cancel()
+        connectionTestTask?.cancel()
     }
 
     func loadConnections() {
@@ -85,7 +95,38 @@ final class FTPViewModel {
     func startEditingConnection(_ connection: FTPConnection? = nil) {
         editingConnection = connection ?? FTPConnection()
         editingPassword = connection.flatMap { KeychainService.load(forKey: $0.keychainKey) } ?? ""
+        connectionTestTask?.cancel()
+        connectionTest = .idle
         isShowingServerForm = true
+    }
+
+    /// Clears a stale test result after the user edits a connection field, so the
+    /// "Connected" / error status never lingers against changed credentials.
+    func resetConnectionTest() {
+        connectionTestTask?.cancel()
+        connectionTest = .idle
+    }
+
+    /// Probes the connection currently being edited (connect + auth + list the remote
+    /// directory) without uploading anything, updating `connectionTest` for the form UI.
+    func testConnection() {
+        let connection = editingConnection
+        let password = editingPassword
+        connectionTestTask?.cancel()
+        connectionTest = .testing
+        connectionTestTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await ftpService.testConnection(connection: connection, password: password)
+                guard !Task.isCancelled else { return }
+                self.connectionTest = .success
+            } catch is CancellationError {
+                // Superseded by a newer test or cancelled — leave state to the newer run.
+            } catch {
+                guard !Task.isCancelled else { return }
+                self.connectionTest = .failure(error.localizedDescription)
+            }
+        }
     }
 
     func saveEditingConnection() {
@@ -203,7 +244,7 @@ final class FTPViewModel {
         uploadTask?.cancel()
         uploadTask = Task { [weak self] in
             guard let self else { return }
-            for url in urls {
+            for (index, url) in urls.enumerated() {
                 guard !Task.isCancelled else { break }
                 do {
                     try await ftpService.uploadFile(
@@ -223,6 +264,12 @@ final class FTPViewModel {
                     self.markFileComplete(url.lastPathComponent)
                 } catch {
                     self.errorMessages.append("Failed to upload \(url.lastPathComponent): \(error.localizedDescription)")
+                    // The server is unreachable / rejecting auth — every remaining file
+                    // would fail identically, so stop rather than retrying each in turn.
+                    if (error as? FTPService.FTPError)?.isServerLevel == true {
+                        self.appendBatchAbortNotice(remaining: urls.count - index - 1)
+                        break
+                    }
                 }
             }
             self.recordUploadCompletion(id: historyID)
@@ -350,7 +397,7 @@ final class FTPViewModel {
             self.totalCount = uploadURLs.count
             self.completedCount = 0
 
-            for url in uploadURLs {
+            for (index, url) in uploadURLs.enumerated() {
                 guard !Task.isCancelled else { break }
                 do {
                     try await ftpService.uploadFile(
@@ -366,6 +413,10 @@ final class FTPViewModel {
                     self.markFileComplete(url.lastPathComponent, uploadWeightOffset: 0.5, uploadWeightRange: 0.5)
                 } catch {
                     self.errorMessages.append("Failed to upload \(url.lastPathComponent): \(error.localizedDescription)")
+                    if (error as? FTPService.FTPError)?.isServerLevel == true {
+                        self.appendBatchAbortNotice(remaining: uploadURLs.count - index - 1)
+                        break
+                    }
                 }
             }
 
@@ -415,6 +466,13 @@ final class FTPViewModel {
             }
             counter += 1
         }
+    }
+
+    /// Appends a one-line notice that the batch was stopped early because the server
+    /// was unreachable, so the user understands why later files show no result.
+    private func appendBatchAbortNotice(remaining: Int) {
+        guard remaining > 0 else { return }
+        errorMessages.append("Stopped — \(remaining) more file\(remaining == 1 ? "" : "s") not uploaded (server unreachable).")
     }
 
     // MARK: - Progress Helpers

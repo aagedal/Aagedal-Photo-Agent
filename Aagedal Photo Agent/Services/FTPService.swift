@@ -163,6 +163,67 @@ struct FTPService: Sendable {
         progressHandler(finalProgress)
     }
 
+    /// Probes a connection without transferring a file: connect + authenticate +
+    /// list the configured remote directory. Reuses the same credential handling and
+    /// transport/security flags as the upload path so a passing test reflects what an
+    /// upload would do. Fails fast (`--connect-timeout`, no `--retry`) — a probe should
+    /// surface an unreachable server immediately rather than retrying for several seconds.
+    nonisolated func testConnection(connection: FTPConnection, password: String) async throws {
+        try Self.validateNetrcField(connection.host, name: "host")
+        try Self.validateNetrcField(connection.username, name: "username")
+        try Self.validateNetrcField(password, name: "password")
+
+        let listURL = Self.remoteDirectoryURL(connection: connection)
+
+        let netrcURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("netrc")
+        let netrcContent = "machine \(connection.host) login \(connection.username) password \(password)\n"
+        guard let netrcData = netrcContent.data(using: .utf8) else {
+            throw FTPError.encodingFailed
+        }
+        try Self.writeNetrcAtomically(netrcData, to: netrcURL)
+        defer { try? FileManager.default.removeItem(at: netrcURL) }
+
+        let arguments = Self.testConnectionArguments(
+            remoteURL: listURL,
+            netrcPath: netrcURL.path,
+            connection: connection
+        )
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
+        process.arguments = arguments
+
+        let stderrPipe = Pipe()
+        process.standardError = stderrPipe
+        process.standardOutput = FileHandle.nullDevice
+
+        let stderrBuffer = LockedBuffer()
+        stderrPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty, let str = String(data: data, encoding: .utf8) else { return }
+            stderrBuffer.append(str)
+        }
+
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+            process.terminationHandler = { proc in
+                stderrPipe.fileHandleForReading.readabilityHandler = nil
+                if proc.terminationStatus == 0 {
+                    continuation.resume()
+                } else {
+                    continuation.resume(throwing: FTPError.uploadFailed(proc.terminationStatus, stderrBuffer.value))
+                }
+            }
+            do {
+                try process.run()
+            } catch {
+                stderrPipe.fileHandleForReading.readabilityHandler = nil
+                continuation.resume(throwing: error)
+            }
+        }
+    }
+
     /// Builds the remote upload target URL for a file. Extracted as a pure function
     /// so the filename encoding is unit-testable.
     ///
@@ -188,6 +249,58 @@ struct FTPService: Sendable {
         let encodedPath = rawPath.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? rawPath
         let encodedName = filename.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? filename
         return "\(scheme)://\(connection.host):\(connection.port)\(encodedPath)\(encodedName)"
+    }
+
+    /// Builds the URL for the configured remote directory (trailing slash), used by the
+    /// connection test to list it. The trailing slash is what makes curl treat the target
+    /// as a directory to list rather than a file to fetch.
+    nonisolated static func remoteDirectoryURL(connection: FTPConnection) -> String {
+        let scheme = connection.useSFTP ? "sftp" : "ftp"
+        let rawPath = connection.remotePath.hasSuffix("/")
+            ? connection.remotePath
+            : connection.remotePath + "/"
+        let encodedPath = rawPath.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? rawPath
+        return "\(scheme)://\(connection.host):\(connection.port)\(encodedPath)"
+    }
+
+    /// Builds the curl argument vector for a connection test (directory listing). Shares
+    /// the transport/security flags with the upload path via `transportFlags`, but fails
+    /// fast: a short `--connect-timeout` and no `--retry`, so an unreachable server is
+    /// surfaced immediately instead of after several retry cycles.
+    nonisolated static func testConnectionArguments(
+        remoteURL: String,
+        netrcPath: String,
+        connection: FTPConnection
+    ) -> [String] {
+        var arguments = [
+            "--netrc-file", netrcPath,
+            "--connect-timeout", "10",
+            "--globoff",
+            "--list-only",
+            remoteURL,
+        ]
+        arguments.append(contentsOf: transportFlags(for: connection))
+        return arguments
+    }
+
+    /// The TLS/SFTP/insecure flags shared by the upload and test-connection paths, so a
+    /// passing test exercises the same transport security an upload would.
+    nonisolated static func transportFlags(for connection: FTPConnection) -> [String] {
+        var flags: [String] = []
+        if connection.useSFTP {
+            if connection.allowInsecureHostVerification {
+                flags.append("--insecure")
+            }
+        } else if connection.useTLS {
+            // Explicit FTPS: require AUTH TLS and abort if the server can't upgrade,
+            // rather than silently transferring credentials in the clear. --insecure
+            // additionally skips certificate verification for self-signed servers.
+            flags.append("--ssl-reqd")
+            if connection.allowInsecureHostVerification {
+                flags.append("--insecure")
+            }
+        }
+        return flags
     }
 
     /// Builds the curl argument vector for an upload. Extracted as a pure function
@@ -216,23 +329,10 @@ struct FTPService: Sendable {
             remoteURL,
         ]
 
-        if connection.useSFTP {
-            if connection.allowInsecureHostVerification {
-                arguments.append("--insecure")
-            }
-        } else {
+        if !connection.useSFTP {
             arguments.append("--ftp-create-dirs")
-            if connection.useTLS {
-                // Explicit FTPS: require AUTH TLS and abort if the server can't
-                // upgrade, rather than silently transferring credentials in the
-                // clear. --insecure additionally skips certificate verification
-                // for self-signed servers (opt-in).
-                arguments.append("--ssl-reqd")
-                if connection.allowInsecureHostVerification {
-                    arguments.append("--insecure")
-                }
-            }
         }
+        arguments.append(contentsOf: transportFlags(for: connection))
         return arguments
     }
 
@@ -288,6 +388,22 @@ struct FTPService: Sendable {
                 return "FTP \(field) \(reason); whitespace and '#' are not allowed"
             case .netrcCreationFailed(let errno):
                 return "Failed to create temporary credential file (errno \(errno))"
+            }
+        }
+
+        /// True when the failure means every other file in the batch would fail the
+        /// same way — the server is unreachable, rejecting auth, or refusing TLS — so
+        /// the upload loop should stop rather than retry each remaining file in turn.
+        /// File-specific failures (e.g. 23 disk write, 26 local read) stay non-fatal.
+        var isServerLevel: Bool {
+            guard case .uploadFailed(let code, _) = self else { return false }
+            switch code {
+            case 5, 6, 7, 9, 28, 35, 51, 67:
+                // proxy refused, DNS, connect, access denied, timeout,
+                // TLS handshake, cert verify, login denied
+                return true
+            default:
+                return false
             }
         }
 

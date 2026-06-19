@@ -2,6 +2,7 @@ import SwiftUI
 
 struct FTPUploadProgressView: View {
     @Bindable var viewModel: FTPViewModel
+    @State private var isHoveringDismiss = false
 
     private var sortedProgress: [FTPUploadProgress] {
         viewModel.uploadProgress.values.sorted { a, b in
@@ -48,7 +49,10 @@ struct FTPUploadProgressView: View {
                         }
                     }
                 }
-                .frame(maxHeight: 120)
+                // Size to content (cap at ~6 rows / 120pt). A fixed maxHeight makes the
+                // greedy ScrollView reserve the full height even for a few files, leaving
+                // a large empty gap above the error text.
+                .frame(height: min(CGFloat(sortedProgress.count) * 18 + 4, 120))
             }
 
             if !viewModel.errorMessages.isEmpty {
@@ -88,12 +92,14 @@ struct FTPUploadProgressView: View {
             Button {
                 viewModel.dismissUploadCompletion()
             } label: {
-                Image(systemName: "checkmark")
+                // Swap to an "x" on hover so it reads as a close affordance.
+                Image(systemName: isHoveringDismiss ? "xmark" : "checkmark")
                     .font(.caption.weight(.semibold))
             }
             .buttonStyle(.borderless)
-            .foregroundStyle(.green)
-            .help("Dismiss")
+            .foregroundStyle(isHoveringDismiss ? Color.secondary : Color.green)
+            .onHover { isHoveringDismiss = $0 }
+            .help("Close")
         }
     }
 }

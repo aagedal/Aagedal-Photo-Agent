@@ -1011,7 +1011,7 @@ struct ContentView: View {
                     Spacer()
                 }
                 .padding(.horizontal, 12)
-                .padding(.vertical, 4)
+                .padding(.vertical, 2)
             }
 
             if isRenderingEditedFolder {
