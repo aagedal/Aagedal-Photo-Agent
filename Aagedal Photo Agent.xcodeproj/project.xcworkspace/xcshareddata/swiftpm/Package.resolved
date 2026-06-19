@@ -15,8 +15,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://codeberg.org/taagedal/SwiftExif.git",
       "state" : {
-        "revision" : "13af3af12679c4cbf86c5e18ac7372ed92de5fe1",
-        "version" : "1.9.6"
+        "revision" : "719338b21d52b40f0158ed85ffa40221ba1b4158",
+        "version" : "1.9.7"
       }
     }
   ],

@@ -23,6 +23,11 @@ final class FTPViewModel {
     var renderTotalCount = 0
     var uploadCompleted = false
 
+    /// Distinct `Uploaded` sub-folders created by the most recent render-and-upload, so the
+    /// owner (ContentView) can reveal them in the sidebar on completion — otherwise the
+    /// freshly created folder stays hidden until a manual close/reopen.
+    var renderedUploadedFolders: [URL] = []
+
     var isShowingServerForm = false
     var editingConnection = FTPConnection()
     var editingPassword = ""
@@ -240,6 +245,7 @@ final class FTPViewModel {
         totalCount = urls.count
         uploadProgress = [:]
         overallProgress = 0
+        renderedUploadedFolders = []
 
         uploadTask?.cancel()
         uploadTask = Task { [weak self] in
@@ -305,6 +311,7 @@ final class FTPViewModel {
         totalCount = urls.count
         uploadProgress = [:]
         overallProgress = 0
+        renderedUploadedFolders = []
 
         uploadTask?.cancel()
         uploadTask = Task { [weak self] in
@@ -354,18 +361,24 @@ final class FTPViewModel {
                     continue
                 }
                 do {
-                    // Render each file into its own subfolder. The render output name is
-                    // derived from the source basename only, so a shared temp dir would let
-                    // a later render clobber an earlier one on disk — losing the first photo
-                    // and uploading the second twice. Per-item folders make every render path
-                    // unique regardless of basename collisions.
-                    let itemDir = tempDir.appendingPathComponent("r\(index)", isDirectory: true)
-                    try FileManager.default.createDirectory(at: itemDir, withIntermediateDirectories: true)
+                    // Render into an `Uploaded` sub-folder of the source's own folder so the
+                    // rendered JPEG persists for the user (the prior temp-dir output was lost
+                    // on cleanup). The render output name is derived from the source basename,
+                    // so apply an always-incrementing `_N` suffix afterward (see
+                    // `sequencedUploadName`): this keeps two same-named sources from clobbering
+                    // each other on disk and de-duplicates the remote name (which is derived
+                    // from the local filename).
+                    let uploadedDir = url.deletingLastPathComponent()
+                        .appendingPathComponent("Uploaded", isDirectory: true)
+                    try FileManager.default.createDirectory(at: uploadedDir, withIntermediateDirectories: true)
                     let outputURL = try await EditExportPipeline.renderItem(
                         sourceURL: url, cameraRaw: metadataMap[url]?.cameraRaw, kind: .jpeg,
-                        outputFolder: itemDir, folderURL: url.deletingLastPathComponent(),
+                        outputFolder: uploadedDir, folderURL: url.deletingLastPathComponent(),
                         writeEngine: writeEngine, failureTracker: failureTracker)
-                    uploadURLs.append(try uniqueUploadName(for: outputURL, avoiding: &usedNames))
+                    uploadURLs.append(try sequencedUploadName(for: outputURL, avoiding: &usedNames))
+                    if !self.renderedUploadedFolders.contains(uploadedDir) {
+                        self.renderedUploadedFolders.append(uploadedDir)
+                    }
                 } catch {
                     self.errorMessages.append("Failed to render \(url.lastPathComponent): \(error.localizedDescription)")
                 }
@@ -448,21 +461,23 @@ final class FTPViewModel {
         }
     }
 
-    /// Returns `url` renamed in place when its filename is already used in this batch,
-    /// so two distinct photos that share a basename don't overwrite each other on the
-    /// remote server (the remote name is derived from the local filename). The first
-    /// occurrence keeps its name; later ones become `name-2.ext`, `name-3.ext`, ….
-    private func uniqueUploadName(for url: URL, avoiding usedNames: inout Set<String>) throws -> URL {
-        if usedNames.insert(url.lastPathComponent).inserted { return url }
+    /// Renames a freshly rendered file in place with an always-incrementing `_N` suffix,
+    /// starting at `_1` and counting up past any name already present on disk (a render
+    /// from a previous upload) or already taken in this batch. Because the remote upload
+    /// name is derived from the local filename, the suffix also keeps repeated uploads of
+    /// the same photo from overwriting each other on the server. Returns the renamed URL.
+    private func sequencedUploadName(for url: URL, avoiding usedNames: inout Set<String>) throws -> URL {
+        let dir = url.deletingLastPathComponent()
         let base = url.deletingPathExtension().lastPathComponent
         let ext = url.pathExtension
-        var counter = 2
+        var counter = 1
         while true {
-            let candidate = ext.isEmpty ? "\(base)-\(counter)" : "\(base)-\(counter).\(ext)"
-            if usedNames.insert(candidate).inserted {
-                let newURL = url.deletingLastPathComponent().appendingPathComponent(candidate)
-                try FileManager.default.moveItem(at: url, to: newURL)
-                return newURL
+            let name = ext.isEmpty ? "\(base)_\(counter)" : "\(base)_\(counter).\(ext)"
+            let candidate = dir.appendingPathComponent(name)
+            if !FileManager.default.fileExists(atPath: candidate.path),
+               usedNames.insert(name).inserted {
+                try FileManager.default.moveItem(at: url, to: candidate)
+                return candidate
             }
             counter += 1
         }

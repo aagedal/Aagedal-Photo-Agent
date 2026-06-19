@@ -164,6 +164,7 @@ struct ContentView: View {
             .modifier(ContentViewModifiers(
                 browserViewModel: browserViewModel,
                 metadataViewModel: metadataViewModel,
+                ftpViewModel: ftpViewModel,
                 faceRecognitionViewModel: faceRecognitionViewModel,
                 settingsViewModel: settingsViewModel,
                 importViewModel: importViewModel,
@@ -1964,6 +1965,7 @@ struct ContentView: View {
 struct ContentViewModifiers: ViewModifier {
     let browserViewModel: BrowserViewModel
     let metadataViewModel: MetadataViewModel
+    let ftpViewModel: FTPViewModel
     let faceRecognitionViewModel: FaceRecognitionViewModel
     let settingsViewModel: SettingsViewModel
     let importViewModel: ImportViewModel
@@ -2080,6 +2082,15 @@ struct ContentViewModifiers: ViewModifier {
             }
         return base
             .modifier(AutoRefreshModifier(browserViewModel: browserViewModel, metadataViewModel: metadataViewModel))
+            .onChange(of: ftpViewModel.uploadCompleted) { _, completed in
+                // When an upload that rendered files finishes, re-scan and expand each source
+                // folder that got a new `Uploaded/` sub-folder so the user discovers it (the
+                // sidecar tree otherwise only builds child lists on first manual expand).
+                guard completed else { return }
+                for folder in ftpViewModel.renderedUploadedFolders {
+                    browserViewModel.revealExportedSubfolder(folder)
+                }
+            }
             // Lives outside `base`: that modifier chain is at the
             // type-checker's expression-complexity limit already.
             .onReceive(NotificationCenter.default.publisher(for: .openRecentFolder)) { notification in
