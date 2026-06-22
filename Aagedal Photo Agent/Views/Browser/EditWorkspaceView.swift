@@ -49,6 +49,11 @@ struct EditWorkspaceView: View {
     @State private var dragCropAngle: Double?
     @State private var dragCropRegion: NormalizedCropRegion?
     @State private var editUndoManager = UndoManager()
+    /// URLs whose develop settings actually changed during this edit session. On exit these are
+    /// proactively re-rendered into the full-screen + thumbnail caches so the return to culling is
+    /// instant and correct, rather than catching up reactively a beat later. Populated wherever
+    /// edits are written back to `images[].cameraRawSettings`; consumed in `handleEditWorkspaceDisappear`.
+    @State private var editedURLsThisSession: Set<URL> = []
     @State private var metalPipeline: MetalEditPipeline?
     @State private var metalCoordinator = MetalPreviewView.Coordinator()
     /// The selected node in the layer chain. `.global` shows the global adjustment sliders;
@@ -1092,23 +1097,59 @@ struct EditWorkspaceView: View {
             keyEventMonitor = nil
         }
 
-        // Render edited thumbnail in background for the image we just edited
-        if let url = selectedImageURL,
-           let index = browserViewModel.urlToImageIndex[url] {
+        // Proactively re-warm caches for every image whose develop settings changed this session,
+        // so the return to the grid/loupe is instant and correct instead of catching up reactively
+        // a beat later (which flashes a stale preview). `commitEditAdjustments` above already flushed
+        // the current image's edit through `syncCameraRawToImageFile`, so it's in the set too.
+        let editedURLs = editedURLsThisSession
+        guard !editedURLs.isEmpty else { return }
+
+        // Snapshot settings + orientation off the MainActor model into plain values so the warm
+        // tasks don't reach back into `browserViewModel.images`. `thumbSettings` keeps the raw
+        // settings (thumbnails render SDR); `fsSettings` applies the loupe's HDR normalization so
+        // warmed full-screen previews aren't SDR-clipped relative to the foreground render.
+        var thumbSettings: [URL: CameraRawSettings] = [:]
+        var fsSettings: [URL: CameraRawSettings] = [:]
+        var orientationByURL: [URL: Int] = [:]
+        let thumbnailService = browserViewModel.thumbnailService
+        for url in editedURLs {
+            guard let index = browserViewModel.urlToImageIndex[url] else { continue }
             let imageFile = browserViewModel.images[index]
-            if let settings = imageFile.cameraRawSettings, !settings.isEmpty {
-                let orientation = imageFile.exifOrientation
-                let thumbnailService = browserViewModel.thumbnailService
-                thumbnailService.invalidateEditedThumbnail(for: url)
-                Task.detached(priority: .utility) {
-                    _ = await thumbnailService.renderEditedThumbnail(
-                        for: url,
-                        settings: settings,
-                        exifOrientation: orientation
-                    )
-                }
+            orientationByURL[url] = imageFile.exifOrientation
+            guard let settings = imageFile.cameraRawSettings, !settings.isEmpty else { continue }
+            thumbSettings[url] = settings
+            var normalized = settings
+            if imageFile.isNativeHDR, normalized.hdrEditMode == nil {
+                normalized.hdrEditMode = 1
+            }
+            fsSettings[url] = normalized
+        }
+
+        // Regenerate grid thumbnails so the browser reflects the edits immediately.
+        for (url, settings) in thumbSettings {
+            let orientation = orientationByURL[url] ?? 1
+            thumbnailService.invalidateEditedThumbnail(for: url)
+            Task.detached(priority: .utility) {
+                _ = await thumbnailService.renderEditedThumbnail(
+                    for: url,
+                    settings: settings,
+                    exifOrientation: orientation
+                )
             }
         }
+
+        // Pre-warm the full-screen edited previews (loupe + grid full-screen cache). Screen-res
+        // decode matches the loupe's own load path.
+        let screenScale = NSScreen.main?.backingScaleFactor ?? 2.0
+        let screenMaxPx = max(NSScreen.main?.frame.width ?? 3840, NSScreen.main?.frame.height ?? 2160) * screenScale
+        let fsSettingsSnapshot = fsSettings
+        let orientationSnapshot = orientationByURL
+        browserViewModel.fullScreenImageCache.warmEditedPreviews(
+            for: Array(fsSettingsSnapshot.keys),
+            screenMaxPx: screenMaxPx,
+            settingsForURL: { fsSettingsSnapshot[$0] },
+            orientationForURL: { orientationSnapshot[$0] ?? 1 }
+        )
     }
 
     private func handleEditWorkspaceAppear() {
@@ -2077,6 +2118,8 @@ struct EditWorkspaceView: View {
         browserViewModel.thumbnailService.invalidateEditedThumbnail(for: url)
         // The full-screen cache's edited render was baked under the old settings.
         browserViewModel.fullScreenImageCache.invalidateEditedImage(for: url)
+        // Remember this image so its edited previews get pre-warmed on exit (see disappear handler).
+        editedURLsThisSession.insert(url)
     }
 
     private func fittedImageRect(in containerSize: CGSize, imageSize: CGSize) -> CGRect {
@@ -3700,6 +3743,7 @@ struct EditWorkspaceView: View {
                 }
                 browserViewModel.thumbnailService.invalidateEditedThumbnail(for: url)
                 browserViewModel.fullScreenImageCache.invalidateEditedImage(for: url)
+                editedURLsThisSession.insert(url)
             }
         }
 

@@ -271,58 +271,12 @@ final class FullScreenImageCache: @unchecked Sendable {
                     let filename = url.lastPathComponent
                     cacheLogger.info("Prefetching \(filename) (edited=\(isEdited))")
 
-                    var settings = settingsForURL?(url)
+                    let settings = settingsForURL?(url)
                     let orientation = orientationForURL?(url) ?? 1
-                    var image: CGImage?
-                    let isRAW = Self.isRawFile(url)
-
-                    if settings != nil {
-                        let ciImage: CIImage?
-                        if isRAW {
-                            // Use CIRAWFilter for flat/neutral decode — get as-shot WB for correct rendering
-                            if let rawResult = Self.loadRAWImage(from: url, draftMode: false, maxPixelSize: screenMaxPx) {
-                                guard !Task.isCancelled else { return }
-                                settings?.asShotNeutralTemperature = Double(rawResult.neutralTemperature)
-                                settings?.asShotNeutralTint = Double(rawResult.neutralTint)
-                                settings?.sourceHasHDRHeadroom = true
-                                ciImage = Self.downsample(rawResult.image, maxPixelSize: screenMaxPx)
-                            } else {
-                                ciImage = nil
-                            }
-                        } else {
-                            ciImage = Self.loadHDRPreview(from: url, maxPixelSize: screenMaxPx)
-                            guard !Task.isCancelled else { return }
-                        }
-                        if let ciImage {
-                            let processed: CIImage
-                            if let settings {
-                                // Async: suspends on the dedicated render queue rather than blocking
-                                // this prefetch task's cooperative-pool thread across the GPU wait.
-                                processed = await CameraRawApproximation.applyWithCropAsync(to: ciImage, settings: settings, exifOrientation: orientation)
-                            } else {
-                                processed = ciImage
-                            }
-                            guard !Task.isCancelled else { return }
-                            // Stamp content headroom so the prefetched edited HDR image engages
-                            // EDR on display (matches the foreground render path).
-                            image = CameraRawApproximation.createDisplayCGImage(processed, from: processed.extent)
-                        }
-                    }
-                    guard !Task.isCancelled else { return }
-                    if image == nil {
-                        // SDR fallback (or no edits active)
-                        guard var loaded = Self.loadDownsampled(from: url, maxPixelSize: screenMaxPx) else {
-                            cacheLogger.info("Prefetch failed: \(filename)")
-                            return
-                        }
-                        guard !Task.isCancelled else { return }
-                        if let settings {
-                            loaded = Self.applyCameraRaw(to: loaded, settings: settings, exifOrientation: orientation)
-                        }
-                        image = loaded
-                    }
-                    guard let image, !Task.isCancelled else {
-                        cacheLogger.info("Prefetch cancelled: \(filename)")
+                    guard let image = await Self.decodedEditedPreview(
+                        for: url, settings: settings, orientation: orientation, screenMaxPx: screenMaxPx
+                    ), !Task.isCancelled else {
+                        cacheLogger.info("Prefetch failed/cancelled: \(filename)")
                         return
                     }
 
@@ -352,6 +306,41 @@ final class FullScreenImageCache: @unchecked Sendable {
         return cachedImage(for: url, isEdited: isEdited)
     }
 
+    /// Proactively re-render edited screen-res previews for specific URLs into the edited cache,
+    /// replacing any stale entries. Called on develop-editor exit so the return to the grid/loupe
+    /// is an instant cache hit instead of a reactive re-decode (which causes a brief stale flash).
+    /// Renders via the shared `decodedEditedPreview` path — same RAW/HDR/SDR handling, as-shot WB,
+    /// and EDR headroom stamp as the loupe and prefetch. Low priority; never touches the unedited
+    /// caches. The reactive `onChange`/folder-poll paths remain the safety net for edits that reach
+    /// an image without the editor (batch paste, reset, external app).
+    nonisolated func warmEditedPreviews(
+        for urls: [URL],
+        screenMaxPx: CGFloat,
+        settingsForURL: @escaping @Sendable (URL) -> CameraRawSettings?,
+        orientationForURL: @escaping @Sendable (URL) -> Int
+    ) {
+        let targets = Array(Set(urls))
+        guard !targets.isEmpty else { return }
+        // Drop the stale edited renders synchronously so a concurrent loupe/grid read can't serve
+        // an entry baked under the old settings before the fresh render lands.
+        for url in targets { invalidateEditedImage(for: url) }
+
+        Task.detached(priority: .utility) { [weak self] in
+            guard let self else { return }
+            for url in targets {
+                guard !Task.isCancelled else { break }
+                guard let settings = settingsForURL(url) else { continue }
+                let orientation = orientationForURL(url)
+                guard let image = await Self.decodedEditedPreview(
+                    for: url, settings: settings, orientation: orientation, screenMaxPx: screenMaxPx
+                ) else { continue }
+                guard !Task.isCancelled else { break }
+                self.store(image, for: url, isEdited: true)
+                cacheLogger.info("Warmed edited preview on exit: \(url.lastPathComponent) (\(image.width)x\(image.height))")
+            }
+        }
+    }
+
     nonisolated func cancelAllPrefetch() {
         let tasksToCancel = lock.withLock {
             let tasks = Array(prefetchTasks.values)
@@ -371,6 +360,66 @@ final class FullScreenImageCache: @unchecked Sendable {
         guard extent.width > 0, extent.height > 0 else { return cgImage }
 
         return CameraRawApproximation.createDisplayCGImage(processed, from: extent) ?? cgImage
+    }
+
+    /// Decode `url` at screen resolution, applying `settings` if present, and return a
+    /// display-ready CGImage. RAW → CIRAWFilter flat/neutral decode with as-shot WB; other
+    /// formats → HDR-preserving preview; SDR fallback for formats CoreImage can't decode.
+    /// When `settings` is non-nil the edit is baked in and EDR content headroom stamped so the
+    /// result engages EDR on display (matches the foreground render path). Returns nil if the
+    /// decode fails or the task is cancelled. Shared by `startPrefetch` and `warmEditedPreviews`
+    /// so both render edited previews identically — keep this the single edited-decode path.
+    nonisolated static func decodedEditedPreview(
+        for url: URL,
+        settings: CameraRawSettings?,
+        orientation: Int,
+        screenMaxPx: CGFloat
+    ) async -> CGImage? {
+        var settings = settings
+        var image: CGImage?
+        let isRAW = isRawFile(url)
+
+        if settings != nil {
+            let ciImage: CIImage?
+            if isRAW {
+                // Use CIRAWFilter for flat/neutral decode — get as-shot WB for correct rendering
+                if let rawResult = loadRAWImage(from: url, draftMode: false, maxPixelSize: screenMaxPx) {
+                    guard !Task.isCancelled else { return nil }
+                    settings?.asShotNeutralTemperature = Double(rawResult.neutralTemperature)
+                    settings?.asShotNeutralTint = Double(rawResult.neutralTint)
+                    settings?.sourceHasHDRHeadroom = true
+                    ciImage = downsample(rawResult.image, maxPixelSize: screenMaxPx)
+                } else {
+                    ciImage = nil
+                }
+            } else {
+                ciImage = loadHDRPreview(from: url, maxPixelSize: screenMaxPx)
+                guard !Task.isCancelled else { return nil }
+            }
+            if let ciImage {
+                let processed: CIImage
+                if let settings {
+                    // Async: suspends on the dedicated render queue rather than blocking this
+                    // task's cooperative-pool thread across the GPU wait.
+                    processed = await CameraRawApproximation.applyWithCropAsync(to: ciImage, settings: settings, exifOrientation: orientation)
+                } else {
+                    processed = ciImage
+                }
+                guard !Task.isCancelled else { return nil }
+                image = CameraRawApproximation.createDisplayCGImage(processed, from: processed.extent)
+            }
+        }
+        guard !Task.isCancelled else { return nil }
+        if image == nil {
+            // SDR fallback (or no edits active)
+            guard var loaded = loadDownsampled(from: url, maxPixelSize: screenMaxPx) else { return nil }
+            guard !Task.isCancelled else { return nil }
+            if let settings {
+                loaded = applyCameraRaw(to: loaded, settings: settings, exifOrientation: orientation)
+            }
+            image = loaded
+        }
+        return image
     }
 
     // MARK: - Shared Image Loading

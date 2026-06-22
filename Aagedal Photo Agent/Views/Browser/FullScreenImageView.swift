@@ -425,6 +425,26 @@ struct FullScreenImageView: View {
                     }
 
                     if let file = currentImageFile {
+                        // Top-left: viewing-mode badge (original vs edited). Only meaningful when the
+                        // image actually has edits — otherwise both modes render identically, so hide it.
+                        if file.hasDevelopEdits || file.hasCropEdits {
+                            VStack {
+                                HStack {
+                                    Label(renderEdits ? "Viewing edits" : "Viewing original",
+                                          systemImage: renderEdits ? "slider.horizontal.3" : "photo")
+                                        .font(.caption)
+                                        .foregroundStyle(.white)
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 6)
+                                        .background((renderEdits ? Color.orange : Color.gray).opacity(0.8), in: Capsule())
+                                        .padding(.leading, 20)
+                                        .padding(.top, 20)
+                                    Spacer()
+                                }
+                                Spacer()
+                            }
+                        }
+
                         // Top-right: crop / edit / C2PA badges
                         if file.hasC2PA || file.hasDevelopEdits || file.hasCropEdits
                             || file.hasPendingMetadataChanges || file.isNativeHDR || file.cameraRawSettings?.hdrEditMode == 1 {
@@ -495,42 +515,36 @@ struct FullScreenImageView: View {
                         // Bottom-center: filename + indicators
                         VStack {
                             Spacer()
-                            HStack(spacing: 12) {
-                                Text(file.filename)
-                                    .font(.caption)
-                                    .foregroundStyle(.white)
+                            VStack(spacing: 4) {
+                                HStack(spacing: 12) {
+                                    Text(file.filename)
+                                        .font(.caption)
+                                        .foregroundStyle(.white)
 
-                                if isZoomedTo100 {
-                                    Text("1:1")
-                                        .font(.caption)
-                                        .foregroundStyle(.white.opacity(0.7))
-                                } else if abs(zoomScale - 1.0) > 0.01 {
-                                    Text("\(Int(zoomScale * 100))%")
-                                        .font(.caption)
-                                        .foregroundStyle(.white.opacity(0.7))
+                                    if isZoomedTo100 {
+                                        Text("1:1")
+                                            .font(.caption)
+                                            .foregroundStyle(.white.opacity(0.7))
+                                    } else if abs(zoomScale - 1.0) > 0.01 {
+                                        Text("\(Int(zoomScale * 100))%")
+                                            .font(.caption)
+                                            .foregroundStyle(.white.opacity(0.7))
+                                    }
+
+                                    if showFaceRectangles {
+                                        Text("Faces")
+                                            .font(.caption)
+                                            .foregroundStyle(.white.opacity(0.7))
+                                    }
                                 }
 
-                                if showFaceRectangles {
-                                    Text("Faces")
-                                        .font(.caption)
-                                        .foregroundStyle(.white.opacity(0.7))
-                                }
-
-                                if renderEdits {
-                                    Text("Edits")
-                                        .font(.caption)
-                                        .foregroundStyle(.white.opacity(0.7))
-                                }
-
-                                if scaling.useNearestNeighbor {
-                                    Text("NN")
-                                        .font(.caption)
-                                        .foregroundStyle(.white.opacity(0.7))
-                                }
+                                Text("Scaling: \(scaling.useNearestNeighbor ? "Nearest Neighbour" : "Bilinear")")
+                                    .font(.caption2)
+                                    .foregroundStyle(.white.opacity(0.7))
                             }
                             .padding(.horizontal, 12)
                             .padding(.vertical, 6)
-                            .background(.black.opacity(0.6), in: Capsule())
+                            .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 14))
                             .padding(.bottom, 16)
                         }
                     }
