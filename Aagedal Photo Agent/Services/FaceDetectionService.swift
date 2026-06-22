@@ -703,9 +703,11 @@ nonisolated struct FaceDetectionService: Sendable {
 
     /// Compute merge suggestions for groups that are close to the clustering threshold.
     /// Returns pairs of groups that might be the same person but didn't quite meet the threshold.
-    func computeMergeSuggestions(groups: [FaceGroup], faces: [DetectedFace], threshold: Float, marginPercent: Float = 0.15) -> [MergeSuggestion] {
+    func computeMergeSuggestions(groups: [FaceGroup], faces: [DetectedFace], threshold: Float, marginPercent: Float = 0.15, cache: FeaturePrintCache? = nil) -> [MergeSuggestion] {
         let faceLookup = Dictionary(uniqueKeysWithValues: faces.map { ($0.id, $0) })
-        let cache = FeaturePrintCache()
+        // Reuse the caller's cache when provided so feature prints unarchived on a prior
+        // call aren't re-unarchived here; fall back to a private cache otherwise.
+        let fpCache = cache ?? FeaturePrintCache()
         var suggestions: [MergeSuggestion] = []
 
         // Check pairs of groups
@@ -716,7 +718,7 @@ nonisolated struct FaceDetectionService: Sendable {
 
                 guard !group1Faces.isEmpty, !group2Faces.isEmpty else { continue }
 
-                let avgDistance = computeAverageLinkageDistance(group1Faces, group2Faces, cache: cache)
+                let avgDistance = computeAverageLinkageDistance(group1Faces, group2Faces, cache: fpCache)
 
                 // If distance is within margin of threshold, suggest merge
                 let margin = threshold * marginPercent

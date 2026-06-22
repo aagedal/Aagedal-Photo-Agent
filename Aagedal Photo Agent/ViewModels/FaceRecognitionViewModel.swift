@@ -415,6 +415,10 @@ final class FaceRecognitionViewModel {
     @ObservationIgnored private var metadataWriteTask: Task<Void, Never>?
     @ObservationIgnored private var lensPrewarmTask: Task<Void, Never>?
     private let detectionService = FaceDetectionService()
+    /// Shared across off-main merge-suggestion recomputations so each face's feature print
+    /// is unarchived once and reused, rather than allocating a fresh cache per call.
+    /// FeaturePrintCache is thread-safe (`@unchecked Sendable`).
+    @ObservationIgnored private let mergeFeaturePrintCache = FaceDetectionService.FeaturePrintCache()
     private let lensService = FaceLensService()
     private let storageService = FaceDataStorageService()
     private let readService: SwiftExifReadService
@@ -1244,18 +1248,35 @@ final class FaceRecognitionViewModel {
 
     // MARK: - Merge Suggestions
 
+    /// Recompute the Face-lens merge suggestions. The all-pairs group comparison is O(groups²
+    /// × faces²) cosine work, so it runs off-main (it fires at the end of every scan and on
+    /// lens switch); suggestions land asynchronously on the MainActor.
     func updateMergeSuggestions() {
         guard let data = faceData else {
             mergeSuggestions = []
             return
         }
 
-        let config = detectionConfig
-        mergeSuggestions = detectionService.computeMergeSuggestions(
-            groups: data.groups,
-            faces: data.faces,
-            threshold: config.clusteringThreshold
-        )
+        let groups = data.groups
+        let faces = data.faces
+        let folderURL = data.folderURL
+        let threshold = detectionConfig.clusteringThreshold
+        let service = detectionService
+        let cache = mergeFeaturePrintCache
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let suggestions = service.computeMergeSuggestions(
+                groups: groups,
+                faces: faces,
+                threshold: threshold,
+                cache: cache
+            )
+            await MainActor.run {
+                // Drop the result if the folder changed or the user switched away from the
+                // Face lens while the computation was in flight.
+                guard let self, self.faceData?.folderURL == folderURL, self.activeLens == .face else { return }
+                self.mergeSuggestions = suggestions
+            }
+        }
     }
 
     /// Refine clustering using named groups as anchors.
