@@ -29,12 +29,21 @@ xcodebuild -project "Aagedal Photo Agent/Aagedal Photo Agent.xcodeproj" \
 ### Image Browsing & Organization
 
 - Browse folders with fast 240x240 thumbnail previews
-- Full-screen image view with keyboard navigation and prefetching
+- Full-screen loupe view with keyboard navigation, prefetching, and edited-preview rendering
 - Star ratings (0-5) and color labels with keyboard shortcuts
+- Photo Mechanic-style cull shortcuts in full-screen (bare digits for rating/label, X to trash)
 - Sort by name, date modified, date added, file size, or star rating
-- Filter by star rating, color label, or person shown
+- Filter by star rating, color label, person shown, or missing required metadata fields
 - Full-text search across filenames and IPTC metadata fields
-- Folder favorites for quick access
+- Folder favorites, recent folders, and drag-and-drop folder organization in the sidebar
+
+### Ingest & Import
+
+- Import from memory cards or folders with a non-blocking progress bar
+- Copy verification (SHA-256) so files are checksummed before the source is released
+- Dual-destination backup — primary and backup copies written and verified in one pass
+- Capture-date sorting into year-grouped date folders, with an Import Title applied automatically
+- Unified import/upload activity history with sticky completion banners
 
 ### Supported Formats
 
@@ -46,39 +55,44 @@ xcodebuild -project "Aagedal Photo Agent/Aagedal Photo Agent.xcodeproj" \
 Non-destructive RAW development with real-time Metal GPU preview:
 
 - Exposure, contrast, highlights, shadows, whites, blacks
-- White balance (temperature and tint)
+- White balance (temperature and tint), with a click/drag-to-neutral eyedropper that samples the pre-WB source like Adobe Camera Raw
 - Vibrance and saturation
+- Per-color HSL — Hue / Saturation / Density adjustments matched to the vectorscope channels
 - Tone curves (Adobe Camera Raw compatible)
-- Crop and rotation
+- Crop, straighten, and rotation
+- Reorderable develop layer chain — a horizontal strip of cards (Global node plus local masks) that you can drag to reorder
 - Local adjustments with elliptical/radial masks — each mask has independent tonal and color controls
 - HDR/EDR rendering with extended dynamic range
 - Before/after comparison toggle
 - Undo/redo support
-- Edits stored in XMP sidecar files for cross-tool compatibility
+- Copy/paste develop settings between images (⌥V pastes including crop)
+- Edits stored in XMP sidecar files for cross-tool compatibility — develop settings and masks are written in Adobe Camera Raw's `crs` encoding so ACR / Bridge detect and render them
 
 ### Metadata Management
 
 - Edit IPTC fields: title, caption, keywords, person shown, creator, credit, copyright, city, country, event, job ID, GPS coordinates
 - Non-destructive editing via JSON sidecar files with explicit save
+- Copy and paste metadata between images
+- Structured keywords — Photo Mechanic-style hierarchical keyword lists with categories and synonyms, with a tree picker in the metadata panel
 - Batch metadata application via templates with variable interpolation
-- Template variables: `{date}`, `{date:FORMAT}`, `{dateCreated}`, `{dateCaptured}`, `{filename}`, `{persons}`, `{keywords}`, `{field:FIELDNAME}`
+- Template variables: `{date}`, `{date:FORMAT}`, `{dateCreated}`, `{dateCaptured}`, `{filename}`, `{seq}`, `{persons}`, `{keywords}`, `{initials}`, `{field:FIELDNAME}` — variables also resolve inside keywords and Person Shown
 - Template hotkeys (Ctrl+1-9) for rapid workflows
+- Required-metadata definitions that drive the browser's missing-field filter and the pre-upload check
 - Metadata mirrored to both IPTC and XMP for cross-tool interoperability
+- Correct IPTC `CodedCharacterSet` tagging so Nordic / non-ASCII characters round-trip through other apps
 - Pure-Swift in-process metadata engine (SwiftExif) — no external binaries, no subprocess overhead
 
 ### Face Recognition
 
-- Automatic face detection using Apple Vision framework
-- Similarity-based face clustering with multiple algorithms:
-  - Hierarchical clustering (average/median linkage)
-  - Chinese Whispers
-  - Quality-gated two-pass
+- Automatic face detection using the Apple Vision framework
+- Face embeddings from a bundled AuraFace (ArcFace) CoreML model — 512-dimension vectors compared by cosine distance
+- Quality-gated hierarchical clustering with eye-aligned face crops
 - Quality scoring: confidence, face size, and blur detection
 - Known People database with per-person embeddings and sample management
   - Auto-matching with configurable confidence thresholds
   - Import/export database (ZIP format)
-  - Interactive suggestions UI during metadata editing
-- Face + Clothing recognition mode for scenarios like red carpet photography
+  - Interactive multi-face suggestions UI during metadata editing
+  - Dedicated Unmatched faces group with drag-to-group / ungroup actions
 - Face data written to image metadata on save
 
 ### Image Scopes & Visualization
@@ -114,14 +128,26 @@ AVIF and JPEG XL encoding powered by bundled FFmpeg (arm64, `libaom-av1` and `li
 ### FTP / SFTP Upload
 
 - Upload selected or all images via FTP or SFTP
-- Multiple connection profiles
+- Multiple connection profiles with a Test Connection button
 - Credentials stored securely in macOS Keychain
-- Progress tracking with upload overlay
+- Pre-upload required-field check that is sidecar-aware (falls back to the XMP sidecar for RAW files)
+- Edited images rendered into a per-folder `Uploaded/` folder before sending, with batch abort
+- Progress tracking with upload overlay, automatic retry, and human-readable errors
 
 ### External Editor Integration
 
 - Hand off images to external editors (Lightroom, Capture One, etc.)
 - Import workflow for externally-edited files
+
+### iCloud Sync
+
+Opt-in sync that keeps your library settings in step across Macs, configured in Settings → iCloud Sync:
+
+- Master "Sync everything" toggle, or per-category control
+- Synced categories: metadata templates, keyword lists, the Known People database, the Teams / roster library, and portable app settings
+- Stored in the app's iCloud Drive container so it follows you to your other Macs
+- Passwords, signing keys, and machine-specific values (file paths, certificates, FTP servers) stay on-device and are never synced
+- Coordinated through `NSFileCoordinator` so syncing never forks conflicting duplicate folders
 
 ## Keyboard Shortcuts
 
@@ -139,6 +165,8 @@ AVIF and JPEG XL encoding powered by bundled FFmpeg (arm64, `libaom-av1` and `li
 | G | Toggle gamut clipping |
 | M | Toggle masks panel |
 | Cmd+J | Add new mask |
+| Cmd+D | Mute selected mask (or the Global layer) |
+| Option+V | Paste develop settings (including crop) |
 | Cmd+R / Shift+Cmd+R | Rotate right / left |
 | Cmd+S | Render selected |
 | Shift+Cmd+S | Render all |
@@ -157,7 +185,7 @@ MVVM with a services layer, built primarily on Apple frameworks plus a small set
 - **SwiftExif** (SPM, pure Swift) for metadata read/write
 - **FFmpeg** (bundled, arm64) for AVIF and JPEG XL encoding
 - **c2patool** (bundled) for C2PA signing
-- **Apple Vision** framework for face detection and feature print similarity
+- **Apple Vision** for face detection; bundled **AuraFace (ArcFace) CoreML** model for face embeddings and recognition
 
 ### Storage
 
@@ -168,6 +196,9 @@ MVVM with a services layer, built primarily on Apple frameworks plus a small set
 | `.face_data/` (per folder) | Face detection data and thumbnails |
 | `~/Library/Application Support/Aagedal Photo Agent/KnownPeople/` | Known People database |
 | `~/Library/Application Support/Aagedal Photo Agent/Templates/` | Metadata presets |
+| `~/Library/Application Support/Aagedal Photo Agent/Lists/` | Keyword lists |
+
+When iCloud Sync is enabled, the Templates, KnownPeople, Teams, and Lists folders move to the app's iCloud Drive container (`iCloud.aagedal.Aagedal-Photo-Agent/Documents/`) instead of Application Support.
 
 ## Releasing
 
