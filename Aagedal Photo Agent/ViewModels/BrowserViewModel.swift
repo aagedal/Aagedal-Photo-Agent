@@ -405,23 +405,15 @@ final class BrowserViewModel {
 
         retinaPreCacheTask = Task.detached(priority: .utility) { [weak self] in
             guard let self, !Task.isCancelled else { return }
-            var image: CGImage?
-            if cameraRaw != nil,
-               let ciImage = FullScreenImageCache.loadHDRPreview(from: url, maxPixelSize: screenMaxPx) {
-                let processed = CameraRawApproximation.applyWithCrop(to: ciImage, settings: cameraRaw!, exifOrientation: orientation)
-                // Stamp content headroom so this pre-cached retina image engages EDR when
-                // full-screen reads it on first open (otherwise it shows SDR until a
-                // navigate-away-and-back re-renders it through the fixed paths).
-                image = CameraRawApproximation.createDisplayCGImage(processed, from: processed.extent)
-            }
-            if image == nil {
-                guard var loaded = FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: screenMaxPx) else { return }
-                if let cameraRaw {
-                    loaded = FullScreenImageCache.applyCameraRaw(to: loaded, settings: cameraRaw, exifOrientation: orientation)
-                }
-                image = loaded
-            }
-            guard let image, !Task.isCancelled else { return }
+            // Render through the shared edited-decode path so the pre-cache is identical to
+            // what prefetch/foreground produce — single source of truth. For edited RAW this
+            // means CIRAWFilter demosaicing directly at screen resolution with as-shot WB +
+            // EDR stamp (not ImageIO's full-sensor decode with neutral WB, which made first-open
+            // look different from a navigate-away-and-back render and incurred a wasteful stall).
+            // With nil settings (show-originals) it degrades to a plain downsampled decode.
+            guard let image = await FullScreenImageCache.decodedEditedPreview(
+                for: url, settings: cameraRaw, orientation: orientation, screenMaxPx: screenMaxPx
+            ), !Task.isCancelled else { return }
             self.fullScreenImageCache.store(image, for: url, isEdited: isEdited)
         }
     }
