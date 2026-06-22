@@ -176,7 +176,10 @@ enum KeywordListsArchive {
             let mode = choices[key] ?? .skip
             if mode == .skip { continue }
 
-            let fileURL = payloadRoot.appendingPathComponent(entry.path)
+            guard let fileURL = safeEntryURL(for: entry.path, in: payloadRoot) else {
+                logger.warning("Skipping keyword-list import entry with unsafe path: \(entry.path, privacy: .public)")
+                continue
+            }
             guard FileManager.default.fileExists(atPath: fileURL.path) else { continue }
             let text = (try? String(contentsOf: fileURL, encoding: .utf8)) ?? ""
 
@@ -295,6 +298,27 @@ enum KeywordListsArchive {
             return ApprovedListField(rawValue: raw).map { .approved($0) }
         }
         return nil
+    }
+
+    /// Resolves a manifest entry's relative `path` to a file inside `payloadRoot`,
+    /// returning `nil` if it would escape that root. `manifest.json` is fully
+    /// attacker-controlled when a user imports a shared `.klists` archive, so its
+    /// `path` values are untrusted: a crafted entry like `../../../../etc/passwd`
+    /// — or a symlink planted inside the archive — would otherwise make us read an
+    /// arbitrary file and copy it into one of the user's keyword lists. Mirrors the
+    /// containment guard in `MetadataSidecarService`.
+    private static func safeEntryURL(for path: String, in payloadRoot: URL) -> URL? {
+        guard !path.isEmpty, !path.hasPrefix("/"), !path.contains("..") else { return nil }
+
+        let candidate = payloadRoot.appendingPathComponent(path)
+        // Resolve symlinks (and macOS's /var -> /private/var aliasing) on both
+        // sides so a symlink inside the archive can't redirect the read outside
+        // the payload, then confirm the resolved path is still contained.
+        let resolved = candidate.resolvingSymlinksInPath().standardizedFileURL.path
+        let rootPath = payloadRoot.resolvingSymlinksInPath().standardizedFileURL.path
+        let rootPrefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
+        guard resolved.hasPrefix(rootPrefix) else { return nil }
+        return candidate
     }
 
     private static func resolvePayloadRoot(in stagingRoot: URL) -> URL {

@@ -79,6 +79,55 @@ struct KeywordListsArchiveTests {
         }
     }
 
+    @Test("Import rejects manifest entries that escape the payload root (path traversal)")
+    func rejectsPathTraversal() throws {
+        try withIsolatedStore {
+            let store = KeywordListsStore.shared
+
+            // Plant a secret OUTSIDE the archive payload. The importer unzips into
+            // a `klists-import-*` dir directly under the system temp dir, so the
+            // payload root sits two levels below temp — `../../` from there lands
+            // back in the temp dir where this secret lives.
+            let secretName = "kl-traversal-secret-\(UUID().uuidString).txt"
+            let secretURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent(secretName)
+            try "TOP-SECRET-LEAK\n".write(to: secretURL, atomically: true, encoding: .utf8)
+            defer { try? FileManager.default.removeItem(at: secretURL) }
+
+            // Build an archive whose manifest points a valid list `kind` at the
+            // secret via `..` traversal.
+            let stagingRoot = FileManager.default.temporaryDirectory
+                .appendingPathComponent("kl-evil-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: stagingRoot, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: stagingRoot) }
+
+            let manifest = KeywordListsArchive.Manifest(
+                schemaVersion: KeywordListsArchive.currentSchemaVersion,
+                exportedAt: Date(),
+                files: [
+                    .init(path: "../../\(secretName)", kind: "quick.keywords", entryCount: 1)
+                ]
+            )
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            try encoder.encode(manifest)
+                .write(to: stagingRoot.appendingPathComponent("manifest.json"))
+
+            let zipURL = tempZip()
+            defer { try? FileManager.default.removeItem(at: zipURL) }
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+            p.arguments = ["-c", "-k", "--keepParent", stagingRoot.path, zipURL.path]
+            try p.run()
+            p.waitUntilExit()
+
+            // The malicious entry must be skipped: nothing imported, secret never read.
+            let imported = try KeywordListsArchive.importAll(from: zipURL, mode: .replace)
+            #expect(imported == 0)
+            #expect(store.readEntries(.quick(.keywords)) == [])
+        }
+    }
+
     @Test("Importing a zip without a manifest throws an actionable error")
     func missingManifestThrows() throws {
         // Build a zip that has the right shape but no manifest.json.
