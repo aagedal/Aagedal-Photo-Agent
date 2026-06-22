@@ -56,7 +56,11 @@ struct Aagedal_Photo_AgentApp: App {
             ContentView()
         }
         .commands {
-            CommandGroup(after: .appInfo) {
+            CommandGroup(replacing: .appInfo) {
+                Button("About Aagedal Photo Agent") {
+                    AboutPanel.show()
+                }
+
                 Button("Check for Updates…") {
                     updater.checkForUpdates()
                 }
