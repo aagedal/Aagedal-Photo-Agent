@@ -2138,7 +2138,11 @@ struct AutoRefreshModifier: ViewModifier {
                 if autoRefreshTask == nil {
                     autoRefreshTask = Task {
                         while !Task.isCancelled {
-                            try? await Task.sleep(nanoseconds: 5_000_000_000)
+                            // Poll interval for picking up new files and external
+                            // metadata edits. Kept short enough that newly-added files
+                            // appear promptly; the rescan early-returns when nothing
+                            // changed on disk, so idle cost stays low.
+                            try? await Task.sleep(nanoseconds: 3_000_000_000)
                             await MainActor.run {
                                 // Skip the entire folder refresh while in the edit
                                 // view — reassigning `images`/`visibleImages` causes

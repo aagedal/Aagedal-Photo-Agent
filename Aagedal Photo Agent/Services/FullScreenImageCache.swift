@@ -479,7 +479,7 @@ final class FullScreenImageCache: @unchecked Sendable {
 
     /// Native longest-side pixel dimension of an image file, read from metadata
     /// only (no decode). Pre-orientation, but the longest side is orientation-invariant.
-    nonisolated private static func nativeLongestSide(of url: URL) -> CGFloat? {
+    nonisolated static func nativeLongestSide(of url: URL) -> CGFloat? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
               let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
               let pw = props[kCGImagePropertyPixelWidth] as? Int,

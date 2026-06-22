@@ -228,6 +228,13 @@ struct FullScreenImageView: View {
     @State private var lastOffset: CGSize = .zero
     @State private var isZoomedTo100: Bool = false
     @State private var sourcePixelSize: CGSize?
+    /// URL + settings loadImage() last decoded. Used to tell an in-place edit (settings
+    /// changed for the image on screen → must reload) apart from a navigation (handled by
+    /// the .task(id:) below). Comparing settings too makes this robust to the order in
+    /// which SwiftUI runs the .task body vs the onChange handler on a navigation — either
+    /// way the reload is correctly skipped, so we don't discard the prefetched image.
+    @State private var lastDecodedURL: URL?
+    @State private var lastDecodedSettings: CameraRawSettings?
     /// Shared linear/nearest-neighbor scaling toggle (View menu + Option+S).
     @ObservedObject private var scaling = ImageScalingController.shared
     @State private var lastOrientationURL: URL?
@@ -610,13 +617,25 @@ struct FullScreenImageView: View {
             isLoading = true
         }
         .onChange(of: currentImageFile?.cameraRawSettings) {
-            // Invalidate cached image when edits change (e.g. mask adjustments
-            // committed in edit workspace) so the full-screen preview re-renders
+            // Reload only for an in-place edit (e.g. mask adjustments committed in the
+            // edit workspace) to the image already on screen. Navigation also changes
+            // cameraRawSettings, but it's handled by the .task(id:) above — reloading
+            // here too discarded the prefetched image and re-decoded from scratch.
             guard renderEdits, let url = currentImageFile?.url else { return }
-            imageCache.invalidateImage(for: url)
-            currentImage = nil
+            // Same image, and settings genuinely differ from what we last decoded.
+            // Both guards together are robust to .task-vs-onChange ordering on nav.
+            guard url == lastDecodedURL,
+                  currentImageFile?.cameraRawSettings != lastDecodedSettings else { return }
+            // Debounce: slider drags in the workspace fire many changes/sec; coalesce
+            // into one reload after editing settles. Keep the current image on screen
+            // (no blank) until the fresh render is ready.
             settingsReloadTask?.cancel()
-            settingsReloadTask = Task { await loadImage() }
+            settingsReloadTask = Task {
+                try? await Task.sleep(for: .milliseconds(250))
+                guard !Task.isCancelled else { return }
+                imageCache.invalidateImage(for: url)
+                await loadImage()
+            }
         }
         .onChange(of: currentImageFile?.exifOrientation) { oldValue, newValue in
             // Only apply in-place rotation when the same image was rotated,
@@ -884,6 +903,10 @@ struct FullScreenImageView: View {
             return
         }
         loadError = nil
+        // Record the image + settings we're decoding so onChange(cameraRawSettings) can
+        // tell an in-place edit from a navigation (handled by .task(id:)).
+        lastDecodedURL = url
+        lastDecodedSettings = currentImageFile?.cameraRawSettings
 
         // Non-image files: show system icon and return
         guard SupportedImageFormats.isSupported(url: url) else {
@@ -981,8 +1004,10 @@ struct FullScreenImageView: View {
                     : nil
                 if image == nil, needsHDRLoad {
                     if isRAWFile {
-                        // Use CIRAWFilter for flat/neutral decode — get as-shot WB for correct rendering
-                        if let rawResult = FullScreenImageCache.loadRAWImage(from: url, draftMode: false) {
+                        // Use CIRAWFilter for flat/neutral decode — get as-shot WB for correct rendering.
+                        // Decode straight to screen resolution (not full sensor then shrink) — the
+                        // wasted full-sensor demosaic was the multi-second culling stall on RAW.
+                        if let rawResult = FullScreenImageCache.loadRAWImage(from: url, draftMode: false, maxPixelSize: screenMaxPx) {
                             guard !Task.isCancelled else { return }
                             var settings = cameraRaw
                             settings?.asShotNeutralTemperature = Double(rawResult.neutralTemperature)
@@ -1051,8 +1076,9 @@ struct FullScreenImageView: View {
                 : nil
             if image == nil, needsHDRLoad {
                 if isRAW {
-                    // Use CIRAWFilter for flat/neutral decode — get as-shot WB for correct rendering
-                    if let rawResult = FullScreenImageCache.loadRAWImage(from: url, draftMode: false) {
+                    // Use CIRAWFilter for flat/neutral decode — get as-shot WB for correct rendering.
+                    // Decode straight to screen resolution (not full sensor then shrink).
+                    if let rawResult = FullScreenImageCache.loadRAWImage(from: url, draftMode: false, maxPixelSize: screenMaxPx) {
                         guard !Task.isCancelled else { return }
                         var settings = cameraRaw
                         settings?.asShotNeutralTemperature = Double(rawResult.neutralTemperature)

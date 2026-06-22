@@ -63,6 +63,10 @@ struct EditWorkspaceView: View {
     @State private var lastScopeUpdateTime: ContinuousClock.Instant = .now
     @State private var editZoomScale: CGFloat = 1.0
     @State private var lastEditZoomScale: CGFloat = 1.0
+    /// True once the Metal source texture has been upgraded from the screen-resolution
+    /// Phase 2 decode to a full-sensor-resolution decode for pixel-peeping at high zoom.
+    @State private var isEditFullResLoaded = false
+    @State private var editFullResTask: Task<Void, Never>?
     @State private var editOffset: CGSize = .zero
     @State private var lastEditOffset: CGSize = .zero
     @State private var previewPaneFrame: CGRect = .zero
@@ -326,6 +330,10 @@ struct EditWorkspaceView: View {
         }
         .onChange(of: metadataViewModel.editingMetadata.cameraRaw) { _, _ in
             renderPreview()
+        }
+        .onChange(of: editZoomScale) { _, _ in
+            // Zooming past fit-view runs the screen-res texture out of detail — upgrade to full-res.
+            loadFullResEditTextureIfNeeded()
         }
         .onChange(of: metadataViewModel.metadataLoadGeneration) { _, _ in
             // Re-apply HDR auto-enable after metadata load completes.
@@ -1213,6 +1221,9 @@ struct EditWorkspaceView: View {
         previewImage = nil
         isLoadingPreview = false
         isDecodingFullResolution = false
+        isEditFullResLoaded = false
+        editFullResTask?.cancel()
+        editFullResTask = nil
         metalPipeline?.clearSourceTexture()
         metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
         resetCropZoom()
@@ -1249,8 +1260,10 @@ struct EditWorkspaceView: View {
             }
 
             if isRaw {
-                // RAW two-phase load: embedded JPEG preview (instant), then
-                // full-quality CIRAWFilter decode at full sensor resolution.
+                // RAW two-phase load: embedded JPEG preview (instant), then a
+                // CIRAWFilter decode at screen resolution (not full sensor — that
+                // wasted seconds demosaicing 45MP for a ~5MP display). Full-res is
+                // loaded lazily on zoom via loadFullResEditTextureIfNeeded().
 
                 // Phase 1: Extract embedded JPEG preview from RAW container (no RAW decode).
                 // Oriented to the in-memory target inside the task — see orientedToTarget.
@@ -1316,7 +1329,7 @@ struct EditWorkspaceView: View {
                 isLoadingPreview = false
                 isDecodingFullResolution = true
 
-                // Phase 2: CIRAWFilter decode at full sensor resolution → Metal texture.
+                // Phase 2: CIRAWFilter decode at screen resolution → Metal texture.
                 // After upload, materialize sourceCIImage at screen resolution to release
                 // the heavyweight CIRAWFilter pipeline (~260MB per instance).
                 if let pipeline = metalPipeline {
@@ -1339,7 +1352,9 @@ struct EditWorkspaceView: View {
                         // these bytes even if a pending rotation write lands mid-load.
                         let orientation = FullScreenImageCache.fileEXIFOrientation(at: selectedImageURL)
                         guard let result = FullScreenImageCache.loadRAWImage(
-                            from: selectedImageURL, draftMode: false
+                            from: selectedImageURL,
+                            draftMode: false,
+                            maxPixelSize: previewMaxPixelSize
                         ) else { return nil }
                         let oriented = Self.orientedToTarget(
                             ciImage: result.image, nsImage: nil,
@@ -1423,6 +1438,10 @@ struct EditWorkspaceView: View {
                         currentURL: selectedImageURL,
                         pipeline: pipeline
                     )
+
+                    // If the user already zoomed in while Phase 2 was decoding, upgrade
+                    // the now-current screen-res texture to full resolution.
+                    loadFullResEditTextureIfNeeded()
                 }
             } else {
                 // Non-RAW two-phase load (mirrors RAW strategy):
@@ -1611,10 +1630,11 @@ struct EditWorkspaceView: View {
                 let start = ContinuousClock.now
                 // Use the same flat CIRAWFilter decode as Phase 2 so the precached
                 // texture matches the final render (no auto-boost / tone mismatch).
-                // Read the tag adjacent to the decode (see Phase 2).
+                // Decode straight to screen resolution (don't decode full sensor then
+                // shrink). Read the tag adjacent to the decode (see Phase 2).
                 let fileOrientation = FullScreenImageCache.fileEXIFOrientation(at: url)
                 guard let rawResult = FullScreenImageCache.loadRAWImage(
-                    from: url, draftMode: false
+                    from: url, draftMode: false, maxPixelSize: screenMaxPx
                 ) else {
                     editLog.info("[\(url.lastPathComponent)] precache: decode failed")
                     continue
@@ -1634,6 +1654,73 @@ struct EditWorkspaceView: View {
                 let elapsed = ContinuousClock.now - start
                 editLog.info("[\(url.lastPathComponent)] precache: done in \(elapsed)")
             }
+        }
+    }
+
+    /// Phase 2 decodes the RAW at screen resolution, which is sharp at fit-to-view but
+    /// soft when the user zooms in to pixel-peep. When zoomed past 100%, lazily re-decode
+    /// the current image at full sensor resolution and swap the Metal source texture.
+    /// Mirrors FullScreenImageView.loadFullResIfNeeded(). One-shot per image (reset on
+    /// navigation); non-RAW images already load full-res in Phase 2 and short-circuit here.
+    private func loadFullResEditTextureIfNeeded() {
+        guard editZoomScale > 1.0 else { return }
+        guard !isEditFullResLoaded, editFullResTask == nil else { return }
+        // Don't compete with the in-flight Phase 2 decode of the same file; Phase 2's
+        // completion re-invokes this if the user is still zoomed in.
+        guard !isDecodingFullResolution else { return }
+        guard let url = selectedImageURL,
+              let pipeline = metalPipeline, pipeline.hasSourceTexture,
+              let texSize = pipeline.sourceTextureSize else { return }
+
+        // Only worth a re-decode if the source has materially more detail than the
+        // current (screen-res) texture. Match loadRAWImage's 1.5× slack.
+        let texMax = max(texSize.width, texSize.height)
+        guard let nativeMax = FullScreenImageCache.nativeLongestSide(of: url),
+              nativeMax > texMax * 1.5 else {
+            isEditFullResLoaded = true   // already effectively full-res — don't retry
+            return
+        }
+
+        let targetOrientation = selectedImageOrientation
+        let isRaw = SupportedImageFormats.isRaw(url: url)
+        let filename = url.lastPathComponent
+        editLog.info("[\(filename)] zoom upgrade: decoding full-res (native \(Int(nativeMax))px, tex \(Int(texMax))px)")
+
+        editFullResTask = Task {
+            let start = ContinuousClock.now
+            let fullRes: CIImage? = await Task.detached(priority: .userInitiated) {
+                let fileOrientation = FullScreenImageCache.fileEXIFOrientation(at: url)
+                let decoded: CIImage?
+                if isRaw {
+                    // nil maxPixelSize → full sensor resolution.
+                    decoded = FullScreenImageCache.loadRAWImage(from: url, draftMode: false)?.image
+                } else {
+                    decoded = FullScreenImageCache.loadHDRFullResolution(from: url)
+                        ?? FullScreenImageCache.loadFullResolution(from: url).map { CIImage(cgImage: $0) }
+                }
+                guard let decoded else { return nil }
+                return Self.orientedToTarget(
+                    ciImage: decoded, nsImage: nil,
+                    from: fileOrientation, to: targetOrientation
+                ).ciImage ?? decoded
+            }.value
+
+            guard !Task.isCancelled, selectedImageURL == url, let fullRes else {
+                editFullResTask = nil
+                return
+            }
+            await Task.detached(priority: .medium) {
+                pipeline.uploadSourceImage(fullRes, exifOrientation: targetOrientation)
+            }.value
+            guard !Task.isCancelled, selectedImageURL == url else {
+                editFullResTask = nil
+                return
+            }
+            isEditFullResLoaded = true
+            editFullResTask = nil
+            syncViewportToMetal()
+            renderPreview()
+            editLog.info("[\(filename)] zoom upgrade: full-res texture uploaded in \(ContinuousClock.now - start)")
         }
     }
 
