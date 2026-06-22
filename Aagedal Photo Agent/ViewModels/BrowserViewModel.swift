@@ -147,7 +147,14 @@ final class BrowserViewModel {
     /// URL, surviving folder navigation. Lets `loadFolder` drop a stale thumbnail when a
     /// file was replaced at a path it previously occupied (delete + re-export) while the
     /// folder was inactive — the URL-keyed caches alone can't tell the file changed.
-    @ObservationIgnored private var thumbnailContentTokens: [URL: String] = [:]
+    /// Bounded (NSCache) so it can't grow without limit across a long session of folder
+    /// hops; an evicted token at worst skips one stale-thumbnail invalidation, which the
+    /// thumbnail NSCache self-heals on regeneration.
+    @ObservationIgnored private let thumbnailContentTokens: NSCache<NSURL, NSString> = {
+        let c = NSCache<NSURL, NSString>()
+        c.countLimit = 20_000
+        return c
+    }()
     private let sidecarService = MetadataSidecarService()
     private let xmpSidecarService = XMPSidecarService()
 
@@ -640,10 +647,11 @@ final class BrowserViewModel {
     private func reconcileThumbnailCaches(against files: [ImageFile]) {
         for file in files {
             let token = Self.thumbnailContentToken(for: file)
-            if let previous = thumbnailContentTokens[file.url], previous != token {
+            let key = file.url as NSURL
+            if let previous = thumbnailContentTokens.object(forKey: key), (previous as String) != token {
                 thumbnailService.invalidateThumbnail(for: file.url)
             }
-            thumbnailContentTokens[file.url] = token
+            thumbnailContentTokens.setObject(token as NSString, forKey: key)
         }
     }
 
@@ -716,14 +724,10 @@ final class BrowserViewModel {
                     }
                     merged.append(updated)
                 } else {
-                    var newItem = item
-                    if newItem.isImageFile,
-                       let source = CGImageSourceCreateWithURL(newItem.url as CFURL, nil),
-                       let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-                       let orientation = props[kCGImagePropertyOrientation] as? Int {
-                        newItem.exifOrientation = orientation
-                    }
-                    merged.append(newItem)
+                    // Orientation is read off the main actor after the merge loop (see
+                    // below) so a slow/network file can't block the UI with synchronous
+                    // per-file CGImageSource I/O on the MainActor.
+                    merged.append(item)
                     newURLs.append(item.url)
                 }
             }
@@ -733,6 +737,20 @@ final class BrowserViewModel {
                 return
             }
             guard self.currentFolderURL == folderURL else { return }
+
+            // Read orientations for newly-appeared files off the main actor (mirrors the
+            // initial-load eager read) so new thumbnails render upright immediately without
+            // blocking the UI on per-file CGImageSource I/O.
+            if !newURLs.isEmpty {
+                let orientations = await Self.readOrientations(for: newURLs)
+                if !orientations.isEmpty {
+                    for index in merged.indices {
+                        if let orientation = orientations[merged[index].url] {
+                            merged[index].exifOrientation = orientation
+                        }
+                    }
+                }
+            }
 
             let allSidecars = await sidecarService.loadAllSidecars(in: folderURL)
             for index in merged.indices {
@@ -773,29 +791,38 @@ final class BrowserViewModel {
     /// Called eagerly after folder scan so exifOrientation is correct before
     /// the full batch metadata read.
     private func readOrientationsEagerly(for images: inout [ImageFile]) async {
-        let indexed = images.enumerated()
-            .filter { $0.element.isImageFile }
-            .map { (index: $0.offset, url: $0.element.url) }
-        guard !indexed.isEmpty else { return }
+        let urls = images.compactMap { $0.isImageFile ? $0.url : nil }
+        let orientations = await Self.readOrientations(for: urls)
+        guard !orientations.isEmpty else { return }
+        for index in images.indices where images[index].isImageFile {
+            if let orientation = orientations[images[index].url] {
+                images[index].exifOrientation = orientation
+            }
+        }
+    }
 
-        let orientations = await withTaskGroup(of: (Int, Int)?.self) { group in
-            for item in indexed {
+    /// Read EXIF orientation (metadata-only) for the given image URLs off the main actor,
+    /// in parallel. Returns only non-default (≠1) orientations; callers leave the rest at
+    /// the default upright value. `nonisolated` so the per-file `CGImageSource` I/O runs on
+    /// the global executor, never blocking the MainActor — shared by the initial eager read
+    /// and the incremental auto-refresh path.
+    private nonisolated static func readOrientations(for urls: [URL]) async -> [URL: Int] {
+        guard !urls.isEmpty else { return [:] }
+        return await withTaskGroup(of: (URL, Int)?.self) { group in
+            for url in urls {
                 group.addTask {
-                    guard let source = CGImageSourceCreateWithURL(item.url as CFURL, nil),
+                    guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
                           let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
                           let orientation = props[kCGImagePropertyOrientation] as? Int,
                           orientation != 1 else { return nil }
-                    return (item.index, orientation)
+                    return (url, orientation)
                 }
             }
-            var result: [(Int, Int)] = []
+            var result: [URL: Int] = [:]
             for await pair in group {
-                if let pair { result.append(pair) }
+                if let pair { result[pair.0] = pair.1 }
             }
             return result
-        }
-        for (index, orientation) in orientations {
-            images[index].exifOrientation = orientation
         }
     }
 
