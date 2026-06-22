@@ -2062,11 +2062,18 @@ struct TypeaheadTextField: NSViewRepresentable {
         }
 
         func controlTextDidBeginEditing(_ notification: Notification) {
-            parent.isFocused = true
+            // Defer to the next runloop tick: this can fire during a SwiftUI
+            // view-update pass, and writing the binding synchronously would
+            // mutate state mid-update ("undefined behavior" warning).
+            DispatchQueue.main.async { [weak self] in
+                self?.parent.isFocused = true
+            }
         }
 
         func controlTextDidEndEditing(_ notification: Notification) {
-            parent.isFocused = false
+            DispatchQueue.main.async { [weak self] in
+                self?.parent.isFocused = false
+            }
         }
 
         func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
