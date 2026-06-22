@@ -232,11 +232,11 @@ The app uses [Sparkle](https://sparkle-project.org) for in-app auto-updates. Rel
 
 ## License
 
-GPL-3.0 - see [LICENSE](Aagedal%20Photo%20Agent/LICENSE) for details.
+GPL-3.0 - see [LICENSE](LICENSE) for details.
 
 ### Bundled third-party components
 
-License texts ship with the app (Settings → Licenses) and live in `Aagedal Photo Agent/Resources/Licenses/`.
+License texts ship with the app (Settings → Licenses) and live under `Aagedal Photo Agent/Resources/`.
 
 | Component | Purpose | License |
 |---|---|---|
@@ -245,3 +245,12 @@ License texts ship with the app (Settings → Licenses) and live in `Aagedal Pho
 | [Sparkle](https://sparkle-project.org) | Software updates | MIT |
 | [SwiftExif](https://codeberg.org/taagedal/SwiftExif) | EXIF / IPTC metadata | GPL-3.0 |
 | [AuraFace-v1](https://huggingface.co/fal/AuraFace-v1) | Face recognition model | Apache-2.0 |
+
+### Source for bundled GPL components (GPLv3 §6)
+
+The app bundles a GPL-licensed **FFmpeg** binary. In accordance with the GPL, the corresponding source is available:
+
+- **FFmpeg 8.1.1**, built with `--enable-gpl --enable-version3` (image-only, network and device features disabled). Upstream source: <https://ffmpeg.org/releases/> (`ffmpeg-8.1.1.tar.xz`). The exact `configure` flags are embedded in the binary (`ffmpeg -version`).
+- The build script used to produce it is published at <https://codeberg.org/taagedal/ffmpeg-apple-silicon>.
+
+The application's own source (GPL-3.0) and the **SwiftExif** source (GPL-3.0) are published on Codeberg.

@@ -2,7 +2,7 @@
 
 All notable user-visible changes are documented here. Downloads and signed builds are published on the [Codeberg releases page](https://codeberg.org/taagedal/Aagedal-Photo-Agent/releases).
 
-## 2.0.0 — Unreleased
+## 2.0.0 — 2026-06-23
 
 ### Highlights
 
