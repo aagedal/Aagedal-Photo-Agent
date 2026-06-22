@@ -1784,6 +1784,7 @@ final class MetadataViewModel {
             var failed = 0
 
             for url in selectedURLs {
+                if Task.isCancelled { break }
                 do {
                     let meta = try await readService.readFullMetadata(url: url)
                     guard let lat = meta.latitude, let lon = meta.longitude else {
@@ -1804,9 +1805,10 @@ final class MetadataViewModel {
                         geocoded += 1
                     }
 
-                    // Rate limit: ~0.5s delay between requests
-                    try await Task.sleep(for: .milliseconds(500))
-
+                    // Throttle only the online geocoder; the offline lookup needs no rate limit.
+                    if geocodingService.usesNetwork {
+                        try await Task.sleep(for: .milliseconds(500))
+                    }
                 } catch {
                     failed += 1
                     logger.warning("Reverse geocoding failed for \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")

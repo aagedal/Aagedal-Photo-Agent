@@ -130,6 +130,14 @@ final class SettingsViewModel {
         didSet { UserDefaults.standard.set(multiSelectPersonShownMode.rawValue, forKey: UserDefaultsKeys.multiSelectPersonShownMode) }
     }
 
+    var reverseGeocodeLanguage: ReverseGeocodeLanguage {
+        didSet { AppDefaults.store.set(reverseGeocodeLanguage.storageValue, forKey: UserDefaultsKeys.reverseGeocodeLanguage) }
+    }
+
+    var reverseGeocodeOffline: Bool {
+        didSet { AppDefaults.store.set(reverseGeocodeOffline, forKey: UserDefaultsKeys.reverseGeocodeOfflineEnabled) }
+    }
+
     var quickListVersion: Int = 0
     @ObservationIgnored private var quickListCache: [QuickListType: [String]] = [:]
     @ObservationIgnored private var cachedQuickListVersion: Int = -1
@@ -529,6 +537,10 @@ final class SettingsViewModel {
 
         let personShownModeRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.multiSelectPersonShownMode) ?? MultiSelectFieldMode.add.rawValue
         self.multiSelectPersonShownMode = MultiSelectFieldMode(rawValue: personShownModeRaw) ?? .add
+
+        let geocodeLangRaw = AppDefaults.store.string(forKey: UserDefaultsKeys.reverseGeocodeLanguage)
+        self.reverseGeocodeLanguage = ReverseGeocodeLanguage(storageValue: geocodeLangRaw ?? ReverseGeocodeLanguage.system.storageValue)
+        self.reverseGeocodeOffline = AppDefaults.store.bool(forKey: UserDefaultsKeys.reverseGeocodeOfflineEnabled)
 
         let storedConfidence = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceMinConfidence) as? Double
         self.faceMinConfidence = storedConfidence ?? 0.7

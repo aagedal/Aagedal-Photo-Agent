@@ -19,6 +19,7 @@
 		AB0600000000000000000002 /* MetadataEngineConcurrencyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0600000000000000000001 /* MetadataEngineConcurrencyTests.swift */; };
 		AB0700000000000000000002 /* StructuredKeywordServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0700000000000000000001 /* StructuredKeywordServiceTests.swift */; };
 		AB0800000000000000000002 /* CoordinateParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0800000000000000000001 /* CoordinateParserTests.swift */; };
+		AB1800000000000000000002 /* GeocodingServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1800000000000000000001 /* GeocodingServiceTests.swift */; };
 		AB0900000000000000000002 /* KnownPeopleServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0900000000000000000001 /* KnownPeopleServiceTests.swift */; };
 		AB1000000000000000000002 /* FTPServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1000000000000000000001 /* FTPServiceTests.swift */; };
 		AB1100000000000000000002 /* FullScreenImageCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1100000000000000000001 /* FullScreenImageCacheTests.swift */; };
@@ -60,6 +61,7 @@
 		AB0600000000000000000001 /* MetadataEngineConcurrencyTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataEngineConcurrencyTests.swift; sourceTree = "<group>"; };
 		AB0700000000000000000001 /* StructuredKeywordServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = StructuredKeywordServiceTests.swift; sourceTree = "<group>"; };
 		AB0800000000000000000001 /* CoordinateParserTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CoordinateParserTests.swift; sourceTree = "<group>"; };
+		AB1800000000000000000001 /* GeocodingServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GeocodingServiceTests.swift; sourceTree = "<group>"; };
 		AB0900000000000000000001 /* KnownPeopleServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KnownPeopleServiceTests.swift; sourceTree = "<group>"; };
 		AB1000000000000000000001 /* FTPServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FTPServiceTests.swift; sourceTree = "<group>"; };
 		AB1100000000000000000001 /* FullScreenImageCacheTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FullScreenImageCacheTests.swift; sourceTree = "<group>"; };
@@ -132,6 +134,7 @@
 				AB0600000000000000000001 /* MetadataEngineConcurrencyTests.swift */,
 				AB0700000000000000000001 /* StructuredKeywordServiceTests.swift */,
 				AB0800000000000000000001 /* CoordinateParserTests.swift */,
+				AB1800000000000000000001 /* GeocodingServiceTests.swift */,
 				AB1100000000000000000001 /* FullScreenImageCacheTests.swift */,
 				AB1200000000000000000001 /* EditExportPipelineTests.swift */,
 				AB1300000000000000000001 /* PlayerResolverTests.swift */,
@@ -319,6 +322,7 @@
 				AB0600000000000000000002 /* MetadataEngineConcurrencyTests.swift in Sources */,
 				AB0700000000000000000002 /* StructuredKeywordServiceTests.swift in Sources */,
 				AB0800000000000000000002 /* CoordinateParserTests.swift in Sources */,
+				AB1800000000000000000002 /* GeocodingServiceTests.swift in Sources */,
 				AB1100000000000000000002 /* FullScreenImageCacheTests.swift in Sources */,
 				AB1200000000000000000002 /* EditExportPipelineTests.swift in Sources */,
 				AB1300000000000000000002 /* PlayerResolverTests.swift in Sources */,
@@ -508,7 +512,7 @@
 				CODE_SIGN_ENTITLEMENTS = "Aagedal Photo Agent/Aagedal Photo Agent.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 356;
+				CURRENT_PROJECT_VERSION = 378;
 				DEVELOPMENT_TEAM = 3R5QGG9DW6;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -542,7 +546,7 @@
 				CODE_SIGN_ENTITLEMENTS = "Aagedal Photo Agent/Aagedal Photo Agent.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 356;
+				CURRENT_PROJECT_VERSION = 378;
 				DEVELOPMENT_TEAM = 3R5QGG9DW6;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;

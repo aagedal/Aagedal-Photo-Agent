@@ -124,6 +124,15 @@ nonisolated enum UserDefaultsKeys {
     static let addJobIdToKeywords = "addJobIdToKeywords"
     static let creatorInitials = "creatorInitials"
 
+    // MARK: - Reverse Geocoding
+    /// Output language for GPS→City/Country lookup. Token decoded by
+    /// `ReverseGeocodeLanguage` ("system" or a BCP-47 code). Absent → `.system`.
+    static let reverseGeocodeLanguage = "reverseGeocodeLanguage"
+    /// When true, names resolve from the offline GeoNames database (no network; city
+    /// names stay English). When false (default), Apple's online geocoder is used and
+    /// localizes both city and country. Read directly from UserDefaults by `GeocodingService`.
+    static let reverseGeocodeOfflineEnabled = "reverseGeocodeOfflineEnabled"
+
     // MARK: - Import Verification & Backup
     static let importVerificationMode = "importVerificationMode"
     static let importBackupBookmark = "importBackupBookmark"

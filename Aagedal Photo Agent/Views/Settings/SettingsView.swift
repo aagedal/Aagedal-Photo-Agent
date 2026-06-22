@@ -635,6 +635,22 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            Section("Reverse Geocoding") {
+                Picker("Place-name language", selection: $settingsViewModel.reverseGeocodeLanguage) {
+                    ForEach(ReverseGeocodeLanguage.allCases) { language in
+                        Text(language.displayName).tag(language)
+                    }
+                }
+
+                Toggle("Work offline", isOn: $settingsViewModel.reverseGeocodeOffline)
+
+                Text(settingsViewModel.reverseGeocodeOffline
+                     ? "Fills City and Country from GPS using an offline database — instant and network-free. The country name is localized to the chosen language; city names stay in English (Rome)."
+                     : "Fills City and Country from GPS using Apple's online geocoder, localizing both city and country to the chosen language (Roma, Frankrike). Requires a network connection.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .padding()
