@@ -26,9 +26,10 @@ APPCAST="${APPCAST:-appcast.xml}"
 CHANGELOG="${CHANGELOG:-CHANGELOG.md}"
 OUTPUT_DIR="${OUTPUT_DIR:-build/release}"
 # Base URL the published DMG will live under. The enclosure URL becomes
-# "$RELEASE_URL_BASE/<version>/<stem>-<version>.dmg" — must match where you
-# actually upload the DMG on Codeberg.
-RELEASE_URL_BASE="${RELEASE_URL_BASE:-https://codeberg.org/taagedal/Aagedal-Photo-Agent/releases/download}"
+# "$RELEASE_URL_BASE/<stem>-<version>.dmg" — must match where you actually
+# upload the DMG. The DMG is too large for Codeberg release assets, so it is
+# self-hosted at this flat path (no per-version subfolder).
+RELEASE_URL_BASE="${RELEASE_URL_BASE:-https://aagedal.me/apps}"
 
 # Move to repo root (this script lives in scripts/).
 cd "$(dirname "$0")/.."
@@ -190,7 +191,7 @@ NOTES="$(awk -v ver="$VERSION" '
 ' "$CHANGELOG")"
 [ -n "$NOTES" ] || NOTES="                    <li>See the changelog for details.</li>"
 PUBDATE="$(date '+%a, %d %b %Y %H:%M:%S %z')"
-DMG_URL="$RELEASE_URL_BASE/$VERSION/$DMG_STEM-$VERSION.dmg"
+DMG_URL="$RELEASE_URL_BASE/$DMG_STEM-$VERSION.dmg"
 ITEM="        <item>
             <title>Version $VERSION</title>
             <pubDate>$PUBDATE</pubDate>
@@ -229,12 +230,11 @@ $(printf '\033[1;32m━━━ Release build complete ━━━\033[0m')
   SHA-256: $(shasum -a 256 "$DMG" | awk '{print $1}')
   Size:    $LENGTH bytes
 
-Publish steps (manual — these touch your Codeberg account):
-  1. Create a Codeberg release with tag exactly:  $VERSION
-  2. Upload the DMG with its exact name:           $DMG_STEM-$VERSION.dmg
-     (the appcast URL depends on that tag + name)
-  3. Update the Sparkle feed asset at:
-        $RELEASE_URL_BASE/appcast/appcast.xml
-     with the now-updated $APPCAST
-  4. Commit the $APPCAST change.
+Publish steps (manual — outward-facing, not automated):
+  1. Upload the DMG to your web host so it is reachable at exactly:
+        $DMG_URL
+  2. Update the Sparkle appcast feed (SUFeedURL:
+        $(/usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$INFO_PLIST" 2>/dev/null))
+     with the now-updated $APPCAST.
+  3. Commit + push the $APPCAST change, and tag the release ($VERSION).
 EOF

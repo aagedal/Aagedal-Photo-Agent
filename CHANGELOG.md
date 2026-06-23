@@ -1,6 +1,16 @@
 # Changelog
 
-All notable user-visible changes are documented here. Downloads and signed builds are published on the [Codeberg releases page](https://codeberg.org/taagedal/Aagedal-Photo-Agent/releases).
+All notable user-visible changes are documented here. Signed, notarized DMGs are self-hosted and delivered as in-app updates via Sparkle.
+
+## 2.0.1 — 2026-06-23
+
+### Highlights
+
+- Fixed "Remove All IPTC Metadata" leaving embedded XMP behind — IPTC and XMP are now fully stripped from JPEG, PNG, and JPEG XL files.
+
+### Bug fixes
+
+- **Remove All IPTC Metadata** previously cleared the IPTC block but left the embedded XMP packet intact, so descriptive fields (keywords, title, creator, headline, …) survived the operation. Fixed in the bundled SwiftExif 1.9.9 metadata engine, which now removes the XMP segment / chunk / box whenever metadata is stripped.
 
 ## 2.0.0 — 2026-06-23
 

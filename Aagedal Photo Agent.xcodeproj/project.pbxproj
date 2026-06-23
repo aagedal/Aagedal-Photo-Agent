@@ -524,7 +524,7 @@
 				CODE_SIGN_ENTITLEMENTS = "Aagedal Photo Agent/Aagedal Photo Agent.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 378;
+				CURRENT_PROJECT_VERSION = 379;
 				DEVELOPMENT_TEAM = 3R5QGG9DW6;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -539,7 +539,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 2.0.0;
+				MARKETING_VERSION = 2.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = "aagedal.Aagedal-Photo-Agent";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -560,7 +560,7 @@
 				CODE_SIGN_ENTITLEMENTS = "Aagedal Photo Agent/Aagedal Photo Agent.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 378;
+				CURRENT_PROJECT_VERSION = 379;
 				DEVELOPMENT_TEAM = 3R5QGG9DW6;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -575,7 +575,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 2.0.0;
+				MARKETING_VERSION = 2.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = "aagedal.Aagedal-Photo-Agent";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -652,7 +652,7 @@
 			repositoryURL = "https://codeberg.org/taagedal/SwiftExif.git";
 			requirement = {
 				kind = upToNextMajorVersion;
-				minimumVersion = 1.9.6;
+				minimumVersion = 1.9.9;
 			};
 		};
 		8ED36A022F8CF03000FB9A33 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
