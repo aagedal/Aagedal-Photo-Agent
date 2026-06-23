@@ -20,7 +20,7 @@ struct TeamColorClustererTests {
             colors.append(ColorRGB(r: red.r - d, g: red.g + d, b: red.b + d))
         }
 
-        let result = try #require(clusterer.cluster(colors: colors, homeKit: white, awayKit: red))
+        let result = try #require(clusterer.cluster(colors: colors, homeKits: [white], awayKits: [red]))
 
         // Home cluster should be near white, away near red.
         #expect(result.homeCentroid.r > 0.7 && result.homeCentroid.g > 0.7)
@@ -36,10 +36,32 @@ struct TeamColorClustererTests {
         #expect(clusterer.side(for: red, in: result, flipped: true) == .home)
     }
 
+    /// A team wearing its alternate (away) kit should still map to its own side, because the
+    /// clusterer considers every candidate kit colour, not just the primary.
+    @Test("A team in its alternate kit still maps to its own side")
+    func alternateKitMapsCorrectly() throws {
+        let clusterer = TeamColorClusterer()
+        let black = ColorRGB(r: 0.08, g: 0.08, b: 0.09)   // home's alternate kit (worn today)
+        let white = ColorRGB(r: 0.95, g: 0.95, b: 0.95)   // away kit
+        var colors: [ColorRGB] = []
+        for d in stride(from: -0.02, through: 0.02, by: 0.01) {
+            colors.append(ColorRGB(r: black.r + d, g: black.g + d, b: black.b + d))
+            colors.append(ColorRGB(r: white.r - d, g: white.g - d, b: white.b - d))
+        }
+        // Home: red primary + black alternate. Away: white.
+        let result = try #require(clusterer.cluster(
+            colors: colors,
+            homeKits: [ColorRGB(r: 0.82, g: 0.10, b: 0.12), black],
+            awayKits: [white]
+        ))
+        #expect(clusterer.side(for: black, in: result, flipped: false) == .home)
+        #expect(clusterer.side(for: white, in: result, flipped: false) == .away)
+    }
+
     @Test("Returns nil when there aren't enough colours")
     func nilForTooFewColours() {
         let clusterer = TeamColorClusterer()
-        #expect(clusterer.cluster(colors: [], homeKit: ColorRGB(r: 1, g: 1, b: 1), awayKit: ColorRGB(r: 0, g: 0, b: 0)) == nil)
-        #expect(clusterer.cluster(colors: [ColorRGB(r: 0.5, g: 0.5, b: 0.5)], homeKit: ColorRGB(r: 1, g: 1, b: 1), awayKit: ColorRGB(r: 0, g: 0, b: 0)) == nil)
+        #expect(clusterer.cluster(colors: [], homeKits: [ColorRGB(r: 1, g: 1, b: 1)], awayKits: [ColorRGB(r: 0, g: 0, b: 0)]) == nil)
+        #expect(clusterer.cluster(colors: [ColorRGB(r: 0.5, g: 0.5, b: 0.5)], homeKits: [ColorRGB(r: 1, g: 1, b: 1)], awayKits: [ColorRGB(r: 0, g: 0, b: 0)]) == nil)
     }
 }

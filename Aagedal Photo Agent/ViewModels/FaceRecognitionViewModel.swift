@@ -98,8 +98,20 @@ final class FaceRecognitionViewModel {
     /// Lenses offered in the switcher for this folder. Sports only appears when the scan
     /// produced jersey data (sports tagging enabled and numbers found).
     var availableLenses: [FaceLens] {
-        guard FaceRecognitionDefaults.multiLensEnabled else { return [.face] }
-        return FaceLens.allCases.filter { $0 != .sports || folderHasJerseyData }
+        // Sports ships independently of the other secondary lenses (which stay gated behind
+        // multiLensEnabled until their thresholds are calibrated). It appears only when this
+        // folder actually produced jersey data.
+        if !FaceRecognitionDefaults.multiLensEnabled {
+            var lenses: [FaceLens] = [.face]
+            if FaceRecognitionDefaults.sportsLensEnabled, folderHasJerseyData { lenses.append(.sports) }
+            return lenses
+        }
+        return FaceLens.allCases.filter {
+            switch $0 {
+            case .sports: return FaceRecognitionDefaults.sportsLensEnabled && folderHasJerseyData
+            default: return true
+            }
+        }
     }
 
     var folderHasJerseyData: Bool {
@@ -108,10 +120,79 @@ final class FaceRecognitionViewModel {
         return data.faces.contains { $0.jerseyNumber != nil }
     }
 
-    /// Stored number detections with no associated face (back-turned players) — the
-    /// "unmatched numbers" shown in the Sports lens.
+    /// Stored number detections with no associated face (back-turned players), excluding ones the
+    /// photographer has rejected — the "unmatched numbers" shown in the Sports lens. The stored
+    /// array also holds face-attached claims after resolution, so this filters to standalone.
     var standaloneNumberDetections: [NumberDetection] {
-        faceData?.numberDetections ?? []
+        (faceData?.numberDetections ?? []).filter {
+            $0.associatedFaceID == nil && $0.effectiveClaimState != .rejected
+        }
+    }
+
+    /// One confirmed player, aggregating every confirmed number claim that resolved to them — the
+    /// identity-centric "player card" unit. Keyed on the resolved name, not on body geometry.
+    struct SportsPlayerCard: Identifiable {
+        var id: String { name.lowercased() }
+        let name: String
+        let representativeFaceID: UUID?
+        let teamSide: TeamSide?
+        let imageCount: Int
+        let detectionIDs: [UUID]
+    }
+
+    /// Confirmed players for the Sports lens, most-photographed first. These are the names that
+    /// will be written on Apply.
+    var confirmedPlayerCards: [SportsPlayerCard] {
+        let confirmed = (faceData?.numberDetections ?? []).filter {
+            $0.effectiveClaimState == .confirmed && ($0.resolvedPlayerName?.isEmpty == false)
+        }
+        let grouped = Dictionary(grouping: confirmed) { $0.resolvedPlayerName! }
+        return grouped.map { name, dets in
+            SportsPlayerCard(
+                name: name,
+                representativeFaceID: dets.first(where: { $0.associatedFaceID != nil })?.associatedFaceID,
+                teamSide: dets.compactMap(\.teamSide).first,
+                imageCount: Set(dets.map(\.imageURL)).count,
+                detectionIDs: dets.map(\.id)
+            )
+        }
+        .sorted { ($0.imageCount, $1.name) > ($1.imageCount, $0.name) }
+    }
+
+    /// Why a claim is in the review queue rather than auto-confirmed.
+    enum SportsReviewReason {
+        /// A number with no face in the frame — could be a supporter or a misread.
+        case numberOnly
+        /// A number over a detected (but not independently identified) face.
+        case unconfirmedFace
+        /// The number exists on both teams and needs a side.
+        case ambiguousSide
+    }
+
+    /// One claim awaiting the photographer's decision.
+    struct SportsReviewItem: Identifiable {
+        var id: UUID { detection.id }
+        let detection: NumberDetection
+        let reason: SportsReviewReason
+    }
+
+    /// Suggested (and ambiguous) claims that need confirmation before any name is written —
+    /// the review queue. Number-only claims surface first (highest risk of a wrong name).
+    var sportsReviewItems: [SportsReviewItem] {
+        let ambiguousIDs = Set(ambiguousNumberDetections.map(\.id))
+        let items: [SportsReviewItem] = (faceData?.numberDetections ?? []).compactMap { det in
+            guard det.effectiveClaimState == .suggested else { return nil }
+            if ambiguousIDs.contains(det.id) {
+                return SportsReviewItem(detection: det, reason: .ambiguousSide)
+            }
+            guard det.resolvedPlayerName?.isEmpty == false else { return nil }
+            return SportsReviewItem(
+                detection: det,
+                reason: det.associatedFaceID == nil ? .numberOnly : .unconfirmedFace
+            )
+        }
+        let order: [SportsReviewReason: Int] = [.numberOnly: 0, .ambiguousSide: 1, .unconfirmedFace: 2]
+        return items.sorted { (order[$0.reason] ?? 9, $0.detection.number) < (order[$1.reason] ?? 9, $1.detection.number) }
     }
 
     func lensState(for lens: FaceLens) -> FaceLensState {
@@ -131,7 +212,11 @@ final class FaceRecognitionViewModel {
         case .redCarpet:
             updateClothingMergeSuggestions()
         case .sports:
-            lastJerseyMergeCount = applyJerseyNumberMerges()
+            // Do NOT auto-merge groups by jersey number: that silently asserts the number on a
+            // torso identifies the face, exactly the body-association we don't trust. Merging by
+            // number stays an explicit, user-initiated action ("Merge by numbers"). Switching to
+            // the lens just (re)resolves claims so the cards and review queue are current.
+            runSportsResolution()
         case .expression:
             break
         }
@@ -161,6 +246,13 @@ final class FaceRecognitionViewModel {
 
     /// Number of groups merged by the last jersey-number assist run (transient, for UI feedback).
     var lastJerseyMergeCount = 0
+
+    /// How many group merges the jersey-number assist would make right now (0 ⇒ nothing to merge,
+    /// so the "Merge by numbers" action is hidden).
+    var jerseyMergeCandidateCount: Int {
+        guard let data = faceData else { return 0 }
+        return Self.jerseyMergePlan(groups: data.groups, faces: data.faces).count
+    }
 
     /// Merge people groups that share the same jersey number with agreeing kit colours.
     /// Conservative: groups with mixed member numbers, differently named groups, or colour
@@ -1413,6 +1505,7 @@ final class FaceRecognitionViewModel {
     func setMatchTeams(homeTeamID: UUID?, awayTeamID: UUID?, folderURL: URL) {
         var roster = matchRoster ?? MatchRoster(folderURL: folderURL)
         roster.folderURL = folderURL
+        roster.mode = .team
         roster.homeTeamID = homeTeamID
         roster.awayTeamID = awayTeamID
         roster.homeTeamSnapshot = homeTeamID.flatMap { RosterStore.shared.team(byID: $0) }
@@ -1422,14 +1515,39 @@ final class FaceRecognitionViewModel {
         try? matchRosterService.save(roster)
     }
 
+    /// Set a single startlist for an individual-sport event (bib mode). Bib numbers resolve
+    /// directly to athletes — no team colour, no home/away confirm step. The startlist is held
+    /// in the home slot; away stays empty.
+    func setEventStartlist(teamID: UUID?, folderURL: URL) {
+        var roster = matchRoster ?? MatchRoster(folderURL: folderURL)
+        roster.folderURL = folderURL
+        roster.mode = .event
+        roster.homeTeamID = teamID
+        roster.awayTeamID = nil
+        roster.homeTeamSnapshot = teamID.flatMap { RosterStore.shared.team(byID: $0) }
+        roster.awayTeamSnapshot = nil
+        // No colour clustering in event mode — nothing to confirm.
+        roster.clusterMappingConfirmed = true
+        roster.clusterFlipped = false
+        matchRoster = roster
+        try? matchRosterService.save(roster)
+    }
+
     /// Cluster sampled jersey colours into the two teams. If the mapping is
     /// already confirmed (and trustworthy), assign sides and resolve names; else
     /// surface the confirm/flip prompt and stop.
     func runSportsResolution() {
-        guard let data = faceData,
-              let match = matchRoster, match.isReady,
-              let home = match.homeTeamSnapshot,
-              let away = match.awayTeamSnapshot else { return }
+        guard let data = faceData, let match = matchRoster, match.isReady else { return }
+
+        // Event mode (individual sports): bib → athlete directly, no colour clustering or
+        // home/away confirm. Resolution runs with no cluster so every claim resolves by number
+        // alone against the single startlist.
+        if match.effectiveMode == .event {
+            applyResolution(cluster: nil, flipped: false)
+            return
+        }
+
+        guard let home = match.homeTeamSnapshot, let away = match.awayTeamSnapshot else { return }
 
         var colors: [ColorRGB] = []
         for face in data.faces { if let c = face.jerseyColorRGB { colors.append(c) } }
@@ -1437,8 +1555,8 @@ final class FaceRecognitionViewModel {
 
         let cluster = colorClusterer.cluster(
             colors: colors,
-            homeKit: home.primaryColor.colorRGB,
-            awayKit: away.primaryColor.colorRGB
+            homeKits: home.kitColors,
+            awayKits: away.kitColors
         )
 
         // No usable colours → resolve by number alone (side unknown).
@@ -1469,77 +1587,135 @@ final class FaceRecognitionViewModel {
         applyResolution(cluster: cluster, flipped: flip)
     }
 
-    /// Assign team sides from the colour cluster, then resolve numbers to player
-    /// names: name each face group (propagates to all its faces) and fill in
-    /// standalone numbers. Ambiguous numbers are bucketed for manual assignment.
+    /// Turn detected numbers into resolved player *claims* without ever renaming a
+    /// face group from a number. Each number — whether it sat over a face's torso or
+    /// stood alone — becomes a `NumberDetection` claim that resolves to a player and
+    /// then waits for confirmation, except claims that corroborate an independently
+    /// recognised face naming the same player, which auto-confirm. Ambiguous numbers
+    /// are bucketed for manual side assignment.
     private func applyResolution(cluster: TeamColorClusterer.ClusterResult?, flipped: Bool) {
         guard var data = faceData, let match = matchRoster else { return }
 
-        // 1. Assign team sides from sampled colours.
+        // Assign team sides from sampled colours (faces keep a side for the overlay).
         for i in data.faces.indices {
             if let c = data.faces[i].jerseyColorRGB, let cluster {
                 data.faces[i].teamSide = colorClusterer.side(for: c, in: cluster, flipped: flipped)
             }
         }
-        if data.numberDetections != nil {
-            for i in data.numberDetections!.indices {
-                if let c = data.numberDetections![i].jerseyColorRGB, let cluster {
-                    data.numberDetections![i].teamSide = colorClusterer.side(for: c, in: cluster, flipped: flipped)
-                }
-            }
-        }
 
-        // 2. Name face groups by majority (number, side) vote across their faces.
-        //    Skip groups the user already named so manual names aren't clobbered.
-        let facesByID = Dictionary(data.faces.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        for gi in data.groups.indices {
-            if let existing = data.groups[gi].name, !existing.isEmpty { continue }
-            var votes: [String: (count: Int, conf: Float, number: Int, side: TeamSide?)] = [:]
-            for faceID in data.groups[gi].faceIDs {
-                guard let face = facesByID[faceID], let number = face.jerseyNumber else { continue }
-                let key = "\(number)-\(face.teamSide?.rawValue ?? "?")"
-                var vote = votes[key] ?? (0, 0, number, face.teamSide)
-                vote.count += 1
-                vote.conf += face.numberConfidence ?? 0
-                votes[key] = vote
-            }
-            guard let best = votes.values.max(by: { ($0.count, $0.conf) < ($1.count, $1.conf) }) else { continue }
-            if case .resolved(let player, _) = playerResolver.resolve(number: best.number, side: best.side, match: match) {
-                // Consume the face↔number link: if this roster player is linked to a
-                // Known Person, the number sighting vouches for that identity. Tag with
-                // the canonical name and register the group↔person association so the
-                // face manager treats this group as that person too (badge, thumbnail).
-                data.groups[gi].name = resolvedDisplayName(for: player)
-                if let personID = player.knownPersonID {
-                    let avgConf = best.count > 0 ? best.conf / Float(best.count) : 0
-                    knownPersonMatchByGroup[data.groups[gi].id] = (personID: personID, confidence: avgConf)
-                }
-            }
-        }
+        let result = Self.reconcileNumberClaims(
+            faces: data.faces,
+            groups: data.groups,
+            existing: data.numberDetections ?? [],
+            resolver: playerResolver,
+            match: match,
+            sideForColor: { color in
+                guard let cluster else { return nil }
+                return self.colorClusterer.side(for: color, in: cluster, flipped: flipped)
+            },
+            displayName: { self.resolvedDisplayName(for: $0) }
+        )
 
-        // 3. Resolve standalone numbers; collect ambiguous ones for manual UI.
-        var ambiguous: [NumberDetection] = []
-        if data.numberDetections != nil {
-            for i in data.numberDetections!.indices {
-                let det = data.numberDetections![i]
-                switch playerResolver.resolve(number: det.number, side: det.teamSide, match: match) {
-                case .resolved(let player, _):
-                    data.numberDetections![i].resolvedPlayerName = resolvedDisplayName(for: player)
-                case .ambiguous:
-                    ambiguous.append(det)
-                case .notFound:
-                    break
-                }
-            }
-        }
-
+        data.numberDetections = result.numbers
         faceData = data
-        ambiguousNumberDetections = ambiguous
+        ambiguousNumberDetections = result.ambiguous
         do {
             try storageService.saveFaceData(data)
         } catch {
             errorMessage = "Failed to save sports resolution: \(error.localizedDescription)"
         }
+    }
+
+    /// Pure core of sports resolution: turn detected numbers into resolved, confirmation-gated
+    /// player claims. Kept `nonisolated static` (like `jerseyMergePlan`) so it's unit-testable
+    /// without the MainActor view model. The two closures inject the colour→side mapping and the
+    /// player→display-name choice so this stays free of clustering/Known-People dependencies.
+    ///
+    /// Guarantees, in order:
+    /// 1. Every face-attached number becomes a first-class claim (geometry never names a group).
+    /// 2. `.rejected` is sticky; `.confirmed` survives only while the resolved name is unchanged.
+    /// 3. A still-suggested claim auto-confirms iff its image holds an independently identified
+    ///    face naming the same player (two agreeing signals).
+    nonisolated static func reconcileNumberClaims(
+        faces: [DetectedFace],
+        groups: [FaceGroup],
+        existing: [NumberDetection],
+        resolver: PlayerResolver,
+        match: MatchRoster,
+        sideForColor: (ColorRGB) -> TeamSide?,
+        displayName: (RosterPlayer) -> String
+    ) -> (numbers: [NumberDetection], ambiguous: [NumberDetection]) {
+        // 1. Promote face-attached numbers into claims (skip faces already represented).
+        var numbers = existing
+        let attachedFaceIDs = Set(numbers.compactMap(\.associatedFaceID))
+        for face in faces {
+            guard let number = face.jerseyNumber, !attachedFaceIDs.contains(face.id) else { continue }
+            numbers.append(NumberDetection(
+                imageURL: face.imageURL,
+                number: number,
+                numberConfidence: face.numberConfidence ?? 0,
+                boundingBox: face.jerseyNumberBox ?? face.faceRect,
+                jerseyColorRGB: face.jerseyColorRGB,
+                associatedFaceID: face.id
+            ))
+        }
+
+        // 2. Side + resolve + reconcile sticky state.
+        var ambiguous: [NumberDetection] = []
+        for i in numbers.indices {
+            if let c = numbers[i].jerseyColorRGB { numbers[i].teamSide = sideForColor(c) }
+            let previousName = numbers[i].resolvedPlayerName
+            let previousState = numbers[i].effectiveClaimState
+
+            switch resolver.resolve(number: numbers[i].number, side: numbers[i].teamSide, match: match) {
+            case .resolved(let player, _):
+                let name = displayName(player)
+                numbers[i].resolvedPlayerName = name
+                if previousState == .rejected {
+                    numbers[i].claimState = .rejected
+                } else if name != previousName {
+                    numbers[i].claimState = .suggested
+                }
+            case .ambiguous:
+                numbers[i].resolvedPlayerName = nil
+                if previousState != .rejected { numbers[i].claimState = .suggested }
+                ambiguous.append(numbers[i])
+            case .notFound:
+                numbers[i].resolvedPlayerName = nil
+                if previousState != .rejected { numbers[i].claimState = .suggested }
+            }
+        }
+
+        // 3. Auto-confirm on agreement with an independently identified face.
+        let faceNamesByURL = independentFaceNamesByURL(faces: faces, groups: groups)
+        for i in numbers.indices where numbers[i].effectiveClaimState == .suggested {
+            guard let name = numbers[i].resolvedPlayerName?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !name.isEmpty,
+                  faceNamesByURL[numbers[i].imageURL]?.contains(name.lowercased()) == true else { continue }
+            numbers[i].claimState = .confirmed
+        }
+
+        return (numbers, ambiguous)
+    }
+
+    /// Per-image set of lower-cased player names that come from an *independently* identified
+    /// face — a face group named by face recognition or the user. Numbers never write group
+    /// names, so any group name here is a genuine second signal for auto-confirmation.
+    nonisolated static func independentFaceNamesByURL(faces: [DetectedFace], groups: [FaceGroup]) -> [URL: Set<String>] {
+        let groupNameByID: [UUID: String] = Dictionary(
+            groups.compactMap { group in
+                guard let name = group.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty
+                else { return nil }
+                return (group.id, name)
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+        var namesByURL: [URL: Set<String>] = [:]
+        for face in faces {
+            guard let groupID = face.groupID, let name = groupNameByID[groupID] else { continue }
+            namesByURL[face.imageURL, default: []].insert(name.lowercased())
+        }
+        return namesByURL
     }
 
     /// The canonical name to tag a resolved player with: prefer the linked Known
@@ -1554,7 +1730,33 @@ final class FaceRecognitionViewModel {
         return player.playerName
     }
 
-    /// Manually assign a side to a standalone ambiguous number, then re-resolve it.
+    /// The player name a (number, side) resolves to in the current match, for previewing the
+    /// "Name from team sheet" action. `nil` if there's no match or the number is ambiguous/unknown.
+    func rosterName(forNumber number: Int, side: TeamSide?) -> String? {
+        guard let match = matchRoster,
+              case .resolved(let player, _) = playerResolver.resolve(number: number, side: side, match: match)
+        else { return nil }
+        return resolvedDisplayName(for: player)
+    }
+
+    /// Name a face group from the roster by jersey number + team — the manual counterpart to number
+    /// resolution, for players whose number couldn't be read (stylised font) or that the
+    /// photographer can't place by name. Records the Known-People link when the roster player has one.
+    @discardableResult
+    func nameGroup(_ groupID: UUID, fromNumber number: Int, side: TeamSide?) -> Bool {
+        guard let match = matchRoster,
+              case .resolved(let player, _) = playerResolver.resolve(number: number, side: side, match: match)
+        else { return false }
+        nameGroup(groupID, name: resolvedDisplayName(for: player))
+        if let personID = player.knownPersonID {
+            knownPersonMatchByGroup[groupID] = (personID: personID, confidence: 1.0)
+        }
+        return true
+    }
+
+    /// Manually assign a side to an ambiguous number, then re-resolve it. The claim still
+    /// needs confirmation afterwards — picking a side disambiguates the team, it doesn't
+    /// assert the player is actually in the frame.
     func assignSide(_ side: TeamSide, toNumberDetection detectionID: UUID) {
         guard var data = faceData, let match = matchRoster, data.numberDetections != nil else { return }
         guard let i = data.numberDetections!.firstIndex(where: { $0.id == detectionID }) else { return }
@@ -1564,6 +1766,108 @@ final class FaceRecognitionViewModel {
         }
         faceData = data
         ambiguousNumberDetections.removeAll { $0.id == detectionID }
+        try? storageService.saveFaceData(data)
+    }
+
+    /// Mutate a single number claim's confirmation state and persist. Confirmed claims (and only
+    /// confirmed claims) write their resolved player name to metadata on Apply.
+    private func setClaimState(_ state: NumberClaimState, forNumberDetection detectionID: UUID) {
+        guard var data = faceData, data.numberDetections != nil,
+              let i = data.numberDetections!.firstIndex(where: { $0.id == detectionID }) else { return }
+        data.numberDetections![i].claimState = state
+        faceData = data
+        try? storageService.saveFaceData(data)
+    }
+
+    /// Accept a number → player claim: its name will be written on Apply.
+    func confirmNumberClaim(_ detectionID: UUID) {
+        setClaimState(.confirmed, forNumberDetection: detectionID)
+        ambiguousNumberDetections.removeAll { $0.id == detectionID }
+    }
+
+    /// Reject a number → player claim (wrong number, opposing team, a supporter, an OCR misread).
+    /// The detection is kept — so re-resolution won't resurrect it — but its name is never written
+    /// and it drops off the player's card. This is also "remove this number from the group".
+    func rejectNumberClaim(_ detectionID: UUID) {
+        setClaimState(.rejected, forNumberDetection: detectionID)
+        ambiguousNumberDetections.removeAll { $0.id == detectionID }
+    }
+
+    /// Manually bind a number claim to a face group — the photographer dragging a number onto a
+    /// person's card. This is an explicit identity assertion, so it confirms the claim: the
+    /// number is linked to the group's representative face and named with the group's name (or, if
+    /// the group is unnamed, the group takes the number's resolved name). Either way it then
+    /// writes on Apply.
+    func bindNumberDetection(_ detectionID: UUID, toGroup groupID: UUID) {
+        guard var data = faceData, data.numberDetections != nil,
+              let i = data.numberDetections!.firstIndex(where: { $0.id == detectionID }),
+              let group = data.groups.first(where: { $0.id == groupID }) else { return }
+
+        data.numberDetections![i].associatedFaceID = group.representativeFaceID
+        let groupName = group.name?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let groupName, !groupName.isEmpty {
+            data.numberDetections![i].resolvedPlayerName = groupName
+            data.numberDetections![i].claimState = .confirmed
+            faceData = data
+            try? storageService.saveFaceData(data)
+        } else if let resolved = data.numberDetections![i].resolvedPlayerName?.trimmingCharacters(in: .whitespacesAndNewlines), !resolved.isEmpty {
+            data.numberDetections![i].claimState = .confirmed
+            faceData = data
+            try? storageService.saveFaceData(data)
+            // Name the previously-unnamed group with the number's player (user-asserted identity).
+            nameGroup(groupID, name: resolved)
+        } else {
+            faceData = data
+            try? storageService.saveFaceData(data)
+        }
+        ambiguousNumberDetections.removeAll { $0.id == detectionID }
+    }
+
+    /// Detach a number from the face it was geometrically attached to, returning it to a
+    /// standalone (back-turned-style) claim. Use when the number clearly belongs to a different
+    /// player than the face it landed on; resolution by colour/side is otherwise unchanged.
+    func detachNumberFromFace(_ detectionID: UUID) {
+        guard var data = faceData, data.numberDetections != nil,
+              let i = data.numberDetections!.firstIndex(where: { $0.id == detectionID }) else { return }
+        let det = data.numberDetections![i]
+        // Clear the matching denormalised hint on the face so the overlay/merge stop showing it.
+        if let faceID = det.associatedFaceID, let fi = data.faces.firstIndex(where: { $0.id == faceID }) {
+            data.faces[fi].jerseyNumber = nil
+            data.faces[fi].numberConfidence = nil
+            data.faces[fi].jerseyNumberBox = nil
+        }
+        data.numberDetections![i].associatedFaceID = nil
+        faceData = data
+        try? storageService.saveFaceData(data)
+    }
+
+    /// Correct a misread number (OCR read "1" but the shirt shows "21"). Updates the claim and its
+    /// denormalised face hint, re-resolves against the roster with the current side, and resets the
+    /// claim to `suggested` so the corrected identity is reviewed before it's written.
+    func correctNumber(_ detectionID: UUID, to newNumber: Int) {
+        guard var data = faceData, let match = matchRoster, data.numberDetections != nil,
+              let i = data.numberDetections!.firstIndex(where: { $0.id == detectionID }) else { return }
+        guard newNumber != data.numberDetections![i].number else { return }
+
+        data.numberDetections![i].number = newNumber
+        if let faceID = data.numberDetections![i].associatedFaceID,
+           let fi = data.faces.firstIndex(where: { $0.id == faceID }) {
+            data.faces[fi].jerseyNumber = newNumber
+        }
+
+        let side = data.numberDetections![i].teamSide
+        ambiguousNumberDetections.removeAll { $0.id == detectionID }
+        switch playerResolver.resolve(number: newNumber, side: side, match: match) {
+        case .resolved(let player, _):
+            data.numberDetections![i].resolvedPlayerName = resolvedDisplayName(for: player)
+        case .ambiguous:
+            data.numberDetections![i].resolvedPlayerName = nil
+            ambiguousNumberDetections.append(data.numberDetections![i])
+        case .notFound:
+            data.numberDetections![i].resolvedPlayerName = nil
+        }
+        data.numberDetections![i].claimState = .suggested
+        faceData = data
         try? storageService.saveFaceData(data)
     }
 
@@ -1716,23 +2020,28 @@ final class FaceRecognitionViewModel {
             seenNamesByURL[face.imageURL] = seen
         }
 
-        // Standalone jersey numbers (back-turned players, no face) that resolved
-        // to a player are written directly. Face-associated numbers flow through
-        // their group name above, so only standalone ones are merged here.
-        for det in data.numberDetections ?? [] where det.associatedFaceID == nil {
-            guard availableURLs.contains(det.imageURL),
-                  let rawName = det.resolvedPlayerName?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !rawName.isEmpty else { continue }
-            let names = splitPersonNames(rawName)
-            guard !names.isEmpty else { continue }
+        // Jersey-number claims (including back-turned players with no face) only write when the
+        // photographer has them in front of them: the Sports lens must be active. Switch away to
+        // Face and number-derived names stop being applied — the detections stay in the folder's
+        // .face_data, but nothing is written from a number alone. Within Sports, only *confirmed*
+        // claims write; suggested/rejected/ambiguous ones never reach metadata. Names that overlap
+        // a face group dedupe against the per-URL set built above.
+        if activeLens == .sports {
+            for det in data.numberDetections ?? [] where det.effectiveClaimState == .confirmed {
+                guard availableURLs.contains(det.imageURL),
+                      let rawName = det.resolvedPlayerName?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !rawName.isEmpty else { continue }
+                let names = splitPersonNames(rawName)
+                guard !names.isEmpty else { continue }
 
-            var existing = namesByURL[det.imageURL] ?? []
-            var seen = seenNamesByURL[det.imageURL] ?? Set(existing.map { $0.lowercased() })
-            for name in names where seen.insert(name.lowercased()).inserted {
-                existing.append(name)
+                var existing = namesByURL[det.imageURL] ?? []
+                var seen = seenNamesByURL[det.imageURL] ?? Set(existing.map { $0.lowercased() })
+                for name in names where seen.insert(name.lowercased()).inserted {
+                    existing.append(name)
+                }
+                namesByURL[det.imageURL] = existing
+                seenNamesByURL[det.imageURL] = seen
             }
-            namesByURL[det.imageURL] = existing
-            seenNamesByURL[det.imageURL] = seen
         }
 
         guard !namesByURL.isEmpty else {

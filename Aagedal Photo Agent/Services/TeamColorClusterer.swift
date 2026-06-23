@@ -24,14 +24,18 @@ nonisolated struct TeamColorClusterer: Sendable {
         var awayCount: Int
     }
 
-    /// Cluster the sampled colours. Returns nil if there aren't enough colours to
-    /// form a meaningful two-way split.
-    func cluster(colors: [ColorRGB], homeKit: ColorRGB, awayKit: ColorRGB) -> ClusterResult? {
+    /// Cluster the sampled colours. Each side may have several candidate kit colours (primary,
+    /// alternate/away, goalkeeper); a cluster is mapped to whichever side has the *nearest* kit, so
+    /// a team wearing its change strip still lands on the right side. Returns nil if there aren't
+    /// enough colours to form a meaningful two-way split.
+    func cluster(colors: [ColorRGB], homeKits: [ColorRGB], awayKits: [ColorRGB]) -> ClusterResult? {
         let points = colors.map { Lab(srgb: $0) }
         guard points.count >= 2 else { return nil }
 
-        var centroidH = Lab(srgb: homeKit)
-        var centroidA = Lab(srgb: awayKit)
+        let kitsHome = (homeKits.isEmpty ? [ColorRGB(r: 0, g: 0, b: 0)] : homeKits).map { Lab(srgb: $0) }
+        let kitsAway = (awayKits.isEmpty ? [ColorRGB(r: 1, g: 1, b: 1)] : awayKits).map { Lab(srgb: $0) }
+        var centroidH = kitsHome[0]
+        var centroidA = kitsAway[0]
         // Degenerate seed (both kits identical) — nudge so assignment can split.
         if centroidH.deltaE(centroidA) < 1 {
             centroidA = Lab(l: centroidA.l + 10, a: centroidA.a, b: centroidA.b)
@@ -65,11 +69,11 @@ nonisolated struct TeamColorClusterer: Sendable {
             if moved < 0.5 { break }
         }
 
-        // Map centroids to sides by the lower-cost assignment to the kit colours.
-        let kitH = Lab(srgb: homeKit)
-        let kitA = Lab(srgb: awayKit)
-        let costDirect = centroidH.deltaE(kitH) + centroidA.deltaE(kitA)
-        let costSwapped = centroidH.deltaE(kitA) + centroidA.deltaE(kitH)
+        // Map centroids to sides by the lower-cost assignment, using each side's *nearest*
+        // candidate kit (so an alternate strip counts as that team's colour).
+        func minDist(_ c: Lab, _ kits: [Lab]) -> Double { kits.map { c.deltaE($0) }.min() ?? .greatestFiniteMagnitude }
+        let costDirect = minDist(centroidH, kitsHome) + minDist(centroidA, kitsAway)
+        let costSwapped = minDist(centroidH, kitsAway) + minDist(centroidA, kitsHome)
         let swap = costSwapped < costDirect
         let finalHome = swap ? centroidA : centroidH
         let finalAway = swap ? centroidH : centroidA

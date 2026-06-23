@@ -1,34 +1,65 @@
 import SwiftUI
 
-/// Per-folder sports setup: pick the home & away teams, confirm the colour →
-/// team mapping after a scan, and resolve any ambiguous jersey numbers.
+/// Per-folder sports setup: choose a two-team match (pick home & away, confirm the
+/// colour → team mapping) or an individual event (pick one startlist; bibs resolve directly).
 struct MatchSetupView: View {
     @Bindable var viewModel: FaceRecognitionViewModel
     let folderURL: URL?
 
     @State private var store = RosterStore.shared
+    @State private var mode: MatchMode = .team
     @State private var homeID: UUID?
     @State private var awayID: UUID?
+    @State private var eventID: UUID?
     @State private var showTeamsLibrary = false
     @Environment(\.dismiss) private var dismiss
 
     private var teams: [Team] { store.allTeams() }
 
+    private var canSave: Bool {
+        guard folderURL != nil else { return false }
+        switch mode {
+        case .team: return homeID != nil && awayID != nil && homeID != awayID
+        case .event: return eventID != nil
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Form {
-                Section("Match teams") {
-                    teamPicker(title: "Home", selection: $homeID)
-                    teamPicker(title: "Away", selection: $awayID)
-                    Button("Manage Teams…") { showTeamsLibrary = true }
+                Section {
+                    Picker("Type", selection: $mode) {
+                        Text("Team match").tag(MatchMode.team)
+                        Text("Individual event").tag(MatchMode.event)
+                    }
+                    .pickerStyle(.segmented)
+                } footer: {
+                    Text(mode == .team
+                         ? "Two teams that may share a number, told apart by kit colour."
+                         : "One startlist — each bib number maps directly to an athlete, no team colour.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
-                if let cluster = viewModel.pendingColorClusterConfirmation {
-                    confirmationSection(cluster)
-                }
+                if mode == .team {
+                    Section("Match teams") {
+                        teamPicker(title: "Home", selection: $homeID)
+                        teamPicker(title: "Away", selection: $awayID)
+                        Button("Manage Teams…") { showTeamsLibrary = true }
+                    }
 
-                if !viewModel.ambiguousNumberDetections.isEmpty {
-                    ambiguousSection
+                    if let cluster = viewModel.pendingColorClusterConfirmation {
+                        confirmationSection(cluster)
+                    }
+
+                    if !viewModel.ambiguousNumberDetections.isEmpty {
+                        ambiguousSection
+                    }
+                } else {
+                    Section("Startlist") {
+                        teamPicker(title: "Athletes", selection: $eventID)
+                        Button("Manage Startlists…") { showTeamsLibrary = true }
+                    }
                 }
             }
             .formStyle(.grouped)
@@ -39,19 +70,26 @@ struct MatchSetupView: View {
                 Spacer()
                 Button("Save & Resolve") {
                     guard let folderURL else { return }
-                    viewModel.setMatchTeams(homeTeamID: homeID, awayTeamID: awayID, folderURL: folderURL)
+                    switch mode {
+                    case .team:
+                        viewModel.setMatchTeams(homeTeamID: homeID, awayTeamID: awayID, folderURL: folderURL)
+                    case .event:
+                        viewModel.setEventStartlist(teamID: eventID, folderURL: folderURL)
+                    }
                     viewModel.runSportsResolution()
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(folderURL == nil || homeID == nil || awayID == nil || homeID == awayID)
+                .disabled(!canSave)
             }
             .padding()
         }
         .frame(width: 460, height: 520)
         .onAppear {
             if let folderURL { viewModel.loadMatchRoster(for: folderURL) }
+            mode = viewModel.matchRoster?.effectiveMode ?? .team
             homeID = viewModel.matchRoster?.homeTeamID
             awayID = viewModel.matchRoster?.awayTeamID
+            if mode == .event { eventID = viewModel.matchRoster?.homeTeamID }
         }
         .sheet(isPresented: $showTeamsLibrary) {
             TeamsLibraryView()

@@ -16,6 +16,8 @@ struct FaceGroupCardCallbacks {
     var onToggleExpand: ((UUID) -> Void)?
     var onOpenFullScreen: ((URL, UUID?) -> Void)?
     var onPhotosDeleted: ((Set<URL>) -> Void)?
+    /// Sports lens: name this group from the team roster by entering a number + team.
+    var onNameFromTeamSheet: ((UUID) -> Void)?
 }
 
 // MARK: - Face Thumbnail Subview
@@ -869,6 +871,14 @@ final class FaceGroupCardView: NSView {
         renameItem.target = self
         menu.addItem(renameItem)
 
+        // Sports lens: name the group from the roster by jersey number + team — for when the
+        // photographer can read the number but doesn't remember who wears it (or OCR missed it).
+        if viewModel?.activeLens == .sports, viewModel?.matchRoster?.isReady == true {
+            let fromSheetItem = NSMenuItem(title: "Name from Team Sheet…", action: #selector(menuNameFromTeamSheet), keyEquivalent: "")
+            fromSheetItem.target = self
+            menu.addItem(fromSheetItem)
+        }
+
         if group.name != nil {
             let applyItem = NSMenuItem(title: "Apply Name to Metadata", action: #selector(menuApplyName), keyEquivalent: "")
             applyItem.target = self
@@ -901,6 +911,11 @@ final class FaceGroupCardView: NSView {
 
     @objc private func menuRename() {
         startEditing()
+    }
+
+    @objc private func menuNameFromTeamSheet() {
+        guard let groupID else { return }
+        callbacks.onNameFromTeamSheet?(groupID)
     }
 
     @objc private func menuSplitAllUnmatched() {

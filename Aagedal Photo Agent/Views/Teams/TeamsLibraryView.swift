@@ -41,6 +41,23 @@ struct TeamsLibraryContent: View {
     @State private var store = RosterStore.shared
     @State private var selection: UUID?
     @State private var showDeleteAlert = false
+    @State private var searchText = ""
+    @State private var sportFilter: TeamSport?
+
+    /// Teams matching the current search text and sport filter, sorted by name.
+    private var filteredTeams: [Team] {
+        let query = searchText.trimmingCharacters(in: .whitespaces).lowercased()
+        return store.allTeams().filter { team in
+            (sportFilter == nil || team.effectiveSport == sportFilter)
+                && (query.isEmpty || team.name.lowercased().contains(query))
+        }
+    }
+
+    /// Sports that actually have teams, for a tidy filter menu.
+    private var presentSports: [TeamSport] {
+        let used = Set(store.allTeams().map(\.effectiveSport))
+        return TeamSport.allCases.filter { used.contains($0) }
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -54,8 +71,43 @@ struct TeamsLibraryContent: View {
 
     private var teamList: some View {
         VStack(spacing: 0) {
+            // Search + sport filter — a professional library can hold many teams.
+            VStack(spacing: 6) {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    TextField("Search teams", text: $searchText)
+                        .textFieldStyle(.plain)
+                    if !searchText.isEmpty {
+                        Button { searchText = "" } label: { Image(systemName: "xmark.circle.fill") }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Menu {
+                    Button { sportFilter = nil } label: {
+                        Label("All sports", systemImage: sportFilter == nil ? "checkmark" : "")
+                    }
+                    ForEach(presentSports, id: \.self) { sport in
+                        Button { sportFilter = sport } label: {
+                            Label(sport.displayName, systemImage: sportFilter == sport ? "checkmark" : "")
+                        }
+                    }
+                } label: {
+                    Label(sportFilter?.displayName ?? "All sports", systemImage: "line.3.horizontal.decrease.circle")
+                        .font(.caption)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .menuStyle(.borderlessButton)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+
+            Divider()
+
             List(selection: $selection) {
-                ForEach(store.allTeams()) { team in
+                ForEach(filteredTeams) { team in
                     HStack(spacing: 8) {
                         Circle()
                             .fill(Color(team.primaryColor))
@@ -63,7 +115,7 @@ struct TeamsLibraryContent: View {
                             .overlay(Circle().strokeBorder(.secondary.opacity(0.4)))
                         VStack(alignment: .leading, spacing: 1) {
                             Text(team.name.isEmpty ? "Untitled Team" : team.name)
-                            Text("\(team.roster.count) player\(team.roster.count == 1 ? "" : "s")")
+                            Text("\(team.effectiveSport.displayName) · \(team.roster.count) player\(team.roster.count == 1 ? "" : "s")")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -118,6 +170,9 @@ struct TeamsLibraryContent: View {
     }
 
     private func addTeam() {
+        // Clear filters so the freshly-added team is visible in the list.
+        searchText = ""
+        sportFilter = nil
         let team = Team(name: "", primaryColor: TeamKitColor(r: 0.2, g: 0.4, b: 0.9))
         try? store.upsert(team)
         selection = team.id
@@ -130,7 +185,10 @@ private struct TeamEditorView: View {
     let store: RosterStore
 
     @State private var name: String
+    @State private var sport: TeamSport
     @State private var primary: Color
+    @State private var hasSecondary: Bool
+    @State private var secondary: Color
     @State private var hasGoalkeeper: Bool
     @State private var goalkeeper: Color
     @State private var roster: [RosterPlayer]
@@ -147,7 +205,10 @@ private struct TeamEditorView: View {
         self.teamID = team.id
         self.createdAt = team.createdAt
         _name = State(initialValue: team.name)
+        _sport = State(initialValue: team.effectiveSport)
         _primary = State(initialValue: Color(team.primaryColor))
+        _hasSecondary = State(initialValue: team.secondaryColor != nil)
+        _secondary = State(initialValue: Color(team.secondaryColor ?? TeamKitColor(r: 0.95, g: 0.95, b: 0.95)))
         _hasGoalkeeper = State(initialValue: team.goalkeeperColor != nil)
         _goalkeeper = State(initialValue: Color(team.goalkeeperColor ?? TeamKitColor(r: 0.9, g: 0.8, b: 0.1)))
         _roster = State(initialValue: team.roster.sorted { $0.number < $1.number })
@@ -157,7 +218,16 @@ private struct TeamEditorView: View {
         Form {
             Section("Team") {
                 TextField("Name", text: $name)
-                ColorPicker("Kit colour", selection: $primary, supportsOpacity: false)
+                Picker("Sport", selection: $sport) {
+                    ForEach(TeamSport.allCases, id: \.self) { sport in
+                        Text(sport.displayName).tag(sport)
+                    }
+                }
+                ColorPicker("Home kit colour", selection: $primary, supportsOpacity: false)
+                Toggle("Has an alternate (away) kit", isOn: $hasSecondary)
+                if hasSecondary {
+                    ColorPicker("Away kit colour", selection: $secondary, supportsOpacity: false)
+                }
                 Toggle("Goalkeeper wears a different colour", isOn: $hasGoalkeeper)
                 if hasGoalkeeper {
                     ColorPicker("Goalkeeper colour", selection: $goalkeeper, supportsOpacity: false)
@@ -228,7 +298,10 @@ private struct TeamEditorView: View {
         .formStyle(.grouped)
         .onAppear { knownPeople = KnownPeopleService.shared.getAllPeople() }
         .onChange(of: name) { scheduleSave() }
+        .onChange(of: sport) { scheduleSave() }
         .onChange(of: primary) { scheduleSave() }
+        .onChange(of: hasSecondary) { scheduleSave() }
+        .onChange(of: secondary) { scheduleSave() }
         .onChange(of: hasGoalkeeper) { scheduleSave() }
         .onChange(of: goalkeeper) { scheduleSave() }
         .onChange(of: roster) { scheduleSave() }
@@ -378,7 +451,9 @@ private struct TeamEditorView: View {
             id: teamID,
             name: name.trimmingCharacters(in: .whitespaces),
             primaryColor: primary.teamKitColor,
+            secondaryColor: hasSecondary ? secondary.teamKitColor : nil,
             goalkeeperColor: hasGoalkeeper ? goalkeeper.teamKitColor : nil,
+            sport: sport,
             roster: cleaned,
             createdAt: createdAt,
             updatedAt: Date()

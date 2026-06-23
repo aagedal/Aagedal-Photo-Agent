@@ -180,7 +180,10 @@ final class FaceGroupCollectionView: NSCollectionView {
 
     override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
         let location = convert(sender.draggingLocation, from: nil)
-        let isDraggingFaces = draggedGroupID == nil
+        // A number drag (from the Sports review queue) only makes sense dropped on a group card,
+        // never on empty space — so don't offer the "New Group" affordance for it.
+        let isNumberDrag = sender.draggingPasteboard.string(forType: .string)?.hasPrefix("number:") == true
+        let isDraggingFaces = draggedGroupID == nil && !isNumberDrag
 
         // Clear all highlights first
         for item in visibleItems() {
@@ -235,7 +238,18 @@ final class FaceGroupCollectionView: NSCollectionView {
         let indexPath = indexPathForItem(at: location)
         let targetItem = indexPath.flatMap { self.item(at: $0) }
 
-        if pasteboard.hasPrefix("group:") {
+        if pasteboard.hasPrefix("number:") {
+            // A jersey/bib number dragged from the Sports review queue or unmatched strip onto a
+            // person's group — bind the number claim to that person.
+            guard let detectionID = UUID(uuidString: String(pasteboard.dropFirst(7))) else { return false }
+            if let cardItem = targetItem as? FaceGroupCardItem,
+               let targetGroupID = cardItem.cardView.groupID,
+               targetGroupID != FaceRecognitionViewModel.unmatchedGroupID {
+                controller.viewModel.bindNumberDetection(detectionID, toGroup: targetGroupID)
+                return true
+            }
+            return false
+        } else if pasteboard.hasPrefix("group:") {
             // Group merge
             let groupIDString = String(pasteboard.dropFirst(6))
             guard let sourceGroupID = UUID(uuidString: groupIDString) else { return false }

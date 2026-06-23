@@ -16,15 +16,31 @@ nonisolated struct ColorRGB: Codable, Sendable, Equatable, Hashable {
     }
 }
 
-/// A jersey number detected in an image, independent of any face.
+/// Whether a number → player claim has been accepted for writing.
+///
+/// A detected number is only ever a *claim* that a given player is in the image —
+/// a supporter in a similar shirt, an OCR misread, or the opposing team's number
+/// can all produce a wrong claim. Names reach the metadata only once a claim is
+/// `confirmed`. Claims auto-confirm when they corroborate an independently
+/// recognised face naming the same player (two signals agree); everything else
+/// waits in the review queue. `rejected` is a sticky user decision, never undone
+/// by a re-resolution.
+nonisolated enum NumberClaimState: String, Codable, Sendable {
+    case suggested
+    case confirmed
+    case rejected
+}
+
+/// A jersey number detected in an image — a self-contained identity *claim*.
 ///
 /// Number detection runs at the image level (not anchored to a detected face) so
 /// that back-turned players — who show a number but no detectable face — are still
-/// captured. When a number's box falls inside a detected face's estimated torso
-/// region it is *attached* to that face (`associatedFaceID != nil`) and the same
-/// values are also stamped onto the `DetectedFace`. Numbers with no containing
-/// face stay standalone (`associatedFaceID == nil`) and are written to metadata
-/// directly during the apply step.
+/// captured. A number whose box falls inside a detected face's estimated torso
+/// region records that face in `associatedFaceID` as a *hint* only: which player a
+/// number physically belongs to can't be inferred reliably from geometry (a packed
+/// shot may put another player's number over a face's estimated torso), so the
+/// association never silently renames a face group. It only helps suggest a card
+/// and enables auto-confirmation when the face is independently identified.
 nonisolated struct NumberDetection: Codable, Identifiable, Sendable {
     let id: UUID
     let imageURL: URL
@@ -51,6 +67,14 @@ nonisolated struct NumberDetection: Codable, Identifiable, Sendable {
     /// The roster player name this detection resolved to, or `nil` if unresolved.
     var resolvedPlayerName: String?
 
+    /// Whether the resolved claim has been accepted for writing. Optional for
+    /// backwards compatibility with `face_data.json` written before the review
+    /// queue existed; `nil` is treated as `.suggested`.
+    var claimState: NumberClaimState?
+
+    /// The claim state, defaulting un-set (legacy) values to `.suggested`.
+    var effectiveClaimState: NumberClaimState { claimState ?? .suggested }
+
     init(
         id: UUID = UUID(),
         imageURL: URL,
@@ -60,7 +84,8 @@ nonisolated struct NumberDetection: Codable, Identifiable, Sendable {
         jerseyColorRGB: ColorRGB? = nil,
         teamSide: TeamSide? = nil,
         associatedFaceID: UUID? = nil,
-        resolvedPlayerName: String? = nil
+        resolvedPlayerName: String? = nil,
+        claimState: NumberClaimState? = nil
     ) {
         self.id = id
         self.imageURL = imageURL
@@ -71,5 +96,6 @@ nonisolated struct NumberDetection: Codable, Identifiable, Sendable {
         self.teamSide = teamSide
         self.associatedFaceID = associatedFaceID
         self.resolvedPlayerName = resolvedPlayerName
+        self.claimState = claimState
     }
 }

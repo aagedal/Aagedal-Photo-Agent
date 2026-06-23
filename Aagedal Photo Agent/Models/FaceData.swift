@@ -152,7 +152,7 @@ nonisolated enum FaceLens: String, Codable, CaseIterable, Sendable {
         switch self {
         case .face: "Groups people by who they are."
         case .redCarpet: "Same people groups — clothing suggests extra merges when faces are weak."
-        case .sports: "Same people groups — jersey numbers merge groups and catch back-turned players."
+        case .sports: "Names players from jersey numbers — review each claim before it's written."
         case .expression: "Groups by look and expression, not identity."
         }
     }
