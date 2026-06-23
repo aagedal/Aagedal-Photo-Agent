@@ -19,7 +19,6 @@
 		AB0600000000000000000002 /* MetadataEngineConcurrencyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0600000000000000000001 /* MetadataEngineConcurrencyTests.swift */; };
 		AB0700000000000000000002 /* StructuredKeywordServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0700000000000000000001 /* StructuredKeywordServiceTests.swift */; };
 		AB0800000000000000000002 /* CoordinateParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0800000000000000000001 /* CoordinateParserTests.swift */; };
-		AB1800000000000000000002 /* GeocodingServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1800000000000000000001 /* GeocodingServiceTests.swift */; };
 		AB0900000000000000000002 /* KnownPeopleServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0900000000000000000001 /* KnownPeopleServiceTests.swift */; };
 		AB1000000000000000000002 /* FTPServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1000000000000000000001 /* FTPServiceTests.swift */; };
 		AB1100000000000000000002 /* FullScreenImageCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1100000000000000000001 /* FullScreenImageCacheTests.swift */; };
@@ -29,6 +28,7 @@
 		AB1500000000000000000002 /* SportsTaggingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1500000000000000000001 /* SportsTaggingTests.swift */; };
 		AB1600000000000000000002 /* FaceEmbeddingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1600000000000000000001 /* FaceEmbeddingTests.swift */; };
 		AB1700000000000000000002 /* ToneCurveGeneratorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1700000000000000000001 /* ToneCurveGeneratorTests.swift */; };
+		AB1800000000000000000002 /* GeocodingServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1800000000000000000001 /* GeocodingServiceTests.swift */; };
 		AB1900000000000000000002 /* ColorLabelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1900000000000000000001 /* ColorLabelTests.swift */; };
 		AB2000000000000000000002 /* NormalizedCropRegionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2000000000000000000001 /* NormalizedCropRegionTests.swift */; };
 		AB2100000000000000000002 /* TechnicalMetadataTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2100000000000000000001 /* TechnicalMetadataTests.swift */; };
@@ -64,7 +64,6 @@
 		AB0600000000000000000001 /* MetadataEngineConcurrencyTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataEngineConcurrencyTests.swift; sourceTree = "<group>"; };
 		AB0700000000000000000001 /* StructuredKeywordServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = StructuredKeywordServiceTests.swift; sourceTree = "<group>"; };
 		AB0800000000000000000001 /* CoordinateParserTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CoordinateParserTests.swift; sourceTree = "<group>"; };
-		AB1800000000000000000001 /* GeocodingServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GeocodingServiceTests.swift; sourceTree = "<group>"; };
 		AB0900000000000000000001 /* KnownPeopleServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KnownPeopleServiceTests.swift; sourceTree = "<group>"; };
 		AB1000000000000000000001 /* FTPServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FTPServiceTests.swift; sourceTree = "<group>"; };
 		AB1100000000000000000001 /* FullScreenImageCacheTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FullScreenImageCacheTests.swift; sourceTree = "<group>"; };
@@ -74,6 +73,7 @@
 		AB1500000000000000000001 /* SportsTaggingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SportsTaggingTests.swift; sourceTree = "<group>"; };
 		AB1600000000000000000001 /* FaceEmbeddingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FaceEmbeddingTests.swift; sourceTree = "<group>"; };
 		AB1700000000000000000001 /* ToneCurveGeneratorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ToneCurveGeneratorTests.swift; sourceTree = "<group>"; };
+		AB1800000000000000000001 /* GeocodingServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GeocodingServiceTests.swift; sourceTree = "<group>"; };
 		AB1900000000000000000001 /* ColorLabelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ColorLabelTests.swift; sourceTree = "<group>"; };
 		AB2000000000000000000001 /* NormalizedCropRegionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NormalizedCropRegionTests.swift; sourceTree = "<group>"; };
 		AB2100000000000000000001 /* TechnicalMetadataTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TechnicalMetadataTests.swift; sourceTree = "<group>"; };
@@ -532,6 +532,8 @@
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = "Aagedal Photo Agent/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "Aagedal Photo Agent";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.photography";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -566,6 +568,8 @@
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = "Aagedal Photo Agent/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "Aagedal Photo Agent";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.photography";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
