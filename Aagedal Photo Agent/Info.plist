@@ -27,7 +27,7 @@
 	<key>NSHumanReadableCopyright</key>
 	<string>© 2026 Truls Aagedal</string>
 	<key>SUFeedURL</key>
-	<string>https://codeberg.org/taagedal/Aagedal-Photo-Agent/releases/download/appcast/appcast.xml</string>
+	<string>https://codeberg.org/taagedal/Aagedal-Photo-Agent/raw/branch/main/appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>i3xudeqe+09I7n+FVFHmPxBa8cEWc3/ljLk3Y9bTEkY=</string>
 	<key>SUEnableAutomaticChecks</key>

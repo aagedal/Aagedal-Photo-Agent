@@ -61,7 +61,7 @@
         <item>
             <title>Version 2.0.1</title>
             <pubDate>Tue, 23 Jun 2026 17:18:11 +0200</pubDate>
-            <sparkle:version>379</sparkle:version>
+            <sparkle:version>380</sparkle:version>
             <sparkle:shortVersionString>2.0.1</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <description><![CDATA[
@@ -71,10 +71,10 @@
             ]]></description>
             <enclosure
                 url="https://aagedal.me/apps/Aagedal-Photo-Agent-2.0.1.dmg"
-                sparkle:version="379"
+                sparkle:version="380"
                 sparkle:shortVersionString="2.0.1"
-                sparkle:edSignature="A62gmzwQuTkXgJpchwng7iNdeeZufSFHhuigsVH97piONOwCf+Ye0ufWbI9jQN0/MqgfpgZ3tk5QAtvFjaYOBg=="
-                length="148542265"
+                sparkle:edSignature="vYA3GDBr5nNavzg9ykkWn56gzhaSWVB/mrlkYFpGWYSyk6AnFItn55uq0HHbuNtQSPFW+Fhm1vxzQ747zKbaCg=="
+                length="148542270"
                 type="application/octet-stream" />
         </item>
 
