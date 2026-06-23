@@ -7,11 +7,10 @@ All notable user-visible changes are documented here. Downloads and signed build
 ### Highlights
 
 - Native pure-Swift metadata engine replaces the ExifTool subprocess — faster, no external binary, no per-call process overhead.
-- End-to-end C2PA content credentials: signing with Keychain-managed certificates, render-and-sign flow, and XMP-persisted edit history.
+- Rebuilt face recognition with a bundled on-device model and improved, fully editable face grouping — Known People suggestions, eye-aligned crops, and a dedicated Unmatched group.
 - Ingest verification with dual-destination backup, plus PhotoMechanic-style cull shortcuts for faster culling sessions.
 - Per-color HSL (Hue / Saturation / Density) adjustments matched to the vectorscope channels.
 - CIE 1931 chromaticity scope with HDR-aware display gamut and target-gamut soft proofing.
-- Interactive Known People suggestions, eye-aligned face crops, and a dedicated Unmatched faces group.
 - New app icon.
 
 ### Native metadata engine
@@ -45,6 +44,8 @@ Replaced ExifTool with **SwiftExif**, a pure-Swift in-process engine. Metadata r
 - Reset Edits now clears CRS data in the sidecar; XMP orientation no longer mismatches after rotation.
 
 ### Content Authenticity (C2PA)
+
+> **Experimental preview** — C2PA signing has not yet been verified end-to-end and may change, or be turned off by default, in a future release. It is intentionally kept off the headline feature list above and labelled experimental in the app.
 
 - Sign images with C2PA content credentials. Certificate and private key storage in the macOS Keychain.
 - Render-and-sign flow with detailed edit-action manifests and format-aware output folders.

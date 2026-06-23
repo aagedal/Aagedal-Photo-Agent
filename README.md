@@ -84,6 +84,8 @@ Non-destructive RAW development with real-time Metal GPU preview:
 
 ### Face Recognition
 
+Rebuilt for 2.0 around a bundled on-device AuraFace (ArcFace) model, with eye-aligned crops and **improved, fully editable face grouping** — review groups, merge or split people, and drag faces between groups.
+
 - Automatic face detection using the Apple Vision framework
 - Face embeddings from a bundled AuraFace (ArcFace) CoreML model — 512-dimension vectors compared by cosine distance
 - Quality-gated hierarchical clustering with eye-aligned face crops
@@ -119,10 +121,11 @@ AVIF and JPEG XL encoding powered by bundled FFmpeg (arm64, `libaom-av1` and `li
 
 ### Content Authenticity (C2PA)
 
-- Detect C2PA manifests on images
-- Sign images with C2PA content credentials
-- Certificate and private key storage in macOS Keychain
+> **Experimental preview.** C2PA signing has not yet been verified end-to-end and may change, or be turned off by default, in a future release.
+
+- Detect and display C2PA content credentials on images
 - Warnings before destructive writes to C2PA-protected images
+- Experimental signing of images with C2PA content credentials — certificate and private key stored in the macOS Keychain
 - Powered by bundled c2patool
 
 ### FTP / SFTP Upload

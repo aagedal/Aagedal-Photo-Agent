@@ -33,5 +33,30 @@
         </item>
         -->
 
+        <item>
+            <title>Version 2.0.0</title>
+            <pubDate>Tue, 23 Jun 2026 14:07:43 +0200</pubDate>
+            <sparkle:version>378</sparkle:version>
+            <sparkle:shortVersionString>2.0.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <description><![CDATA[
+                <ul>
+                    <li>Native pure-Swift metadata engine replaces the ExifTool subprocess — faster, with no external binary.</li>
+                    <li>Rebuilt face recognition with a bundled on-device model and improved, fully editable face grouping — Known People suggestions, eye-aligned crops, and an Unmatched group.</li>
+                    <li>Ingest verification with dual-destination backup, plus PhotoMechanic-style cull shortcuts.</li>
+                    <li>Per-color HSL (Hue / Saturation / Density) adjustments matched to the vectorscope channels.</li>
+                    <li>CIE 1931 chromaticity scope with HDR-aware display gamut and target-gamut soft proofing.</li>
+                    <li>New app icon.</li>
+                </ul>
+            ]]></description>
+            <enclosure
+                url="https://codeberg.org/taagedal/Aagedal-Photo-Agent/releases/download/2.0.0/Aagedal-Photo-Agent-2.0.0.dmg"
+                sparkle:version="378"
+                sparkle:shortVersionString="2.0.0"
+                sparkle:edSignature="Ku0QBuDJ/4kTqLuKTzA1NuhIPGRoDHx8JZgcc+6urea8eou3KGmbyLexPjxvuLL6fTa90YnhXsTcNdQMmTBUAg=="
+                length="148541385"
+                type="application/octet-stream" />
+        </item>
+
     </channel>
 </rss>
