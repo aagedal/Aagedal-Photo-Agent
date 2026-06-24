@@ -1464,12 +1464,89 @@ final class FaceRecognitionViewModel {
 
     // MARK: - Naming & Metadata
 
+    /// Display name for a group, or `nil` when the group is missing or unnamed.
+    /// Used by the full-screen overlay to label and pre-fill the rename popover.
+    func groupName(_ groupID: UUID) -> String? {
+        guard let group = groupLookup[groupID], let name = group.name, !name.isEmpty else { return nil }
+        return name
+    }
+
+    /// The jersey number for a group (sports mode only), used to prefix the name tag.
+    /// Resolved first from numbers actually read off the group's faces, then — for
+    /// players named from the team sheet or Known People without an OCR'd number — from
+    /// the roster via the linked person or a name match. `nil` when nothing resolves.
+    func groupNumber(_ groupID: UUID) -> Int? {
+        guard let group = groupLookup[groupID] else { return nil }
+
+        // 0. A hand-assigned number is an explicit choice — always honored, and it wins
+        //    over any detected/roster number (it's how the user corrects a misread).
+        if let manual = group.manualNumber { return manual }
+
+        // Auto-resolved numbers only surface when jersey detection is on for scans.
+        guard UserDefaults.standard.bool(forKey: UserDefaultsKeys.sportsModeEnabled) else { return nil }
+
+        // 1. Majority vote across detected face numbers (most authoritative).
+        var votes: [Int: Int] = [:]
+        for faceID in group.faceIDs {
+            guard let number = faceLookup[faceID]?.jerseyNumber else { continue }
+            votes[number, default: 0] += 1
+        }
+        if let voted = votes.max(by: { ($0.value, $1.key) < ($1.value, $0.key) })?.key {
+            return voted
+        }
+
+        // 2. Roster fallback: the number is on the team sheet even when no face was OCR'd.
+        return rosterNumber(forGroup: groupID, group: group)
+    }
+
+    /// The roster jersey number for an already-identified group: by the linked
+    /// known-person id, else by matching the group name to a roster player.
+    private func rosterNumber(forGroup groupID: UUID, group: FaceGroup) -> Int? {
+        guard let match = matchRoster else { return nil }
+        let teams = [match.team(for: .home), match.team(for: .away)].compactMap { $0 }
+        guard !teams.isEmpty else { return nil }
+
+        if let personID = knownPersonMatchByGroup[groupID]?.personID {
+            for team in teams {
+                if let player = team.roster.first(where: { $0.knownPersonID == personID }) {
+                    return player.number
+                }
+            }
+        }
+        if let name = group.name {
+            for team in teams {
+                if let player = team.roster.first(where: {
+                    namesMatch($0.playerName, name) || namesMatch(resolvedDisplayName(for: $0), name)
+                }) {
+                    return player.number
+                }
+            }
+        }
+        return nil
+    }
+
     func nameGroup(_ groupID: UUID, name: String) {
         guard var data = faceData else { return }
         let groupIdx = groupIndexMap(from: data)
         guard let index = groupIdx[groupID] else { return }
 
         data.groups[index].name = name.isEmpty ? nil : name
+        faceData = data
+        do {
+            try storageService.saveFaceData(data)
+        } catch {
+            errorMessage = "Failed to save face data: \(error.localizedDescription)"
+        }
+    }
+
+    /// Assign (or clear, with `nil`) a hand-picked jersey number for a group. Display-only —
+    /// see `groupNumber(_:)`. Persisted alongside the rest of the face data.
+    func setManualNumber(_ number: Int?, forGroup groupID: UUID) {
+        guard var data = faceData else { return }
+        let groupIdx = groupIndexMap(from: data)
+        guard let index = groupIdx[groupID] else { return }
+
+        data.groups[index].manualNumber = number
         faceData = data
         do {
             try storageService.saveFaceData(data)

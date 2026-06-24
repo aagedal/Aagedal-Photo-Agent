@@ -220,6 +220,15 @@ struct FullScreenImageView: View {
 
     // Face overlay state
     @State private var showFaceRectangles: Bool = false
+    // The face whose name popover is open (keyed by face id, carrying its group id).
+    @State private var renamingFace: RenamingFace?
+
+    /// Identifies the face box whose inline rename popover is currently presented.
+    private struct RenamingFace: Identifiable {
+        let id: UUID        // face id — keeps the popover unique even when two faces share a group
+        let groupID: UUID
+        let initialName: String
+    }
 
     // Zoom state
     @State private var zoomScale: CGFloat = 1.0
@@ -1393,13 +1402,101 @@ struct FullScreenImageView: View {
         }
     }
 
-    /// Convert Vision face rect (normalized, bottom-left origin) to display rect (pixels, top-left origin)
-    private func convertFaceRect(_ faceRect: CGRect, toDisplayIn imageDisplayRect: CGRect) -> CGRect {
-        let displayX = imageDisplayRect.minX + faceRect.origin.x * imageDisplayRect.width
-        let displayY = imageDisplayRect.minY + (1.0 - faceRect.origin.y - faceRect.height) * imageDisplayRect.height
-        let displayW = faceRect.width * imageDisplayRect.width
-        let displayH = faceRect.height * imageDisplayRect.height
-        return CGRect(x: displayX, y: displayY, width: displayW, height: displayH)
+    /// Maps a detection rect (Vision-normalized, bottom-left origin, in the full
+    /// display-oriented image frame) into display-space corners, replicating the
+    /// crop + straighten geometry that `CameraRawApproximation.applyCrop` bakes into
+    /// the rendered image. Without an effective crop this reduces to a plain
+    /// aspect-fit placement (the old `convertFaceRect` behaviour).
+    ///
+    /// Returns four corners (TL, TR, BR, BL in display space) so callers can stroke a
+    /// quad that follows the straighten angle — an axis-aligned rect would drift out
+    /// of alignment once the crop is rotated.
+    private func detectionCorners(
+        _ rect: CGRect,
+        crop: CameraRawCrop?,
+        imageSize: CGSize,
+        in imageDisplayRect: CGRect
+    ) -> [CGPoint] {
+        // Corners in normalized full-image space, y-up (Vision convention):
+        // TL, TR, BR, BL as they appear upright in the displayed image.
+        let normCorners = [
+            CGPoint(x: rect.minX, y: rect.maxY),
+            CGPoint(x: rect.maxX, y: rect.maxY),
+            CGPoint(x: rect.maxX, y: rect.minY),
+            CGPoint(x: rect.minX, y: rect.minY),
+        ]
+
+        // Plain aspect-fit placement when there is no crop to follow.
+        func placedDirectly() -> [CGPoint] {
+            normCorners.map { p in
+                CGPoint(
+                    x: imageDisplayRect.minX + p.x * imageDisplayRect.width,
+                    y: imageDisplayRect.minY + (1.0 - p.y) * imageDisplayRect.height
+                )
+            }
+        }
+
+        guard let crop, crop.isEffectiveCrop,
+              imageSize.width > 0, imageSize.height > 0 else {
+            return placedDirectly()
+        }
+
+        // Express the crop in the same display-oriented frame the face boxes live in,
+        // exactly as applyCrop does before rendering.
+        let dc = crop.transformedForDisplay(orientation: currentImageFile?.exifOrientation ?? 1)
+        let left = min(dc.left ?? 0, dc.right ?? 1)
+        let right = max(dc.left ?? 0, dc.right ?? 1)
+        let top = min(dc.top ?? 0, dc.bottom ?? 1)
+        let bottom = max(dc.top ?? 0, dc.bottom ?? 1)
+        let fracW = right - left
+        let fracH = bottom - top
+        guard fracW > 0.0001, fracH > 0.0001 else { return placedDirectly() }
+
+        // The renderer outputs exactly fracW·Wf × fracH·Hf pixels, so the full-image
+        // pixel dimensions can be recovered from the rendered (cropped) size. Only the
+        // aspect ratio matters (absolute scale cancels below), but using real pixels
+        // keeps the rotation math identical to applyCrop.
+        let wf = imageSize.width / fracW
+        let hf = imageSize.height / fracH
+        let cx = wf / 2, cy = hf / 2
+        // y-up, +angle — matches applyCrop's CGAffineTransform(rotationAngle:).
+        let theta = (dc.angle ?? 0) * .pi / 180.0
+        let cosT = cos(theta), sinT = sin(theta)
+
+        let cropW = imageSize.width   // == fracW · wf
+        let cropH = imageSize.height  // == fracH · hf
+        // Upright crop centre in full-image pixels (y-up: top edge is high y).
+        let cropCenterX = (left * wf) + cropW / 2
+        let cropCenterY = ((1 - bottom) * hf) + cropH / 2
+        // Rotate the crop centre about the image centre, as applyCrop does.
+        let rcx = cropCenterX - cx, rcy = cropCenterY - cy
+        let newCenterX = cx + rcx * cosT - rcy * sinT
+        let newCenterY = cy + rcx * sinT + rcy * cosT
+        let cropOriginX = newCenterX - cropW / 2
+        let cropOriginY = newCenterY - cropH / 2
+
+        return normCorners.map { p in
+            let px = p.x * wf, py = p.y * hf
+            let dx = px - cx, dy = py - cy
+            let rx = cx + dx * cosT - dy * sinT
+            let ry = cy + dx * sinT + dy * cosT
+            let u = (rx - cropOriginX) / cropW
+            let v = (ry - cropOriginY) / cropH
+            return CGPoint(
+                x: imageDisplayRect.minX + u * imageDisplayRect.width,
+                y: imageDisplayRect.minY + (1.0 - v) * imageDisplayRect.height
+            )
+        }
+    }
+
+    /// Closed quad path through four display-space corners.
+    private func quadPath(_ corners: [CGPoint]) -> Path {
+        var path = Path()
+        guard let first = corners.first else { return path }
+        path.move(to: first)
+        for corner in corners.dropFirst() { path.addLine(to: corner) }
+        path.closeSubpath()
+        return path
     }
 
     @ViewBuilder
@@ -1412,42 +1509,83 @@ struct FullScreenImageView: View {
            let url = currentImageFile?.url {
             let facesInImage = faceVM.facesForImage(url)
             let standaloneNumbers = faceVM.numberDetectionsForImage(url)
-            Canvas { context, _ in
-                for face in facesInImage {
-                    let isHighlighted = face.id == highlightedFaceID
-                    let faceDisplayRect = convertFaceRect(face.faceRect, toDisplayIn: imageDisplayRect)
-                    let groupColor = colorForGroup(face.groupID)
-                    let lineWidth: CGFloat = isHighlighted ? 4 : 2
-                    let opacity: CGFloat = isHighlighted ? 1.0 : 0.5
-                    let path = Path(roundedRect: faceDisplayRect, cornerRadius: 4)
-                    context.stroke(path, with: .color(groupColor.opacity(opacity)), lineWidth: lineWidth)
-                }
+            // Follow the crop/straighten geometry baked into the rendered image so the
+            // boxes stay glued to faces and numbers after a rotated crop.
+            let displayCrop = renderEdits ? currentImageFile?.cameraRawSettings?.crop : nil
+            ZStack {
+                Canvas { context, _ in
+                    for face in facesInImage {
+                        let isHighlighted = face.id == highlightedFaceID
+                        let corners = detectionCorners(face.faceRect, crop: displayCrop, imageSize: imageSize, in: imageDisplayRect)
+                        let groupColor = colorForGroup(face.groupID)
+                        let lineWidth: CGFloat = isHighlighted ? 4 : 2
+                        let opacity: CGFloat = isHighlighted ? 1.0 : 0.5
+                        context.stroke(quadPath(corners), with: .color(groupColor.opacity(opacity)), lineWidth: lineWidth)
+                        // Named faces get a tag under the box, mirroring the jersey-number
+                        // tags. In sports mode the player's number is prefixed: "9 Alice".
+                        if let groupID = face.groupID, let name = faceVM.groupName(groupID) {
+                            let label = faceVM.groupNumber(groupID).map { "#\($0) \(name)" } ?? name
+                            drawTag(
+                                context: context,
+                                text: label,
+                                box: quadPath(corners).boundingRect,
+                                color: groupColor,
+                                imageDisplayRect: imageDisplayRect,
+                                preferBelow: true
+                            )
+                        }
+                    }
 
-                // Jersey-number debug boxes (sports tagging): solid orange for numbers
-                // attached to a face's torso, red for standalone (back-turned) detections.
-                for face in facesInImage {
-                    guard let number = face.jerseyNumber, let box = face.jerseyNumberBox else { continue }
-                    drawNumberBox(
-                        context: context,
-                        rect: convertFaceRect(box, toDisplayIn: imageDisplayRect),
-                        number: number,
-                        confidence: face.numberConfidence,
-                        color: .orange,
-                        imageDisplayRect: imageDisplayRect
-                    )
+                    // Jersey-number debug boxes (sports tagging): solid orange for numbers
+                    // attached to a face's torso, red for standalone (back-turned) detections.
+                    for face in facesInImage {
+                        guard let number = face.jerseyNumber, let box = face.jerseyNumberBox else { continue }
+                        drawNumberBox(
+                            context: context,
+                            corners: detectionCorners(box, crop: displayCrop, imageSize: imageSize, in: imageDisplayRect),
+                            number: number,
+                            confidence: face.numberConfidence,
+                            color: .orange,
+                            imageDisplayRect: imageDisplayRect
+                        )
+                    }
+                    for detection in standaloneNumbers {
+                        drawNumberBox(
+                            context: context,
+                            corners: detectionCorners(detection.boundingBox, crop: displayCrop, imageSize: imageSize, in: imageDisplayRect),
+                            number: detection.number,
+                            confidence: detection.numberConfidence,
+                            color: .red,
+                            imageDisplayRect: imageDisplayRect
+                        )
+                    }
                 }
-                for detection in standaloneNumbers {
-                    drawNumberBox(
-                        context: context,
-                        rect: convertFaceRect(detection.boundingBox, toDisplayIn: imageDisplayRect),
-                        number: detection.number,
-                        confidence: detection.numberConfidence,
-                        color: .red,
-                        imageDisplayRect: imageDisplayRect
-                    )
+                .allowsHitTesting(false)
+
+                // Click a face box to name/rename it. Only faces with a group are
+                // addressable (synthetic-only faces have nothing to persist a name to).
+                ForEach(facesInImage, id: \.id) { face in
+                    if let groupID = face.groupID {
+                        let box = quadPath(detectionCorners(face.faceRect, crop: displayCrop, imageSize: imageSize, in: imageDisplayRect)).boundingRect
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .frame(width: max(box.width, 12), height: max(box.height, 12))
+                            .position(x: box.midX, y: box.midY)
+                            .onTapGesture {
+                                renamingFace = RenamingFace(id: face.id, groupID: groupID, initialName: faceVM.groupName(groupID) ?? "")
+                            }
+                            .popover(isPresented: Binding(
+                                get: { renamingFace?.id == face.id },
+                                set: { if !$0 { renamingFace = nil } }
+                            )) {
+                                FaceNamePopover(initialName: renamingFace?.initialName ?? "") { newName in
+                                    faceVM.nameGroup(groupID, name: newName.trimmingCharacters(in: .whitespacesAndNewlines))
+                                    renamingFace = nil
+                                }
+                            }
+                    }
                 }
             }
-            .allowsHitTesting(false)
         }
     }
 
@@ -1455,34 +1593,58 @@ struct FullScreenImageView: View {
     /// the box touches the top of the image).
     private func drawNumberBox(
         context: GraphicsContext,
-        rect: CGRect,
+        corners: [CGPoint],
         number: Int,
         confidence: Float?,
         color: Color,
         imageDisplayRect: CGRect
     ) {
-        context.stroke(Path(roundedRect: rect, cornerRadius: 2), with: .color(color.opacity(0.9)), lineWidth: 2)
-
+        context.stroke(quadPath(corners), with: .color(color.opacity(0.9)), lineWidth: 2)
         var label = "#\(number)"
         // Vision reports only coarse confidences (≈0.3/0.5/1.0); a full-confidence tag is
         // pure noise, so only flag the uncertain ones.
         if let confidence, confidence < 0.99 {
             label += " \(Int(confidence * 100))%"
         }
+        // Anchor the tag off the quad's upright bounding box so it stays legible even
+        // when the box is rotated by the straighten angle.
+        drawTag(
+            context: context,
+            text: label,
+            box: quadPath(corners).boundingRect,
+            color: color,
+            imageDisplayRect: imageDisplayRect,
+            preferBelow: false
+        )
+    }
+
+    /// Draw a small filled "#9" / "Alice" tag hugging `box` (display space). Sits above
+    /// the box by default and flips below when it would clip the image's top edge; pass
+    /// `preferBelow: true` for name tags, which read better under the face.
+    private func drawTag(
+        context: GraphicsContext,
+        text: String,
+        box: CGRect,
+        color: Color,
+        imageDisplayRect: CGRect,
+        preferBelow: Bool
+    ) {
         let resolved = context.resolve(
-            Text(label)
+            Text(text)
                 .font(.system(size: 11, weight: .bold))
                 .foregroundColor(.white)
         )
-        let textSize = resolved.measure(in: CGSize(width: 200, height: 40))
+        let textSize = resolved.measure(in: CGSize(width: 240, height: 40))
         let tagHeight = textSize.height + 2
-        let fitsAbove = rect.minY - tagHeight - 2 >= imageDisplayRect.minY
-        let tagRect = CGRect(
-            x: rect.minX,
-            y: fitsAbove ? rect.minY - tagHeight - 2 : rect.maxY + 2,
-            width: textSize.width + 8,
-            height: tagHeight
-        )
+        let aboveY = box.minY - tagHeight - 2
+        let belowY = box.maxY + 2
+        let y: CGFloat
+        if preferBelow {
+            y = (belowY + tagHeight <= imageDisplayRect.maxY) ? belowY : max(aboveY, imageDisplayRect.minY)
+        } else {
+            y = (aboveY >= imageDisplayRect.minY) ? aboveY : belowY
+        }
+        let tagRect = CGRect(x: box.minX, y: y, width: textSize.width + 8, height: tagHeight)
         context.fill(Path(roundedRect: tagRect, cornerRadius: 3), with: .color(color.opacity(0.85)))
         context.draw(resolved, at: CGPoint(x: tagRect.midX, y: tagRect.midY), anchor: .center)
     }
@@ -1685,5 +1847,42 @@ struct FullScreenPresenter: ViewModifier {
 extension View {
     func fullScreenImagePresenter(viewModel: BrowserViewModel, scopeViewModel: ScopeViewModel) -> some View {
         modifier(FullScreenPresenter(viewModel: viewModel, scopeViewModel: scopeViewModel))
+    }
+}
+
+/// Inline name/rename field shown in a popover when a face box is clicked in the
+/// full-screen viewer. Commits on Return or the Save button.
+private struct FaceNamePopover: View {
+    let initialName: String
+    let onCommit: (String) -> Void
+
+    @State private var name: String = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextField("Person name", text: $name)
+                .textFieldStyle(.roundedBorder)
+                .frame(minWidth: 220)
+                .focused($focused)
+                .onChange(of: name) { _, newValue in
+                    // Names are single-line.
+                    let filtered = newValue.replacingOccurrences(of: "\n", with: "")
+                        .replacingOccurrences(of: "\r", with: "")
+                    if filtered != newValue { name = filtered }
+                }
+                .onSubmit { onCommit(name) }
+            HStack {
+                Spacer()
+                Button("Save") { onCommit(name) }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(12)
+        .onAppear {
+            name = initialName
+            focused = true
+        }
     }
 }

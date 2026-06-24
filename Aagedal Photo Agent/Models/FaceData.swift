@@ -112,6 +112,9 @@ nonisolated struct FaceGroup: Codable, Identifiable {
     var faceIDs: [UUID]
     /// Groups explicitly created by the user (split, move-to-new-group) are excluded from the synthetic "Unmatched Faces" group.
     var userCreated: Bool?
+    /// A jersey number assigned by hand (sports mode). Display-only — it labels the group
+    /// and overrides OCR'd/roster numbers, but is never written into the name or Person Shown.
+    var manualNumber: Int?
 }
 
 // MARK: - Lenses
