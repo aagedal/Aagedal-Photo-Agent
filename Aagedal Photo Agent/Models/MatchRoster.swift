@@ -78,12 +78,17 @@ nonisolated struct MatchRoster: Codable, Sendable {
     /// In event mode the single startlist is held in the home slot (away stays nil).
     var eventStartlist: Team? { homeTeamSnapshot }
 
-    /// True when enough is set up to resolve names: both teams for a match, or the
-    /// single startlist for an event.
+    /// True when enough is set up to resolve names: at least one team/startlist. A team match
+    /// resolves best with both sides (kit colour then tells same-number players apart), but a
+    /// photographer often only carries their own squad's sheet — so a single team is enough to
+    /// start resolving. Numbers not on the configured team(s) simply stay unmatched, and the
+    /// confirm-before-write review queue guards against mislabelling the opponent.
     var isReady: Bool {
-        switch effectiveMode {
-        case .team: return homeTeamSnapshot != nil && awayTeamSnapshot != nil
-        case .event: return homeTeamSnapshot != nil
-        }
+        homeTeamSnapshot != nil || awayTeamSnapshot != nil
+    }
+
+    /// Whether both sides are configured — the case where kit-colour clustering is meaningful.
+    var hasBothTeams: Bool {
+        homeTeamSnapshot != nil && awayTeamSnapshot != nil
     }
 }

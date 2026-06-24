@@ -380,6 +380,18 @@ struct SportsAssistStrip: View {
             .sorted { ($0.detections.count, $1.number) > ($1.detections.count, $0.number) }
     }
 
+    /// Header label for the configured match/event: the startlist, "Home vs Away", or — when only
+    /// one team is set up — just that team's name.
+    private func matchLabel(_ roster: MatchRoster) -> String {
+        if roster.effectiveMode == .event { return roster.eventStartlist?.name ?? "Startlist" }
+        switch (roster.homeTeamSnapshot?.name, roster.awayTeamSnapshot?.name) {
+        case let (home?, away?): return "\(home) vs \(away)"
+        case let (home?, nil): return home
+        case let (nil, away?): return away
+        case (nil, nil): return "—"
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
@@ -400,9 +412,7 @@ struct SportsAssistStrip: View {
             // Match setup → number-to-player-name resolution.
             HStack(spacing: 8) {
                 if let roster = viewModel.matchRoster, roster.isReady {
-                    Text(roster.effectiveMode == .event
-                         ? (roster.eventStartlist?.name ?? "Startlist")
-                         : "\(roster.homeTeamSnapshot?.name ?? "Home") vs \(roster.awayTeamSnapshot?.name ?? "Away")")
+                    Text(matchLabel(roster))
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
                     Button("Resolve Names") {

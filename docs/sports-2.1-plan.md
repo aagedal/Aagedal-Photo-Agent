@@ -88,6 +88,10 @@ the folder produced jersey data.
   photographer can read but can't place, or that OCR missed (stylised fonts). `rosterName(forNumber:
   side:)` + `nameGroup(_:fromNumber:side:)`; `NameFromTeamSheetView` sheet.
 - [x] **Teams in Settings** — Settings ▸ People and Groups ▸ Teams hosts the same `TeamsLibraryContent`.
+- [x] **Single-team matches** — `MatchRoster.isReady` now needs only one side (`hasBothTeams`
+  gates colour clustering). A photographer carrying only their own squad's sheet can resolve;
+  numbers off the sheet stay unmatched, and confirm-before-write guards the opponent. Verified
+  against the real NorgeMarokko scan (Landslaget only): #10→Ødegaard, #5→Wolfe, #21→Schjelderup.
 
 ## Next
 - [ ] Team-sheet / startlist paste import is already present in the team editor.

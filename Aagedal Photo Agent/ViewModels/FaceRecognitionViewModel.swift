@@ -1539,15 +1539,14 @@ final class FaceRecognitionViewModel {
     func runSportsResolution() {
         guard let data = faceData, let match = matchRoster, match.isReady else { return }
 
-        // Event mode (individual sports): bib → athlete directly, no colour clustering or
-        // home/away confirm. Resolution runs with no cluster so every claim resolves by number
-        // alone against the single startlist.
-        if match.effectiveMode == .event {
+        // No colour clustering when there's nothing to tell apart: an individual event (bib →
+        // athlete) or a match with only one team configured. Each claim resolves by number alone
+        // against the single roster; numbers not on it stay unmatched.
+        guard match.effectiveMode == .team, match.hasBothTeams,
+              let home = match.homeTeamSnapshot, let away = match.awayTeamSnapshot else {
             applyResolution(cluster: nil, flipped: false)
             return
         }
-
-        guard let home = match.homeTeamSnapshot, let away = match.awayTeamSnapshot else { return }
 
         var colors: [ColorRGB] = []
         for face in data.faces { if let c = face.jerseyColorRGB { colors.append(c) } }

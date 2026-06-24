@@ -274,6 +274,28 @@ struct SportsTaggingTests {
         #expect(result.ambiguous.isEmpty)
     }
 
+    @MainActor
+    @Test("One team configured (no away) still resolves its own numbers; isReady is true")
+    func singleTeamResolves() {
+        let home = Team(name: "Landslaget", primaryColor: TeamKitColor(r: 0.85, g: 0.84, b: 0.87),
+                        roster: [RosterPlayer(number: 10, playerName: "Martin Ødegaard")])
+        let match = MatchRoster(folderURL: URL(fileURLWithPath: "/tmp"),
+                                homeTeamID: home.id, homeTeamSnapshot: home)
+        #expect(match.isReady)
+        #expect(!match.hasBothTeams)
+
+        // No side, no colour (single-team path) — resolves the number on the only team.
+        let det = standaloneNumber(10, url: "/tmp/a.jpg", side: nil)
+        let result = FaceRecognitionViewModel.reconcileNumberClaims(
+            faces: [], groups: [], existing: [det],
+            resolver: PlayerResolver(), match: match,
+            sideForColor: { _ in nil }, displayName: { $0.playerName }
+        )
+        let claim = try! #require(result.numbers.first)
+        #expect(claim.resolvedPlayerName == "Martin Ødegaard")
+        #expect(claim.effectiveClaimState == .suggested)   // still needs confirmation
+    }
+
     @Test("Legacy match roster (no mode) decodes as a team match")
     func legacyMatchRosterDefaultsToTeam() throws {
         let team = Team(name: "A", primaryColor: TeamKitColor(r: 1, g: 0, b: 0))

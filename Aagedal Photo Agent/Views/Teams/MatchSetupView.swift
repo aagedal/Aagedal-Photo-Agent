@@ -19,8 +19,14 @@ struct MatchSetupView: View {
     private var canSave: Bool {
         guard folderURL != nil else { return false }
         switch mode {
-        case .team: return homeID != nil && awayID != nil && homeID != awayID
-        case .event: return eventID != nil
+        case .team:
+            // At least one team; if both are set they must differ. A photographer often only
+            // carries their own squad's sheet — one team is enough to start resolving.
+            guard homeID != nil || awayID != nil else { return false }
+            if let homeID, let awayID, homeID == awayID { return false }
+            return true
+        case .event:
+            return eventID != nil
         }
     }
 
@@ -42,10 +48,16 @@ struct MatchSetupView: View {
                 }
 
                 if mode == .team {
-                    Section("Match teams") {
+                    Section {
                         teamPicker(title: "Home", selection: $homeID)
                         teamPicker(title: "Away", selection: $awayID)
                         Button("Manage Teams…") { showTeamsLibrary = true }
+                    } header: {
+                        Text("Match teams")
+                    } footer: {
+                        Text("Set both teams to tell same-number players apart by kit colour. One team is enough if you only need to tag that squad.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
 
                     if let cluster = viewModel.pendingColorClusterConfirmation {
