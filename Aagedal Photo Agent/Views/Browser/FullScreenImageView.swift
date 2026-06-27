@@ -207,6 +207,10 @@ struct FullScreenImageView: View {
     @State private var hiResApplied = false
     @State private var showLabelPicker = false
     @State private var hideOverlays = false
+    /// Persisted collapsed/expanded state of the bottom-right keyboard-shortcuts
+    /// hint card. Collapses to a small keyboard pill rather than disappearing, so
+    /// the user can always re-expand it; state survives across sessions.
+    @AppStorage("fullScreenShortcutsCollapsed") private var shortcutsCollapsed = false
     @FocusState private var isFocused: Bool
 
     // Image cache and prefetch
@@ -518,6 +522,17 @@ struct FullScreenImageView: View {
                                 Spacer()
                             }
                             .padding(.leading, 20)
+                            .padding(.bottom, 20)
+                        }
+
+                        // Bottom-right: keyboard-shortcut tips (collapsible)
+                        VStack {
+                            Spacer()
+                            HStack {
+                                Spacer()
+                                shortcutsHintCard(for: file)
+                            }
+                            .padding(.trailing, 20)
                             .padding(.bottom, 20)
                         }
 
@@ -878,6 +893,75 @@ struct FullScreenImageView: View {
         default: break
         }
         return result
+    }
+
+    /// Bottom-right keyboard-shortcut tips. Collapses to a small keyboard pill
+    /// (persisted in `shortcutsCollapsed`) instead of disappearing, so it can
+    /// always be re-expanded. The "toggle edits" row only appears when the image
+    /// actually has edits, since E is a no-op otherwise.
+    @ViewBuilder
+    private func shortcutsHintCard(for file: ImageFile) -> some View {
+        if shortcutsCollapsed {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) { shortcutsCollapsed = false }
+            } label: {
+                Image(systemName: "keyboard")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.8))
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 8)
+                    .background(.black.opacity(0.55), in: Capsule())
+                    .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .help("Show keyboard shortcuts")
+        } else {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 12) {
+                    Text("Shortcuts")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white)
+                    Spacer(minLength: 16)
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) { shortcutsCollapsed = true }
+                    } label: {
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(.white.opacity(0.6))
+                            .padding(3)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Collapse")
+                }
+                if file.hasDevelopEdits || file.hasCropEdits {
+                    shortcutRow("E", "Toggle edits / original")
+                }
+                shortcutRow("H", "Hide interface")
+                shortcutRow("Z", "Toggle 1:1 at cursor")
+                shortcutRow("F", "Toggle face boxes")
+                shortcutRow("\u{2325}S", "Toggle scaling filter")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 12))
+            .fixedSize(horizontal: true, vertical: false)
+        }
+    }
+
+    private func shortcutRow(_ key: String, _ label: String) -> some View {
+        HStack(spacing: 8) {
+            Text(key)
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white)
+                .frame(minWidth: 18, alignment: .center)
+                .padding(.horizontal, 3)
+                .frame(height: 18)
+                .background(.white.opacity(0.18), in: RoundedRectangle(cornerRadius: 4))
+            Text(label)
+                .font(.caption2)
+                .foregroundStyle(.white.opacity(0.75))
+        }
     }
 
     @ViewBuilder
