@@ -1120,6 +1120,17 @@ struct ContentView: View {
             }
         }
         .frame(minWidth: 180)
+        .task {
+            // Keep the sidebar's subfolder lists in sync with disk: favorites and
+            // their (expandable) subfolders are cached on first expand and would
+            // otherwise never reflect folders created/renamed externally. The
+            // sweep only re-reads what's already visible and leaves selection and
+            // expansion untouched. Cancels automatically when the sidebar goes away.
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(10))
+                browserViewModel.refreshExpandedSubfolders()
+            }
+        }
     }
 
     // MARK: - Template Picker Sheet

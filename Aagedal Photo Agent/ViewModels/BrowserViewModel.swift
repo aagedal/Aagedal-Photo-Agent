@@ -1995,6 +1995,74 @@ final class BrowserViewModel {
         }
     }
 
+    /// Re-scans the given folders' direct subfolders off MainActor and writes the
+    /// result back, the shared worker behind both the periodic and manual refresh.
+    /// Selection (`currentFolderURL`) and expansion (`expandedFavoriteFolders` /
+    /// `expandedOpenFolders`) are keyed independently of the child cache, so
+    /// replacing a child array never disturbs what's selected or open.
+    ///
+    /// A failed scan returns nil (distinct from a genuinely empty folder) and is
+    /// skipped, so a transient permission/IO hiccup during a background pass can't
+    /// blank out a folder that's really still there. When `force` is false the
+    /// cache is only reassigned if the contents actually changed, avoiding needless
+    /// view churn on the 10s tick.
+    private func rescanSubfolders(_ urls: Set<URL>, force: Bool) {
+        guard !urls.isEmpty else { return }
+        let service = fileSystemService
+        Task.detached(priority: .utility) {
+            let results: [(URL, [URL]?)] = await withTaskGroup(of: (URL, [URL]?).self) { group in
+                for url in urls {
+                    group.addTask {
+                        let subs = try? service.listSubfolders(at: url)
+                        return (url, subs)
+                    }
+                }
+                var out: [(URL, [URL]?)] = []
+                for await pair in group { out.append(pair) }
+                return out
+            }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                for (url, subs) in results {
+                    guard let subs else { continue }
+                    if force || self.subfoldersByOpenFolder[url] != subs {
+                        self.subfoldersByOpenFolder[url] = subs
+                        self.prefetchGrandchildren(of: url)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Periodic (~10s) sweep that keeps every visible folder's child list in sync
+    /// with disk, so subfolders created/renamed/removed externally show up without a
+    /// manual reopen. Only scans folders whose children are actually on screen:
+    /// favorite roots (always shown) and any expanded folder already in the cache.
+    func refreshExpandedSubfolders() {
+        var toScan: Set<URL> = Set(favoriteFolders.map(\.url))
+        toScan.formUnion(expandedFavoriteFolders)
+        toScan.formUnion(expandedOpenFolders)
+        let urls = toScan.filter { subfoldersByOpenFolder[$0] != nil }
+        rescanSubfolders(Set(urls), force: false)
+    }
+
+    /// Manual refresh (right-click → Refresh): force a re-scan of `url` plus any of
+    /// its currently-expanded descendants, so a deep refresh updates the whole open
+    /// subtree the user is looking at.
+    func refreshSubfolders(for url: URL) {
+        var toScan: Set<URL> = [url]
+        func collectExpanded(_ parent: URL) {
+            guard let children = subfoldersByOpenFolder[parent] else { return }
+            for child in children
+            where expandedFavoriteFolders.contains(child) || expandedOpenFolders.contains(child) {
+                toScan.insert(child)
+                collectExpanded(child)
+            }
+        }
+        collectExpanded(url)
+        rescanSubfolders(toScan, force: true)
+    }
+
     /// Recursively removes all cached subfolder entries rooted at a URL.
     private func removeSubfolderCacheRecursively(for url: URL) {
         guard let children = subfoldersByOpenFolder.removeValue(forKey: url) else { return }

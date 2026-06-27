@@ -167,6 +167,9 @@ struct FolderTreeRow: View {
             Button("New Subfolder...") {
                 viewModel.promptNewSubfolder(url)
             }
+            Button("Refresh") {
+                viewModel.refreshSubfolders(for: url)
+            }
             Divider()
             Button("Back Up Edited Files...") {
                 NotificationCenter.default.post(name: .backupEditedFilesForFolder, object: url)
@@ -188,6 +191,9 @@ struct FolderTreeRow: View {
             Button("New Subfolder...") {
                 viewModel.promptNewSubfolder(url)
             }
+            Button("Refresh") {
+                viewModel.refreshSubfolders(for: url)
+            }
             Divider()
             Button("Rename...") {
                 viewModel.promptRenameSubfolder(url)
@@ -202,6 +208,9 @@ struct FolderTreeRow: View {
             }
             Button("New Subfolder...") {
                 viewModel.promptNewSubfolder(url)
+            }
+            Button("Refresh") {
+                viewModel.refreshSubfolders(for: url)
             }
             Divider()
             Button("Back Up Edited Files...") {
@@ -228,6 +237,9 @@ struct FolderTreeRow: View {
             }
             Button("New Subfolder...") {
                 viewModel.promptNewSubfolder(url)
+            }
+            Button("Refresh") {
+                viewModel.refreshSubfolders(for: url)
             }
             Divider()
             Button("Rename...") {
