@@ -12,6 +12,9 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
     private var observationTasks: [Task<Void, Never>] = []
     private var lastSnapshotURLs: [URL] = []
     private var lastImageStates: [URL: ImageFile] = [:]
+    /// In-flight speculative prefetch tasks, keyed by URL so `cancelPrefetchingForItemsAt` can
+    /// actually stop work for items the user scrolled past before their decode started.
+    private var prefetchTasks: [URL: Task<Void, Never>] = [:]
 
     private let baseMinWidth: CGFloat = 190
     private let itemSpacing: CGFloat = 4
@@ -294,28 +297,42 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
     // MARK: - NSCollectionViewPrefetching
 
     func collectionView(_ collectionView: NSCollectionView, prefetchItemsAt indexPaths: [IndexPath]) {
+        let service = viewModel.thumbnailService
+        let showOriginals = viewModel.showOriginalThumbnails
         for indexPath in indexPaths {
             guard indexPath.item < viewModel.visibleImages.count else { continue }
             let image = viewModel.visibleImages[indexPath.item]
-            if viewModel.thumbnailService.thumbnail(for: image.url, preferOriginal: viewModel.showOriginalThumbnails) == nil {
-                Task {
-                    _ = await viewModel.thumbnailService.loadThumbnail(for: image.url)
+            let url = image.url
+            guard prefetchTasks[url] == nil else { continue }
+
+            let needsOriginal = service.thumbnail(for: url, preferOriginal: showOriginals) == nil
+            let settings = image.cameraRawSettings
+            let needsEdited = !showOriginals
+                && settings?.isEmpty == false
+                && !service.hasEditedThumbnail(for: url)
+            guard needsOriginal || needsEdited else { continue }
+            let orientation = image.exifOrientation
+
+            prefetchTasks[url] = Task { [weak self] in
+                if needsOriginal {
+                    _ = await service.loadThumbnail(for: url)
                 }
-            }
-            // Pre-render edited thumbnails for images with develop edits
-            if !viewModel.showOriginalThumbnails,
-               let settings = image.cameraRawSettings, !settings.isEmpty,
-               !viewModel.thumbnailService.hasEditedThumbnail(for: image.url) {
-                let orientation = image.exifOrientation
-                Task {
-                    _ = await viewModel.thumbnailService.renderEditedThumbnail(
-                        for: image.url, settings: settings, exifOrientation: orientation)
+                // Pre-render edited thumbnails for images with develop edits, unless the user
+                // scrolled this item out of the prefetch window in the meantime.
+                if !Task.isCancelled, needsEdited, let settings {
+                    _ = await service.renderEditedThumbnail(
+                        for: url, settings: settings, exifOrientation: orientation)
                 }
+                self?.prefetchTasks.removeValue(forKey: url)
             }
         }
     }
 
     func collectionView(_ collectionView: NSCollectionView, cancelPrefetchingForItemsAt indexPaths: [IndexPath]) {
-        // ThumbnailService handles its own in-flight task management
+        for indexPath in indexPaths {
+            guard indexPath.item < viewModel.visibleImages.count else { continue }
+            let url = viewModel.visibleImages[indexPath.item].url
+            prefetchTasks.removeValue(forKey: url)?.cancel()
+        }
     }
 }

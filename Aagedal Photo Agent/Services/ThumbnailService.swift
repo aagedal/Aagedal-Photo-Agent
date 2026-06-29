@@ -13,6 +13,12 @@ final class ThumbnailService {
     @ObservationIgnored private var editedInFlightTasks: [URL: Task<NSImage?, Never>] = [:]
     private let thumbnailSize = CGSize(width: 240, height: 240)
 
+    /// Caps how many thumbnail decodes run concurrently across the whole app — cell loads,
+    /// prefetch, and the background sweep all funnel through it. Without a cap a fast scroll or a
+    /// held arrow key spawns hundreds of QuickLook/ImageIO decodes at once, saturating `thumbnailsd`
+    /// and the cooperative pool so the thumbnails actually on screen queue behind off-screen ones.
+    private let decodeGate = ThumbnailDecodeGate(limit: 6)
+
     // Background pre-generation state
     var isPreGenerating = false
     var preGenerateCompleted = 0
@@ -63,14 +69,11 @@ final class ThumbnailService {
 
         // Create and register a new task
         let task = Task<NSImage?, Never> {
-            var image: NSImage?
-            if let ql = await generateQLThumbnail(for: url) {
-                image = ql
-            } else if let cg = await loadCGImageSourceThumbnail(for: url) {
-                image = cg
+            if let oriented = await self.generateOrientedThumbnail(for: url) {
+                cache.setObject(oriented, forKey: url as NSURL)
+                return oriented
             }
 
-            guard let image else {
             // For non-image files, use system file icon
             if !SupportedImageFormats.isSupported(url: url) {
                 let icon = NSWorkspace.shared.icon(forFile: url.path)
@@ -81,16 +84,31 @@ final class ThumbnailService {
             return nil as NSImage?
         }
 
-            let oriented = Self.orientedToSidecar(image, fileURL: url)
-            cache.setObject(oriented, forKey: url as NSURL)
-            return oriented
-        }
-
         inFlightTasks[url] = task
         let result = await task.value
         inFlightTasks.removeValue(forKey: url)
 
         return result
+    }
+
+    /// Decodes the thumbnail and applies sidecar-orientation correction entirely off the main
+    /// actor, behind the shared `decodeGate` concurrency cap. The decode (`generateQLThumbnail` /
+    /// `loadCGImageSourceThumbnail`) was already off-main, but `loadThumbnail`'s enclosing `Task`
+    /// is MainActor-isolated, so the orientation finalize used to run on the main thread — for a
+    /// RAW folder, where every file carries a sidecar, that meant a sidecar read plus a full
+    /// `CIImage` rotation on the main thread per thumbnail, hitching grid scrolling. `nonisolated
+    /// async` keeps the whole finalize on the cooperative pool. `XMPReader` (SwiftExif) is a
+    /// pure-Swift parser, so the sidecar read is safe off-main.
+    nonisolated private func generateOrientedThumbnail(for url: URL) async -> NSImage? {
+        await decodeGate.acquire()
+        var oriented: NSImage?
+        if let ql = await generateQLThumbnail(for: url) {
+            oriented = Self.orientedToSidecar(ql, fileURL: url)
+        } else if let cg = await loadCGImageSourceThumbnail(for: url) {
+            oriented = Self.orientedToSidecar(cg, fileURL: url)
+        }
+        await decodeGate.release()
+        return oriented
     }
 
     /// Rotate a freshly generated (file-oriented) thumbnail to the orientation recorded
@@ -371,5 +389,35 @@ final class ThumbnailService {
         isPreGenerating = false
         preGenerateCompleted = 0
         preGenerateTotal = 0
+    }
+}
+
+/// A small async semaphore bounding how many thumbnail decodes run at once. Plain FIFO: callers
+/// that can't get a permit immediately suspend until one is released, so a burst of requests is
+/// throttled to `limit` concurrent decodes instead of all firing at once.
+actor ThumbnailDecodeGate {
+    private let limit: Int
+    private var inUse = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(limit: Int) {
+        self.limit = max(1, limit)
+    }
+
+    func acquire() async {
+        if inUse < limit {
+            inUse += 1
+            return
+        }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func release() {
+        if waiters.isEmpty {
+            inUse -= 1
+        } else {
+            // Hand the permit directly to the next waiter (inUse stays the same).
+            waiters.removeFirst().resume()
+        }
     }
 }
