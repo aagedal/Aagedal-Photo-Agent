@@ -144,11 +144,36 @@ final class ThumbnailService {
             return await existingTask.value
         }
 
+        let maxPixelSize = max(thumbnailSize.width, thumbnailSize.height) * 2
         let task = Task<NSImage?, Never> {
-            // Get or load the original thumbnail
+            guard !settings.isEmpty else { return nil }
+
+            // RAW: render the edited thumbnail from a real CIRAWFilter decode — the same
+            // shared edited-decode path the loupe and prefetch use — instead of compositing
+            // edits onto QuickLook's embedded camera-JPEG preview. The QL preview is already
+            // tone-mapped and clipped, so exposure/highlight numbers calibrated against the
+            // linear HDR RAW decode (extendedDynamicRangeAmount=2.0 + sourceHasHDRHeadroom
+            // tonemap) blew out highlights — the grid looked overexposed next to the edit
+            // view. Decoding the RAW here makes the thumb match. Gated behind `decodeGate`
+            // and downscaled to thumbnail size, and only ever for edited RAWs (unedited RAWs
+            // keep the fast QL preview), so a fast scroll can't saturate the RAW engine.
+            if SupportedImageFormats.isRaw(url: url) {
+                await decodeGate.acquire()
+                let outputCG = await FullScreenImageCache.decodedEditedPreview(
+                    for: url, settings: settings, orientation: exifOrientation, screenMaxPx: maxPixelSize)
+                await decodeGate.release()
+                guard let outputCG else { return nil }
+                let edited = NSImage(cgImage: outputCG, size: NSSize(width: outputCG.width, height: outputCG.height))
+                editedCache.setObject(edited, forKey: url as NSURL)
+                return edited
+            }
+
+            // Non-RAW: composite edits onto the decoded thumbnail. The thumbnail base and the
+            // edit-view base are the same SDR decode here, so there's no source divergence and
+            // the cheap QL-preview path stays accurate.
             // `loadThumbnail` already brings the base to the sidecar orientation, so the
             // crop and mask geometry below (applied in the display frame) line up on a
-            // sidecar-rotated RAW.
+            // sidecar-rotated file.
             let original: NSImage
             if let cached = cache.object(forKey: url as NSURL) {
                 original = cached
@@ -161,8 +186,7 @@ final class ThumbnailService {
             // Unwrap the CGImage on the current actor (cheap — the thumbnail is
             // already a bitmap rep), then render the edits off-main. The CoreImage
             // render must not run on the MainActor or it hitches grid scrolling.
-            guard !settings.isEmpty,
-                  let cgImage = original.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            guard let cgImage = original.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
                 return nil
             }
             guard let outputCG = await Self.renderEditedThumbnail(
@@ -240,11 +264,12 @@ final class ThumbnailService {
     }
 
     /// Applies the full develop pipeline (tonal + masks + crop/rotation) to a
-    /// thumbnail so grid thumbs reflect edits, Bridge-style. For RAW files the QL
-    /// thumbnail is the camera-rendered preview (camera processing baked in), so
-    /// tonal/WB results are approximate there — an accepted trade-off: an
-    /// approximate edited thumb beats an untouched one, and the full-screen and
-    /// export renders stay exact.
+    /// decoded thumbnail so grid thumbs reflect edits, Bridge-style. Used for
+    /// non-RAW files, whose thumbnail base matches the edit-view SDR decode.
+    /// (RAW files render their edited thumbnail from a real CIRAWFilter decode via
+    /// `FullScreenImageCache.decodedEditedPreview` in `renderEditedThumbnail(for:…)`,
+    /// because their QL preview is the camera-baked JPEG and diverges from the RAW
+    /// decode the edit/export renders use.)
     ///
     /// `nonisolated static async` so the CoreImage render runs on the cooperative
     /// pool, off the MainActor. Takes/returns `CGImage` (Sendable) to cross the
