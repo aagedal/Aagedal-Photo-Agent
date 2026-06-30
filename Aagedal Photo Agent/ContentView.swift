@@ -669,7 +669,10 @@ struct ContentView: View {
         HStack(spacing: 0) {
             // Left column: face bar + browser
             VStack(spacing: 0) {
-                if !browserViewModel.images.isEmpty {
+                // Keep the bar through a folder change: loadFolder clears `images` before the
+                // new scan lands, and gating on emptiness alone makes the bar blink out.
+                // `isLoading` spans that window, so it stays put.
+                if !browserViewModel.images.isEmpty || browserViewModel.isLoading {
                     faceBar
                     Divider()
                 }

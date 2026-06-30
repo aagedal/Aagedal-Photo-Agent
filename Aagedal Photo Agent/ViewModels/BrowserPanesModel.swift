@@ -36,6 +36,17 @@ final class BrowserPanesModel {
         }
     }
 
+    /// Fraction of the split occupied by the first pane (0…1). Managed explicitly —
+    /// HSplitView/VSplitView re-derive the divider from content ideal sizes and so jump
+    /// when a pane's folder changes. Clamped on write; persisted across launches.
+    var splitFraction: Double {
+        didSet {
+            let clamped = min(max(splitFraction, 0.15), 0.85)
+            if clamped != splitFraction { splitFraction = clamped; return }
+            UserDefaults.standard.set(splitFraction, forKey: UserDefaultsKeys.browserPaneSplitFraction)
+        }
+    }
+
     private let sharedThumbnailService: ThumbnailService
     private let sharedFullScreenImageCache: FullScreenImageCache
 
@@ -52,6 +63,8 @@ final class BrowserPanesModel {
         // Always launch in single mode — a saved split would point its second pane at
         // a folder we haven't reloaded yet, and the user can re-split in one click.
         self.layout = .single
+        let storedFraction = UserDefaults.standard.double(forKey: UserDefaultsKeys.browserPaneSplitFraction)
+        self.splitFraction = (storedFraction >= 0.15 && storedFraction <= 0.85) ? storedFraction : 0.5
     }
 
     /// The pane every single consumer (sidebar, metadata, faces, edit) follows.

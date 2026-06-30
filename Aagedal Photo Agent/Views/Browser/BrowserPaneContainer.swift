@@ -10,27 +10,93 @@ struct BrowserPaneContainer: View {
     var activeFaceCount: Int = 0
     var activeFaceGroupCount: Int = 0
 
+    /// Width/height the divider occupies (and grab area). The visible line is 1px.
+    private let dividerThickness: CGFloat = 7
+    private let splitSpace = "browserSplit"
+
     var body: some View {
         switch panes.layout {
         case .single:
             paneView(panes.safeActiveIndex, showActiveChrome: false)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .splitHorizontal:
-            HSplitView {
-                paneView(0, showActiveChrome: true)
-                paneView(1, showActiveChrome: true)
-            }
+            splitContainer(axis: .horizontal)
         case .splitVertical:
-            VSplitView {
-                paneView(0, showActiveChrome: true)
-                paneView(1, showActiveChrome: true)
-            }
+            splitContainer(axis: .vertical)
         case .tabs:
             VStack(spacing: 0) {
                 tabBar
                 Divider()
                 paneView(panes.safeActiveIndex, showActiveChrome: false)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+    }
+
+    /// Explicit split with a self-managed divider fraction, so changing a pane's folder
+    /// doesn't disturb the user's divider position (which HSplitView/VSplitView do).
+    @ViewBuilder
+    private func splitContainer(axis: Axis) -> some View {
+        GeometryReader { geo in
+            let total = axis == .horizontal ? geo.size.width : geo.size.height
+            let usable = max(total - dividerThickness, 1)
+            let firstExtent = usable * panes.splitFraction
+            let secondExtent = usable - firstExtent
+
+            let layoutContent = Group {
+                if axis == .horizontal {
+                    HStack(spacing: 0) {
+                        paneView(0, showActiveChrome: true).frame(width: firstExtent)
+                        splitDivider(axis: axis, usable: usable)
+                        paneView(1, showActiveChrome: true).frame(width: secondExtent)
+                    }
+                } else {
+                    VStack(spacing: 0) {
+                        paneView(0, showActiveChrome: true).frame(height: firstExtent)
+                        splitDivider(axis: axis, usable: usable)
+                        paneView(1, showActiveChrome: true).frame(height: secondExtent)
+                    }
+                }
+            }
+            layoutContent
+                .frame(width: geo.size.width, height: geo.size.height)
+                .coordinateSpace(name: splitSpace)
+        }
+    }
+
+    private func splitDivider(axis: Axis, usable: CGFloat) -> some View {
+        // 1px visible line inside a wider transparent grab area.
+        Color.clear
+            .frame(
+                width: axis == .horizontal ? dividerThickness : nil,
+                height: axis == .vertical ? dividerThickness : nil
+            )
+            .overlay {
+                Rectangle()
+                    .fill(Color(nsColor: .separatorColor))
+                    .frame(
+                        width: axis == .horizontal ? 1 : nil,
+                        height: axis == .vertical ? 1 : nil
+                    )
+            }
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                if hovering {
+                    (axis == .horizontal ? NSCursor.resizeLeftRight : NSCursor.resizeUpDown).push()
+                } else {
+                    NSCursor.pop()
+                }
+            }
+            .gesture(
+                // Read the absolute cursor position in the (fixed) container space rather
+                // than translation — the divider moves as we drag, so translation would
+                // feed back and jitter. Position-based tracking is stable to the clamp.
+                DragGesture(minimumDistance: 0, coordinateSpace: .named(splitSpace))
+                    .onChanged { value in
+                        let pos = axis == .horizontal ? value.location.x : value.location.y
+                        panes.splitFraction = (pos - dividerThickness / 2) / usable
+                    }
+            )
     }
 
     @ViewBuilder
@@ -52,9 +118,12 @@ struct BrowserPaneContainer: View {
             // (whose viewModel is fixed at creation) stays bound to the previous pane
             // and the thumbnails freeze on the old folder.
             .id(ObjectIdentifier(pane))
-            .frame(minWidth: 300, maxWidth: .infinity, minHeight: 200, maxHeight: .infinity)
+            // Sizing is set by the caller per layout (explicit width/height in split,
+            // flexible in single/tabs), so no intrinsic frame here.
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             // Fallback focus for clicks on empty-pane chrome (where there's no NSCollectionView).
             .contentShape(Rectangle())
+            .clipped()
             .simultaneousGesture(TapGesture().onEnded { panes.activePaneIndex = index })
             .overlay(alignment: .top) {
                 if showActiveChrome && isActive {
