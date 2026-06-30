@@ -76,10 +76,17 @@ final class FaceGroupCollectionController: NSViewController, NSCollectionViewDel
         collectionView.isSelectable = false
         collectionView.backgroundColors = [.clear]
 
-        let layout = NSCollectionViewFlowLayout()
-        layout.minimumInteritemSpacing = cardSpacing
-        layout.minimumLineSpacing = cardSpacing
+        let layout = FaceGroupWaterfallLayout()
+        layout.minColumnWidth = minCardWidth
+        layout.interitemSpacing = cardSpacing
+        layout.lineSpacing = cardSpacing
         layout.sectionInset = NSEdgeInsets(top: gridPadding, left: gridPadding, bottom: gridPadding, right: gridPadding)
+        layout.heightForItem = { [weak self] indexPath, width in
+            self?.cardHeight(at: indexPath, width: width) ?? 120
+        }
+        layout.isFullWidthItem = { [weak self] indexPath in
+            self?.isUnmatchedItem(at: indexPath) ?? false
+        }
         collectionView.collectionViewLayout = layout
 
         collectionView.register(FaceGroupCardItem.self, forItemWithIdentifier: FaceGroupCardItem.identifier)
@@ -102,20 +109,6 @@ final class FaceGroupCollectionController: NSViewController, NSCollectionViewDel
     override func viewDidAppear() {
         super.viewDidAppear()
         view.window?.makeFirstResponder(collectionView)
-    }
-
-    // MARK: - Column Count
-
-    private func columnCount(for width: CGFloat) -> Int {
-        let available = width - gridPadding * 2
-        let count = Int((available + cardSpacing) / (minCardWidth + cardSpacing))
-        return max(1, count)
-    }
-
-    private func cardWidth(for boundsWidth: CGFloat) -> CGFloat {
-        let cols = CGFloat(columnCount(for: boundsWidth))
-        let available = boundsWidth - gridPadding * 2 - cardSpacing * (cols - 1)
-        return max(minCardWidth, available / cols)
     }
 
     // MARK: - Data Source
@@ -253,34 +246,45 @@ final class FaceGroupCollectionController: NSViewController, NSCollectionViewDel
         lastGroupStates = newStates
     }
 
-    // MARK: - NSCollectionViewDelegateFlowLayout
+    // MARK: - Waterfall Layout Sizing
 
-    func collectionView(_ collectionView: NSCollectionView, layout collectionViewLayout: NSCollectionViewLayout, sizeForItemAt indexPath: IndexPath) -> NSSize {
+    /// Natural height for a card at the given resolved width — used by the waterfall layout.
+    private func cardHeight(at indexPath: IndexPath, width: CGFloat) -> CGFloat {
         guard case .group(let groupID) = dataSource.itemIdentifier(for: indexPath) else {
-            return NSSize(width: minCardWidth, height: 120)
+            return 120
         }
-
         let isUnmatched = groupID == FaceRecognitionViewModel.unmatchedGroupID
-        // Unmatched group spans full width; others use normal column width
-        let width = isUnmatched
-            ? collectionView.bounds.width - gridPadding * 2
-            : cardWidth(for: collectionView.bounds.width)
         let faceCount = viewModel.group(byID: groupID).map { viewModel.faces(in: $0).count } ?? 0
-        // Unmatched group is always expanded
+        // Unmatched group is always expanded.
         let isExpanded = isUnmatched || expandedGroupIDs.contains(groupID)
-        let height = FaceGroupCardView.computeHeight(
+        return FaceGroupCardView.computeHeight(
             faceCount: faceCount,
             cardWidth: width,
             isExpanded: isExpanded,
             maxVisibleFaces: isUnmatched ? .max : maxVisibleFaces
         )
-        return NSSize(width: width, height: height)
+    }
+
+    private func isUnmatchedItem(at indexPath: IndexPath) -> Bool {
+        guard case .group(let groupID) = dataSource.itemIdentifier(for: indexPath) else { return false }
+        return groupID == FaceRecognitionViewModel.unmatchedGroupID
     }
 
     // MARK: - Layout Invalidation on Resize
 
+    /// Set while the user is live-dragging the review sidebar's width. Reflowing the grid on every
+    /// pixel makes the cards stutter between column counts, so we hold the current layout steady
+    /// during the drag and reflow once when it ends.
+    var isResizing = false {
+        didSet {
+            guard oldValue != isResizing, !isResizing, isViewLoaded else { return }
+            collectionView.collectionViewLayout?.invalidateLayout()
+        }
+    }
+
     override func viewDidLayout() {
         super.viewDidLayout()
+        guard !isResizing else { return }
         collectionView.collectionViewLayout?.invalidateLayout()
     }
 
