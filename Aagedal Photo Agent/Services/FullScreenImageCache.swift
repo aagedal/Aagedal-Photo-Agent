@@ -537,9 +537,10 @@ final class FullScreenImageCache: @unchecked Sendable {
     }
 
     /// Load a RAW image via CIRAWFilter at a target max pixel size.
-    /// Uses flat/neutral decode (no auto-boost) matching EditWorkspaceView's pipeline,
-    /// decoding directly at preview scale via CIRAWFilter.scaleFactor. Returns CIImage
-    /// for downstream processing.
+    /// Decode profile (flat/neutral vs Apple's camera-native boost) and decoder version
+    /// are user-configurable in Settings; see `loadRAWImage` below. Decoding happens
+    /// directly at preview scale via CIRAWFilter.scaleFactor. Returns CIImage for
+    /// downstream processing.
     nonisolated static func loadRAWPreview(from url: URL, maxPixelSize: CGFloat, draftMode: Bool = false) -> CIImage? {
         guard let result = loadRAWImage(from: url, draftMode: draftMode, maxPixelSize: maxPixelSize) else { return nil }
         // Final clamp against scaleFactor rounding; a no-op once scaleFactor has shrunk it.
@@ -562,8 +563,29 @@ final class FullScreenImageCache: @unchecked Sendable {
             return nil
         }
         rawFilter.isDraftModeEnabled = draftMode
-        rawFilter.boostAmount = 0        // disable auto-boost (Metal shader handles exposure)
-        rawFilter.boostShadowAmount = 0  // disable shadow recovery boost
+
+        // Decode profile: "native" (default) leaves CIRAWFilter's own camera-matched boost
+        // in place, closer to the Finder/Preview thumbnail; "flat" disables Apple's auto
+        // tone curve so the Metal shader gets predictable linear input instead. Develop
+        // sliders are unaffected either way — switching profiles just changes their baseline.
+        let profileRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.rawDecodeProfile)
+        let profile = RAWDecodeProfile(rawValue: profileRaw ?? "") ?? .native
+        if profile == .flat {
+            rawFilter.boostAmount = 0        // disable auto-boost (Metal shader handles exposure)
+            rawFilter.boostShadowAmount = 0  // disable shadow recovery boost
+        }
+        // .native: leave CIRAWFilter's own defaults (boostAmount/boostShadowAmount = 1.0).
+
+        // Decoder version: "Auto" (default) leaves CIRAWFilter on the newest decoder for
+        // the image. A pinned preference is matched against this image's actual supported
+        // versions (which may report e.g. "9" or "9DNG" depending on container) and falls
+        // back to Auto if the image doesn't support the requested version.
+        let decoderVersionRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.rawDecoderVersionPreference)
+        if let token = RAWDecoderVersionPreference(rawValue: decoderVersionRaw ?? "")?.matchToken,
+           let match = rawFilter.supportedDecoderVersions.first(where: { $0.rawValue.contains(token) }) {
+            rawFilter.decoderVersion = match
+        }
+
         // Decode straight to the requested preview size: demosaic at the reduced scale
         // instead of decoding the full sensor and shrinking afterward. Only ever downscale,
         // and keep the same 1.5× slack the affine downsample used so output sizes are unchanged.
@@ -586,7 +608,7 @@ final class FullScreenImageCache: @unchecked Sendable {
             return nil
         }
         let extent = output.extent
-        cacheLogger.info("RAW decoded \(url.lastPathComponent) draft=\(draftMode) scale=\(rawFilter.scaleFactor, format: .fixed(precision: 3)) \(Int(extent.width))x\(Int(extent.height)) asShot=\(Int(neutralTemp))K tint=\(Int(neutralTint))")
+        cacheLogger.info("RAW decoded \(url.lastPathComponent) draft=\(draftMode) profile=\(profile.rawValue) decoder=\(rawFilter.decoderVersion.rawValue) scale=\(rawFilter.scaleFactor, format: .fixed(precision: 3)) \(Int(extent.width))x\(Int(extent.height)) asShot=\(Int(neutralTemp))K tint=\(Int(neutralTint))")
         return RAWDecodeResult(image: output, neutralTemperature: neutralTemp, neutralTint: neutralTint)
     }
 

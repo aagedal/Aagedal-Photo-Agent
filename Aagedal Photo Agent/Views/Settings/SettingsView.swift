@@ -47,6 +47,7 @@ struct SettingsView: View {
 
     enum SettingsSection: String, CaseIterable, Identifiable {
         case general
+        case rawDecoding
         case metadata
         case keywordLists
         case quickLists
@@ -68,6 +69,7 @@ struct SettingsView: View {
         var title: String {
             switch self {
             case .general: return "General"
+            case .rawDecoding: return "RAW Decoding"
             case .metadata: return "Metadata"
             case .keywordLists: return "Keywords"
             case .quickLists: return "Quick Lists"
@@ -89,6 +91,7 @@ struct SettingsView: View {
         var icon: String {
             switch self {
             case .general: return "gear"
+            case .rawDecoding: return "camera.aperture"
             case .metadata: return "tag"
             case .keywordLists: return "list.bullet.rectangle"
             case .quickLists: return "bolt"
@@ -115,6 +118,7 @@ struct SettingsView: View {
             List(selection: $selection) {
                 Section("General") {
                     row(.general)
+                    row(.rawDecoding)
                 }
                 Section("Library & Metadata") {
                     row(.metadata)
@@ -164,6 +168,7 @@ struct SettingsView: View {
     private func detailView(for section: SettingsSection) -> some View {
         switch section {
         case .general: generalTab
+        case .rawDecoding: rawDecodingTab
         case .metadata: metadataTab
         case .keywordLists: keywordsTab
         case .quickLists: quickListsTab
@@ -241,6 +246,41 @@ struct SettingsView: View {
 
                 Toggle("Render RAW images as HDR", isOn: $settingsViewModel.rawRenderAsHDR)
                 Text("Display RAW files using Extended Dynamic Range. Requires re-opening the folder to take effect.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
+    }
+
+    // MARK: - RAW Decoding Tab
+
+    @ViewBuilder
+    private var rawDecodingTab: some View {
+        Form {
+            Section("Decode Profile") {
+                Picker("Profile", selection: $settingsViewModel.rawDecodeProfile) {
+                    ForEach(RAWDecodeProfile.allCases) { profile in
+                        Text(profile.title).tag(profile)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text(settingsViewModel.rawDecodeProfile.subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Develop sliders are unaffected and start from this profile's baseline. Requires re-opening the folder/image to take effect.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Decoder Version") {
+                Picker("Decoder", selection: $settingsViewModel.rawDecoderVersionPreference) {
+                    ForEach(RAWDecoderVersionPreference.allCases) { pref in
+                        Text(pref.title).tag(pref)
+                    }
+                }
+                Text("Pin RAW decoding to an older decoder version (e.g. to opt out of a newer AI-assisted decoder) instead of always using the newest available. Falls back to Auto for files that don't support the selected version. Requires re-opening the folder/image to take effect.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

@@ -27,6 +27,8 @@ final class PreferencesSyncService {
     static let syncedKeys: [String] = [
         // Browser / preview
         UserDefaultsKeys.rawRenderAsHDR,
+        UserDefaultsKeys.rawDecodeProfile,
+        UserDefaultsKeys.rawDecoderVersionPreference,
         UserDefaultsKeys.showAllFiles,
         UserDefaultsKeys.showOriginalThumbnails,
         UserDefaultsKeys.defaultEditDestination,

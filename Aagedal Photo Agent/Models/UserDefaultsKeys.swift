@@ -77,6 +77,8 @@ nonisolated enum UserDefaultsKeys {
 
     // MARK: - Browser
     static let rawRenderAsHDR = "rawRenderAsHDR"
+    static let rawDecodeProfile = "rawDecodeProfile"
+    static let rawDecoderVersionPreference = "rawDecoderVersionPreference"
     static let showAllFiles = "showAllFiles"
     static let thumbnailSortOrder = "thumbnailSortOrder"
     static let thumbnailSortReversed = "thumbnailSortReversed"
