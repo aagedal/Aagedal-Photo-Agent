@@ -20,8 +20,18 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
     private var prefetchTasks: [URL: Task<Void, Never>] = [:]
 
     private let baseMinWidth: CGFloat = 190
-    private let itemSpacing: CGFloat = 4
+    /// Horizontal gap between thumbnails. Cells fill the row exactly, so this is the actual
+    /// gap (not just a floor the layout pads out unevenly).
+    private let interitemSpacing: CGFloat = 3
+    /// Vertical gap between rows (a touch larger, since each row has a label strip below it).
+    private let lineSpacing: CGFloat = 8
     private let gridPadding: CGFloat = 8
+    /// Matches ThumbnailItemView's internal padding and label area, so cell-height math lines up.
+    private let cellInnerPadding: CGFloat = 6
+    private let baseImageHeight: CGFloat = 140
+    private let textAreaHeight: CGFloat = 44
+    /// Last width we reflowed at, so `viewDidLayout` only re-lays-out on real width changes.
+    private var lastLayoutWidth: CGFloat = 0
 
     init(viewModel: BrowserViewModel) {
         self.viewModel = viewModel
@@ -55,8 +65,8 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
         collectionView.prefetchDataSource = self
 
         let layout = NSCollectionViewFlowLayout()
-        layout.minimumInteritemSpacing = itemSpacing
-        layout.minimumLineSpacing = itemSpacing
+        layout.minimumInteritemSpacing = interitemSpacing
+        layout.minimumLineSpacing = lineSpacing
         layout.sectionInset = NSEdgeInsets(top: gridPadding, left: gridPadding, bottom: gridPadding, right: gridPadding)
         updateLayoutItemSize(layout, scale: viewModel.thumbnailScale)
         collectionView.collectionViewLayout = layout
@@ -284,18 +294,42 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
     }
 
     private func updateLayoutItemSize(_ layout: NSCollectionViewFlowLayout, scale: Double) {
-        let itemWidth = baseMinWidth * scale
-        let itemHeight = 140 * scale + 50
-        layout.itemSize = NSSize(width: itemWidth, height: itemHeight)
+        let width = collectionView?.bounds.width ?? 0
+        layout.itemSize = itemSize(forWidth: width, scale: scale)
+        lastLayoutWidth = width
+    }
+
+    /// Fill-the-row item size: each cell grows so a row's leftover space is absorbed into the
+    /// cells (giving uniform `interitemSpacing` gaps and even edges) instead of NSCollectionView
+    /// dumping all of it between items. Height grows with width to preserve the image-box aspect.
+    private func itemSize(forWidth containerWidth: CGFloat, scale: Double) -> NSSize {
+        let target = baseMinWidth * scale
+        let available = max(containerWidth - gridPadding * 2, target)
+        let columns = max(1, Int((available + interitemSpacing) / (target + interitemSpacing)))
+        let itemWidth = ((available - interitemSpacing * CGFloat(columns - 1)) / CGFloat(columns)).rounded(.down)
+        let innerWidth = itemWidth - cellInnerPadding * 2
+        let boxAspect = (baseMinWidth - cellInnerPadding * 2) / baseImageHeight
+        let imageHeight = innerWidth / boxAspect
+        let itemHeight = (imageHeight + cellInnerPadding + textAreaHeight).rounded()
+        return NSSize(width: itemWidth, height: itemHeight)
+    }
+
+    // MARK: - Reflow on width change (window resize, split-divider drag, sidebar toggle)
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        guard let layout = collectionView?.collectionViewLayout as? NSCollectionViewFlowLayout else { return }
+        let width = collectionView.bounds.width
+        guard abs(width - lastLayoutWidth) > 0.5 else { return }
+        lastLayoutWidth = width
+        layout.itemSize = itemSize(forWidth: width, scale: viewModel.thumbnailScale)
+        layout.invalidateLayout()
     }
 
     // MARK: - NSCollectionViewDelegateFlowLayout
 
     func collectionView(_ collectionView: NSCollectionView, layout collectionViewLayout: NSCollectionViewLayout, sizeForItemAt indexPath: IndexPath) -> NSSize {
-        let scale = viewModel.thumbnailScale
-        let itemWidth = baseMinWidth * scale
-        let itemHeight = 140 * scale + 50
-        return NSSize(width: itemWidth, height: itemHeight)
+        itemSize(forWidth: collectionView.bounds.width, scale: viewModel.thumbnailScale)
     }
 
     // MARK: - NSCollectionViewPrefetching
