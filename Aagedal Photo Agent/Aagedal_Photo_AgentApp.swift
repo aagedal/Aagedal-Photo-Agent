@@ -440,6 +440,9 @@ extension Notification.Name {
     static let scopeSourceImageDidChange = Notification.Name("scopeSourceImageDidChange")
     static let editSliderDragStateChanged = Notification.Name("editSliderDragStateChanged")
     static let showAllFilesChanged = Notification.Name("showAllFilesChanged")
+    /// Posted (object: URL) when a pane opens a root folder, so the shared sidebar —
+    /// always backed by the primary pane — lists it even if a non-primary split pane opened it.
+    static let browserDidOpenRootFolder = Notification.Name("browserDidOpenRootFolder")
     static let showRawMetadata = Notification.Name("showRawMetadata")
     static let applyTemplateShortcut = Notification.Name("applyTemplateShortcut")
     static let addNewMask = Notification.Name("addNewMask")

@@ -13,14 +13,23 @@ struct FolderTreeRow: View {
     let depth: Int
     let section: SidebarFolderSection
     let isRootOfSection: Bool
+    /// Owns the folder-tree state (favorites, opens, expansion, subfolders). In split
+    /// view this is always the primary pane, so the sidebar stays stable regardless of
+    /// which pane is focused.
     @Bindable var viewModel: BrowserViewModel
+    /// The active pane's current folder — drives the highlight, independent of which
+    /// pane backs the tree.
+    let currentFolderURL: URL?
+    /// Opens a folder into the active pane (and registers it in the shared sidebar).
+    /// Bool = whether to add it to the Open Folders section.
+    let openFolder: (URL, Bool) -> Void
     let revealInFinder: (URL) -> Void
 
     @State private var isDropHighlighted = false
     @State private var isHovered = false
 
     private var isCurrent: Bool {
-        url == viewModel.currentFolderURL
+        url == currentFolderURL
     }
 
     private var isExpanded: Bool {
@@ -62,6 +71,8 @@ struct FolderTreeRow: View {
                         section: childSection,
                         isRootOfSection: false,
                         viewModel: viewModel,
+                        currentFolderURL: currentFolderURL,
+                        openFolder: openFolder,
                         revealInFinder: revealInFinder
                     )
                 }
@@ -141,7 +152,7 @@ struct FolderTreeRow: View {
         .onTapGesture {
             // Favorites open in place — they already have a sidebar home, so
             // they must not get duplicated into the Open Folders section.
-            viewModel.loadFolder(url: url, addToOpenFolders: section == .openRoot)
+            openFolder(url, section == .openRoot)
         }
         .onDrag {
             NSItemProvider(object: url as NSURL)
@@ -159,7 +170,7 @@ struct FolderTreeRow: View {
         switch section {
         case .favoriteRoot:
             Button("Open") {
-                viewModel.loadFolder(url: url, addToOpenFolders: false)
+                openFolder(url, false)
             }
             Button("Reveal in Finder") {
                 revealInFinder(url)
@@ -183,7 +194,7 @@ struct FolderTreeRow: View {
 
         case .favoriteChild:
             Button("Open") {
-                viewModel.loadFolder(url: url, addToOpenFolders: false)
+                openFolder(url, false)
             }
             Button("Reveal in Finder") {
                 revealInFinder(url)
@@ -230,7 +241,7 @@ struct FolderTreeRow: View {
 
         case .openChild:
             Button("Open as Folder") {
-                viewModel.openSubfolderAsRoot(url)
+                openFolder(url, true)
             }
             Button("Reveal in Finder") {
                 revealInFinder(url)

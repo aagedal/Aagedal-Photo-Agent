@@ -7,6 +7,9 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
     enum Section { case main }
 
     let viewModel: BrowserViewModel
+    /// Called when the user clicks into this grid — split-view container uses it to
+    /// mark the pane active.
+    var onFocus: (() -> Void)?
     private var collectionView: ThumbnailCollectionView!
     private var dataSource: NSCollectionViewDiffableDataSource<Section, URL>!
     private var observationTasks: [Task<Void, Never>] = []
@@ -46,6 +49,7 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
 
         collectionView = ThumbnailCollectionView()
         collectionView.viewModel = viewModel
+        collectionView.onFocus = { [weak self] in self?.onFocus?() }
         collectionView.isSelectable = false // We handle selection ourselves
         collectionView.backgroundColors = [.clear]
         collectionView.prefetchDataSource = self

@@ -5,6 +5,9 @@ final class ThumbnailCollectionView: NSCollectionView {
 
     weak var viewModel: BrowserViewModel?
 
+    /// Fired on mouseDown so the split-view container can mark this pane active.
+    var onFocus: (() -> Void)?
+
     private var isDragging = false
     private var mouseDownLocation: NSPoint?
     private var dropIndicatorLayer: CALayer?
@@ -107,6 +110,7 @@ final class ThumbnailCollectionView: NSCollectionView {
     // MARK: - Mouse Handling
 
     override func mouseDown(with event: NSEvent) {
+        onFocus?()
         window?.makeFirstResponder(self)
         mouseDownLocation = convert(event.locationInWindow, from: nil)
         isDragging = false

@@ -139,10 +139,14 @@ final class BrowserViewModel {
     var copiedIPTCMetadata: IPTCMetadata?
 
     let fileSystemService = FileSystemService()
-    let thumbnailService = ThumbnailService()
+    /// Injected so split-view panes can share a single decode gate + NSCache rather than
+    /// each pane spinning up its own (which would double concurrent decodes and thrash).
+    let thumbnailService: ThumbnailService
     let metadataReadService = SwiftExifReadService()
     @ObservationIgnored private(set) var writeEngine: any MetadataWriteEngine = SwiftExifWriteEngine()
-    @ObservationIgnored let fullScreenImageCache = FullScreenImageCache()
+    /// Injected for the same reason as `thumbnailService` — sharing one IOSurface pool across
+    /// panes avoids doubling full-screen-preview memory pressure.
+    @ObservationIgnored let fullScreenImageCache: FullScreenImageCache
     /// Content token (size+mtime) the thumbnail caches were last populated under, per
     /// URL, surviving folder navigation. Lets `loadFolder` drop a stale thumbnail when a
     /// file was replaced at a path it previously occupied (delete + re-export) while the
@@ -206,7 +210,10 @@ final class BrowserViewModel {
 
     @ObservationIgnored private(set) var selectedImagesCache: [ImageFile] = []
 
-    init() {
+    init(thumbnailService: ThumbnailService = ThumbnailService(),
+         fullScreenImageCache: FullScreenImageCache = FullScreenImageCache()) {
+        self.thumbnailService = thumbnailService
+        self.fullScreenImageCache = fullScreenImageCache
         if let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.thumbnailSortOrder),
            let stored = SortOrder(rawValue: raw) {
             sortOrder = stored
@@ -555,8 +562,13 @@ final class BrowserViewModel {
         // into Open Folders, no matter which entry point opened them (tap,
         // Open Recent, drag-and-drop, import).
         let isFavoriteRoot = favoriteFolders.contains { $0.url == url }
-        if addToOpenFolders && !isFavoriteRoot && !openFolders.contains(url) && !isSubfolderOfOpenFolder(url) {
-            openFolders.append(url)
+        if addToOpenFolders && !isFavoriteRoot && !isSubfolderOfOpenFolder(url) {
+            if !openFolders.contains(url) {
+                openFolders.append(url)
+            }
+            // Announce so the shared sidebar (primary pane) lists this root even when a
+            // non-primary split-view pane opened it. Idempotent on the primary.
+            NotificationCenter.default.post(name: .browserDidOpenRootFolder, object: url)
         }
 
         loadFolderTask = Task {
@@ -2109,6 +2121,23 @@ final class BrowserViewModel {
             openFolders.append(url)
         }
         loadFolder(url: url)
+    }
+
+    /// Add a folder to this view model's Open Folders list (and discover its
+    /// subfolders for the tree) WITHOUT loading its images. Used so a folder opened
+    /// into another split-view pane still appears in the single, shared sidebar,
+    /// which is always backed by the primary pane.
+    func registerOpenFolderForSidebar(_ url: URL) {
+        guard !favoriteFolders.contains(where: { $0.url == url }),
+              !openFolders.contains(url),
+              !isSubfolderOfOpenFolder(url) else { return }
+        openFolders.append(url)
+        guard subfoldersByOpenFolder[url] == nil else { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let subs = (try? self.fileSystemService.listSubfolders(at: url)) ?? []
+            self.subfoldersByOpenFolder[url] = subs
+        }
     }
 
     var showTrashSubfolderConfirmation = false

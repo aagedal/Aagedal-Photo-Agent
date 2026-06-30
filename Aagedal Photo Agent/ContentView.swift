@@ -49,7 +49,21 @@ private struct SafetyAndCullingHandlers: ViewModifier {
 }
 
 struct ContentView: View {
-    @State private var browserViewModel: BrowserViewModel
+    @State private var panes: BrowserPanesModel
+    /// The pane every single consumer follows — sidebar folder loads, metadata panel,
+    /// face bar, and edit view all bind to this (the focused pane in split view).
+    private var browserViewModel: BrowserViewModel { panes.active }
+    /// Canonical owner of the sidebar's folder-tree state (favorites, open folders,
+    /// expansion, subfolders). Always the primary pane, so the sidebar stays stable no
+    /// matter which pane is focused — only folder *opening* follows the active pane.
+    private var sidebarViewModel: BrowserViewModel { panes.panes[0] }
+
+    /// Open a folder into the active pane. The shared sidebar (primary pane) picks it up
+    /// via the `.browserDidOpenRootFolder` notification, so it shows even when a
+    /// non-primary pane opened it.
+    private func openFolderInActivePane(_ url: URL, addToOpenFolders: Bool) {
+        panes.active.loadFolder(url: url, addToOpenFolders: addToOpenFolders)
+    }
     @State private var metadataViewModel: MetadataViewModel
     @State private var faceRecognitionViewModel: FaceRecognitionViewModel
     @State private var templateViewModel = TemplateViewModel()
@@ -100,12 +114,22 @@ struct ContentView: View {
     @State private var listRecoveryAffectedNames: [String] = []
 
     init() {
-        let browser = BrowserViewModel()
+        let thumbnailService = ThumbnailService()
+        let fullScreenImageCache = FullScreenImageCache()
+        let browser = BrowserViewModel(thumbnailService: thumbnailService, fullScreenImageCache: fullScreenImageCache)
         let faceRecognition = FaceRecognitionViewModel(readService: browser.metadataReadService, writeEngine: browser.writeEngine)
-        browser.onImagesDeleted = { [weak faceRecognition] urls in
-            faceRecognition?.deleteFaces(forImageURLs: urls)
+        // Wire face deletion onto every pane (primary now, the split pane when created).
+        let configurePane: (BrowserViewModel) -> Void = { [weak faceRecognition] vm in
+            vm.onImagesDeleted = { urls in faceRecognition?.deleteFaces(forImageURLs: urls) }
         }
-        _browserViewModel = State(initialValue: browser)
+        configurePane(browser)
+        let panesModel = BrowserPanesModel(
+            primary: browser,
+            thumbnailService: thumbnailService,
+            fullScreenImageCache: fullScreenImageCache
+        )
+        panesModel.configurePane = configurePane
+        _panes = State(initialValue: panesModel)
         _metadataViewModel = State(initialValue: MetadataViewModel(readService: browser.metadataReadService, writeEngine: browser.writeEngine))
         _faceRecognitionViewModel = State(initialValue: faceRecognition)
         let history = ActivityHistoryStore()
@@ -162,6 +186,7 @@ struct ContentView: View {
             .toolbar { toolbarContent }
             .navigationTitle(browserViewModel.currentFolderName ?? "Aagedal Photo Agent")
             .modifier(ContentViewModifiers(
+                panes: panes,
                 browserViewModel: browserViewModel,
                 metadataViewModel: metadataViewModel,
                 ftpViewModel: ftpViewModel,
@@ -235,7 +260,7 @@ struct ContentView: View {
                 let suffix = count == 1 ? "image has" : "images have"
                 Text("\(count) pending \(suffix) C2PA content credentials in this folder. Writing metadata will invalidate the authenticity chain.")
             }
-            .alert("Move to Trash", isPresented: $browserViewModel.showDeleteConfirmation) {
+            .alert("Move to Trash", isPresented: Bindable(browserViewModel).showDeleteConfirmation) {
                 Button("Cancel", role: .cancel) { }
                 Button("Move to Trash", role: .destructive) {
                     browserViewModel.deleteSelectedImages()
@@ -244,7 +269,7 @@ struct ContentView: View {
                 let count = browserViewModel.selectedImageIDs.count
                 Text("Are you sure you want to move \(count) \(count == 1 ? "image" : "images") to the Trash?")
             }
-            .alert("Move Folder to Trash", isPresented: $browserViewModel.showTrashSubfolderConfirmation) {
+            .alert("Move Folder to Trash", isPresented: Bindable(browserViewModel).showTrashSubfolderConfirmation) {
                 Button("Cancel", role: .cancel) {
                     browserViewModel.pendingTrashSubfolderURL = nil
                 }
@@ -256,11 +281,11 @@ struct ContentView: View {
                     Text("Are you sure you want to move \"\(url.lastPathComponent)\" and all its contents to the Trash?")
                 }
             }
-            .sheet(isPresented: $browserViewModel.showRenameSubfolderAlert) {
+            .sheet(isPresented: Bindable(browserViewModel).showRenameSubfolderAlert) {
                 RenameFolderSheet(viewModel: browserViewModel)
             }
-            .alert("New Subfolder", isPresented: $browserViewModel.showNewSubfolderAlert) {
-                TextField("Name", text: $browserViewModel.newSubfolderName)
+            .alert("New Subfolder", isPresented: Bindable(browserViewModel).showNewSubfolderAlert) {
+                TextField("Name", text: Bindable(browserViewModel).newSubfolderName)
                 Button("Cancel", role: .cancel) {
                     browserViewModel.pendingNewSubfolderParentURL = nil
                 }
@@ -270,7 +295,7 @@ struct ContentView: View {
             } message: {
                 Text("Enter a name for the new subfolder.")
             }
-            .alert("Reset All Edits", isPresented: $browserViewModel.showResetEditsConfirmation) {
+            .alert("Reset All Edits", isPresented: Bindable(browserViewModel).showResetEditsConfirmation) {
                 Button("Cancel", role: .cancel) { }
                 Button("Reset", role: .destructive) {
                     let affected = browserViewModel.selectedImageIDs
@@ -287,7 +312,7 @@ struct ContentView: View {
                 let count = browserViewModel.selectedImageIDs.count
                 Text("Reset camera raw edits and crop on \(count) \(count == 1 ? "image" : "images")? This cannot be undone.")
             }
-            .alert("Remove All IPTC Metadata", isPresented: $browserViewModel.showRemoveIPTCConfirmation) {
+            .alert("Remove All IPTC Metadata", isPresented: Bindable(browserViewModel).showRemoveIPTCConfirmation) {
                 Button("Cancel", role: .cancel) { }
                 Button("Remove", role: .destructive) {
                     browserViewModel.removeIPTCFromImageFiles { [self] in
@@ -300,7 +325,7 @@ struct ContentView: View {
             }
             .confirmationDialog(
                 "Remove All IPTC Metadata",
-                isPresented: $browserViewModel.showRemoveIPTCSidecarChoice,
+                isPresented: Bindable(browserViewModel).showRemoveIPTCSidecarChoice,
                 titleVisibility: .visible
             ) {
                 Button("Remove from Image Files Only", role: .destructive) {
@@ -486,8 +511,8 @@ struct ContentView: View {
             .fullScreenImagePresenter(viewModel: browserViewModel, scopeViewModel: scopeViewModel)
             .cleanFeedPresenter(controller: CleanFeedController.shared, browserViewModel: browserViewModel)
             .onAppear {
-                browserViewModel.loadFavorites()
-                browserViewModel.loadFavoriteTopLevelSubfolders()
+                sidebarViewModel.loadFavorites()
+                sidebarViewModel.loadFavoriteTopLevelSubfolders()
                 templateViewModel.loadTemplates()
                 ftpViewModel.loadConnections()
                 ftpViewModel.activityHistory = activityHistory
@@ -649,10 +674,10 @@ struct ContentView: View {
                     Divider()
                 }
 
-                BrowserView(
-                    viewModel: browserViewModel,
-                    faceCount: faceRecognitionViewModel.faceData?.faces.count ?? 0,
-                    faceGroupCount: faceRecognitionViewModel.faceData?.groups.count ?? 0
+                BrowserPaneContainer(
+                    panes: panes,
+                    activeFaceCount: faceRecognitionViewModel.faceData?.faces.count ?? 0,
+                    activeFaceGroupCount: faceRecognitionViewModel.faceData?.groups.count ?? 0
                 )
                 .frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity)
                 .onKeyPress("m") {
@@ -737,19 +762,49 @@ struct ContentView: View {
         )
     }
 
+    /// Layout switcher for the thumbnail area (single / side-by-side / top-bottom / tabs).
+    private var paneLayoutMenu: some View {
+        Menu {
+            paneLayoutButton(.single, "Single", "rectangle")
+            paneLayoutButton(.splitHorizontal, "Split Side by Side", "rectangle.split.2x1")
+            paneLayoutButton(.splitVertical, "Split Top and Bottom", "rectangle.split.1x2")
+            paneLayoutButton(.tabs, "Tabs", "square.on.square")
+        } label: {
+            Image(systemName: paneLayoutIcon)
+        }
+        .help("Thumbnail area layout")
+    }
+
+    private func paneLayoutButton(_ layout: BrowserPaneLayout, _ title: String, _ icon: String) -> some View {
+        Button {
+            panes.setLayout(layout)
+        } label: {
+            Label(title, systemImage: panes.layout == layout ? "checkmark" : icon)
+        }
+    }
+
+    private var paneLayoutIcon: String {
+        switch panes.layout {
+        case .single: return "rectangle"
+        case .splitHorizontal: return "rectangle.split.2x1"
+        case .splitVertical: return "rectangle.split.1x2"
+        case .tabs: return "square.on.square"
+        }
+    }
+
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         // Show filter and sort controls in the toolbar when in edit mode
         // (BrowserView provides these in browser mode, but isn't in the hierarchy during editing)
         if mainViewMode == .editing {
             ToolbarItemGroup(placement: .automatic) {
-                ColorLabelFilterBar(selectedLabels: $browserViewModel.selectedColorLabels)
+                ColorLabelFilterBar(selectedLabels: Bindable(browserViewModel).selectedColorLabels)
                     .disabled(browserViewModel.images.isEmpty)
                     .padding(8)
             }
 
             ToolbarItemGroup(placement: .automatic) {
-                StarRatingFilterBar(minimumRating: $browserViewModel.minimumStarRating)
+                StarRatingFilterBar(minimumRating: Bindable(browserViewModel).minimumStarRating)
                     .disabled(browserViewModel.images.isEmpty)
                     .padding(8)
 
@@ -779,6 +834,12 @@ struct ContentView: View {
                     }
                 }
                 .pickerStyle(.menu)
+            }
+        }
+
+        ToolbarItem(placement: .automatic) {
+            if mainViewMode == .browser {
+                paneLayoutMenu
             }
         }
 
@@ -856,13 +917,13 @@ struct ContentView: View {
 
     private var editFilterMenu: some View {
         Menu {
-            Picker("Person Shown", selection: $browserViewModel.personShownFilter) {
+            Picker("Person Shown", selection: Bindable(browserViewModel).personShownFilter) {
                 ForEach(BrowserViewModel.PersonShownFilter.allCases, id: \.self) { filter in
                     Text(filter.displayName).tag(filter)
                 }
             }
 
-            Picker("Edited", selection: $browserViewModel.editedFilter) {
+            Picker("Edited", selection: Bindable(browserViewModel).editedFilter) {
                 ForEach(BrowserViewModel.EditedFilter.allCases, id: \.self) { filter in
                     Text(filter.displayName).tag(filter)
                 }
@@ -900,7 +961,7 @@ struct ContentView: View {
     private func handleImportStarted(_ notification: NotificationCenter.Publisher.Output) {
         isShowingImport = false
         if let folderURL = notification.object as? URL {
-            browserViewModel.loadFolder(url: folderURL)
+            openFolderInActivePane(folderURL, addToOpenFolders: true)
         }
     }
 
@@ -928,36 +989,40 @@ struct ContentView: View {
             // highlight shrinks, not the row pitch.
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    if !browserViewModel.favoriteFolders.isEmpty {
+                    if !sidebarViewModel.favoriteFolders.isEmpty {
                         sidebarSectionHeader("Favorites")
-                        ForEach(browserViewModel.favoriteFolders) { favorite in
+                        ForEach(sidebarViewModel.favoriteFolders) { favorite in
                             FolderTreeRow(
                                 url: favorite.url,
                                 depth: 0,
                                 section: .favoriteRoot,
                                 isRootOfSection: true,
-                                viewModel: browserViewModel,
+                                viewModel: sidebarViewModel,
+                                currentFolderURL: browserViewModel.currentFolderURL,
+                                openFolder: openFolderInActivePane,
                                 revealInFinder: revealInFinder
                             )
                         }
                     }
 
-                    if !browserViewModel.favoriteFolders.isEmpty && !browserViewModel.openFolders.isEmpty {
+                    if !sidebarViewModel.favoriteFolders.isEmpty && !sidebarViewModel.openFolders.isEmpty {
                         Rectangle()
                             .fill(Color(nsColor: .separatorColor))
                             .frame(height: 1)
                             .padding(.vertical, 6)
                     }
 
-                    if !browserViewModel.openFolders.isEmpty {
+                    if !sidebarViewModel.openFolders.isEmpty {
                         sidebarSectionHeader("Open Folders")
-                        ForEach(browserViewModel.openFolders, id: \.self) { folderURL in
+                        ForEach(sidebarViewModel.openFolders, id: \.self) { folderURL in
                             FolderTreeRow(
                                 url: folderURL,
                                 depth: 0,
                                 section: .openRoot,
                                 isRootOfSection: true,
-                                viewModel: browserViewModel,
+                                viewModel: sidebarViewModel,
+                                currentFolderURL: browserViewModel.currentFolderURL,
+                                openFolder: openFolderInActivePane,
                                 revealInFinder: revealInFinder
                             )
                         }
@@ -1974,6 +2039,7 @@ struct ContentView: View {
 }
 
 struct ContentViewModifiers: ViewModifier {
+    let panes: BrowserPanesModel
     let browserViewModel: BrowserViewModel
     let metadataViewModel: MetadataViewModel
     let ftpViewModel: FTPViewModel
@@ -2092,7 +2158,7 @@ struct ContentViewModifiers: ViewModifier {
                 }
             }
         return base
-            .modifier(AutoRefreshModifier(browserViewModel: browserViewModel, metadataViewModel: metadataViewModel))
+            .modifier(AutoRefreshModifier(panes: panes, metadataViewModel: metadataViewModel))
             .onChange(of: ftpViewModel.uploadCompleted) { _, completed in
                 // When an upload that rendered files finishes, re-scan and expand each source
                 // folder that got a new `Uploaded/` sub-folder so the user discovers it (the
@@ -2106,7 +2172,11 @@ struct ContentViewModifiers: ViewModifier {
             // type-checker's expression-complexity limit already.
             .onReceive(NotificationCenter.default.publisher(for: .openRecentFolder)) { notification in
                 guard let url = notification.object as? URL else { return }
-                browserViewModel.loadFolder(url: url)
+                panes.active.loadFolder(url: url, addToOpenFolders: true)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .browserDidOpenRootFolder)) { notification in
+                guard let url = notification.object as? URL else { return }
+                panes.panes[0].registerOpenFolderForSidebar(url)
             }
     }
 
@@ -2117,7 +2187,7 @@ struct ContentViewModifiers: ViewModifier {
                 var isDir: ObjCBool = false
                 if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
                     Task { @MainActor in
-                        browserViewModel.loadFolder(url: url)
+                        panes.active.loadFolder(url: url, addToOpenFolders: true)
                     }
                 }
             }
@@ -2139,7 +2209,7 @@ struct ContentViewModifiers: ViewModifier {
 }
 
 struct AutoRefreshModifier: ViewModifier {
-    let browserViewModel: BrowserViewModel
+    let panes: BrowserPanesModel
     let metadataViewModel: MetadataViewModel
     @State private var autoRefreshTask: Task<Void, Never>?
 
@@ -2155,7 +2225,21 @@ struct AutoRefreshModifier: ViewModifier {
                             // changed on disk, so idle cost stays low.
                             try? await Task.sleep(nanoseconds: 3_000_000_000)
                             await MainActor.run {
-                                // Skip the entire folder refresh while in the edit
+                                let active = panes.active
+
+                                // Keep every inactive split-view pane's grid in sync with
+                                // disk — this is the "watch a second folder" behavior. They
+                                // don't drive the metadata panel, so the active-pane edit
+                                // guards below don't apply to them. Skipped in single mode,
+                                // where the off-screen pane isn't visible.
+                                if panes.layout.usesSecondPane {
+                                    for pane in panes.panes where pane !== active {
+                                        pane.refreshCurrentFolderIfNeeded()
+                                        pane.clearLastRefreshModifiedURLs()
+                                    }
+                                }
+
+                                // Skip the active-pane folder refresh while in the edit
                                 // view — reassigning `images`/`visibleImages` causes
                                 // @Observable to re-render the edit workspace (filmstrip,
                                 // metadata panel) even when content hasn't changed,
@@ -2164,7 +2248,7 @@ struct AutoRefreshModifier: ViewModifier {
 
                                 // Skip while the user is typing in the search field —
                                 // the rebuild cascade steals TextField focus.
-                                guard browserViewModel.searchText.isEmpty else { return }
+                                guard active.searchText.isEmpty else { return }
 
                                 // Skip the folder refresh while the user has unsaved
                                 // metadata edits — the rebuildVisibleCache cascade can
@@ -2174,22 +2258,22 @@ struct AutoRefreshModifier: ViewModifier {
                                 // run on the next cycle after the user saves/commits.
                                 guard !metadataViewModel.hasChanges else { return }
 
-                                browserViewModel.refreshCurrentFolderIfNeeded()
+                                active.refreshCurrentFolderIfNeeded()
 
                                 // If any currently selected file was modified externally,
                                 // reload full metadata so the browser reflects the changes.
                                 let selectedURLs = Set(metadataViewModel.selectedURLs)
                                 if !selectedURLs.isEmpty,
                                    !metadataViewModel.isSaving,
-                                   !browserViewModel.lastRefreshModifiedURLs.isDisjoint(with: selectedURLs) {
+                                   !active.lastRefreshModifiedURLs.isDisjoint(with: selectedURLs) {
                                     metadataViewModel.loadMetadata(
-                                        for: browserViewModel.selectedImages,
-                                        folderURL: browserViewModel.currentFolderURL
+                                        for: active.selectedImages,
+                                        folderURL: active.currentFolderURL
                                     )
                                 }
                                 // Clear after processing so stale URLs don't trigger
-                                // repeated reloads on every subsequent 5-second cycle.
-                                browserViewModel.clearLastRefreshModifiedURLs()
+                                // repeated reloads on every subsequent cycle.
+                                active.clearLastRefreshModifiedURLs()
                             }
                         }
                     }
