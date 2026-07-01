@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import Metal
+import CoreImage
 @testable import Aagedal_Photo_Agent
 
 
@@ -2077,5 +2078,64 @@ struct BrushRasterizationTests {
         #expect(at(s0, 48, 48) == 0)
         #expect(at(s1, 48, 48) > 0.5)
         #expect(at(s1, 16, 16) == 0)
+    }
+}
+
+/// Phase 3 — the compositing kernel's `maskType` branch. Renders a flat image through the full
+/// `editAdjustments` pipeline (via `renderOffscreen`) and confirms a brush mask's adjustment
+/// lands only on the painted region, and that the ellipse (SDF) path is unaffected by the branch.
+/// Skipped when no Metal device is available.
+@Suite("Brush mask compositing")
+struct BrushCompositingTests {
+    private var space: CGColorSpace { CGColorSpace(name: CGColorSpace.extendedLinearSRGB)! }
+
+    private func solidGray(_ v: CGFloat, size: CGFloat = 64) -> CIImage {
+        CIImage(color: CIColor(red: v, green: v, blue: v, colorSpace: space)!)
+            .cropped(to: CGRect(x: 0, y: 0, width: size, height: size))
+    }
+
+    /// Reads the linear RGB at one pixel of a rendered result.
+    private func sample(_ image: CIImage, x: Int, y: Int) -> Float {
+        let ctx = CIContext(options: [.workingColorSpace: space])
+        var buf = [Float](repeating: 0, count: 4)
+        ctx.render(image, toBitmap: &buf, rowBytes: 16,
+                   bounds: CGRect(x: image.extent.origin.x + CGFloat(x),
+                                  y: image.extent.origin.y + CGFloat(y), width: 1, height: 1),
+                   format: .RGBAf, colorSpace: space)
+        return buf[0]
+    }
+
+    @Test("a brush mask's exposure brightens only the painted region")
+    func brushMaskBrightensPaintedRegion() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else { return }
+        var mask = MaskAdjustment()
+        mask.brush = BrushMaskGeometry(strokes: [
+            BrushStroke(dabs: [BrushDab(x: 0.5, y: 0.5, flow: 1.0, hardness: 1.0)],
+                        radius: 0.3, density: 1.0, erase: false)
+        ])
+        mask.exposure = 1.0   // +1 EV = 2×
+        var settings = CameraRawSettings()
+        settings.localAdjustments = [mask]
+        let result = try #require(MetalEditPipeline.renderOffscreen(source: solidGray(0.4), settings: settings))
+        let center = sample(result, x: 32, y: 32)
+        let corner = sample(result, x: 3, y: 3)
+        #expect(center > corner + 0.2)          // painted center brightened (~0.8)
+        #expect(abs(corner - 0.4) < 0.05)       // unpainted corner ~unchanged (~0.4)
+    }
+
+    @Test("the ellipse (SDF) mask path still renders after the maskType branch")
+    func ellipseMaskStillRenders() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else { return }
+        var mask = MaskAdjustment()
+        mask.geometry = EllipseMaskGeometry(centerX: 0.5, centerY: 0.5,
+                                            radiusX: 0.3, radiusY: 0.3, rotation: 0, feather: 0)
+        mask.exposure = 1.0
+        var settings = CameraRawSettings()
+        settings.localAdjustments = [mask]
+        let result = try #require(MetalEditPipeline.renderOffscreen(source: solidGray(0.4), settings: settings))
+        let center = sample(result, x: 32, y: 32)
+        let corner = sample(result, x: 3, y: 3)
+        #expect(center > corner + 0.2)          // ellipse center brightened
+        #expect(abs(corner - 0.4) < 0.05)       // outside the ellipse ~unchanged
     }
 }

@@ -26,6 +26,8 @@ struct MaskParams {
     float anonymizerBlackOut; // 0 or 1 — full opaque redaction instead of the layered effect
     float temperature;       // -1..1, local white balance warm/cool shift
     float tint;              // -1..1, local white balance green/magenta shift
+    uint  maskType;          // 0 = analytic ellipse (SDF), 1 = freeform brush (sample brushAlpha)
+    uint  brushLayer;        // slice index into the brush alpha array (maskType == 1 only)
 };
 
 struct HSLChannelParams {
@@ -510,6 +512,7 @@ kernel void editAdjustments(
     texture2d<half, access::sample> source [[texture(0)]],
     texture2d<half, access::write> destination [[texture(1)]],
     texture1d<float, access::sample> toneLUT [[texture(2)]],
+    texture2d_array<half, access::sample> brushAlpha [[texture(3)]],
     constant EditParams &params [[buffer(0)]],
     constant MaskParams *masks [[buffer(1)]],
     constant HSLParams &hslParams [[buffer(2)]],
@@ -588,7 +591,18 @@ kernel void editAdjustments(
             rgb = applyGlobal(rgb, params, toneLUT, hslParams);
         } else {
             constant MaskParams &mask = masks[entry];
-            float weight = maskWeight(mask, uv, params.sourceSize);
+            // Brush masks resolve their coverage from the pre-rasterized alpha array (sampled
+            // in source UV space); ellipse masks use the analytic SDF. `applyMaskColor` below
+            // is identical for both — it only ever sees a resolved weight + rgb.
+            float weight;
+            if (mask.maskType == 1u) {
+                constexpr sampler brushSampler(filter::linear, address::clamp_to_edge);
+                weight = float(brushAlpha.sample(brushSampler, uv, mask.brushLayer).r);
+                if (mask.inverted > 0.5) weight = 1.0 - weight;
+                weight *= mask.amount;
+            } else {
+                weight = maskWeight(mask, uv, params.sourceSize);
+            }
             if (weight < 0.001) continue;
             half3 adjusted;
             if (mask.activeFlags & (1u << 8)) {

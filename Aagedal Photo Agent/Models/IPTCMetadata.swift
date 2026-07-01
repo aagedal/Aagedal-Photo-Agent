@@ -308,6 +308,56 @@ nonisolated struct BrushStroke: Codable, Sendable, Equatable {
 nonisolated struct BrushMaskGeometry: Codable, Sendable, Equatable {
     var strokes: [BrushStroke] = []
     var isEmpty: Bool { strokes.isEmpty }
+
+    /// Point-maps every dab from the sensor (XMP) frame to the display frame under an EXIF
+    /// orientation, mirroring `EllipseMaskGeometry.transformedForDisplay`'s center mapping.
+    /// A dab is a pixel-space circle whose radius is long-edge-relative (invariant under the
+    /// 90°-family axis swap), so only the position needs remapping — no aspect correction, and
+    /// `radius`/`density`/flow/hardness are untouched.
+    func transformedForDisplay(orientation: Int) -> BrushMaskGeometry {
+        guard orientation > 1 else { return self }
+        var result = self
+        result.strokes = strokes.map { stroke in
+            var s = stroke
+            s.dabs = stroke.dabs.map { dab in
+                var d = dab
+                let mapped = Self.mapPoint(x: dab.x, y: dab.y, orientation: orientation)
+                d.x = mapped.x
+                d.y = mapped.y
+                return d
+            }
+            return s
+        }
+        return result
+    }
+
+    /// Inverse of `transformedForDisplay` — maps dabs from the display frame back to the sensor
+    /// (XMP) frame for writing. Only the ±90° rotations aren't self-inverse.
+    func transformedForSensor(orientation: Int) -> BrushMaskGeometry {
+        let inverse: Int
+        switch orientation {
+        case 6: inverse = 8
+        case 8: inverse = 6
+        default: inverse = orientation
+        }
+        return transformedForDisplay(orientation: inverse)
+    }
+
+    /// UV point mapping for each EXIF orientation, identical to the center mapping in
+    /// `EllipseMaskGeometry.transformedForDisplay`. Normalized UV, so the 90°-family swap is a
+    /// direct x/y exchange (no aspect term).
+    private static func mapPoint(x: Double, y: Double, orientation: Int) -> (x: Double, y: Double) {
+        switch orientation {
+        case 2: return (1 - x, y)          // flip horizontal
+        case 3: return (1 - x, 1 - y)      // rotate 180°
+        case 4: return (x, 1 - y)          // flip vertical
+        case 5: return (y, x)              // transpose
+        case 6: return (1 - y, x)          // rotate 90° CW
+        case 7: return (1 - y, 1 - x)      // transverse
+        case 8: return (y, 1 - x)          // rotate 90° CCW
+        default: return (x, y)             // O=1 or unknown
+        }
+    }
 }
 
 /// A verbatim-preserved Camera Raw mask value node — a Codable/Sendable mirror of the subset of
@@ -367,12 +417,18 @@ nonisolated struct MaskAdjustment: Codable, Sendable, Equatable, Identifiable {
     func transformedForDisplay(orientation: Int, sensorAspect: Double) -> MaskAdjustment {
         var result = self
         result.geometry = geometry.transformedForDisplay(orientation: orientation, sensorAspect: sensorAspect)
+        if let brush {
+            result.brush = brush.transformedForDisplay(orientation: orientation)
+        }
         return result
     }
 
     func transformedForSensor(orientation: Int, displayAspect: Double) -> MaskAdjustment {
         var result = self
         result.geometry = geometry.transformedForSensor(orientation: orientation, displayAspect: displayAspect)
+        if let brush {
+            result.brush = brush.transformedForSensor(orientation: orientation)
+        }
         return result
     }
 

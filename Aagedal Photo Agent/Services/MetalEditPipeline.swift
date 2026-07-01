@@ -31,6 +31,8 @@ struct MaskParams {
     var anonymizerBlackOut: Float = 0
     var temperature: Float = 0
     var tint: Float = 0
+    var maskType: UInt32 = 0   // 0 = ellipse (SDF), 1 = brush (sample brushAlpha)
+    var brushLayer: UInt32 = 0 // slice into the brush alpha array (maskType == 1 only)
 }
 
 /// GPU brush-dab parameters matching the Metal `BrushDabParams` struct. One dispatch per dab,
@@ -251,6 +253,17 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// ~1-1.5GB). Sized to the render source so the compositing kernel (Phase 3) can sample it
     /// in source UV space. Not yet read by `editAdjustments` — wired in Phase 3.
     nonisolated(unsafe) private(set) var brushAlphaTexture: MTLTexture?
+    /// A 1×1×1 zeroed R16Float array bound to `editAdjustments`' brush-alpha slot whenever there
+    /// are no brush masks, so the kernel's `texture2d_array` argument is always satisfied (Metal
+    /// requires every declared texture bound) — it's never sampled in that case (no mask sets
+    /// maskType == 1).
+    nonisolated(unsafe) private let emptyBrushAlpha: MTLTexture
+    /// Cache guarding `refreshBrushAlpha`: the brush masks + resolution the current
+    /// `brushAlphaTexture` was rasterized from. `updateParams` runs per slider drag, but strokes
+    /// only change on paint/undo/image-load — comparing against this skips the full-res rebuild
+    /// (a synchronous GPU rasterization) on every unrelated tonal edit.
+    nonisolated(unsafe) private var lastBuiltBrushMasks: [BrushMaskGeometry] = []
+    nonisolated(unsafe) private var lastBuiltBrushSize = MTLSize(width: 0, height: 0, depth: 0)
 
     nonisolated private static let colorSpace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
 
@@ -426,6 +439,22 @@ final class MetalEditPipeline: @unchecked Sendable {
                             withBytes: &identityData, bytesPerRow: 2 * 4 * MemoryLayout<UInt16>.size)
         self.identityLutTexture = identityTex
 
+        // 1×1×1 zeroed brush-alpha placeholder (always-bound fallback; see property doc).
+        let emptyBrushDesc = MTLTextureDescriptor()
+        emptyBrushDesc.textureType = .type2DArray
+        emptyBrushDesc.pixelFormat = .r16Float
+        emptyBrushDesc.width = 1
+        emptyBrushDesc.height = 1
+        emptyBrushDesc.arrayLength = 1
+        emptyBrushDesc.usage = .shaderRead
+        emptyBrushDesc.storageMode = .shared
+        guard let emptyBrushTex = device.makeTexture(descriptor: emptyBrushDesc) else { return nil }
+        var zeroHalf: UInt16 = 0
+        emptyBrushTex.replace(region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0, slice: 0,
+                              withBytes: &zeroHalf, bytesPerRow: MemoryLayout<UInt16>.size,
+                              bytesPerImage: MemoryLayout<UInt16>.size)
+        self.emptyBrushAlpha = emptyBrushTex
+
         // Pre-allocate the main LUT texture (4096 entries, rgba16Float, ~32KB).
         // R/G/B channels carry per-channel LUT for curve editor support.
         // Reused on every slider drag via replace(region:) — no per-frame allocation.
@@ -565,7 +594,8 @@ final class MetalEditPipeline: @unchecked Sendable {
         var flags: UInt32 = 0
 
         guard let settings else {
-            // No settings → the chain is just the (no-op) global node.
+            // No settings → the chain is just the (no-op) global node; drop any brush alpha.
+            refreshBrushAlpha([], size: MTLSize(width: 0, height: 0, depth: 0))
             params.orderCount = uploadLayerOrder([.global], maskIndexByID: [:])
             let ptr = buffer.contents().bindMemory(to: EditParams.self, capacity: 1)
             ptr.pointee = params
@@ -635,10 +665,10 @@ final class MetalEditPipeline: @unchecked Sendable {
                 displayAspect: size.width / size.height
             )
         }()
-        // Brush (paint) masks have no GPU rasterization path yet (arrives in Phase 2/3); until
-        // then they'd misrender as their placeholder ellipse geometry, so skip them here. They
-        // still round-trip through the model/XMP untouched.
-        let masks = displaySettings.localAdjustments?.filter { $0.enabled && $0.brush == nil } ?? []
+        // Both ellipse and brush masks participate. Brush masks resolve their coverage from a
+        // pre-rasterized alpha array (rebuilt below), sampled by `editAdjustments` when the mask's
+        // `maskType` is 1; ellipse masks use the analytic SDF.
+        let masks = displaySettings.localAdjustments?.filter { $0.enabled } ?? []
         let maskCount = min(masks.count, Self.maxMasks)
         params.maskCount = UInt32(maskCount)
 
@@ -650,8 +680,11 @@ final class MetalEditPipeline: @unchecked Sendable {
         }
 
         // Maps each enabled mask's UUID → its slot in the mask buffer, so the layer-order
-        // build below can translate `.mask(id)` refs into GPU mask indices.
+        // build below can translate `.mask(id)` refs into GPU mask indices. Brush masks are
+        // collected in the same iteration order so their `brushLayer` slice indices line up
+        // with the alpha array `refreshBrushAlpha` rasterizes below.
         var maskIndexByID: [UUID: Int] = [:]
+        var brushGeometries: [BrushMaskGeometry] = []
         if maskCount > 0, let maskBuf = maskBuffer {
             let maskPtr = maskBuf.contents().bindMemory(to: MaskParams.self, capacity: Self.maxMasks)
             for i in 0..<maskCount {
@@ -664,6 +697,11 @@ final class MetalEditPipeline: @unchecked Sendable {
                 mp.feather = Float(mask.geometry.feather / 100.0)
                 mp.inverted = mask.inverted ? 1.0 : 0.0
                 mp.amount = Float(mask.amount)
+                if let brush = mask.brush {
+                    mp.maskType = 1
+                    mp.brushLayer = UInt32(brushGeometries.count)
+                    brushGeometries.append(brush)
+                }
 
                 var maskFlags: UInt32 = 0
                 if let exp = mask.exposure, exp != 0 {
@@ -714,6 +752,18 @@ final class MetalEditPipeline: @unchecked Sendable {
                 mp.activeFlags = maskFlags
                 maskPtr[i] = mp
             }
+        }
+
+        // Rebuild the brush alpha array (cached — only when strokes/resolution change) so the
+        // compositing kernel can sample it. Sized to the source texture, which the kernel
+        // samples in source UV space. The offscreen (export) pipeline has no persistent source
+        // texture, so `sourceTextureSize` is nil there and it rebuilds explicitly at the working
+        // resolution in `renderOffscreenSerial` instead.
+        if let texSize = sourceTextureSize {
+            refreshBrushAlpha(
+                brushGeometries,
+                size: MTLSize(width: Int(texSize.width), height: Int(texSize.height), depth: 1)
+            )
         }
 
         // 6. HSL per-color adjustments
@@ -944,6 +994,28 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// Frees the brush alpha texture (e.g. when the last brush mask is removed).
     nonisolated func clearBrushAlpha() {
         brushAlphaTexture = nil
+        lastBuiltBrushMasks = []
+        lastBuiltBrushSize = MTLSize(width: 0, height: 0, depth: 0)
+    }
+
+    /// Cached wrapper around `rebuildBrushAlpha` for the live path: rebuilds only when the brush
+    /// masks or target resolution differ from the last build. `updateParams` calls this on every
+    /// slider drag, but a full-res rasterization (a synchronous GPU wait) should only happen when
+    /// the strokes actually change — not on unrelated tonal edits.
+    nonisolated func refreshBrushAlpha(_ brushMasks: [BrushMaskGeometry], size: MTLSize) {
+        guard !brushMasks.isEmpty else {
+            if brushAlphaTexture != nil { clearBrushAlpha() }
+            return
+        }
+        if brushAlphaTexture != nil,
+           brushMasks == lastBuiltBrushMasks,
+           size.width == lastBuiltBrushSize.width,
+           size.height == lastBuiltBrushSize.height {
+            return
+        }
+        rebuildBrushAlpha(brushMasks, size: size)
+        lastBuiltBrushMasks = brushMasks
+        lastBuiltBrushSize = size
     }
 
     // MARK: - Render
@@ -981,6 +1053,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         encoder.setTexture(source, index: 0)
         encoder.setTexture(drawable.texture, index: 1)
         encoder.setTexture(lutTexture, index: 2)
+        encoder.setTexture(brushAlphaTexture ?? emptyBrushAlpha, index: 3)
         encoder.setBuffer(buffer, offset: 0, index: 0)
         if let maskBuf = maskBuffer {
             encoder.setBuffer(maskBuf, offset: 0, index: 1)
@@ -1558,6 +1631,19 @@ final class MetalEditPipeline: @unchecked Sendable {
         // 3. Generate LUT and set parameters
         pipeline.updateParams(settings)
 
+        // The offscreen pipeline has no persistent source texture, so `updateParams` can't size
+        // the brush alpha — rebuild it explicitly at the working resolution. Brush geometries are
+        // taken in the same first-`maxMasks` enabled-mask order `updateParams` used to assign each
+        // mask's `brushLayer` slice, so the slices line up. `settings` is already display-oriented
+        // here, so the dabs rasterize in the same frame the kernel samples.
+        let brushMasksForExport = (settings.localAdjustments?.filter { $0.enabled } ?? [])
+            .prefix(Self.maxMasks)
+            .compactMap { $0.brush }
+        pipeline.rebuildBrushAlpha(
+            brushMasksForExport,
+            size: MTLSize(width: width, height: height, depth: 1)
+        )
+
         // 3. Create output texture (managed — CIImage can create from it)
         let outDesc = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .rgba16Float, width: width, height: height, mipmapped: false
@@ -1586,6 +1672,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         let flags = ptr.pointee.activeFlags
         let useLUT = (flags & (1 << 0)) != 0
         encoder.setTexture(useLUT ? pipeline.lutTexture : pipeline.identityLutTexture, index: 2)
+        encoder.setTexture(pipeline.brushAlphaTexture ?? pipeline.emptyBrushAlpha, index: 3)
 
         encoder.setBuffer(paramsBuffer, offset: 0, index: 0)
         if let maskBuf = pipeline.maskBuffer {
