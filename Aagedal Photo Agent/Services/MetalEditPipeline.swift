@@ -49,6 +49,13 @@ struct BrushDabParams {
     var originPx: SIMD2<UInt32> = .zero
 }
 
+/// GPU stroke-composite parameters matching the Metal `BrushCompositeParams` struct.
+struct BrushCompositeParams {
+    var layer: UInt32 = 0
+    var erase: UInt32 = 0
+    var originPx: SIMD2<UInt32> = .zero
+}
+
 /// GPU overlay parameters matching the Metal `MaskOverlayParams` struct.
 struct MaskOverlayParams {
     var center: SIMD2<Float> = .zero
@@ -255,6 +262,12 @@ final class MetalEditPipeline: @unchecked Sendable {
     // missing, matching the overlay pipeline.
     private let stampBrushPipelineState: MTLComputePipelineState?
     private let clearBrushAlphaPipelineState: MTLComputePipelineState?
+    private let clearBrushRegionPipelineState: MTLComputePipelineState?
+    private let compositeBrushPipelineState: MTLComputePipelineState?
+    /// Single-slice scratch texture holding one stroke's coverage envelope during a rebuild:
+    /// dabs are max-stamped here, then source-over composited into `brushAlphaTexture` so
+    /// separate strokes accumulate. Lazily sized to match the alpha array.
+    nonisolated(unsafe) private var brushEnvScratch: MTLTexture?
     /// Per-brush-mask alpha coverage: one `texture2d_array` R16Float slice per brush mask,
     /// lazily (re)built by `rebuildBrushAlpha`. Nil when there are no brush masks, so non-brush
     /// edits pay zero GPU memory (an unconditional 8-slice array at export resolution would be
@@ -402,6 +415,16 @@ final class MetalEditPipeline: @unchecked Sendable {
             self.clearBrushAlphaPipelineState = try? device.makeComputePipelineState(function: clearFunc)
         } else {
             self.clearBrushAlphaPipelineState = nil
+        }
+        if let clearRegionFunc = library.makeFunction(name: "clearBrushRegion") {
+            self.clearBrushRegionPipelineState = try? device.makeComputePipelineState(function: clearRegionFunc)
+        } else {
+            self.clearBrushRegionPipelineState = nil
+        }
+        if let compositeFunc = library.makeFunction(name: "compositeBrushStroke") {
+            self.compositeBrushPipelineState = try? device.makeComputePipelineState(function: compositeFunc)
+        } else {
+            self.compositeBrushPipelineState = nil
         }
 
         self.ciContext = CIContext(mtlDevice: device, options: [
@@ -896,6 +919,26 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// Whether the brush rasterization pipelines compiled.
     nonisolated var hasBrushPipeline: Bool {
         stampBrushPipelineState != nil && clearBrushAlphaPipelineState != nil
+            && clearBrushRegionPipelineState != nil && compositeBrushPipelineState != nil
+    }
+
+    /// The pixel bounding box (originX, originY, width, height) a stroke's dabs cover, clipped to
+    /// `size`, or nil if empty. Used to bound the per-stroke clear/composite dispatches so cost is
+    /// the painted area, not the whole slice.
+    nonisolated private static func strokeBoundingBox(_ stroke: BrushStroke, size: MTLSize) -> (Int, Int, Int, Int)? {
+        let r = Double(brushRadiusPixels(normalized: stroke.radius, size: size))
+        guard r > 0, !stroke.dabs.isEmpty else { return nil }
+        var minX = Double.greatestFiniteMagnitude, minY = Double.greatestFiniteMagnitude
+        var maxX = -Double.greatestFiniteMagnitude, maxY = -Double.greatestFiniteMagnitude
+        for dab in stroke.dabs {
+            let cx = dab.x * Double(size.width), cy = dab.y * Double(size.height)
+            minX = min(minX, cx - r); minY = min(minY, cy - r)
+            maxX = max(maxX, cx + r); maxY = max(maxY, cy + r)
+        }
+        let x0 = max(0, Int(minX.rounded(.down))), y0 = max(0, Int(minY.rounded(.down)))
+        let x1 = min(size.width, Int(maxX.rounded(.up))), y1 = min(size.height, Int(maxY.rounded(.up)))
+        guard x1 > x0, y1 > y0 else { return nil }
+        return (x0, y0, x1 - x0, y1 - y0)
     }
 
     /// Converts a normalized brush radius (ACR `Radius`) into pixels for a texture of the given
@@ -920,6 +963,8 @@ final class MetalEditPipeline: @unchecked Sendable {
     nonisolated func rebuildBrushAlpha(_ brushMasks: [BrushMaskGeometry], size: MTLSize) -> MTLTexture? {
         guard let stampState = stampBrushPipelineState,
               let clearState = clearBrushAlphaPipelineState,
+              let clearRegionState = clearBrushRegionPipelineState,
+              let compositeState = compositeBrushPipelineState,
               !brushMasks.isEmpty, size.width > 0, size.height > 0 else {
             brushAlphaTexture = nil
             return nil
@@ -949,27 +994,68 @@ final class MetalEditPipeline: @unchecked Sendable {
             tex = newTex
         }
 
+        // Single-slice envelope scratch, reused across strokes; (re)allocated to match `size`.
+        let scratch: MTLTexture
+        if let existing = brushEnvScratch, existing.width == size.width, existing.height == size.height {
+            scratch = existing
+        } else {
+            let desc = MTLTextureDescriptor()
+            desc.textureType = .type2DArray
+            desc.pixelFormat = .r16Float
+            desc.width = size.width
+            desc.height = size.height
+            desc.arrayLength = 1
+            desc.usage = [.shaderRead, .shaderWrite]
+            desc.storageMode = .shared
+            guard let newScratch = device.makeTexture(descriptor: desc) else { return nil }
+            scratch = newScratch
+        }
+
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
               let encoder = commandBuffer.makeComputeCommandEncoder() else {
             return nil
         }
 
-        // Clear every slice first. The default serial-dispatch encoder inserts a barrier
-        // between dispatches, so the clear is guaranteed to complete before the first stamp
-        // reads the alpha (and each stamp sees the prior stamp's writes for max/subtract).
+        // Clear every slice first. The default serial-dispatch encoder inserts a barrier between
+        // dispatches, so the clear completes before the first stamp reads the alpha.
         encoder.setComputePipelineState(clearState)
         encoder.setTexture(tex, index: 0)
-        let clearTG = MTLSize(width: 8, height: 8, depth: 1)
         encoder.dispatchThreads(
             MTLSize(width: size.width, height: size.height, depth: layers),
-            threadsPerThreadgroup: clearTG
+            threadsPerThreadgroup: MTLSize(width: 8, height: 8, depth: 1)
         )
 
-        encoder.setComputePipelineState(stampState)
-        encoder.setTexture(tex, index: 0)
+        // Per stroke: build its coverage envelope in the scratch (dabs max-blended, so within a
+        // stroke it's a flat cap at the stroke's flow), then source-over composite it into the
+        // mask's slice — so separate strokes ACCUMULATE (clicking the same spot builds up) rather
+        // than clamping at one stroke's flow. Bounded to each stroke's bbox to keep cost local.
+        let stampTG = MTLSize(width: 16, height: 16, depth: 1)
         for (layer, mask) in brushMasks.prefix(layers).enumerated() {
             for stroke in mask.strokes {
-                Self.encodeStroke(stroke, layer: layer, size: size, into: encoder)
+                guard let (bx, by, bw, bh) = Self.strokeBoundingBox(stroke, size: size) else { continue }
+                var origin = SIMD2<UInt32>(UInt32(bx), UInt32(by))
+                let bbox = MTLSize(width: bw, height: bh, depth: 1)
+
+                // 1. Clear the scratch over this stroke's bbox.
+                encoder.setComputePipelineState(clearRegionState)
+                encoder.setTexture(scratch, index: 0)
+                encoder.setBytes(&origin, length: MemoryLayout<SIMD2<UInt32>>.stride, index: 0)
+                encoder.dispatchThreads(bbox, threadsPerThreadgroup: stampTG)
+
+                // 2. Stamp the stroke's dabs into scratch slice 0 as a max envelope (forceAdd).
+                encoder.setComputePipelineState(stampState)
+                encoder.setTexture(scratch, index: 0)
+                Self.encodeStroke(stroke, layer: 0, size: size, forceAdd: true, into: encoder)
+
+                // 3. Source-over (or multiplicative-erase) composite scratch → alpha slice.
+                encoder.setComputePipelineState(compositeState)
+                encoder.setTexture(tex, index: 0)
+                encoder.setTexture(scratch, index: 1)
+                var cp = BrushCompositeParams(layer: UInt32(layer),
+                                              erase: stroke.erase ? 1 : 0,
+                                              originPx: origin)
+                encoder.setBytes(&cp, length: MemoryLayout<BrushCompositeParams>.stride, index: 0)
+                encoder.dispatchThreads(bbox, threadsPerThreadgroup: stampTG)
             }
         }
 
@@ -977,19 +1063,23 @@ final class MetalEditPipeline: @unchecked Sendable {
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
         brushAlphaTexture = tex
+        brushEnvScratch = scratch
         return tex
     }
 
     /// Encodes one stroke's dabs as `stampBrush` dispatches into `encoder` (which must already
-    /// have the stamp pipeline state + alpha texture bound), each bounded to that dab's bounding
-    /// box. Shared by the full rebuild and the incremental live-paint path.
+    /// have the stamp pipeline state + target texture bound), each bounded to that dab's bounding
+    /// box. `forceAdd` stamps a plain max envelope (used to build the per-stroke scratch, where
+    /// erase is applied by the composite step instead). Shared by the full rebuild and the
+    /// incremental live-paint path.
     nonisolated private static func encodeStroke(
-        _ stroke: BrushStroke, layer: Int, size: MTLSize, into encoder: MTLComputeCommandEncoder
+        _ stroke: BrushStroke, layer: Int, size: MTLSize, forceAdd: Bool = false,
+        into encoder: MTLComputeCommandEncoder
     ) {
         let radiusPx = brushRadiusPixels(normalized: stroke.radius, size: size)
         guard radiusPx > 0 else { return }
         let density = Float(stroke.density)
-        let erase: UInt32 = stroke.erase ? 1 : 0
+        let erase: UInt32 = (forceAdd || !stroke.erase) ? 0 : 1
         let stampTG = MTLSize(width: 16, height: 16, depth: 1)
         for dab in stroke.dabs {
             let cx = Double(dab.x) * Double(size.width)
@@ -1046,6 +1136,7 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// Frees the brush alpha texture (e.g. when the last brush mask is removed).
     nonisolated func clearBrushAlpha() {
         brushAlphaTexture = nil
+        brushEnvScratch = nil
         lastBuiltBrushMasks = []
         lastBuiltBrushSize = MTLSize(width: 0, height: 0, depth: 0)
     }

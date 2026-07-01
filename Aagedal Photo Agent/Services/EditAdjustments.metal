@@ -709,6 +709,45 @@ kernel void clearBrushAlpha(
     alpha.write(half4(0.0h), uint2(gid.x, gid.y), gid.z);
 }
 
+/// Zeros slice 0 of a scratch array over a bounding box (grid origin = originPx). Used to reset
+/// the per-stroke envelope scratch before each stroke's dabs are stamped into it.
+kernel void clearBrushRegion(
+    texture2d_array<half, access::write> tex [[texture(0)]],
+    constant uint2 &originPx [[buffer(0)]],
+    uint2 lid [[thread_position_in_grid]])
+{
+    uint2 px = originPx + lid;
+    if (px.x >= tex.get_width() || px.y >= tex.get_height()) return;
+    tex.write(half4(0.0h), px, 0);
+}
+
+/// Composites one stroke's coverage envelope (slice 0 of `env`) into `alpha`'s `layer` slice
+/// over a bounding box. This is what makes SEPARATE strokes accumulate: within a stroke the dabs
+/// are max-blended into `env` (a flat envelope capped at the stroke's flow), then source-over
+/// composited here — so clicking the same spot twice builds up (`a + e·(1-a)`) toward full
+/// opacity instead of clamping at one stroke's flow. Erase strokes multiply the mask down
+/// (`a·(1-e)`), the symmetric inverse. Pixels the stroke didn't touch (env 0) are left unchanged.
+struct BrushCompositeParams {
+    uint  layer;      // target alpha slice
+    uint  erase;      // 0 = source-over add, 1 = multiplicative erase
+    uint2 originPx;   // bounding-box top-left (grid origin)
+};
+
+kernel void compositeBrushStroke(
+    texture2d_array<half, access::read_write> alpha [[texture(0)]],
+    texture2d_array<half, access::read> env [[texture(1)]],
+    constant BrushCompositeParams &p [[buffer(0)]],
+    uint2 lid [[thread_position_in_grid]])
+{
+    uint2 px = p.originPx + lid;
+    if (px.x >= alpha.get_width() || px.y >= alpha.get_height()) return;
+    half e = env.read(px, 0).r;
+    if (e <= 0.0h) return;                       // stroke didn't cover this pixel
+    half a = alpha.read(px, p.layer).r;
+    half result = (p.erase != 0) ? (a * (1.0h - e)) : (a + e * (1.0h - a));
+    alpha.write(half4(result, 0.0h, 0.0h, 0.0h), px, p.layer);
+}
+
 /// Rasterizes one brush dab into `alpha`'s `layer` slice, bounded to the dab's bounding box
 /// (grid origin = `dab.originPx`, so `lid` is the offset within the box).
 kernel void stampBrush(

@@ -2078,6 +2078,30 @@ struct BrushRasterizationTests {
         #expect(px[32 * 64 + 32] < 0.01)   // added then fully erased
     }
 
+    @Test("separate add strokes at the same spot accumulate (build up past one stroke's flow)")
+    func separateStrokesAccumulate() throws {
+        guard let pipeline = makePipeline() else { return }
+        let size = MTLSize(width: 64, height: 64, depth: 1)
+        func stroke() -> BrushStroke {
+            BrushStroke(dabs: [BrushDab(x: 0.5, y: 0.5, flow: 0.5, hardness: 1.0)],
+                        radius: 0.25, density: 1.0, erase: false)
+        }
+        // One stroke at flow 0.5 → ~0.5. A SECOND identical stroke must build up (source-over),
+        // not clamp at 0.5. Three strokes → higher still.
+        let one = BrushMaskGeometry(strokes: [stroke()])
+        let two = BrushMaskGeometry(strokes: [stroke(), stroke()])
+        let three = BrushMaskGeometry(strokes: [stroke(), stroke(), stroke()])
+        func centerAfter(_ b: BrushMaskGeometry) throws -> Float {
+            let tex = try #require(pipeline.rebuildBrushAlpha([b], size: size))
+            return readSlice(tex, slice: 0)[32 * 64 + 32]
+        }
+        let a1 = try centerAfter(one), a2 = try centerAfter(two), a3 = try centerAfter(three)
+        #expect(abs(a1 - 0.5) < 0.05)     // single stroke ≈ its flow
+        #expect(a2 > a1 + 0.15)           // second stroke builds up (≈0.75)
+        #expect(a3 > a2)                  // third builds up further
+        #expect(a3 < 1.001)              // never exceeds full opacity
+    }
+
     @Test("overlapping soft erase dabs preserve a soft falloff (envelope, not accumulation)")
     func softEraseStaysSoft() throws {
         guard let pipeline = makePipeline() else { return }

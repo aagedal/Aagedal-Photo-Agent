@@ -3479,6 +3479,20 @@ struct EditWorkspaceView: View {
                 .foregroundStyle(.secondary)
             Divider()
 
+            // Per-mask opacity (the mask's overall strength). Only mask layers have this — the
+            // Global layer is always fully applied.
+            sliderRow(
+                "Opacity",
+                value: maskAmountBinding(idx),
+                range: 0...100,
+                step: 1,
+                formatter: { "\(Int($0.rounded()))%" },
+                settingsMutator: { settings, value in
+                    settings.localAdjustments?[idx].amount = min(max(value / 100, 0), 1)
+                },
+                onReset: { maskAmountBinding(idx).wrappedValue = 100 }
+            )
+
             sliderRow(
                 "Temperature",
                 value: maskDoubleBinding(idx, \.temperature),
@@ -3700,6 +3714,24 @@ struct EditWorkspaceView: View {
         return metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?.firstIndex { $0.id == id }
     }
 
+    /// Per-mask opacity (`amount`, 0–1) as a 0–100 slider value. `amount` is non-optional and
+    /// defaults to 1.0 (fully applied).
+    private func maskAmountBinding(_ maskIndex: Int) -> Binding<Double> {
+        Binding(
+            get: {
+                guard let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
+                      maskIndex < masks.count else { return 100 }
+                return masks[maskIndex].amount * 100
+            },
+            set: { newValue in
+                updateCameraRaw { cameraRaw in
+                    guard let masks = cameraRaw.localAdjustments, maskIndex < masks.count else { return }
+                    cameraRaw.localAdjustments?[maskIndex].amount = min(max(newValue / 100, 0), 1)
+                }
+            }
+        )
+    }
+
     private func maskDoubleBinding(_ maskIndex: Int, _ keyPath: WritableKeyPath<MaskAdjustment, Double?>) -> Binding<Double> {
         Binding(
             get: {
@@ -3741,9 +3773,9 @@ struct EditWorkspaceView: View {
                 return masks[maskIndex].anonymizer?.amount ?? 0
             },
             set: { newValue in
+                let clamped = min(max(newValue.rounded(), 0), 100)
                 updateCameraRaw { cameraRaw in
                     guard let masks = cameraRaw.localAdjustments, maskIndex < masks.count else { return }
-                    let clamped = min(max(newValue.rounded(), 0), 100)
                     if clamped <= 0 {
                         cameraRaw.localAdjustments?[maskIndex].anonymizer?.amount = nil
                         if cameraRaw.localAdjustments?[maskIndex].anonymizer?.isEmpty == true {
@@ -3755,6 +3787,14 @@ struct EditWorkspaceView: View {
                         }
                         cameraRaw.localAdjustments?[maskIndex].anonymizer?.amount = clamped
                     }
+                }
+                // Anonymizing wants full coverage — a partially-opaque mask would leak the
+                // underlying detail through the pixelation. Nudge the brush to 100% flow so
+                // subsequent strokes fully obscure (only for brush masks).
+                if clamped > 0,
+                   let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
+                   maskIndex < masks.count, masks[maskIndex].brush != nil {
+                    brushFlow = 1.0
                 }
             }
         )
