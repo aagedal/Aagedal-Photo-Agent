@@ -398,6 +398,7 @@ struct EditWorkspaceView: View {
             // static display with interactive handles. Metal overlay is only used
             // during active mask drags for real-time feedback.
             metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
+            syncMaskOverlayTarget()
             metalCoordinator.requestRedraw()
         }
         .onChange(of: cleanFeedController.isEnabled) { _, enabled in
@@ -3173,10 +3174,16 @@ struct EditWorkspaceView: View {
                 Image(systemName: "paintbrush.pointed")
                 Text("Brush").font(.system(size: 11, weight: .semibold))
                 Spacer()
-                Toggle(isOn: $isBrushPainting) {
+                Button {
+                    isBrushPainting.toggle()
+                    if isBrushPainting { isPickingWhiteBalance = false }
+                    syncMaskOverlayTarget()
+                } label: {
                     Text(isBrushPainting ? "Painting" : "Paint")
+                        .frame(minWidth: 54)
                 }
-                .toggleStyle(.button)
+                .buttonStyle(.borderedProminent)
+                .tint(isBrushPainting ? .accentColor : .gray)
                 .controlSize(.small)
                 .help("Toggle the paint tool (shortcut: B)")
             }
@@ -3227,8 +3234,20 @@ struct EditWorkspaceView: View {
     }
 
     private var addLayerButton: some View {
-        Button {
-            addNewMask()
+        Menu {
+            Button {
+                addNewMask()
+            } label: {
+                Label("Radial Mask", systemImage: LayerKind.ellipseMask.systemImage)
+            }
+            Button {
+                _ = addNewBrushMask()
+                isBrushPainting = true
+                isPickingWhiteBalance = false
+                syncMaskOverlayTarget()
+            } label: {
+                Label("Brush Mask", systemImage: LayerKind.brushMask.systemImage)
+            }
         } label: {
             VStack(spacing: 3) {
                 RoundedRectangle(cornerRadius: 6)
@@ -3246,8 +3265,10 @@ struct EditWorkspaceView: View {
                     .frame(width: 60)
             }
         }
-        .buttonStyle(.plain)
-        .help("Add mask adjustment")
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Add a mask adjustment (radial or brush)")
     }
 
     @ViewBuilder
@@ -3836,11 +3857,26 @@ struct EditWorkspaceView: View {
         } else {
             targetID = addNewBrushMask()
         }
-        // Rebuild params so a freshly-created mask's alpha slice is allocated before live stamping.
+        // Rebuild params so a freshly-created mask's alpha slice is allocated before live
+        // stamping, and turn on the red coverage overlay for this mask so the stroke is visible
+        // as it's painted (auto-hidden once the mask gets an adjustment).
+        metalPipeline?.maskOverlayMaskID = targetID
         if let pipeline = metalPipeline, pipeline.hasSourceTexture {
             pipeline.updateParams(settingsForPipeline(metadataViewModel.editingMetadata.cameraRaw))
         }
         return brushSliceIndex(forMaskID: targetID)
+    }
+
+    /// Drives the ACR-style red mask-coverage overlay: shows it for the selected mask while the
+    /// brush tool is active or a brush mask is selected, and clears it otherwise. The kernel
+    /// itself hides the tint once the mask has an adjustment, so this only tracks selection.
+    private func syncMaskOverlayTarget() {
+        guard let pipeline = metalPipeline else { return }
+        pipeline.maskOverlayMaskID = (isBrushPainting || selectedMaskIsBrush) ? selectedMaskID : nil
+        if pipeline.hasSourceTexture {
+            pipeline.updateParams(settingsForPipeline(metadataViewModel.editingMetadata.cameraRaw))
+            metalCoordinator.requestRedraw()
+        }
     }
 
     /// `onStrokeChanged`: stamp the incremental dabs straight into the GPU alpha slice for
@@ -4661,6 +4697,15 @@ struct EditWorkspaceView: View {
             guard canEditSingleImage else { return event }
             isBrushPainting.toggle()
             if isBrushPainting { isPickingWhiteBalance = false }
+            syncMaskOverlayTarget()
+            return nil
+        }
+
+        // X — swap the brush between Add and Erase (Photoshop swaps FG/BG on X). Only meaningful
+        // in a brush context, so pass the event through otherwise.
+        if chars == "x" && modifiers.isDisjoint(with: [.command, .option, .control]) {
+            guard canEditSingleImage, isBrushPainting || selectedMaskIsBrush else { return event }
+            brushErase.toggle()
             return nil
         }
 

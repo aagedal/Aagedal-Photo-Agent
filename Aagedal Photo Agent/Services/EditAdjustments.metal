@@ -78,6 +78,9 @@ struct EditParams {
     uint orderCount;         // entries in the layer-order buffer (buffer 3); always ≥ 1
     float anonymizerAmount;   // 0-1 global slider strength, gated by activeFlags bit5
     float anonymizerBlackOut; // 0 or 1 — full opaque redaction instead of the layered effect
+
+    int  maskOverlayIndex;    // mask buffer index to visualize as a red overlay, or -1 = none
+    float maskOverlayOpacity; // 0-1 red-tint strength for the mask overlay
 };
 
 // ============================================================
@@ -644,6 +647,23 @@ kernel void editAdjustments(
         // Adobe RGB: sRGB -> Adobe RGB, clamp, Adobe RGB -> sRGB
         float3 aRgb = sRGBtoAdobeRGB_edit * float3(rgb);
         rgb = half3(AdobeRGBtoSRGB_edit * clamp(aRgb, 0.0, gamutHiF));
+    }
+
+    // Mask-coverage overlay (ACR-style): tint the selected mask's region red so a freshly
+    // painted brush mask is visible before any adjustment moves a pixel. Auto-hidden by the CPU
+    // once the mask has an adjustment (it clears maskOverlayIndex), matching ACR's behaviour.
+    if (params.maskOverlayIndex >= 0 && uint(params.maskOverlayIndex) < params.maskCount
+            && masks[params.maskOverlayIndex].activeFlags == 0u) {
+        constant MaskParams &om = masks[params.maskOverlayIndex];
+        float ow;
+        if (om.maskType == 1u) {
+            constexpr sampler brushSampler(filter::linear, address::clamp_to_edge);
+            ow = float(brushAlpha.sample(brushSampler, uv, om.brushLayer).r);
+            if (om.inverted > 0.5) ow = 1.0 - ow;
+        } else {
+            ow = maskWeight(om, uv, params.sourceSize);
+        }
+        rgb = mix(rgb, half3(0.9h, 0.1h, 0.1h), half(ow * params.maskOverlayOpacity));
     }
 
     destination.write(half4(rgb, color.a), gid);

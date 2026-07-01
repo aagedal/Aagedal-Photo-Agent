@@ -131,6 +131,9 @@ struct EditParams {
     var orderCount: UInt32 = 0
     var anonymizerAmount: Float = 0   // 0-1 global slider strength, gated by activeFlags bit5
     var anonymizerBlackOut: Float = 0 // 0 or 1
+
+    var maskOverlayIndex: Int32 = -1  // mask buffer index to red-tint, or -1 = none
+    var maskOverlayOpacity: Float = 0 // 0-1 red-tint strength
 }
 
 /// Manages the Metal compute pipeline for real-time edit preview.
@@ -201,6 +204,11 @@ final class MetalEditPipeline: @unchecked Sendable {
     nonisolated(unsafe) var gamutClipMode: UInt32 = 0 {
         didSet { mirror?.gamutClipMode = gamutClipMode }
     }
+
+    /// When set, `updateParams` red-tints this mask's coverage (ACR-style) so a freshly painted
+    /// brush mask is visible before any adjustment. The kernel auto-hides it once the mask gains
+    /// an adjustment. Set by the editor from selection / paint-mode state.
+    nonisolated(unsafe) var maskOverlayMaskID: UUID? = nil
 
     /// As-shot white balance from the RAW decoder. Used as the reference point for WB
     /// adjustments so that "Custom at as-shot temperature" produces an identity matrix.
@@ -764,6 +772,17 @@ final class MetalEditPipeline: @unchecked Sendable {
                 brushGeometries,
                 size: MTLSize(width: Int(texSize.width), height: Int(texSize.height), depth: 1)
             )
+        }
+
+        // Mask-coverage overlay target: red-tint the editor-selected mask until it's adjusted
+        // (the kernel gates on the mask's activeFlags being 0). Mapped from the UUID here so it
+        // stays consistent with the current mask buffer layout.
+        if let oid = maskOverlayMaskID, let idx = maskIndexByID[oid] {
+            params.maskOverlayIndex = Int32(idx)
+            params.maskOverlayOpacity = 0.5
+        } else {
+            params.maskOverlayIndex = -1
+            params.maskOverlayOpacity = 0
         }
 
         // 6. HSL per-color adjustments
