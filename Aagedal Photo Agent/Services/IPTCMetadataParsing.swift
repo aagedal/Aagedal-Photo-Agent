@@ -201,201 +201,411 @@ nonisolated private func aaphotoMaskField(_ dict: [String: Any], _ name: String)
     dict[name] ?? dict["http://aagedal.me/ns/photo/1.0/" + name]
 }
 
-/// Parse Adobe Camera Raw `MaskGroupBasedCorrections` into `[MaskAdjustment]`.
-/// Each correction is a dictionary with `CorrectionMasks` as a nested array
-/// of mask geometry dictionaries. Corrections whose geometry can't be parsed
-/// (unsupported mask type, missing corner fields) are dropped — substituting a
-/// default ellipse would silently misrender them.
-nonisolated func parseMaskGroupBasedCorrections(_ value: Any?) -> [MaskAdjustment]? {
-    guard let corrections = value as? [[String: Any]], !corrections.isEmpty else { return nil }
+/// The outcome of parsing `MaskGroupBasedCorrections`: the corrections this app models
+/// (`masks`) plus corrections it can't (`preserved` — kept verbatim so a develop save
+/// re-emits them instead of dropping them).
+nonisolated struct ParsedMaskCorrections {
     var masks: [MaskAdjustment] = []
+    var preserved: [PreservedMaskCorrection] = []
+}
+
+/// Parse Adobe Camera Raw `MaskGroupBasedCorrections`. Each correction is a dictionary with
+/// `CorrectionMasks` as a nested array of mask dictionaries. Two mask kinds are modeled:
+/// a single `Mask/CircularGradient` (ellipse) and a single additive `Mask/Aggregate` of
+/// `Mask/Paint` sub-masks (brush). Anything else — an erase-brush `MaskBrushTable` blob, an
+/// unknown mask type, a multi-mask intersection — is kept verbatim in `preserved` rather than
+/// dropped, so it survives a develop save (the next `replaceCameraRawBlock` wipe would otherwise
+/// delete it permanently). Substituting a default ellipse would silently misrender it.
+nonisolated func parseMaskGroupBasedCorrections(_ value: Any?) -> ParsedMaskCorrections? {
+    guard let corrections = value as? [[String: Any]], !corrections.isEmpty else { return nil }
+    var result = ParsedMaskCorrections()
     for (index, corr) in corrections.enumerated() {
         let active = parseBoolValue(crsMaskField(corr, "CorrectionActive")) ?? true
         let amount = parseDoubleValue(crsMaskField(corr, "CorrectionAmount")) ?? 1.0
         let name = crsMaskField(corr, "CorrectionName") as? String ?? "Mask \(index + 1)"
 
-        guard let maskArray = crsMaskField(corr, "CorrectionMasks") as? [[String: Any]],
-              let maskDict = maskArray.first,
-              (crsMaskField(maskDict, "What") as? String) == "Mask/CircularGradient",
-              let top = parseDoubleValue(crsMaskField(maskDict, "Top")),
-              let left = parseDoubleValue(crsMaskField(maskDict, "Left")),
-              let bottom = parseDoubleValue(crsMaskField(maskDict, "Bottom")),
-              let right = parseDoubleValue(crsMaskField(maskDict, "Right"))
-        else {
-            parsingLog.warning("Dropping MaskGroupBasedCorrections[\(index)] (\(name, privacy: .public)): mask geometry failed to parse")
+        let maskArray = crsMaskField(corr, "CorrectionMasks") as? [[String: Any]]
+        let firstMask = maskArray?.first
+        let what = firstMask.flatMap { crsMaskField($0, "What") as? String }
+
+        // Brush: a single additive Mask/Aggregate whose sub-masks are all Mask/Paint.
+        if let firstMask, maskArray?.count == 1, what == "Mask/Aggregate",
+           let brush = parseBrushGeometry(firstMask) {
+            var mask = makeMaskAdjustment(corr: corr, name: name, active: active, amount: amount,
+                                          inverted: false, geometry: EllipseMaskGeometry())
+            mask.brush = brush
+            result.masks.append(mask)
             continue
         }
 
-        var geometry = EllipseMaskGeometry()
-        geometry.centerX = (left + right) / 2
-        geometry.centerY = (top + bottom) / 2
-        // ACR's (Left,Top)/(Right,Bottom) are opposite corners of the ellipse's
-        // ORIENTED bounding rect — the corner vector rotates with the ellipse in
-        // aspect-corrected (pixel) space, so for rotated masks Left can exceed
-        // Right and these half-extents are signed, NOT the semi-axes. The true
-        // radii are recovered by un-rotating the corner vector at render time
-        // (see EllipseMaskGeometry); at Angle=0 they coincide.
-        geometry.radiusX = (right - left) / 2
-        geometry.radiusY = (bottom - top) / 2
-        geometry.rotation = parseDoubleValue(crsMaskField(maskDict, "Angle")) ?? 0
-        geometry.feather = parseDoubleValue(crsMaskField(maskDict, "Feather")) ?? 50
-        // ACR Flipped=true means effect applies inside the ellipse;
-        // our inverted=true means effect applies outside. Negate.
-        let inverted = !(parseBoolValue(crsMaskField(maskDict, "Flipped")) ?? true)
+        // Ellipse (radial): a single Mask/CircularGradient with parseable corner fields.
+        if let firstMask, maskArray?.count == 1, what == "Mask/CircularGradient",
+           let geometry = parseEllipseGeometry(firstMask) {
+            // ACR Flipped=true means effect applies inside the ellipse;
+            // our inverted=true means effect applies outside. Negate.
+            let inverted = !(parseBoolValue(crsMaskField(firstMask, "Flipped")) ?? true)
+            let mask = makeMaskAdjustment(corr: corr, name: name, active: active, amount: amount,
+                                          inverted: inverted, geometry: geometry)
+            result.masks.append(mask)
+            continue
+        }
 
-        // ACR stores all local adjustments as fractions of their full range (-1..+1).
-        // Exposure range is -4..+4 EV, so XMP value × 4 = EV stops.
-        let exposure = parseDoubleValue(crsMaskField(corr, "LocalExposure2012")).map { $0 * 4.0 }
-        let contrast = parsePercentInt(crsMaskField(corr, "LocalContrast2012"))
-        let highlights = parsePercentInt(crsMaskField(corr, "LocalHighlights2012"))
-        let shadows = parsePercentInt(crsMaskField(corr, "LocalShadows2012"))
-        let whites = parsePercentInt(crsMaskField(corr, "LocalWhites2012"))
-        let blacks = parsePercentInt(crsMaskField(corr, "LocalBlacks2012"))
-        let saturation = parsePercentInt(crsMaskField(corr, "LocalSaturation"))
-        let vibrance = parsePercentInt(crsMaskField(corr, "LocalVibrance"))
-        let temperature = parseDoubleValue(crsMaskField(corr, "LocalTemperature")).map { $0 * 100 }
-        let tint = parseDoubleValue(crsMaskField(corr, "LocalTint")).map { $0 * 100 }
-
-        // App-private (aaphoto namespace): Anonymizer isn't a real ACR concept, so it's a
-        // sibling field on the correction rather than a `crs:Local*` property.
-        let anonymizerAmount = parseDoubleValue(aaphotoMaskField(corr, "AnonymizerAmount"))
-        let anonymizerBlackOut = parseBoolValue(aaphotoMaskField(corr, "AnonymizerBlackOut"))
-        let anonymizer: AnonymizerSettings? = (anonymizerAmount ?? 0) > 0 || anonymizerBlackOut == true
-            ? AnonymizerSettings(amount: anonymizerAmount, blackOut: anonymizerBlackOut)
-            : nil
-
-        let mask = MaskAdjustment(
-            name: name,
-            enabled: active,
-            inverted: inverted,
-            amount: amount,
-            geometry: geometry,
-            exposure: exposure.flatMap { abs($0) < 0.001 ? nil : $0 },
-            contrast: contrast.flatMap { $0 == 0 ? nil : $0 },
-            highlights: highlights.flatMap { $0 == 0 ? nil : $0 },
-            shadows: shadows.flatMap { $0 == 0 ? nil : $0 },
-            whites: whites.flatMap { $0 == 0 ? nil : $0 },
-            blacks: blacks.flatMap { $0 == 0 ? nil : $0 },
-            saturation: saturation.flatMap { $0 == 0 ? nil : $0 },
-            vibrance: vibrance.flatMap { $0 == 0 ? nil : $0 },
-            temperature: temperature.flatMap { abs($0) < 0.01 ? nil : $0 },
-            tint: tint.flatMap { abs($0) < 0.01 ? nil : $0 },
-            anonymizer: anonymizer
-        )
-        masks.append(mask)
+        // Anything else — erase-brush MaskBrushTable, unknown mask type, multi-mask
+        // intersection — is preserved verbatim so a develop save doesn't delete it.
+        parsingLog.warning("Preserving MaskGroupBasedCorrections[\(index)] (\(name, privacy: .public)) verbatim: unmodeled mask type \(what ?? "unknown", privacy: .public)")
+        result.preserved.append(PreservedMaskCorrection(fields: preservedFields(from: corr)))
     }
-    return masks.isEmpty ? nil : masks
+    return result
+}
+
+/// Decode the oriented-corner ellipse box (`Mask/CircularGradient`) into `EllipseMaskGeometry`.
+/// Returns nil when the corner fields are missing (caller preserves the correction instead).
+nonisolated private func parseEllipseGeometry(_ maskDict: [String: Any]) -> EllipseMaskGeometry? {
+    guard let top = parseDoubleValue(crsMaskField(maskDict, "Top")),
+          let left = parseDoubleValue(crsMaskField(maskDict, "Left")),
+          let bottom = parseDoubleValue(crsMaskField(maskDict, "Bottom")),
+          let right = parseDoubleValue(crsMaskField(maskDict, "Right"))
+    else { return nil }
+
+    var geometry = EllipseMaskGeometry()
+    geometry.centerX = (left + right) / 2
+    geometry.centerY = (top + bottom) / 2
+    // ACR's (Left,Top)/(Right,Bottom) are opposite corners of the ellipse's ORIENTED bounding
+    // rect — the corner vector rotates with the ellipse in aspect-corrected (pixel) space, so
+    // for rotated masks Left can exceed Right and these half-extents are signed, NOT the
+    // semi-axes. The true radii are recovered by un-rotating the corner vector at render time
+    // (see EllipseMaskGeometry); at Angle=0 they coincide.
+    geometry.radiusX = (right - left) / 2
+    geometry.radiusY = (bottom - top) / 2
+    geometry.rotation = parseDoubleValue(crsMaskField(maskDict, "Angle")) ?? 0
+    geometry.feather = parseDoubleValue(crsMaskField(maskDict, "Feather")) ?? 50
+    return geometry
+}
+
+/// Decode an additive `Mask/Aggregate` into `BrushMaskGeometry`. Each `Mask/Paint` sub-mask
+/// becomes one `BrushStroke`. Returns nil for an opaque erase-brush aggregate (`MaskBrushTable`,
+/// no decodable `Masks`) or any sub-mask that isn't a parseable `Mask/Paint`, so the caller
+/// preserves the whole correction verbatim rather than rendering it wrong.
+nonisolated private func parseBrushGeometry(_ aggregate: [String: Any]) -> BrushMaskGeometry? {
+    // Erase strokes switch ACR to a rasterized MaskBrushTable blob with no decodable Dabs.
+    if crsMaskField(aggregate, "MaskBrushTable") != nil { return nil }
+    guard let subMasks = crsMaskField(aggregate, "Masks") as? [[String: Any]], !subMasks.isEmpty else {
+        return nil
+    }
+    var strokes: [BrushStroke] = []
+    for sub in subMasks {
+        guard (crsMaskField(sub, "What") as? String) == "Mask/Paint",
+              let radius = parseDoubleValue(crsMaskField(sub, "Radius")),
+              let dabsRaw = crsMaskField(sub, "Dabs") as? [String]
+        else { return nil }
+        // MaskValue is the per-sub-mask accumulated-opacity ceiling (ACR "Density"); Flow and
+        // CenterWeight (hardness) seed the current brush state before any inline f/h records.
+        let density = parseDoubleValue(crsMaskField(sub, "MaskValue")) ?? 1.0
+        let baseFlow = parseDoubleValue(crsMaskField(sub, "Flow")) ?? 1.0
+        let baseHardness = parseDoubleValue(crsMaskField(sub, "CenterWeight")) ?? 0.0
+        let dabs = parseDabs(dabsRaw, flow: baseFlow, hardness: baseHardness)
+        guard !dabs.isEmpty else { continue }
+        strokes.append(BrushStroke(dabs: dabs, radius: radius, density: density, erase: false))
+    }
+    return strokes.isEmpty ? nil : BrushMaskGeometry(strokes: strokes)
+}
+
+/// Parse ACR `Dabs` records into `[BrushDab]`. A record is `f <flow>` (set current flow),
+/// `h <hardness>` (set current hardness/CenterWeight), or `d <x> <y>` (a dab at normalized UV
+/// using the current flow/hardness). `flow`/`hardness` seed the state before the first f/h.
+nonisolated private func parseDabs(_ records: [String], flow: Double, hardness: Double) -> [BrushDab] {
+    var currentFlow = flow
+    var currentHardness = hardness
+    var dabs: [BrushDab] = []
+    for record in records {
+        let parts = record.split(separator: " ")
+        guard let tag = parts.first else { continue }
+        switch String(tag) {
+        case "f":
+            if parts.count >= 2, let f = Double(parts[1]) { currentFlow = f }
+        case "h":
+            if parts.count >= 2, let h = Double(parts[1]) { currentHardness = h }
+        case "d":
+            if parts.count >= 3, let x = Double(parts[1]), let y = Double(parts[2]) {
+                dabs.append(BrushDab(x: x, y: y, flow: currentFlow, hardness: currentHardness))
+            }
+        default:
+            break
+        }
+    }
+    return dabs
+}
+
+/// Build a `MaskAdjustment` from a correction's shared correction-level fields (the effect
+/// sliders + app-private Anonymizer) — used by both the ellipse and brush parse paths.
+nonisolated private func makeMaskAdjustment(corr: [String: Any], name: String, active: Bool,
+                                            amount: Double, inverted: Bool,
+                                            geometry: EllipseMaskGeometry) -> MaskAdjustment {
+    // ACR stores all local adjustments as fractions of their full range (-1..+1).
+    // Exposure range is -4..+4 EV, so XMP value × 4 = EV stops.
+    let exposure = parseDoubleValue(crsMaskField(corr, "LocalExposure2012")).map { $0 * 4.0 }
+    let contrast = parsePercentInt(crsMaskField(corr, "LocalContrast2012"))
+    let highlights = parsePercentInt(crsMaskField(corr, "LocalHighlights2012"))
+    let shadows = parsePercentInt(crsMaskField(corr, "LocalShadows2012"))
+    let whites = parsePercentInt(crsMaskField(corr, "LocalWhites2012"))
+    let blacks = parsePercentInt(crsMaskField(corr, "LocalBlacks2012"))
+    let saturation = parsePercentInt(crsMaskField(corr, "LocalSaturation"))
+    let vibrance = parsePercentInt(crsMaskField(corr, "LocalVibrance"))
+    let temperature = parseDoubleValue(crsMaskField(corr, "LocalTemperature")).map { $0 * 100 }
+    let tint = parseDoubleValue(crsMaskField(corr, "LocalTint")).map { $0 * 100 }
+
+    // App-private (aaphoto namespace): Anonymizer isn't a real ACR concept, so it's a
+    // sibling field on the correction rather than a `crs:Local*` property.
+    let anonymizerAmount = parseDoubleValue(aaphotoMaskField(corr, "AnonymizerAmount"))
+    let anonymizerBlackOut = parseBoolValue(aaphotoMaskField(corr, "AnonymizerBlackOut"))
+    let anonymizer: AnonymizerSettings? = (anonymizerAmount ?? 0) > 0 || anonymizerBlackOut == true
+        ? AnonymizerSettings(amount: anonymizerAmount, blackOut: anonymizerBlackOut)
+        : nil
+
+    return MaskAdjustment(
+        name: name,
+        enabled: active,
+        inverted: inverted,
+        amount: amount,
+        geometry: geometry,
+        exposure: exposure.flatMap { abs($0) < 0.001 ? nil : $0 },
+        contrast: contrast.flatMap { $0 == 0 ? nil : $0 },
+        highlights: highlights.flatMap { $0 == 0 ? nil : $0 },
+        shadows: shadows.flatMap { $0 == 0 ? nil : $0 },
+        whites: whites.flatMap { $0 == 0 ? nil : $0 },
+        blacks: blacks.flatMap { $0 == 0 ? nil : $0 },
+        saturation: saturation.flatMap { $0 == 0 ? nil : $0 },
+        vibrance: vibrance.flatMap { $0 == 0 ? nil : $0 },
+        temperature: temperature.flatMap { abs($0) < 0.01 ? nil : $0 },
+        tint: tint.flatMap { abs($0) < 0.01 ? nil : $0 },
+        anonymizer: anonymizer
+    )
+}
+
+/// Recursively convert an unwrapped XMP correction dictionary (namespace-prefixed keys,
+/// values are `String` / `[String]` / nested `[[String: Any]]` / `[String: Any]`) into the
+/// Codable `PreservedXMPNode` mirror, dropping only value shapes that can't occur in a
+/// correction. The full-namespace keys are kept so the writer re-emits them verbatim.
+nonisolated private func preservedFields(from dict: [String: Any]) -> [String: PreservedXMPNode] {
+    dict.reduce(into: [:]) { out, kv in
+        if let node = preservedNode(from: kv.value) { out[kv.key] = node }
+    }
+}
+
+nonisolated private func preservedNode(from value: Any) -> PreservedXMPNode? {
+    if let s = value as? String { return .string(s) }
+    if let a = value as? [String] { return .strings(a) }
+    if let items = value as? [[String: Any]] { return .items(items.map(preservedFields(from:))) }
+    if let dict = value as? [String: Any] { return .structure(preservedFields(from: dict)) }
+    return nil
+}
+
+/// A nested `crs` mask node — bare-name simple fields, plus array-typed fields (`Dabs`) and
+/// nested structured-array children (`Masks`). Lets a brush correction carry the full
+/// `Mask/Aggregate` → `Masks` → `Mask/Paint` → `Dabs` tree that the flat single-struct
+/// `maskFields` shape can't express. The writer (`XMPDataBuilder`) turns it into `XMPValue`.
+nonisolated struct ACRMaskNode {
+    var fields: [(name: String, value: String)] = []
+    var arrays: [(name: String, values: [String])] = []
+    var children: [(name: String, nodes: [ACRMaskNode])] = []
 }
 
 /// One ACR `MaskGroupBasedCorrections` entry encoded as bare-name field/value
 /// pairs: the correction-level fields (without the nested `CorrectionMasks`
-/// array) plus the fields of its single `Mask/CircularGradient` struct.
-/// Shared by the embedded-XMP writer (`SwiftExifWriteEngine.applyMasks`, which
-/// namespace-prefixes the keys) and the .xmp sidecar writer
-/// (`XMPSidecarService`, which writes them as `crs:` attributes) so the two
-/// destinations encode masks identically.
+/// array) plus either a single `Mask/CircularGradient` struct (`maskFields`) or a nested
+/// `correctionMasks` node tree (brush). Shared by the embedded-XMP writer
+/// (`SwiftExifWriteEngine.applyMasks`, which namespace-prefixes the keys) and the .xmp sidecar
+/// writer (`XMPSidecarService`, which writes them as `crs:` attributes) so the two destinations
+/// encode masks identically.
 nonisolated struct ACRMaskCorrection {
     var correctionFields: [(name: String, value: String)]
     var maskFields: [(name: String, value: String)]
     /// App-private fields with no ACR equivalent (e.g. Anonymizer) — written under the
     /// `aaphoto` namespace as siblings of `correctionFields`, never `crs:`.
     var appPrivateFields: [(name: String, value: String)] = []
+    /// When set, the `CorrectionMasks` array is built from these nodes (brush masks) instead of
+    /// wrapping the flat `maskFields` as a single struct (ellipse masks).
+    var correctionMasks: [ACRMaskNode]? = nil
 }
 
 /// Encode enabled masks into ACR's `MaskGroupBasedCorrections` schema —
 /// the exact inverse of `parseMaskGroupBasedCorrections`.
 nonisolated func encodeMaskGroupBasedCorrections(_ masks: [MaskAdjustment]) -> [ACRMaskCorrection] {
     masks.filter(\.enabled).enumerated().map { index, mask in
-        let geo = mask.geometry
-        let top = geo.centerY - geo.radiusY
-        let left = geo.centerX - geo.radiusX
-        let bottom = geo.centerY + geo.radiusY
-        let right = geo.centerX + geo.radiusX
+        let correctionFields = encodeCorrectionFields(mask)
+        let appPrivateFields = encodeMaskAppPrivateFields(mask)
 
-        let corrSyncID = mask.id.uuidString.replacingOccurrences(of: "-", with: "")
-        let maskSyncID = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        if let brush = mask.brush {
+            return ACRMaskCorrection(
+                correctionFields: correctionFields,
+                maskFields: [],
+                appPrivateFields: appPrivateFields,
+                correctionMasks: encodeBrushCorrectionMasks(brush, name: mask.name)
+            )
+        }
 
-        let maskFields: [(name: String, value: String)] = [
-            ("What", "Mask/CircularGradient"),
-            ("Top", acrNum(top)),
-            ("Left", acrNum(left)),
-            ("Bottom", acrNum(bottom)),
-            ("Right", acrNum(right)),
-            ("Angle", acrNum(geo.rotation)),
-            ("Feather", acrNum(geo.feather)),
-            ("Midpoint", "50"),
-            ("Roundness", "0"),
-            // ACR Flipped=true means effect applies inside the ellipse;
-            // our `inverted=true` means effect applies outside. Negate.
-            ("Flipped", mask.inverted ? "false" : "true"),
+        return ACRMaskCorrection(
+            correctionFields: correctionFields,
+            maskFields: encodeEllipseMaskFields(mask, index: index),
+            appPrivateFields: appPrivateFields
+        )
+    }
+}
+
+/// A fresh ACR-style sync ID (a UUID with the hyphens stripped).
+nonisolated private func newMaskSyncID() -> String {
+    UUID().uuidString.replacingOccurrences(of: "-", with: "")
+}
+
+/// The single `Mask/CircularGradient` struct fields for an ellipse mask.
+nonisolated private func encodeEllipseMaskFields(_ mask: MaskAdjustment, index: Int) -> [(name: String, value: String)] {
+    let geo = mask.geometry
+    let top = geo.centerY - geo.radiusY
+    let left = geo.centerX - geo.radiusX
+    let bottom = geo.centerY + geo.radiusY
+    let right = geo.centerX + geo.radiusX
+    return [
+        ("What", "Mask/CircularGradient"),
+        ("Top", acrNum(top)),
+        ("Left", acrNum(left)),
+        ("Bottom", acrNum(bottom)),
+        ("Right", acrNum(right)),
+        ("Angle", acrNum(geo.rotation)),
+        ("Feather", acrNum(geo.feather)),
+        ("Midpoint", "50"),
+        ("Roundness", "0"),
+        // ACR Flipped=true means effect applies inside the ellipse;
+        // our `inverted=true` means effect applies outside. Negate.
+        ("Flipped", mask.inverted ? "false" : "true"),
+        ("MaskActive", "true"),
+        ("MaskBlendMode", "0"),
+        ("MaskInverted", "false"),
+        ("MaskName", "Radial Gradient \(index + 1)"),
+        ("MaskSyncID", newMaskSyncID()),
+        ("MaskValue", "1"),
+        ("Version", "2"),
+    ]
+}
+
+/// The `CorrectionMasks` node tree for a brush mask: one `Mask/Aggregate` whose `Masks` are the
+/// per-stroke `Mask/Paint` sub-masks (each carrying its `Dabs`). Additive strokes only — an
+/// erase stroke can't be expressed as ACR `Dabs` (it round-trips through the app-private
+/// preserve path instead), so `erase` strokes are skipped here.
+nonisolated private func encodeBrushCorrectionMasks(_ brush: BrushMaskGeometry, name: String) -> [ACRMaskNode] {
+    let paints: [ACRMaskNode] = brush.strokes.compactMap { stroke in
+        guard !stroke.erase, !stroke.dabs.isEmpty else { return nil }
+        var node = ACRMaskNode()
+        node.fields = [
+            ("What", "Mask/Paint"),
             ("MaskActive", "true"),
             ("MaskBlendMode", "0"),
             ("MaskInverted", "false"),
-            ("MaskName", "Radial Gradient \(index + 1)"),
-            ("MaskSyncID", maskSyncID),
-            ("MaskValue", "1"),
-            ("Version", "2"),
+            ("MaskSyncID", newMaskSyncID()),
+            ("MaskValue", acrNum(stroke.density)),
+            ("Radius", acrNum(stroke.radius)),
+            ("Flow", acrNum(stroke.dabs.first?.flow ?? 1.0)),
+            ("CenterWeight", acrNum(stroke.dabs.first?.hardness ?? 0.0)),
         ]
-
-        // ACR stores all local adjustments as fractions of their full range
-        // (-1..+1). Exposure is on a -4..+4 EV range, so divide by 4.
-        let exp = (mask.exposure ?? 0) / 4.0
-        let con = Double(mask.contrast ?? 0) / 100.0
-        let hi = Double(mask.highlights ?? 0) / 100.0
-        let sh = Double(mask.shadows ?? 0) / 100.0
-        let wh = Double(mask.whites ?? 0) / 100.0
-        let bl = Double(mask.blacks ?? 0) / 100.0
-        let sat = Double(mask.saturation ?? 0) / 100.0
-        let vib = Double(mask.vibrance ?? 0) / 100.0
-        let temp = (mask.temperature ?? 0) / 100.0
-        let tint = (mask.tint ?? 0) / 100.0
-
-        let correctionFields: [(name: String, value: String)] = [
-            ("CorrectionActive", "true"),
-            ("CorrectionAmount", acrNum(mask.amount)),
-            ("CorrectionName", mask.name),
-            ("CorrectionSyncID", corrSyncID),
-            ("What", "Correction"),
-            ("LocalExposure2012", acrNum(exp)),
-            ("LocalContrast2012", acrNum(con)),
-            ("LocalHighlights2012", acrNum(hi)),
-            ("LocalShadows2012", acrNum(sh)),
-            ("LocalWhites2012", acrNum(wh)),
-            ("LocalBlacks2012", acrNum(bl)),
-            ("LocalSaturation", acrNum(sat)),
-            ("LocalVibrance", acrNum(vib)),
-            ("LocalTemperature", acrNum(temp)),
-            ("LocalTint", acrNum(tint)),
-            // Legacy fields ACR still expects, all zero.
-            ("LocalExposure", "0"),
-            ("LocalContrast", "0"),
-            ("LocalBrightness", "0"),
-            ("LocalClarity", "0"),
-            ("LocalClarity2012", "0"),
-            ("LocalSharpness", "0"),
-            ("LocalLuminanceNoise", "0"),
-            ("LocalMoire", "0"),
-            ("LocalDefringe", "0"),
-            ("LocalDehaze", "0"),
-            ("LocalTexture", "0"),
-            ("LocalHue", "0"),
-            ("LocalToningHue", "0"),
-            ("LocalToningSaturation", "0"),
-        ]
-
-        // App-private: Anonymizer isn't a real ACR concept, so it's never written under `crs:`.
-        var appPrivateFields: [(name: String, value: String)] = []
-        if let anon = mask.anonymizer, !anon.isEmpty {
-            if let amount = anon.amount, amount > 0 {
-                appPrivateFields.append(("AnonymizerAmount", String(format: "%.1f", amount)))
-            }
-            if anon.blackOut == true {
-                appPrivateFields.append(("AnonymizerBlackOut", "True"))
-            }
-        }
-
-        return ACRMaskCorrection(correctionFields: correctionFields, maskFields: maskFields, appPrivateFields: appPrivateFields)
+        node.arrays = [("Dabs", encodeDabs(stroke.dabs))]
+        return node
     }
+    var aggregate = ACRMaskNode()
+    aggregate.fields = [
+        ("What", "Mask/Aggregate"),
+        ("MaskActive", "true"),
+        ("MaskBlendMode", "0"),
+        ("MaskInverted", "false"),
+        ("MaskName", name),
+        ("MaskSyncID", newMaskSyncID()),
+        ("MaskValue", "1"),
+    ]
+    aggregate.children = [("Masks", paints)]
+    return [aggregate]
+}
+
+/// Encode a stroke's dabs as ACR `Dabs` records: `f <flow>` / `h <hardness>` whenever the value
+/// changes (flow always emitted first; hardness only when it differs from ACR's implicit 0),
+/// then `d <x> <y>` per dab using the current flow/hardness. The exact inverse of `parseDabs`.
+nonisolated private func encodeDabs(_ dabs: [BrushDab]) -> [String] {
+    var out: [String] = []
+    var lastFlow: Double? = nil
+    var lastHardness = 0.0  // ACR's implicit starting hardness (omits `h` while it's 0)
+    for dab in dabs {
+        if dab.flow != lastFlow {
+            out.append("f " + String(format: "%.4f", dab.flow))
+            lastFlow = dab.flow
+        }
+        if dab.hardness != lastHardness {
+            out.append("h " + String(format: "%.4f", dab.hardness))
+            lastHardness = dab.hardness
+        }
+        out.append("d " + String(format: "%.6f", dab.x) + " " + String(format: "%.6f", dab.y))
+    }
+    return out
+}
+
+/// The shared correction-level fields (effect sliders + legacy zeros) — identical for ellipse
+/// and brush masks, since the effect is geometry-independent.
+nonisolated private func encodeCorrectionFields(_ mask: MaskAdjustment) -> [(name: String, value: String)] {
+    // ACR stores all local adjustments as fractions of their full range
+    // (-1..+1). Exposure is on a -4..+4 EV range, so divide by 4.
+    let exp = (mask.exposure ?? 0) / 4.0
+    let con = Double(mask.contrast ?? 0) / 100.0
+    let hi = Double(mask.highlights ?? 0) / 100.0
+    let sh = Double(mask.shadows ?? 0) / 100.0
+    let wh = Double(mask.whites ?? 0) / 100.0
+    let bl = Double(mask.blacks ?? 0) / 100.0
+    let sat = Double(mask.saturation ?? 0) / 100.0
+    let vib = Double(mask.vibrance ?? 0) / 100.0
+    let temp = (mask.temperature ?? 0) / 100.0
+    let tint = (mask.tint ?? 0) / 100.0
+
+    return [
+        ("CorrectionActive", "true"),
+        ("CorrectionAmount", acrNum(mask.amount)),
+        ("CorrectionName", mask.name),
+        ("CorrectionSyncID", mask.id.uuidString.replacingOccurrences(of: "-", with: "")),
+        ("What", "Correction"),
+        ("LocalExposure2012", acrNum(exp)),
+        ("LocalContrast2012", acrNum(con)),
+        ("LocalHighlights2012", acrNum(hi)),
+        ("LocalShadows2012", acrNum(sh)),
+        ("LocalWhites2012", acrNum(wh)),
+        ("LocalBlacks2012", acrNum(bl)),
+        ("LocalSaturation", acrNum(sat)),
+        ("LocalVibrance", acrNum(vib)),
+        ("LocalTemperature", acrNum(temp)),
+        ("LocalTint", acrNum(tint)),
+        // Legacy fields ACR still expects, all zero.
+        ("LocalExposure", "0"),
+        ("LocalContrast", "0"),
+        ("LocalBrightness", "0"),
+        ("LocalClarity", "0"),
+        ("LocalClarity2012", "0"),
+        ("LocalSharpness", "0"),
+        ("LocalLuminanceNoise", "0"),
+        ("LocalMoire", "0"),
+        ("LocalDefringe", "0"),
+        ("LocalDehaze", "0"),
+        ("LocalTexture", "0"),
+        ("LocalHue", "0"),
+        ("LocalToningHue", "0"),
+        ("LocalToningSaturation", "0"),
+    ]
+}
+
+/// App-private (aaphoto) sibling fields with no ACR equivalent (Anonymizer).
+nonisolated private func encodeMaskAppPrivateFields(_ mask: MaskAdjustment) -> [(name: String, value: String)] {
+    var appPrivateFields: [(name: String, value: String)] = []
+    if let anon = mask.anonymizer, !anon.isEmpty {
+        if let amount = anon.amount, amount > 0 {
+            appPrivateFields.append(("AnonymizerAmount", String(format: "%.1f", amount)))
+        }
+        if anon.blackOut == true {
+            appPrivateFields.append(("AnonymizerBlackOut", "True"))
+        }
+    }
+    return appPrivateFields
 }
 
 // MARK: - HSL per-color adjustments (shared encode/decode)
@@ -475,7 +685,8 @@ nonisolated func iptcMetadataFromDict(_ dict: [String: Any]) -> IPTCMetadata {
         hasCrop: parseBoolValue(dict[MetadataDictKey.crsHasCrop])
     ).decodedFromACR(aspect: metadataDictPixelAspect(dict))
     let cropValue = crop.isEmpty ? nil : crop
-    let localAdjustments = parseMaskGroupBasedCorrections(dict[MetadataDictKey.maskGroupBasedCorrections])
+    let parsedMasks = parseMaskGroupBasedCorrections(dict[MetadataDictKey.maskGroupBasedCorrections])
+    let localAdjustments = (parsedMasks?.masks).flatMap { $0.isEmpty ? nil : $0 }
 
     let tcMaster = parseToneCurveArray(dict[MetadataDictKey.crsToneCurvePV2012])
     let tcRed = parseToneCurveArray(dict[MetadataDictKey.crsToneCurvePV2012Red])
@@ -523,6 +734,11 @@ nonisolated func iptcMetadataFromDict(_ dict: [String: Any]) -> IPTCMetadata {
         masks: localAdjustments,
         globalIndex: parseIntValue(dict[MetadataDictKey.globalLayerIndex])
     )
+    // Corrections we can't model (erase-brush blobs, unknown mask types) — kept verbatim so a
+    // develop save re-emits them instead of dropping them.
+    if let preserved = parsedMasks?.preserved, !preserved.isEmpty {
+        cameraRaw.unparsedMaskCorrections = preserved
+    }
     // App-private Anonymizer redaction (not an ACR concept — Adobe tools ignore it).
     let anonymizerAmount = parseDoubleValue(dict[MetadataDictKey.anonymizerAmount])
     let anonymizerBlackOut = parseBoolValue(dict[MetadataDictKey.anonymizerBlackOut])

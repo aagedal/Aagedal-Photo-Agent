@@ -598,7 +598,10 @@ final class MetalEditPipeline: @unchecked Sendable {
                 displayAspect: size.width / size.height
             )
         }()
-        let masks = displaySettings.localAdjustments?.filter(\.enabled) ?? []
+        // Brush (paint) masks have no GPU rasterization path yet (arrives in Phase 2/3); until
+        // then they'd misrender as their placeholder ellipse geometry, so skip them here. They
+        // still round-trip through the model/XMP untouched.
+        let masks = displaySettings.localAdjustments?.filter { $0.enabled && $0.brush == nil } ?? []
         let maskCount = min(masks.count, Self.maxMasks)
         params.maskCount = UInt32(maskCount)
 

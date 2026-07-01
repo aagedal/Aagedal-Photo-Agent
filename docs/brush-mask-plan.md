@@ -2,9 +2,9 @@
 
 ## Progress
 
-Not started. Implement one phase at a time (see Sequencing below), each in its own session/thread.
+Implement one phase at a time (see Sequencing below), each in its own session/thread.
 
-- [ ] Phase 1 — Model + XMP (read/write additive `Dabs`, preserve-unparseable-correction fallback)
+- [x] Phase 1 — Model + XMP (read/write additive `Dabs`, preserve-unparseable-correction fallback) — **done 2026-07-01**. `BrushDab`/`BrushStroke`/`BrushMaskGeometry` + `MaskAdjustment.brush` + `.brushMask` LayerKind in IPTCMetadata.swift; `parseMaskGroupBasedCorrections` now returns `ParsedMaskCorrections{masks, preserved}` (brush parse via `parseBrushGeometry`/`parseDabs`; unmodeled corrections kept verbatim as `PreservedMaskCorrection`/`PreservedXMPNode` in `CameraRawSettings.unparsedMaskCorrections`); encode via `ACRMaskNode` tree + `encodeBrushCorrectionMasks`/`encodeDabs`; writer threads preserved through `XMPDataBuilder.applyMasks`/`applyLayerChain` (sidecar) and `StructuredWriteData.unparsedMaskCorrections` → `SwiftExifWriteEngine` + the two `MetadataViewModel` develop-save sites (embedded). Brush masks filtered out of `MetalEditPipeline` render until Phase 2/3 (no misrender as placeholder ellipse). 6 new tests in `BrushMaskTests` (parse/dabs/encode/preserve/sidecar round-trip) all green; existing ellipse/anonymizer/layer suites still green. Verified SwiftExif 1.9.9 (the resolved dep, not just the local fork) round-trips the deep nesting. **Fork fidelity fix shipped 2026-07-01 (user-approved):** added `"Masks"` to `XMPWriter.seqProperties` in the SwiftExif fork so the nested `crs:Masks` container emits as `rdf:Seq` (matching ACR) instead of `rdf:Bag`, with a regression test (`testACRBrushMaskNestedSeqContainersRewritten`). Released as **SwiftExif 1.9.10** (committed 752d185, tagged + pushed to codeberg); the app's `project.pbxproj` dependency + `Package.resolved` are bumped to 1.9.10 and all brush tests pass against it. So `crs:Masks` now writes as Seq in the app.
 - [ ] Phase 2 — Metal: lazy alpha texture array + `stampBrush` rasterization kernel
 - [ ] Phase 3 — Compositing kernel: `maskType` branch in `editAdjustments`
 - [ ] Phase 4 — UI: bare-`B` paint tool, `BrushMaskOverlayNSView`, brush settings toolbar

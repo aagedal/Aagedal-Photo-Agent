@@ -1137,6 +1137,7 @@ final class MetadataViewModel {
                         hslAdjustments: edited.cameraRaw?.hslAdjustments,
                         layerOrder: edited.cameraRaw?.layerOrder,
                         anonymizer: edited.cameraRaw?.anonymizer,
+                        unparsedMaskCorrections: edited.cameraRaw?.unparsedMaskCorrections,
                         replaceCameraRawBlock: true
                     )
                     : .empty
@@ -2124,6 +2125,7 @@ final class MetadataViewModel {
                         hslAdjustments: edited.cameraRaw?.hslAdjustments,
                         layerOrder: edited.cameraRaw?.layerOrder,
                         anonymizer: edited.cameraRaw?.anonymizer,
+                        unparsedMaskCorrections: edited.cameraRaw?.unparsedMaskCorrections,
                         replaceCameraRawBlock: true
                     )
                     : .empty

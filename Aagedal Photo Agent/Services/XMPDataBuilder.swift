@@ -122,7 +122,8 @@ enum XMPDataBuilder {
         setCRS(&xmp, "SDRBlend", settings.sdrBlend.map(formatSignedInt))
 
         applyToneCurves(settings.toneCurve, into: &xmp)
-        applyLayerChain(masks: settings.localAdjustments ?? [], layerOrder: settings.layerOrder, into: &xmp)
+        applyLayerChain(masks: settings.localAdjustments ?? [], layerOrder: settings.layerOrder,
+                        preserved: settings.unparsedMaskCorrections ?? [], into: &xmp)
         applyAnonymizer(settings.anonymizer, into: &xmp)
     }
 
@@ -177,38 +178,70 @@ enum XMPDataBuilder {
     /// `encodeMaskGroupBasedCorrections`; this exact nesting is what `parseMaskGroupBasedCorrections`
     /// expects on read-back. Stamps AlreadyApplied="False"/CompatibleVersion so Bridge/ACR badge the
     /// file as edited (only when masks exist).
-    nonisolated static func applyMasks(_ masks: [MaskAdjustment], into xmp: inout XMPData) {
+    nonisolated static func applyMasks(_ masks: [MaskAdjustment], preserved: [PreservedMaskCorrection], into xmp: inout XMPData) {
         let encoded = encodeMaskGroupBasedCorrections(masks)
-        if encoded.isEmpty {
+        if encoded.isEmpty && preserved.isEmpty {
             xmp.removeValue(namespace: XMPNamespace.crs, property: "MaskGroupBasedCorrections")
             return
         }
-        let corrections: [[String: XMPValue]] = encoded.map { corr in
+        var corrections: [[String: XMPValue]] = encoded.map { corr in
             var fields = Dictionary(uniqueKeysWithValues: corr.correctionFields.map {
                 (XMPNamespace.crs + $0.name, XMPValue.simple($0.value))
             })
-            let maskStruct = Dictionary(uniqueKeysWithValues: corr.maskFields.map {
-                (XMPNamespace.crs + $0.name, XMPValue.simple($0.value))
-            })
-            fields[XMPNamespace.crs + "CorrectionMasks"] = .structuredArray([maskStruct])
+            // Brush masks carry a nested Mask/Aggregate → Masks → Mask/Paint → Dabs node tree;
+            // ellipse masks carry a single flat Mask/CircularGradient struct.
+            if let nodes = corr.correctionMasks {
+                fields[XMPNamespace.crs + "CorrectionMasks"] = .structuredArray(nodes.map(buildMaskNode))
+            } else {
+                let maskStruct = Dictionary(uniqueKeysWithValues: corr.maskFields.map {
+                    (XMPNamespace.crs + $0.name, XMPValue.simple($0.value))
+                })
+                fields[XMPNamespace.crs + "CorrectionMasks"] = .structuredArray([maskStruct])
+            }
             // App-private siblings (e.g. Anonymizer) live under aaphoto:, never crs:.
             for field in corr.appPrivateFields {
                 fields[aaphotoNamespace + field.name] = .simple(field.value)
             }
             return fields
         }
+        // Re-emit unmodeled corrections (erase-brush blobs, unknown mask types) verbatim, after
+        // our own masks — the whole point of preserving them through the model.
+        corrections.append(contentsOf: preserved.map { $0.fields.mapValues(xmpValue(from:)) })
         xmp.setValue(.simple("False"), namespace: XMPNamespace.crs, property: "AlreadyApplied")
         xmp.setValue(.simple("234881024"), namespace: XMPNamespace.crs, property: "CompatibleVersion")
         xmp.setValue(.structuredArray(corrections), namespace: XMPNamespace.crs, property: "MaskGroupBasedCorrections")
     }
 
+    /// Recursively build one `crs` mask struct from an `ACRMaskNode` — simple fields, array
+    /// fields (`Dabs`), and nested structured-array children (`Masks`), all `crs:`-prefixed.
+    nonisolated private static func buildMaskNode(_ node: ACRMaskNode) -> [String: XMPValue] {
+        var fields: [String: XMPValue] = [:]
+        for field in node.fields { fields[XMPNamespace.crs + field.name] = .simple(field.value) }
+        for array in node.arrays { fields[XMPNamespace.crs + array.name] = .array(array.values) }
+        for child in node.children {
+            fields[XMPNamespace.crs + child.name] = .structuredArray(child.nodes.map(buildMaskNode))
+        }
+        return fields
+    }
+
+    /// Convert a preserved (verbatim) correction node back to `XMPValue`. Keys inside a
+    /// `PreservedMaskCorrection` are already full namespace-prefixed, so this only maps values.
+    nonisolated private static func xmpValue(from node: PreservedXMPNode) -> XMPValue {
+        switch node {
+        case .string(let s):     return .simple(s)
+        case .strings(let a):    return .array(a)
+        case .structure(let f):  return .structure(f.mapValues(xmpValue(from:)))
+        case .items(let items):  return .structuredArray(items.map { $0.mapValues(xmpValue(from:)) })
+        }
+    }
+
     /// Write masks in render-stack order plus the app-private `aaphoto:GlobalLayerIndex` (the global
     /// node's position in the reorderable chain). Reuses the shared model helpers so both stores agree.
-    nonisolated static func applyLayerChain(masks: [MaskAdjustment], layerOrder: [LayerRef]?, into xmp: inout XMPData) {
+    nonisolated static func applyLayerChain(masks: [MaskAdjustment], layerOrder: [LayerRef]?, preserved: [PreservedMaskCorrection] = [], into xmp: inout XMPData) {
         var chain = CameraRawSettings()
         chain.localAdjustments = masks
         chain.layerOrder = layerOrder
-        applyMasks(chain.masksInRenderOrder() ?? masks, into: &xmp)
+        applyMasks(chain.masksInRenderOrder() ?? masks, preserved: preserved, into: &xmp)
         if let globalIndex = chain.globalLayerIndex(), globalIndex > 0 {
             xmp.setValue(.simple(String(globalIndex)), namespace: aaphotoNamespace, property: "GlobalLayerIndex")
         } else {

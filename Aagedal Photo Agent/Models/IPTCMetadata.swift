@@ -274,6 +274,63 @@ nonisolated struct EllipseMaskGeometry: Codable, Sendable, Equatable {
     }
 }
 
+/// One paint dab — a single stamped disc along a brush stroke. Coordinates are normalized UV
+/// in the sensor (XMP) frame, matching ACR's `d x y` `Dabs` convention (values can slightly
+/// exceed [0,1] at frame edges). `flow` and `hardness` are the brush settings in effect for
+/// this dab (ACR's inline `f`/`h` records), so a stroke can vary them mid-drag.
+nonisolated struct BrushDab: Codable, Sendable, Equatable {
+    var x: Double
+    var y: Double
+    var flow: Double      // 0-1, ACR `f` record
+    var hardness: Double  // 0-1, ACR `h` record (a.k.a. CenterWeight)
+}
+
+/// One brush stroke — a single mouse-down/up gesture, mirroring one ACR `Mask/Paint` sub-mask.
+/// The dabs union together (or subtract, when `erase`) to form this stroke's contribution.
+nonisolated struct BrushStroke: Codable, Sendable, Equatable {
+    var dabs: [BrushDab]
+    var radius: Double    // normalized brush radius, constant per stroke (ACR `Radius`)
+    var density: Double   // 0-1 accumulated-opacity ceiling (ACR per-sub-mask `MaskValue`) — needs calibration
+    var erase: Bool       // true = subtract this stroke from the accumulated mask
+
+    init(dabs: [BrushDab] = [], radius: Double = 0.1, density: Double = 1.0, erase: Bool = false) {
+        self.dabs = dabs
+        self.radius = radius
+        self.density = density
+        self.erase = erase
+    }
+}
+
+/// Freeform paint-mask geometry — a list of strokes (mirrors one ACR `Mask/Aggregate`'s
+/// nested `Mask/Paint` sub-masks). A sibling of `EllipseMaskGeometry` on `MaskAdjustment`;
+/// every existing per-mask adjustment (exposure, Anonymizer, Temp/Tint…) works on it
+/// unchanged because they only ever see a resolved weight + rgb.
+nonisolated struct BrushMaskGeometry: Codable, Sendable, Equatable {
+    var strokes: [BrushStroke] = []
+    var isEmpty: Bool { strokes.isEmpty }
+}
+
+/// A verbatim-preserved Camera Raw mask value node — a Codable/Sendable mirror of the subset of
+/// `XMPValue` shapes an unparseable `crs` correction can contain (simple, rdf:Seq of strings,
+/// single struct, or rdf:Bag/Seq of structs). Kept model-side (no SwiftExif dependency) so the
+/// preserved data survives through the model; converted back to `XMPValue` at the write boundary.
+nonisolated indirect enum PreservedXMPNode: Codable, Sendable, Equatable {
+    case string(String)
+    case strings([String])
+    case structure([String: PreservedXMPNode])
+    case items([[String: PreservedXMPNode]])
+}
+
+/// A Camera Raw `MaskGroupBasedCorrections` entry this app can't model or edit — an ACR
+/// erase-brush `MaskBrushTable` blob, or any future Adobe mask type. Its full nested field set
+/// is kept verbatim (keys are namespace-prefixed, as parsed) so a develop save re-emits it
+/// byte-for-byte instead of silently dropping it. Without this, the next `replaceCameraRawBlock`
+/// crs-block rewrite would delete it permanently — a real data-loss bug for files edited with an
+/// ACR erase brush. Per-image (bound to specific pixels): excluded from paste/merge like as-shot WB.
+nonisolated struct PreservedMaskCorrection: Codable, Sendable, Equatable {
+    var fields: [String: PreservedXMPNode]
+}
+
 nonisolated struct MaskAdjustment: Codable, Sendable, Equatable, Identifiable {
     var id: UUID = UUID()
     var name: String = "Mask 1"
@@ -281,6 +338,11 @@ nonisolated struct MaskAdjustment: Codable, Sendable, Equatable, Identifiable {
     var inverted: Bool = false
     var amount: Double = 1.0
     var geometry: EllipseMaskGeometry = EllipseMaskGeometry()
+    /// When non-nil, this is a freeform paint mask and `geometry` (ellipse) is unused;
+    /// nil means an analytic ellipse mask. Kept as a sibling field (like `anonymizer`) rather
+    /// than making the geometry a polymorphic sum type, so every `mask.geometry` call site is
+    /// untouched.
+    var brush: BrushMaskGeometry?
 
     var exposure: Double?
     var contrast: Int?
@@ -314,9 +376,9 @@ nonisolated struct MaskAdjustment: Codable, Sendable, Equatable, Identifiable {
         return result
     }
 
-    /// The layer kind for icon/affordance purposes. Today every mask is an ellipse;
-    /// when more geometry types arrive, switch on `geometry` here.
-    var layerKind: LayerKind { .ellipseMask }
+    /// The layer kind for icon/affordance purposes — a brush mask when `brush` is set,
+    /// otherwise an analytic ellipse.
+    var layerKind: LayerKind { brush != nil ? .brushMask : .ellipseMask }
 }
 
 /// Visual classification of an editing layer, used to pick an icon in the layer strip.
@@ -325,12 +387,14 @@ nonisolated struct MaskAdjustment: Codable, Sendable, Equatable, Identifiable {
 nonisolated enum LayerKind: Sendable, Equatable {
     case global
     case ellipseMask
+    case brushMask
 
     /// SF Symbol name representing this layer kind.
     var systemImage: String {
         switch self {
         case .global:      return "circle.lefthalf.filled"
         case .ellipseMask: return "circle.dashed"
+        case .brushMask:   return "paintbrush.pointed"
         }
     }
 }
@@ -437,6 +501,12 @@ nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
     var hslAdjustments: HSLAdjustments?
     var anonymizer: AnonymizerSettings?
 
+    /// Camera Raw mask corrections this app can't model (ACR erase-brush `MaskBrushTable`
+    /// blobs, future Adobe mask types). Kept verbatim and re-emitted on write so a develop
+    /// save doesn't permanently drop them — see `PreservedMaskCorrection`. Per-image: excluded
+    /// from `merged()`/paste operations.
+    var unparsedMaskCorrections: [PreservedMaskCorrection]?
+
     /// Explicit processing order of the editing layer chain, interleaving the global
     /// adjustment node among the masks. `nil` (all legacy edits) means the canonical
     /// order `[.global] + masks`, which reproduces the historical "global is the fixed
@@ -489,6 +559,7 @@ nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
             && (localAdjustments?.isEmpty ?? true)
             && (hslAdjustments?.isEmpty ?? true)
             && (anonymizer?.isEmpty ?? true)
+            && (unparsedMaskCorrections?.isEmpty ?? true)
     }
 
     /// True when the settings contain at least one edit the user can see. Unlike
@@ -541,6 +612,9 @@ nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
         if let value = override.hslAdjustments { result.hslAdjustments = value }
         if let value = override.anonymizer { result.anonymizer = value }
         if let value = override.layerOrder { result.layerOrder = value }
+        // Per-image, but merged() combines records for the SAME image (embedded + sidecar),
+        // so prefer the override's copy rather than dropping it.
+        if let value = override.unparsedMaskCorrections { result.unparsedMaskCorrections = value }
         return result
     }
 

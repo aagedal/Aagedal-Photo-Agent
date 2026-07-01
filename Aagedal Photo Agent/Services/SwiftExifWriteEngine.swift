@@ -281,6 +281,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         let writesCameraRaw = fields.keys.contains(where: \.isCameraRawField)
             || structuredData.toneCurve != nil || structuredData.masks != nil
             || structuredData.hslAdjustments != nil
+            || structuredData.unparsedMaskCorrections?.isEmpty == false
         if structuredData.replaceCameraRawBlock && writesCameraRaw {
             metadata.xmp?.removeAll(namespace: crsNamespace)
             // Our private global-position tag tracks develop state — clear it with the block
@@ -322,8 +323,9 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
             applyToneCurves(tc, metadata: &metadata)
         }
 
-        if let masks = structuredData.masks {
-            applyLayerChain(masks: masks, layerOrder: structuredData.layerOrder, metadata: &metadata)
+        if structuredData.masks != nil || structuredData.unparsedMaskCorrections?.isEmpty == false {
+            applyLayerChain(masks: structuredData.masks ?? [], layerOrder: structuredData.layerOrder,
+                            preserved: structuredData.unparsedMaskCorrections ?? [], metadata: &metadata)
         }
 
         if let hsl = structuredData.hslAdjustments {
@@ -561,8 +563,8 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
     /// Write the local-mask block in render-stack order plus the app-private
     /// `aaphoto:GlobalLayerIndex` for the global node's position — shared with the `.xmp` sidecar
     /// writer via `XMPDataBuilder` (one implementation of the `MaskGroupBasedCorrections` nesting).
-    private func applyLayerChain(masks: [MaskAdjustment], layerOrder: [LayerRef]?, metadata: inout ImageMetadata) {
-        mutateXMP(&metadata) { XMPDataBuilder.applyLayerChain(masks: masks, layerOrder: layerOrder, into: &$0) }
+    private func applyLayerChain(masks: [MaskAdjustment], layerOrder: [LayerRef]?, preserved: [PreservedMaskCorrection] = [], metadata: inout ImageMetadata) {
+        mutateXMP(&metadata) { XMPDataBuilder.applyLayerChain(masks: masks, layerOrder: layerOrder, preserved: preserved, into: &$0) }
     }
 
     /// Apply per-color HSL adjustments as simple XMP-crs properties

@@ -626,7 +626,7 @@ struct MalformedMetadataNumericTests {
             ]]
         ]]
         let masks = parseMaskGroupBasedCorrections(corrections)
-        #expect(masks?.count == 1)
+        #expect(masks?.masks.count == 1)
     }
 
     /// SwiftExif keys structured XMP fields as `<namespaceURI><Property>`
@@ -651,7 +651,7 @@ struct MalformedMetadataNumericTests {
                 "\(crs)Flipped": "false"
             ]]
         ]]
-        let mask = try #require(parseMaskGroupBasedCorrections(corrections)?.first)
+        let mask = try #require(parseMaskGroupBasedCorrections(corrections)?.masks.first)
         #expect(mask.name == "Sky")
         #expect(mask.amount == 0.75)
         #expect(abs(mask.geometry.centerX - 0.6) < 1e-9)
@@ -679,7 +679,7 @@ struct MalformedMetadataNumericTests {
                 "Top": "0.1", "Left": "0.1", "Bottom": "0.4", "Right": "0.4"
             ]]
         ]]
-        let mask = try #require(parseMaskGroupBasedCorrections(corrections)?.first)
+        let mask = try #require(parseMaskGroupBasedCorrections(corrections)?.masks.first)
         #expect(mask.temperature.map { abs($0 - 20) < 1e-9 } == true)
         #expect(mask.tint.map { abs($0 - (-12)) < 1e-9 } == true)
 
@@ -688,12 +688,14 @@ struct MalformedMetadataNumericTests {
         #expect(encoded.correctionFields.contains { $0.name == "LocalTint" && $0.value == "-0.12" })
     }
 
-    /// A correction whose mask geometry can't be parsed (unsupported type or
-    /// missing corner fields) must be DROPPED, not substituted with the default
-    /// ellipse — a generic mask silently misrenders the image.
-    @Test("corrections with unparseable mask geometry are dropped, not defaulted")
-    func unparseableMaskGeometryIsDropped() {
-        // Unsupported mask type (ACR brush) alongside a valid radial mask.
+    /// A correction whose mask geometry can't be parsed (unsupported type or missing corner
+    /// fields) must NOT be substituted with the default ellipse (which silently misrenders) —
+    /// and, unlike before, it must be PRESERVED verbatim rather than dropped, so a develop save
+    /// re-emits it instead of permanently deleting it.
+    @Test("corrections with unparseable mask geometry are preserved verbatim, not defaulted")
+    func unparseableMaskGeometryIsPreserved() {
+        // Unsupported mask type (bare Mask/Paint, no Aggregate) alongside a valid radial mask
+        // and a radial mask with a missing corner.
         let corrections: [[String: Any]] = [
             [
                 "CorrectionActive": true,
@@ -715,13 +717,18 @@ struct MalformedMetadataNumericTests {
                 ]]
             ]
         ]
-        let masks = parseMaskGroupBasedCorrections(corrections)
-        #expect(masks?.count == 1)
-        #expect(masks?.first.map { abs($0.geometry.centerX - 0.4) < 1e-9 } == true)
+        let parsed = parseMaskGroupBasedCorrections(corrections)
+        #expect(parsed?.masks.count == 1)
+        #expect(parsed?.masks.first.map { abs($0.geometry.centerX - 0.4) < 1e-9 } == true)
+        // The two unparseable corrections are kept, not lost.
+        #expect(parsed?.preserved.count == 2)
 
-        // All corrections unparseable → nil, same as no masks at all.
+        // All corrections unparseable → no modeled masks, but they're still preserved
+        // (not silently dropped like before).
         let allBad: [[String: Any]] = [["CorrectionMasks": [["What": "Mask/Paint"]]]]
-        #expect(parseMaskGroupBasedCorrections(allBad) == nil)
+        let allBadParsed = parseMaskGroupBasedCorrections(allBad)
+        #expect(allBadParsed?.masks.isEmpty == true)
+        #expect(allBadParsed?.preserved.count == 1)
     }
 
     /// Gates whether a metadata save touches the file's crs block at all —
@@ -1680,7 +1687,7 @@ struct AnonymizerSettingsTests {
             dict["CorrectionMasks"] = [Dictionary(uniqueKeysWithValues: corr.maskFields.map { ($0.name, $0.value as Any) })]
             return dict
         }
-        let decoded = try #require(parseMaskGroupBasedCorrections(corrections))
+        let decoded = try #require(parseMaskGroupBasedCorrections(corrections)).masks
         #expect(decoded.count == 3)
         #expect(decoded[0].anonymizer?.amount.map { abs($0 - 72.5) < 1e-9 } == true)
         #expect(decoded[0].anonymizer?.blackOut != true)
@@ -1700,7 +1707,7 @@ struct AnonymizerSettingsTests {
                 "\(crs)Top": "0.1", "\(crs)Left": "0.1", "\(crs)Bottom": "0.4", "\(crs)Right": "0.4"
             ]]
         ]]
-        let mask = try #require(parseMaskGroupBasedCorrections(corrections)?.first)
+        let mask = try #require(parseMaskGroupBasedCorrections(corrections)?.masks.first)
         #expect(mask.anonymizer?.amount.map { abs($0 - 55.0) < 1e-9 } == true)
     }
 
@@ -1749,5 +1756,199 @@ struct AnonymizerSettingsTests {
 
         let reloaded = try #require(svc.loadSidecar(for: imageURL)?.cameraRaw?.localAdjustments?.first)
         #expect(reloaded.anonymizer?.amount.map { abs($0 - 65) < 1e-9 } == true)
+    }
+}
+
+/// Phase 1 of the brush-mask feature: the model + XMP read/write for additive `Mask/Paint`
+/// `Dabs` strokes, plus the "preserve unrecognized correction verbatim" fallback. Values are
+/// anchored to the real ACR-authored sample `Vixen 2026 05.jpg` (a single additive stroke).
+@Suite("Brush mask XMP round-trip")
+struct BrushMaskTests {
+    private let crs = "http://ns.adobe.com/camera-raw-settings/1.0/"
+
+    /// The exact nested shape SwiftExif produces for the real `Vixen 2026 05.jpg` sample:
+    /// Correction → CorrectionMasks[Mask/Aggregate] → Masks[Mask/Paint] → Dabs.
+    private func sampleCorrections(dabs: [String] = ["f 0.5000", "d 0.533385 0.323619", "d 0.527716 0.442002"],
+                                   radius: String = "0.395627", flow: String = "0.5",
+                                   centerWeight: String = "0", maskValue: String = "1") -> [[String: Any]] {
+        [[
+            "\(crs)CorrectionActive": "true",
+            "\(crs)CorrectionAmount": "1",
+            "\(crs)CorrectionName": "Mask 1",
+            "\(crs)LocalExposure2012": "0.1",
+            "\(crs)CorrectionMasks": [[
+                "\(crs)What": "Mask/Aggregate",
+                "\(crs)MaskName": "Brush 1",
+                "\(crs)MaskValue": "1",
+                "\(crs)Masks": [[
+                    "\(crs)What": "Mask/Paint",
+                    "\(crs)Radius": radius,
+                    "\(crs)Flow": flow,
+                    "\(crs)CenterWeight": centerWeight,
+                    "\(crs)MaskValue": maskValue,
+                    "\(crs)Dabs": dabs,
+                ]],
+            ]],
+        ]]
+    }
+
+    @Test("parses a real additive Mask/Aggregate into brush geometry")
+    func parsesBrushGeometry() throws {
+        let parsed = try #require(parseMaskGroupBasedCorrections(sampleCorrections()))
+        #expect(parsed.preserved.isEmpty)
+        let mask = try #require(parsed.masks.first)
+        #expect(mask.name == "Mask 1")
+        #expect(mask.layerKind == .brushMask)
+        let brush = try #require(mask.brush)
+        #expect(brush.strokes.count == 1)
+        let stroke = try #require(brush.strokes.first)
+        #expect(abs(stroke.radius - 0.395627) < 1e-6)
+        #expect(abs(stroke.density - 1.0) < 1e-9)
+        #expect(stroke.erase == false)
+        // Two `d` records → two dabs; the `f` record set flow for both.
+        #expect(stroke.dabs.count == 2)
+        #expect(abs(stroke.dabs[0].x - 0.533385) < 1e-6)
+        #expect(abs(stroke.dabs[0].y - 0.323619) < 1e-6)
+        #expect(abs(stroke.dabs[0].flow - 0.5) < 1e-9)
+        #expect(stroke.dabs[0].hardness == 0)
+        // The exposure lives on the correction, shared with the ellipse path.
+        #expect(mask.exposure.map { abs($0 - 0.4) < 1e-9 } == true)  // 0.1 × 4 EV
+    }
+
+    @Test("Dabs inline f/h records set per-dab flow and hardness")
+    func parsesInlineFlowHardness() throws {
+        let dabs = ["f 0.5", "d 0.1 0.2", "h 0.196", "f 0.8", "d 0.3 0.4"]
+        let parsed = try #require(parseMaskGroupBasedCorrections(sampleCorrections(dabs: dabs)))
+        let stroke = try #require(parsed.masks.first?.brush?.strokes.first)
+        #expect(stroke.dabs.count == 2)
+        #expect(abs(stroke.dabs[0].flow - 0.5) < 1e-9)
+        #expect(stroke.dabs[0].hardness == 0)
+        #expect(abs(stroke.dabs[1].flow - 0.8) < 1e-9)
+        #expect(abs(stroke.dabs[1].hardness - 0.196) < 1e-9)
+    }
+
+    @Test("an opaque erase-brush MaskBrushTable aggregate is preserved, not parsed as brush")
+    func eraseBrushTableIsPreserved() throws {
+        let corrections: [[String: Any]] = [[
+            "\(crs)CorrectionActive": "true",
+            "\(crs)CorrectionName": "Erase test",
+            "\(crs)LocalExposure2012": "0.2",
+            "\(crs)CorrectionMasks": [[
+                "\(crs)What": "Mask/Aggregate",
+                "\(crs)MaskName": "Brush 1",
+                "\(crs)MaskValue": "1",
+                "\(crs)MaskBrushTable": "9F8737DEECAFF5C8FE6BB4B9D438EAF2",
+                "\(crs)MaskBrushUncompressedBytes": "13258",
+            ]],
+        ]]
+        let parsed = try #require(parseMaskGroupBasedCorrections(corrections))
+        #expect(parsed.masks.isEmpty)
+        #expect(parsed.preserved.count == 1)
+    }
+
+    @Test("encodes a brush mask into a nested Mask/Aggregate → Masks → Dabs node tree")
+    func encodesBrushMask() throws {
+        var mask = MaskAdjustment(name: "Painted")
+        mask.brush = BrushMaskGeometry(strokes: [
+            BrushStroke(dabs: [
+                BrushDab(x: 0.1, y: 0.2, flow: 0.5, hardness: 0),
+                BrushDab(x: 0.3, y: 0.4, flow: 0.5, hardness: 0.196),
+            ], radius: 0.25, density: 0.674528, erase: false)
+        ])
+        let corr = try #require(encodeMaskGroupBasedCorrections([mask]).first)
+        let nodes = try #require(corr.correctionMasks)
+        #expect(nodes.count == 1)
+        let aggregate = nodes[0]
+        #expect(aggregate.fields.contains { $0.name == "What" && $0.value == "Mask/Aggregate" })
+        let paints = try #require(aggregate.children.first { $0.name == "Masks" }?.nodes)
+        #expect(paints.count == 1)
+        let paint = paints[0]
+        #expect(paint.fields.contains { $0.name == "What" && $0.value == "Mask/Paint" })
+        #expect(paint.fields.contains { $0.name == "Radius" && $0.value == "0.25" })
+        #expect(paint.fields.contains { $0.name == "MaskValue" && $0.value == "0.674528" })
+        let dabs = try #require(paint.arrays.first { $0.name == "Dabs" }?.values)
+        // Flow emitted once up front; hardness only when it changes to non-zero.
+        #expect(dabs == ["f 0.5000", "d 0.100000 0.200000", "h 0.1960", "d 0.300000 0.400000"])
+    }
+
+    @Test("a brush mask round-trips through an XMP sidecar save/load cycle")
+    func brushMaskRoundTripsThroughSidecar() throws {
+        let svc = XMPSidecarService()
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let imageURL = tmp.appendingPathComponent("test.jpg")
+
+        var mask = MaskAdjustment(name: "Painted")
+        mask.exposure = 0.8
+        mask.brush = BrushMaskGeometry(strokes: [
+            BrushStroke(dabs: [
+                BrushDab(x: 0.533385, y: 0.323619, flow: 0.5, hardness: 0),
+                BrushDab(x: 0.527716, y: 0.442002, flow: 0.5, hardness: 0),
+            ], radius: 0.395627, density: 1.0, erase: false)
+        ])
+        var settings = CameraRawSettings()
+        settings.localAdjustments = [mask]
+        try svc.saveCameraRawOnly(settings, orientation: nil, for: imageURL)
+
+        let reloaded = try #require(svc.loadSidecar(for: imageURL)?.cameraRaw?.localAdjustments?.first)
+        #expect(reloaded.layerKind == .brushMask)
+        let stroke = try #require(reloaded.brush?.strokes.first)
+        #expect(abs(stroke.radius - 0.395627) < 1e-6)
+        #expect(stroke.dabs.count == 2)
+        #expect(abs(stroke.dabs[0].x - 0.533385) < 1e-6)
+        #expect(abs(stroke.dabs[1].y - 0.442002) < 1e-6)
+        #expect(reloaded.exposure.map { abs($0 - 0.8) < 1e-6 } == true)
+    }
+
+    /// The core data-loss fix: an unmodeled (erase-brush) correction must survive a develop
+    /// save/reload cycle byte-for-byte, instead of vanishing on the next crs-block rewrite.
+    @Test("an unparseable mask correction survives a save/reload/edit/re-save cycle")
+    func preservedCorrectionSurvivesReSave() throws {
+        let svc = XMPSidecarService()
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let imageURL = tmp.appendingPathComponent("test.jpg")
+        let sidecarURL = imageURL.deletingPathExtension().appendingPathExtension("xmp")
+        let hash = "9F8737DEECAFF5C8FE6BB4B9D438EAF2"
+
+        let corrections: [[String: Any]] = [[
+            "\(crs)CorrectionActive": "true",
+            "\(crs)CorrectionName": "Erase",
+            "\(crs)LocalExposure2012": "0.2",
+            "\(crs)CorrectionMasks": [[
+                "\(crs)What": "Mask/Aggregate",
+                "\(crs)MaskName": "Brush 1",
+                "\(crs)MaskValue": "1",
+                "\(crs)MaskBrushTable": hash,
+                "\(crs)MaskBrushUncompressedBytes": "13258",
+            ]],
+        ]]
+        let preserved = try #require(parseMaskGroupBasedCorrections(corrections)).preserved
+        #expect(preserved.count == 1)
+
+        var settings = CameraRawSettings()
+        settings.exposure2012 = 0.5
+        settings.unparsedMaskCorrections = preserved
+        try svc.saveCameraRawOnly(settings, orientation: nil, for: imageURL)
+
+        // The opaque blob is present in the written XMP verbatim.
+        let firstXML = try String(contentsOf: sidecarURL, encoding: .utf8)
+        #expect(firstXML.contains("MaskBrushTable"))
+        #expect(firstXML.contains(hash))
+
+        // Reload: the preserved correction comes back.
+        let reloaded = try #require(svc.loadSidecar(for: imageURL)?.cameraRaw)
+        #expect(reloaded.unparsedMaskCorrections?.count == 1)
+
+        // Simulate a later develop edit that rewrites the whole crs block — the wipe scenario.
+        var edited = reloaded
+        edited.exposure2012 = 0.9
+        try svc.saveCameraRawOnly(edited, orientation: nil, for: imageURL)
+        let finalXML = try String(contentsOf: sidecarURL, encoding: .utf8)
+        #expect(finalXML.contains(hash))
+        let reReloaded = try #require(svc.loadSidecar(for: imageURL)?.cameraRaw)
+        #expect(reReloaded.unparsedMaskCorrections?.count == 1)
     }
 }

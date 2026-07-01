@@ -13,6 +13,11 @@ struct StructuredWriteData: Sendable {
     /// "don't touch" for a merge-style write; see `replaceCameraRawBlock` for full-replace writes.
     var anonymizer: AnonymizerSettings?
 
+    /// Camera Raw mask corrections this app can't model (erase-brush blobs, unknown mask types),
+    /// carried through so a full-replace develop write re-emits them verbatim instead of dropping
+    /// them. See `PreservedMaskCorrection`.
+    var unparsedMaskCorrections: [PreservedMaskCorrection]?
+
     /// Replace the file's ENTIRE Camera Raw (crs) namespace block with this
     /// write's content — Adobe-faithful semantics: ACR drops settings it isn't
     /// carrying (Texture, vignette, HSL, …) when it saves, so stale baked
@@ -27,6 +32,7 @@ struct StructuredWriteData: Sendable {
             && (masks == nil || (masks?.isEmpty ?? true))
             && (hslAdjustments == nil || (hslAdjustments?.isEmpty ?? true))
             && (anonymizer == nil || (anonymizer?.isEmpty ?? true))
+            && (unparsedMaskCorrections?.isEmpty ?? true)
     }
 
     static let empty = StructuredWriteData()

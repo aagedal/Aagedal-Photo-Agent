@@ -652,7 +652,7 @@
 			repositoryURL = "https://codeberg.org/taagedal/SwiftExif.git";
 			requirement = {
 				kind = upToNextMajorVersion;
-				minimumVersion = 1.9.9;
+				minimumVersion = 1.9.10;
 			};
 		};
 		8ED36A022F8CF03000FB9A33 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
