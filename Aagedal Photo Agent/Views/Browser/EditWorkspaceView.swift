@@ -3234,41 +3234,44 @@ struct EditWorkspaceView: View {
     }
 
     private var addLayerButton: some View {
-        Menu {
-            Button {
-                addNewMask()
-            } label: {
-                Label("Radial Mask", systemImage: LayerKind.ellipseMask.systemImage)
+        VStack(spacing: 3) {
+            VStack(spacing: 4) {
+                addMaskMiniButton(kind: .ellipseMask, help: "Add radial mask") {
+                    addNewMask()
+                }
+                addMaskMiniButton(kind: .brushMask, help: "Add brush mask") {
+                    _ = addNewBrushMask()
+                    isBrushPainting = true
+                    isPickingWhiteBalance = false
+                    syncMaskOverlayTarget()
+                }
             }
-            Button {
-                _ = addNewBrushMask()
-                isBrushPainting = true
-                isPickingWhiteBalance = false
-                syncMaskOverlayTarget()
-            } label: {
-                Label("Brush Mask", systemImage: LayerKind.brushMask.systemImage)
-            }
-        } label: {
-            VStack(spacing: 3) {
-                RoundedRectangle(cornerRadius: 6)
-                    .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [3]))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 56, height: 56)
-                    .overlay(
-                        Image(systemName: "plus")
-                            .font(.system(size: 18))
-                            .foregroundStyle(.secondary)
-                    )
-                Text("Add")
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 60)
-            }
+            Text("Add")
+                .font(.system(size: 9))
+                .foregroundStyle(.secondary)
+                .frame(width: 60)
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .help("Add a mask adjustment (radial or brush)")
+    }
+
+    /// One compact "add mask" button — the kind's icon plus a `+`. Two of these stack vertically
+    /// to fill a layer-card slot, so adding either mask kind is a single click.
+    private func addMaskMiniButton(kind: LayerKind, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [3]))
+                .foregroundStyle(.secondary)
+                .frame(width: 56, height: 26)
+                .overlay(
+                    HStack(spacing: 5) {
+                        Image(systemName: kind.systemImage)
+                        Image(systemName: "plus").font(.system(size: 9, weight: .bold))
+                    }
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                )
+        }
+        .buttonStyle(.plain)
+        .help(help)
     }
 
     @ViewBuilder
