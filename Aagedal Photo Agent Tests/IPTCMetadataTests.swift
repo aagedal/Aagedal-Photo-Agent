@@ -2078,6 +2078,30 @@ struct BrushRasterizationTests {
         #expect(px[32 * 64 + 32] < 0.01)   // added then fully erased
     }
 
+    @Test("overlapping soft erase dabs preserve a soft falloff (envelope, not accumulation)")
+    func softEraseStaysSoft() throws {
+        guard let pipeline = makePipeline() else { return }
+        let size = MTLSize(width: 64, height: 64, depth: 1)
+        // Fill an area solid, then erase it with a stroke of TWO overlapping soft dabs at the
+        // same spot (hardness 0). A subtractive erase would remove ~2× the soft profile and cut a
+        // hard hole; the envelope (min) erase must leave a soft gradient.
+        let brush = BrushMaskGeometry(strokes: [
+            BrushStroke(dabs: [BrushDab(x: 0.5, y: 0.5, flow: 1.0, hardness: 1.0)],
+                        radius: 0.3, density: 1.0, erase: false),
+            BrushStroke(dabs: [BrushDab(x: 0.5, y: 0.5, flow: 1.0, hardness: 0.0),
+                               BrushDab(x: 0.5, y: 0.5, flow: 1.0, hardness: 0.0)],
+                        radius: 0.25, density: 1.0, erase: true),
+        ])
+        let tex = try #require(pipeline.rebuildBrushAlpha([brush], size: size))
+        let px = readSlice(tex, slice: 0)
+        func at(_ x: Int, _ y: Int) -> Float { px[y * 64 + x] }
+        #expect(at(32, 32) < 0.05)              // center fully erased (falloff 1)
+        // 8px right of center = half the 16px erase radius → soft falloff ≈ 0.5 coverage, so the
+        // mask should be partially (not fully) erased. Subtractive over-accumulation would zero it.
+        let half = at(40, 32)
+        #expect(half > 0.25 && half < 0.75)
+    }
+
     @Test("live-stamping adds dabs into an existing slice without a full rebuild")
     func liveStampAccumulates() throws {
         guard let pipeline = makePipeline() else { return }

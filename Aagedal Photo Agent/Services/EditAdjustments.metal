@@ -738,7 +738,12 @@ kernel void stampBrush(
     half prev = alpha.read(px, dab.layer).r;
     half result;
     if (dab.erase != 0) {
-        result = max(0.0h, prev - half(coverage));
+        // Symmetric with the additive `max` below: over overlapping dabs in one stroke,
+        // min(prev, 1 - coverage) collapses to min(prev, 1 - max(coverage)) — the erase
+        // *envelope*, so the soft falloff is preserved instead of being subtracted repeatedly
+        // (plain `prev - coverage` accumulates across the many overlapping dabs of a stroke and
+        // saturates the edge to hard). Erasing to full 0 needs flow 1 (mirrors add capping at flow).
+        result = min(prev, half(1.0 - coverage));
     } else {
         result = max(prev, half(coverage));
     }
