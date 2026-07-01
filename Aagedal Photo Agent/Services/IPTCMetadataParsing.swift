@@ -81,6 +81,9 @@ nonisolated enum MetadataDictKey {
     static let maskGroupBasedCorrections = "MaskGroupBasedCorrections"
     /// App-private (aaphoto namespace): the global node's position in the layer chain.
     static let globalLayerIndex = "GlobalLayerIndex"
+    /// App-private (aaphoto namespace): the global Anonymizer redaction settings.
+    static let anonymizerAmount = "AnonymizerAmount"
+    static let anonymizerBlackOut = "AnonymizerBlackOut"
 }
 
 nonisolated func parseStringOrArray(_ value: Any?) -> [String] {
@@ -192,6 +195,12 @@ nonisolated private func crsMaskField(_ dict: [String: Any], _ name: String) -> 
     dict[name] ?? dict["http://ns.adobe.com/camera-raw-settings/1.0/" + name]
 }
 
+/// Same lookup as `crsMaskField`, but for the app-private `aaphoto` namespace — used by
+/// fields (like Anonymizer) that aren't a real ACR concept and so can't live under `crs:`.
+nonisolated private func aaphotoMaskField(_ dict: [String: Any], _ name: String) -> Any? {
+    dict[name] ?? dict["http://aagedal.me/ns/photo/1.0/" + name]
+}
+
 /// Parse Adobe Camera Raw `MaskGroupBasedCorrections` into `[MaskAdjustment]`.
 /// Each correction is a dictionary with `CorrectionMasks` as a nested array
 /// of mask geometry dictionaries. Corrections whose geometry can't be parsed
@@ -247,6 +256,14 @@ nonisolated func parseMaskGroupBasedCorrections(_ value: Any?) -> [MaskAdjustmen
         let temperature = parseDoubleValue(crsMaskField(corr, "LocalTemperature")).map { $0 * 100 }
         let tint = parseDoubleValue(crsMaskField(corr, "LocalTint")).map { $0 * 100 }
 
+        // App-private (aaphoto namespace): Anonymizer isn't a real ACR concept, so it's a
+        // sibling field on the correction rather than a `crs:Local*` property.
+        let anonymizerAmount = parseDoubleValue(aaphotoMaskField(corr, "AnonymizerAmount"))
+        let anonymizerBlackOut = parseBoolValue(aaphotoMaskField(corr, "AnonymizerBlackOut"))
+        let anonymizer: AnonymizerSettings? = (anonymizerAmount ?? 0) > 0 || anonymizerBlackOut == true
+            ? AnonymizerSettings(amount: anonymizerAmount, blackOut: anonymizerBlackOut)
+            : nil
+
         let mask = MaskAdjustment(
             name: name,
             enabled: active,
@@ -262,7 +279,8 @@ nonisolated func parseMaskGroupBasedCorrections(_ value: Any?) -> [MaskAdjustmen
             saturation: saturation.flatMap { $0 == 0 ? nil : $0 },
             vibrance: vibrance.flatMap { $0 == 0 ? nil : $0 },
             temperature: temperature.flatMap { abs($0) < 0.01 ? nil : $0 },
-            tint: tint.flatMap { abs($0) < 0.01 ? nil : $0 }
+            tint: tint.flatMap { abs($0) < 0.01 ? nil : $0 },
+            anonymizer: anonymizer
         )
         masks.append(mask)
     }
@@ -279,6 +297,9 @@ nonisolated func parseMaskGroupBasedCorrections(_ value: Any?) -> [MaskAdjustmen
 nonisolated struct ACRMaskCorrection {
     var correctionFields: [(name: String, value: String)]
     var maskFields: [(name: String, value: String)]
+    /// App-private fields with no ACR equivalent (e.g. Anonymizer) — written under the
+    /// `aaphoto` namespace as siblings of `correctionFields`, never `crs:`.
+    var appPrivateFields: [(name: String, value: String)] = []
 }
 
 /// Encode enabled masks into ACR's `MaskGroupBasedCorrections` schema —
@@ -362,7 +383,18 @@ nonisolated func encodeMaskGroupBasedCorrections(_ masks: [MaskAdjustment]) -> [
             ("LocalToningSaturation", "0"),
         ]
 
-        return ACRMaskCorrection(correctionFields: correctionFields, maskFields: maskFields)
+        // App-private: Anonymizer isn't a real ACR concept, so it's never written under `crs:`.
+        var appPrivateFields: [(name: String, value: String)] = []
+        if let anon = mask.anonymizer, !anon.isEmpty {
+            if let amount = anon.amount, amount > 0 {
+                appPrivateFields.append(("AnonymizerAmount", String(format: "%.1f", amount)))
+            }
+            if anon.blackOut == true {
+                appPrivateFields.append(("AnonymizerBlackOut", "True"))
+            }
+        }
+
+        return ACRMaskCorrection(correctionFields: correctionFields, maskFields: maskFields, appPrivateFields: appPrivateFields)
     }
 }
 
@@ -491,6 +523,12 @@ nonisolated func iptcMetadataFromDict(_ dict: [String: Any]) -> IPTCMetadata {
         masks: localAdjustments,
         globalIndex: parseIntValue(dict[MetadataDictKey.globalLayerIndex])
     )
+    // App-private Anonymizer redaction (not an ACR concept — Adobe tools ignore it).
+    let anonymizerAmount = parseDoubleValue(dict[MetadataDictKey.anonymizerAmount])
+    let anonymizerBlackOut = parseBoolValue(dict[MetadataDictKey.anonymizerBlackOut])
+    if (anonymizerAmount ?? 0) > 0 || anonymizerBlackOut == true {
+        cameraRaw.anonymizer = AnonymizerSettings(amount: anonymizerAmount, blackOut: anonymizerBlackOut)
+    }
 
     return IPTCMetadata(
         title: dict[MetadataDictKey.headline] as? String

@@ -2301,6 +2301,7 @@ struct EditWorkspaceView: View {
             || (cameraRaw.crop?.isEffectiveCrop == true)
             || !(cameraRaw.localAdjustments?.isEmpty ?? true)
             || !(cameraRaw.hslAdjustments?.isEmpty ?? true)
+            || (cameraRaw.anonymizer?.isEmpty == false)
     }
 
     private var hslAdjustmentsBinding: Binding<HSLAdjustments> {
@@ -2349,6 +2350,43 @@ struct EditWorkspaceView: View {
                     let rounded = (newValue * 100).rounded() / 100
                     cameraRaw.exposure2012 = rounded == 0 ? nil : rounded
                 }
+            }
+        )
+    }
+
+    private var anonymizerAmountBinding: Binding<Double> {
+        Binding(
+            get: { metadataViewModel.editingMetadata.cameraRaw?.anonymizer?.amount ?? 0 },
+            set: { newValue in
+                updateCameraRaw { cameraRaw in
+                    let clamped = min(max(newValue.rounded(), 0), 100)
+                    if clamped <= 0 {
+                        cameraRaw.anonymizer?.amount = nil
+                        if cameraRaw.anonymizer?.isEmpty == true { cameraRaw.anonymizer = nil }
+                    } else {
+                        if cameraRaw.anonymizer == nil { cameraRaw.anonymizer = AnonymizerSettings() }
+                        cameraRaw.anonymizer?.amount = clamped
+                    }
+                }
+            }
+        )
+    }
+
+    private var anonymizerBlackOutBinding: Binding<Bool> {
+        Binding(
+            get: { metadataViewModel.editingMetadata.cameraRaw?.anonymizer?.blackOut ?? false },
+            set: { newValue in
+                updateCameraRaw { cameraRaw in
+                    if newValue {
+                        if cameraRaw.anonymizer == nil { cameraRaw.anonymizer = AnonymizerSettings() }
+                        cameraRaw.anonymizer?.blackOut = true
+                    } else {
+                        cameraRaw.anonymizer?.blackOut = nil
+                        if cameraRaw.anonymizer?.isEmpty == true { cameraRaw.anonymizer = nil }
+                    }
+                }
+                // A Toggle has no "drag end" — every flip is a discrete commit.
+                commitEditAdjustments()
             }
         )
     }
@@ -2777,6 +2815,55 @@ struct EditWorkspaceView: View {
                 commitEditAdjustments()
             }
         )
+
+        // ── Anonymizer ──
+        HStack(spacing: 6) {
+            Text("Anonymizer")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.secondary)
+                .onTapGesture(count: 2) {
+                    if hasAnonymizerAdjustments { resetAnonymizerAdjustments() }
+                }
+            Spacer()
+            Button {
+                resetAnonymizerAdjustments()
+            } label: {
+                Image(systemName: "arrow.counterclockwise")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .disabled(!hasAnonymizerAdjustments)
+            .help("Reset anonymizer")
+        }
+        .padding(.top, 2)
+        Divider()
+
+        sliderRow(
+            "Anonymizer",
+            value: anonymizerAmountBinding,
+            range: 0...100,
+            step: 1,
+            formatter: { "\(Int($0.rounded()))" },
+            settingsMutator: { settings, value in
+                let clamped = min(max(value.rounded(), 0), 100)
+                if clamped <= 0 {
+                    settings.anonymizer?.amount = nil
+                    if settings.anonymizer?.isEmpty == true { settings.anonymizer = nil }
+                } else {
+                    if settings.anonymizer == nil { settings.anonymizer = AnonymizerSettings() }
+                    settings.anonymizer?.amount = clamped
+                }
+            },
+            onReset: {
+                anonymizerAmountBinding.wrappedValue = 0
+            }
+        )
+        .disabled(anonymizerBlackOutBinding.wrappedValue)
+
+        Toggle("Black out", isOn: anonymizerBlackOutBinding)
+            .toggleStyle(.checkbox)
+            .help("Fully redact this region instead of the mosaic effect")
     }
 
     // MARK: - Section Headers
@@ -3383,6 +3470,43 @@ struct EditWorkspaceView: View {
                     maskIntBinding(idx, \.vibrance).wrappedValue = 0
                 }
             )
+            // ── Anonymizer ──
+            Text("Anonymizer")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.secondary)
+                .padding(.top, 2)
+            Divider()
+
+            sliderRow(
+                "Anonymizer",
+                value: maskAnonymizerAmountBinding(idx),
+                range: 0...100,
+                step: 1,
+                formatter: { "\(Int($0.rounded()))" },
+                settingsMutator: { settings, value in
+                    let clamped = min(max(value.rounded(), 0), 100)
+                    if clamped <= 0 {
+                        settings.localAdjustments?[idx].anonymizer?.amount = nil
+                        if settings.localAdjustments?[idx].anonymizer?.isEmpty == true {
+                            settings.localAdjustments?[idx].anonymizer = nil
+                        }
+                    } else {
+                        if settings.localAdjustments?[idx].anonymizer == nil {
+                            settings.localAdjustments?[idx].anonymizer = AnonymizerSettings()
+                        }
+                        settings.localAdjustments?[idx].anonymizer?.amount = clamped
+                    }
+                },
+                onReset: {
+                    maskAnonymizerAmountBinding(idx).wrappedValue = 0
+                }
+            )
+            .disabled(maskAnonymizerBlackOutBinding(idx).wrappedValue)
+
+            Toggle("Black out", isOn: maskAnonymizerBlackOutBinding(idx))
+                .toggleStyle(.checkbox)
+                .help("Fully redact this mask instead of the mosaic effect")
+
             // ── Mask Shape ──
             Text("Mask Shape")
                 .font(.subheadline.weight(.medium))
@@ -3463,6 +3587,61 @@ struct EditWorkspaceView: View {
         )
     }
 
+    private func maskAnonymizerAmountBinding(_ maskIndex: Int) -> Binding<Double> {
+        Binding(
+            get: {
+                guard let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
+                      maskIndex < masks.count else { return 0 }
+                return masks[maskIndex].anonymizer?.amount ?? 0
+            },
+            set: { newValue in
+                updateCameraRaw { cameraRaw in
+                    guard let masks = cameraRaw.localAdjustments, maskIndex < masks.count else { return }
+                    let clamped = min(max(newValue.rounded(), 0), 100)
+                    if clamped <= 0 {
+                        cameraRaw.localAdjustments?[maskIndex].anonymizer?.amount = nil
+                        if cameraRaw.localAdjustments?[maskIndex].anonymizer?.isEmpty == true {
+                            cameraRaw.localAdjustments?[maskIndex].anonymizer = nil
+                        }
+                    } else {
+                        if cameraRaw.localAdjustments?[maskIndex].anonymizer == nil {
+                            cameraRaw.localAdjustments?[maskIndex].anonymizer = AnonymizerSettings()
+                        }
+                        cameraRaw.localAdjustments?[maskIndex].anonymizer?.amount = clamped
+                    }
+                }
+            }
+        )
+    }
+
+    private func maskAnonymizerBlackOutBinding(_ maskIndex: Int) -> Binding<Bool> {
+        Binding(
+            get: {
+                guard let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
+                      maskIndex < masks.count else { return false }
+                return masks[maskIndex].anonymizer?.blackOut ?? false
+            },
+            set: { newValue in
+                updateCameraRaw { cameraRaw in
+                    guard let masks = cameraRaw.localAdjustments, maskIndex < masks.count else { return }
+                    if newValue {
+                        if cameraRaw.localAdjustments?[maskIndex].anonymizer == nil {
+                            cameraRaw.localAdjustments?[maskIndex].anonymizer = AnonymizerSettings()
+                        }
+                        cameraRaw.localAdjustments?[maskIndex].anonymizer?.blackOut = true
+                    } else {
+                        cameraRaw.localAdjustments?[maskIndex].anonymizer?.blackOut = nil
+                        if cameraRaw.localAdjustments?[maskIndex].anonymizer?.isEmpty == true {
+                            cameraRaw.localAdjustments?[maskIndex].anonymizer = nil
+                        }
+                    }
+                }
+                // A Toggle has no "drag end" — every flip is a discrete commit.
+                commitEditAdjustments()
+            }
+        )
+    }
+
     private func addNewMask() {
         let existingCount = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?.count ?? 0
         var geo = EllipseMaskGeometry()
@@ -3538,6 +3717,10 @@ struct EditWorkspaceView: View {
         !(metadataViewModel.editingMetadata.cameraRaw?.hslAdjustments?.isEmpty ?? true)
     }
 
+    private var hasAnonymizerAdjustments: Bool {
+        !(metadataViewModel.editingMetadata.cameraRaw?.anonymizer?.isEmpty ?? true)
+    }
+
     private func resetColorAdjustments() {
         updateCameraRaw { cameraRaw in
             cameraRaw.whiteBalance = isSelectedImageRaw ? "As Shot" : nil
@@ -3570,6 +3753,13 @@ struct EditWorkspaceView: View {
         commitEditAdjustments()
     }
 
+    private func resetAnonymizerAdjustments() {
+        updateCameraRaw { cameraRaw in
+            cameraRaw.anonymizer = nil
+        }
+        commitEditAdjustments()
+    }
+
     private func resetDevelopAdjustments() {
         resetCropZoom()
         selectedLayer = .global
@@ -3588,6 +3778,7 @@ struct EditWorkspaceView: View {
             cameraRaw.saturation = nil
             cameraRaw.vibrance = nil
             cameraRaw.localAdjustments = nil
+            cameraRaw.anonymizer = nil
             cameraRaw.crop = CameraRawCrop(
                 top: 0,
                 left: 0,
@@ -3617,6 +3808,7 @@ struct EditWorkspaceView: View {
             cameraRaw.vibrance = nil
             cameraRaw.toneCurve = nil
             cameraRaw.localAdjustments = nil
+            cameraRaw.anonymizer = nil
         }
         selectedLayer = .global
         commitDevelopReset()
@@ -3789,7 +3981,8 @@ struct EditWorkspaceView: View {
                 toneCurve: cameraRaw.toneCurve,
                 masks: (cameraRaw.localAdjustments?.isEmpty == false) ? cameraRaw.localAdjustments : nil,
                 hslAdjustments: (cameraRaw.hslAdjustments?.isEmpty == false) ? cameraRaw.hslAdjustments : nil,
-                layerOrder: cameraRaw.layerOrder
+                layerOrder: cameraRaw.layerOrder,
+                anonymizer: (cameraRaw.anonymizer?.isEmpty == false) ? cameraRaw.anonymizer : nil
             )
 
             do {
@@ -4224,6 +4417,15 @@ struct EditWorkspaceView: View {
         if chars == "c" && modifiers.isDisjoint(with: [.command, .option, .control]) {
             guard canEditSingleImage else { return event }
             toggleCropControls()
+            return nil
+        }
+
+        // J — add a new ellipse (radial) mask. Bare-letter tool shortcut, matching the
+        // Photoshop-style convention (a future brush mask tool would be bare "B");
+        // Cmd+J still works too (menu item).
+        if chars == "j" && modifiers.isDisjoint(with: [.command, .option, .control]) {
+            guard canEditSingleImage else { return event }
+            addNewMask()
             return nil
         }
 

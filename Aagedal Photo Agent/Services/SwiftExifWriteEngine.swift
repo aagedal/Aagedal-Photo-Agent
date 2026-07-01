@@ -286,6 +286,8 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
             // Our private global-position tag tracks develop state — clear it with the block
             // so a reset/replace can't leave a stale GlobalLayerIndex behind.
             metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: "GlobalLayerIndex")
+            metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: "AnonymizerAmount")
+            metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: "AnonymizerBlackOut")
         }
 
         // GPS coordinates are paired: SwiftExif's setGPS takes both at once and
@@ -326,6 +328,10 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
 
         if let hsl = structuredData.hslAdjustments {
             applyHSL(hsl, metadata: &metadata)
+        }
+
+        if let anon = structuredData.anonymizer {
+            applyAnonymizer(anon, metadata: &metadata)
         }
 
         // After a block replacement that carries settings, re-stamp the edited
@@ -570,6 +576,12 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         for (name, value) in encoded {
             metadata.xmp?.setValue(.simple(value), namespace: crsNamespace, property: name)
         }
+    }
+
+    /// Apply the global Anonymizer redaction settings as app-private XMP — shared with the
+    /// `.xmp` sidecar writer via `XMPDataBuilder` so the two stores can't drift.
+    private func applyAnonymizer(_ anon: AnonymizerSettings, metadata: inout ImageMetadata) {
+        mutateXMP(&metadata) { XMPDataBuilder.applyAnonymizer(anon, into: &$0) }
     }
 
     /// Set an XMP field, creating XMPData if needed. Pass nil value to remove.

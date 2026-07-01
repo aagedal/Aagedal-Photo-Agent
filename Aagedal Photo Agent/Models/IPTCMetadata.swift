@@ -292,12 +292,14 @@ nonisolated struct MaskAdjustment: Codable, Sendable, Equatable, Identifiable {
     var vibrance: Int?
     var temperature: Double?
     var tint: Double?
+    var anonymizer: AnonymizerSettings?
 
     var hasAdjustments: Bool {
         exposure != nil || contrast != nil || highlights != nil
             || shadows != nil || whites != nil || blacks != nil
             || saturation != nil || vibrance != nil
             || temperature != nil || tint != nil
+            || (anonymizer?.isEmpty == false)
     }
 
     func transformedForDisplay(orientation: Int, sensorAspect: Double) -> MaskAdjustment {
@@ -390,6 +392,19 @@ nonisolated struct HSLAdjustments: Codable, Sendable, Equatable {
     }
 }
 
+/// Multi-layer redaction effect (random distortion + blur + mosaic sampled in one pass,
+/// or a hard "Black Out") — not an ACR/Lightroom concept, persisted as an app-private
+/// XMP extension. `amount` is a 0...100 strength (nil/0 means off); `blackOut` overrides
+/// the layered effect with full opaque redaction.
+nonisolated struct AnonymizerSettings: Codable, Sendable, Equatable {
+    var amount: Double?
+    var blackOut: Bool?
+
+    nonisolated var isEmpty: Bool {
+        (amount ?? 0) <= 0 && (blackOut ?? false) == false
+    }
+}
+
 nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
     var version: String?
     var processVersion: String?
@@ -420,6 +435,7 @@ nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
     var toneCurve: ToneCurve?
     var localAdjustments: [MaskAdjustment]?
     var hslAdjustments: HSLAdjustments?
+    var anonymizer: AnonymizerSettings?
 
     /// Explicit processing order of the editing layer chain, interleaving the global
     /// adjustment node among the masks. `nil` (all legacy edits) means the canonical
@@ -472,6 +488,7 @@ nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
             && (toneCurve?.isEmpty ?? true)
             && (localAdjustments?.isEmpty ?? true)
             && (hslAdjustments?.isEmpty ?? true)
+            && (anonymizer?.isEmpty ?? true)
     }
 
     /// True when the settings contain at least one edit the user can see. Unlike
@@ -522,6 +539,7 @@ nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
         if let value = override.toneCurve { result.toneCurve = value }
         if let value = override.localAdjustments { result.localAdjustments = value }
         if let value = override.hslAdjustments { result.hslAdjustments = value }
+        if let value = override.anonymizer { result.anonymizer = value }
         if let value = override.layerOrder { result.layerOrder = value }
         return result
     }

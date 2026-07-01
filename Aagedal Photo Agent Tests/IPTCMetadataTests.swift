@@ -1607,3 +1607,124 @@ struct LayerOrderTests {
         #expect(reread.resolvedLayerOrder() == [.mask(m2.id), .global, .mask(m1.id)])
     }
 }
+
+@Suite("Anonymizer")
+struct AnonymizerSettingsTests {
+    @Test("AnonymizerSettings.isEmpty")
+    func isEmpty() {
+        #expect(AnonymizerSettings().isEmpty)
+        #expect(AnonymizerSettings(amount: 0, blackOut: false).isEmpty)
+        #expect(AnonymizerSettings(amount: nil, blackOut: nil).isEmpty)
+        #expect(!AnonymizerSettings(amount: 40, blackOut: nil).isEmpty)
+        #expect(!AnonymizerSettings(amount: nil, blackOut: true).isEmpty)
+    }
+
+    @Test("CameraRawSettings.isEmpty reflects the global anonymizer")
+    func cameraRawIsEmptyReflectsAnonymizer() {
+        var settings = CameraRawSettings()
+        #expect(settings.isEmpty)
+        settings.anonymizer = AnonymizerSettings(amount: 60, blackOut: nil)
+        #expect(!settings.isEmpty)
+    }
+
+    @Test("MaskAdjustment.hasAdjustments reflects the per-mask anonymizer")
+    func maskHasAdjustmentsReflectsAnonymizer() {
+        var mask = MaskAdjustment(name: "Face", geometry: EllipseMaskGeometry())
+        #expect(!mask.hasAdjustments)
+        mask.anonymizer = AnonymizerSettings(amount: nil, blackOut: true)
+        #expect(mask.hasAdjustments)
+    }
+
+    @Test("per-mask anonymizer round-trips through MaskGroupBasedCorrections encode/decode")
+    func perMaskAnonymizerRoundTrips() throws {
+        var amountMask = MaskAdjustment(name: "Crowd", geometry: EllipseMaskGeometry())
+        amountMask.anonymizer = AnonymizerSettings(amount: 72.5, blackOut: nil)
+        var blackOutMask = MaskAdjustment(name: "Plate", geometry: EllipseMaskGeometry())
+        blackOutMask.anonymizer = AnonymizerSettings(amount: nil, blackOut: true)
+        let plainMask = MaskAdjustment(name: "Sky", geometry: EllipseMaskGeometry())
+
+        let encoded = encodeMaskGroupBasedCorrections([amountMask, blackOutMask, plainMask])
+        #expect(encoded.count == 3)
+        #expect(encoded[0].appPrivateFields.contains { $0.name == "AnonymizerAmount" && $0.value == "72.5" })
+        #expect(encoded[1].appPrivateFields.contains { $0.name == "AnonymizerBlackOut" && $0.value == "True" })
+        #expect(encoded[2].appPrivateFields.isEmpty)
+
+        // Round-trip through the bare-name dict shape (as a hand-built/JSON-sourced dict would carry it).
+        let corrections: [[String: Any]] = encoded.map { corr in
+            var dict: [String: Any] = [:]
+            for field in corr.correctionFields { dict[field.name] = field.value }
+            for field in corr.appPrivateFields { dict[field.name] = field.value }
+            dict["CorrectionMasks"] = [Dictionary(uniqueKeysWithValues: corr.maskFields.map { ($0.name, $0.value as Any) })]
+            return dict
+        }
+        let decoded = try #require(parseMaskGroupBasedCorrections(corrections))
+        #expect(decoded.count == 3)
+        #expect(decoded[0].anonymizer?.amount.map { abs($0 - 72.5) < 1e-9 } == true)
+        #expect(decoded[0].anonymizer?.blackOut != true)
+        #expect(decoded[1].anonymizer?.blackOut == true)
+        #expect(decoded[2].anonymizer == nil)
+    }
+
+    @Test("per-mask anonymizer round-trips through SwiftExif's namespace-URI-prefixed keys")
+    func perMaskAnonymizerRoundTripsURIPrefixedKeys() throws {
+        let aaphoto = "http://aagedal.me/ns/photo/1.0/"
+        let crs = "http://ns.adobe.com/camera-raw-settings/1.0/"
+        let corrections: [[String: Any]] = [[
+            "\(crs)CorrectionActive": "true",
+            "\(aaphoto)AnonymizerAmount": "55.0",
+            "\(crs)CorrectionMasks": [[
+                "\(crs)What": "Mask/CircularGradient",
+                "\(crs)Top": "0.1", "\(crs)Left": "0.1", "\(crs)Bottom": "0.4", "\(crs)Right": "0.4"
+            ]]
+        ]]
+        let mask = try #require(parseMaskGroupBasedCorrections(corrections)?.first)
+        #expect(mask.anonymizer?.amount.map { abs($0 - 55.0) < 1e-9 } == true)
+    }
+
+    @Test("global anonymizer round-trips through an XMP sidecar save/load cycle")
+    func globalAnonymizerRoundTripsThroughSidecar() throws {
+        let svc = XMPSidecarService()
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let imageURL = tmp.appendingPathComponent("test.jpg")
+
+        var settings = CameraRawSettings()
+        settings.exposure2012 = 0.5
+        settings.anonymizer = AnonymizerSettings(amount: 80, blackOut: nil)
+        try svc.saveCameraRawOnly(settings, orientation: nil, for: imageURL)
+
+        let reloaded = try #require(svc.loadSidecar(for: imageURL)?.cameraRaw)
+        #expect(reloaded.anonymizer?.amount.map { abs($0 - 80) < 1e-9 } == true)
+        #expect(reloaded.anonymizer?.blackOut != true)
+
+        // Turning Black Out on (amount cleared) must replace, not merge with, the prior amount.
+        settings.anonymizer = AnonymizerSettings(amount: nil, blackOut: true)
+        try svc.saveCameraRawOnly(settings, orientation: nil, for: imageURL)
+        let reloadedBlackOut = try #require(svc.loadSidecar(for: imageURL)?.cameraRaw)
+        #expect(reloadedBlackOut.anonymizer?.blackOut == true)
+        #expect(reloadedBlackOut.anonymizer?.amount == nil)
+
+        // A full develop reset clears the anonymizer along with everything else.
+        try svc.saveCameraRawOnly(nil, orientation: nil, for: imageURL)
+        #expect(svc.loadSidecar(for: imageURL)?.cameraRaw == nil)
+    }
+
+    @Test("per-mask anonymizer round-trips through an XMP sidecar save/load cycle")
+    func perMaskAnonymizerRoundTripsThroughSidecar() throws {
+        let svc = XMPSidecarService()
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let imageURL = tmp.appendingPathComponent("test.jpg")
+
+        var maskedFace = MaskAdjustment(name: "Face", geometry: EllipseMaskGeometry())
+        maskedFace.anonymizer = AnonymizerSettings(amount: 65, blackOut: nil)
+        var settings = CameraRawSettings()
+        settings.localAdjustments = [maskedFace]
+        try svc.saveCameraRawOnly(settings, orientation: nil, for: imageURL)
+
+        let reloaded = try #require(svc.loadSidecar(for: imageURL)?.cameraRaw?.localAdjustments?.first)
+        #expect(reloaded.anonymizer?.amount.map { abs($0 - 65) < 1e-9 } == true)
+    }
+}

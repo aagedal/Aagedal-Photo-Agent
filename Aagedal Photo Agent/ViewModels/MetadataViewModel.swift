@@ -1136,6 +1136,7 @@ final class MetadataViewModel {
                         masks: edited.cameraRaw?.localAdjustments,
                         hslAdjustments: edited.cameraRaw?.hslAdjustments,
                         layerOrder: edited.cameraRaw?.layerOrder,
+                        anonymizer: edited.cameraRaw?.anonymizer,
                         replaceCameraRawBlock: true
                     )
                     : .empty
@@ -2122,6 +2123,7 @@ final class MetadataViewModel {
                         masks: edited.cameraRaw?.localAdjustments,
                         hslAdjustments: edited.cameraRaw?.hslAdjustments,
                         layerOrder: edited.cameraRaw?.layerOrder,
+                        anonymizer: edited.cameraRaw?.anonymizer,
                         replaceCameraRawBlock: true
                     )
                     : .empty
@@ -2199,6 +2201,7 @@ final class MetadataViewModel {
                         masks: edited.cameraRaw?.localAdjustments,
                         hslAdjustments: edited.cameraRaw?.hslAdjustments,
                         layerOrder: edited.cameraRaw?.layerOrder,
+                        anonymizer: edited.cameraRaw?.anonymizer,
                         replaceCameraRawBlock: true
                     )
                     : .empty

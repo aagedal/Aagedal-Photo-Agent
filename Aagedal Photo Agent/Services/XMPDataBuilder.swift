@@ -123,6 +123,7 @@ enum XMPDataBuilder {
 
         applyToneCurves(settings.toneCurve, into: &xmp)
         applyLayerChain(masks: settings.localAdjustments ?? [], layerOrder: settings.layerOrder, into: &xmp)
+        applyAnonymizer(settings.anonymizer, into: &xmp)
     }
 
     /// Clear the develop block — the same fixed field list the old NSXML `removeCameraRawSettings`
@@ -144,6 +145,8 @@ enum XMPDataBuilder {
             xmp.removeValue(namespace: XMPNamespace.crs, property: field)
         }
         xmp.removeValue(namespace: aaphotoNamespace, property: "GlobalLayerIndex")
+        xmp.removeValue(namespace: aaphotoNamespace, property: "AnonymizerAmount")
+        xmp.removeValue(namespace: aaphotoNamespace, property: "AnonymizerBlackOut")
     }
 
     // MARK: - Shared develop encoders (also used by the embedded SwiftExifWriteEngine)
@@ -188,6 +191,10 @@ enum XMPDataBuilder {
                 (XMPNamespace.crs + $0.name, XMPValue.simple($0.value))
             })
             fields[XMPNamespace.crs + "CorrectionMasks"] = .structuredArray([maskStruct])
+            // App-private siblings (e.g. Anonymizer) live under aaphoto:, never crs:.
+            for field in corr.appPrivateFields {
+                fields[aaphotoNamespace + field.name] = .simple(field.value)
+            }
             return fields
         }
         xmp.setValue(.simple("False"), namespace: XMPNamespace.crs, property: "AlreadyApplied")
@@ -206,6 +213,28 @@ enum XMPDataBuilder {
             xmp.setValue(.simple(String(globalIndex)), namespace: aaphotoNamespace, property: "GlobalLayerIndex")
         } else {
             xmp.removeValue(namespace: aaphotoNamespace, property: "GlobalLayerIndex")
+        }
+    }
+
+    /// Write the global Anonymizer redaction settings as app-private XMP (`aaphoto:AnonymizerAmount`
+    /// / `AnonymizerBlackOut`) — not an ACR/Lightroom concept, so other tools silently ignore it;
+    /// this app's own render/export pipeline is the only consumer. nil/empty clears both fields.
+    /// Shared with the embedded-file writer via `SwiftExifWriteEngine.applyAnonymizer`.
+    nonisolated static func applyAnonymizer(_ anon: AnonymizerSettings?, into xmp: inout XMPData) {
+        guard let anon, !anon.isEmpty else {
+            xmp.removeValue(namespace: aaphotoNamespace, property: "AnonymizerAmount")
+            xmp.removeValue(namespace: aaphotoNamespace, property: "AnonymizerBlackOut")
+            return
+        }
+        if let amount = anon.amount, amount > 0 {
+            xmp.setValue(.simple(String(format: "%.1f", amount)), namespace: aaphotoNamespace, property: "AnonymizerAmount")
+        } else {
+            xmp.removeValue(namespace: aaphotoNamespace, property: "AnonymizerAmount")
+        }
+        if anon.blackOut == true {
+            xmp.setValue(.simple(formatBool(true)), namespace: aaphotoNamespace, property: "AnonymizerBlackOut")
+        } else {
+            xmp.removeValue(namespace: aaphotoNamespace, property: "AnonymizerBlackOut")
         }
     }
 

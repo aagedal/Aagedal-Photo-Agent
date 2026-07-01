@@ -19,8 +19,10 @@ struct MaskParams {
     float vibrance;         // -1..1
     uint  activeFlags;      // bitmask: bit0=exposure, bit1=contrast,
                             // bit2=highlights, bit3=shadows, bit4=whites,
-                            // bit5=blacks, bit6=saturation, bit7=vibrance
-    uint  _pad;
+                            // bit5=blacks, bit6=saturation, bit7=vibrance,
+                            // bit8=anonymizer (replaces the other tonal bits when set)
+    float anonymizerAmount;   // 0-1 strength, gated by activeFlags bit8
+    float anonymizerBlackOut; // 0 or 1 — full opaque redaction instead of the layered effect
 };
 
 struct HSLChannelParams {
@@ -47,7 +49,8 @@ struct EditParams {
     float3x3 whiteBalanceMatrix; // Bradford chromatic adaptation (identity if no WB)
 
     uint activeFlags;        // bitmask: bit0=toneLUT, bit1=vibrance,
-                             // bit2=saturation, bit3=whiteBalance, bit4=hdrMode
+                             // bit2=saturation, bit3=whiteBalance, bit4=hdrMode,
+                             // bit5=anonymizer (global)
     uint maskCount;          // number of active masks (0-8)
 
     float2 scale;            // source→drawable scale (stretch-to-fill)
@@ -68,7 +71,8 @@ struct EditParams {
                              // (0.5,0.5) = no crop mask. Pixels beyond → background.
 
     uint orderCount;         // entries in the layer-order buffer (buffer 3); always ≥ 1
-    uint _padOrder;
+    float anonymizerAmount;   // 0-1 global slider strength, gated by activeFlags bit5
+    float anonymizerBlackOut; // 0 or 1 — full opaque redaction instead of the layered effect
 };
 
 // ============================================================
@@ -430,6 +434,60 @@ static half3 applyMaskColor(half3 rgb, constant MaskParams &mask)
     return adjusted;
 }
 
+/// Cheap deterministic per-block hash → [0,1)². Used to jitter which neighborhood a
+/// mosaic block samples from (the "random distortion" layer) — same input always maps
+/// to the same output, so a block's displacement is stable across frames, but distinct
+/// blocks land on unrelated offsets.
+static float2 hash21(float2 p)
+{
+    p = fract(p * float2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(float2(p.x * p.y, p.x + p.y) * float2(p.y, p.x));
+}
+
+/// Anonymizer base-color sampler: folds distortion + blur + mosaic into a single texture
+/// fetch. `blockPx` (in source pixels) sets both the mosaic cell size AND the mip level —
+/// hardware mip generation already box-filtered each level, so sampling at
+/// log2(blockPx) gets a free blur of exactly the right radius for that block size. All
+/// pixels within one block compute the same `blockOrigin`/`sampleUV`, which is what
+/// produces the hard mosaic edges (the only thing actually visible in the output); the
+/// per-block hash jitters which blurred neighborhood gets picked, scrambling block
+/// alignment so the mosaic can't be reversed by deconvolving against a known box filter.
+static half3 sampleAnonymized(texture2d<half, access::sample> source, float2 uv, float2 sourceSize, float blockPx)
+{
+    constexpr sampler mipSampler(filter::linear, mip_filter::linear, address::clamp_to_edge);
+    float2 px = uv * sourceSize;
+    float2 blockOrigin = floor(px / blockPx) * blockPx;
+    float2 blockCenterUV = (blockOrigin + blockPx * 0.5) / sourceSize;
+
+    // Distortion: jitter by close to a full block width so adjacent blocks can draw from
+    // meaningfully different neighborhoods, not just a softened version of the same spot —
+    // this is what actually scrambles reconstruction, not just the box blur below.
+    float2 jitter = (hash21(blockOrigin) - 0.5) * (blockPx * 0.9) / sourceSize;
+    float2 sampleUV = clamp(blockCenterUV + jitter, 0.0, 1.0);
+
+    // Blur: sample from a mip level wider than the block itself, so each block's color
+    // already incorporates its neighbors. A mip exactly sized to the block would let a
+    // reversal attack assume "this block = average of exactly this square"; the extra
+    // headroom (2x the block's own footprint) breaks that assumption.
+    float maxLevel = float(source.get_num_mip_levels() - 1);
+    float mipLevel = clamp(log2(max(blockPx * 2.0, 1.0)), 0.0, maxLevel);
+    return source.sample(mipSampler, sampleUV, level(mipLevel)).rgb;
+}
+
+/// Maps the Anonymizer's 0-1 slider strength to a mosaic block size, as a fraction of the
+/// source image's long edge (not a fixed pixel count) — so the same slider value produces
+/// the same *relative* block size whether the source is a 12MP JPEG or a 60MP RAW. Quadratic
+/// ramp: gentle at low values (still recognizable as a mosaic, not a single flat color),
+/// chunky enough at full strength to fully obscure a face-sized region on any resolution.
+static float anonymizerBlockSize(float strength, float2 sourceSize)
+{
+    float t = clamp(strength, 0.0, 1.0);
+    float longEdge = max(sourceSize.x, sourceSize.y);
+    float pct = mix(0.004, 0.09, t * t);   // 0.4% .. 9% of the long edge
+    return max(pct * longEdge, 3.0);        // floor so tiny sources don't degenerate to ~0px
+}
+
 kernel void editAdjustments(
     texture2d<half, access::sample> source [[texture(0)]],
     texture2d<half, access::write> destination [[texture(1)]],
@@ -479,9 +537,25 @@ kernel void editAdjustments(
         return;
     }
 
-    constexpr sampler bilinear(filter::linear, address::clamp_to_edge);
-    half4 color = source.sample(bilinear, uv);
-    half3 rgb = color.rgb;
+    // Global Anonymizer changes how the base color itself is fetched (a different
+    // sampling strategy, not a per-pixel tone op on an already-sampled color) — so it's
+    // resolved here, before the layer chain runs, rather than as a chain node.
+    bool globalAnonActive = (params.activeFlags & (1u << 5)) != 0;
+    if (globalAnonActive && params.anonymizerBlackOut > 0.5) {
+        destination.write(half4(0.0h, 0.0h, 0.0h, 1.0h), gid);
+        return;
+    }
+    half4 color;
+    half3 rgb;
+    if (globalAnonActive) {
+        float blockPx = anonymizerBlockSize(params.anonymizerAmount, params.sourceSize);
+        rgb = sampleAnonymized(source, uv, params.sourceSize, blockPx);
+        color = half4(rgb, 1.0h);
+    } else {
+        constexpr sampler bilinear(filter::linear, address::clamp_to_edge);
+        color = source.sample(bilinear, uv);
+        rgb = color.rgb;
+    }
 
     // Layer chain: apply each node in the order given by the order buffer. The global
     // adjustment block (kGlobalOrderSentinel) is reorderable among the masks — every node
@@ -498,7 +572,21 @@ kernel void editAdjustments(
             constant MaskParams &mask = masks[entry];
             float weight = maskWeight(mask, uv, params.sourceSize);
             if (weight < 0.001) continue;
-            half3 adjusted = applyMaskColor(rgb, mask);
+            half3 adjusted;
+            if (mask.activeFlags & (1u << 8)) {
+                // Anonymizer replaces (rather than composes with) the mask's other tonal
+                // adjustments — pixelating an exposure-shifted value is pointless once the
+                // pixelation has already destroyed the detail exposure would reveal. The
+                // feathered mix below still applies, so mask edges soften normally.
+                if (mask.anonymizerBlackOut > 0.5) {
+                    adjusted = half3(0.0h, 0.0h, 0.0h);
+                } else {
+                    float blockPx = anonymizerBlockSize(mask.anonymizerAmount, params.sourceSize);
+                    adjusted = sampleAnonymized(source, uv, params.sourceSize, blockPx);
+                }
+            } else {
+                adjusted = applyMaskColor(rgb, mask);
+            }
             rgb = mix(rgb, adjusted, half(weight));
         }
     }

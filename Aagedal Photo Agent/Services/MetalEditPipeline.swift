@@ -26,8 +26,9 @@ struct MaskParams {
     var blacks: Float = 0
     var saturation: Float = 1
     var vibrance: Float = 0
-    var activeFlags: UInt32 = 0
-    var _pad: UInt32 = 0
+    var activeFlags: UInt32 = 0  // bit8 = anonymizer; see EditAdjustments.metal MaskParams
+    var anonymizerAmount: Float = 0
+    var anonymizerBlackOut: Float = 0
 }
 
 /// GPU overlay parameters matching the Metal `MaskOverlayParams` struct.
@@ -80,7 +81,7 @@ struct EditParams {
 
     var whiteBalanceMatrix: simd_float3x3 = matrix_identity_float3x3
 
-    var activeFlags: UInt32 = 0  // bit0=toneLUT, bit1=vibrance, bit2=saturation, bit3=whiteBalance, bit4=hdrMode
+    var activeFlags: UInt32 = 0  // bit0=toneLUT, bit1=vibrance, bit2=saturation, bit3=whiteBalance, bit4=hdrMode, bit5=anonymizer
     var maskCount: UInt32 = 0
 
     var scale: SIMD2<Float> = .zero
@@ -110,7 +111,8 @@ struct EditParams {
     // buffer. Drives the per-pixel processing sequence so the global node can be reordered
     // among the masks. Always ≥ 1 (the global node is always present).
     var orderCount: UInt32 = 0
-    var _padOrder: UInt32 = 0
+    var anonymizerAmount: Float = 0   // 0-1 global slider strength, gated by activeFlags bit5
+    var anonymizerBlackOut: Float = 0 // 0 or 1
 }
 
 /// Manages the Metal compute pipeline for real-time edit preview.
@@ -400,6 +402,22 @@ final class MetalEditPipeline: @unchecked Sendable {
 
     // MARK: - Source Texture Upload
 
+    /// Generates a full mip chain for a just-populated source texture, synchronously. The
+    /// Anonymizer effect's mosaic/blur sampling fetches an explicit LOD (compute kernels have
+    /// no implicit screen-space derivatives the way fragment shaders do), so every source
+    /// texture the edit kernel might read from needs mips, not just level 0. Cheap relative to
+    /// the CIContext render that just populated level 0 — a one-time cost per image load/export,
+    /// not per frame.
+    nonisolated private static func generateMipmaps(for texture: MTLTexture, commandQueue: MTLCommandQueue) {
+        guard texture.mipmapLevelCount > 1,
+              let commandBuffer = commandQueue.makeCommandBuffer(),
+              let blit = commandBuffer.makeBlitCommandEncoder() else { return }
+        blit.generateMipmaps(for: texture)
+        blit.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+    }
+
     /// Renders the source CIImage to an MTLTexture. Call once per image load (not per frame).
     /// `exifOrientation` is the orientation already baked into the CIImage's pixels —
     /// used by `updateParams` to transform sensor-frame mask geometry to match.
@@ -414,7 +432,7 @@ final class MetalEditPipeline: @unchecked Sendable {
             pixelFormat: .rgba16Float,
             width: width,
             height: height,
-            mipmapped: false
+            mipmapped: true
         )
         desc.usage = [.shaderRead, .shaderWrite]
         desc.storageMode = .private
@@ -450,6 +468,7 @@ final class MetalEditPipeline: @unchecked Sendable {
 
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
+        Self.generateMipmaps(for: texture, commandQueue: commandQueue)
         setSourceTexture(texture)
         setSourceOrientation(exifOrientation)
         // Share the same texture object with the clean-feed mirror (zero-copy).
@@ -555,6 +574,13 @@ final class MetalEditPipeline: @unchecked Sendable {
             flags |= (1 << 4)
         }
 
+        // 6. Anonymizer (global) — multi-layer redaction effect or full Black Out.
+        if let anon = settings.anonymizer, !anon.isEmpty {
+            params.anonymizerAmount = Float(min(max((anon.amount ?? 0) / 100.0, 0.0), 1.0))
+            params.anonymizerBlackOut = (anon.blackOut == true) ? 1.0 : 0.0
+            flags |= (1 << 5)
+        }
+
         params.activeFlags = flags
 
         // 5. Local mask adjustments. Mask geometry is stored in the sensor (XMP)
@@ -629,6 +655,11 @@ final class MetalEditPipeline: @unchecked Sendable {
                 if let vib = mask.vibrance, vib != 0 {
                     mp.vibrance = Float(Double(vib) / 100.0)
                     maskFlags |= (1 << 7)
+                }
+                if let anon = mask.anonymizer, !anon.isEmpty {
+                    mp.anonymizerAmount = Float(min(max((anon.amount ?? 0) / 100.0, 0.0), 1.0))
+                    mp.anonymizerBlackOut = (anon.blackOut == true) ? 1.0 : 0.0
+                    maskFlags |= (1 << 8)
                 }
                 mp.activeFlags = maskFlags
                 maskPtr[i] = mp
@@ -1154,7 +1185,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         let height = Int(extent.height)
 
         let desc = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .rgba16Float, width: width, height: height, mipmapped: false
+            pixelFormat: .rgba16Float, width: width, height: height, mipmapped: true
         )
         desc.usage = [.shaderRead, .shaderWrite]
         desc.storageMode = .private
@@ -1183,6 +1214,10 @@ final class MetalEditPipeline: @unchecked Sendable {
 
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
+        // Pre-cached textures get promoted to sourceTexture on navigation (applyCachedTexture),
+        // so they need mips too — the Anonymizer effect can't tell a promoted texture apart
+        // from a freshly-uploaded one.
+        Self.generateMipmaps(for: texture, commandQueue: commandQueue)
         textureCache.setObject(MTLTextureWrapper(texture, neutralTemperature: neutralTemperature, neutralTint: neutralTint), forKey: url as NSURL)
     }
 
@@ -1304,7 +1339,7 @@ final class MetalEditPipeline: @unchecked Sendable {
 
         // 1. Upload source CIImage to Metal texture
         let srcDesc = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .rgba16Float, width: width, height: height, mipmapped: false
+            pixelFormat: .rgba16Float, width: width, height: height, mipmapped: true
         )
         srcDesc.usage = [.shaderRead, .shaderWrite]
         srcDesc.storageMode = .private
@@ -1333,6 +1368,9 @@ final class MetalEditPipeline: @unchecked Sendable {
         }
         uploadCmdBuf.commit()
         uploadCmdBuf.waitUntilCompleted()
+        // Export must mosaic/blur at the same fidelity as the live preview — the Anonymizer
+        // kernel fetches an explicit mip level, so this texture needs a full mip chain too.
+        generateMipmaps(for: srcTexture, commandQueue: queue)
 
         // 2. Propagate as-shot WB reference so the ephemeral pipeline computes
         //    the same white balance matrix as the live edit preview.
@@ -1411,6 +1449,7 @@ final class MetalEditPipeline: @unchecked Sendable {
                 && settings.tint == nil && settings.incrementalTint == nil)
         let noMasks = settings.localAdjustments?.isEmpty ?? true
         let noHSL = settings.hslAdjustments?.isEmpty ?? true
-        return noTonal && noVibrance && noSaturation && noWB && noMasks && noHSL
+        let noAnonymizer = settings.anonymizer?.isEmpty ?? true
+        return noTonal && noVibrance && noSaturation && noWB && noMasks && noHSL && noAnonymizer
     }
 }

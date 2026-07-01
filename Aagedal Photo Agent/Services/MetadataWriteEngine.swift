@@ -9,6 +9,9 @@ struct StructuredWriteData: Sendable {
     /// global-first. Carried so the embedded-XMP writer can persist `aaphoto:GlobalLayerIndex`
     /// and write masks in render-stack order, matching the .xmp sidecar.
     var layerOrder: [LayerRef]?
+    /// The global Anonymizer redaction settings (app-private, not an ACR concept). nil means
+    /// "don't touch" for a merge-style write; see `replaceCameraRawBlock` for full-replace writes.
+    var anonymizer: AnonymizerSettings?
 
     /// Replace the file's ENTIRE Camera Raw (crs) namespace block with this
     /// write's content — Adobe-faithful semantics: ACR drops settings it isn't
@@ -23,6 +26,7 @@ struct StructuredWriteData: Sendable {
         (toneCurve == nil || (toneCurve?.isEmpty ?? true))
             && (masks == nil || (masks?.isEmpty ?? true))
             && (hslAdjustments == nil || (hslAdjustments?.isEmpty ?? true))
+            && (anonymizer == nil || (anonymizer?.isEmpty ?? true))
     }
 
     static let empty = StructuredWriteData()
