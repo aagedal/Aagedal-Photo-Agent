@@ -568,3 +568,212 @@ final class MaskOverlayNSView: NSView {
         }
     }
 }
+
+// MARK: - Brush paint overlay (Phase 4)
+
+/// SwiftUI wrapper for the freeform brush-paint overlay — the sibling of
+/// `MaskOverlayRepresentable`, but instead of dragging discrete ellipse handles it interprets a
+/// continuous mouse drag as a paint gesture. It collects spacing-filtered dabs in the DISPLAY
+/// frame, streams each incremental batch to `onStrokeChanged` for immediate GPU feedback while
+/// the user drags, and hands the finished stroke to `onStrokeEnded` on mouse-up for a single
+/// model commit (one undo entry per gesture, matching ellipse dragging).
+struct BrushMaskOverlayRepresentable: NSViewRepresentable {
+    let viewportOrigin: SIMD2<Float>
+    let viewportSize: SIMD2<Float>
+    let viewSize: CGSize
+    let imageSize: CGSize          // display-frame image pixel dimensions
+    let radius: Double             // brush radius as a fraction of the long edge (BrushStroke.radius)
+    let hardness: Double           // 0-1 (dab CenterWeight)
+    let flow: Double               // 0-1 (dab flow)
+    let erase: Bool
+    /// Called on mouse-down: ensure a target brush mask exists and its GPU alpha slice is
+    /// allocated, returning the slice index to live-stamp into (nil aborts the gesture).
+    let onStrokeBegan: () -> Int?
+    /// Called per new dab batch during the drag: the incremental dabs (display frame) + the
+    /// slice to stamp into.
+    let onStrokeChanged: (BrushStroke, Int) -> Void
+    /// Called on mouse-up with the whole gesture's dabs (display frame) for one model commit.
+    let onStrokeEnded: (BrushStroke) -> Void
+
+    func makeNSView(context: Context) -> BrushMaskOverlayNSView {
+        let view = BrushMaskOverlayNSView(coordinator: context.coordinator)
+        context.coordinator.view = view
+        return view
+    }
+
+    func updateNSView(_ nsView: BrushMaskOverlayNSView, context: Context) {
+        context.coordinator.parent = self
+        nsView.viewportOrigin = viewportOrigin
+        nsView.viewportSize = viewportSize
+        nsView.imageSize = imageSize
+        nsView.radius = radius
+        nsView.hardness = hardness
+        nsView.flow = flow
+        nsView.erase = erase
+        nsView.needsDisplay = true
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    final class Coordinator {
+        var parent: BrushMaskOverlayRepresentable
+        weak var view: BrushMaskOverlayNSView?
+        init(parent: BrushMaskOverlayRepresentable) { self.parent = parent }
+    }
+}
+
+/// The paint-capture NSView. Captures every mouse event within the image area (unlike the
+/// ellipse overlay, which only hit-tests near its handles) and draws a brush-size cursor ring.
+final class BrushMaskOverlayNSView: NSView {
+    private weak var coordinator: BrushMaskOverlayRepresentable.Coordinator?
+
+    var viewportOrigin: SIMD2<Float> = .zero
+    var viewportSize: SIMD2<Float> = SIMD2<Float>(1, 1)
+    var imageSize: CGSize = .zero
+    var radius: Double = 0.04
+    var hardness: Double = 0.5
+    var flow: Double = 1.0
+    var erase: Bool = false
+
+    // Active gesture state.
+    private var isPainting = false
+    private var targetLayer = 0
+    private var allDabs: [BrushDab] = []
+    private var lastDabImagePx: CGPoint?
+    private var cursorPoint: CGPoint?
+
+    init(coordinator: BrushMaskOverlayRepresentable.Coordinator) {
+        self.coordinator = coordinator
+        super.init(frame: .zero)
+        wantsLayer = true
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override var isFlipped: Bool { true }        // top-left origin, y-down — matches UV space
+    override var acceptsFirstResponder: Bool { true }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(
+            rect: bounds,
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+            owner: self, userInfo: nil
+        ))
+    }
+
+    // MARK: Coordinate mapping (identical projection to the ellipse overlay)
+
+    private func uv(for point: CGPoint) -> CGPoint {
+        guard bounds.width > 0, bounds.height > 0 else { return .zero }
+        return CGPoint(
+            x: CGFloat(viewportOrigin.x) + (point.x / bounds.width) * CGFloat(viewportSize.x),
+            y: CGFloat(viewportOrigin.y) + (point.y / bounds.height) * CGFloat(viewportSize.y)
+        )
+    }
+    private func imagePx(_ uvPoint: CGPoint) -> CGPoint {
+        CGPoint(x: uvPoint.x * imageSize.width, y: uvPoint.y * imageSize.height)
+    }
+    /// Brush radius projected to screen points. The image is displayed at a uniform scale, so a
+    /// single conversion factor (points per image pixel) covers both axes.
+    private var screenRadius: CGFloat {
+        guard imageSize.width > 0, viewportSize.x > 0, bounds.width > 0 else { return 12 }
+        let longEdgePx = CGFloat(max(imageSize.width, imageSize.height))
+        let ptsPerImagePx = bounds.width / (CGFloat(viewportSize.x) * imageSize.width)
+        return max(2, CGFloat(radius) * longEdgePx * ptsPerImagePx)
+    }
+    /// Minimum cursor travel (image px) between dabs — 25% of the brush diameter, so a slow drag
+    /// doesn't emit thousands of redundant stamps.
+    private var dabSpacingPx: CGFloat {
+        let longEdgePx = CGFloat(max(imageSize.width, imageSize.height))
+        return max(1, 0.5 * CGFloat(radius) * longEdgePx)
+    }
+
+    private func makeDab(at uvPoint: CGPoint) -> BrushDab {
+        BrushDab(x: Double(uvPoint.x), y: Double(uvPoint.y), flow: flow, hardness: hardness)
+    }
+    private func makeStroke(_ dabs: [BrushDab]) -> BrushStroke {
+        BrushStroke(dabs: dabs, radius: radius, density: 1.0, erase: erase)
+    }
+
+    // MARK: Mouse
+
+    override func mouseDown(with event: NSEvent) {
+        guard let coordinator, imageSize.width > 0,
+              let layer = coordinator.parent.onStrokeBegan() else { return }
+        isPainting = true
+        targetLayer = layer
+        allDabs.removeAll(keepingCapacity: true)
+        let loc = convert(event.locationInWindow, from: nil)
+        cursorPoint = loc
+        let uvPoint = uv(for: loc)
+        let dab = makeDab(at: uvPoint)
+        allDabs.append(dab)
+        lastDabImagePx = imagePx(uvPoint)
+        coordinator.parent.onStrokeChanged(makeStroke([dab]), targetLayer)
+        needsDisplay = true
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard isPainting, let coordinator else { return }
+        let loc = convert(event.locationInWindow, from: nil)
+        cursorPoint = loc
+        let uvPoint = uv(for: loc)
+        let px = imagePx(uvPoint)
+        defer { needsDisplay = true }
+        guard let last = lastDabImagePx else { return }
+        let travel = hypot(px.x - last.x, px.y - last.y)
+        guard travel >= dabSpacingPx else { return }
+        // Interpolate intermediate dabs so a fast drag lays down a continuous line, not gaps.
+        let steps = max(1, Int(travel / dabSpacingPx))
+        let startUV = allDabs.last.map { CGPoint(x: $0.x, y: $0.y) } ?? uvPoint
+        var newDabs: [BrushDab] = []
+        for s in 1...steps {
+            let t = CGFloat(s) / CGFloat(steps)
+            let interp = CGPoint(x: startUV.x + (uvPoint.x - startUV.x) * t,
+                                 y: startUV.y + (uvPoint.y - startUV.y) * t)
+            newDabs.append(makeDab(at: interp))
+        }
+        allDabs.append(contentsOf: newDabs)
+        lastDabImagePx = px
+        coordinator.parent.onStrokeChanged(makeStroke(newDabs), targetLayer)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard isPainting, let coordinator else { return }
+        isPainting = false
+        let stroke = makeStroke(allDabs)
+        allDabs.removeAll(keepingCapacity: true)
+        lastDabImagePx = nil
+        needsDisplay = true
+        guard !stroke.dabs.isEmpty else { return }
+        coordinator.parent.onStrokeEnded(stroke)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        cursorPoint = convert(event.locationInWindow, from: nil)
+        needsDisplay = true
+    }
+    override func mouseExited(with event: NSEvent) {
+        cursorPoint = nil
+        needsDisplay = true
+    }
+
+    // MARK: Cursor
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let point = cursorPoint else { return }
+        let r = screenRadius
+        let rect = NSRect(x: point.x - r, y: point.y - r, width: r * 2, height: r * 2)
+        // Double-stroked ring (light over dark) stays visible over any image content.
+        NSColor.black.withAlphaComponent(0.55).setStroke()
+        let outer = NSBezierPath(ovalIn: rect)
+        outer.lineWidth = 2.5
+        outer.stroke()
+        (erase ? NSColor.systemRed : NSColor.white).setStroke()
+        let inner = NSBezierPath(ovalIn: rect)
+        inner.lineWidth = 1.0
+        inner.stroke()
+    }
+}

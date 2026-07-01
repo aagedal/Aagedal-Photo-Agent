@@ -1848,6 +1848,28 @@ struct BrushMaskTests {
         #expect(parsed.preserved.count == 1)
     }
 
+    @Test("brush dabs survive a display↔sensor orientation round-trip for every EXIF value")
+    func brushOrientationRoundTrips() {
+        let geo = BrushMaskGeometry(strokes: [
+            BrushStroke(dabs: [BrushDab(x: 0.1, y: 0.2, flow: 0.6, hardness: 0.3),
+                               BrushDab(x: 0.8, y: 0.55, flow: 0.6, hardness: 0.3)],
+                        radius: 0.12, density: 1.0, erase: false)
+        ])
+        for orientation in 1...8 {
+            let display = geo.transformedForDisplay(orientation: orientation)
+            let back = display.transformedForSensor(orientation: orientation)
+            for (a, b) in zip(back.strokes[0].dabs, geo.strokes[0].dabs) {
+                #expect(abs(a.x - b.x) < 1e-9)
+                #expect(abs(a.y - b.y) < 1e-9)
+            }
+            // A 90° family swap must actually move the point (not a no-op) except O=1.
+            if orientation > 1 {
+                #expect(display.strokes[0].dabs[0].x != geo.strokes[0].dabs[0].x
+                        || display.strokes[0].dabs[0].y != geo.strokes[0].dabs[0].y)
+            }
+        }
+    }
+
     @Test("encodes a brush mask into a nested Mask/Aggregate → Masks → Dabs node tree")
     func encodesBrushMask() throws {
         var mask = MaskAdjustment(name: "Painted")
@@ -2054,6 +2076,40 @@ struct BrushRasterizationTests {
         let tex = try #require(pipeline.rebuildBrushAlpha([brush], size: size))
         let px = readSlice(tex, slice: 0)
         #expect(px[32 * 64 + 32] < 0.01)   // added then fully erased
+    }
+
+    @Test("live-stamping adds dabs into an existing slice without a full rebuild")
+    func liveStampAccumulates() throws {
+        guard let pipeline = makePipeline() else { return }
+        let size = MTLSize(width: 64, height: 64, depth: 1)
+        // Seed a texture with one stroke, then live-stamp a second dab elsewhere in the slice.
+        let seed = BrushMaskGeometry(strokes: [
+            BrushStroke(dabs: [BrushDab(x: 0.25, y: 0.25, flow: 1.0, hardness: 1.0)],
+                        radius: 0.15, density: 1.0, erase: false)
+        ])
+        _ = try #require(pipeline.rebuildBrushAlpha([seed], size: size))
+        let stamped = pipeline.stampBrushStroke(
+            BrushStroke(dabs: [BrushDab(x: 0.75, y: 0.75, flow: 1.0, hardness: 1.0)],
+                        radius: 0.15, density: 1.0, erase: false),
+            layer: 0
+        )
+        #expect(stamped)
+        let px = readSlice(try #require(pipeline.brushAlphaTexture), slice: 0)
+        func at(_ x: Int, _ y: Int) -> Float { px[y * 64 + x] }
+        #expect(at(16, 16) > 0.5)   // original dab survived
+        #expect(at(48, 48) > 0.5)   // live-stamped dab is present
+    }
+
+    @Test("live-stamping into an out-of-range or missing slice is a safe no-op")
+    func liveStampGuards() {
+        guard let pipeline = makePipeline() else { return }
+        // No texture allocated yet → no-op, returns false.
+        let stroke = BrushStroke(dabs: [BrushDab(x: 0.5, y: 0.5, flow: 1.0, hardness: 1.0)],
+                                 radius: 0.2, density: 1.0, erase: false)
+        #expect(pipeline.stampBrushStroke(stroke, layer: 0) == false)
+        _ = pipeline.rebuildBrushAlpha([BrushMaskGeometry(strokes: [stroke])],
+                                       size: MTLSize(width: 32, height: 32, depth: 1))
+        #expect(pipeline.stampBrushStroke(stroke, layer: 5) == false)   // slice 5 doesn't exist
     }
 
     @Test("each brush mask rasterizes into its own independent array slice")

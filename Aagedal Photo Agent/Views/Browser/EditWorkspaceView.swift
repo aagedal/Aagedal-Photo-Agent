@@ -82,6 +82,14 @@ struct EditWorkspaceView: View {
     @State private var isPickingWhiteBalance = false
     /// Live marquee rectangle (preview-pane coordinates) drawn while dragging a WB sample.
     @State private var wbPickDragRect: CGRect?
+
+    // Freeform brush-paint tool (bare "B"). Settings are transient UI state describing what's
+    // about to be painted — already-painted strokes keep whatever they were painted with.
+    @State private var isBrushPainting = false
+    @State private var brushRadius: Double = 0.04     // fraction of the long edge (BrushStroke.radius)
+    @State private var brushHardness: Double = 0.5    // 0-1 dab CenterWeight
+    @State private var brushFlow: Double = 0.8        // 0-1 dab flow
+    @State private var brushErase = false             // subtract from the mask instead of adding
     @FocusState private var isWorkspaceFocused: Bool
 
     private static let previewBackground = Color(red: 0.15, green: 0.15, blue: 0.15)
@@ -547,10 +555,13 @@ struct EditWorkspaceView: View {
                                 .fill(Self.previewBackground, style: FillStyle(eoFill: true))
                                 .allowsHitTesting(false)
 
-                                // Ellipse mask overlay (crop-applied path)
+                                // Ellipse mask overlay (crop-applied path) — ellipse masks only,
+                                // suppressed while the brush tool owns the mouse.
                                 if let maskIdx = selectedMaskIndex,
                                    let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
                                    maskIdx < masks.count,
+                                   masks[maskIdx].brush == nil,
+                                   !isBrushPainting,
                                    !isShowingBefore {
                                     let cropVpOrigin = SIMD2<Float>(
                                         Float(-imageRect.minX / imageRect.width),
@@ -621,6 +632,17 @@ struct EditWorkspaceView: View {
                                     )
                                     .frame(width: geometry.size.width, height: geometry.size.height)
                                 }
+
+                                // Freeform brush paint overlay (crop-applied path).
+                                let brushVpOrigin = SIMD2<Float>(
+                                    Float(-imageRect.minX / imageRect.width),
+                                    Float(-imageRect.minY / imageRect.height)
+                                )
+                                let brushVpSize = SIMD2<Float>(
+                                    Float(geometry.size.width / imageRect.width),
+                                    Float(geometry.size.height / imageRect.height)
+                                )
+                                brushOverlay(viewportOrigin: brushVpOrigin, viewportSize: brushVpSize, viewSize: geometry.size)
                             }
                             .frame(width: geometry.size.width, height: geometry.size.height)
                             .scaleEffect(editZoomScale)
@@ -643,10 +665,13 @@ struct EditWorkspaceView: View {
                             )
                                 .frame(width: geometry.size.width, height: geometry.size.height)
 
-                            // Ellipse mask overlay
+                            // Ellipse mask overlay — only for ellipse masks, and not while the
+                            // brush tool is active (its overlay owns the mouse then).
                             if let maskIdx = selectedMaskIndex,
                                let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
                                maskIdx < masks.count,
+                               masks[maskIdx].brush == nil,
+                               !isBrushPainting,
                                !isShowingBefore {
                                 MaskOverlayRepresentable(
                                     viewportOrigin: vpOrigin,
@@ -705,6 +730,9 @@ struct EditWorkspaceView: View {
                                 )
                                 .frame(width: geometry.size.width, height: geometry.size.height)
                             }
+
+                            // Freeform brush paint overlay (bare "B").
+                            brushOverlay(viewportOrigin: vpOrigin, viewportSize: vpSize, viewSize: geometry.size)
                         }
                         .frame(width: geometry.size.width, height: geometry.size.height)
                         .gesture(editPanGesture(in: geometry.size, imageSize: imageSize))
@@ -877,6 +905,10 @@ struct EditWorkspaceView: View {
                 if canEditSingleImage {
                     // ── Mask Selector ──
                     maskSelectorBar
+
+                    if isBrushPainting {
+                        brushToolbar
+                    }
 
                     if selectedMaskIndex != nil {
                         maskAdjustmentSliders
@@ -3125,6 +3157,46 @@ struct EditWorkspaceView: View {
         }
     }
 
+    /// Transient brush-settings toolbar, shown only while the brush tool is active. These settings
+    /// describe what's about to be painted; already-painted strokes keep their own settings.
+    private var brushToolbar: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "paintbrush.pointed")
+                Text("Brush").font(.system(size: 11, weight: .semibold))
+                Spacer()
+                Picker("", selection: $brushErase) {
+                    Text("Add").tag(false)
+                    Text("Erase").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 120)
+                .labelsHidden()
+            }
+            brushSlider("Size", value: $brushRadius, range: 0.005...0.20)
+            brushSlider("Hardness", value: $brushHardness, range: 0...1)
+            brushSlider("Flow", value: $brushFlow, range: 0.05...1)
+            Text("Drag on the image to paint. Press B to exit.")
+                .font(.system(size: 9))
+                .foregroundStyle(.secondary)
+        }
+        .padding(8)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func brushSlider(_ label: String, value: Binding<Double>, range: ClosedRange<Double>) -> some View {
+        HStack(spacing: 8) {
+            Text(label)
+                .font(.system(size: 10))
+                .frame(width: 58, alignment: .leading)
+            Slider(value: value, in: range)
+            Text(String(format: "%.0f%%", value.wrappedValue / range.upperBound * 100))
+                .font(.system(size: 10).monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 34, alignment: .trailing)
+        }
+    }
+
     /// Resolved processing order of the current edit (defaults to `[.global]` when there are
     /// no settings yet), driving both the card strip and the render pipeline.
     private var resolvedLayerOrder: [LayerRef] {
@@ -3696,6 +3768,115 @@ struct EditWorkspaceView: View {
         }
         selectedLayer = .mask(newMask.id)
         commitEditAdjustments()
+    }
+
+    // MARK: - Brush paint tool
+
+    /// Creates an empty freeform brush mask, selects it, and returns its id. Called lazily on the
+    /// first paint gesture when no brush mask is selected (like `addNewMask` for ellipses).
+    private func addNewBrushMask() -> UUID {
+        let existingCount = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?.count ?? 0
+        let newMask = MaskAdjustment(name: "Brush \(existingCount + 1)", brush: BrushMaskGeometry(strokes: []))
+        updateCameraRaw { cameraRaw in
+            if cameraRaw.localAdjustments == nil { cameraRaw.localAdjustments = [] }
+            cameraRaw.localAdjustments?.append(newMask)
+            if cameraRaw.layerOrder != nil {
+                cameraRaw.layerOrder?.append(.mask(newMask.id))
+            }
+        }
+        selectedLayer = .mask(newMask.id)
+        return newMask.id
+    }
+
+    /// The GPU alpha-array slice index for a brush mask, mirroring `MetalEditPipeline.updateParams`'
+    /// slice assignment (enabled masks in order, capped to the pipeline's mask limit, brush ones
+    /// numbered as encountered). Returns nil if the id isn't an enabled brush mask.
+    private func brushSliceIndex(forMaskID id: UUID) -> Int? {
+        guard let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments else { return nil }
+        var slice = 0
+        for mask in masks.filter({ $0.enabled }).prefix(8) {
+            if mask.id == id { return mask.brush != nil ? slice : nil }
+            if mask.brush != nil { slice += 1 }
+        }
+        return nil
+    }
+
+    /// Maps a display-frame stroke to the sensor (XMP) frame for storage — the inverse of the
+    /// EXIF-orientation transform the render path applies. (Crop straighten isn't applied to brush
+    /// dabs; painting on a straightened-but-unconfirmed image is an edge case, flagged for later.)
+    private func brushStrokeForSensor(_ stroke: BrushStroke) -> BrushStroke {
+        let orientation = selectedImageOrientation
+        guard orientation > 1 else { return stroke }
+        let g = BrushMaskGeometry(strokes: [stroke]).transformedForSensor(orientation: orientation)
+        return g.strokes.first ?? stroke
+    }
+
+    /// `onStrokeBegan`: resolve the target brush mask (selected one, or a fresh mask), make sure
+    /// the pipeline has rebuilt so the mask's alpha slice exists, and return that slice index.
+    private func ensureBrushTarget() -> Int? {
+        let targetID: UUID
+        if let id = selectedMaskID,
+           let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
+           masks.first(where: { $0.id == id })?.brush != nil {
+            targetID = id
+        } else {
+            targetID = addNewBrushMask()
+        }
+        // Rebuild params so a freshly-created mask's alpha slice is allocated before live stamping.
+        if let pipeline = metalPipeline, pipeline.hasSourceTexture {
+            pipeline.updateParams(settingsForPipeline(metadataViewModel.editingMetadata.cameraRaw))
+        }
+        return brushSliceIndex(forMaskID: targetID)
+    }
+
+    /// `onStrokeChanged`: stamp the incremental dabs straight into the GPU alpha slice for
+    /// immediate feedback (the dabs are already display-frame, matching the display-oriented
+    /// alpha texture), then request a redraw. Transient — the model isn't touched until commit.
+    private func liveBrushStamp(_ stroke: BrushStroke, layer: Int) {
+        guard let pipeline = metalPipeline, pipeline.hasSourceTexture else { return }
+        pipeline.stampBrushStroke(stroke, layer: layer)
+        metalCoordinator.requestRedraw()
+    }
+
+    /// `onStrokeEnded`: append the finished gesture to the selected brush mask as ONE undo entry,
+    /// then rebuild the authoritative alpha from the model.
+    private func commitBrushStroke(_ stroke: BrushStroke) {
+        guard let id = selectedMaskID else { return }
+        let sensorStroke = brushStrokeForSensor(stroke)
+        updateCameraRaw { cameraRaw in
+            guard let idx = cameraRaw.localAdjustments?.firstIndex(where: { $0.id == id }) else { return }
+            if cameraRaw.localAdjustments?[idx].brush == nil {
+                cameraRaw.localAdjustments?[idx].brush = BrushMaskGeometry(strokes: [])
+            }
+            cameraRaw.localAdjustments?[idx].brush?.strokes.append(sensorStroke)
+        }
+        if let pipeline = metalPipeline, pipeline.hasSourceTexture {
+            pipeline.updateParams(settingsForPipeline(metadataViewModel.editingMetadata.cameraRaw))
+            metalCoordinator.requestRedraw()
+        }
+        commitEditAdjustments()
+    }
+
+    /// The paint overlay, parameterised by the region's viewport so it works in both the normal-fit
+    /// and crop-applied preview layouts.
+    @ViewBuilder
+    private func brushOverlay(viewportOrigin: SIMD2<Float>, viewportSize: SIMD2<Float>, viewSize: CGSize) -> some View {
+        if isBrushPainting, !isShowingBefore, canEditSingleImage, let imgSize = currentImageSize {
+            BrushMaskOverlayRepresentable(
+                viewportOrigin: viewportOrigin,
+                viewportSize: viewportSize,
+                viewSize: viewSize,
+                imageSize: imgSize,
+                radius: brushRadius,
+                hardness: brushHardness,
+                flow: brushFlow,
+                erase: brushErase,
+                onStrokeBegan: { ensureBrushTarget() },
+                onStrokeChanged: { stroke, layer in liveBrushStamp(stroke, layer: layer) },
+                onStrokeEnded: { stroke in commitBrushStroke(stroke) }
+            )
+            .frame(width: viewSize.width, height: viewSize.height)
+        }
     }
 
     private func deleteSelectedMask() {
@@ -4452,11 +4633,20 @@ struct EditWorkspaceView: View {
         }
 
         // J — add a new ellipse (radial) mask. Bare-letter tool shortcut, matching the
-        // Photoshop-style convention (a future brush mask tool would be bare "B");
+        // Photoshop-style convention (the brush mask tool is bare "B", below);
         // Cmd+J still works too (menu item).
         if chars == "j" && modifiers.isDisjoint(with: [.command, .option, .control]) {
             guard canEditSingleImage else { return event }
             addNewMask()
+            return nil
+        }
+
+        // B — toggle the freeform brush paint tool (Photoshop convention). Turning it on
+        // deselects the WB eyedropper so the two drag-driven tools don't fight over the mouse.
+        if chars == "b" && modifiers.isDisjoint(with: [.command, .option, .control]) {
+            guard canEditSingleImage else { return event }
+            isBrushPainting.toggle()
+            if isBrushPainting { isPickingWhiteBalance = false }
             return nil
         }
 

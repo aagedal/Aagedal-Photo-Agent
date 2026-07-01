@@ -948,39 +948,9 @@ final class MetalEditPipeline: @unchecked Sendable {
 
         encoder.setComputePipelineState(stampState)
         encoder.setTexture(tex, index: 0)
-        let stampTG = MTLSize(width: 16, height: 16, depth: 1)
         for (layer, mask) in brushMasks.prefix(layers).enumerated() {
             for stroke in mask.strokes {
-                let radiusPx = Self.brushRadiusPixels(normalized: stroke.radius, size: size)
-                guard radiusPx > 0 else { continue }
-                let density = Float(stroke.density)
-                let erase: UInt32 = stroke.erase ? 1 : 0
-                for dab in stroke.dabs {
-                    let cx = Double(dab.x) * Double(size.width)
-                    let cy = Double(dab.y) * Double(size.height)
-                    let r = Double(radiusPx)
-                    let minX = max(0, Int((cx - r).rounded(.down)))
-                    let minY = max(0, Int((cy - r).rounded(.down)))
-                    let maxX = min(size.width, Int((cx + r).rounded(.up)))
-                    let maxY = min(size.height, Int((cy + r).rounded(.up)))
-                    let boxW = maxX - minX
-                    let boxH = maxY - minY
-                    guard boxW > 0, boxH > 0 else { continue }
-                    var p = BrushDabParams()
-                    p.center = SIMD2<Float>(Float(dab.x), Float(dab.y))
-                    p.radiusPx = radiusPx
-                    p.hardness = Float(dab.hardness)
-                    p.flow = Float(dab.flow)
-                    p.density = density
-                    p.erase = erase
-                    p.layer = UInt32(layer)
-                    p.originPx = SIMD2<UInt32>(UInt32(minX), UInt32(minY))
-                    encoder.setBytes(&p, length: MemoryLayout<BrushDabParams>.stride, index: 0)
-                    encoder.dispatchThreads(
-                        MTLSize(width: boxW, height: boxH, depth: 1),
-                        threadsPerThreadgroup: stampTG
-                    )
-                }
+                Self.encodeStroke(stroke, layer: layer, size: size, into: encoder)
             }
         }
 
@@ -989,6 +959,69 @@ final class MetalEditPipeline: @unchecked Sendable {
         commandBuffer.waitUntilCompleted()
         brushAlphaTexture = tex
         return tex
+    }
+
+    /// Encodes one stroke's dabs as `stampBrush` dispatches into `encoder` (which must already
+    /// have the stamp pipeline state + alpha texture bound), each bounded to that dab's bounding
+    /// box. Shared by the full rebuild and the incremental live-paint path.
+    nonisolated private static func encodeStroke(
+        _ stroke: BrushStroke, layer: Int, size: MTLSize, into encoder: MTLComputeCommandEncoder
+    ) {
+        let radiusPx = brushRadiusPixels(normalized: stroke.radius, size: size)
+        guard radiusPx > 0 else { return }
+        let density = Float(stroke.density)
+        let erase: UInt32 = stroke.erase ? 1 : 0
+        let stampTG = MTLSize(width: 16, height: 16, depth: 1)
+        for dab in stroke.dabs {
+            let cx = Double(dab.x) * Double(size.width)
+            let cy = Double(dab.y) * Double(size.height)
+            let r = Double(radiusPx)
+            let minX = max(0, Int((cx - r).rounded(.down)))
+            let minY = max(0, Int((cy - r).rounded(.down)))
+            let maxX = min(size.width, Int((cx + r).rounded(.up)))
+            let maxY = min(size.height, Int((cy + r).rounded(.up)))
+            let boxW = maxX - minX
+            let boxH = maxY - minY
+            guard boxW > 0, boxH > 0 else { continue }
+            var p = BrushDabParams()
+            p.center = SIMD2<Float>(Float(dab.x), Float(dab.y))
+            p.radiusPx = radiusPx
+            p.hardness = Float(dab.hardness)
+            p.flow = Float(dab.flow)
+            p.density = density
+            p.erase = erase
+            p.layer = UInt32(layer)
+            p.originPx = SIMD2<UInt32>(UInt32(minX), UInt32(minY))
+            encoder.setBytes(&p, length: MemoryLayout<BrushDabParams>.stride, index: 0)
+            encoder.dispatchThreads(
+                MTLSize(width: boxW, height: boxH, depth: 1),
+                threadsPerThreadgroup: stampTG
+            )
+        }
+    }
+
+    /// Live-paint entry: stamps `stroke`'s dabs into an EXISTING slice of `brushAlphaTexture`
+    /// without a clear/rebuild, for immediate feedback while the user drags. The slice must
+    /// already exist (allocated by a prior `refreshBrushAlpha`, e.g. because an empty brush mask
+    /// was committed on gesture start). Transient: the authoritative alpha is rebuilt from the
+    /// model on `mouseUp` when the finished stroke is committed and `updateParams` runs. No-op if
+    /// the pipeline/texture is missing or `layer` is out of range. Returns true if it dispatched.
+    @discardableResult
+    nonisolated func stampBrushStroke(_ stroke: BrushStroke, layer: Int) -> Bool {
+        guard let stampState = stampBrushPipelineState,
+              let tex = brushAlphaTexture,
+              layer >= 0, layer < tex.arrayLength,
+              !stroke.dabs.isEmpty,
+              let commandBuffer = commandQueue.makeCommandBuffer(),
+              let encoder = commandBuffer.makeComputeCommandEncoder() else { return false }
+        let size = MTLSize(width: tex.width, height: tex.height, depth: 1)
+        encoder.setComputePipelineState(stampState)
+        encoder.setTexture(tex, index: 0)
+        Self.encodeStroke(stroke, layer: layer, size: size, into: encoder)
+        encoder.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        return true
     }
 
     /// Frees the brush alpha texture (e.g. when the last brush mask is removed).
