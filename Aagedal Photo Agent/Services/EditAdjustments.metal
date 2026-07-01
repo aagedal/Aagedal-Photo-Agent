@@ -611,23 +611,22 @@ kernel void editAdjustments(
             if (weight < 0.001) continue;
             half3 adjusted;
             if (mask.activeFlags & (1u << 8)) {
-                // Anonymizer replaces (rather than composes with) the mask's other tonal
-                // adjustments — pixelating an exposure-shifted value is pointless once the
-                // pixelation has already destroyed the detail exposure would reveal. The
-                // feathered mix below still applies, so mask edges soften normally.
+                // Anonymizer: pixelate first (it re-samples the RAW source, so detail exposure
+                // would reveal is already destroyed), THEN apply the same adjustments the rest of
+                // the image gets so the patch matches — global (if it's already run; a later
+                // global node adjusts this region itself, so skip to avoid doubling) and the
+                // mask's OWN tonal adjustments (exposure/contrast/temp/tint/…). Black Out is a
+                // full redaction, so no adjustments apply to it. The feathered mix below still
+                // softens the mask edges.
                 if (mask.anonymizerBlackOut > 0.5) {
                     adjusted = half3(0.0h, 0.0h, 0.0h);
                 } else {
                     float blockPx = anonymizerBlockSize(mask.anonymizerAmount, params.sourceSize);
                     adjusted = sampleAnonymized(source, uv, params.sourceSize, blockPx);
-                    // The mosaic re-samples the RAW source, discarding whatever the running
-                    // color had accumulated — so re-apply the global adjustments if they've
-                    // already run, otherwise the anonymized patch (raw) won't match the
-                    // surrounding globally-adjusted pixels. If the global node runs LATER in the
-                    // order, it adjusts this region then, so we skip it here to avoid doubling.
                     if (globalApplied) {
                         adjusted = applyGlobal(adjusted, params, toneLUT, hslParams);
                     }
+                    adjusted = applyMaskColor(adjusted, mask);
                 }
             } else {
                 adjusted = applyMaskColor(rgb, mask);

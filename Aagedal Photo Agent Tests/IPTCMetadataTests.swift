@@ -2250,6 +2250,27 @@ struct BrushCompositingTests {
         #expect(abs(center - corner) < 0.1)
     }
 
+    @Test("a mask's own exposure adjustment applies to its anonymized region")
+    func anonymizerReceivesMaskAdjustment() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else { return }
+        var mask = MaskAdjustment()
+        mask.brush = BrushMaskGeometry(strokes: [
+            BrushStroke(dabs: [BrushDab(x: 0.5, y: 0.5, flow: 1.0, hardness: 1.0)],
+                        radius: 0.3, density: 1.0, erase: false)
+        ])
+        var anon = AnonymizerSettings()
+        anon.amount = 50
+        mask.anonymizer = anon
+        mask.exposure = 1.0                 // the mask's OWN exposure (+1 EV), no global edit
+        var settings = CameraRawSettings()
+        settings.localAdjustments = [mask]
+        let result = try #require(MetalEditPipeline.renderOffscreen(source: solidGray(0.3), settings: settings))
+        let center = sample(result, x: 32, y: 32)   // anonymized + mask exposure
+        let corner = sample(result, x: 3, y: 3)     // untouched (outside the mask)
+        #expect(abs(corner - 0.3) < 0.03)   // outside the mask stays raw
+        #expect(center > 0.45)              // pixelated region brightened by the mask's exposure
+    }
+
     @Test("the ellipse (SDF) mask path still renders after the maskType branch")
     func ellipseMaskStillRenders() throws {
         guard MTLCreateSystemDefaultDevice() != nil else { return }
