@@ -906,7 +906,7 @@ struct EditWorkspaceView: View {
                     // ── Mask Selector ──
                     maskSelectorBar
 
-                    if isBrushPainting {
+                    if isBrushPainting || selectedMaskIsBrush {
                         brushToolbar
                     }
 
@@ -3157,26 +3157,40 @@ struct EditWorkspaceView: View {
         }
     }
 
-    /// Transient brush-settings toolbar, shown only while the brush tool is active. These settings
-    /// describe what's about to be painted; already-painted strokes keep their own settings.
+    /// Whether the currently-selected layer is a freeform brush mask.
+    private var selectedMaskIsBrush: Bool {
+        guard let id = selectedMaskID else { return false }
+        return metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?
+            .first(where: { $0.id == id })?.brush != nil
+    }
+
+    /// Brush-settings toolbar, shown while the brush tool is active or a brush mask is selected.
+    /// The "Paint" toggle mirrors the bare-`B` shortcut so the tool is discoverable without it;
+    /// the sliders describe what's about to be painted (already-painted strokes keep their own).
     private var brushToolbar: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 Image(systemName: "paintbrush.pointed")
                 Text("Brush").font(.system(size: 11, weight: .semibold))
                 Spacer()
-                Picker("", selection: $brushErase) {
-                    Text("Add").tag(false)
-                    Text("Erase").tag(true)
+                Toggle(isOn: $isBrushPainting) {
+                    Text(isBrushPainting ? "Painting" : "Paint")
                 }
-                .pickerStyle(.segmented)
-                .frame(width: 120)
-                .labelsHidden()
+                .toggleStyle(.button)
+                .controlSize(.small)
+                .help("Toggle the paint tool (shortcut: B)")
             }
+            Picker("", selection: $brushErase) {
+                Text("Add").tag(false)
+                Text("Erase").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
             brushSlider("Size", value: $brushRadius, range: 0.005...0.20)
             brushSlider("Hardness", value: $brushHardness, range: 0...1)
             brushSlider("Flow", value: $brushFlow, range: 0.05...1)
-            Text("Drag on the image to paint. Press B to exit.")
+            Text(isBrushPainting ? "Drag on the image to paint. Press B to exit."
+                                 : "Turn on Paint (or press B), then drag on the image.")
                 .font(.system(size: 9))
                 .foregroundStyle(.secondary)
         }

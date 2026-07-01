@@ -683,11 +683,12 @@ final class BrushMaskOverlayNSView: NSView {
         let ptsPerImagePx = bounds.width / (CGFloat(viewportSize.x) * imageSize.width)
         return max(2, CGFloat(radius) * longEdgePx * ptsPerImagePx)
     }
-    /// Minimum cursor travel (image px) between dabs — 25% of the brush diameter, so a slow drag
-    /// doesn't emit thousands of redundant stamps.
+    /// Minimum cursor travel (image px) between dabs — ~10% of the brush diameter. Tight enough
+    /// that overlapping soft dabs read as a continuous stroke (not a string of scalloped blobs),
+    /// but coarse enough to avoid thousands of redundant stamps on a slow drag.
     private var dabSpacingPx: CGFloat {
         let longEdgePx = CGFloat(max(imageSize.width, imageSize.height))
-        return max(1, 0.5 * CGFloat(radius) * longEdgePx)
+        return max(1, 0.2 * CGFloat(radius) * longEdgePx)
     }
 
     private func makeDab(at uvPoint: CGPoint) -> BrushDab {
@@ -726,7 +727,8 @@ final class BrushMaskOverlayNSView: NSView {
         let travel = hypot(px.x - last.x, px.y - last.y)
         guard travel >= dabSpacingPx else { return }
         // Interpolate intermediate dabs so a fast drag lays down a continuous line, not gaps.
-        let steps = max(1, Int(travel / dabSpacingPx))
+        // `ceil` keeps every inter-dab step at or below the target spacing (no residual gap).
+        let steps = max(1, Int((travel / dabSpacingPx).rounded(.up)))
         let startUV = allDabs.last.map { CGPoint(x: $0.x, y: $0.y) } ?? uvPoint
         var newDabs: [BrushDab] = []
         for s in 1...steps {
