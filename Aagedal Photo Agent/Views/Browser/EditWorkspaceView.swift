@@ -398,6 +398,9 @@ struct EditWorkspaceView: View {
             // static display with interactive handles. Metal overlay is only used
             // during active mask drags for real-time feedback.
             metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
+            // Leaving a brush layer (e.g. after deleting one) exits paint mode, so the brush
+            // controls don't linger on Global or radial layers. Selecting a brush layer keeps it.
+            if !selectedMaskIsBrush { isBrushPainting = false }
             syncMaskOverlayTarget()
             metalCoordinator.requestRedraw()
         }
@@ -3257,18 +3260,20 @@ struct EditWorkspaceView: View {
     /// to fill a layer-card slot, so adding either mask kind is a single click.
     private func addMaskMiniButton(kind: LayerKind, help: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            RoundedRectangle(cornerRadius: 6)
-                .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [3]))
-                .foregroundStyle(.secondary)
-                .frame(width: 56, height: 26)
-                .overlay(
-                    HStack(spacing: 5) {
-                        Image(systemName: kind.systemImage)
-                        Image(systemName: "plus").font(.system(size: 9, weight: .bold))
-                    }
-                    .font(.system(size: 12))
+            HStack(spacing: 5) {
+                Image(systemName: kind.systemImage)
+                Image(systemName: "plus").font(.system(size: 9, weight: .bold))
+            }
+            .font(.system(size: 12))
+            .foregroundStyle(.secondary)
+            .frame(width: 56, height: 26)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [3]))
                     .foregroundStyle(.secondary)
-                )
+            )
+            // The whole frame is the hit area, not just the (stroked) border + icon pixels.
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help(help)
