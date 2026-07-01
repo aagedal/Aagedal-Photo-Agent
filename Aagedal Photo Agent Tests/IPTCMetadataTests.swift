@@ -2227,6 +2227,29 @@ struct BrushCompositingTests {
         #expect(abs(corner - 0.4) < 0.05)       // unpainted corner ~unchanged (~0.4)
     }
 
+    @Test("a brush anonymizer mask still receives the global exposure adjustment")
+    func anonymizerReceivesGlobalAdjustment() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else { return }
+        var mask = MaskAdjustment()
+        mask.brush = BrushMaskGeometry(strokes: [
+            BrushStroke(dabs: [BrushDab(x: 0.5, y: 0.5, flow: 1.0, hardness: 1.0)],
+                        radius: 0.3, density: 1.0, erase: false)
+        ])
+        var anon = AnonymizerSettings()
+        anon.amount = 50
+        mask.anonymizer = anon
+        var settings = CameraRawSettings()
+        settings.exposure2012 = 1.0        // global brighten (~+1 EV)
+        settings.localAdjustments = [mask]
+        let result = try #require(MetalEditPipeline.renderOffscreen(source: solidGray(0.3), settings: settings))
+        let center = sample(result, x: 32, y: 32)   // anonymized region
+        let corner = sample(result, x: 3, y: 3)     // only the global adjustment
+        // The anonymized patch must be brightened by the global exposure like its surroundings,
+        // not stuck at the raw source value (0.3). On a flat field the two should match closely.
+        #expect(center > 0.4)
+        #expect(abs(center - corner) < 0.1)
+    }
+
     @Test("the ellipse (SDF) mask path still renders after the maskType branch")
     func ellipseMaskStillRenders() throws {
         guard MTLCreateSystemDefaultDevice() != nil else { return }

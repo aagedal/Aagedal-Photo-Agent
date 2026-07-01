@@ -586,12 +586,14 @@ kernel void editAdjustments(
     // transforms the running color in sequence, so moving the global node before/after a
     // mask changes the result. Legacy edits resolve to [global, mask0, mask1, …], which
     // reproduces the previous fixed "global first, then masks" behavior exactly.
+    bool globalApplied = false;
     for (uint k = 0; k < params.orderCount; k++) {
         uint entry = order[k];
         if (entry >= params.maskCount) {
             // Global node: the order buffer uses 0xFFFFFFFF as the global sentinel
             // (MetalEditPipeline.globalOrderSentinel); any index ≥ maskCount is global.
             rgb = applyGlobal(rgb, params, toneLUT, hslParams);
+            globalApplied = true;
         } else {
             constant MaskParams &mask = masks[entry];
             // Brush masks resolve their coverage from the pre-rasterized alpha array (sampled
@@ -618,6 +620,14 @@ kernel void editAdjustments(
                 } else {
                     float blockPx = anonymizerBlockSize(mask.anonymizerAmount, params.sourceSize);
                     adjusted = sampleAnonymized(source, uv, params.sourceSize, blockPx);
+                    // The mosaic re-samples the RAW source, discarding whatever the running
+                    // color had accumulated — so re-apply the global adjustments if they've
+                    // already run, otherwise the anonymized patch (raw) won't match the
+                    // surrounding globally-adjusted pixels. If the global node runs LATER in the
+                    // order, it adjusts this region then, so we skip it here to avoid doubling.
+                    if (globalApplied) {
+                        adjusted = applyGlobal(adjusted, params, toneLUT, hslParams);
+                    }
                 }
             } else {
                 adjusted = applyMaskColor(rgb, mask);
