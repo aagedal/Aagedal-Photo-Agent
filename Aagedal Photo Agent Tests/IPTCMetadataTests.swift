@@ -665,6 +665,29 @@ struct MalformedMetadataNumericTests {
         #expect(mask.contrast == 30)
     }
 
+    /// Values lifted verbatim from a real ACR-authored mask (crs:LocalTemperature="0.2",
+    /// crs:LocalTint="-0.12") to anchor the scale conversion against real-world data, not
+    /// just hand-picked round numbers.
+    @Test("mask Local Temperature/Tint parse and round-trip at ACR's real-world scale")
+    func maskTemperatureTintRoundTrip() throws {
+        let corrections: [[String: Any]] = [[
+            "CorrectionActive": "true",
+            "LocalTemperature": "0.2",
+            "LocalTint": "-0.12",
+            "CorrectionMasks": [[
+                "What": "Mask/CircularGradient",
+                "Top": "0.1", "Left": "0.1", "Bottom": "0.4", "Right": "0.4"
+            ]]
+        ]]
+        let mask = try #require(parseMaskGroupBasedCorrections(corrections)?.first)
+        #expect(mask.temperature.map { abs($0 - 20) < 1e-9 } == true)
+        #expect(mask.tint.map { abs($0 - (-12)) < 1e-9 } == true)
+
+        let encoded = try #require(encodeMaskGroupBasedCorrections([mask]).first)
+        #expect(encoded.correctionFields.contains { $0.name == "LocalTemperature" && $0.value == "0.2" })
+        #expect(encoded.correctionFields.contains { $0.name == "LocalTint" && $0.value == "-0.12" })
+    }
+
     /// A correction whose mask geometry can't be parsed (unsupported type or
     /// missing corner fields) must be DROPPED, not substituted with the default
     /// ellipse — a generic mask silently misrenders the image.

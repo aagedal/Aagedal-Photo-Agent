@@ -20,9 +20,12 @@ struct MaskParams {
     uint  activeFlags;      // bitmask: bit0=exposure, bit1=contrast,
                             // bit2=highlights, bit3=shadows, bit4=whites,
                             // bit5=blacks, bit6=saturation, bit7=vibrance,
-                            // bit8=anonymizer (replaces the other tonal bits when set)
+                            // bit8=anonymizer (replaces the other tonal bits when set),
+                            // bit9=temperature, bit10=tint
     float anonymizerAmount;   // 0-1 strength, gated by activeFlags bit8
     float anonymizerBlackOut; // 0 or 1 — full opaque redaction instead of the layered effect
+    float temperature;       // -1..1, local white balance warm/cool shift
+    float tint;              // -1..1, local white balance green/magenta shift
 };
 
 struct HSLChannelParams {
@@ -343,6 +346,21 @@ static float maskWeight(constant MaskParams &mask, float2 uv, float2 sourceSize)
 static half3 applyMaskColor(half3 rgb, constant MaskParams &mask)
 {
     half3 adjusted = rgb;
+
+    // Local white balance (Temperature/Tint): a lightweight multiplicative RGB gain, not
+    // the full Bradford chromatic-adaptation matrix the global WB uses — that requires a
+    // per-mask CPU CIContext render to derive, which doesn't belong in a GPU-resident,
+    // per-pixel mask function. Applied first, matching ACR's Local panel ordering (WB
+    // before tonal adjustments) and the global chain's own WB-before-tone order.
+    if (mask.activeFlags & (1u << 9)) {
+        // Warm (positive) boosts red / cuts blue; cool (negative) the reverse.
+        adjusted.r *= half(1.0 + mask.temperature * 0.3);
+        adjusted.b *= half(1.0 - mask.temperature * 0.3);
+    }
+    if (mask.activeFlags & (1u << 10)) {
+        // Magenta (positive) cuts green; green (negative) boosts it — matches Adobe's Tint sign.
+        adjusted.g *= half(1.0 - mask.tint * 0.3);
+    }
 
     // Exposure: multiplicative EV shift
     if (mask.activeFlags & (1u << 0)) {

@@ -3365,6 +3365,37 @@ struct EditWorkspaceView: View {
             Divider()
 
             sliderRow(
+                "Temperature",
+                value: maskDoubleBinding(idx, \.temperature),
+                range: -100...100,
+                step: 1,
+                gradientColors: [.blue, .yellow],
+                formatter: signedIntString,
+                settingsMutator: { settings, value in
+                    let rounded = value.rounded()
+                    settings.localAdjustments?[idx].temperature = rounded == 0 ? nil : rounded
+                },
+                onReset: {
+                    maskDoubleBinding(idx, \.temperature).wrappedValue = 0
+                }
+            )
+            sliderRow(
+                "Tint",
+                value: maskDoubleBinding(idx, \.tint),
+                range: -100...100,
+                step: 1,
+                gradientColors: [.green, .pink],
+                formatter: signedIntString,
+                settingsMutator: { settings, value in
+                    let rounded = value.rounded()
+                    settings.localAdjustments?[idx].tint = rounded == 0 ? nil : rounded
+                },
+                onReset: {
+                    maskDoubleBinding(idx, \.tint).wrappedValue = 0
+                }
+            )
+
+            sliderRow(
                 "Exposure",
                 value: maskDoubleBinding(idx, \.exposure),
                 range: -4...4,

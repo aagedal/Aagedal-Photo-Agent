@@ -26,9 +26,11 @@ struct MaskParams {
     var blacks: Float = 0
     var saturation: Float = 1
     var vibrance: Float = 0
-    var activeFlags: UInt32 = 0  // bit8 = anonymizer; see EditAdjustments.metal MaskParams
+    var activeFlags: UInt32 = 0  // bit8=anonymizer, bit9=temperature, bit10=tint; see EditAdjustments.metal MaskParams
     var anonymizerAmount: Float = 0
     var anonymizerBlackOut: Float = 0
+    var temperature: Float = 0
+    var tint: Float = 0
 }
 
 /// GPU overlay parameters matching the Metal `MaskOverlayParams` struct.
@@ -660,6 +662,14 @@ final class MetalEditPipeline: @unchecked Sendable {
                     mp.anonymizerAmount = Float(min(max((anon.amount ?? 0) / 100.0, 0.0), 1.0))
                     mp.anonymizerBlackOut = (anon.blackOut == true) ? 1.0 : 0.0
                     maskFlags |= (1 << 8)
+                }
+                if let temp = mask.temperature, temp != 0 {
+                    mp.temperature = Float(min(max(temp / 100.0, -1.0), 1.0))
+                    maskFlags |= (1 << 9)
+                }
+                if let tnt = mask.tint, tnt != 0 {
+                    mp.tint = Float(min(max(tnt / 100.0, -1.0), 1.0))
+                    maskFlags |= (1 << 10)
                 }
                 mp.activeFlags = maskFlags
                 maskPtr[i] = mp
