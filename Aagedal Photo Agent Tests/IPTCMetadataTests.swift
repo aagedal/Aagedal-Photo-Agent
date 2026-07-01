@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import Metal
 @testable import Aagedal_Photo_Agent
 
 
@@ -1950,5 +1951,131 @@ struct BrushMaskTests {
         #expect(finalXML.contains(hash))
         let reReloaded = try #require(svc.loadSidecar(for: imageURL)?.cameraRaw)
         #expect(reReloaded.unparsedMaskCorrections?.count == 1)
+    }
+}
+
+/// Phase 2 — GPU rasterization of brush masks into the alpha texture array. Verifies the
+/// `stampBrush`/`clearBrushAlpha` kernels + `rebuildBrushAlpha` against hardcoded stroke lists
+/// (no compositing wiring yet — that's Phase 3). Skipped when no Metal device is available
+/// (headless runners without a GPU).
+@Suite("Brush mask rasterization")
+struct BrushRasterizationTests {
+
+    /// Builds a pipeline over the system default Metal device, or nil if none is available.
+    private func makePipeline() -> MetalEditPipeline? {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let queue = device.makeCommandQueue() else { return nil }
+        return MetalEditPipeline(device: device, commandQueue: queue)
+    }
+
+    /// IEEE 754 half → Float (values produced here are all normal, in [0,1]).
+    private func halfToFloat(_ h: UInt16) -> Float {
+        let sign = UInt32(h & 0x8000) << 16
+        let exp = UInt32(h & 0x7C00) >> 10
+        let mant = UInt32(h & 0x03FF)
+        let bits: UInt32
+        if exp == 0 {
+            if mant == 0 { bits = sign }
+            else {
+                var e: UInt32 = 0
+                var m = mant
+                while (m & 0x0400) == 0 { m <<= 1; e += 1 }
+                m &= 0x03FF
+                bits = sign | ((127 - 15 - e) << 23) | (m << 13)
+            }
+        } else if exp == 0x1F {
+            bits = sign | 0x7F80_0000 | (mant << 13)
+        } else {
+            bits = sign | ((exp + (127 - 15)) << 23) | (mant << 13)
+        }
+        return Float(bitPattern: bits)
+    }
+
+    /// Reads back one R16Float array slice as Floats, row-major.
+    private func readSlice(_ tex: MTLTexture, slice: Int) -> [Float] {
+        let w = tex.width, h = tex.height
+        var raw = [UInt16](repeating: 0, count: w * h)
+        raw.withUnsafeMutableBytes { ptr in
+            tex.getBytes(ptr.baseAddress!,
+                         bytesPerRow: w * MemoryLayout<UInt16>.size,
+                         bytesPerImage: w * h * MemoryLayout<UInt16>.size,
+                         from: MTLRegionMake2D(0, 0, w, h),
+                         mipmapLevel: 0, slice: slice)
+        }
+        return raw.map { halfToFloat($0) }
+    }
+
+    @Test("a centered additive dab is opaque at its center and empty outside its radius")
+    func centeredDabCoverage() throws {
+        guard let pipeline = makePipeline() else { return }
+        #expect(pipeline.hasBrushPipeline)
+        let size = MTLSize(width: 64, height: 64, depth: 1)
+        // radius 0.25 of long edge (64) = 16px, centered soft dab at full flow.
+        let brush = BrushMaskGeometry(strokes: [
+            BrushStroke(dabs: [BrushDab(x: 0.5, y: 0.5, flow: 1.0, hardness: 0.0)],
+                        radius: 0.25, density: 1.0, erase: false)
+        ])
+        let tex = try #require(pipeline.rebuildBrushAlpha([brush], size: size))
+        #expect(tex.arrayLength == 1)
+        let px = readSlice(tex, slice: 0)
+        func at(_ x: Int, _ y: Int) -> Float { px[y * 64 + x] }
+        #expect(at(32, 32) > 0.5)          // center ~fully covered
+        #expect(at(0, 0) == 0)             // corner well outside the 16px radius
+        #expect(at(32, 55) == 0)           // 22px below center, outside radius
+    }
+
+    @Test("passing no brush masks frees the alpha texture")
+    func emptyFreesTexture() throws {
+        guard let pipeline = makePipeline() else { return }
+        let size = MTLSize(width: 32, height: 32, depth: 1)
+        let brush = BrushMaskGeometry(strokes: [
+            BrushStroke(dabs: [BrushDab(x: 0.5, y: 0.5, flow: 1.0, hardness: 0.5)],
+                        radius: 0.3, density: 1.0, erase: false)
+        ])
+        _ = pipeline.rebuildBrushAlpha([brush], size: size)
+        #expect(pipeline.brushAlphaTexture != nil)
+        let none = pipeline.rebuildBrushAlpha([], size: size)
+        #expect(none == nil)
+        #expect(pipeline.brushAlphaTexture == nil)
+    }
+
+    @Test("an erase stroke subtracts a prior additive stroke's coverage")
+    func eraseSubtracts() throws {
+        guard let pipeline = makePipeline() else { return }
+        let size = MTLSize(width: 64, height: 64, depth: 1)
+        // Add a hard opaque dab, then erase the same spot: center returns to ~0.
+        let brush = BrushMaskGeometry(strokes: [
+            BrushStroke(dabs: [BrushDab(x: 0.5, y: 0.5, flow: 1.0, hardness: 1.0)],
+                        radius: 0.25, density: 1.0, erase: false),
+            BrushStroke(dabs: [BrushDab(x: 0.5, y: 0.5, flow: 1.0, hardness: 1.0)],
+                        radius: 0.25, density: 1.0, erase: true),
+        ])
+        let tex = try #require(pipeline.rebuildBrushAlpha([brush], size: size))
+        let px = readSlice(tex, slice: 0)
+        #expect(px[32 * 64 + 32] < 0.01)   // added then fully erased
+    }
+
+    @Test("each brush mask rasterizes into its own independent array slice")
+    func multipleMasksIndependentSlices() throws {
+        guard let pipeline = makePipeline() else { return }
+        let size = MTLSize(width: 64, height: 64, depth: 1)
+        let maskA = BrushMaskGeometry(strokes: [
+            BrushStroke(dabs: [BrushDab(x: 0.25, y: 0.25, flow: 1.0, hardness: 1.0)],
+                        radius: 0.15, density: 1.0, erase: false)
+        ])
+        let maskB = BrushMaskGeometry(strokes: [
+            BrushStroke(dabs: [BrushDab(x: 0.75, y: 0.75, flow: 1.0, hardness: 1.0)],
+                        radius: 0.15, density: 1.0, erase: false)
+        ])
+        let tex = try #require(pipeline.rebuildBrushAlpha([maskA, maskB], size: size))
+        #expect(tex.arrayLength == 2)
+        let s0 = readSlice(tex, slice: 0)
+        let s1 = readSlice(tex, slice: 1)
+        func at(_ px: [Float], _ x: Int, _ y: Int) -> Float { px[y * 64 + x] }
+        // Slice 0 painted top-left, empty bottom-right; slice 1 the reverse.
+        #expect(at(s0, 16, 16) > 0.5)
+        #expect(at(s0, 48, 48) == 0)
+        #expect(at(s1, 48, 48) > 0.5)
+        #expect(at(s1, 16, 16) == 0)
     }
 }

@@ -634,3 +634,79 @@ kernel void editAdjustments(
 
     destination.write(half4(rgb, color.a), gid);
 }
+
+// ============================================================
+// Brush-mask rasterization (Phase 2)
+//
+// A freeform paint mask is stored as a list of strokes, each a list of dabs — soft circular
+// stamps in normalized UV. `stampBrush` rasterizes ONE dab into a slice of a per-brush-mask
+// alpha texture array (R16Float), bounded to that dab's bounding box so the cost is the dab
+// footprint, not the whole texture (the same incremental-write shape as the LUT's
+// `replace(region:)` — cheap, not a full rebuild per dab). Dabs accumulate via a `max()`
+// blend for additive strokes; erase strokes subtract. The array is populated two ways on the
+// CPU: a full rebuild from the stroke list (image load / undo / resolution change) and live
+// per-drag stamping while painting. The compositing kernel (Phase 3) samples this alpha in
+// place of the analytic ellipse SDF — until then nothing reads it, so this is inert
+// infrastructure verifiable in isolation against a hardcoded stroke list.
+//
+// Dispatches share one serial compute encoder so each dab sees the prior dab's writes
+// (read_write accumulation is only race-free under serial dispatch).
+// ============================================================
+
+struct BrushDabParams {
+    float2 center;    // dab center, normalized UV [0,1] in the alpha texture's frame
+    float  radiusPx;  // dab radius in alpha-texture pixels
+    float  hardness;  // 0-1 (ACR CenterWeight): fraction of the radius at full coverage before falloff
+    float  flow;      // 0-1: this dab's opacity contribution
+    float  density;   // 0-1: accumulated-opacity ceiling for the owning stroke
+    uint   erase;     // 0 = add (max blend), 1 = subtract
+    uint   layer;     // target array slice (which brush mask)
+    uint2  originPx;  // bounding-box top-left in alpha-texture pixels (grid origin)
+};
+
+/// Clears every slice of the brush alpha array to 0 before a full rebuild.
+kernel void clearBrushAlpha(
+    texture2d_array<half, access::write> alpha [[texture(0)]],
+    uint3 gid [[thread_position_in_grid]])
+{
+    if (gid.x >= alpha.get_width() || gid.y >= alpha.get_height() || gid.z >= alpha.get_array_size()) {
+        return;
+    }
+    alpha.write(half4(0.0h), uint2(gid.x, gid.y), gid.z);
+}
+
+/// Rasterizes one brush dab into `alpha`'s `layer` slice, bounded to the dab's bounding box
+/// (grid origin = `dab.originPx`, so `lid` is the offset within the box).
+kernel void stampBrush(
+    texture2d_array<half, access::read_write> alpha [[texture(0)]],
+    constant BrushDabParams &dab [[buffer(0)]],
+    uint2 lid [[thread_position_in_grid]])
+{
+    uint2 px = dab.originPx + lid;
+    uint w = alpha.get_width();
+    uint h = alpha.get_height();
+    if (px.x >= w || px.y >= h) return;
+
+    // Distance from the dab center in pixels (radius is already in pixel units, so the
+    // profile stays circular regardless of the texture's aspect ratio).
+    float2 centerPx = dab.center * float2(w, h);
+    float dist = length((float2(px.x, px.y) + 0.5) - centerPx);
+    if (dist > dab.radiusPx) return;
+
+    // Soft circular profile. `hardness` is the fraction of the radius held at full coverage;
+    // beyond it, smoothstep down to 0 at the edge. Clamp the inner edge below 1 so smoothstep
+    // stays well-defined for a hard-edged (hardness == 1) brush.
+    float t = dab.radiusPx > 0.0 ? dist / dab.radiusPx : 1.0;
+    float inner = min(dab.hardness, 0.999);
+    float falloff = 1.0 - smoothstep(inner, 1.0, t);
+
+    float coverage = min(falloff * dab.flow, dab.density);
+    half prev = alpha.read(px, dab.layer).r;
+    half result;
+    if (dab.erase != 0) {
+        result = max(0.0h, prev - half(coverage));
+    } else {
+        result = max(prev, half(coverage));
+    }
+    alpha.write(half4(result, 0.0h, 0.0h, 0.0h), px, dab.layer);
+}

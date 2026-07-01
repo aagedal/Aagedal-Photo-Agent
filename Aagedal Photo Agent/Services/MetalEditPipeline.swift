@@ -33,6 +33,20 @@ struct MaskParams {
     var tint: Float = 0
 }
 
+/// GPU brush-dab parameters matching the Metal `BrushDabParams` struct. One dispatch per dab,
+/// uploaded via `setBytes` (not a shared buffer) so consecutive dabs in one command buffer
+/// don't alias each other's parameters.
+struct BrushDabParams {
+    var center: SIMD2<Float> = .zero
+    var radiusPx: Float = 0
+    var hardness: Float = 0.5
+    var flow: Float = 1.0
+    var density: Float = 1.0
+    var erase: UInt32 = 0
+    var layer: UInt32 = 0
+    var originPx: SIMD2<UInt32> = .zero
+}
+
 /// GPU overlay parameters matching the Metal `MaskOverlayParams` struct.
 struct MaskOverlayParams {
     var center: SIMD2<Float> = .zero
@@ -227,6 +241,17 @@ final class MetalEditPipeline: @unchecked Sendable {
     private let overlayPipelineState: MTLComputePipelineState?
     nonisolated(unsafe) private let overlayParamsBuffer: MTLBuffer?
 
+    // Brush-mask rasterization (Phase 2). Optional — graceful degradation if the shaders are
+    // missing, matching the overlay pipeline.
+    private let stampBrushPipelineState: MTLComputePipelineState?
+    private let clearBrushAlphaPipelineState: MTLComputePipelineState?
+    /// Per-brush-mask alpha coverage: one `texture2d_array` R16Float slice per brush mask,
+    /// lazily (re)built by `rebuildBrushAlpha`. Nil when there are no brush masks, so non-brush
+    /// edits pay zero GPU memory (an unconditional 8-slice array at export resolution would be
+    /// ~1-1.5GB). Sized to the render source so the compositing kernel (Phase 3) can sample it
+    /// in source UV space. Not yet read by `editAdjustments` — wired in Phase 3.
+    nonisolated(unsafe) private(set) var brushAlphaTexture: MTLTexture?
+
     nonisolated private static let colorSpace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
 
     /// Shared pipeline for offscreen (export) renders. Built once and reused so we don't
@@ -345,6 +370,18 @@ final class MetalEditPipeline: @unchecked Sendable {
             length: MemoryLayout<MaskOverlayParams>.stride,
             options: .storageModeShared
         )
+
+        // Brush-mask rasterization pipelines (optional — graceful degradation if missing).
+        if let stampFunc = library.makeFunction(name: "stampBrush") {
+            self.stampBrushPipelineState = try? device.makeComputePipelineState(function: stampFunc)
+        } else {
+            self.stampBrushPipelineState = nil
+        }
+        if let clearFunc = library.makeFunction(name: "clearBrushAlpha") {
+            self.clearBrushAlphaPipelineState = try? device.makeComputePipelineState(function: clearFunc)
+        } else {
+            self.clearBrushAlphaPipelineState = nil
+        }
 
         self.ciContext = CIContext(mtlDevice: device, options: [
             .workingFormat: CIFormat.RGBAh,
@@ -784,6 +821,130 @@ final class MetalEditPipeline: @unchecked Sendable {
 
     /// Whether the Metal overlay pipeline is available.
     nonisolated var hasOverlayPipeline: Bool { overlayPipelineState != nil }
+
+    // MARK: - Brush Mask Rasterization (Phase 2)
+
+    /// Whether the brush rasterization pipelines compiled.
+    nonisolated var hasBrushPipeline: Bool {
+        stampBrushPipelineState != nil && clearBrushAlphaPipelineState != nil
+    }
+
+    /// Converts a normalized brush radius (ACR `Radius`) into pixels for a texture of the given
+    /// dimensions. The normalization reference is the long edge — self-consistent with
+    /// `anonymizerBlockSize` and the other long-edge-relative sizing in the pipeline, which is
+    /// what makes a stroke rebuild identically into a 1500px preview or a 9000px export texture.
+    /// The absolute scale vs. Lightroom's own brush-size display is one of the two constants
+    /// flagged for the Phase 6 calibration pass.
+    nonisolated static func brushRadiusPixels(normalized radius: Double, size: MTLSize) -> Float {
+        let longEdge = Double(max(size.width, size.height))
+        return Float(radius * longEdge)
+    }
+
+    /// (Re)builds the brush alpha texture array from `brushMasks`, one array slice per mask, and
+    /// stores it in `brushAlphaTexture`. Rasterizes every stroke's dabs via `stampBrush`, each
+    /// dispatch bounded to that dab's bounding box. `size` is the target resolution (source
+    /// texture dims for preview, working dims for export) so the same normalized stroke list
+    /// rebuilds correctly at any resolution. Passing no brush masks frees the texture.
+    /// Returns the populated texture, or nil when there are no brush masks / the pipeline is
+    /// unavailable. Not per-frame: called on stroke changes / resolution changes only.
+    @discardableResult
+    nonisolated func rebuildBrushAlpha(_ brushMasks: [BrushMaskGeometry], size: MTLSize) -> MTLTexture? {
+        guard let stampState = stampBrushPipelineState,
+              let clearState = clearBrushAlphaPipelineState,
+              !brushMasks.isEmpty, size.width > 0, size.height > 0 else {
+            brushAlphaTexture = nil
+            return nil
+        }
+        let layers = min(brushMasks.count, Self.maxMasks)
+
+        // Lazily (re)allocate only when the slice count or resolution changes; otherwise reuse
+        // the existing texture and just re-clear + re-stamp into it.
+        let tex: MTLTexture
+        if let existing = brushAlphaTexture,
+           existing.width == size.width, existing.height == size.height,
+           existing.arrayLength == layers {
+            tex = existing
+        } else {
+            let desc = MTLTextureDescriptor()
+            desc.textureType = .type2DArray
+            desc.pixelFormat = .r16Float
+            desc.width = size.width
+            desc.height = size.height
+            desc.arrayLength = layers
+            desc.usage = [.shaderRead, .shaderWrite]
+            desc.storageMode = .shared
+            guard let newTex = device.makeTexture(descriptor: desc) else {
+                brushAlphaTexture = nil
+                return nil
+            }
+            tex = newTex
+        }
+
+        guard let commandBuffer = commandQueue.makeCommandBuffer(),
+              let encoder = commandBuffer.makeComputeCommandEncoder() else {
+            return nil
+        }
+
+        // Clear every slice first. The default serial-dispatch encoder inserts a barrier
+        // between dispatches, so the clear is guaranteed to complete before the first stamp
+        // reads the alpha (and each stamp sees the prior stamp's writes for max/subtract).
+        encoder.setComputePipelineState(clearState)
+        encoder.setTexture(tex, index: 0)
+        let clearTG = MTLSize(width: 8, height: 8, depth: 1)
+        encoder.dispatchThreads(
+            MTLSize(width: size.width, height: size.height, depth: layers),
+            threadsPerThreadgroup: clearTG
+        )
+
+        encoder.setComputePipelineState(stampState)
+        encoder.setTexture(tex, index: 0)
+        let stampTG = MTLSize(width: 16, height: 16, depth: 1)
+        for (layer, mask) in brushMasks.prefix(layers).enumerated() {
+            for stroke in mask.strokes {
+                let radiusPx = Self.brushRadiusPixels(normalized: stroke.radius, size: size)
+                guard radiusPx > 0 else { continue }
+                let density = Float(stroke.density)
+                let erase: UInt32 = stroke.erase ? 1 : 0
+                for dab in stroke.dabs {
+                    let cx = Double(dab.x) * Double(size.width)
+                    let cy = Double(dab.y) * Double(size.height)
+                    let r = Double(radiusPx)
+                    let minX = max(0, Int((cx - r).rounded(.down)))
+                    let minY = max(0, Int((cy - r).rounded(.down)))
+                    let maxX = min(size.width, Int((cx + r).rounded(.up)))
+                    let maxY = min(size.height, Int((cy + r).rounded(.up)))
+                    let boxW = maxX - minX
+                    let boxH = maxY - minY
+                    guard boxW > 0, boxH > 0 else { continue }
+                    var p = BrushDabParams()
+                    p.center = SIMD2<Float>(Float(dab.x), Float(dab.y))
+                    p.radiusPx = radiusPx
+                    p.hardness = Float(dab.hardness)
+                    p.flow = Float(dab.flow)
+                    p.density = density
+                    p.erase = erase
+                    p.layer = UInt32(layer)
+                    p.originPx = SIMD2<UInt32>(UInt32(minX), UInt32(minY))
+                    encoder.setBytes(&p, length: MemoryLayout<BrushDabParams>.stride, index: 0)
+                    encoder.dispatchThreads(
+                        MTLSize(width: boxW, height: boxH, depth: 1),
+                        threadsPerThreadgroup: stampTG
+                    )
+                }
+            }
+        }
+
+        encoder.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        brushAlphaTexture = tex
+        return tex
+    }
+
+    /// Frees the brush alpha texture (e.g. when the last brush mask is removed).
+    nonisolated func clearBrushAlpha() {
+        brushAlphaTexture = nil
+    }
 
     // MARK: - Render
 
