@@ -81,6 +81,11 @@ nonisolated enum MetadataDictKey {
     static let maskGroupBasedCorrections = "MaskGroupBasedCorrections"
     /// App-private (aaphoto namespace): the global node's position in the layer chain.
     static let globalLayerIndex = "GlobalLayerIndex"
+    /// App-private (aaphoto namespace): the fully-explicit layer-chain order, used once any
+    /// watermark layer exists (see `CameraRawSettings.needsExplicitLayerOrderPersistence`).
+    static let layerOrderExplicit = "LayerOrder"
+    /// App-private (aaphoto namespace): the watermark layer library-reference array.
+    static let watermarkLayers = "WatermarkLayers"
     /// App-private (aaphoto namespace): the global Anonymizer redaction settings.
     static let anonymizerAmount = "AnonymizerAmount"
     static let anonymizerBlackOut = "AnonymizerBlackOut"
@@ -256,6 +261,51 @@ nonisolated func parseMaskGroupBasedCorrections(_ value: Any?) -> ParsedMaskCorr
         result.preserved.append(PreservedMaskCorrection(fields: preservedFields(from: corr)))
     }
     return result
+}
+
+/// Parse the app-private `aaphoto:WatermarkLayers` array back into `[WatermarkLayer]`.
+/// Mirrors `parseMaskGroupBasedCorrections`'s defensive style: an entry missing its
+/// `AssetID` (or with an unparseable UUID) is skipped rather than thrown, so one bad
+/// hand-edited sidecar doesn't break the whole layer chain.
+nonisolated func parseWatermarkLayers(_ value: Any?) -> [WatermarkLayer]? {
+    guard let items = value as? [[String: Any]], !items.isEmpty else { return nil }
+    let layers: [WatermarkLayer] = items.compactMap { item in
+        guard let assetIDString = aaphotoMaskField(item, "AssetID") as? String,
+              let assetID = UUID(uuidString: assetIDString)
+        else { return nil }
+        let id = (aaphotoMaskField(item, "ID") as? String).flatMap { UUID(uuidString: $0) } ?? UUID()
+
+        var geometry = WatermarkGeometry()
+        geometry.centerX = parseDoubleValue(aaphotoMaskField(item, "CenterX")) ?? geometry.centerX
+        geometry.centerY = parseDoubleValue(aaphotoMaskField(item, "CenterY")) ?? geometry.centerY
+        if let dim = aaphotoMaskField(item, "SizeDimension") as? String {
+            geometry.sizeDimension = WatermarkDimension(rawValue: dim) ?? geometry.sizeDimension
+        }
+        if let unit = aaphotoMaskField(item, "SizeUnit") as? String {
+            geometry.sizeUnit = WatermarkSizeUnit(rawValue: unit) ?? geometry.sizeUnit
+        }
+        geometry.sizeValue = parseDoubleValue(aaphotoMaskField(item, "SizeValue")) ?? geometry.sizeValue
+        if let unit = aaphotoMaskField(item, "MarginUnit") as? String {
+            geometry.marginUnit = WatermarkMarginUnit(rawValue: unit) ?? geometry.marginUnit
+        }
+        geometry.marginValue = parseDoubleValue(aaphotoMaskField(item, "MarginValue")) ?? geometry.marginValue
+
+        var layer = WatermarkLayer(id: id, libraryAssetID: assetID, geometry: geometry)
+        layer.name = aaphotoMaskField(item, "Name") as? String ?? layer.name
+        layer.enabled = parseBoolValue(aaphotoMaskField(item, "Enabled")) ?? true
+        layer.opacity = parseDoubleValue(aaphotoMaskField(item, "Opacity")) ?? 1.0
+        return layer
+    }
+    return layers.isEmpty ? nil : layers
+}
+
+/// Parse the app-private `aaphoto:LayerOrder` token array (rdf:Seq of simple strings) back
+/// into `[LayerRef]`, using the shared token grammar from `LayerRef.init(token:)`.
+/// Malformed tokens are skipped defensively.
+nonisolated func parseExplicitLayerOrder(_ value: Any?) -> [LayerRef]? {
+    guard let tokens = value as? [String], !tokens.isEmpty else { return nil }
+    let refs = tokens.compactMap(LayerRef.init(token:))
+    return refs.isEmpty ? nil : refs
 }
 
 /// Decode the oriented-corner ellipse box (`Mask/CircularGradient`) into `EllipseMaskGeometry`.
@@ -726,14 +776,21 @@ nonisolated func iptcMetadataFromDict(_ dict: [String: Any]) -> IPTCMetadata {
         sdrBlend: parseIntValue(dict[MetadataDictKey.crsSDRBlend]),
         toneCurve: toneCurve,
         localAdjustments: localAdjustments,
+        watermarkLayers: parseWatermarkLayers(dict[MetadataDictKey.watermarkLayers]),
         hslAdjustments: decodeHSLAdjustments { parseIntValue(dict[$0]) }
     )
     // Reconstruct the reorderable layer chain: masks are already in render-stack order; the
     // app-private GlobalLayerIndex (if present) says where the global node sits among them.
+    // This legacy encoding can't place a watermark layer, so if the fully-explicit
+    // `aaphoto:LayerOrder` is present (written whenever any watermark layer exists), it takes
+    // priority over the GlobalLayerIndex reconstruction.
     cameraRaw.layerOrder = CameraRawSettings.layerOrder(
         masks: localAdjustments,
         globalIndex: parseIntValue(dict[MetadataDictKey.globalLayerIndex])
     )
+    if let explicitOrder = parseExplicitLayerOrder(dict[MetadataDictKey.layerOrderExplicit]) {
+        cameraRaw.layerOrder = explicitOrder
+    }
     // Corrections we can't model (erase-brush blobs, unknown mask types) — kept verbatim so a
     // develop save re-emits them instead of dropping them.
     if let preserved = parsedMasks?.preserved, !preserved.isEmpty {

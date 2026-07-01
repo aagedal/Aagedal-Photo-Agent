@@ -122,7 +122,8 @@ enum XMPDataBuilder {
         setCRS(&xmp, "SDRBlend", settings.sdrBlend.map(formatSignedInt))
 
         applyToneCurves(settings.toneCurve, into: &xmp)
-        applyLayerChain(masks: settings.localAdjustments ?? [], layerOrder: settings.layerOrder,
+        applyLayerChain(masks: settings.localAdjustments ?? [], watermarks: settings.watermarkLayers ?? [],
+                        layerOrder: settings.layerOrder,
                         preserved: settings.unparsedMaskCorrections ?? [], into: &xmp)
         applyAnonymizer(settings.anonymizer, into: &xmp)
     }
@@ -146,6 +147,8 @@ enum XMPDataBuilder {
             xmp.removeValue(namespace: XMPNamespace.crs, property: field)
         }
         xmp.removeValue(namespace: aaphotoNamespace, property: "GlobalLayerIndex")
+        xmp.removeValue(namespace: aaphotoNamespace, property: "LayerOrder")
+        xmp.removeValue(namespace: aaphotoNamespace, property: "WatermarkLayers")
         xmp.removeValue(namespace: aaphotoNamespace, property: "AnonymizerAmount")
         xmp.removeValue(namespace: aaphotoNamespace, property: "AnonymizerBlackOut")
     }
@@ -235,18 +238,66 @@ enum XMPDataBuilder {
         }
     }
 
-    /// Write masks in render-stack order plus the app-private `aaphoto:GlobalLayerIndex` (the global
-    /// node's position in the reorderable chain). Reuses the shared model helpers so both stores agree.
-    nonisolated static func applyLayerChain(masks: [MaskAdjustment], layerOrder: [LayerRef]?, preserved: [PreservedMaskCorrection] = [], into xmp: inout XMPData) {
+    /// Write masks in render-stack order, watermark layers, and the layer-chain order —
+    /// plus the app-private `aaphoto:GlobalLayerIndex` (the global node's position). Reuses
+    /// the shared model helpers so both stores agree.
+    ///
+    /// Persistence has two modes, chosen by `CameraRawSettings.needsExplicitLayerOrderPersistence`:
+    /// the legacy encoding (masks in render-stack order + a single `GlobalLayerIndex` int) only
+    /// works when there are just 2 conceptual buckets (masks, global) — it's kept as-is so
+    /// watermark-free files round-trip byte-identically. Once any watermark layer exists there
+    /// are 3 independently-positioned kinds, which that one int can no longer reconstruct, so the
+    /// fully-explicit `aaphoto:LayerOrder` token array takes over instead.
+    nonisolated static func applyLayerChain(masks: [MaskAdjustment], watermarks: [WatermarkLayer] = [], layerOrder: [LayerRef]?, preserved: [PreservedMaskCorrection] = [], into xmp: inout XMPData) {
         var chain = CameraRawSettings()
         chain.localAdjustments = masks
+        chain.watermarkLayers = watermarks
         chain.layerOrder = layerOrder
         applyMasks(chain.masksInRenderOrder() ?? masks, preserved: preserved, into: &xmp)
-        if let globalIndex = chain.globalLayerIndex(), globalIndex > 0 {
-            xmp.setValue(.simple(String(globalIndex)), namespace: aaphotoNamespace, property: "GlobalLayerIndex")
-        } else {
+        applyWatermarkLayers(watermarks, into: &xmp)
+        if chain.needsExplicitLayerOrderPersistence {
             xmp.removeValue(namespace: aaphotoNamespace, property: "GlobalLayerIndex")
+            applyExplicitLayerOrder(chain.resolvedLayerOrder(), into: &xmp)
+        } else {
+            xmp.removeValue(namespace: aaphotoNamespace, property: "LayerOrder")
+            if let globalIndex = chain.globalLayerIndex(), globalIndex > 0 {
+                xmp.setValue(.simple(String(globalIndex)), namespace: aaphotoNamespace, property: "GlobalLayerIndex")
+            } else {
+                xmp.removeValue(namespace: aaphotoNamespace, property: "GlobalLayerIndex")
+            }
         }
+    }
+
+    /// Write watermark layers as app-private `aaphoto:WatermarkLayers` — not an ACR/Lightroom
+    /// concept, so no `crs:` involvement, mirroring how Anonymizer settings live under `aaphoto:`.
+    nonisolated static func applyWatermarkLayers(_ layers: [WatermarkLayer], into xmp: inout XMPData) {
+        guard !layers.isEmpty else {
+            xmp.removeValue(namespace: aaphotoNamespace, property: "WatermarkLayers")
+            return
+        }
+        let encoded: [[String: XMPValue]] = layers.map { layer in
+            [
+                aaphotoNamespace + "ID": .simple(layer.id.uuidString),
+                aaphotoNamespace + "Name": .simple(layer.name),
+                aaphotoNamespace + "Enabled": .simple(formatBool(layer.enabled)),
+                aaphotoNamespace + "AssetID": .simple(layer.libraryAssetID.uuidString),
+                aaphotoNamespace + "CenterX": .simple(formatUnsignedDouble(layer.geometry.centerX, precision: 6)),
+                aaphotoNamespace + "CenterY": .simple(formatUnsignedDouble(layer.geometry.centerY, precision: 6)),
+                aaphotoNamespace + "SizeDimension": .simple(layer.geometry.sizeDimension.rawValue),
+                aaphotoNamespace + "SizeUnit": .simple(layer.geometry.sizeUnit.rawValue),
+                aaphotoNamespace + "SizeValue": .simple(formatUnsignedDouble(layer.geometry.sizeValue, precision: 4)),
+                aaphotoNamespace + "MarginUnit": .simple(layer.geometry.marginUnit.rawValue),
+                aaphotoNamespace + "MarginValue": .simple(formatUnsignedDouble(layer.geometry.marginValue, precision: 4)),
+                aaphotoNamespace + "Opacity": .simple(formatUnsignedDouble(layer.opacity, precision: 4)),
+            ]
+        }
+        xmp.setValue(.structuredArray(encoded), namespace: aaphotoNamespace, property: "WatermarkLayers")
+    }
+
+    /// Write the fully-explicit layer-chain order as an `aaphoto:LayerOrder` rdf:Seq of
+    /// compact tokens (`"global"` / `"mask:<uuid>"` / `"watermark:<uuid>"`) — see `LayerRef.token`.
+    nonisolated static func applyExplicitLayerOrder(_ resolved: [LayerRef], into xmp: inout XMPData) {
+        xmp.setValue(.array(resolved.map(\.token)), namespace: aaphotoNamespace, property: "LayerOrder")
     }
 
     /// Write the global Anonymizer redaction settings as app-private XMP (`aaphoto:AnonymizerAmount`

@@ -64,6 +64,10 @@ struct EditWorkspaceView: View {
     @State private var dropTargetLayer: LayerRef?
     @State private var isDraggingMask = false
     @State private var dragMaskGeometry: EllipseMaskGeometry?
+    @State private var dragWatermarkGeometry: WatermarkGeometry?
+    /// Shown when "Add Watermark" is tapped but the Watermark library (Settings ▸ Watermarks)
+    /// has no PNGs imported yet.
+    @State private var showWatermarkLibraryEmptyAlert = false
     @State private var scopeThrottleTask: Task<Void, Never>?
     @State private var lastScopeUpdateTime: ContinuousClock.Instant = .now
     @State private var editZoomScale: CGFloat = 1.0
@@ -205,6 +209,7 @@ struct EditWorkspaceView: View {
             || cameraRaw.saturation != nil
             || cameraRaw.toneCurve != nil
             || !(cameraRaw.localAdjustments?.isEmpty ?? true)
+            || !(cameraRaw.watermarkLayers?.isEmpty ?? true)
     }
 
     private var selectedImageOrientation: Int {
@@ -271,6 +276,35 @@ struct EditWorkspaceView: View {
             g = g.transformedForSensor(orientation: orientation, displayAspect: maskDisplayAspect)
         }
         return g
+    }
+
+    /// Sensor (stored) → display geometry for the watermark overlay, mirroring
+    /// `maskGeometryForDisplay` — same two-stage EXIF-then-straighten transform, just for
+    /// the simpler point-only `WatermarkGeometry`.
+    private func watermarkGeometryForDisplay(_ geometry: WatermarkGeometry) -> WatermarkGeometry {
+        var g = geometry
+        let orientation = selectedImageOrientation
+        if orientation > 1 {
+            g = g.transformedForDisplay(orientation: orientation)
+        }
+        return g.rotatedInDisplay(byDegrees: -displayCropAngle, aspect: maskDisplayAspect)
+    }
+
+    /// Display → sensor geometry on store: exact inverse of `watermarkGeometryForDisplay`.
+    private func watermarkGeometryForSensor(_ geometry: WatermarkGeometry) -> WatermarkGeometry {
+        var g = geometry.rotatedInDisplay(byDegrees: displayCropAngle, aspect: maskDisplayAspect)
+        let orientation = selectedImageOrientation
+        if orientation > 1 {
+            g = g.transformedForSensor(orientation: orientation)
+        }
+        return g
+    }
+
+    /// The library asset's decoded aspect ratio (width/height) for a watermark layer's
+    /// position-handle overlay — falls back to 1 (square) if the asset went missing, matching
+    /// the Metal pipeline's own missing-asset fallback (a degenerate but non-crashing handle).
+    private func assetAspect(forWatermarkAssetID id: UUID) -> Double {
+        WatermarkStore.shared.asset(byID: id)?.aspectRatio ?? 1
     }
 
     private var activeCrop: NormalizedCropRegion {
@@ -609,6 +643,49 @@ struct EditWorkspaceView: View {
                                     )
                                 }
 
+                                // Watermark position handle (crop-applied path).
+                                if let wmIdx = selectedWatermarkIndex,
+                                   let layers = metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers,
+                                   wmIdx < layers.count,
+                                   !isShowingBefore, let imgSize = currentImageSize {
+                                    let cropVpOrigin = SIMD2<Float>(
+                                        Float(-imageRect.minX / imageRect.width),
+                                        Float(-imageRect.minY / imageRect.height)
+                                    )
+                                    let cropVpSize = SIMD2<Float>(
+                                        Float(geometry.size.width / imageRect.width),
+                                        Float(geometry.size.height / imageRect.height)
+                                    )
+                                    WatermarkOverlayRepresentable(
+                                        viewportOrigin: cropVpOrigin,
+                                        viewportSize: cropVpSize,
+                                        viewSize: geometry.size,
+                                        geometry: watermarkGeometryForDisplay(dragWatermarkGeometry ?? layers[wmIdx].geometry),
+                                        assetAspect: assetAspect(forWatermarkAssetID: layers[wmIdx].libraryAssetID),
+                                        imageSize: imgSize,
+                                        onStart: { isDraggingEditSlider = true },
+                                        onChange: { newGeometry in
+                                            let sensorGeometry = watermarkGeometryForSensor(newGeometry)
+                                            dragWatermarkGeometry = sensorGeometry
+                                            if let pipeline = metalPipeline, pipeline.hasSourceTexture {
+                                                var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
+                                                settings.watermarkLayers?[wmIdx].geometry = sensorGeometry
+                                                pipeline.updateParams(settingsForPipeline(settings))
+                                            }
+                                        },
+                                        onCommit: {
+                                            if let finalGeo = dragWatermarkGeometry {
+                                                updateCameraRaw { cameraRaw in
+                                                    cameraRaw.watermarkLayers?[wmIdx].geometry = finalGeo
+                                                }
+                                                dragWatermarkGeometry = nil
+                                            }
+                                            isDraggingEditSlider = false
+                                            commitEditAdjustments()
+                                        }
+                                    )
+                                }
+
                                 // White-balance eyedropper over the crop-framed preview.
                                 if isPickingWhiteBalance, !isShowingBefore {
                                     let cropVpOrigin = SIMD2<Float>(
@@ -711,6 +788,41 @@ struct EditWorkspaceView: View {
                                             dragMaskGeometry = nil
                                         }
                                         isDraggingMask = false
+                                        isDraggingEditSlider = false
+                                        commitEditAdjustments()
+                                    }
+                                )
+                            }
+
+                            // Watermark position handle.
+                            if let wmIdx = selectedWatermarkIndex,
+                               let layers = metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers,
+                               wmIdx < layers.count,
+                               !isShowingBefore, let imgSize = currentImageSize {
+                                WatermarkOverlayRepresentable(
+                                    viewportOrigin: vpOrigin,
+                                    viewportSize: vpSize,
+                                    viewSize: geometry.size,
+                                    geometry: watermarkGeometryForDisplay(dragWatermarkGeometry ?? layers[wmIdx].geometry),
+                                    assetAspect: assetAspect(forWatermarkAssetID: layers[wmIdx].libraryAssetID),
+                                    imageSize: imgSize,
+                                    onStart: { isDraggingEditSlider = true },
+                                    onChange: { newGeometry in
+                                        let sensorGeometry = watermarkGeometryForSensor(newGeometry)
+                                        dragWatermarkGeometry = sensorGeometry
+                                        if let pipeline = metalPipeline, pipeline.hasSourceTexture {
+                                            var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
+                                            settings.watermarkLayers?[wmIdx].geometry = sensorGeometry
+                                            pipeline.updateParams(settingsForPipeline(settings))
+                                        }
+                                    },
+                                    onCommit: {
+                                        if let finalGeo = dragWatermarkGeometry {
+                                            updateCameraRaw { cameraRaw in
+                                                cameraRaw.watermarkLayers?[wmIdx].geometry = finalGeo
+                                            }
+                                            dragWatermarkGeometry = nil
+                                        }
                                         isDraggingEditSlider = false
                                         commitEditAdjustments()
                                     }
@@ -922,6 +1034,8 @@ struct EditWorkspaceView: View {
 
                     if selectedMaskIndex != nil {
                         maskAdjustmentSliders
+                    } else if selectedWatermarkIndex != nil {
+                        watermarkLayerControls
                     } else {
                         globalAdjustmentSliders
                     }
@@ -2342,6 +2456,7 @@ struct EditWorkspaceView: View {
             || cameraRaw.toneCurve != nil
             || (cameraRaw.crop?.isEffectiveCrop == true)
             || !(cameraRaw.localAdjustments?.isEmpty ?? true)
+            || !(cameraRaw.watermarkLayers?.isEmpty ?? true)
             || !(cameraRaw.hslAdjustments?.isEmpty ?? true)
             || (cameraRaw.anonymizer?.isEmpty == false)
     }
@@ -3163,6 +3278,8 @@ struct EditWorkspaceView: View {
             }
             if let id = selectedMaskID {
                 maskActionRow(id)
+            } else if let id = selectedWatermarkID {
+                watermarkActionRow(id)
             }
         }
     }
@@ -3242,6 +3359,16 @@ struct EditWorkspaceView: View {
         return nil
     }
 
+    /// UUID of the selected watermark layer, or nil when a different layer is selected / the
+    /// layer was deleted.
+    private var selectedWatermarkID: UUID? {
+        if case .watermark(let id) = selectedLayer,
+           metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers?.contains(where: { $0.id == id }) == true {
+            return id
+        }
+        return nil
+    }
+
     private var addLayerButton: some View {
         VStack(spacing: 3) {
             VStack(spacing: 4) {
@@ -3254,11 +3381,19 @@ struct EditWorkspaceView: View {
                     isPickingWhiteBalance = false
                     syncMaskOverlayTarget()
                 }
+                addMaskMiniButton(kind: .watermark, help: "Add watermark layer") {
+                    addNewWatermarkLayer()
+                }
             }
             Text("Add")
                 .font(.system(size: 9))
                 .foregroundStyle(.secondary)
                 .frame(width: 60)
+        }
+        .alert("No Watermarks in Library", isPresented: $showWatermarkLibraryEmptyAlert) {
+            Button("OK") {}
+        } message: {
+            Text("Import a PNG watermark first, from Settings \u{2192} Watermarks.")
         }
     }
 
@@ -3288,9 +3423,10 @@ struct EditWorkspaceView: View {
     @ViewBuilder
     private func layerCard(_ ref: LayerRef) -> some View {
         let mask = maskFor(ref)
+        let watermark = watermarkFor(ref)
         let isSelected = ref == selectedLayer
-        let muted = mask.map { !$0.enabled } ?? false
-        let kind: LayerKind = mask?.layerKind ?? .global
+        let muted = mask.map { !$0.enabled } ?? watermark.map { !$0.enabled } ?? false
+        let kind: LayerKind = mask?.layerKind ?? watermark?.layerKind ?? .global
 
         VStack(spacing: 3) {
             ZStack {
@@ -3378,6 +3514,13 @@ struct EditWorkspaceView: View {
                     selectedLayer = ref
                     deleteSelectedMask()
                 }
+            } else if let watermark {
+                Button(watermark.enabled ? "Mute" : "Enable") { toggleWatermarkEnabled(watermark.id) }
+                Divider()
+                Button("Delete", role: .destructive) {
+                    selectedLayer = ref
+                    deleteSelectedWatermark()
+                }
             }
         }
         .help(layerName(ref, mask: mask))
@@ -3429,18 +3572,21 @@ struct EditWorkspaceView: View {
         return metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?.first { $0.id == id }
     }
 
+    private func watermarkFor(_ ref: LayerRef) -> WatermarkLayer? {
+        guard case .watermark(let id) = ref else { return nil }
+        return metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers?.first { $0.id == id }
+    }
+
     private func layerName(_ ref: LayerRef, mask: MaskAdjustment?) -> String {
         switch ref {
-        case .global: return "Global"
-        case .mask:   return mask?.name ?? "Mask"
+        case .global:    return "Global"
+        case .mask:      return mask?.name ?? "Mask"
+        case .watermark: return watermarkFor(ref)?.name ?? "Watermark"
         }
     }
 
     private func layerRefString(_ ref: LayerRef) -> String {
-        switch ref {
-        case .global:        return "global"
-        case .mask(let id):  return "mask:\(id.uuidString)"
-        }
+        ref.token
     }
 
     /// Reorders the layer chain so `dragged` takes `target`'s slot. A single `updateCameraRaw`
@@ -3696,6 +3842,151 @@ struct EditWorkspaceView: View {
         }
     }
 
+    /// Watermark layer's control panel: which library image, size (px/% × width/height),
+    /// margin (px/%), and opacity. No color/tonal controls (a watermark layer doesn't have
+    /// any) and no invert (not a meaningful concept here).
+    @ViewBuilder
+    private var watermarkLayerControls: some View {
+        if let idx = selectedWatermarkIndex,
+           let layers = metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers,
+           idx < layers.count {
+
+            Text("Watermark")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.secondary)
+            Divider()
+
+            let library = WatermarkStore.shared.allAssets()
+            if library.isEmpty {
+                Label("No watermarks in your library yet — import a PNG from Settings \u{2192} Watermarks.",
+                      systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Picker("Image", selection: watermarkAssetIDBinding(idx)) {
+                    ForEach(library) { asset in
+                        Text(asset.name).tag(Optional(asset.id))
+                    }
+                }
+                .labelsHidden()
+            }
+
+            Text("Size")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.secondary)
+                .padding(.top, 2)
+            Divider()
+
+            HStack(spacing: 8) {
+                Picker("", selection: watermarkSizeUnitBinding(idx)) {
+                    Text("px").tag(WatermarkSizeUnit.pixel)
+                    Text("%").tag(WatermarkSizeUnit.percent)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 70)
+
+                Picker("", selection: watermarkSizeDimensionBinding(idx)) {
+                    Text("Width").tag(WatermarkDimension.width)
+                    Text("Height").tag(WatermarkDimension.height)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+
+            let assetAspectValue = assetAspect(forWatermarkAssetID: layers[idx].libraryAssetID)
+            let sizeIsPercent = watermarkSizeUnitBinding(idx).wrappedValue == .percent
+            sliderRow(
+                "Size",
+                value: watermarkSizeValueBinding(idx),
+                range: sizeIsPercent ? 1...100 : 8...4000,
+                step: 1,
+                formatter: { sizeIsPercent ? "\(Int($0.rounded()))%" : "\(Int($0.rounded()))px" },
+                settingsMutator: { settings, value in
+                    settings.watermarkLayers?[idx].geometry.sizeValue = value
+                    // Re-clamp live too, so the position visibly moves inward while dragging
+                    // the size slider, not just once the drag ends.
+                    if let g = settings.watermarkLayers?[idx].geometry {
+                        let reclamped = watermarkGeometryClampingOwnPosition(g, assetAspect: assetAspectValue)
+                        settings.watermarkLayers?[idx].geometry = reclamped
+                        // The overlay (footprint outline + dashed margin line) reads from
+                        // SwiftUI state, which this live-drag path otherwise bypasses entirely
+                        // (by design, to avoid a full body re-evaluation per mouse pixel) — feed
+                        // it through the same override the position-handle drag already uses,
+                        // so the overlay tracks the live resize instead of only updating on release.
+                        dragWatermarkGeometry = reclamped
+                    }
+                },
+                onReset: {
+                    watermarkSizeValueBinding(idx).wrappedValue = 20
+                }
+            )
+
+            Text("Margin")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.secondary)
+                .padding(.top, 2)
+            Divider()
+            Text("Restricts how close to the image edge the watermark can be dragged.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Picker("", selection: watermarkMarginUnitBinding(idx)) {
+                Text("px").tag(WatermarkMarginUnit.pixel)
+                Text("%").tag(WatermarkMarginUnit.percent)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 70)
+
+            let marginIsPercent = watermarkMarginUnitBinding(idx).wrappedValue == .percent
+            sliderRow(
+                "Margin",
+                value: watermarkMarginValueBinding(idx),
+                range: marginIsPercent ? 0...45 : 0...2000,
+                step: 1,
+                formatter: { marginIsPercent ? "\(Int($0.rounded()))%" : "\(Int($0.rounded()))px" },
+                settingsMutator: { settings, value in
+                    settings.watermarkLayers?[idx].geometry.marginValue = value
+                    // Re-clamp live too, so the position visibly moves inward while dragging
+                    // the margin slider, not just once the drag ends.
+                    if let g = settings.watermarkLayers?[idx].geometry {
+                        let reclamped = watermarkGeometryClampingOwnPosition(g, assetAspect: assetAspectValue)
+                        settings.watermarkLayers?[idx].geometry = reclamped
+                        // Feed the overlay (dashed margin line + footprint outline) through the
+                        // same live-override state the position-handle drag uses — see the Size
+                        // slider's identical comment above.
+                        dragWatermarkGeometry = reclamped
+                    }
+                },
+                onReset: {
+                    watermarkMarginValueBinding(idx).wrappedValue = 10
+                }
+            )
+
+            Text("Opacity")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.secondary)
+                .padding(.top, 2)
+            Divider()
+
+            sliderRow(
+                "Opacity",
+                value: watermarkOpacityBinding(idx),
+                range: 0...100,
+                step: 1,
+                formatter: { "\(Int($0.rounded()))%" },
+                settingsMutator: { settings, value in
+                    settings.watermarkLayers?[idx].opacity = min(max(value / 100, 0), 1)
+                },
+                onReset: {
+                    watermarkOpacityBinding(idx).wrappedValue = 100
+                }
+            )
+        }
+    }
+
     private func maskGeometryBinding(_ maskIndex: Int, _ keyPath: WritableKeyPath<EllipseMaskGeometry, Double>) -> Binding<Double> {
         Binding(
             get: {
@@ -3718,6 +4009,151 @@ struct EditWorkspaceView: View {
     private var selectedMaskIndex: Int? {
         guard case .mask(let id) = selectedLayer else { return nil }
         return metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?.firstIndex { $0.id == id }
+    }
+
+    /// Live array index of the selected watermark layer in `watermarkLayers`, mirroring
+    /// `selectedMaskIndex`.
+    private var selectedWatermarkIndex: Int? {
+        guard case .watermark(let id) = selectedLayer else { return nil }
+        return metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers?.firstIndex { $0.id == id }
+    }
+
+    // MARK: - Watermark bindings
+
+    /// Re-clamps a (sensor-frame) watermark geometry's position into the margin-inset safe
+    /// area implied by its OWN (possibly just-changed) size/margin fields — used whenever
+    /// size or margin changes so the watermark visibly moves inward immediately instead of
+    /// only correcting the next time the position handle is dragged. No-op if the display
+    /// image size isn't known yet.
+    private func watermarkGeometryClampingOwnPosition(_ geometry: WatermarkGeometry, assetAspect: Double) -> WatermarkGeometry {
+        guard let size = currentImageSize, size.width > 0, size.height > 0 else { return geometry }
+        let display = watermarkGeometryForDisplay(geometry)
+            .clamped(assetAspect: assetAspect, imageWidth: size.width, imageHeight: size.height)
+        return watermarkGeometryForSensor(display)
+    }
+
+    /// Applies `mutate` to the selected watermark layer's geometry, then re-clamps its
+    /// position — the shared commit path for every size/margin/unit control, so adjusting any
+    /// of them keeps the watermark visibly in bounds rather than deferring the correction to
+    /// the next drag.
+    private func updateWatermarkGeometry(_ index: Int, _ mutate: (inout WatermarkGeometry) -> Void) {
+        guard let layers = metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers, index < layers.count else { return }
+        let assetAspectValue = assetAspect(forWatermarkAssetID: layers[index].libraryAssetID)
+        updateCameraRaw { cameraRaw in
+            guard let ls = cameraRaw.watermarkLayers, index < ls.count else { return }
+            mutate(&cameraRaw.watermarkLayers![index].geometry)
+            cameraRaw.watermarkLayers![index].geometry = watermarkGeometryClampingOwnPosition(
+                cameraRaw.watermarkLayers![index].geometry, assetAspect: assetAspectValue
+            )
+        }
+    }
+
+    private func watermarkSizeValueBinding(_ index: Int) -> Binding<Double> {
+        Binding(
+            get: {
+                guard let layers = metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers,
+                      index < layers.count else { return 0 }
+                return layers[index].geometry.sizeValue
+            },
+            set: { newValue in
+                updateWatermarkGeometry(index) { $0.sizeValue = newValue }
+                // The committed value now matches — drop the live-drag overlay override so it
+                // reads straight from cameraRaw again (mirrors the position-handle drag's own
+                // onCommit clearing dragWatermarkGeometry).
+                dragWatermarkGeometry = nil
+            }
+        )
+    }
+
+    private func watermarkMarginValueBinding(_ index: Int) -> Binding<Double> {
+        Binding(
+            get: {
+                guard let layers = metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers,
+                      index < layers.count else { return 0 }
+                return layers[index].geometry.marginValue
+            },
+            set: { newValue in
+                updateWatermarkGeometry(index) { $0.marginValue = newValue }
+                dragWatermarkGeometry = nil
+            }
+        )
+    }
+
+    private func watermarkSizeDimensionBinding(_ index: Int) -> Binding<WatermarkDimension> {
+        Binding(
+            get: {
+                guard let layers = metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers,
+                      index < layers.count else { return .width }
+                return layers[index].geometry.sizeDimension
+            },
+            set: { newValue in
+                updateWatermarkGeometry(index) { $0.sizeDimension = newValue }
+                commitEditAdjustments()
+            }
+        )
+    }
+
+    private func watermarkSizeUnitBinding(_ index: Int) -> Binding<WatermarkSizeUnit> {
+        Binding(
+            get: {
+                guard let layers = metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers,
+                      index < layers.count else { return .percent }
+                return layers[index].geometry.sizeUnit
+            },
+            set: { newValue in
+                updateWatermarkGeometry(index) { $0.sizeUnit = newValue }
+                commitEditAdjustments()
+            }
+        )
+    }
+
+    private func watermarkMarginUnitBinding(_ index: Int) -> Binding<WatermarkMarginUnit> {
+        Binding(
+            get: {
+                guard let layers = metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers,
+                      index < layers.count else { return .percent }
+                return layers[index].geometry.marginUnit
+            },
+            set: { newValue in
+                updateWatermarkGeometry(index) { $0.marginUnit = newValue }
+                commitEditAdjustments()
+            }
+        )
+    }
+
+    /// Per-layer opacity (0–1) as a 0–100 slider value.
+    private func watermarkOpacityBinding(_ index: Int) -> Binding<Double> {
+        Binding(
+            get: {
+                guard let layers = metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers,
+                      index < layers.count else { return 100 }
+                return layers[index].opacity * 100
+            },
+            set: { newValue in
+                updateCameraRaw { cameraRaw in
+                    guard let layers = cameraRaw.watermarkLayers, index < layers.count else { return }
+                    cameraRaw.watermarkLayers?[index].opacity = min(max(newValue / 100, 0), 1)
+                }
+            }
+        )
+    }
+
+    private func watermarkAssetIDBinding(_ index: Int) -> Binding<UUID?> {
+        Binding(
+            get: {
+                guard let layers = metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers,
+                      index < layers.count else { return nil }
+                return layers[index].libraryAssetID
+            },
+            set: { newValue in
+                guard let newValue else { return }
+                updateCameraRaw { cameraRaw in
+                    guard let layers = cameraRaw.watermarkLayers, index < layers.count else { return }
+                    cameraRaw.watermarkLayers?[index].libraryAssetID = newValue
+                }
+                commitEditAdjustments()
+            }
+        )
     }
 
     /// Per-mask opacity (`amount`, 0–1) as a 0–100 slider value. `amount` is non-optional and
@@ -3857,6 +4293,102 @@ struct EditWorkspaceView: View {
         }
         selectedLayer = .mask(newMask.id)
         commitEditAdjustments()
+    }
+
+    // MARK: - Watermark layers
+
+    /// Adds a new watermark layer using the first (alphabetically) library asset, defaulting
+    /// to the bottom-right corner of the margin-inset safe area per spec. If the library is
+    /// empty, prompts the user to import one from Settings instead of adding a layer with no
+    /// image to show.
+    private func addNewWatermarkLayer() {
+        guard let defaultAsset = WatermarkStore.shared.allAssets().first else {
+            showWatermarkLibraryEmptyAlert = true
+            return
+        }
+        let existingCount = metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers?.count ?? 0
+        var geo = WatermarkGeometry()   // defaults to the bottom-right corner
+        // Use this asset's own remembered size/margin (Settings ▸ Watermarks ▸ Default
+        // Placement) rather than the bare app-wide default (20% width / 10% margin).
+        geo.sizeDimension = defaultAsset.defaultSizeDimension
+        geo.sizeUnit = defaultAsset.defaultSizeUnit
+        geo.sizeValue = defaultAsset.defaultSizeValue
+        geo.marginUnit = defaultAsset.defaultMarginUnit
+        geo.marginValue = defaultAsset.defaultMarginValue
+        if let size = currentImageSize, size.width > 0, size.height > 0 {
+            geo = geo.clamped(assetAspect: defaultAsset.aspectRatio, imageWidth: size.width, imageHeight: size.height)
+        }
+        geo = watermarkGeometryForSensor(geo)
+        let newLayer = WatermarkLayer(name: "Watermark \(existingCount + 1)", libraryAssetID: defaultAsset.id, geometry: geo)
+        updateCameraRaw { cameraRaw in
+            if cameraRaw.watermarkLayers == nil { cameraRaw.watermarkLayers = [] }
+            cameraRaw.watermarkLayers?.append(newLayer)
+            if cameraRaw.layerOrder != nil {
+                cameraRaw.layerOrder?.append(.watermark(newLayer.id))
+            }
+        }
+        selectedLayer = .watermark(newLayer.id)
+        commitEditAdjustments()
+    }
+
+    private func deleteSelectedWatermark() {
+        guard case .watermark(let id) = selectedLayer,
+              let layers = metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers,
+              let idx = layers.firstIndex(where: { $0.id == id }) else { return }
+        updateCameraRaw { cameraRaw in
+            cameraRaw.watermarkLayers?.removeAll { $0.id == id }
+            cameraRaw.layerOrder?.removeAll { $0 == .watermark(id) }
+            if cameraRaw.watermarkLayers?.isEmpty == true {
+                cameraRaw.watermarkLayers = nil
+            }
+        }
+        let remaining = metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers ?? []
+        if remaining.isEmpty {
+            selectedLayer = .global
+        } else {
+            selectedLayer = .watermark(remaining[min(idx, remaining.count - 1)].id)
+        }
+        commitEditAdjustments()
+    }
+
+    private func toggleWatermarkEnabled(_ id: UUID) {
+        updateCameraRaw { cameraRaw in
+            guard let i = cameraRaw.watermarkLayers?.firstIndex(where: { $0.id == id }) else { return }
+            cameraRaw.watermarkLayers?[i].enabled.toggle()
+        }
+        commitEditAdjustments()
+    }
+
+    /// Mute / delete controls for the selected watermark layer, shown beneath the strip —
+    /// mirrors `maskActionRow` but omits invert (not a meaningful concept for a watermark).
+    @ViewBuilder
+    private func watermarkActionRow(_ id: UUID) -> some View {
+        if let layer = metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers?.first(where: { $0.id == id }) {
+            HStack(spacing: 10) {
+                Button {
+                    toggleWatermarkEnabled(id)
+                } label: {
+                    Image(systemName: layer.enabled ? "eye" : "eye.slash")
+                        .font(.system(size: 11))
+                        .foregroundStyle(layer.enabled ? Color.secondary : Color.red)
+                }
+                .buttonStyle(.plain)
+                .help(layer.enabled ? "Mute watermark effect" : "Enable watermark effect")
+
+                Spacer()
+
+                Button {
+                    deleteSelectedWatermark()
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Delete watermark layer")
+            }
+            .padding(.horizontal, 2)
+        }
     }
 
     // MARK: - Brush paint tool
@@ -4296,6 +4828,7 @@ struct EditWorkspaceView: View {
             let structuredData = StructuredWriteData(
                 toneCurve: cameraRaw.toneCurve,
                 masks: (cameraRaw.localAdjustments?.isEmpty == false) ? cameraRaw.localAdjustments : nil,
+                watermarkLayers: (cameraRaw.watermarkLayers?.isEmpty == false) ? cameraRaw.watermarkLayers : nil,
                 hslAdjustments: (cameraRaw.hslAdjustments?.isEmpty == false) ? cameraRaw.hslAdjustments : nil,
                 layerOrder: cameraRaw.layerOrder,
                 anonymizer: (cameraRaw.anonymizer?.isEmpty == false) ? cameraRaw.anonymizer : nil

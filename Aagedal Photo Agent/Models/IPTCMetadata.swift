@@ -360,6 +360,161 @@ nonisolated struct BrushMaskGeometry: Codable, Sendable, Equatable {
     }
 }
 
+nonisolated enum WatermarkDimension: String, Codable, Sendable {
+    case width, height
+}
+
+nonisolated enum WatermarkSizeUnit: String, Codable, Sendable {
+    case pixel, percent
+}
+
+nonisolated enum WatermarkMarginUnit: String, Codable, Sendable {
+    case pixel, percent
+}
+
+/// Position + sizing for one watermark layer instance. `centerX`/`centerY` are the
+/// watermark's own anchor point (its rendered center), normalized UV in the sensor (XMP)
+/// frame — same convention as `EllipseMaskGeometry`'s center. Size and margin are each
+/// independently expressed as either an absolute pixel value or a percentage (of the
+/// relevant image dimension); the watermark's own aspect ratio determines whichever
+/// dimension isn't explicitly constrained. Unlike the ellipse/brush masks there is no
+/// rotation or feather — a watermark is a rigid rectangle with a hard edge.
+nonisolated struct WatermarkGeometry: Codable, Sendable, Equatable {
+    var centerX: Double = 1.0
+    var centerY: Double = 1.0
+    var sizeDimension: WatermarkDimension = .width
+    var sizeUnit: WatermarkSizeUnit = .percent
+    var sizeValue: Double = 20.0
+    var marginUnit: WatermarkMarginUnit = .percent
+    var marginValue: Double = 10.0
+
+    /// Point-maps the center from sensor (XMP) frame to display frame under an EXIF
+    /// orientation, mirroring `BrushMaskGeometry.transformedForDisplay`'s dab mapping — a
+    /// watermark has no shape to reorient, so only its anchor point moves.
+    func transformedForDisplay(orientation: Int) -> WatermarkGeometry {
+        guard orientation > 1 else { return self }
+        var result = self
+        let mapped = Self.mapPoint(x: centerX, y: centerY, orientation: orientation)
+        result.centerX = mapped.x
+        result.centerY = mapped.y
+        return result
+    }
+
+    /// Inverse of `transformedForDisplay`.
+    func transformedForSensor(orientation: Int) -> WatermarkGeometry {
+        let inverse: Int
+        switch orientation {
+        case 6: inverse = 8
+        case 8: inverse = 6
+        default: inverse = orientation
+        }
+        return transformedForDisplay(orientation: inverse)
+    }
+
+    /// Rigidly rotate the anchor point by `degrees` about the frame center (0.5, 0.5), to
+    /// follow a crop STRAIGHTEN angle — mirrors `EllipseMaskGeometry.rotatedInDisplay`'s
+    /// center rotation. `aspect` is the display frame's pixel width/height.
+    func rotatedInDisplay(byDegrees degrees: Double, aspect: Double) -> WatermarkGeometry {
+        guard abs(degrees) > 1e-12 else { return self }
+        let a = aspect > 0 ? aspect : 1
+        let rad = degrees * .pi / 180
+        var result = self
+        let dx = (centerX - 0.5) * a
+        let dy = centerY - 0.5
+        result.centerX = 0.5 + (dx * cos(rad) - dy * sin(rad)) / a
+        result.centerY = 0.5 + (dx * sin(rad) + dy * cos(rad))
+        return result
+    }
+
+    /// UV point mapping for each EXIF orientation, identical to `BrushMaskGeometry`'s.
+    private static func mapPoint(x: Double, y: Double, orientation: Int) -> (x: Double, y: Double) {
+        switch orientation {
+        case 2: return (1 - x, y)
+        case 3: return (1 - x, 1 - y)
+        case 4: return (x, 1 - y)
+        case 5: return (y, x)
+        case 6: return (1 - y, x)
+        case 7: return (1 - y, 1 - x)
+        case 8: return (y, 1 - x)
+        default: return (x, y)
+        }
+    }
+
+    /// The watermark's rendered half-width/half-height in normalized UV (display frame),
+    /// resolved from `sizeDimension`/`sizeUnit`/`sizeValue` plus the source asset's own
+    /// aspect ratio (asset pixel width / pixel height). Shared by the CPU-side drag-clamp
+    /// math and the GPU param upload, so the two never disagree about where the
+    /// watermark's edges actually are.
+    func renderedHalfExtentUV(assetAspect: Double, imageWidth: Double, imageHeight: Double) -> (halfWidthUV: Double, halfHeightUV: Double) {
+        guard imageWidth > 0, imageHeight > 0, assetAspect > 0 else { return (0, 0) }
+        let widthPixels: Double
+        let heightPixels: Double
+        switch (sizeDimension, sizeUnit) {
+        case (.width, .pixel):
+            widthPixels = max(sizeValue, 0)
+            heightPixels = widthPixels / assetAspect
+        case (.width, .percent):
+            widthPixels = imageWidth * max(sizeValue, 0) / 100
+            heightPixels = widthPixels / assetAspect
+        case (.height, .pixel):
+            heightPixels = max(sizeValue, 0)
+            widthPixels = heightPixels * assetAspect
+        case (.height, .percent):
+            heightPixels = imageHeight * max(sizeValue, 0) / 100
+            widthPixels = heightPixels * assetAspect
+        }
+        return (widthPixels / imageWidth / 2, heightPixels / imageHeight / 2)
+    }
+
+    /// The margin inset in normalized UV, independently on each axis (a percent margin is a
+    /// percentage of that axis's own image dimension, matching how crop insets work).
+    func marginInsetUV(imageWidth: Double, imageHeight: Double) -> (x: Double, y: Double) {
+        guard imageWidth > 0, imageHeight > 0 else { return (0, 0) }
+        switch marginUnit {
+        case .pixel:
+            return (max(marginValue, 0) / imageWidth, max(marginValue, 0) / imageHeight)
+        case .percent:
+            let fraction = max(marginValue, 0) / 100
+            return (fraction, fraction)
+        }
+    }
+
+    /// The UV-space rectangle the center may occupy without the watermark crossing the
+    /// margin-inset boundary on any edge. Degenerates to the single center point
+    /// (0.5, 0.5) if the margin + half-extent leave no room.
+    func safeAreaRect(assetAspect: Double, imageWidth: Double, imageHeight: Double) -> (minX: Double, maxX: Double, minY: Double, maxY: Double) {
+        let half = renderedHalfExtentUV(assetAspect: assetAspect, imageWidth: imageWidth, imageHeight: imageHeight)
+        let margin = marginInsetUV(imageWidth: imageWidth, imageHeight: imageHeight)
+        var minX = margin.x + half.halfWidthUV
+        var maxX = 1 - margin.x - half.halfWidthUV
+        var minY = margin.y + half.halfHeightUV
+        var maxY = 1 - margin.y - half.halfHeightUV
+        if minX > maxX { minX = 0.5; maxX = 0.5 }
+        if minY > maxY { minY = 0.5; maxY = 0.5 }
+        return (minX, maxX, minY, maxY)
+    }
+
+    /// Clamp `centerX`/`centerY` into `safeAreaRect`, returning a corrected copy.
+    func clamped(assetAspect: Double, imageWidth: Double, imageHeight: Double) -> WatermarkGeometry {
+        let rect = safeAreaRect(assetAspect: assetAspect, imageWidth: imageWidth, imageHeight: imageHeight)
+        var result = self
+        result.centerX = min(max(centerX, rect.minX), rect.maxX)
+        result.centerY = min(max(centerY, rect.minY), rect.maxY)
+        return result
+    }
+
+    /// The UV-space rectangle the watermark's own rendered EDGE may not cross — i.e. the
+    /// margin inset directly from the image edges, independent of the watermark's own size.
+    /// This is what the edit-view overlay draws as the dashed margin boundary: unlike
+    /// `safeAreaRect` (where the CENTER may travel, which sits margin+half-extent inside the
+    /// image), this rect's boundary IS where the watermark's visible border sits when pushed
+    /// as close to the image edge as the margin allows.
+    func marginBoundaryRect(imageWidth: Double, imageHeight: Double) -> (minX: Double, maxX: Double, minY: Double, maxY: Double) {
+        let margin = marginInsetUV(imageWidth: imageWidth, imageHeight: imageHeight)
+        return (margin.x, 1 - margin.x, margin.y, 1 - margin.y)
+    }
+}
+
 /// A verbatim-preserved Camera Raw mask value node — a Codable/Sendable mirror of the subset of
 /// `XMPValue` shapes an unparseable `crs` correction can contain (simple, rdf:Seq of strings,
 /// single struct, or rdf:Bag/Seq of structs). Kept model-side (no SwiftExif dependency) so the
@@ -437,6 +592,33 @@ nonisolated struct MaskAdjustment: Codable, Sendable, Equatable, Identifiable {
     var layerKind: LayerKind { brush != nil ? .brushMask : .ellipseMask }
 }
 
+/// One watermark layer instance — references a named PNG in the reusable Watermark
+/// library (`WatermarkStore`) by `libraryAssetID` and carries only positioning, sizing,
+/// and opacity. Deliberately has no color/tonal fields (unlike `MaskAdjustment`) since a
+/// watermark layer has no color controls.
+nonisolated struct WatermarkLayer: Codable, Sendable, Equatable, Identifiable {
+    var id: UUID = UUID()
+    var name: String = "Watermark 1"
+    var enabled: Bool = true
+    var libraryAssetID: UUID
+    var geometry: WatermarkGeometry = WatermarkGeometry()
+    var opacity: Double = 1.0
+
+    var layerKind: LayerKind { .watermark }
+
+    func transformedForDisplay(orientation: Int) -> WatermarkLayer {
+        var result = self
+        result.geometry = geometry.transformedForDisplay(orientation: orientation)
+        return result
+    }
+
+    func transformedForSensor(orientation: Int) -> WatermarkLayer {
+        var result = self
+        result.geometry = geometry.transformedForSensor(orientation: orientation)
+        return result
+    }
+}
+
 /// Visual classification of an editing layer, used to pick an icon in the layer strip.
 /// Extend with new cases as mask geometry types are added — keep it the single source
 /// of truth for layer→icon mapping so new kinds don't require touching the UI call sites.
@@ -444,6 +626,7 @@ nonisolated enum LayerKind: Sendable, Equatable {
     case global
     case ellipseMask
     case brushMask
+    case watermark
 
     /// SF Symbol name representing this layer kind.
     var systemImage: String {
@@ -451,37 +634,56 @@ nonisolated enum LayerKind: Sendable, Equatable {
         case .global:      return "circle.lefthalf.filled"
         case .ellipseMask: return "circle.dashed"
         case .brushMask:   return "paintbrush.pointed"
+        case .watermark:   return "seal"
         }
     }
 }
 
 /// A stable reference to a node in the editing layer chain. `.global` is the single
 /// global-adjustment node; `.mask` points at a `MaskAdjustment` by its UUID (stable across
-/// reordering, unlike an array index). Encoded as a compact string for clean JSON sidecars:
-/// `"global"` or `"mask:<uuid>"`.
+/// reordering, unlike an array index); `.watermark` points at a `WatermarkLayer` the same
+/// way. Encoded as a compact string for clean JSON sidecars: `"global"`, `"mask:<uuid>"`,
+/// or `"watermark:<uuid>"`.
 nonisolated enum LayerRef: Sendable, Equatable, Hashable, Codable {
     case global
     case mask(UUID)
+    case watermark(UUID)
+
+    /// Parses the compact string token grammar shared by the `Codable` conformance below
+    /// and the XMP `aaphoto:LayerOrder` dict-based parser (`IPTCMetadataParsing`).
+    init?(token: String) {
+        if token == "global" {
+            self = .global
+        } else if token.hasPrefix("mask:"), let uuid = UUID(uuidString: String(token.dropFirst(5))) {
+            self = .mask(uuid)
+        } else if token.hasPrefix("watermark:"), let uuid = UUID(uuidString: String(token.dropFirst(10))) {
+            self = .watermark(uuid)
+        } else {
+            return nil
+        }
+    }
+
+    var token: String {
+        switch self {
+        case .global:             return "global"
+        case .mask(let id):       return "mask:\(id.uuidString)"
+        case .watermark(let id):  return "watermark:\(id.uuidString)"
+        }
+    }
 
     init(from decoder: Decoder) throws {
         let raw = try decoder.singleValueContainer().decode(String.self)
-        if raw == "global" {
-            self = .global
-        } else if raw.hasPrefix("mask:"), let uuid = UUID(uuidString: String(raw.dropFirst(5))) {
-            self = .mask(uuid)
-        } else {
+        guard let ref = LayerRef(token: raw) else {
             throw DecodingError.dataCorrupted(.init(
                 codingPath: decoder.codingPath,
                 debugDescription: "Unrecognized LayerRef \"\(raw)\""))
         }
+        self = ref
     }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
-        switch self {
-        case .global:        try container.encode("global")
-        case .mask(let id):  try container.encode("mask:\(id.uuidString)")
-        }
+        try container.encode(token)
     }
 }
 
@@ -554,6 +756,9 @@ nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
     var sdrBlend: Int?
     var toneCurve: ToneCurve?
     var localAdjustments: [MaskAdjustment]?
+    /// Watermark layers — app-private, no Adobe Camera Raw equivalent. Persisted separately
+    /// from `localAdjustments` under `aaphoto:WatermarkLayers` (see `XMPDataBuilder`).
+    var watermarkLayers: [WatermarkLayer]?
     var hslAdjustments: HSLAdjustments?
     var anonymizer: AnonymizerSettings?
 
@@ -613,6 +818,7 @@ nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
             && sdrBlend == nil
             && (toneCurve?.isEmpty ?? true)
             && (localAdjustments?.isEmpty ?? true)
+            && (watermarkLayers?.isEmpty ?? true)
             && (hslAdjustments?.isEmpty ?? true)
             && (anonymizer?.isEmpty ?? true)
             && (unparsedMaskCorrections?.isEmpty ?? true)
@@ -665,6 +871,7 @@ nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
         if let value = override.sdrBlend { result.sdrBlend = value }
         if let value = override.toneCurve { result.toneCurve = value }
         if let value = override.localAdjustments { result.localAdjustments = value }
+        if let value = override.watermarkLayers { result.watermarkLayers = value }
         if let value = override.hslAdjustments { result.hslAdjustments = value }
         if let value = override.anonymizer { result.anonymizer = value }
         if let value = override.layerOrder { result.layerOrder = value }
@@ -674,19 +881,24 @@ nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
         return result
     }
 
-    /// The processing order of the layer chain, sanitized against the current masks.
-    /// Drops refs to masks that no longer exist, appends any masks missing from the
-    /// stored order (new masks land at the end), and guarantees exactly one `.global`
-    /// (prepended if the stored order somehow lacks it). When `layerOrder` is nil this
-    /// returns the canonical `[.global] + masks` order — identical to legacy rendering.
+    /// The processing order of the layer chain, sanitized against the current masks and
+    /// watermark layers. Drops refs to layers that no longer exist, appends any layers
+    /// missing from the stored order (new layers land at the end), and guarantees exactly
+    /// one `.global` (prepended if the stored order somehow lacks it). When `layerOrder` is
+    /// nil this returns the canonical `[.global] + masks + watermarks` order — identical to
+    /// legacy rendering when there are no watermark layers.
     func resolvedLayerOrder() -> [LayerRef] {
         let masks = localAdjustments ?? []
+        let watermarks = watermarkLayers ?? []
         let maskIDs = masks.map(\.id)
+        let watermarkIDs = watermarks.map(\.id)
         guard let stored = layerOrder, !stored.isEmpty else {
-            return [.global] + maskIDs.map(LayerRef.mask)
+            return [.global] + maskIDs.map(LayerRef.mask) + watermarkIDs.map(LayerRef.watermark)
         }
-        let validIDs = Set(maskIDs)
+        let validMaskIDs = Set(maskIDs)
+        let validWatermarkIDs = Set(watermarkIDs)
         var seenMaskIDs = Set<UUID>()
+        var seenWatermarkIDs = Set<UUID>()
         var sawGlobal = false
         var result: [LayerRef] = []
         for ref in stored {
@@ -696,17 +908,33 @@ nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
                 sawGlobal = true
                 result.append(.global)
             case .mask(let id):
-                guard validIDs.contains(id), !seenMaskIDs.contains(id) else { continue }
+                guard validMaskIDs.contains(id), !seenMaskIDs.contains(id) else { continue }
                 seenMaskIDs.insert(id)
                 result.append(.mask(id))
+            case .watermark(let id):
+                guard validWatermarkIDs.contains(id), !seenWatermarkIDs.contains(id) else { continue }
+                seenWatermarkIDs.insert(id)
+                result.append(.watermark(id))
             }
         }
         if !sawGlobal { result.insert(.global, at: 0) }
-        // Append any masks not referenced by the stored order (e.g. just added).
+        // Append any layers not referenced by the stored order (e.g. just added).
         for id in maskIDs where !seenMaskIDs.contains(id) {
             result.append(.mask(id))
         }
+        for id in watermarkIDs where !seenWatermarkIDs.contains(id) {
+            result.append(.watermark(id))
+        }
         return result
+    }
+
+    /// True when persistence needs the fully-explicit `aaphoto:LayerOrder` XMP array
+    /// rather than the legacy masks-in-render-order + `GlobalLayerIndex` encoding. The
+    /// legacy encoding can only place a single global node among an otherwise-homogeneous
+    /// mask list by reconstructing it from one int; once a watermark layer exists there are
+    /// 3 independently-positioned kinds, which that int can no longer reconstruct.
+    var needsExplicitLayerOrderPersistence: Bool {
+        !(watermarkLayers?.isEmpty ?? true)
     }
 
     // MARK: - Persistence helpers for the layer chain
@@ -760,6 +988,16 @@ nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
         result.localAdjustments = masks.map {
             $0.transformedForDisplay(orientation: orientation, sensorAspect: sensorAspect)
         }
+        return result
+    }
+
+    /// Watermark geometry is stored in the sensor (XMP) frame like mask geometry, but
+    /// only carries a point (no oriented-corner box to decode), so unlike
+    /// `masksTransformedForDisplay` this needs no aspect term.
+    func watermarksTransformedForDisplay(orientation: Int) -> CameraRawSettings {
+        guard orientation > 1, let layers = watermarkLayers, !layers.isEmpty else { return self }
+        var result = self
+        result.watermarkLayers = layers.map { $0.transformedForDisplay(orientation: orientation) }
         return result
     }
 

@@ -94,6 +94,104 @@ struct MetadataEngineConcurrencyTests {
         #expect(read.contrast == 25)
     }
 
+    /// Watermark layer regression: a watermark layer (library reference, sizing, margin,
+    /// opacity) written through the structured write path must read back unchanged, and
+    /// — since a watermark layer exists — the layer chain must persist through the
+    /// fully-explicit `aaphoto:LayerOrder`, not the legacy `GlobalLayerIndex` int.
+    @Test("watermark layer roundtrips geometry, sizing, and layer order through write then read")
+    func watermarkLayerRoundtrip() async throws {
+        let engine = SwiftExifWriteEngine()
+        let reader = SwiftExifReadService()
+        let url = try makeTempJPEG()
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        var mask = MaskAdjustment(name: "Sky")
+        mask.geometry.centerX = 0.3
+
+        let assetID = UUID()
+        var geometry = WatermarkGeometry()
+        geometry.centerX = 0.85
+        geometry.centerY = 0.9
+        geometry.sizeDimension = .height
+        geometry.sizeUnit = .pixel
+        geometry.sizeValue = 240
+        geometry.marginUnit = .percent
+        geometry.marginValue = 6
+        var watermark = WatermarkLayer(name: "Studio Logo", libraryAssetID: assetID, geometry: geometry)
+        watermark.opacity = 0.65
+
+        // Interleave mask/global/watermark so the round-trip must go through the fully
+        // explicit LayerOrder, not just append-at-the-end ordering.
+        let layerOrder: [LayerRef] = [.mask(mask.id), .global, .watermark(watermark.id)]
+
+        try await engine.writeFields(
+            [:], to: [url],
+            structuredData: StructuredWriteData(masks: [mask], watermarkLayers: [watermark], layerOrder: layerOrder)
+        )
+
+        let meta = try await reader.readFullMetadata(url: url)
+        let cameraRaw = try #require(meta.cameraRaw)
+        let read = try #require(cameraRaw.watermarkLayers?.first)
+        #expect(read.name == "Studio Logo")
+        #expect(read.libraryAssetID == assetID)
+        #expect(read.enabled == true)
+        #expect(read.geometry.sizeDimension == .height)
+        #expect(read.geometry.sizeUnit == .pixel)
+        #expect(abs(read.geometry.sizeValue - 240) < 1e-4)
+        #expect(read.geometry.marginUnit == .percent)
+        #expect(abs(read.geometry.marginValue - 6) < 1e-4)
+        #expect(abs(read.geometry.centerX - 0.85) < 1e-5)
+        #expect(abs(read.geometry.centerY - 0.9) < 1e-5)
+        #expect(abs(read.opacity - 0.65) < 1e-4)
+
+        // Mask identity doesn't survive an XMP round-trip (ACR's mask schema has no slot for
+        // our app UUID, so `parseMaskGroupBasedCorrections` mints a fresh one on every read —
+        // `maskRoundtrip` above never asserts `.id` for the same reason). Watermark IDs DO
+        // round-trip since `applyWatermarkLayers`/`parseWatermarkLayers` explicitly carry
+        // them, so the chain must still show exactly 3 entries with `.global` and the
+        // watermark in their authored relative positions.
+        #expect(cameraRaw.needsExplicitLayerOrderPersistence)
+        let order = cameraRaw.resolvedLayerOrder()
+        #expect(order.count == 3)
+        #expect(order.contains(.global))
+        #expect(order.contains(.watermark(watermark.id)))
+        #expect(order.firstIndex(of: .watermark(watermark.id)).map { $0 > order.firstIndex(of: .global)! } == true)
+    }
+
+    /// Legacy regression: a develop save with no watermark layers must keep persisting the
+    /// layer chain via the compact `GlobalLayerIndex` int (not the fully-explicit
+    /// `LayerOrder`), so pre-existing watermark-free files round-trip exactly as before.
+    @Test("mask-only layer chain still roundtrips via GlobalLayerIndex, not the explicit LayerOrder")
+    func maskOnlyLayerChainStaysOnLegacyEncoding() async throws {
+        let engine = SwiftExifWriteEngine()
+        let reader = SwiftExifReadService()
+        let url = try makeTempJPEG()
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let mask = MaskAdjustment(name: "Sky")
+        let layerOrder: [LayerRef] = [.mask(mask.id), .global]
+
+        try await engine.writeFields(
+            [:], to: [url],
+            structuredData: StructuredWriteData(masks: [mask], layerOrder: layerOrder)
+        )
+
+        let meta = try SwiftExif.readMetadata(from: url)
+        let aaphotoNamespace = "http://aagedal.me/ns/photo/1.0/"
+        #expect(meta.xmp?.simpleValue(namespace: aaphotoNamespace, property: "GlobalLayerIndex") == "1")
+        #expect(meta.xmp?.arrayValue(namespace: aaphotoNamespace, property: "LayerOrder").isEmpty ?? true)
+
+        // Mask identity doesn't survive an XMP round-trip (see the comment in
+        // watermarkLayerRoundtrip above), so check shape/global-position rather than the
+        // original mask.id.
+        let read = try await reader.readFullMetadata(url: url)
+        #expect(read.cameraRaw?.needsExplicitLayerOrderPersistence == false)
+        let order = read.cameraRaw?.resolvedLayerOrder()
+        #expect(order?.count == 2)
+        // Authored order was [.mask, .global] (globalIndex 1) — the mask precedes global.
+        #expect(order?.last == .global)
+    }
+
     /// HSL regression: per-color HSL adjustments written through the structured
     /// write path must read back with their authored hue/saturation/luminance.
     /// `developWriteFields` deliberately excludes HSL, so the live (non-export)

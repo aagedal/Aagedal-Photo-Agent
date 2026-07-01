@@ -184,4 +184,6 @@ nonisolated enum UserDefaultsKeys {
     static let knownPeopleICloudEnabled = "knownPeople.iCloudEnabled"
     /// True when the Teams library lives in the iCloud ubiquity container.
     static let teamsICloudEnabled = "teams.iCloudEnabled"
+    /// True when the Watermark library lives in the iCloud ubiquity container.
+    static let watermarksICloudEnabled = "watermarks.iCloudEnabled"
 }

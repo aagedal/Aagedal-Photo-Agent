@@ -57,6 +57,7 @@ struct SettingsView: View {
         case locations
         case format
         case templates
+        case watermarks
         case ftp
         case signing
         case sync
@@ -79,6 +80,7 @@ struct SettingsView: View {
             case .locations: return "Locations"
             case .format: return "Format"
             case .templates: return "Templates"
+            case .watermarks: return "Watermarks"
             case .ftp: return "FTP"
             case .signing: return "Signing"
             case .sync: return "iCloud Sync"
@@ -101,6 +103,7 @@ struct SettingsView: View {
             case .locations: return "folder"
             case .format: return "doc.richtext"
             case .templates: return "doc.on.clipboard"
+            case .watermarks: return "seal"
             case .ftp: return "arrow.up.to.line"
             case .signing: return "signature"
             case .sync: return "icloud"
@@ -125,6 +128,7 @@ struct SettingsView: View {
                     row(.keywordLists)
                     row(.quickLists)
                     row(.templates)
+                    row(.watermarks)
                 }
                 Section("People and Groups") {
                     row(.faceRecognition)
@@ -178,6 +182,7 @@ struct SettingsView: View {
         case .locations: locationsTab
         case .format: formatTab
         case .templates: templatesTab
+        case .watermarks: watermarksTab
         case .ftp: ftpTab
         case .signing: signingTab
         case .sync: syncTab
@@ -353,6 +358,13 @@ struct SettingsView: View {
     @ViewBuilder
     private var teamsTab: some View {
         TeamsLibraryContent()
+    }
+
+    // MARK: - Watermarks Tab
+
+    @ViewBuilder
+    private var watermarksTab: some View {
+        WatermarksLibraryContent()
     }
 
     @ViewBuilder
@@ -1204,6 +1216,14 @@ struct SettingsView: View {
                     set: { coordinator.setKnownPeopleEnabled($0) }
                 ))
                 Text("Reference faces and clothing samples used for auto-matching.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Toggle("Watermarks", isOn: Binding(
+                    get: { coordinator.watermarksEnabled },
+                    set: { coordinator.setWatermarksEnabled($0) }
+                ))
+                Text("Named watermark images used by the watermark develop layer.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } header: {

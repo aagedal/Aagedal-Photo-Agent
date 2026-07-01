@@ -181,6 +181,38 @@ final class ICloudSyncCoordinator {
         bump()
     }
 
+    // MARK: - Watermark library
+
+    var watermarksEnabled: Bool {
+        _ = version
+        return UserDefaults.standard.bool(forKey: UserDefaultsKeys.watermarksICloudEnabled)
+    }
+
+    func setWatermarksEnabled(_ on: Bool) {
+        lastError = nil
+        do {
+            if on {
+                guard let cloud = AppPaths.iCloudWatermarksURL else {
+                    lastError = Self.unavailableMessage
+                    bump()
+                    return
+                }
+                try mergeCopy(from: WatermarkStore.localWatermarksDirectory, to: cloud)
+                UserDefaults.standard.set(true, forKey: UserDefaultsKeys.watermarksICloudEnabled)
+            } else {
+                if let cloud = AppPaths.iCloudWatermarksURL {
+                    try? mergeCopy(from: cloud, to: WatermarkStore.localWatermarksDirectory)
+                }
+                UserDefaults.standard.set(false, forKey: UserDefaultsKeys.watermarksICloudEnabled)
+            }
+            WatermarkStore.shared.reloadAfterStorageChange()
+        } catch {
+            lastError = "Could not move the Watermark library into iCloud Drive: \(error.localizedDescription)"
+        }
+        WatermarkCloudCoordinator.shared.refresh()
+        bump()
+    }
+
     // MARK: - Helpers
 
     private static let unavailableMessage =

@@ -1134,6 +1134,7 @@ final class MetadataViewModel {
                     ? StructuredWriteData(
                         toneCurve: edited.cameraRaw?.toneCurve,
                         masks: edited.cameraRaw?.localAdjustments,
+                        watermarkLayers: edited.cameraRaw?.watermarkLayers,
                         hslAdjustments: edited.cameraRaw?.hslAdjustments,
                         layerOrder: edited.cameraRaw?.layerOrder,
                         anonymizer: edited.cameraRaw?.anonymizer,
@@ -2122,6 +2123,7 @@ final class MetadataViewModel {
                     ? StructuredWriteData(
                         toneCurve: edited.cameraRaw?.toneCurve,
                         masks: edited.cameraRaw?.localAdjustments,
+                        watermarkLayers: edited.cameraRaw?.watermarkLayers,
                         hslAdjustments: edited.cameraRaw?.hslAdjustments,
                         layerOrder: edited.cameraRaw?.layerOrder,
                         anonymizer: edited.cameraRaw?.anonymizer,
@@ -2201,6 +2203,7 @@ final class MetadataViewModel {
                     ? StructuredWriteData(
                         toneCurve: edited.cameraRaw?.toneCurve,
                         masks: edited.cameraRaw?.localAdjustments,
+                        watermarkLayers: edited.cameraRaw?.watermarkLayers,
                         hslAdjustments: edited.cameraRaw?.hslAdjustments,
                         layerOrder: edited.cameraRaw?.layerOrder,
                         anonymizer: edited.cameraRaw?.anonymizer,

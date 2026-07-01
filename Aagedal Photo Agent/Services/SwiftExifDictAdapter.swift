@@ -161,6 +161,22 @@ extension ImageMetadata {
                 dict[MetadataDictKey.globalLayerIndex] = v
             }
 
+            // App-private fully-explicit layer-chain order (used once any watermark layer
+            // exists — see CameraRawSettings.needsExplicitLayerOrderPersistence).
+            let layerOrderTokens = xmp.arrayValue(namespace: aaphotoNamespaceURI,
+                                                   property: MetadataDictKey.layerOrderExplicit)
+            if !layerOrderTokens.isEmpty {
+                dict[MetadataDictKey.layerOrderExplicit] = layerOrderTokens
+            }
+
+            // App-private watermark layer library-reference array.
+            if let watermarks = xmp.structuredArrayValue(
+                namespace: aaphotoNamespaceURI,
+                property: MetadataDictKey.watermarkLayers
+            ) {
+                dict[MetadataDictKey.watermarkLayers] = watermarks.map(unwrapXMPStruct)
+            }
+
             // App-private global Anonymizer redaction settings.
             if let v = xmp.simpleValue(namespace: aaphotoNamespaceURI,
                                        property: MetadataDictKey.anonymizerAmount) {

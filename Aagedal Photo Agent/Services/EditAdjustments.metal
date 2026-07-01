@@ -30,6 +30,17 @@ struct MaskParams {
     uint  brushLayer;        // slice index into the brush alpha array (maskType == 1 only)
 };
 
+/// Per-instance watermark-layer parameters. `center`/`halfExtent` are UV (display frame,
+/// already aspect-corrected on the CPU side via WatermarkGeometry.renderedHalfExtentUV, so
+/// the shader needs no extra aspect term). `textureLayer` indexes the shared watermark
+/// texture array (deduped by library asset — several layers may reuse one slice).
+struct WatermarkParams {
+    float2 center;
+    float2 halfExtent;
+    float opacity;
+    uint textureLayer;
+};
+
 struct HSLChannelParams {
     float saturation;       // -1..1
     float luminance;        // -1..1
@@ -81,6 +92,8 @@ struct EditParams {
 
     int  maskOverlayIndex;    // mask buffer index to visualize as a red overlay, or -1 = none
     float maskOverlayOpacity; // 0-1 red-tint strength for the mask overlay
+
+    uint watermarkCount;      // number of active watermark layers (0-4), see WatermarkParams
 };
 
 // ============================================================
@@ -346,6 +359,26 @@ static float maskWeight(constant MaskParams &mask, float2 uv, float2 sourceSize)
     return weight;
 }
 
+/// Alpha-composites one watermark layer over the running color, "over"-blending in
+/// premultiplied space (the texture is decoded/uploaded premultiplied — see
+/// `MetalEditPipeline.loadWatermarkTextures` — so no separate un-premultiply/re-premultiply
+/// step is needed). `wm.center`/`halfExtent` define the watermark's footprint in UV; a pixel
+/// outside it is returned unchanged. Degenerate (zero) `halfExtent` — e.g. the layer's
+/// library asset went missing — also returns `rgb` unchanged rather than dividing by zero.
+static half3 applyWatermark(half3 rgb, constant WatermarkParams &wm,
+                            texture2d_array<half, access::sample> tex, float2 uv)
+{
+    if (wm.halfExtent.x <= 0.0 || wm.halfExtent.y <= 0.0) return rgb;
+    float2 local = (uv - wm.center) / wm.halfExtent;
+    if (abs(local.x) > 1.0 || abs(local.y) > 1.0) return rgb;
+    float2 sampleUV = local * 0.5 + 0.5;
+    constexpr sampler wmSampler(filter::linear, address::clamp_to_edge);
+    half4 wmColor = tex.sample(wmSampler, sampleUV, wm.textureLayer);
+    half opacity = half(wm.opacity);
+    half alpha = wmColor.a * opacity;
+    return wmColor.rgb * opacity + rgb * (1.0h - alpha);
+}
+
 /// Per-mask local tonal adjustments applied to `rgb` (returns the fully-adjusted color;
 /// the kernel blends it back by the mask weight). Each adjustment is gated by mask.activeFlags.
 static half3 applyMaskColor(half3 rgb, constant MaskParams &mask)
@@ -516,10 +549,12 @@ kernel void editAdjustments(
     texture2d<half, access::write> destination [[texture(1)]],
     texture1d<float, access::sample> toneLUT [[texture(2)]],
     texture2d_array<half, access::sample> brushAlpha [[texture(3)]],
+    texture2d_array<half, access::sample> watermarkTex [[texture(4)]],
     constant EditParams &params [[buffer(0)]],
     constant MaskParams *masks [[buffer(1)]],
     constant HSLParams &hslParams [[buffer(2)]],
     constant uint *order [[buffer(3)]],
+    constant WatermarkParams *watermarks [[buffer(4)]],
     uint2 gid [[thread_position_in_grid]])
 {
     if (gid.x >= uint(params.drawableSize.x) || gid.y >= uint(params.drawableSize.y)) {
@@ -586,14 +621,24 @@ kernel void editAdjustments(
     // transforms the running color in sequence, so moving the global node before/after a
     // mask changes the result. Legacy edits resolve to [global, mask0, mask1, …], which
     // reproduces the previous fixed "global first, then masks" behavior exactly.
+    //
+    // Order-buffer entry encoding (3 buckets): 0xFFFFFFFF = global sentinel; the top bit
+    // (0x80000000) set on anything else = a watermark-layer index (low 31 bits) into
+    // `watermarks`; otherwise it's a plain mask index into `masks` (< maskCount). The global
+    // sentinel is checked FIRST since it also has the top bit set.
     bool globalApplied = false;
     for (uint k = 0; k < params.orderCount; k++) {
         uint entry = order[k];
-        if (entry >= params.maskCount) {
+        if (entry == 0xFFFFFFFFu) {
             // Global node: the order buffer uses 0xFFFFFFFF as the global sentinel
-            // (MetalEditPipeline.globalOrderSentinel); any index ≥ maskCount is global.
+            // (MetalEditPipeline.globalOrderSentinel).
             rgb = applyGlobal(rgb, params, toneLUT, hslParams);
             globalApplied = true;
+        } else if (entry & 0x80000000u) {
+            uint wIdx = entry & 0x7FFFFFFFu;
+            if (wIdx < params.watermarkCount) {
+                rgb = applyWatermark(rgb, watermarks[wIdx], watermarkTex, uv);
+            }
         } else {
             constant MaskParams &mask = masks[entry];
             // Brush masks resolve their coverage from the pre-rasterized alpha array (sampled

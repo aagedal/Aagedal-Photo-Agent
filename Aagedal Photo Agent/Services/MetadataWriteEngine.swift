@@ -4,6 +4,9 @@ import Foundation
 struct StructuredWriteData: Sendable {
     var toneCurve: ToneCurve?
     var masks: [MaskAdjustment]?
+    /// Watermark layers — app-private, carried alongside `masks` through the same
+    /// `layerOrder` chain. nil ⇒ "don't touch" for a merge-style write.
+    var watermarkLayers: [WatermarkLayer]?
     var hslAdjustments: HSLAdjustments?
     /// The reorderable layer chain (incl. the global node's position). nil ⇒ canonical
     /// global-first. Carried so the embedded-XMP writer can persist `aaphoto:GlobalLayerIndex`
@@ -30,6 +33,7 @@ struct StructuredWriteData: Sendable {
     var isEmpty: Bool {
         (toneCurve == nil || (toneCurve?.isEmpty ?? true))
             && (masks == nil || (masks?.isEmpty ?? true))
+            && (watermarkLayers == nil || (watermarkLayers?.isEmpty ?? true))
             && (hslAdjustments == nil || (hslAdjustments?.isEmpty ?? true))
             && (anonymizer == nil || (anonymizer?.isEmpty ?? true))
             && (unparsedMaskCorrections?.isEmpty ?? true)

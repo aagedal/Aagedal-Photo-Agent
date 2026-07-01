@@ -56,6 +56,14 @@ struct BrushCompositeParams {
     var originPx: SIMD2<UInt32> = .zero
 }
 
+/// GPU watermark-layer parameters matching the Metal `WatermarkParams` struct.
+struct WatermarkParams {
+    var center: SIMD2<Float> = .zero
+    var halfExtent: SIMD2<Float> = .zero   // (0,0) = degenerate/missing asset; shader no-ops
+    var opacity: Float = 1.0
+    var textureLayer: UInt32 = 0
+}
+
 /// GPU overlay parameters matching the Metal `MaskOverlayParams` struct.
 struct MaskOverlayParams {
     var center: SIMD2<Float> = .zero
@@ -141,6 +149,8 @@ struct EditParams {
 
     var maskOverlayIndex: Int32 = -1  // mask buffer index to red-tint, or -1 = none
     var maskOverlayOpacity: Float = 0 // 0-1 red-tint strength
+
+    var watermarkCount: UInt32 = 0    // number of active watermark layers (0-4)
 }
 
 /// Manages the Metal compute pipeline for real-time edit preview.
@@ -249,10 +259,17 @@ final class MetalEditPipeline: @unchecked Sendable {
     nonisolated(unsafe) private var lutInterleaveBuffer = [Float](repeating: 0, count: ToneCurveGenerator.lutSize * 4)
 
     nonisolated private static let maxMasks = 8
-    /// Max layer-order entries: every mask plus the single global node.
-    nonisolated private static let maxOrderEntries = maxMasks + 1
-    /// Order-buffer entry meaning "run the global adjustment block here" (any value ≥ maxMasks).
+    /// Max simultaneous watermark layers (and, since each references one library asset,
+    /// also the texture array's slice cap — fewer if several layers share one asset).
+    nonisolated private static let maxWatermarks = 4
+    /// Max layer-order entries: every mask, every watermark layer, plus the single global node.
+    nonisolated private static let maxOrderEntries = maxMasks + maxWatermarks + 1
+    /// Order-buffer entry meaning "run the global adjustment block here".
     nonisolated private static let globalOrderSentinel: UInt32 = 0xFFFF_FFFF
+    /// Order-buffer high bit meaning "the low 31 bits are a watermark-layer index", so a
+    /// watermark entry and the global sentinel (which also has this bit set) stay
+    /// distinguishable from a plain mask index (always < maxMasks). See EditAdjustments.metal.
+    nonisolated private static let watermarkOrderFlag: UInt32 = 0x8000_0000
 
     // Overlay pipeline (mask overlay rendering)
     private let overlayPipelineState: MTLComputePipelineState?
@@ -285,6 +302,29 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// (a synchronous GPU rasterization) on every unrelated tonal edit.
     nonisolated(unsafe) private var lastBuiltBrushMasks: [BrushMaskGeometry] = []
     nonisolated(unsafe) private var lastBuiltBrushSize = MTLSize(width: 0, height: 0, depth: 0)
+
+    // MARK: - Watermark layers
+
+    /// Per-layer watermark parameters (buffer index 4) — center/halfExtent/opacity/textureLayer,
+    /// up to `maxWatermarks` entries. Rewritten (cheaply) on every `updateParams`/
+    /// `refreshWatermarkParams` call; the texture array behind it is only reloaded when the
+    /// referenced asset IDs actually change (see `lastBuiltWatermarkAssetIDs`).
+    nonisolated(unsafe) private(set) var watermarkParamsBuffer: MTLBuffer?
+    /// Deduped-by-asset watermark texture array (texture index 4), one RGBA8 premultiplied
+    /// slice per distinct library asset referenced by the active watermark layers. Nil when
+    /// there are none, so non-watermark edits pay zero extra GPU memory.
+    nonisolated(unsafe) private(set) var watermarkTexture: MTLTexture?
+    /// A 1×1×1 fully-transparent placeholder bound to `editAdjustments`' watermark-texture slot
+    /// whenever there are no active watermark layers, so the kernel's texture argument is
+    /// always satisfied (mirrors `emptyBrushAlpha`).
+    nonisolated(unsafe) private let emptyWatermarkTexture: MTLTexture
+    /// Cache guarding the texture (re)decode in `loadWatermarkTextures`: the distinct asset IDs
+    /// the current `watermarkTexture` was built from.
+    nonisolated(unsafe) private var lastBuiltWatermarkAssetIDs: [UUID] = []
+    /// Per-asset (slice index, decoded aspect ratio) from the last texture build — reused by
+    /// `refreshWatermarkParams` when the asset-ID cache above hits, so a position/size/opacity-only
+    /// change doesn't force a redecode.
+    nonisolated(unsafe) private var lastBuiltWatermarkAspects: [UUID: (slice: Int, aspect: Double)] = [:]
 
     nonisolated private static let colorSpace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
 
@@ -449,6 +489,10 @@ final class MetalEditPipeline: @unchecked Sendable {
             length: MemoryLayout<UInt32>.stride * Self.maxOrderEntries,
             options: .storageModeShared
         )
+        self.watermarkParamsBuffer = device.makeBuffer(
+            length: MemoryLayout<WatermarkParams>.stride * Self.maxWatermarks,
+            options: .storageModeShared
+        )
         metalPipelineLog.info("MaskParams stride=\(MemoryLayout<MaskParams>.stride) size=\(MemoryLayout<MaskParams>.size) alignment=\(MemoryLayout<MaskParams>.alignment)")
         metalPipelineLog.info("EditParams stride=\(MemoryLayout<EditParams>.stride) size=\(MemoryLayout<EditParams>.size) alignment=\(MemoryLayout<EditParams>.alignment)")
         metalPipelineLog.info("HSLParams stride=\(MemoryLayout<HSLParams>.stride) size=\(MemoryLayout<HSLParams>.size) alignment=\(MemoryLayout<HSLParams>.alignment)")
@@ -485,6 +529,26 @@ final class MetalEditPipeline: @unchecked Sendable {
                               withBytes: &zeroHalf, bytesPerRow: MemoryLayout<UInt16>.size,
                               bytesPerImage: MemoryLayout<UInt16>.size)
         self.emptyBrushAlpha = emptyBrushTex
+
+        // 1×1×1 fully-transparent watermark-texture placeholder (always-bound fallback; see
+        // property doc). Zeroed — alpha 0 means applyWatermark's blend is a no-op even if a
+        // stray order-buffer entry somehow pointed at it. Same sRGB-tagged format as the real
+        // watermark texture array (see loadWatermarkTextures) so binding either one is valid
+        // for the same shader texture argument.
+        let emptyWatermarkDesc = MTLTextureDescriptor()
+        emptyWatermarkDesc.textureType = .type2DArray
+        emptyWatermarkDesc.pixelFormat = .rgba8Unorm_srgb
+        emptyWatermarkDesc.width = 1
+        emptyWatermarkDesc.height = 1
+        emptyWatermarkDesc.arrayLength = 1
+        emptyWatermarkDesc.usage = .shaderRead
+        emptyWatermarkDesc.storageMode = .shared
+        guard let emptyWatermarkTex = device.makeTexture(descriptor: emptyWatermarkDesc) else { return nil }
+        var zeroRGBA: UInt32 = 0
+        emptyWatermarkTex.replace(region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0, slice: 0,
+                                  withBytes: &zeroRGBA, bytesPerRow: MemoryLayout<UInt32>.size,
+                                  bytesPerImage: MemoryLayout<UInt32>.size)
+        self.emptyWatermarkTexture = emptyWatermarkTex
 
         // Pre-allocate the main LUT texture (4096 entries, rgba16Float, ~32KB).
         // R/G/B channels carry per-channel LUT for curve editor support.
@@ -625,9 +689,11 @@ final class MetalEditPipeline: @unchecked Sendable {
         var flags: UInt32 = 0
 
         guard let settings else {
-            // No settings → the chain is just the (no-op) global node; drop any brush alpha.
+            // No settings → the chain is just the (no-op) global node; drop any brush alpha
+            // and watermark textures.
             refreshBrushAlpha([], size: MTLSize(width: 0, height: 0, depth: 0))
-            params.orderCount = uploadLayerOrder([.global], maskIndexByID: [:])
+            refreshWatermarkParams([], imageSize: MTLSize(width: 0, height: 0, depth: 0))
+            params.orderCount = uploadLayerOrder([.global], maskIndexByID: [:], watermarkIndexByID: [:])
             let ptr = buffer.contents().bindMemory(to: EditParams.self, capacity: 1)
             ptr.pointee = params
             ptr.pointee.gamutClipMode = gamutClipMode
@@ -691,10 +757,9 @@ final class MetalEditPipeline: @unchecked Sendable {
         let displaySettings: CameraRawSettings = {
             let orientation = sourceOrientation
             guard orientation > 1, let size = sourceTextureSize, size.height > 0 else { return settings }
-            return settings.masksTransformedForDisplay(
-                orientation: orientation,
-                displayAspect: size.width / size.height
-            )
+            return settings
+                .masksTransformedForDisplay(orientation: orientation, displayAspect: size.width / size.height)
+                .watermarksTransformedForDisplay(orientation: orientation)
         }()
         // Both ellipse and brush masks participate. Brush masks resolve their coverage from a
         // pre-rasterized alpha array (rebuilt below), sampled by `editAdjustments` when the mask's
@@ -840,12 +905,37 @@ final class MetalEditPipeline: @unchecked Sendable {
             hslPtr.pointee = hslP
         }
 
-        // Build the processing order: interleave the global node among the masks per the
-        // resolved layer order. `.mask` refs to disabled/overflow masks (absent from
-        // maskIndexByID) are skipped; the global node is always present.
+        // 7. Watermark layers — app-only compositing, no ACR equivalent. Order-buffer slot
+        // assignment happens unconditionally below (needed regardless of resolution); the
+        // GPU-resident texture + geometry data is only refreshed here when a persistent source
+        // texture size is already known (live preview). The offscreen/export path (no
+        // persistent source texture at this point) assigns the same slots by iteration order
+        // and lets `renderOffscreenSerial` call `refreshWatermarkParams` again explicitly once
+        // its working resolution is known — mirroring `rebuildBrushAlpha`'s split exactly.
+        let displayWatermarks = (displaySettings.watermarkLayers ?? []).filter(\.enabled)
+        let activeWatermarks = Array(displayWatermarks.prefix(Self.maxWatermarks))
+        params.watermarkCount = UInt32(activeWatermarks.count)
+        var watermarkIndexByID: [UUID: Int] = [:]
+        if !activeWatermarks.isEmpty {
+            if let texSize = sourceTextureSize {
+                watermarkIndexByID = refreshWatermarkParams(
+                    activeWatermarks,
+                    imageSize: MTLSize(width: Int(texSize.width), height: Int(texSize.height), depth: 1)
+                )
+            } else {
+                for (i, layer) in activeWatermarks.enumerated() { watermarkIndexByID[layer.id] = i }
+            }
+        } else {
+            refreshWatermarkParams([], imageSize: MTLSize(width: 0, height: 0, depth: 0))
+        }
+
+        // Build the processing order: interleave the global node among the masks and
+        // watermark layers per the resolved layer order. Refs to disabled/overflow/missing
+        // layers (absent from the index maps) are skipped; the global node is always present.
         params.orderCount = uploadLayerOrder(
             displaySettings.resolvedLayerOrder(),
-            maskIndexByID: maskIndexByID
+            maskIndexByID: maskIndexByID,
+            watermarkIndexByID: watermarkIndexByID
         )
 
         let ptr = buffer.contents().bindMemory(to: EditParams.self, capacity: 1)
@@ -870,12 +960,16 @@ final class MetalEditPipeline: @unchecked Sendable {
     }
 
     /// Writes the layer-processing order into `orderBuffer` and returns the entry count.
-    /// Each resolved `.global` becomes `globalOrderSentinel`; each `.mask(id)` becomes its
-    /// GPU mask index via `maskIndexByID` (refs with no mapping — disabled or overflow masks
-    /// — are skipped). Capped at `maxOrderEntries`.
+    /// Each resolved `.global` becomes `globalOrderSentinel`; each `.mask(id)` becomes its GPU
+    /// mask index via `maskIndexByID`; each `.watermark(id)` becomes its GPU watermark-params
+    /// index via `watermarkIndexByID`, flagged with `watermarkOrderFlag` so the shader can tell
+    /// it apart from a plain mask index (see EditAdjustments.metal's order-buffer encoding
+    /// comment). Refs with no mapping — disabled or overflow layers — are skipped. Capped at
+    /// `maxOrderEntries`.
     nonisolated private func uploadLayerOrder(
         _ resolved: [LayerRef],
-        maskIndexByID: [UUID: Int]
+        maskIndexByID: [UUID: Int],
+        watermarkIndexByID: [UUID: Int]
     ) -> UInt32 {
         guard let orderBuf = orderBuffer else { return 0 }
         let ptr = orderBuf.contents().bindMemory(to: UInt32.self, capacity: Self.maxOrderEntries)
@@ -888,6 +982,10 @@ final class MetalEditPipeline: @unchecked Sendable {
             case .mask(let id):
                 guard let idx = maskIndexByID[id] else { continue }
                 ptr[count] = UInt32(idx)
+                count += 1
+            case .watermark(let id):
+                guard let idx = watermarkIndexByID[id] else { continue }
+                ptr[count] = Self.watermarkOrderFlag | UInt32(idx)
                 count += 1
             }
         }
@@ -1161,6 +1259,143 @@ final class MetalEditPipeline: @unchecked Sendable {
         lastBuiltBrushSize = size
     }
 
+    // MARK: - Watermark textures
+
+    /// (Re)builds the deduped-by-asset watermark texture array from `assetIDs` (which may
+    /// contain duplicates — several layers can reference the same library asset). Reads each
+    /// asset's PNG directly off disk via `WatermarkStore.resolvedImageURL`/`CloudCoordinatedIO`
+    /// — NOT through `WatermarkStore.shared`'s actor-isolated `assets` list — so this is safe to
+    /// call from the offscreen (background-queue) export path as well as the live main-thread
+    /// path. Decodes with `CGContext` using a Y-flip so row 0 lands at the texture's v=0 (top),
+    /// matching this pipeline's UV convention; premultiplied alpha throughout (see
+    /// `applyWatermark` in EditAdjustments.metal), since `CGContext` bitmap targets require it.
+    /// Cached against `lastBuiltWatermarkAssetIDs` — a position/size/opacity-only change (the
+    /// common case while dragging a slider) skips the redecode entirely.
+    @discardableResult
+    nonisolated private func loadWatermarkTextures(_ assetIDs: [UUID]) -> [UUID: (slice: Int, aspect: Double)] {
+        var distinctIDs: [UUID] = []
+        var seen = Set<UUID>()
+        for id in assetIDs where !seen.contains(id) {
+            seen.insert(id)
+            distinctIDs.append(id)
+        }
+        guard !distinctIDs.isEmpty else {
+            watermarkTexture = nil
+            lastBuiltWatermarkAssetIDs = []
+            lastBuiltWatermarkAspects = [:]
+            return [:]
+        }
+        if watermarkTexture != nil, distinctIDs == lastBuiltWatermarkAssetIDs {
+            return lastBuiltWatermarkAspects
+        }
+
+        var decoded: [(id: UUID, image: CGImage)] = []
+        for id in distinctIDs {
+            guard let data = try? CloudCoordinatedIO.readData(at: WatermarkStore.resolvedImageURL(forAssetID: id)),
+                  let source = CGImageSourceCreateWithData(data as CFData, nil),
+                  let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil),
+                  cgImage.width > 0, cgImage.height > 0
+            else { continue }
+            decoded.append((id, cgImage))
+        }
+        guard !decoded.isEmpty else {
+            watermarkTexture = nil
+            lastBuiltWatermarkAssetIDs = []
+            lastBuiltWatermarkAspects = [:]
+            return [:]
+        }
+
+        let maxW = decoded.map(\.image.width).max() ?? 1
+        let maxH = decoded.map(\.image.height).max() ?? 1
+        let desc = MTLTextureDescriptor()
+        desc.textureType = .type2DArray
+        // sRGB-tagged format: Metal automatically linearizes the gamma-encoded bytes on
+        // sample, matching the rest of this pipeline (which composites in linear light).
+        // Plain .rgba8Unorm would treat the stored sRGB bytes as already-linear, visibly
+        // shifting the watermark's color/brightness wherever it isn't pure black/white.
+        desc.pixelFormat = .rgba8Unorm_srgb
+        desc.width = maxW
+        desc.height = maxH
+        desc.arrayLength = decoded.count
+        desc.usage = .shaderRead
+        desc.storageMode = .shared
+        guard let tex = device.makeTexture(descriptor: desc) else {
+            watermarkTexture = nil
+            lastBuiltWatermarkAssetIDs = []
+            lastBuiltWatermarkAspects = [:]
+            return [:]
+        }
+
+        let rgbColorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        var mapping: [UUID: (slice: Int, aspect: Double)] = [:]
+        for (slice, entry) in decoded.enumerated() {
+            let w = entry.image.width, h = entry.image.height
+            guard let context = CGContext(
+                data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                space: rgbColorSpace, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { continue }
+            // No extra flip: `context.draw` already writes the image right-side-up into the
+            // raw buffer (row 0 = the image's own top row), matching Metal's texture v=0 —
+            // confirmed empirically after an earlier version of this code added an (incorrect)
+            // flip here and rendered every watermark upside down.
+            context.draw(entry.image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            guard let pixelData = context.data else { continue }
+            tex.replace(
+                region: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0, slice: slice,
+                withBytes: pixelData, bytesPerRow: w * 4, bytesPerImage: w * h * 4
+            )
+            mapping[entry.id] = (slice, Double(w) / Double(h))
+        }
+
+        watermarkTexture = tex
+        lastBuiltWatermarkAssetIDs = distinctIDs
+        lastBuiltWatermarkAspects = mapping
+        return mapping
+    }
+
+    /// Builds the per-layer `WatermarkParams` (center/halfExtent/opacity/textureLayer) for
+    /// `layers` at `imageSize` (the render target's pixel dimensions — the same frame the
+    /// kernel samples `uv` in), (re)loading the texture array as needed, and returns each
+    /// layer's assigned order-buffer slot index. Mirrors `refreshBrushAlpha`'s split from
+    /// `updateParams`: called there directly when a persistent source texture size is already
+    /// known (live preview), and again explicitly by `renderOffscreenSerial` once the export's
+    /// working resolution is known (the ephemeral offscreen pipeline has no persistent source
+    /// texture at `updateParams` time).
+    @discardableResult
+    nonisolated func refreshWatermarkParams(_ layers: [WatermarkLayer], imageSize: MTLSize) -> [UUID: Int] {
+        guard !layers.isEmpty, imageSize.width > 0, imageSize.height > 0,
+              let wmBuf = watermarkParamsBuffer else {
+            watermarkTexture = nil
+            lastBuiltWatermarkAssetIDs = []
+            lastBuiltWatermarkAspects = [:]
+            return [:]
+        }
+        let capped = Array(layers.prefix(Self.maxWatermarks))
+        let assetMapping = loadWatermarkTextures(capped.map(\.libraryAssetID))
+
+        var indexByID: [UUID: Int] = [:]
+        let wmPtr = wmBuf.contents().bindMemory(to: WatermarkParams.self, capacity: Self.maxWatermarks)
+        for (i, layer) in capped.enumerated() {
+            indexByID[layer.id] = i
+            var wp = WatermarkParams()
+            wp.opacity = Float(layer.opacity)
+            if let (slice, aspect) = assetMapping[layer.libraryAssetID] {
+                let half = layer.geometry.renderedHalfExtentUV(
+                    assetAspect: aspect,
+                    imageWidth: Double(imageSize.width),
+                    imageHeight: Double(imageSize.height)
+                )
+                wp.center = SIMD2<Float>(Float(layer.geometry.centerX), Float(layer.geometry.centerY))
+                wp.halfExtent = SIMD2<Float>(Float(half.halfWidthUV), Float(half.halfHeightUV))
+                wp.textureLayer = UInt32(slice)
+            }
+            // Missing asset (deleted from the library): halfExtent stays (0,0), which
+            // `applyWatermark` treats as a no-op rather than sampling garbage.
+            wmPtr[i] = wp
+        }
+        return indexByID
+    }
+
     // MARK: - Render
 
     /// Single compute dispatch to drawable. Returns true on success.
@@ -1197,6 +1432,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         encoder.setTexture(drawable.texture, index: 1)
         encoder.setTexture(lutTexture, index: 2)
         encoder.setTexture(brushAlphaTexture ?? emptyBrushAlpha, index: 3)
+        encoder.setTexture(watermarkTexture ?? emptyWatermarkTexture, index: 4)
         encoder.setBuffer(buffer, offset: 0, index: 0)
         if let maskBuf = maskBuffer {
             encoder.setBuffer(maskBuf, offset: 0, index: 1)
@@ -1206,6 +1442,9 @@ final class MetalEditPipeline: @unchecked Sendable {
         }
         if let orderBuf = orderBuffer {
             encoder.setBuffer(orderBuf, offset: 0, index: 3)
+        }
+        if let wmBuf = watermarkParamsBuffer {
+            encoder.setBuffer(wmBuf, offset: 0, index: 4)
         }
 
         let threadgroupSize = MTLSize(width: 16, height: 16, depth: 1)
@@ -1689,10 +1928,12 @@ final class MetalEditPipeline: @unchecked Sendable {
         // transform before the params upload (the ephemeral pipeline has no
         // source texture of its own, so updateParams can't do it there).
         if source.extent.height > 0 {
-            settings = settings.masksTransformedForDisplay(
-                orientation: exifOrientation,
-                displayAspect: source.extent.width / source.extent.height
-            )
+            settings = settings
+                .masksTransformedForDisplay(
+                    orientation: exifOrientation,
+                    displayAspect: source.extent.width / source.extent.height
+                )
+                .watermarksTransformedForDisplay(orientation: exifOrientation)
         }
         let maskCount = settings.localAdjustments?.filter(\.enabled).count ?? 0
         if maskCount > 0 {
@@ -1787,6 +2028,18 @@ final class MetalEditPipeline: @unchecked Sendable {
             size: MTLSize(width: width, height: height, depth: 1)
         )
 
+        // Same reasoning for watermark layers: `updateParams` (just above) had no persistent
+        // source texture to size against, so it only assigned order-buffer slots. Refresh the
+        // actual texture + geometry data now, at the export's real working resolution, before
+        // the dispatch below reads it.
+        let watermarkLayersForExport = (settings.watermarkLayers ?? [])
+            .filter(\.enabled)
+            .prefix(Self.maxWatermarks)
+        pipeline.refreshWatermarkParams(
+            Array(watermarkLayersForExport),
+            imageSize: MTLSize(width: width, height: height, depth: 1)
+        )
+
         // 3. Create output texture (managed — CIImage can create from it)
         let outDesc = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .rgba16Float, width: width, height: height, mipmapped: false
@@ -1816,6 +2069,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         let useLUT = (flags & (1 << 0)) != 0
         encoder.setTexture(useLUT ? pipeline.lutTexture : pipeline.identityLutTexture, index: 2)
         encoder.setTexture(pipeline.brushAlphaTexture ?? pipeline.emptyBrushAlpha, index: 3)
+        encoder.setTexture(pipeline.watermarkTexture ?? pipeline.emptyWatermarkTexture, index: 4)
 
         encoder.setBuffer(paramsBuffer, offset: 0, index: 0)
         if let maskBuf = pipeline.maskBuffer {
@@ -1826,6 +2080,9 @@ final class MetalEditPipeline: @unchecked Sendable {
         }
         if let orderBuf = pipeline.orderBuffer {
             encoder.setBuffer(orderBuf, offset: 0, index: 3)
+        }
+        if let wmBuf = pipeline.watermarkParamsBuffer {
+            encoder.setBuffer(wmBuf, offset: 0, index: 4)
         }
 
         let threadgroupSize = MTLSize(width: 16, height: 16, depth: 1)
@@ -1852,8 +2109,9 @@ final class MetalEditPipeline: @unchecked Sendable {
             || (settings.temperature == nil && settings.incrementalTemperature == nil
                 && settings.tint == nil && settings.incrementalTint == nil)
         let noMasks = settings.localAdjustments?.isEmpty ?? true
+        let noWatermarks = settings.watermarkLayers?.isEmpty ?? true
         let noHSL = settings.hslAdjustments?.isEmpty ?? true
         let noAnonymizer = settings.anonymizer?.isEmpty ?? true
-        return noTonal && noVibrance && noSaturation && noWB && noMasks && noHSL && noAnonymizer
+        return noTonal && noVibrance && noSaturation && noWB && noMasks && noWatermarks && noHSL && noAnonymizer
     }
 }

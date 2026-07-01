@@ -280,13 +280,17 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         // image whose crs block we couldn't model) from wiping the block.
         let writesCameraRaw = fields.keys.contains(where: \.isCameraRawField)
             || structuredData.toneCurve != nil || structuredData.masks != nil
+            || structuredData.watermarkLayers != nil
             || structuredData.hslAdjustments != nil
             || structuredData.unparsedMaskCorrections?.isEmpty == false
         if structuredData.replaceCameraRawBlock && writesCameraRaw {
             metadata.xmp?.removeAll(namespace: crsNamespace)
             // Our private global-position tag tracks develop state — clear it with the block
-            // so a reset/replace can't leave a stale GlobalLayerIndex behind.
+            // so a reset/replace can't leave a stale GlobalLayerIndex/LayerOrder/watermark
+            // set behind.
             metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: "GlobalLayerIndex")
+            metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: "LayerOrder")
+            metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: "WatermarkLayers")
             metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: "AnonymizerAmount")
             metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: "AnonymizerBlackOut")
         }
@@ -323,8 +327,10 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
             applyToneCurves(tc, metadata: &metadata)
         }
 
-        if structuredData.masks != nil || structuredData.unparsedMaskCorrections?.isEmpty == false {
-            applyLayerChain(masks: structuredData.masks ?? [], layerOrder: structuredData.layerOrder,
+        if structuredData.masks != nil || structuredData.watermarkLayers != nil
+            || structuredData.unparsedMaskCorrections?.isEmpty == false {
+            applyLayerChain(masks: structuredData.masks ?? [], watermarks: structuredData.watermarkLayers ?? [],
+                            layerOrder: structuredData.layerOrder,
                             preserved: structuredData.unparsedMaskCorrections ?? [], metadata: &metadata)
         }
 
@@ -563,8 +569,8 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
     /// Write the local-mask block in render-stack order plus the app-private
     /// `aaphoto:GlobalLayerIndex` for the global node's position — shared with the `.xmp` sidecar
     /// writer via `XMPDataBuilder` (one implementation of the `MaskGroupBasedCorrections` nesting).
-    private func applyLayerChain(masks: [MaskAdjustment], layerOrder: [LayerRef]?, preserved: [PreservedMaskCorrection] = [], metadata: inout ImageMetadata) {
-        mutateXMP(&metadata) { XMPDataBuilder.applyLayerChain(masks: masks, layerOrder: layerOrder, preserved: preserved, into: &$0) }
+    private func applyLayerChain(masks: [MaskAdjustment], watermarks: [WatermarkLayer] = [], layerOrder: [LayerRef]?, preserved: [PreservedMaskCorrection] = [], metadata: inout ImageMetadata) {
+        mutateXMP(&metadata) { XMPDataBuilder.applyLayerChain(masks: masks, watermarks: watermarks, layerOrder: layerOrder, preserved: preserved, into: &$0) }
     }
 
     /// Apply per-color HSL adjustments as simple XMP-crs properties
@@ -622,8 +628,9 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         if let tc = settings.toneCurve, !tc.isEmpty {
             applyToneCurves(tc, metadata: &metadata)
         }
-        if let masks = settings.localAdjustments, !masks.isEmpty {
-            applyLayerChain(masks: masks, layerOrder: settings.layerOrder, metadata: &metadata)
+        if settings.localAdjustments?.isEmpty == false || settings.watermarkLayers?.isEmpty == false {
+            applyLayerChain(masks: settings.localAdjustments ?? [], watermarks: settings.watermarkLayers ?? [],
+                            layerOrder: settings.layerOrder, metadata: &metadata)
         }
         if let hsl = settings.hslAdjustments, !hsl.isEmpty {
             applyHSL(hsl, metadata: &metadata)

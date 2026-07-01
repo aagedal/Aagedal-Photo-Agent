@@ -3138,7 +3138,7 @@ final class BrowserViewModel {
             // Replace the whole crs block: clears masks, tone curves, and any
             // settings ACR wrote that the app doesn't manage — a reset means
             // no develop settings remain, whoever authored them.
-            let structuredData = StructuredWriteData(masks: [], replaceCameraRawBlock: true)
+            let structuredData = StructuredWriteData(masks: [], watermarkLayers: [], replaceCameraRawBlock: true)
 
             // RAW files keep their CRS in the XMP sidecar (cleared above) — never embed
             // into the RAW container, which corrupts proprietary maker data (e.g. Sony's
