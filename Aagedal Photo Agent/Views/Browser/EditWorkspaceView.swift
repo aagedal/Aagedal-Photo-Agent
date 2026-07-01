@@ -651,7 +651,10 @@ struct EditWorkspaceView: View {
                             .frame(width: geometry.size.width, height: geometry.size.height)
                             .scaleEffect(editZoomScale)
                             .offset(editOffset)
-                            .gesture(editPanGesture(in: geometry.size, imageSize: geometry.size))
+                            // While painting, disable the pan gesture so drags reach the brush
+                            // overlay instead of panning the zoomed image.
+                            .gesture(editPanGesture(in: geometry.size, imageSize: geometry.size),
+                                     including: isBrushPainting ? .subviews : .all)
                         }
                     } else {
                         // Normal fit: Metal viewport handles zoom/pan and letterboxing
@@ -739,7 +742,10 @@ struct EditWorkspaceView: View {
                             brushOverlay(viewportOrigin: vpOrigin, viewportSize: vpSize, viewSize: geometry.size)
                         }
                         .frame(width: geometry.size.width, height: geometry.size.height)
-                        .gesture(editPanGesture(in: geometry.size, imageSize: imageSize))
+                        // While painting, disable the pan gesture so drags reach the brush overlay
+                        // instead of panning the zoomed image.
+                        .gesture(editPanGesture(in: geometry.size, imageSize: imageSize),
+                                 including: isBrushPainting ? .subviews : .all)
                     }
                 } else if isLoadingPreview {
                     ProgressView("Loading preview...")
