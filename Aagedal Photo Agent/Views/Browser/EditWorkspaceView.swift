@@ -100,7 +100,7 @@ struct EditWorkspaceView: View {
     @State private var isBrushPainting = false
     @State private var brushRadius: Double = 0.04     // fraction of the long edge (BrushStroke.radius)
     @State private var brushHardness: Double = 0.5    // 0-1 dab CenterWeight
-    @State private var brushFlow: Double = 0.8        // 0-1 dab flow
+    @State private var brushFlow: Double = 1.0        // 0-1 dab flow
     @State private var brushErase = false             // subtract from the mask instead of adding
     @FocusState private var isWorkspaceFocused: Bool
 
