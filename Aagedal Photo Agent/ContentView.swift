@@ -357,7 +357,7 @@ struct ContentView: View {
                     Color.black.opacity(0.3)
                         .ignoresSafeArea()
                         .onTapGesture {
-                            isShowingTemplatePalette = false
+                            closeTemplatePalette(restoringGridFocus: true)
                         }
                         .onAppear {
                             templateViewModel.loadTemplates()
@@ -366,14 +366,14 @@ struct ContentView: View {
                         templates: templateViewModel.templates,
                         onApply: { template, append in
                             applyTemplate(template, append: append)
-                            isShowingTemplatePalette = false
+                            closeTemplatePalette(restoringGridFocus: true)
                         },
                         onSaveNew: {
-                            isShowingTemplatePalette = false
+                            closeTemplatePalette(restoringGridFocus: false)
                             isShowingSaveTemplateName = true
                         },
                         onDismiss: {
-                            isShowingTemplatePalette = false
+                            closeTemplatePalette(restoringGridFocus: true)
                         }
                     )
                 }
@@ -441,6 +441,7 @@ struct ContentView: View {
                 if let slot = notification.object as? Int,
                    let template = templateViewModel.template(forSlot: slot) {
                     applyTemplate(template)
+                    restoreGridFocus()
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .uploadSelected)) { _ in
@@ -1546,6 +1547,20 @@ struct ContentView: View {
     }
 
     // MARK: - Helpers
+
+    private func closeTemplatePalette(restoringGridFocus: Bool) {
+        isShowingTemplatePalette = false
+        if restoringGridFocus {
+            restoreGridFocus()
+        }
+    }
+
+    private func restoreGridFocus() {
+        let targetViewModel = browserViewModel
+        DispatchQueue.main.async {
+            targetViewModel.shouldRestoreGridFocus = true
+        }
+    }
 
     private func reloadMetadataForSelection() {
         let selected = browserViewModel.selectedImages
