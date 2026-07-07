@@ -13,6 +13,12 @@ final class ThumbnailService {
     @ObservationIgnored private var editedInFlightTasks: [URL: Task<NSImage?, Never>] = [:]
     private let thumbnailSize = CGSize(width: 240, height: 240)
 
+    /// Caps how many thumbnail decodes run concurrently across the whole app — cell loads,
+    /// prefetch, and the background sweep all funnel through it. Without a cap a fast scroll or a
+    /// held arrow key spawns hundreds of QuickLook/ImageIO decodes at once, saturating `thumbnailsd`
+    /// and the cooperative pool so the thumbnails actually on screen queue behind off-screen ones.
+    private let decodeGate = ThumbnailDecodeGate(limit: 6)
+
     // Background pre-generation state
     var isPreGenerating = false
     var preGenerateCompleted = 0
@@ -63,14 +69,11 @@ final class ThumbnailService {
 
         // Create and register a new task
         let task = Task<NSImage?, Never> {
-            var image: NSImage?
-            if let ql = await generateQLThumbnail(for: url) {
-                image = ql
-            } else if let cg = await loadCGImageSourceThumbnail(for: url) {
-                image = cg
+            if let oriented = await self.generateOrientedThumbnail(for: url) {
+                cache.setObject(oriented, forKey: url as NSURL)
+                return oriented
             }
 
-            guard let image else {
             // For non-image files, use system file icon
             if !SupportedImageFormats.isSupported(url: url) {
                 let icon = NSWorkspace.shared.icon(forFile: url.path)
@@ -81,16 +84,31 @@ final class ThumbnailService {
             return nil as NSImage?
         }
 
-            let oriented = Self.orientedToSidecar(image, fileURL: url)
-            cache.setObject(oriented, forKey: url as NSURL)
-            return oriented
-        }
-
         inFlightTasks[url] = task
         let result = await task.value
         inFlightTasks.removeValue(forKey: url)
 
         return result
+    }
+
+    /// Decodes the thumbnail and applies sidecar-orientation correction entirely off the main
+    /// actor, behind the shared `decodeGate` concurrency cap. The decode (`generateQLThumbnail` /
+    /// `loadCGImageSourceThumbnail`) was already off-main, but `loadThumbnail`'s enclosing `Task`
+    /// is MainActor-isolated, so the orientation finalize used to run on the main thread — for a
+    /// RAW folder, where every file carries a sidecar, that meant a sidecar read plus a full
+    /// `CIImage` rotation on the main thread per thumbnail, hitching grid scrolling. `nonisolated
+    /// async` keeps the whole finalize on the cooperative pool. `XMPReader` (SwiftExif) is a
+    /// pure-Swift parser, so the sidecar read is safe off-main.
+    nonisolated private func generateOrientedThumbnail(for url: URL) async -> NSImage? {
+        await decodeGate.acquire()
+        var oriented: NSImage?
+        if let ql = await generateQLThumbnail(for: url) {
+            oriented = Self.orientedToSidecar(ql, fileURL: url)
+        } else if let cg = await loadCGImageSourceThumbnail(for: url) {
+            oriented = Self.orientedToSidecar(cg, fileURL: url)
+        }
+        await decodeGate.release()
+        return oriented
     }
 
     /// Rotate a freshly generated (file-oriented) thumbnail to the orientation recorded
@@ -126,11 +144,39 @@ final class ThumbnailService {
             return await existingTask.value
         }
 
+        let maxPixelSize = max(thumbnailSize.width, thumbnailSize.height) * 2
         let task = Task<NSImage?, Never> {
-            // Get or load the original thumbnail
+            guard !settings.isEmpty else { return nil }
+
+            // RAW: render the edited thumbnail from a real CIRAWFilter decode — the same
+            // shared edited-decode path the loupe and prefetch use — instead of compositing
+            // edits onto QuickLook's embedded camera-JPEG preview. The QL preview is already
+            // tone-mapped and clipped, so exposure/highlight numbers calibrated against the
+            // linear HDR RAW decode (extendedDynamicRangeAmount=2.0 + sourceHasHDRHeadroom
+            // tonemap) blew out highlights — the grid looked overexposed next to the edit
+            // view. Decoding the RAW here makes the thumb match. Gated behind `decodeGate`
+            // and downscaled to thumbnail size, and only ever for edited RAWs (unedited RAWs
+            // keep the fast QL preview), so a fast scroll can't saturate the RAW engine.
+            if SupportedImageFormats.isRaw(url: url) {
+                await decodeGate.acquire()
+                let outputCG = await FullScreenImageCache.decodedEditedPreview(
+                    for: url, settings: settings, orientation: exifOrientation, screenMaxPx: maxPixelSize)
+                await decodeGate.release()
+                guard let outputCG else { return nil }
+                // Drop the result if a rotation (or other invalidation) cancelled us mid-decode,
+                // so a render for the old orientation can't clobber the rotated cache entry.
+                guard !Task.isCancelled else { return nil }
+                let edited = NSImage(cgImage: outputCG, size: NSSize(width: outputCG.width, height: outputCG.height))
+                editedCache.setObject(edited, forKey: url as NSURL)
+                return edited
+            }
+
+            // Non-RAW: composite edits onto the decoded thumbnail. The thumbnail base and the
+            // edit-view base are the same SDR decode here, so there's no source divergence and
+            // the cheap QL-preview path stays accurate.
             // `loadThumbnail` already brings the base to the sidecar orientation, so the
             // crop and mask geometry below (applied in the display frame) line up on a
-            // sidecar-rotated RAW.
+            // sidecar-rotated file.
             let original: NSImage
             if let cached = cache.object(forKey: url as NSURL) {
                 original = cached
@@ -143,14 +189,16 @@ final class ThumbnailService {
             // Unwrap the CGImage on the current actor (cheap — the thumbnail is
             // already a bitmap rep), then render the edits off-main. The CoreImage
             // render must not run on the MainActor or it hitches grid scrolling.
-            guard !settings.isEmpty,
-                  let cgImage = original.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            guard let cgImage = original.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
                 return nil
             }
             guard let outputCG = await Self.renderEditedThumbnail(
                 cgImage: cgImage, settings: settings, exifOrientation: exifOrientation) else {
                 return nil
             }
+            // Drop the result if a rotation (or other invalidation) cancelled us mid-render,
+            // so a render for the old orientation can't clobber the rotated cache entry.
+            guard !Task.isCancelled else { return nil }
             let edited = NSImage(cgImage: outputCG, size: NSSize(width: outputCG.width, height: outputCG.height))
             editedCache.setObject(edited, forKey: url as NSURL)
             return edited
@@ -222,11 +270,12 @@ final class ThumbnailService {
     }
 
     /// Applies the full develop pipeline (tonal + masks + crop/rotation) to a
-    /// thumbnail so grid thumbs reflect edits, Bridge-style. For RAW files the QL
-    /// thumbnail is the camera-rendered preview (camera processing baked in), so
-    /// tonal/WB results are approximate there — an accepted trade-off: an
-    /// approximate edited thumb beats an untouched one, and the full-screen and
-    /// export renders stay exact.
+    /// decoded thumbnail so grid thumbs reflect edits, Bridge-style. Used for
+    /// non-RAW files, whose thumbnail base matches the edit-view SDR decode.
+    /// (RAW files render their edited thumbnail from a real CIRAWFilter decode via
+    /// `FullScreenImageCache.decodedEditedPreview` in `renderEditedThumbnail(for:…)`,
+    /// because their QL preview is the camera-baked JPEG and diverges from the RAW
+    /// decode the edit/export renders use.)
     ///
     /// `nonisolated static async` so the CoreImage render runs on the cooperative
     /// pool, off the MainActor. Takes/returns `CGImage` (Sendable) to cross the
@@ -265,6 +314,12 @@ final class ThumbnailService {
     /// Rotates the cached thumbnail in-place for instant visual feedback during rotation.
     /// Falls back to invalidation if no cached thumbnail exists.
     func rotateThumbnailInCache(for url: URL, clockwise: Bool) {
+        // Cancel any in-flight edited render: it captured the pre-rotation orientation and,
+        // for a slow gated RAW decode, would finish *after* this rotation and overwrite the
+        // freshly-rotated cache entry with a stale-orientation image — leaving the grid
+        // thumbnail disagreeing with the edit view. (RAW edited renders are the only ones
+        // slow enough to lose this race, which is why uncropped/non-RAW files are unaffected.)
+        editedInFlightTasks.removeValue(forKey: url)?.cancel()
         if let existing = cache.object(forKey: url as NSURL),
            let rotated = rotateImage90(existing, clockwise: clockwise) {
             cache.setObject(rotated, forKey: url as NSURL)
@@ -371,5 +426,35 @@ final class ThumbnailService {
         isPreGenerating = false
         preGenerateCompleted = 0
         preGenerateTotal = 0
+    }
+}
+
+/// A small async semaphore bounding how many thumbnail decodes run at once. Plain FIFO: callers
+/// that can't get a permit immediately suspend until one is released, so a burst of requests is
+/// throttled to `limit` concurrent decodes instead of all firing at once.
+actor ThumbnailDecodeGate {
+    private let limit: Int
+    private var inUse = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(limit: Int) {
+        self.limit = max(1, limit)
+    }
+
+    func acquire() async {
+        if inUse < limit {
+            inUse += 1
+            return
+        }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func release() {
+        if waiters.isEmpty {
+            inUse -= 1
+        } else {
+            // Hand the permit directly to the next waiter (inUse stays the same).
+            waiters.removeFirst().resume()
+        }
     }
 }

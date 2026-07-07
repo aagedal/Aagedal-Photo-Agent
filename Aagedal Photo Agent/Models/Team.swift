@@ -48,6 +48,35 @@ nonisolated struct TeamKitColor: Codable, Sendable, Equatable, Hashable {
     }
 }
 
+/// The sport a team (or startlist) plays, used to search/filter a large library.
+nonisolated enum TeamSport: String, Codable, Sendable, CaseIterable {
+    case football
+    case handball
+    case basketball
+    case iceHockey
+    case volleyball
+    case rugby
+    case americanFootball
+    case athletics
+    case cycling
+    case other
+
+    var displayName: String {
+        switch self {
+        case .football: "Football"
+        case .handball: "Handball"
+        case .basketball: "Basketball"
+        case .iceHockey: "Ice hockey"
+        case .volleyball: "Volleyball"
+        case .rugby: "Rugby"
+        case .americanFootball: "American football"
+        case .athletics: "Athletics"
+        case .cycling: "Cycling"
+        case .other: "Other"
+        }
+    }
+}
+
 /// A team in the reusable, iCloud-synced Teams library.
 ///
 /// Stands alone with zero face data: the photographer types the team sheet
@@ -57,8 +86,13 @@ nonisolated struct Team: Codable, Identifiable, Sendable {
     let id: UUID
     var name: String
     var primaryColor: TeamKitColor
+    /// Optional alternate (away/change) kit, worn when the primary clashes with the opponent.
+    /// Considered alongside the primary when matching sampled colours to this team.
+    var secondaryColor: TeamKitColor?
     /// Optional alternate kit for the goalkeeper, who often wears a different colour.
     var goalkeeperColor: TeamKitColor?
+    /// Sport category for search/filter. Optional for backwards compatibility; `nil` ⇒ `.other`.
+    var sport: TeamSport?
     var roster: [RosterPlayer]
     var createdAt: Date
     var updatedAt: Date
@@ -67,7 +101,9 @@ nonisolated struct Team: Codable, Identifiable, Sendable {
         id: UUID = UUID(),
         name: String,
         primaryColor: TeamKitColor,
+        secondaryColor: TeamKitColor? = nil,
         goalkeeperColor: TeamKitColor? = nil,
+        sport: TeamSport? = nil,
         roster: [RosterPlayer] = [],
         createdAt: Date = Date(),
         updatedAt: Date = Date()
@@ -75,10 +111,21 @@ nonisolated struct Team: Codable, Identifiable, Sendable {
         self.id = id
         self.name = name
         self.primaryColor = primaryColor
+        self.secondaryColor = secondaryColor
         self.goalkeeperColor = goalkeeperColor
+        self.sport = sport
         self.roster = roster
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+    }
+
+    /// The sport, defaulting legacy (un-set) teams to `.other`.
+    var effectiveSport: TeamSport { sport ?? .other }
+
+    /// All configured kit colours (primary, secondary, goalkeeper), used to match a sampled
+    /// jersey colour to this team regardless of which kit they wore.
+    var kitColors: [ColorRGB] {
+        [primaryColor.colorRGB, secondaryColor?.colorRGB, goalkeeperColor?.colorRGB].compactMap { $0 }
     }
 
     /// Find the roster entry for a given number, if any.

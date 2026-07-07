@@ -1,5 +1,7 @@
 import Testing
 import Foundation
+import Metal
+import CoreImage
 @testable import Aagedal_Photo_Agent
 
 
@@ -626,7 +628,7 @@ struct MalformedMetadataNumericTests {
             ]]
         ]]
         let masks = parseMaskGroupBasedCorrections(corrections)
-        #expect(masks?.count == 1)
+        #expect(masks?.masks.count == 1)
     }
 
     /// SwiftExif keys structured XMP fields as `<namespaceURI><Property>`
@@ -651,7 +653,7 @@ struct MalformedMetadataNumericTests {
                 "\(crs)Flipped": "false"
             ]]
         ]]
-        let mask = try #require(parseMaskGroupBasedCorrections(corrections)?.first)
+        let mask = try #require(parseMaskGroupBasedCorrections(corrections)?.masks.first)
         #expect(mask.name == "Sky")
         #expect(mask.amount == 0.75)
         #expect(abs(mask.geometry.centerX - 0.6) < 1e-9)
@@ -665,12 +667,37 @@ struct MalformedMetadataNumericTests {
         #expect(mask.contrast == 30)
     }
 
-    /// A correction whose mask geometry can't be parsed (unsupported type or
-    /// missing corner fields) must be DROPPED, not substituted with the default
-    /// ellipse — a generic mask silently misrenders the image.
-    @Test("corrections with unparseable mask geometry are dropped, not defaulted")
-    func unparseableMaskGeometryIsDropped() {
-        // Unsupported mask type (ACR brush) alongside a valid radial mask.
+    /// Values lifted verbatim from a real ACR-authored mask (crs:LocalTemperature="0.2",
+    /// crs:LocalTint="-0.12") to anchor the scale conversion against real-world data, not
+    /// just hand-picked round numbers.
+    @Test("mask Local Temperature/Tint parse and round-trip at ACR's real-world scale")
+    func maskTemperatureTintRoundTrip() throws {
+        let corrections: [[String: Any]] = [[
+            "CorrectionActive": "true",
+            "LocalTemperature": "0.2",
+            "LocalTint": "-0.12",
+            "CorrectionMasks": [[
+                "What": "Mask/CircularGradient",
+                "Top": "0.1", "Left": "0.1", "Bottom": "0.4", "Right": "0.4"
+            ]]
+        ]]
+        let mask = try #require(parseMaskGroupBasedCorrections(corrections)?.masks.first)
+        #expect(mask.temperature.map { abs($0 - 20) < 1e-9 } == true)
+        #expect(mask.tint.map { abs($0 - (-12)) < 1e-9 } == true)
+
+        let encoded = try #require(encodeMaskGroupBasedCorrections([mask]).first)
+        #expect(encoded.correctionFields.contains { $0.name == "LocalTemperature" && $0.value == "0.2" })
+        #expect(encoded.correctionFields.contains { $0.name == "LocalTint" && $0.value == "-0.12" })
+    }
+
+    /// A correction whose mask geometry can't be parsed (unsupported type or missing corner
+    /// fields) must NOT be substituted with the default ellipse (which silently misrenders) —
+    /// and, unlike before, it must be PRESERVED verbatim rather than dropped, so a develop save
+    /// re-emits it instead of permanently deleting it.
+    @Test("corrections with unparseable mask geometry are preserved verbatim, not defaulted")
+    func unparseableMaskGeometryIsPreserved() {
+        // Unsupported mask type (bare Mask/Paint, no Aggregate) alongside a valid radial mask
+        // and a radial mask with a missing corner.
         let corrections: [[String: Any]] = [
             [
                 "CorrectionActive": true,
@@ -692,13 +719,18 @@ struct MalformedMetadataNumericTests {
                 ]]
             ]
         ]
-        let masks = parseMaskGroupBasedCorrections(corrections)
-        #expect(masks?.count == 1)
-        #expect(masks?.first.map { abs($0.geometry.centerX - 0.4) < 1e-9 } == true)
+        let parsed = parseMaskGroupBasedCorrections(corrections)
+        #expect(parsed?.masks.count == 1)
+        #expect(parsed?.masks.first.map { abs($0.geometry.centerX - 0.4) < 1e-9 } == true)
+        // The two unparseable corrections are kept, not lost.
+        #expect(parsed?.preserved.count == 2)
 
-        // All corrections unparseable → nil, same as no masks at all.
+        // All corrections unparseable → no modeled masks, but they're still preserved
+        // (not silently dropped like before).
         let allBad: [[String: Any]] = [["CorrectionMasks": [["What": "Mask/Paint"]]]]
-        #expect(parseMaskGroupBasedCorrections(allBad) == nil)
+        let allBadParsed = parseMaskGroupBasedCorrections(allBad)
+        #expect(allBadParsed?.masks.isEmpty == true)
+        #expect(allBadParsed?.preserved.count == 1)
     }
 
     /// Gates whether a metadata save touches the file's crs block at all —
@@ -1605,5 +1637,653 @@ struct LayerOrderTests {
         reread.localAdjustments = storedMasks
         reread.layerOrder = restored
         #expect(reread.resolvedLayerOrder() == [.mask(m2.id), .global, .mask(m1.id)])
+    }
+}
+
+@Suite("Anonymizer")
+struct AnonymizerSettingsTests {
+    @Test("AnonymizerSettings.isEmpty")
+    func isEmpty() {
+        #expect(AnonymizerSettings().isEmpty)
+        #expect(AnonymizerSettings(amount: 0, blackOut: false).isEmpty)
+        #expect(AnonymizerSettings(amount: nil, blackOut: nil).isEmpty)
+        #expect(!AnonymizerSettings(amount: 40, blackOut: nil).isEmpty)
+        #expect(!AnonymizerSettings(amount: nil, blackOut: true).isEmpty)
+    }
+
+    @Test("CameraRawSettings.isEmpty reflects the global anonymizer")
+    func cameraRawIsEmptyReflectsAnonymizer() {
+        var settings = CameraRawSettings()
+        #expect(settings.isEmpty)
+        settings.anonymizer = AnonymizerSettings(amount: 60, blackOut: nil)
+        #expect(!settings.isEmpty)
+    }
+
+    @Test("MaskAdjustment.hasAdjustments reflects the per-mask anonymizer")
+    func maskHasAdjustmentsReflectsAnonymizer() {
+        var mask = MaskAdjustment(name: "Face", geometry: EllipseMaskGeometry())
+        #expect(!mask.hasAdjustments)
+        mask.anonymizer = AnonymizerSettings(amount: nil, blackOut: true)
+        #expect(mask.hasAdjustments)
+    }
+
+    @Test("per-mask anonymizer round-trips through MaskGroupBasedCorrections encode/decode")
+    func perMaskAnonymizerRoundTrips() throws {
+        var amountMask = MaskAdjustment(name: "Crowd", geometry: EllipseMaskGeometry())
+        amountMask.anonymizer = AnonymizerSettings(amount: 72.5, blackOut: nil)
+        var blackOutMask = MaskAdjustment(name: "Plate", geometry: EllipseMaskGeometry())
+        blackOutMask.anonymizer = AnonymizerSettings(amount: nil, blackOut: true)
+        let plainMask = MaskAdjustment(name: "Sky", geometry: EllipseMaskGeometry())
+
+        let encoded = encodeMaskGroupBasedCorrections([amountMask, blackOutMask, plainMask])
+        #expect(encoded.count == 3)
+        #expect(encoded[0].appPrivateFields.contains { $0.name == "AnonymizerAmount" && $0.value == "72.5" })
+        #expect(encoded[1].appPrivateFields.contains { $0.name == "AnonymizerBlackOut" && $0.value == "True" })
+        #expect(encoded[2].appPrivateFields.isEmpty)
+
+        // Round-trip through the bare-name dict shape (as a hand-built/JSON-sourced dict would carry it).
+        let corrections: [[String: Any]] = encoded.map { corr in
+            var dict: [String: Any] = [:]
+            for field in corr.correctionFields { dict[field.name] = field.value }
+            for field in corr.appPrivateFields { dict[field.name] = field.value }
+            dict["CorrectionMasks"] = [Dictionary(uniqueKeysWithValues: corr.maskFields.map { ($0.name, $0.value as Any) })]
+            return dict
+        }
+        let decoded = try #require(parseMaskGroupBasedCorrections(corrections)).masks
+        #expect(decoded.count == 3)
+        #expect(decoded[0].anonymizer?.amount.map { abs($0 - 72.5) < 1e-9 } == true)
+        #expect(decoded[0].anonymizer?.blackOut != true)
+        #expect(decoded[1].anonymizer?.blackOut == true)
+        #expect(decoded[2].anonymizer == nil)
+    }
+
+    @Test("per-mask anonymizer round-trips through SwiftExif's namespace-URI-prefixed keys")
+    func perMaskAnonymizerRoundTripsURIPrefixedKeys() throws {
+        let aaphoto = "http://aagedal.me/ns/photo/1.0/"
+        let crs = "http://ns.adobe.com/camera-raw-settings/1.0/"
+        let corrections: [[String: Any]] = [[
+            "\(crs)CorrectionActive": "true",
+            "\(aaphoto)AnonymizerAmount": "55.0",
+            "\(crs)CorrectionMasks": [[
+                "\(crs)What": "Mask/CircularGradient",
+                "\(crs)Top": "0.1", "\(crs)Left": "0.1", "\(crs)Bottom": "0.4", "\(crs)Right": "0.4"
+            ]]
+        ]]
+        let mask = try #require(parseMaskGroupBasedCorrections(corrections)?.masks.first)
+        #expect(mask.anonymizer?.amount.map { abs($0 - 55.0) < 1e-9 } == true)
+    }
+
+    @Test("global anonymizer round-trips through an XMP sidecar save/load cycle")
+    func globalAnonymizerRoundTripsThroughSidecar() throws {
+        let svc = XMPSidecarService()
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let imageURL = tmp.appendingPathComponent("test.jpg")
+
+        var settings = CameraRawSettings()
+        settings.exposure2012 = 0.5
+        settings.anonymizer = AnonymizerSettings(amount: 80, blackOut: nil)
+        try svc.saveCameraRawOnly(settings, orientation: nil, for: imageURL)
+
+        let reloaded = try #require(svc.loadSidecar(for: imageURL)?.cameraRaw)
+        #expect(reloaded.anonymizer?.amount.map { abs($0 - 80) < 1e-9 } == true)
+        #expect(reloaded.anonymizer?.blackOut != true)
+
+        // Turning Black Out on (amount cleared) must replace, not merge with, the prior amount.
+        settings.anonymizer = AnonymizerSettings(amount: nil, blackOut: true)
+        try svc.saveCameraRawOnly(settings, orientation: nil, for: imageURL)
+        let reloadedBlackOut = try #require(svc.loadSidecar(for: imageURL)?.cameraRaw)
+        #expect(reloadedBlackOut.anonymizer?.blackOut == true)
+        #expect(reloadedBlackOut.anonymizer?.amount == nil)
+
+        // A full develop reset clears the anonymizer along with everything else.
+        try svc.saveCameraRawOnly(nil, orientation: nil, for: imageURL)
+        #expect(svc.loadSidecar(for: imageURL)?.cameraRaw == nil)
+    }
+
+    @Test("per-mask anonymizer round-trips through an XMP sidecar save/load cycle")
+    func perMaskAnonymizerRoundTripsThroughSidecar() throws {
+        let svc = XMPSidecarService()
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let imageURL = tmp.appendingPathComponent("test.jpg")
+
+        var maskedFace = MaskAdjustment(name: "Face", geometry: EllipseMaskGeometry())
+        maskedFace.anonymizer = AnonymizerSettings(amount: 65, blackOut: nil)
+        var settings = CameraRawSettings()
+        settings.localAdjustments = [maskedFace]
+        try svc.saveCameraRawOnly(settings, orientation: nil, for: imageURL)
+
+        let reloaded = try #require(svc.loadSidecar(for: imageURL)?.cameraRaw?.localAdjustments?.first)
+        #expect(reloaded.anonymizer?.amount.map { abs($0 - 65) < 1e-9 } == true)
+    }
+}
+
+/// Phase 1 of the brush-mask feature: the model + XMP read/write for additive `Mask/Paint`
+/// `Dabs` strokes, plus the "preserve unrecognized correction verbatim" fallback. Values are
+/// anchored to the real ACR-authored sample `Vixen 2026 05.jpg` (a single additive stroke).
+@Suite("Brush mask XMP round-trip")
+struct BrushMaskTests {
+    private let crs = "http://ns.adobe.com/camera-raw-settings/1.0/"
+
+    /// The exact nested shape SwiftExif produces for the real `Vixen 2026 05.jpg` sample:
+    /// Correction → CorrectionMasks[Mask/Aggregate] → Masks[Mask/Paint] → Dabs.
+    private func sampleCorrections(dabs: [String] = ["f 0.5000", "d 0.533385 0.323619", "d 0.527716 0.442002"],
+                                   radius: String = "0.395627", flow: String = "0.5",
+                                   centerWeight: String = "0", maskValue: String = "1") -> [[String: Any]] {
+        [[
+            "\(crs)CorrectionActive": "true",
+            "\(crs)CorrectionAmount": "1",
+            "\(crs)CorrectionName": "Mask 1",
+            "\(crs)LocalExposure2012": "0.1",
+            "\(crs)CorrectionMasks": [[
+                "\(crs)What": "Mask/Aggregate",
+                "\(crs)MaskName": "Brush 1",
+                "\(crs)MaskValue": "1",
+                "\(crs)Masks": [[
+                    "\(crs)What": "Mask/Paint",
+                    "\(crs)Radius": radius,
+                    "\(crs)Flow": flow,
+                    "\(crs)CenterWeight": centerWeight,
+                    "\(crs)MaskValue": maskValue,
+                    "\(crs)Dabs": dabs,
+                ]],
+            ]],
+        ]]
+    }
+
+    @Test("parses a real additive Mask/Aggregate into brush geometry")
+    func parsesBrushGeometry() throws {
+        let parsed = try #require(parseMaskGroupBasedCorrections(sampleCorrections()))
+        #expect(parsed.preserved.isEmpty)
+        let mask = try #require(parsed.masks.first)
+        #expect(mask.name == "Mask 1")
+        #expect(mask.layerKind == .brushMask)
+        let brush = try #require(mask.brush)
+        #expect(brush.strokes.count == 1)
+        let stroke = try #require(brush.strokes.first)
+        #expect(abs(stroke.radius - 0.395627) < 1e-6)
+        #expect(abs(stroke.density - 1.0) < 1e-9)
+        #expect(stroke.erase == false)
+        // Two `d` records → two dabs; the `f` record set flow for both.
+        #expect(stroke.dabs.count == 2)
+        #expect(abs(stroke.dabs[0].x - 0.533385) < 1e-6)
+        #expect(abs(stroke.dabs[0].y - 0.323619) < 1e-6)
+        #expect(abs(stroke.dabs[0].flow - 0.5) < 1e-9)
+        #expect(stroke.dabs[0].hardness == 0)
+        // The exposure lives on the correction, shared with the ellipse path.
+        #expect(mask.exposure.map { abs($0 - 0.4) < 1e-9 } == true)  // 0.1 × 4 EV
+    }
+
+    @Test("Dabs inline f/h records set per-dab flow and hardness")
+    func parsesInlineFlowHardness() throws {
+        let dabs = ["f 0.5", "d 0.1 0.2", "h 0.196", "f 0.8", "d 0.3 0.4"]
+        let parsed = try #require(parseMaskGroupBasedCorrections(sampleCorrections(dabs: dabs)))
+        let stroke = try #require(parsed.masks.first?.brush?.strokes.first)
+        #expect(stroke.dabs.count == 2)
+        #expect(abs(stroke.dabs[0].flow - 0.5) < 1e-9)
+        #expect(stroke.dabs[0].hardness == 0)
+        #expect(abs(stroke.dabs[1].flow - 0.8) < 1e-9)
+        #expect(abs(stroke.dabs[1].hardness - 0.196) < 1e-9)
+    }
+
+    @Test("an opaque erase-brush MaskBrushTable aggregate is preserved, not parsed as brush")
+    func eraseBrushTableIsPreserved() throws {
+        let corrections: [[String: Any]] = [[
+            "\(crs)CorrectionActive": "true",
+            "\(crs)CorrectionName": "Erase test",
+            "\(crs)LocalExposure2012": "0.2",
+            "\(crs)CorrectionMasks": [[
+                "\(crs)What": "Mask/Aggregate",
+                "\(crs)MaskName": "Brush 1",
+                "\(crs)MaskValue": "1",
+                "\(crs)MaskBrushTable": "9F8737DEECAFF5C8FE6BB4B9D438EAF2",
+                "\(crs)MaskBrushUncompressedBytes": "13258",
+            ]],
+        ]]
+        let parsed = try #require(parseMaskGroupBasedCorrections(corrections))
+        #expect(parsed.masks.isEmpty)
+        #expect(parsed.preserved.count == 1)
+    }
+
+    @Test("brush dabs survive a display↔sensor orientation round-trip for every EXIF value")
+    func brushOrientationRoundTrips() {
+        let geo = BrushMaskGeometry(strokes: [
+            BrushStroke(dabs: [BrushDab(x: 0.1, y: 0.2, flow: 0.6, hardness: 0.3),
+                               BrushDab(x: 0.8, y: 0.55, flow: 0.6, hardness: 0.3)],
+                        radius: 0.12, density: 1.0, erase: false)
+        ])
+        for orientation in 1...8 {
+            let display = geo.transformedForDisplay(orientation: orientation)
+            let back = display.transformedForSensor(orientation: orientation)
+            for (a, b) in zip(back.strokes[0].dabs, geo.strokes[0].dabs) {
+                #expect(abs(a.x - b.x) < 1e-9)
+                #expect(abs(a.y - b.y) < 1e-9)
+            }
+            // A 90° family swap must actually move the point (not a no-op) except O=1.
+            if orientation > 1 {
+                #expect(display.strokes[0].dabs[0].x != geo.strokes[0].dabs[0].x
+                        || display.strokes[0].dabs[0].y != geo.strokes[0].dabs[0].y)
+            }
+        }
+    }
+
+    @Test("encodes a brush mask into a nested Mask/Aggregate → Masks → Dabs node tree")
+    func encodesBrushMask() throws {
+        var mask = MaskAdjustment(name: "Painted")
+        mask.brush = BrushMaskGeometry(strokes: [
+            BrushStroke(dabs: [
+                BrushDab(x: 0.1, y: 0.2, flow: 0.5, hardness: 0),
+                BrushDab(x: 0.3, y: 0.4, flow: 0.5, hardness: 0.196),
+            ], radius: 0.25, density: 0.674528, erase: false)
+        ])
+        let corr = try #require(encodeMaskGroupBasedCorrections([mask]).first)
+        let nodes = try #require(corr.correctionMasks)
+        #expect(nodes.count == 1)
+        let aggregate = nodes[0]
+        #expect(aggregate.fields.contains { $0.name == "What" && $0.value == "Mask/Aggregate" })
+        let paints = try #require(aggregate.children.first { $0.name == "Masks" }?.nodes)
+        #expect(paints.count == 1)
+        let paint = paints[0]
+        #expect(paint.fields.contains { $0.name == "What" && $0.value == "Mask/Paint" })
+        #expect(paint.fields.contains { $0.name == "Radius" && $0.value == "0.25" })
+        #expect(paint.fields.contains { $0.name == "MaskValue" && $0.value == "0.674528" })
+        let dabs = try #require(paint.arrays.first { $0.name == "Dabs" }?.values)
+        // Flow emitted once up front; hardness only when it changes to non-zero.
+        #expect(dabs == ["f 0.5000", "d 0.100000 0.200000", "h 0.1960", "d 0.300000 0.400000"])
+    }
+
+    @Test("a brush mask round-trips through an XMP sidecar save/load cycle")
+    func brushMaskRoundTripsThroughSidecar() throws {
+        let svc = XMPSidecarService()
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let imageURL = tmp.appendingPathComponent("test.jpg")
+
+        var mask = MaskAdjustment(name: "Painted")
+        mask.exposure = 0.8
+        mask.brush = BrushMaskGeometry(strokes: [
+            BrushStroke(dabs: [
+                BrushDab(x: 0.533385, y: 0.323619, flow: 0.5, hardness: 0),
+                BrushDab(x: 0.527716, y: 0.442002, flow: 0.5, hardness: 0),
+            ], radius: 0.395627, density: 1.0, erase: false)
+        ])
+        var settings = CameraRawSettings()
+        settings.localAdjustments = [mask]
+        try svc.saveCameraRawOnly(settings, orientation: nil, for: imageURL)
+
+        let reloaded = try #require(svc.loadSidecar(for: imageURL)?.cameraRaw?.localAdjustments?.first)
+        #expect(reloaded.layerKind == .brushMask)
+        let stroke = try #require(reloaded.brush?.strokes.first)
+        #expect(abs(stroke.radius - 0.395627) < 1e-6)
+        #expect(stroke.dabs.count == 2)
+        #expect(abs(stroke.dabs[0].x - 0.533385) < 1e-6)
+        #expect(abs(stroke.dabs[1].y - 0.442002) < 1e-6)
+        #expect(reloaded.exposure.map { abs($0 - 0.8) < 1e-6 } == true)
+    }
+
+    /// The core data-loss fix: an unmodeled (erase-brush) correction must survive a develop
+    /// save/reload cycle byte-for-byte, instead of vanishing on the next crs-block rewrite.
+    @Test("an unparseable mask correction survives a save/reload/edit/re-save cycle")
+    func preservedCorrectionSurvivesReSave() throws {
+        let svc = XMPSidecarService()
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let imageURL = tmp.appendingPathComponent("test.jpg")
+        let sidecarURL = imageURL.deletingPathExtension().appendingPathExtension("xmp")
+        let hash = "9F8737DEECAFF5C8FE6BB4B9D438EAF2"
+
+        let corrections: [[String: Any]] = [[
+            "\(crs)CorrectionActive": "true",
+            "\(crs)CorrectionName": "Erase",
+            "\(crs)LocalExposure2012": "0.2",
+            "\(crs)CorrectionMasks": [[
+                "\(crs)What": "Mask/Aggregate",
+                "\(crs)MaskName": "Brush 1",
+                "\(crs)MaskValue": "1",
+                "\(crs)MaskBrushTable": hash,
+                "\(crs)MaskBrushUncompressedBytes": "13258",
+            ]],
+        ]]
+        let preserved = try #require(parseMaskGroupBasedCorrections(corrections)).preserved
+        #expect(preserved.count == 1)
+
+        var settings = CameraRawSettings()
+        settings.exposure2012 = 0.5
+        settings.unparsedMaskCorrections = preserved
+        try svc.saveCameraRawOnly(settings, orientation: nil, for: imageURL)
+
+        // The opaque blob is present in the written XMP verbatim.
+        let firstXML = try String(contentsOf: sidecarURL, encoding: .utf8)
+        #expect(firstXML.contains("MaskBrushTable"))
+        #expect(firstXML.contains(hash))
+
+        // Reload: the preserved correction comes back.
+        let reloaded = try #require(svc.loadSidecar(for: imageURL)?.cameraRaw)
+        #expect(reloaded.unparsedMaskCorrections?.count == 1)
+
+        // Simulate a later develop edit that rewrites the whole crs block — the wipe scenario.
+        var edited = reloaded
+        edited.exposure2012 = 0.9
+        try svc.saveCameraRawOnly(edited, orientation: nil, for: imageURL)
+        let finalXML = try String(contentsOf: sidecarURL, encoding: .utf8)
+        #expect(finalXML.contains(hash))
+        let reReloaded = try #require(svc.loadSidecar(for: imageURL)?.cameraRaw)
+        #expect(reReloaded.unparsedMaskCorrections?.count == 1)
+    }
+}
+
+/// Phase 2 — GPU rasterization of brush masks into the alpha texture array. Verifies the
+/// `stampBrush`/`clearBrushAlpha` kernels + `rebuildBrushAlpha` against hardcoded stroke lists
+/// (no compositing wiring yet — that's Phase 3). Skipped when no Metal device is available
+/// (headless runners without a GPU).
+@Suite("Brush mask rasterization")
+struct BrushRasterizationTests {
+
+    /// Builds a pipeline over the system default Metal device, or nil if none is available.
+    private func makePipeline() -> MetalEditPipeline? {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let queue = device.makeCommandQueue() else { return nil }
+        return MetalEditPipeline(device: device, commandQueue: queue)
+    }
+
+    /// IEEE 754 half → Float (values produced here are all normal, in [0,1]).
+    private func halfToFloat(_ h: UInt16) -> Float {
+        let sign = UInt32(h & 0x8000) << 16
+        let exp = UInt32(h & 0x7C00) >> 10
+        let mant = UInt32(h & 0x03FF)
+        let bits: UInt32
+        if exp == 0 {
+            if mant == 0 { bits = sign }
+            else {
+                var e: UInt32 = 0
+                var m = mant
+                while (m & 0x0400) == 0 { m <<= 1; e += 1 }
+                m &= 0x03FF
+                bits = sign | ((127 - 15 - e) << 23) | (m << 13)
+            }
+        } else if exp == 0x1F {
+            bits = sign | 0x7F80_0000 | (mant << 13)
+        } else {
+            bits = sign | ((exp + (127 - 15)) << 23) | (mant << 13)
+        }
+        return Float(bitPattern: bits)
+    }
+
+    /// Reads back one R16Float array slice as Floats, row-major.
+    private func readSlice(_ tex: MTLTexture, slice: Int) -> [Float] {
+        let w = tex.width, h = tex.height
+        var raw = [UInt16](repeating: 0, count: w * h)
+        raw.withUnsafeMutableBytes { ptr in
+            tex.getBytes(ptr.baseAddress!,
+                         bytesPerRow: w * MemoryLayout<UInt16>.size,
+                         bytesPerImage: w * h * MemoryLayout<UInt16>.size,
+                         from: MTLRegionMake2D(0, 0, w, h),
+                         mipmapLevel: 0, slice: slice)
+        }
+        return raw.map { halfToFloat($0) }
+    }
+
+    @Test("a centered additive dab is opaque at its center and empty outside its radius")
+    func centeredDabCoverage() throws {
+        guard let pipeline = makePipeline() else { return }
+        #expect(pipeline.hasBrushPipeline)
+        let size = MTLSize(width: 64, height: 64, depth: 1)
+        // radius 0.25 of long edge (64) = 16px, centered soft dab at full flow.
+        let brush = BrushMaskGeometry(strokes: [
+            BrushStroke(dabs: [BrushDab(x: 0.5, y: 0.5, flow: 1.0, hardness: 0.0)],
+                        radius: 0.25, density: 1.0, erase: false)
+        ])
+        let tex = try #require(pipeline.rebuildBrushAlpha([brush], size: size))
+        #expect(tex.arrayLength == 1)
+        let px = readSlice(tex, slice: 0)
+        func at(_ x: Int, _ y: Int) -> Float { px[y * 64 + x] }
+        #expect(at(32, 32) > 0.5)          // center ~fully covered
+        #expect(at(0, 0) == 0)             // corner well outside the 16px radius
+        #expect(at(32, 55) == 0)           // 22px below center, outside radius
+    }
+
+    @Test("passing no brush masks frees the alpha texture")
+    func emptyFreesTexture() throws {
+        guard let pipeline = makePipeline() else { return }
+        let size = MTLSize(width: 32, height: 32, depth: 1)
+        let brush = BrushMaskGeometry(strokes: [
+            BrushStroke(dabs: [BrushDab(x: 0.5, y: 0.5, flow: 1.0, hardness: 0.5)],
+                        radius: 0.3, density: 1.0, erase: false)
+        ])
+        _ = pipeline.rebuildBrushAlpha([brush], size: size)
+        #expect(pipeline.brushAlphaTexture != nil)
+        let none = pipeline.rebuildBrushAlpha([], size: size)
+        #expect(none == nil)
+        #expect(pipeline.brushAlphaTexture == nil)
+    }
+
+    @Test("an erase stroke subtracts a prior additive stroke's coverage")
+    func eraseSubtracts() throws {
+        guard let pipeline = makePipeline() else { return }
+        let size = MTLSize(width: 64, height: 64, depth: 1)
+        // Add a hard opaque dab, then erase the same spot: center returns to ~0.
+        let brush = BrushMaskGeometry(strokes: [
+            BrushStroke(dabs: [BrushDab(x: 0.5, y: 0.5, flow: 1.0, hardness: 1.0)],
+                        radius: 0.25, density: 1.0, erase: false),
+            BrushStroke(dabs: [BrushDab(x: 0.5, y: 0.5, flow: 1.0, hardness: 1.0)],
+                        radius: 0.25, density: 1.0, erase: true),
+        ])
+        let tex = try #require(pipeline.rebuildBrushAlpha([brush], size: size))
+        let px = readSlice(tex, slice: 0)
+        #expect(px[32 * 64 + 32] < 0.01)   // added then fully erased
+    }
+
+    @Test("separate add strokes at the same spot accumulate (build up past one stroke's flow)")
+    func separateStrokesAccumulate() throws {
+        guard let pipeline = makePipeline() else { return }
+        let size = MTLSize(width: 64, height: 64, depth: 1)
+        func stroke() -> BrushStroke {
+            BrushStroke(dabs: [BrushDab(x: 0.5, y: 0.5, flow: 0.5, hardness: 1.0)],
+                        radius: 0.25, density: 1.0, erase: false)
+        }
+        // One stroke at flow 0.5 → ~0.5. A SECOND identical stroke must build up (source-over),
+        // not clamp at 0.5. Three strokes → higher still.
+        let one = BrushMaskGeometry(strokes: [stroke()])
+        let two = BrushMaskGeometry(strokes: [stroke(), stroke()])
+        let three = BrushMaskGeometry(strokes: [stroke(), stroke(), stroke()])
+        func centerAfter(_ b: BrushMaskGeometry) throws -> Float {
+            let tex = try #require(pipeline.rebuildBrushAlpha([b], size: size))
+            return readSlice(tex, slice: 0)[32 * 64 + 32]
+        }
+        let a1 = try centerAfter(one), a2 = try centerAfter(two), a3 = try centerAfter(three)
+        #expect(abs(a1 - 0.5) < 0.05)     // single stroke ≈ its flow
+        #expect(a2 > a1 + 0.15)           // second stroke builds up (≈0.75)
+        #expect(a3 > a2)                  // third builds up further
+        #expect(a3 < 1.001)              // never exceeds full opacity
+    }
+
+    @Test("overlapping soft erase dabs preserve a soft falloff (envelope, not accumulation)")
+    func softEraseStaysSoft() throws {
+        guard let pipeline = makePipeline() else { return }
+        let size = MTLSize(width: 64, height: 64, depth: 1)
+        // Fill an area solid, then erase it with a stroke of TWO overlapping soft dabs at the
+        // same spot (hardness 0). A subtractive erase would remove ~2× the soft profile and cut a
+        // hard hole; the envelope (min) erase must leave a soft gradient.
+        let brush = BrushMaskGeometry(strokes: [
+            BrushStroke(dabs: [BrushDab(x: 0.5, y: 0.5, flow: 1.0, hardness: 1.0)],
+                        radius: 0.3, density: 1.0, erase: false),
+            BrushStroke(dabs: [BrushDab(x: 0.5, y: 0.5, flow: 1.0, hardness: 0.0),
+                               BrushDab(x: 0.5, y: 0.5, flow: 1.0, hardness: 0.0)],
+                        radius: 0.25, density: 1.0, erase: true),
+        ])
+        let tex = try #require(pipeline.rebuildBrushAlpha([brush], size: size))
+        let px = readSlice(tex, slice: 0)
+        func at(_ x: Int, _ y: Int) -> Float { px[y * 64 + x] }
+        #expect(at(32, 32) < 0.05)              // center fully erased (falloff 1)
+        // 8px right of center = half the 16px erase radius → soft falloff ≈ 0.5 coverage, so the
+        // mask should be partially (not fully) erased. Subtractive over-accumulation would zero it.
+        let half = at(40, 32)
+        #expect(half > 0.25 && half < 0.75)
+    }
+
+    @Test("live-stamping adds dabs into an existing slice without a full rebuild")
+    func liveStampAccumulates() throws {
+        guard let pipeline = makePipeline() else { return }
+        let size = MTLSize(width: 64, height: 64, depth: 1)
+        // Seed a texture with one stroke, then live-stamp a second dab elsewhere in the slice.
+        let seed = BrushMaskGeometry(strokes: [
+            BrushStroke(dabs: [BrushDab(x: 0.25, y: 0.25, flow: 1.0, hardness: 1.0)],
+                        radius: 0.15, density: 1.0, erase: false)
+        ])
+        _ = try #require(pipeline.rebuildBrushAlpha([seed], size: size))
+        let stamped = pipeline.stampBrushStroke(
+            BrushStroke(dabs: [BrushDab(x: 0.75, y: 0.75, flow: 1.0, hardness: 1.0)],
+                        radius: 0.15, density: 1.0, erase: false),
+            layer: 0
+        )
+        #expect(stamped)
+        let px = readSlice(try #require(pipeline.brushAlphaTexture), slice: 0)
+        func at(_ x: Int, _ y: Int) -> Float { px[y * 64 + x] }
+        #expect(at(16, 16) > 0.5)   // original dab survived
+        #expect(at(48, 48) > 0.5)   // live-stamped dab is present
+    }
+
+    @Test("live-stamping into an out-of-range or missing slice is a safe no-op")
+    func liveStampGuards() {
+        guard let pipeline = makePipeline() else { return }
+        // No texture allocated yet → no-op, returns false.
+        let stroke = BrushStroke(dabs: [BrushDab(x: 0.5, y: 0.5, flow: 1.0, hardness: 1.0)],
+                                 radius: 0.2, density: 1.0, erase: false)
+        #expect(pipeline.stampBrushStroke(stroke, layer: 0) == false)
+        _ = pipeline.rebuildBrushAlpha([BrushMaskGeometry(strokes: [stroke])],
+                                       size: MTLSize(width: 32, height: 32, depth: 1))
+        #expect(pipeline.stampBrushStroke(stroke, layer: 5) == false)   // slice 5 doesn't exist
+    }
+
+    @Test("each brush mask rasterizes into its own independent array slice")
+    func multipleMasksIndependentSlices() throws {
+        guard let pipeline = makePipeline() else { return }
+        let size = MTLSize(width: 64, height: 64, depth: 1)
+        let maskA = BrushMaskGeometry(strokes: [
+            BrushStroke(dabs: [BrushDab(x: 0.25, y: 0.25, flow: 1.0, hardness: 1.0)],
+                        radius: 0.15, density: 1.0, erase: false)
+        ])
+        let maskB = BrushMaskGeometry(strokes: [
+            BrushStroke(dabs: [BrushDab(x: 0.75, y: 0.75, flow: 1.0, hardness: 1.0)],
+                        radius: 0.15, density: 1.0, erase: false)
+        ])
+        let tex = try #require(pipeline.rebuildBrushAlpha([maskA, maskB], size: size))
+        #expect(tex.arrayLength == 2)
+        let s0 = readSlice(tex, slice: 0)
+        let s1 = readSlice(tex, slice: 1)
+        func at(_ px: [Float], _ x: Int, _ y: Int) -> Float { px[y * 64 + x] }
+        // Slice 0 painted top-left, empty bottom-right; slice 1 the reverse.
+        #expect(at(s0, 16, 16) > 0.5)
+        #expect(at(s0, 48, 48) == 0)
+        #expect(at(s1, 48, 48) > 0.5)
+        #expect(at(s1, 16, 16) == 0)
+    }
+}
+
+/// Phase 3 — the compositing kernel's `maskType` branch. Renders a flat image through the full
+/// `editAdjustments` pipeline (via `renderOffscreen`) and confirms a brush mask's adjustment
+/// lands only on the painted region, and that the ellipse (SDF) path is unaffected by the branch.
+/// Skipped when no Metal device is available.
+@Suite("Brush mask compositing")
+struct BrushCompositingTests {
+    private var space: CGColorSpace { CGColorSpace(name: CGColorSpace.extendedLinearSRGB)! }
+
+    private func solidGray(_ v: CGFloat, size: CGFloat = 64) -> CIImage {
+        CIImage(color: CIColor(red: v, green: v, blue: v, colorSpace: space)!)
+            .cropped(to: CGRect(x: 0, y: 0, width: size, height: size))
+    }
+
+    /// Reads the linear RGB at one pixel of a rendered result.
+    private func sample(_ image: CIImage, x: Int, y: Int) -> Float {
+        let ctx = CIContext(options: [.workingColorSpace: space])
+        var buf = [Float](repeating: 0, count: 4)
+        ctx.render(image, toBitmap: &buf, rowBytes: 16,
+                   bounds: CGRect(x: image.extent.origin.x + CGFloat(x),
+                                  y: image.extent.origin.y + CGFloat(y), width: 1, height: 1),
+                   format: .RGBAf, colorSpace: space)
+        return buf[0]
+    }
+
+    @Test("a brush mask's exposure brightens only the painted region")
+    func brushMaskBrightensPaintedRegion() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else { return }
+        var mask = MaskAdjustment()
+        mask.brush = BrushMaskGeometry(strokes: [
+            BrushStroke(dabs: [BrushDab(x: 0.5, y: 0.5, flow: 1.0, hardness: 1.0)],
+                        radius: 0.3, density: 1.0, erase: false)
+        ])
+        mask.exposure = 1.0   // +1 EV = 2×
+        var settings = CameraRawSettings()
+        settings.localAdjustments = [mask]
+        let result = try #require(MetalEditPipeline.renderOffscreen(source: solidGray(0.4), settings: settings))
+        let center = sample(result, x: 32, y: 32)
+        let corner = sample(result, x: 3, y: 3)
+        #expect(center > corner + 0.2)          // painted center brightened (~0.8)
+        #expect(abs(corner - 0.4) < 0.05)       // unpainted corner ~unchanged (~0.4)
+    }
+
+    @Test("a brush anonymizer mask still receives the global exposure adjustment")
+    func anonymizerReceivesGlobalAdjustment() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else { return }
+        var mask = MaskAdjustment()
+        mask.brush = BrushMaskGeometry(strokes: [
+            BrushStroke(dabs: [BrushDab(x: 0.5, y: 0.5, flow: 1.0, hardness: 1.0)],
+                        radius: 0.3, density: 1.0, erase: false)
+        ])
+        var anon = AnonymizerSettings()
+        anon.amount = 50
+        mask.anonymizer = anon
+        var settings = CameraRawSettings()
+        settings.exposure2012 = 1.0        // global brighten (~+1 EV)
+        settings.localAdjustments = [mask]
+        let result = try #require(MetalEditPipeline.renderOffscreen(source: solidGray(0.3), settings: settings))
+        let center = sample(result, x: 32, y: 32)   // anonymized region
+        let corner = sample(result, x: 3, y: 3)     // only the global adjustment
+        // The anonymized patch must be brightened by the global exposure like its surroundings,
+        // not stuck at the raw source value (0.3). On a flat field the two should match closely.
+        #expect(center > 0.4)
+        #expect(abs(center - corner) < 0.1)
+    }
+
+    @Test("a mask's own exposure adjustment applies to its anonymized region")
+    func anonymizerReceivesMaskAdjustment() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else { return }
+        var mask = MaskAdjustment()
+        mask.brush = BrushMaskGeometry(strokes: [
+            BrushStroke(dabs: [BrushDab(x: 0.5, y: 0.5, flow: 1.0, hardness: 1.0)],
+                        radius: 0.3, density: 1.0, erase: false)
+        ])
+        var anon = AnonymizerSettings()
+        anon.amount = 50
+        mask.anonymizer = anon
+        mask.exposure = 1.0                 // the mask's OWN exposure (+1 EV), no global edit
+        var settings = CameraRawSettings()
+        settings.localAdjustments = [mask]
+        let result = try #require(MetalEditPipeline.renderOffscreen(source: solidGray(0.3), settings: settings))
+        let center = sample(result, x: 32, y: 32)   // anonymized + mask exposure
+        let corner = sample(result, x: 3, y: 3)     // untouched (outside the mask)
+        #expect(abs(corner - 0.3) < 0.03)   // outside the mask stays raw
+        #expect(center > 0.45)              // pixelated region brightened by the mask's exposure
+    }
+
+    @Test("the ellipse (SDF) mask path still renders after the maskType branch")
+    func ellipseMaskStillRenders() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else { return }
+        var mask = MaskAdjustment()
+        mask.geometry = EllipseMaskGeometry(centerX: 0.5, centerY: 0.5,
+                                            radiusX: 0.3, radiusY: 0.3, rotation: 0, feather: 0)
+        mask.exposure = 1.0
+        var settings = CameraRawSettings()
+        settings.localAdjustments = [mask]
+        let result = try #require(MetalEditPipeline.renderOffscreen(source: solidGray(0.4), settings: settings))
+        let center = sample(result, x: 32, y: 32)
+        let corner = sample(result, x: 3, y: 3)
+        #expect(center > corner + 0.2)          // ellipse center brightened
+        #expect(abs(corner - 0.4) < 0.05)       // outside the ellipse ~unchanged
     }
 }

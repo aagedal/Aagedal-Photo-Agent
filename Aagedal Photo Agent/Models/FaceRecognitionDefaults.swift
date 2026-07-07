@@ -19,6 +19,13 @@ nonisolated enum FaceRecognitionDefaults {
     /// folder with a persisted secondary lens still opens on Face), and `prewarmSecondaryLensesIfNeeded`.
     static let multiLensEnabled = false
 
+    /// Master switch for the **Sports** lens specifically. Shipped for 2.1 independently of
+    /// `multiLensEnabled`, because the Sports lens is calibrated and useful on its own while the
+    /// Expression / Red Carpet thresholds are still being tuned. When `true`, Sports appears in the
+    /// switcher for any folder that produced jersey data (see `availableLenses`), even though the
+    /// other secondary lenses stay gated off. Turn off to fully hide sports tagging again.
+    static let sportsLensEnabled = true
+
     // MARK: - Clustering (cosine distance)
     //
     // Calibrated against AuraFace on labeled faces: same-person pairs cluster around cosine

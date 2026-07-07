@@ -26,8 +26,42 @@ struct MaskParams {
     var blacks: Float = 0
     var saturation: Float = 1
     var vibrance: Float = 0
-    var activeFlags: UInt32 = 0
-    var _pad: UInt32 = 0
+    var activeFlags: UInt32 = 0  // bit8=anonymizer, bit9=temperature, bit10=tint; see EditAdjustments.metal MaskParams
+    var anonymizerAmount: Float = 0
+    var anonymizerBlackOut: Float = 0
+    var temperature: Float = 0
+    var tint: Float = 0
+    var maskType: UInt32 = 0   // 0 = ellipse (SDF), 1 = brush (sample brushAlpha)
+    var brushLayer: UInt32 = 0 // slice into the brush alpha array (maskType == 1 only)
+}
+
+/// GPU brush-dab parameters matching the Metal `BrushDabParams` struct. One dispatch per dab,
+/// uploaded via `setBytes` (not a shared buffer) so consecutive dabs in one command buffer
+/// don't alias each other's parameters.
+struct BrushDabParams {
+    var center: SIMD2<Float> = .zero
+    var radiusPx: Float = 0
+    var hardness: Float = 0.5
+    var flow: Float = 1.0
+    var density: Float = 1.0
+    var erase: UInt32 = 0
+    var layer: UInt32 = 0
+    var originPx: SIMD2<UInt32> = .zero
+}
+
+/// GPU stroke-composite parameters matching the Metal `BrushCompositeParams` struct.
+struct BrushCompositeParams {
+    var layer: UInt32 = 0
+    var erase: UInt32 = 0
+    var originPx: SIMD2<UInt32> = .zero
+}
+
+/// GPU watermark-layer parameters matching the Metal `WatermarkParams` struct.
+struct WatermarkParams {
+    var center: SIMD2<Float> = .zero
+    var halfExtent: SIMD2<Float> = .zero   // (0,0) = degenerate/missing asset; shader no-ops
+    var opacity: Float = 1.0
+    var textureLayer: UInt32 = 0
 }
 
 /// GPU overlay parameters matching the Metal `MaskOverlayParams` struct.
@@ -80,7 +114,7 @@ struct EditParams {
 
     var whiteBalanceMatrix: simd_float3x3 = matrix_identity_float3x3
 
-    var activeFlags: UInt32 = 0  // bit0=toneLUT, bit1=vibrance, bit2=saturation, bit3=whiteBalance, bit4=hdrMode
+    var activeFlags: UInt32 = 0  // bit0=toneLUT, bit1=vibrance, bit2=saturation, bit3=whiteBalance, bit4=hdrMode, bit5=anonymizer
     var maskCount: UInt32 = 0
 
     var scale: SIMD2<Float> = .zero
@@ -110,7 +144,13 @@ struct EditParams {
     // buffer. Drives the per-pixel processing sequence so the global node can be reordered
     // among the masks. Always ≥ 1 (the global node is always present).
     var orderCount: UInt32 = 0
-    var _padOrder: UInt32 = 0
+    var anonymizerAmount: Float = 0   // 0-1 global slider strength, gated by activeFlags bit5
+    var anonymizerBlackOut: Float = 0 // 0 or 1
+
+    var maskOverlayIndex: Int32 = -1  // mask buffer index to red-tint, or -1 = none
+    var maskOverlayOpacity: Float = 0 // 0-1 red-tint strength
+
+    var watermarkCount: UInt32 = 0    // number of active watermark layers (0-4)
 }
 
 /// Manages the Metal compute pipeline for real-time edit preview.
@@ -182,6 +222,11 @@ final class MetalEditPipeline: @unchecked Sendable {
         didSet { mirror?.gamutClipMode = gamutClipMode }
     }
 
+    /// When set, `updateParams` red-tints this mask's coverage (ACR-style) so a freshly painted
+    /// brush mask is visible before any adjustment. The kernel auto-hides it once the mask gains
+    /// an adjustment. Set by the editor from selection / paint-mode state.
+    nonisolated(unsafe) var maskOverlayMaskID: UUID? = nil
+
     /// As-shot white balance from the RAW decoder. Used as the reference point for WB
     /// adjustments so that "Custom at as-shot temperature" produces an identity matrix.
     nonisolated(unsafe) var asShotTemperature: Double = 6500 {
@@ -214,14 +259,72 @@ final class MetalEditPipeline: @unchecked Sendable {
     nonisolated(unsafe) private var lutInterleaveBuffer = [Float](repeating: 0, count: ToneCurveGenerator.lutSize * 4)
 
     nonisolated private static let maxMasks = 8
-    /// Max layer-order entries: every mask plus the single global node.
-    nonisolated private static let maxOrderEntries = maxMasks + 1
-    /// Order-buffer entry meaning "run the global adjustment block here" (any value ≥ maxMasks).
+    /// Max simultaneous watermark layers (and, since each references one library asset,
+    /// also the texture array's slice cap — fewer if several layers share one asset).
+    nonisolated private static let maxWatermarks = 4
+    /// Max layer-order entries: every mask, every watermark layer, plus the single global node.
+    nonisolated private static let maxOrderEntries = maxMasks + maxWatermarks + 1
+    /// Order-buffer entry meaning "run the global adjustment block here".
     nonisolated private static let globalOrderSentinel: UInt32 = 0xFFFF_FFFF
+    /// Order-buffer high bit meaning "the low 31 bits are a watermark-layer index", so a
+    /// watermark entry and the global sentinel (which also has this bit set) stay
+    /// distinguishable from a plain mask index (always < maxMasks). See EditAdjustments.metal.
+    nonisolated private static let watermarkOrderFlag: UInt32 = 0x8000_0000
 
     // Overlay pipeline (mask overlay rendering)
     private let overlayPipelineState: MTLComputePipelineState?
     nonisolated(unsafe) private let overlayParamsBuffer: MTLBuffer?
+
+    // Brush-mask rasterization (Phase 2). Optional — graceful degradation if the shaders are
+    // missing, matching the overlay pipeline.
+    private let stampBrushPipelineState: MTLComputePipelineState?
+    private let clearBrushAlphaPipelineState: MTLComputePipelineState?
+    private let clearBrushRegionPipelineState: MTLComputePipelineState?
+    private let compositeBrushPipelineState: MTLComputePipelineState?
+    /// Single-slice scratch texture holding one stroke's coverage envelope during a rebuild:
+    /// dabs are max-stamped here, then source-over composited into `brushAlphaTexture` so
+    /// separate strokes accumulate. Lazily sized to match the alpha array.
+    nonisolated(unsafe) private var brushEnvScratch: MTLTexture?
+    /// Per-brush-mask alpha coverage: one `texture2d_array` R16Float slice per brush mask,
+    /// lazily (re)built by `rebuildBrushAlpha`. Nil when there are no brush masks, so non-brush
+    /// edits pay zero GPU memory (an unconditional 8-slice array at export resolution would be
+    /// ~1-1.5GB). Sized to the render source so the compositing kernel (Phase 3) can sample it
+    /// in source UV space. Not yet read by `editAdjustments` — wired in Phase 3.
+    nonisolated(unsafe) private(set) var brushAlphaTexture: MTLTexture?
+    /// A 1×1×1 zeroed R16Float array bound to `editAdjustments`' brush-alpha slot whenever there
+    /// are no brush masks, so the kernel's `texture2d_array` argument is always satisfied (Metal
+    /// requires every declared texture bound) — it's never sampled in that case (no mask sets
+    /// maskType == 1).
+    nonisolated(unsafe) private let emptyBrushAlpha: MTLTexture
+    /// Cache guarding `refreshBrushAlpha`: the brush masks + resolution the current
+    /// `brushAlphaTexture` was rasterized from. `updateParams` runs per slider drag, but strokes
+    /// only change on paint/undo/image-load — comparing against this skips the full-res rebuild
+    /// (a synchronous GPU rasterization) on every unrelated tonal edit.
+    nonisolated(unsafe) private var lastBuiltBrushMasks: [BrushMaskGeometry] = []
+    nonisolated(unsafe) private var lastBuiltBrushSize = MTLSize(width: 0, height: 0, depth: 0)
+
+    // MARK: - Watermark layers
+
+    /// Per-layer watermark parameters (buffer index 4) — center/halfExtent/opacity/textureLayer,
+    /// up to `maxWatermarks` entries. Rewritten (cheaply) on every `updateParams`/
+    /// `refreshWatermarkParams` call; the texture array behind it is only reloaded when the
+    /// referenced asset IDs actually change (see `lastBuiltWatermarkAssetIDs`).
+    nonisolated(unsafe) private(set) var watermarkParamsBuffer: MTLBuffer?
+    /// Deduped-by-asset watermark texture array (texture index 4), one RGBA8 premultiplied
+    /// slice per distinct library asset referenced by the active watermark layers. Nil when
+    /// there are none, so non-watermark edits pay zero extra GPU memory.
+    nonisolated(unsafe) private(set) var watermarkTexture: MTLTexture?
+    /// A 1×1×1 fully-transparent placeholder bound to `editAdjustments`' watermark-texture slot
+    /// whenever there are no active watermark layers, so the kernel's texture argument is
+    /// always satisfied (mirrors `emptyBrushAlpha`).
+    nonisolated(unsafe) private let emptyWatermarkTexture: MTLTexture
+    /// Cache guarding the texture (re)decode in `loadWatermarkTextures`: the distinct asset IDs
+    /// the current `watermarkTexture` was built from.
+    nonisolated(unsafe) private var lastBuiltWatermarkAssetIDs: [UUID] = []
+    /// Per-asset (slice index, decoded aspect ratio) from the last texture build — reused by
+    /// `refreshWatermarkParams` when the asset-ID cache above hits, so a position/size/opacity-only
+    /// change doesn't force a redecode.
+    nonisolated(unsafe) private var lastBuiltWatermarkAspects: [UUID: (slice: Int, aspect: Double)] = [:]
 
     nonisolated private static let colorSpace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
 
@@ -342,6 +445,28 @@ final class MetalEditPipeline: @unchecked Sendable {
             options: .storageModeShared
         )
 
+        // Brush-mask rasterization pipelines (optional — graceful degradation if missing).
+        if let stampFunc = library.makeFunction(name: "stampBrush") {
+            self.stampBrushPipelineState = try? device.makeComputePipelineState(function: stampFunc)
+        } else {
+            self.stampBrushPipelineState = nil
+        }
+        if let clearFunc = library.makeFunction(name: "clearBrushAlpha") {
+            self.clearBrushAlphaPipelineState = try? device.makeComputePipelineState(function: clearFunc)
+        } else {
+            self.clearBrushAlphaPipelineState = nil
+        }
+        if let clearRegionFunc = library.makeFunction(name: "clearBrushRegion") {
+            self.clearBrushRegionPipelineState = try? device.makeComputePipelineState(function: clearRegionFunc)
+        } else {
+            self.clearBrushRegionPipelineState = nil
+        }
+        if let compositeFunc = library.makeFunction(name: "compositeBrushStroke") {
+            self.compositeBrushPipelineState = try? device.makeComputePipelineState(function: compositeFunc)
+        } else {
+            self.compositeBrushPipelineState = nil
+        }
+
         self.ciContext = CIContext(mtlDevice: device, options: [
             .workingFormat: CIFormat.RGBAh,
             .workingColorSpace: Self.colorSpace,
@@ -362,6 +487,10 @@ final class MetalEditPipeline: @unchecked Sendable {
         )
         self.orderBuffer = device.makeBuffer(
             length: MemoryLayout<UInt32>.stride * Self.maxOrderEntries,
+            options: .storageModeShared
+        )
+        self.watermarkParamsBuffer = device.makeBuffer(
+            length: MemoryLayout<WatermarkParams>.stride * Self.maxWatermarks,
             options: .storageModeShared
         )
         metalPipelineLog.info("MaskParams stride=\(MemoryLayout<MaskParams>.stride) size=\(MemoryLayout<MaskParams>.size) alignment=\(MemoryLayout<MaskParams>.alignment)")
@@ -385,6 +514,42 @@ final class MetalEditPipeline: @unchecked Sendable {
                             withBytes: &identityData, bytesPerRow: 2 * 4 * MemoryLayout<UInt16>.size)
         self.identityLutTexture = identityTex
 
+        // 1×1×1 zeroed brush-alpha placeholder (always-bound fallback; see property doc).
+        let emptyBrushDesc = MTLTextureDescriptor()
+        emptyBrushDesc.textureType = .type2DArray
+        emptyBrushDesc.pixelFormat = .r16Float
+        emptyBrushDesc.width = 1
+        emptyBrushDesc.height = 1
+        emptyBrushDesc.arrayLength = 1
+        emptyBrushDesc.usage = .shaderRead
+        emptyBrushDesc.storageMode = .shared
+        guard let emptyBrushTex = device.makeTexture(descriptor: emptyBrushDesc) else { return nil }
+        var zeroHalf: UInt16 = 0
+        emptyBrushTex.replace(region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0, slice: 0,
+                              withBytes: &zeroHalf, bytesPerRow: MemoryLayout<UInt16>.size,
+                              bytesPerImage: MemoryLayout<UInt16>.size)
+        self.emptyBrushAlpha = emptyBrushTex
+
+        // 1×1×1 fully-transparent watermark-texture placeholder (always-bound fallback; see
+        // property doc). Zeroed — alpha 0 means applyWatermark's blend is a no-op even if a
+        // stray order-buffer entry somehow pointed at it. Same sRGB-tagged format as the real
+        // watermark texture array (see loadWatermarkTextures) so binding either one is valid
+        // for the same shader texture argument.
+        let emptyWatermarkDesc = MTLTextureDescriptor()
+        emptyWatermarkDesc.textureType = .type2DArray
+        emptyWatermarkDesc.pixelFormat = .rgba8Unorm_srgb
+        emptyWatermarkDesc.width = 1
+        emptyWatermarkDesc.height = 1
+        emptyWatermarkDesc.arrayLength = 1
+        emptyWatermarkDesc.usage = .shaderRead
+        emptyWatermarkDesc.storageMode = .shared
+        guard let emptyWatermarkTex = device.makeTexture(descriptor: emptyWatermarkDesc) else { return nil }
+        var zeroRGBA: UInt32 = 0
+        emptyWatermarkTex.replace(region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0, slice: 0,
+                                  withBytes: &zeroRGBA, bytesPerRow: MemoryLayout<UInt32>.size,
+                                  bytesPerImage: MemoryLayout<UInt32>.size)
+        self.emptyWatermarkTexture = emptyWatermarkTex
+
         // Pre-allocate the main LUT texture (4096 entries, rgba16Float, ~32KB).
         // R/G/B channels carry per-channel LUT for curve editor support.
         // Reused on every slider drag via replace(region:) — no per-frame allocation.
@@ -400,6 +565,22 @@ final class MetalEditPipeline: @unchecked Sendable {
 
     // MARK: - Source Texture Upload
 
+    /// Generates a full mip chain for a just-populated source texture, synchronously. The
+    /// Anonymizer effect's mosaic/blur sampling fetches an explicit LOD (compute kernels have
+    /// no implicit screen-space derivatives the way fragment shaders do), so every source
+    /// texture the edit kernel might read from needs mips, not just level 0. Cheap relative to
+    /// the CIContext render that just populated level 0 — a one-time cost per image load/export,
+    /// not per frame.
+    nonisolated private static func generateMipmaps(for texture: MTLTexture, commandQueue: MTLCommandQueue) {
+        guard texture.mipmapLevelCount > 1,
+              let commandBuffer = commandQueue.makeCommandBuffer(),
+              let blit = commandBuffer.makeBlitCommandEncoder() else { return }
+        blit.generateMipmaps(for: texture)
+        blit.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+    }
+
     /// Renders the source CIImage to an MTLTexture. Call once per image load (not per frame).
     /// `exifOrientation` is the orientation already baked into the CIImage's pixels —
     /// used by `updateParams` to transform sensor-frame mask geometry to match.
@@ -414,7 +595,7 @@ final class MetalEditPipeline: @unchecked Sendable {
             pixelFormat: .rgba16Float,
             width: width,
             height: height,
-            mipmapped: false
+            mipmapped: true
         )
         desc.usage = [.shaderRead, .shaderWrite]
         desc.storageMode = .private
@@ -450,6 +631,7 @@ final class MetalEditPipeline: @unchecked Sendable {
 
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
+        Self.generateMipmaps(for: texture, commandQueue: commandQueue)
         setSourceTexture(texture)
         setSourceOrientation(exifOrientation)
         // Share the same texture object with the clean-feed mirror (zero-copy).
@@ -507,8 +689,11 @@ final class MetalEditPipeline: @unchecked Sendable {
         var flags: UInt32 = 0
 
         guard let settings else {
-            // No settings → the chain is just the (no-op) global node.
-            params.orderCount = uploadLayerOrder([.global], maskIndexByID: [:])
+            // No settings → the chain is just the (no-op) global node; drop any brush alpha
+            // and watermark textures.
+            refreshBrushAlpha([], size: MTLSize(width: 0, height: 0, depth: 0))
+            refreshWatermarkParams([], imageSize: MTLSize(width: 0, height: 0, depth: 0))
+            params.orderCount = uploadLayerOrder([.global], maskIndexByID: [:], watermarkIndexByID: [:])
             let ptr = buffer.contents().bindMemory(to: EditParams.self, capacity: 1)
             ptr.pointee = params
             ptr.pointee.gamutClipMode = gamutClipMode
@@ -555,6 +740,13 @@ final class MetalEditPipeline: @unchecked Sendable {
             flags |= (1 << 4)
         }
 
+        // 6. Anonymizer (global) — multi-layer redaction effect or full Black Out.
+        if let anon = settings.anonymizer, !anon.isEmpty {
+            params.anonymizerAmount = Float(min(max((anon.amount ?? 0) / 100.0, 0.0), 1.0))
+            params.anonymizerBlackOut = (anon.blackOut == true) ? 1.0 : 0.0
+            flags |= (1 << 5)
+        }
+
         params.activeFlags = flags
 
         // 5. Local mask adjustments. Mask geometry is stored in the sensor (XMP)
@@ -565,12 +757,14 @@ final class MetalEditPipeline: @unchecked Sendable {
         let displaySettings: CameraRawSettings = {
             let orientation = sourceOrientation
             guard orientation > 1, let size = sourceTextureSize, size.height > 0 else { return settings }
-            return settings.masksTransformedForDisplay(
-                orientation: orientation,
-                displayAspect: size.width / size.height
-            )
+            return settings
+                .masksTransformedForDisplay(orientation: orientation, displayAspect: size.width / size.height)
+                .watermarksTransformedForDisplay(orientation: orientation)
         }()
-        let masks = displaySettings.localAdjustments?.filter(\.enabled) ?? []
+        // Both ellipse and brush masks participate. Brush masks resolve their coverage from a
+        // pre-rasterized alpha array (rebuilt below), sampled by `editAdjustments` when the mask's
+        // `maskType` is 1; ellipse masks use the analytic SDF.
+        let masks = displaySettings.localAdjustments?.filter { $0.enabled } ?? []
         let maskCount = min(masks.count, Self.maxMasks)
         params.maskCount = UInt32(maskCount)
 
@@ -582,8 +776,11 @@ final class MetalEditPipeline: @unchecked Sendable {
         }
 
         // Maps each enabled mask's UUID → its slot in the mask buffer, so the layer-order
-        // build below can translate `.mask(id)` refs into GPU mask indices.
+        // build below can translate `.mask(id)` refs into GPU mask indices. Brush masks are
+        // collected in the same iteration order so their `brushLayer` slice indices line up
+        // with the alpha array `refreshBrushAlpha` rasterizes below.
         var maskIndexByID: [UUID: Int] = [:]
+        var brushGeometries: [BrushMaskGeometry] = []
         if maskCount > 0, let maskBuf = maskBuffer {
             let maskPtr = maskBuf.contents().bindMemory(to: MaskParams.self, capacity: Self.maxMasks)
             for i in 0..<maskCount {
@@ -596,6 +793,11 @@ final class MetalEditPipeline: @unchecked Sendable {
                 mp.feather = Float(mask.geometry.feather / 100.0)
                 mp.inverted = mask.inverted ? 1.0 : 0.0
                 mp.amount = Float(mask.amount)
+                if let brush = mask.brush {
+                    mp.maskType = 1
+                    mp.brushLayer = UInt32(brushGeometries.count)
+                    brushGeometries.append(brush)
+                }
 
                 var maskFlags: UInt32 = 0
                 if let exp = mask.exposure, exp != 0 {
@@ -630,9 +832,45 @@ final class MetalEditPipeline: @unchecked Sendable {
                     mp.vibrance = Float(Double(vib) / 100.0)
                     maskFlags |= (1 << 7)
                 }
+                if let anon = mask.anonymizer, !anon.isEmpty {
+                    mp.anonymizerAmount = Float(min(max((anon.amount ?? 0) / 100.0, 0.0), 1.0))
+                    mp.anonymizerBlackOut = (anon.blackOut == true) ? 1.0 : 0.0
+                    maskFlags |= (1 << 8)
+                }
+                if let temp = mask.temperature, temp != 0 {
+                    mp.temperature = Float(min(max(temp / 100.0, -1.0), 1.0))
+                    maskFlags |= (1 << 9)
+                }
+                if let tnt = mask.tint, tnt != 0 {
+                    mp.tint = Float(min(max(tnt / 100.0, -1.0), 1.0))
+                    maskFlags |= (1 << 10)
+                }
                 mp.activeFlags = maskFlags
                 maskPtr[i] = mp
             }
+        }
+
+        // Rebuild the brush alpha array (cached — only when strokes/resolution change) so the
+        // compositing kernel can sample it. Sized to the source texture, which the kernel
+        // samples in source UV space. The offscreen (export) pipeline has no persistent source
+        // texture, so `sourceTextureSize` is nil there and it rebuilds explicitly at the working
+        // resolution in `renderOffscreenSerial` instead.
+        if let texSize = sourceTextureSize {
+            refreshBrushAlpha(
+                brushGeometries,
+                size: MTLSize(width: Int(texSize.width), height: Int(texSize.height), depth: 1)
+            )
+        }
+
+        // Mask-coverage overlay target: red-tint the editor-selected mask until it's adjusted
+        // (the kernel gates on the mask's activeFlags being 0). Mapped from the UUID here so it
+        // stays consistent with the current mask buffer layout.
+        if let oid = maskOverlayMaskID, let idx = maskIndexByID[oid] {
+            params.maskOverlayIndex = Int32(idx)
+            params.maskOverlayOpacity = 0.5
+        } else {
+            params.maskOverlayIndex = -1
+            params.maskOverlayOpacity = 0
         }
 
         // 6. HSL per-color adjustments
@@ -667,12 +905,37 @@ final class MetalEditPipeline: @unchecked Sendable {
             hslPtr.pointee = hslP
         }
 
-        // Build the processing order: interleave the global node among the masks per the
-        // resolved layer order. `.mask` refs to disabled/overflow masks (absent from
-        // maskIndexByID) are skipped; the global node is always present.
+        // 7. Watermark layers — app-only compositing, no ACR equivalent. Order-buffer slot
+        // assignment happens unconditionally below (needed regardless of resolution); the
+        // GPU-resident texture + geometry data is only refreshed here when a persistent source
+        // texture size is already known (live preview). The offscreen/export path (no
+        // persistent source texture at this point) assigns the same slots by iteration order
+        // and lets `renderOffscreenSerial` call `refreshWatermarkParams` again explicitly once
+        // its working resolution is known — mirroring `rebuildBrushAlpha`'s split exactly.
+        let displayWatermarks = (displaySettings.watermarkLayers ?? []).filter(\.enabled)
+        let activeWatermarks = Array(displayWatermarks.prefix(Self.maxWatermarks))
+        params.watermarkCount = UInt32(activeWatermarks.count)
+        var watermarkIndexByID: [UUID: Int] = [:]
+        if !activeWatermarks.isEmpty {
+            if let texSize = sourceTextureSize {
+                watermarkIndexByID = refreshWatermarkParams(
+                    activeWatermarks,
+                    imageSize: MTLSize(width: Int(texSize.width), height: Int(texSize.height), depth: 1)
+                )
+            } else {
+                for (i, layer) in activeWatermarks.enumerated() { watermarkIndexByID[layer.id] = i }
+            }
+        } else {
+            refreshWatermarkParams([], imageSize: MTLSize(width: 0, height: 0, depth: 0))
+        }
+
+        // Build the processing order: interleave the global node among the masks and
+        // watermark layers per the resolved layer order. Refs to disabled/overflow/missing
+        // layers (absent from the index maps) are skipped; the global node is always present.
         params.orderCount = uploadLayerOrder(
             displaySettings.resolvedLayerOrder(),
-            maskIndexByID: maskIndexByID
+            maskIndexByID: maskIndexByID,
+            watermarkIndexByID: watermarkIndexByID
         )
 
         let ptr = buffer.contents().bindMemory(to: EditParams.self, capacity: 1)
@@ -697,12 +960,16 @@ final class MetalEditPipeline: @unchecked Sendable {
     }
 
     /// Writes the layer-processing order into `orderBuffer` and returns the entry count.
-    /// Each resolved `.global` becomes `globalOrderSentinel`; each `.mask(id)` becomes its
-    /// GPU mask index via `maskIndexByID` (refs with no mapping — disabled or overflow masks
-    /// — are skipped). Capped at `maxOrderEntries`.
+    /// Each resolved `.global` becomes `globalOrderSentinel`; each `.mask(id)` becomes its GPU
+    /// mask index via `maskIndexByID`; each `.watermark(id)` becomes its GPU watermark-params
+    /// index via `watermarkIndexByID`, flagged with `watermarkOrderFlag` so the shader can tell
+    /// it apart from a plain mask index (see EditAdjustments.metal's order-buffer encoding
+    /// comment). Refs with no mapping — disabled or overflow layers — are skipped. Capped at
+    /// `maxOrderEntries`.
     nonisolated private func uploadLayerOrder(
         _ resolved: [LayerRef],
-        maskIndexByID: [UUID: Int]
+        maskIndexByID: [UUID: Int],
+        watermarkIndexByID: [UUID: Int]
     ) -> UInt32 {
         guard let orderBuf = orderBuffer else { return 0 }
         let ptr = orderBuf.contents().bindMemory(to: UInt32.self, capacity: Self.maxOrderEntries)
@@ -715,6 +982,10 @@ final class MetalEditPipeline: @unchecked Sendable {
             case .mask(let id):
                 guard let idx = maskIndexByID[id] else { continue }
                 ptr[count] = UInt32(idx)
+                count += 1
+            case .watermark(let id):
+                guard let idx = watermarkIndexByID[id] else { continue }
+                ptr[count] = Self.watermarkOrderFlag | UInt32(idx)
                 count += 1
             }
         }
@@ -740,6 +1011,390 @@ final class MetalEditPipeline: @unchecked Sendable {
 
     /// Whether the Metal overlay pipeline is available.
     nonisolated var hasOverlayPipeline: Bool { overlayPipelineState != nil }
+
+    // MARK: - Brush Mask Rasterization (Phase 2)
+
+    /// Whether the brush rasterization pipelines compiled.
+    nonisolated var hasBrushPipeline: Bool {
+        stampBrushPipelineState != nil && clearBrushAlphaPipelineState != nil
+            && clearBrushRegionPipelineState != nil && compositeBrushPipelineState != nil
+    }
+
+    /// The pixel bounding box (originX, originY, width, height) a stroke's dabs cover, clipped to
+    /// `size`, or nil if empty. Used to bound the per-stroke clear/composite dispatches so cost is
+    /// the painted area, not the whole slice.
+    nonisolated private static func strokeBoundingBox(_ stroke: BrushStroke, size: MTLSize) -> (Int, Int, Int, Int)? {
+        let r = Double(brushRadiusPixels(normalized: stroke.radius, size: size))
+        guard r > 0, !stroke.dabs.isEmpty else { return nil }
+        var minX = Double.greatestFiniteMagnitude, minY = Double.greatestFiniteMagnitude
+        var maxX = -Double.greatestFiniteMagnitude, maxY = -Double.greatestFiniteMagnitude
+        for dab in stroke.dabs {
+            let cx = dab.x * Double(size.width), cy = dab.y * Double(size.height)
+            minX = min(minX, cx - r); minY = min(minY, cy - r)
+            maxX = max(maxX, cx + r); maxY = max(maxY, cy + r)
+        }
+        let x0 = max(0, Int(minX.rounded(.down))), y0 = max(0, Int(minY.rounded(.down)))
+        let x1 = min(size.width, Int(maxX.rounded(.up))), y1 = min(size.height, Int(maxY.rounded(.up)))
+        guard x1 > x0, y1 > y0 else { return nil }
+        return (x0, y0, x1 - x0, y1 - y0)
+    }
+
+    /// Converts a normalized brush radius (ACR `Radius`) into pixels for a texture of the given
+    /// dimensions. The normalization reference is the long edge — self-consistent with
+    /// `anonymizerBlockSize` and the other long-edge-relative sizing in the pipeline, which is
+    /// what makes a stroke rebuild identically into a 1500px preview or a 9000px export texture.
+    /// The absolute scale vs. Lightroom's own brush-size display is one of the two constants
+    /// flagged for the Phase 6 calibration pass.
+    nonisolated static func brushRadiusPixels(normalized radius: Double, size: MTLSize) -> Float {
+        let longEdge = Double(max(size.width, size.height))
+        return Float(radius * longEdge)
+    }
+
+    /// (Re)builds the brush alpha texture array from `brushMasks`, one array slice per mask, and
+    /// stores it in `brushAlphaTexture`. Rasterizes every stroke's dabs via `stampBrush`, each
+    /// dispatch bounded to that dab's bounding box. `size` is the target resolution (source
+    /// texture dims for preview, working dims for export) so the same normalized stroke list
+    /// rebuilds correctly at any resolution. Passing no brush masks frees the texture.
+    /// Returns the populated texture, or nil when there are no brush masks / the pipeline is
+    /// unavailable. Not per-frame: called on stroke changes / resolution changes only.
+    @discardableResult
+    nonisolated func rebuildBrushAlpha(_ brushMasks: [BrushMaskGeometry], size: MTLSize) -> MTLTexture? {
+        guard let stampState = stampBrushPipelineState,
+              let clearState = clearBrushAlphaPipelineState,
+              let clearRegionState = clearBrushRegionPipelineState,
+              let compositeState = compositeBrushPipelineState,
+              !brushMasks.isEmpty, size.width > 0, size.height > 0 else {
+            brushAlphaTexture = nil
+            return nil
+        }
+        let layers = min(brushMasks.count, Self.maxMasks)
+
+        // Lazily (re)allocate only when the slice count or resolution changes; otherwise reuse
+        // the existing texture and just re-clear + re-stamp into it.
+        let tex: MTLTexture
+        if let existing = brushAlphaTexture,
+           existing.width == size.width, existing.height == size.height,
+           existing.arrayLength == layers {
+            tex = existing
+        } else {
+            let desc = MTLTextureDescriptor()
+            desc.textureType = .type2DArray
+            desc.pixelFormat = .r16Float
+            desc.width = size.width
+            desc.height = size.height
+            desc.arrayLength = layers
+            desc.usage = [.shaderRead, .shaderWrite]
+            desc.storageMode = .shared
+            guard let newTex = device.makeTexture(descriptor: desc) else {
+                brushAlphaTexture = nil
+                return nil
+            }
+            tex = newTex
+        }
+
+        // Single-slice envelope scratch, reused across strokes; (re)allocated to match `size`.
+        let scratch: MTLTexture
+        if let existing = brushEnvScratch, existing.width == size.width, existing.height == size.height {
+            scratch = existing
+        } else {
+            let desc = MTLTextureDescriptor()
+            desc.textureType = .type2DArray
+            desc.pixelFormat = .r16Float
+            desc.width = size.width
+            desc.height = size.height
+            desc.arrayLength = 1
+            desc.usage = [.shaderRead, .shaderWrite]
+            desc.storageMode = .shared
+            guard let newScratch = device.makeTexture(descriptor: desc) else { return nil }
+            scratch = newScratch
+        }
+
+        guard let commandBuffer = commandQueue.makeCommandBuffer(),
+              let encoder = commandBuffer.makeComputeCommandEncoder() else {
+            return nil
+        }
+
+        // Clear every slice first. The default serial-dispatch encoder inserts a barrier between
+        // dispatches, so the clear completes before the first stamp reads the alpha.
+        encoder.setComputePipelineState(clearState)
+        encoder.setTexture(tex, index: 0)
+        encoder.dispatchThreads(
+            MTLSize(width: size.width, height: size.height, depth: layers),
+            threadsPerThreadgroup: MTLSize(width: 8, height: 8, depth: 1)
+        )
+
+        // Per stroke: build its coverage envelope in the scratch (dabs max-blended, so within a
+        // stroke it's a flat cap at the stroke's flow), then source-over composite it into the
+        // mask's slice — so separate strokes ACCUMULATE (clicking the same spot builds up) rather
+        // than clamping at one stroke's flow. Bounded to each stroke's bbox to keep cost local.
+        let stampTG = MTLSize(width: 16, height: 16, depth: 1)
+        for (layer, mask) in brushMasks.prefix(layers).enumerated() {
+            for stroke in mask.strokes {
+                guard let (bx, by, bw, bh) = Self.strokeBoundingBox(stroke, size: size) else { continue }
+                var origin = SIMD2<UInt32>(UInt32(bx), UInt32(by))
+                let bbox = MTLSize(width: bw, height: bh, depth: 1)
+
+                // 1. Clear the scratch over this stroke's bbox.
+                encoder.setComputePipelineState(clearRegionState)
+                encoder.setTexture(scratch, index: 0)
+                encoder.setBytes(&origin, length: MemoryLayout<SIMD2<UInt32>>.stride, index: 0)
+                encoder.dispatchThreads(bbox, threadsPerThreadgroup: stampTG)
+
+                // 2. Stamp the stroke's dabs into scratch slice 0 as a max envelope (forceAdd).
+                encoder.setComputePipelineState(stampState)
+                encoder.setTexture(scratch, index: 0)
+                Self.encodeStroke(stroke, layer: 0, size: size, forceAdd: true, into: encoder)
+
+                // 3. Source-over (or multiplicative-erase) composite scratch → alpha slice.
+                encoder.setComputePipelineState(compositeState)
+                encoder.setTexture(tex, index: 0)
+                encoder.setTexture(scratch, index: 1)
+                var cp = BrushCompositeParams(layer: UInt32(layer),
+                                              erase: stroke.erase ? 1 : 0,
+                                              originPx: origin)
+                encoder.setBytes(&cp, length: MemoryLayout<BrushCompositeParams>.stride, index: 0)
+                encoder.dispatchThreads(bbox, threadsPerThreadgroup: stampTG)
+            }
+        }
+
+        encoder.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        brushAlphaTexture = tex
+        brushEnvScratch = scratch
+        return tex
+    }
+
+    /// Encodes one stroke's dabs as `stampBrush` dispatches into `encoder` (which must already
+    /// have the stamp pipeline state + target texture bound), each bounded to that dab's bounding
+    /// box. `forceAdd` stamps a plain max envelope (used to build the per-stroke scratch, where
+    /// erase is applied by the composite step instead). Shared by the full rebuild and the
+    /// incremental live-paint path.
+    nonisolated private static func encodeStroke(
+        _ stroke: BrushStroke, layer: Int, size: MTLSize, forceAdd: Bool = false,
+        into encoder: MTLComputeCommandEncoder
+    ) {
+        let radiusPx = brushRadiusPixels(normalized: stroke.radius, size: size)
+        guard radiusPx > 0 else { return }
+        let density = Float(stroke.density)
+        let erase: UInt32 = (forceAdd || !stroke.erase) ? 0 : 1
+        let stampTG = MTLSize(width: 16, height: 16, depth: 1)
+        for dab in stroke.dabs {
+            let cx = Double(dab.x) * Double(size.width)
+            let cy = Double(dab.y) * Double(size.height)
+            let r = Double(radiusPx)
+            let minX = max(0, Int((cx - r).rounded(.down)))
+            let minY = max(0, Int((cy - r).rounded(.down)))
+            let maxX = min(size.width, Int((cx + r).rounded(.up)))
+            let maxY = min(size.height, Int((cy + r).rounded(.up)))
+            let boxW = maxX - minX
+            let boxH = maxY - minY
+            guard boxW > 0, boxH > 0 else { continue }
+            var p = BrushDabParams()
+            p.center = SIMD2<Float>(Float(dab.x), Float(dab.y))
+            p.radiusPx = radiusPx
+            p.hardness = Float(dab.hardness)
+            p.flow = Float(dab.flow)
+            p.density = density
+            p.erase = erase
+            p.layer = UInt32(layer)
+            p.originPx = SIMD2<UInt32>(UInt32(minX), UInt32(minY))
+            encoder.setBytes(&p, length: MemoryLayout<BrushDabParams>.stride, index: 0)
+            encoder.dispatchThreads(
+                MTLSize(width: boxW, height: boxH, depth: 1),
+                threadsPerThreadgroup: stampTG
+            )
+        }
+    }
+
+    /// Live-paint entry: stamps `stroke`'s dabs into an EXISTING slice of `brushAlphaTexture`
+    /// without a clear/rebuild, for immediate feedback while the user drags. The slice must
+    /// already exist (allocated by a prior `refreshBrushAlpha`, e.g. because an empty brush mask
+    /// was committed on gesture start). Transient: the authoritative alpha is rebuilt from the
+    /// model on `mouseUp` when the finished stroke is committed and `updateParams` runs. No-op if
+    /// the pipeline/texture is missing or `layer` is out of range. Returns true if it dispatched.
+    @discardableResult
+    nonisolated func stampBrushStroke(_ stroke: BrushStroke, layer: Int) -> Bool {
+        guard let stampState = stampBrushPipelineState,
+              let tex = brushAlphaTexture,
+              layer >= 0, layer < tex.arrayLength,
+              !stroke.dabs.isEmpty,
+              let commandBuffer = commandQueue.makeCommandBuffer(),
+              let encoder = commandBuffer.makeComputeCommandEncoder() else { return false }
+        let size = MTLSize(width: tex.width, height: tex.height, depth: 1)
+        encoder.setComputePipelineState(stampState)
+        encoder.setTexture(tex, index: 0)
+        Self.encodeStroke(stroke, layer: layer, size: size, into: encoder)
+        encoder.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        return true
+    }
+
+    /// Frees the brush alpha texture (e.g. when the last brush mask is removed).
+    nonisolated func clearBrushAlpha() {
+        brushAlphaTexture = nil
+        brushEnvScratch = nil
+        lastBuiltBrushMasks = []
+        lastBuiltBrushSize = MTLSize(width: 0, height: 0, depth: 0)
+    }
+
+    /// Cached wrapper around `rebuildBrushAlpha` for the live path: rebuilds only when the brush
+    /// masks or target resolution differ from the last build. `updateParams` calls this on every
+    /// slider drag, but a full-res rasterization (a synchronous GPU wait) should only happen when
+    /// the strokes actually change — not on unrelated tonal edits.
+    nonisolated func refreshBrushAlpha(_ brushMasks: [BrushMaskGeometry], size: MTLSize) {
+        guard !brushMasks.isEmpty else {
+            if brushAlphaTexture != nil { clearBrushAlpha() }
+            return
+        }
+        if brushAlphaTexture != nil,
+           brushMasks == lastBuiltBrushMasks,
+           size.width == lastBuiltBrushSize.width,
+           size.height == lastBuiltBrushSize.height {
+            return
+        }
+        rebuildBrushAlpha(brushMasks, size: size)
+        lastBuiltBrushMasks = brushMasks
+        lastBuiltBrushSize = size
+    }
+
+    // MARK: - Watermark textures
+
+    /// (Re)builds the deduped-by-asset watermark texture array from `assetIDs` (which may
+    /// contain duplicates — several layers can reference the same library asset). Reads each
+    /// asset's PNG directly off disk via `WatermarkStore.resolvedImageURL`/`CloudCoordinatedIO`
+    /// — NOT through `WatermarkStore.shared`'s actor-isolated `assets` list — so this is safe to
+    /// call from the offscreen (background-queue) export path as well as the live main-thread
+    /// path. Decodes with `CGContext` using a Y-flip so row 0 lands at the texture's v=0 (top),
+    /// matching this pipeline's UV convention; premultiplied alpha throughout (see
+    /// `applyWatermark` in EditAdjustments.metal), since `CGContext` bitmap targets require it.
+    /// Cached against `lastBuiltWatermarkAssetIDs` — a position/size/opacity-only change (the
+    /// common case while dragging a slider) skips the redecode entirely.
+    @discardableResult
+    nonisolated private func loadWatermarkTextures(_ assetIDs: [UUID]) -> [UUID: (slice: Int, aspect: Double)] {
+        var distinctIDs: [UUID] = []
+        var seen = Set<UUID>()
+        for id in assetIDs where !seen.contains(id) {
+            seen.insert(id)
+            distinctIDs.append(id)
+        }
+        guard !distinctIDs.isEmpty else {
+            watermarkTexture = nil
+            lastBuiltWatermarkAssetIDs = []
+            lastBuiltWatermarkAspects = [:]
+            return [:]
+        }
+        if watermarkTexture != nil, distinctIDs == lastBuiltWatermarkAssetIDs {
+            return lastBuiltWatermarkAspects
+        }
+
+        var decoded: [(id: UUID, image: CGImage)] = []
+        for id in distinctIDs {
+            guard let data = try? CloudCoordinatedIO.readData(at: WatermarkStore.resolvedImageURL(forAssetID: id)),
+                  let source = CGImageSourceCreateWithData(data as CFData, nil),
+                  let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil),
+                  cgImage.width > 0, cgImage.height > 0
+            else { continue }
+            decoded.append((id, cgImage))
+        }
+        guard !decoded.isEmpty else {
+            watermarkTexture = nil
+            lastBuiltWatermarkAssetIDs = []
+            lastBuiltWatermarkAspects = [:]
+            return [:]
+        }
+
+        let maxW = decoded.map(\.image.width).max() ?? 1
+        let maxH = decoded.map(\.image.height).max() ?? 1
+        let desc = MTLTextureDescriptor()
+        desc.textureType = .type2DArray
+        // sRGB-tagged format: Metal automatically linearizes the gamma-encoded bytes on
+        // sample, matching the rest of this pipeline (which composites in linear light).
+        // Plain .rgba8Unorm would treat the stored sRGB bytes as already-linear, visibly
+        // shifting the watermark's color/brightness wherever it isn't pure black/white.
+        desc.pixelFormat = .rgba8Unorm_srgb
+        desc.width = maxW
+        desc.height = maxH
+        desc.arrayLength = decoded.count
+        desc.usage = .shaderRead
+        desc.storageMode = .shared
+        guard let tex = device.makeTexture(descriptor: desc) else {
+            watermarkTexture = nil
+            lastBuiltWatermarkAssetIDs = []
+            lastBuiltWatermarkAspects = [:]
+            return [:]
+        }
+
+        let rgbColorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        var mapping: [UUID: (slice: Int, aspect: Double)] = [:]
+        for (slice, entry) in decoded.enumerated() {
+            let w = entry.image.width, h = entry.image.height
+            guard let context = CGContext(
+                data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                space: rgbColorSpace, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { continue }
+            // No extra flip: `context.draw` already writes the image right-side-up into the
+            // raw buffer (row 0 = the image's own top row), matching Metal's texture v=0 —
+            // confirmed empirically after an earlier version of this code added an (incorrect)
+            // flip here and rendered every watermark upside down.
+            context.draw(entry.image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            guard let pixelData = context.data else { continue }
+            tex.replace(
+                region: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0, slice: slice,
+                withBytes: pixelData, bytesPerRow: w * 4, bytesPerImage: w * h * 4
+            )
+            mapping[entry.id] = (slice, Double(w) / Double(h))
+        }
+
+        watermarkTexture = tex
+        lastBuiltWatermarkAssetIDs = distinctIDs
+        lastBuiltWatermarkAspects = mapping
+        return mapping
+    }
+
+    /// Builds the per-layer `WatermarkParams` (center/halfExtent/opacity/textureLayer) for
+    /// `layers` at `imageSize` (the render target's pixel dimensions — the same frame the
+    /// kernel samples `uv` in), (re)loading the texture array as needed, and returns each
+    /// layer's assigned order-buffer slot index. Mirrors `refreshBrushAlpha`'s split from
+    /// `updateParams`: called there directly when a persistent source texture size is already
+    /// known (live preview), and again explicitly by `renderOffscreenSerial` once the export's
+    /// working resolution is known (the ephemeral offscreen pipeline has no persistent source
+    /// texture at `updateParams` time).
+    @discardableResult
+    nonisolated func refreshWatermarkParams(_ layers: [WatermarkLayer], imageSize: MTLSize) -> [UUID: Int] {
+        guard !layers.isEmpty, imageSize.width > 0, imageSize.height > 0,
+              let wmBuf = watermarkParamsBuffer else {
+            watermarkTexture = nil
+            lastBuiltWatermarkAssetIDs = []
+            lastBuiltWatermarkAspects = [:]
+            return [:]
+        }
+        let capped = Array(layers.prefix(Self.maxWatermarks))
+        let assetMapping = loadWatermarkTextures(capped.map(\.libraryAssetID))
+
+        var indexByID: [UUID: Int] = [:]
+        let wmPtr = wmBuf.contents().bindMemory(to: WatermarkParams.self, capacity: Self.maxWatermarks)
+        for (i, layer) in capped.enumerated() {
+            indexByID[layer.id] = i
+            var wp = WatermarkParams()
+            wp.opacity = Float(layer.opacity)
+            if let (slice, aspect) = assetMapping[layer.libraryAssetID] {
+                let half = layer.geometry.renderedHalfExtentUV(
+                    assetAspect: aspect,
+                    imageWidth: Double(imageSize.width),
+                    imageHeight: Double(imageSize.height)
+                )
+                wp.center = SIMD2<Float>(Float(layer.geometry.centerX), Float(layer.geometry.centerY))
+                wp.halfExtent = SIMD2<Float>(Float(half.halfWidthUV), Float(half.halfHeightUV))
+                wp.textureLayer = UInt32(slice)
+            }
+            // Missing asset (deleted from the library): halfExtent stays (0,0), which
+            // `applyWatermark` treats as a no-op rather than sampling garbage.
+            wmPtr[i] = wp
+        }
+        return indexByID
+    }
 
     // MARK: - Render
 
@@ -776,6 +1431,8 @@ final class MetalEditPipeline: @unchecked Sendable {
         encoder.setTexture(source, index: 0)
         encoder.setTexture(drawable.texture, index: 1)
         encoder.setTexture(lutTexture, index: 2)
+        encoder.setTexture(brushAlphaTexture ?? emptyBrushAlpha, index: 3)
+        encoder.setTexture(watermarkTexture ?? emptyWatermarkTexture, index: 4)
         encoder.setBuffer(buffer, offset: 0, index: 0)
         if let maskBuf = maskBuffer {
             encoder.setBuffer(maskBuf, offset: 0, index: 1)
@@ -785,6 +1442,9 @@ final class MetalEditPipeline: @unchecked Sendable {
         }
         if let orderBuf = orderBuffer {
             encoder.setBuffer(orderBuf, offset: 0, index: 3)
+        }
+        if let wmBuf = watermarkParamsBuffer {
+            encoder.setBuffer(wmBuf, offset: 0, index: 4)
         }
 
         let threadgroupSize = MTLSize(width: 16, height: 16, depth: 1)
@@ -1093,7 +1753,10 @@ final class MetalEditPipeline: @unchecked Sendable {
         cropTop: Double,
         cropRight: Double,
         cropBottom: Double,
-        angleDegrees: Double
+        angleDegrees: Double,
+        zoomScale: CGFloat = 1.0,
+        offset: CGSize = .zero,
+        handlePadding: CGFloat = 0
     ) {
         guard let buffer = paramsBuffer else { return }
         guard containerSize.width > 0, containerSize.height > 0,
@@ -1112,8 +1775,10 @@ final class MetalEditPipeline: @unchecked Sendable {
         // Fit the actual crop into the container (identical to cropFittedImageRect's baseScale).
         let radians = angleDegrees * .pi / 180.0
 
-        let fitScale = min(containerSize.width / max(actualW, 1),
-                           containerSize.height / max(actualH, 1))
+        let availW = max(Double(containerSize.width - handlePadding * 2), 1)
+        let availH = max(Double(containerSize.height - handlePadding * 2), 1)
+        let fitScale = min(availW / max(actualW, 1),
+                           availH / max(actualH, 1)) * max(Double(zoomScale), 0.0001)
         guard fitScale > 0 else { return }
 
         // The source region (in pixels) that maps to the full drawable — larger than the
@@ -1124,8 +1789,18 @@ final class MetalEditPipeline: @unchecked Sendable {
         let vpH = visiblePxH / imgH
 
         cachedViewportSize = SIMD2<Float>(Float(vpW), Float(vpH))
-        cachedViewportCenter = SIMD2<Float>(Float(centerX), Float(centerY))
-        cachedViewportOrigin = SIMD2<Float>(Float(centerX - vpW / 2), Float(centerY - vpH / 2))
+
+        let offsetPxX = Double(offset.width) / fitScale
+        let offsetPxY = Double(offset.height) / fitScale
+        let cosA = cos(radians)
+        let sinA = sin(radians)
+        let rotatedOffsetX = offsetPxX * cosA - offsetPxY * sinA
+        let rotatedOffsetY = offsetPxX * sinA + offsetPxY * cosA
+        let viewportCenterX = centerX - rotatedOffsetX / imgW
+        let viewportCenterY = centerY - rotatedOffsetY / imgH
+
+        cachedViewportCenter = SIMD2<Float>(Float(viewportCenterX), Float(viewportCenterY))
+        cachedViewportOrigin = SIMD2<Float>(Float(viewportCenterX - vpW / 2), Float(viewportCenterY - vpH / 2))
         cachedViewportRotation = Float(radians)
 
         // The crop occupies the central (actual·fitScale / container) fraction of the
@@ -1154,7 +1829,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         let height = Int(extent.height)
 
         let desc = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .rgba16Float, width: width, height: height, mipmapped: false
+            pixelFormat: .rgba16Float, width: width, height: height, mipmapped: true
         )
         desc.usage = [.shaderRead, .shaderWrite]
         desc.storageMode = .private
@@ -1183,6 +1858,10 @@ final class MetalEditPipeline: @unchecked Sendable {
 
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
+        // Pre-cached textures get promoted to sourceTexture on navigation (applyCachedTexture),
+        // so they need mips too — the Anonymizer effect can't tell a promoted texture apart
+        // from a freshly-uploaded one.
+        Self.generateMipmaps(for: texture, commandQueue: commandQueue)
         textureCache.setObject(MTLTextureWrapper(texture, neutralTemperature: neutralTemperature, neutralTint: neutralTint), forKey: url as NSURL)
     }
 
@@ -1264,10 +1943,12 @@ final class MetalEditPipeline: @unchecked Sendable {
         // transform before the params upload (the ephemeral pipeline has no
         // source texture of its own, so updateParams can't do it there).
         if source.extent.height > 0 {
-            settings = settings.masksTransformedForDisplay(
-                orientation: exifOrientation,
-                displayAspect: source.extent.width / source.extent.height
-            )
+            settings = settings
+                .masksTransformedForDisplay(
+                    orientation: exifOrientation,
+                    displayAspect: source.extent.width / source.extent.height
+                )
+                .watermarksTransformedForDisplay(orientation: exifOrientation)
         }
         let maskCount = settings.localAdjustments?.filter(\.enabled).count ?? 0
         if maskCount > 0 {
@@ -1304,7 +1985,7 @@ final class MetalEditPipeline: @unchecked Sendable {
 
         // 1. Upload source CIImage to Metal texture
         let srcDesc = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .rgba16Float, width: width, height: height, mipmapped: false
+            pixelFormat: .rgba16Float, width: width, height: height, mipmapped: true
         )
         srcDesc.usage = [.shaderRead, .shaderWrite]
         srcDesc.storageMode = .private
@@ -1333,6 +2014,9 @@ final class MetalEditPipeline: @unchecked Sendable {
         }
         uploadCmdBuf.commit()
         uploadCmdBuf.waitUntilCompleted()
+        // Export must mosaic/blur at the same fidelity as the live preview — the Anonymizer
+        // kernel fetches an explicit mip level, so this texture needs a full mip chain too.
+        generateMipmaps(for: srcTexture, commandQueue: queue)
 
         // 2. Propagate as-shot WB reference so the ephemeral pipeline computes
         //    the same white balance matrix as the live edit preview.
@@ -1345,6 +2029,31 @@ final class MetalEditPipeline: @unchecked Sendable {
 
         // 3. Generate LUT and set parameters
         pipeline.updateParams(settings)
+
+        // The offscreen pipeline has no persistent source texture, so `updateParams` can't size
+        // the brush alpha — rebuild it explicitly at the working resolution. Brush geometries are
+        // taken in the same first-`maxMasks` enabled-mask order `updateParams` used to assign each
+        // mask's `brushLayer` slice, so the slices line up. `settings` is already display-oriented
+        // here, so the dabs rasterize in the same frame the kernel samples.
+        let brushMasksForExport = (settings.localAdjustments?.filter { $0.enabled } ?? [])
+            .prefix(Self.maxMasks)
+            .compactMap { $0.brush }
+        pipeline.rebuildBrushAlpha(
+            brushMasksForExport,
+            size: MTLSize(width: width, height: height, depth: 1)
+        )
+
+        // Same reasoning for watermark layers: `updateParams` (just above) had no persistent
+        // source texture to size against, so it only assigned order-buffer slots. Refresh the
+        // actual texture + geometry data now, at the export's real working resolution, before
+        // the dispatch below reads it.
+        let watermarkLayersForExport = (settings.watermarkLayers ?? [])
+            .filter(\.enabled)
+            .prefix(Self.maxWatermarks)
+        pipeline.refreshWatermarkParams(
+            Array(watermarkLayersForExport),
+            imageSize: MTLSize(width: width, height: height, depth: 1)
+        )
 
         // 3. Create output texture (managed — CIImage can create from it)
         let outDesc = MTLTextureDescriptor.texture2DDescriptor(
@@ -1374,6 +2083,8 @@ final class MetalEditPipeline: @unchecked Sendable {
         let flags = ptr.pointee.activeFlags
         let useLUT = (flags & (1 << 0)) != 0
         encoder.setTexture(useLUT ? pipeline.lutTexture : pipeline.identityLutTexture, index: 2)
+        encoder.setTexture(pipeline.brushAlphaTexture ?? pipeline.emptyBrushAlpha, index: 3)
+        encoder.setTexture(pipeline.watermarkTexture ?? pipeline.emptyWatermarkTexture, index: 4)
 
         encoder.setBuffer(paramsBuffer, offset: 0, index: 0)
         if let maskBuf = pipeline.maskBuffer {
@@ -1384,6 +2095,9 @@ final class MetalEditPipeline: @unchecked Sendable {
         }
         if let orderBuf = pipeline.orderBuffer {
             encoder.setBuffer(orderBuf, offset: 0, index: 3)
+        }
+        if let wmBuf = pipeline.watermarkParamsBuffer {
+            encoder.setBuffer(wmBuf, offset: 0, index: 4)
         }
 
         let threadgroupSize = MTLSize(width: 16, height: 16, depth: 1)
@@ -1410,7 +2124,9 @@ final class MetalEditPipeline: @unchecked Sendable {
             || (settings.temperature == nil && settings.incrementalTemperature == nil
                 && settings.tint == nil && settings.incrementalTint == nil)
         let noMasks = settings.localAdjustments?.isEmpty ?? true
+        let noWatermarks = settings.watermarkLayers?.isEmpty ?? true
         let noHSL = settings.hslAdjustments?.isEmpty ?? true
-        return noTonal && noVibrance && noSaturation && noWB && noMasks && noHSL
+        let noAnonymizer = settings.anonymizer?.isEmpty ?? true
+        return noTonal && noVibrance && noSaturation && noWB && noMasks && noWatermarks && noHSL && noAnonymizer
     }
 }

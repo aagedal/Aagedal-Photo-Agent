@@ -41,6 +41,11 @@ nonisolated enum AppPaths {
         iCloudDocuments?.appendingPathComponent("Teams", isDirectory: true)
     }
 
+    /// Watermark library folder inside the ubiquity container.
+    static var iCloudWatermarksURL: URL? {
+        iCloudDocuments?.appendingPathComponent("Watermarks", isDirectory: true)
+    }
+
     static var applicationSupport: URL {
         guard let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
             logger.error("Application Support directory not found, falling back to home directory")

@@ -47,14 +47,17 @@ struct SettingsView: View {
 
     enum SettingsSection: String, CaseIterable, Identifiable {
         case general
+        case rawDecoding
         case metadata
         case keywordLists
         case quickLists
         case faceRecognition
         case knownPeople
+        case teams
         case locations
         case format
         case templates
+        case watermarks
         case ftp
         case signing
         case sync
@@ -67,14 +70,17 @@ struct SettingsView: View {
         var title: String {
             switch self {
             case .general: return "General"
+            case .rawDecoding: return "RAW Decoding"
             case .metadata: return "Metadata"
             case .keywordLists: return "Keywords"
             case .quickLists: return "Quick Lists"
             case .faceRecognition: return "Face Recognition"
             case .knownPeople: return "Known People"
+            case .teams: return "Teams"
             case .locations: return "Locations"
             case .format: return "Format"
             case .templates: return "Templates"
+            case .watermarks: return "Watermarks"
             case .ftp: return "FTP"
             case .signing: return "Signing"
             case .sync: return "iCloud Sync"
@@ -87,14 +93,17 @@ struct SettingsView: View {
         var icon: String {
             switch self {
             case .general: return "gear"
+            case .rawDecoding: return "camera.aperture"
             case .metadata: return "tag"
             case .keywordLists: return "list.bullet.rectangle"
             case .quickLists: return "bolt"
             case .faceRecognition: return "person.crop.rectangle.stack"
             case .knownPeople: return "person.crop.square"
+            case .teams: return "tshirt"
             case .locations: return "folder"
             case .format: return "doc.richtext"
             case .templates: return "doc.on.clipboard"
+            case .watermarks: return "seal"
             case .ftp: return "arrow.up.to.line"
             case .signing: return "signature"
             case .sync: return "icloud"
@@ -112,16 +121,19 @@ struct SettingsView: View {
             List(selection: $selection) {
                 Section("General") {
                     row(.general)
+                    row(.rawDecoding)
                 }
                 Section("Library & Metadata") {
                     row(.metadata)
                     row(.keywordLists)
                     row(.quickLists)
                     row(.templates)
+                    row(.watermarks)
                 }
                 Section("People and Groups") {
                     row(.faceRecognition)
                     row(.knownPeople)
+                    row(.teams)
                 }
                 Section("Export & Publishing") {
                     row(.locations)
@@ -160,14 +172,17 @@ struct SettingsView: View {
     private func detailView(for section: SettingsSection) -> some View {
         switch section {
         case .general: generalTab
+        case .rawDecoding: rawDecodingTab
         case .metadata: metadataTab
         case .keywordLists: keywordsTab
         case .quickLists: quickListsTab
         case .faceRecognition: faceRecognitionTab
         case .knownPeople: knownPeopleTab
+        case .teams: teamsTab
         case .locations: locationsTab
         case .format: formatTab
         case .templates: templatesTab
+        case .watermarks: watermarksTab
         case .ftp: ftpTab
         case .signing: signingTab
         case .sync: syncTab
@@ -244,6 +259,41 @@ struct SettingsView: View {
         .padding()
     }
 
+    // MARK: - RAW Decoding Tab
+
+    @ViewBuilder
+    private var rawDecodingTab: some View {
+        Form {
+            Section("Decode Profile") {
+                Picker("Profile", selection: $settingsViewModel.rawDecodeProfile) {
+                    ForEach(RAWDecodeProfile.allCases) { profile in
+                        Text(profile.title).tag(profile)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text(settingsViewModel.rawDecodeProfile.subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Develop sliders are unaffected and start from this profile's baseline. Requires re-opening the folder/image to take effect.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Decoder Version") {
+                Picker("Decoder", selection: $settingsViewModel.rawDecoderVersionPreference) {
+                    ForEach(RAWDecoderVersionPreference.allCases) { pref in
+                        Text(pref.title).tag(pref)
+                    }
+                }
+                Text("Pin RAW decoding to an older decoder version (e.g. to opt out of a newer AI-assisted decoder) instead of always using the newest available. Falls back to Auto for files that don't support the selected version. Requires re-opening the folder/image to take effect.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
+    }
+
     // MARK: - Face Recognition Tab
 
     @ViewBuilder
@@ -302,6 +352,20 @@ struct SettingsView: View {
     }
 
     // MARK: - Known People Tab
+
+    // MARK: - Teams Tab
+
+    @ViewBuilder
+    private var teamsTab: some View {
+        TeamsLibraryContent()
+    }
+
+    // MARK: - Watermarks Tab
+
+    @ViewBuilder
+    private var watermarksTab: some View {
+        WatermarksLibraryContent()
+    }
 
     @ViewBuilder
     private var knownPeopleTab: some View {
@@ -1152,6 +1216,14 @@ struct SettingsView: View {
                     set: { coordinator.setKnownPeopleEnabled($0) }
                 ))
                 Text("Reference faces and clothing samples used for auto-matching.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Toggle("Watermarks", isOn: Binding(
+                    get: { coordinator.watermarksEnabled },
+                    set: { coordinator.setWatermarksEnabled($0) }
+                ))
+                Text("Named watermark images used by the watermark develop layer.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } header: {

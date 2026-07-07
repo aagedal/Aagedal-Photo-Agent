@@ -4,6 +4,12 @@ struct BrowserView: View {
     @Bindable var viewModel: BrowserViewModel
     var faceCount: Int = 0
     var faceGroupCount: Int = 0
+    /// Fired when the user clicks into this grid (split-view pane focus).
+    var onFocus: (() -> Void)? = nil
+    /// Whether this pane contributes the filter/sort/search toolbar items. In split view
+    /// both panes are in the hierarchy, so only the active one provides them — otherwise
+    /// the groups duplicate and overflow into the toolbar's "»" menu.
+    var providesToolbar: Bool = true
 
     var body: some View {
         Group {
@@ -43,7 +49,7 @@ struct BrowserView: View {
                 }
             } else {
                 ZStack {
-                    CollectionViewGridRepresentable(viewModel: viewModel)
+                    CollectionViewGridRepresentable(viewModel: viewModel, onFocus: onFocus)
 
                     // Bottom-left overlays
                     VStack(alignment: .leading, spacing: 6) {
@@ -108,51 +114,52 @@ struct BrowserView: View {
             }
         }
         .toolbar {
-            
-            ToolbarItemGroup(placement: .automatic) {
-                ColorLabelFilterBar(selectedLabels: $viewModel.selectedColorLabels)
-                    .disabled(viewModel.images.isEmpty)
-                    .padding(8)
-            }
-        
-
-            ToolbarItemGroup(placement: .automatic) {
-                StarRatingFilterBar(minimumRating: $viewModel.minimumStarRating)
-                    .disabled(viewModel.images.isEmpty)
-                    .padding(8)
-                
-                filterMenu
-            }
-            
-            ToolbarItemGroup(placement: .automatic) {
-                
-                Button {
-                    viewModel.sortReversed.toggle()
-                } label: {
-                    Image(systemName: viewModel.sortReversed ? "arrow.up" : "arrow.down")
+            if providesToolbar {
+                ToolbarItemGroup(placement: .automatic) {
+                    ColorLabelFilterBar(selectedLabels: $viewModel.selectedColorLabels)
+                        .disabled(viewModel.images.isEmpty)
+                        .padding(8)
                 }
-                .help(viewModel.sortReversed ? "Sort ascending" : "Sort descending")
-                .disabled(viewModel.sortOrder == .manual)
-                
-                Picker("Sort", selection: Binding(
-                    get: { viewModel.sortOrder },
-                    set: { newValue in
-                        if newValue == .manual && viewModel.sortOrder != .manual {
-                            viewModel.initializeManualOrder(from: viewModel.sortedImages)
+
+
+                ToolbarItemGroup(placement: .automatic) {
+                    StarRatingFilterBar(minimumRating: $viewModel.minimumStarRating)
+                        .disabled(viewModel.images.isEmpty)
+                        .padding(8)
+
+                    filterMenu
+                }
+
+                ToolbarItemGroup(placement: .automatic) {
+
+                    Button {
+                        viewModel.sortReversed.toggle()
+                    } label: {
+                        Image(systemName: viewModel.sortReversed ? "arrow.up" : "arrow.down")
+                    }
+                    .help(viewModel.sortReversed ? "Sort ascending" : "Sort descending")
+                    .disabled(viewModel.sortOrder == .manual)
+
+                    Picker("Sort", selection: Binding(
+                        get: { viewModel.sortOrder },
+                        set: { newValue in
+                            if newValue == .manual && viewModel.sortOrder != .manual {
+                                viewModel.initializeManualOrder(from: viewModel.sortedImages)
+                            }
+                            viewModel.sortOrder = newValue
                         }
-                        viewModel.sortOrder = newValue
+                    )) {
+                        ForEach(BrowserViewModel.SortOrder.allCases, id: \.self) { order in
+                            Text(order.rawValue).tag(order)
+                        }
                     }
-                )) {
-                    ForEach(BrowserViewModel.SortOrder.allCases, id: \.self) { order in
-                        Text(order.rawValue).tag(order)
-                    }
-                }
-                .pickerStyle(.menu)
-                
-            }
+                    .pickerStyle(.menu)
 
-            ToolbarItemGroup(placement: .automatic) {
-                searchField
+                }
+
+                ToolbarItemGroup(placement: .automatic) {
+                    searchField
+                }
             }
         }
     }

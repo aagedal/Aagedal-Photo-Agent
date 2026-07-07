@@ -19,6 +19,14 @@ struct EditWorkspaceView: View {
 
     @State private var sourceImage: NSImage?
     @State private var sourceCIImage: CIImage?
+    /// URL and orientation the retained `sourceCIImage`/`sourceImage` were decoded for.
+    /// Lets an in-app rotation of the *same* image rotate the known-good source in place
+    /// (see the `exifOrientation` onChange) instead of re-decoding from a file whose EXIF
+    /// tag was just rewritten — a re-decode double-applies the rotation (preview shows 180°
+    /// while the file rotated 90°) because ImageIO can serve new pixels with a stale
+    /// reported orientation.
+    @State private var sourceLoadedURL: URL?
+    @State private var sourceLoadedOrientation: Int?
     @State private var isDraggingEditSlider = false
     @State private var previewCIImage: CIImage?
     @State private var previewImage: NSImage?
@@ -64,6 +72,10 @@ struct EditWorkspaceView: View {
     @State private var dropTargetLayer: LayerRef?
     @State private var isDraggingMask = false
     @State private var dragMaskGeometry: EllipseMaskGeometry?
+    @State private var dragWatermarkGeometry: WatermarkGeometry?
+    /// Shown when "Add Watermark" is tapped but the Watermark library (Settings ▸ Watermarks)
+    /// has no PNGs imported yet.
+    @State private var showWatermarkLibraryEmptyAlert = false
     @State private var scopeThrottleTask: Task<Void, Never>?
     @State private var lastScopeUpdateTime: ContinuousClock.Instant = .now
     @State private var editZoomScale: CGFloat = 1.0
@@ -82,6 +94,14 @@ struct EditWorkspaceView: View {
     @State private var isPickingWhiteBalance = false
     /// Live marquee rectangle (preview-pane coordinates) drawn while dragging a WB sample.
     @State private var wbPickDragRect: CGRect?
+
+    // Freeform brush-paint tool (bare "B"). Settings are transient UI state describing what's
+    // about to be painted — already-painted strokes keep whatever they were painted with.
+    @State private var isBrushPainting = false
+    @State private var brushRadius: Double = 0.04     // fraction of the long edge (BrushStroke.radius)
+    @State private var brushHardness: Double = 0.5    // 0-1 dab CenterWeight
+    @State private var brushFlow: Double = 1.0        // 0-1 dab flow
+    @State private var brushErase = false             // subtract from the mask instead of adding
     @FocusState private var isWorkspaceFocused: Bool
 
     private static let previewBackground = Color(red: 0.15, green: 0.15, blue: 0.15)
@@ -197,6 +217,7 @@ struct EditWorkspaceView: View {
             || cameraRaw.saturation != nil
             || cameraRaw.toneCurve != nil
             || !(cameraRaw.localAdjustments?.isEmpty ?? true)
+            || !(cameraRaw.watermarkLayers?.isEmpty ?? true)
     }
 
     private var selectedImageOrientation: Int {
@@ -263,6 +284,35 @@ struct EditWorkspaceView: View {
             g = g.transformedForSensor(orientation: orientation, displayAspect: maskDisplayAspect)
         }
         return g
+    }
+
+    /// Sensor (stored) → display geometry for the watermark overlay, mirroring
+    /// `maskGeometryForDisplay` — same two-stage EXIF-then-straighten transform, just for
+    /// the simpler point-only `WatermarkGeometry`.
+    private func watermarkGeometryForDisplay(_ geometry: WatermarkGeometry) -> WatermarkGeometry {
+        var g = geometry
+        let orientation = selectedImageOrientation
+        if orientation > 1 {
+            g = g.transformedForDisplay(orientation: orientation)
+        }
+        return g.rotatedInDisplay(byDegrees: -displayCropAngle, aspect: maskDisplayAspect)
+    }
+
+    /// Display → sensor geometry on store: exact inverse of `watermarkGeometryForDisplay`.
+    private func watermarkGeometryForSensor(_ geometry: WatermarkGeometry) -> WatermarkGeometry {
+        var g = geometry.rotatedInDisplay(byDegrees: displayCropAngle, aspect: maskDisplayAspect)
+        let orientation = selectedImageOrientation
+        if orientation > 1 {
+            g = g.transformedForSensor(orientation: orientation)
+        }
+        return g
+    }
+
+    /// The library asset's decoded aspect ratio (width/height) for a watermark layer's
+    /// position-handle overlay — falls back to 1 (square) if the asset went missing, matching
+    /// the Metal pipeline's own missing-asset fallback (a degenerate but non-crashing handle).
+    private func assetAspect(forWatermarkAssetID id: UUID) -> Double {
+        WatermarkStore.shared.asset(byID: id)?.aspectRatio ?? 1
     }
 
     private var activeCrop: NormalizedCropRegion {
@@ -372,6 +422,19 @@ struct EditWorkspaceView: View {
             }
         }
         .onChange(of: selectedImage?.exifOrientation) { oldVal, newVal in
+            // Same image rotated in-app: rotate the retained source by the known delta
+            // rather than re-decoding. A re-decode reads the file's just-rewritten EXIF
+            // tag, which ImageIO can serve inconsistently (new pixels + stale reported
+            // orientation) so the corrective rotation double-applies — the preview shows
+            // 180° while the file only rotated 90°. Rotating the already-correct source
+            // avoids the file round-trip entirely and is always a single, exact step.
+            if let url = selectedImageURL, url == sourceLoadedURL, sourceCIImage != nil,
+               let from = sourceLoadedOrientation, let newVal, from != newVal,
+               ImageFile.orientationCorrection(from: from, to: newVal) != .up {
+                editLog.info("[\(url.lastPathComponent)] in-place rotate source \(from) → \(newVal)")
+                rotateSourceInPlace(from: from, to: newVal)
+                return
+            }
             editLog.info("[\(selectedImageURL?.lastPathComponent ?? "nil")] loadSelectedImagePreview triggered by: onChange(exifOrientation) \(oldVal ?? 0) → \(newVal ?? 0)")
             loadSelectedImagePreview()
         }
@@ -390,6 +453,10 @@ struct EditWorkspaceView: View {
             // static display with interactive handles. Metal overlay is only used
             // during active mask drags for real-time feedback.
             metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
+            // Leaving a brush layer (e.g. after deleting one) exits paint mode, so the brush
+            // controls don't linger on Global or radial layers. Selecting a brush layer keeps it.
+            if !selectedMaskIsBrush { isBrushPainting = false }
+            syncMaskOverlayTarget()
             metalCoordinator.requestRedraw()
         }
         .onChange(of: cleanFeedController.isEnabled) { _, enabled in
@@ -525,6 +592,7 @@ struct EditWorkspaceView: View {
                             }
                         } else {
                             // Crop applied, normal editing: support zoom/pan
+                            let cropViewport = editCropViewport(in: geometry.size, imageSize: metalImageSize ?? imageSize)
                             ZStack {
                                 MetalPreviewView(
                                     ciImage: displayCIImage,
@@ -534,35 +602,19 @@ struct EditWorkspaceView: View {
 
                                     coordinator: metalCoordinator
                                 )
-                                    .frame(width: imageRect.width, height: imageRect.height)
-                                    .rotationEffect(.degrees(-displayCropAngle))
-                                    .position(x: imageRect.midX, y: imageRect.midY)
+                                    .frame(width: geometry.size.width, height: geometry.size.height)
 
-                                // Black out area outside crop
-                                let cropRect = cropViewRect(crop: displayCrop, angleDegrees: displayCropAngle, imageRect: imageRect)
-                                Path { path in
-                                    path.addRect(CGRect(origin: .zero, size: geometry.size))
-                                    path.addRect(cropRect)
-                                }
-                                .fill(Self.previewBackground, style: FillStyle(eoFill: true))
-                                .allowsHitTesting(false)
-
-                                // Ellipse mask overlay (crop-applied path)
+                                // Ellipse mask overlay (crop-applied path) — ellipse masks only,
+                                // suppressed while the brush tool owns the mouse.
                                 if let maskIdx = selectedMaskIndex,
                                    let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
                                    maskIdx < masks.count,
+                                   masks[maskIdx].brush == nil,
+                                   !isBrushPainting,
                                    !isShowingBefore {
-                                    let cropVpOrigin = SIMD2<Float>(
-                                        Float(-imageRect.minX / imageRect.width),
-                                        Float(-imageRect.minY / imageRect.height)
-                                    )
-                                    let cropVpSize = SIMD2<Float>(
-                                        Float(geometry.size.width / imageRect.width),
-                                        Float(geometry.size.height / imageRect.height)
-                                    )
                                     MaskOverlayRepresentable(
-                                        viewportOrigin: cropVpOrigin,
-                                        viewportSize: cropVpSize,
+                                        viewportOrigin: cropViewport.origin,
+                                        viewportSize: cropViewport.size,
                                         viewSize: geometry.size,
                                         geometry: maskGeometryForDisplay(dragMaskGeometry ?? masks[maskIdx].geometry),
                                         inverted: masks[maskIdx].inverted,
@@ -594,38 +646,69 @@ struct EditWorkspaceView: View {
                                     )
                                 }
 
+                                // Watermark position handle (crop-applied path).
+                                if let wmIdx = selectedWatermarkIndex,
+                                   let layers = metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers,
+                                   wmIdx < layers.count,
+                                   !isShowingBefore, let imgSize = currentImageSize {
+                                    WatermarkOverlayRepresentable(
+                                        viewportOrigin: cropViewport.origin,
+                                        viewportSize: cropViewport.size,
+                                        viewSize: geometry.size,
+                                        geometry: watermarkGeometryForDisplay(dragWatermarkGeometry ?? layers[wmIdx].geometry),
+                                        assetAspect: assetAspect(forWatermarkAssetID: layers[wmIdx].libraryAssetID),
+                                        imageSize: imgSize,
+                                        onStart: { isDraggingEditSlider = true },
+                                        onChange: { newGeometry in
+                                            let sensorGeometry = watermarkGeometryForSensor(newGeometry)
+                                            dragWatermarkGeometry = sensorGeometry
+                                            if let pipeline = metalPipeline, pipeline.hasSourceTexture {
+                                                var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
+                                                settings.watermarkLayers?[wmIdx].geometry = sensorGeometry
+                                                pipeline.updateParams(settingsForPipeline(settings))
+                                            }
+                                        },
+                                        onCommit: {
+                                            if let finalGeo = dragWatermarkGeometry {
+                                                updateCameraRaw { cameraRaw in
+                                                    cameraRaw.watermarkLayers?[wmIdx].geometry = finalGeo
+                                                }
+                                                dragWatermarkGeometry = nil
+                                            }
+                                            isDraggingEditSlider = false
+                                            commitEditAdjustments()
+                                        }
+                                    )
+                                }
+
                                 // White-balance eyedropper over the crop-framed preview.
                                 if isPickingWhiteBalance, !isShowingBefore {
-                                    let cropVpOrigin = SIMD2<Float>(
-                                        Float(-imageRect.minX / imageRect.width),
-                                        Float(-imageRect.minY / imageRect.height)
-                                    )
-                                    let cropVpSize = SIMD2<Float>(
-                                        Float(geometry.size.width / imageRect.width),
-                                        Float(geometry.size.height / imageRect.height)
-                                    )
                                     WhiteBalancePickOverlay(
                                         marquee: $wbPickDragRect,
                                         probe: { rect in
                                             probeLinearRGB(
                                                 forPaneRect: rect, paneSize: geometry.size,
-                                                viewportOrigin: cropVpOrigin, viewportSize: cropVpSize
+                                                viewportOrigin: cropViewport.origin, viewportSize: cropViewport.size
                                             )
                                         },
                                         onPick: { rect in
                                             performWhiteBalancePick(
                                                 inPaneRect: rect, paneSize: geometry.size,
-                                                viewportOrigin: cropVpOrigin, viewportSize: cropVpSize
+                                                viewportOrigin: cropViewport.origin, viewportSize: cropViewport.size
                                             )
                                         }
                                     )
                                     .frame(width: geometry.size.width, height: geometry.size.height)
                                 }
+
+                                // Freeform brush paint overlay (crop-applied path).
+                                brushOverlay(viewportOrigin: cropViewport.origin, viewportSize: cropViewport.size, viewSize: geometry.size)
                             }
                             .frame(width: geometry.size.width, height: geometry.size.height)
-                            .scaleEffect(editZoomScale)
-                            .offset(editOffset)
-                            .gesture(editPanGesture(in: geometry.size, imageSize: geometry.size))
+                            // While painting, disable the pan gesture so drags reach the brush
+                            // overlay instead of panning the zoomed image.
+                            .gesture(editPanGesture(in: geometry.size, imageSize: geometry.size),
+                                     including: isBrushPainting ? .subviews : .all)
                         }
                     } else {
                         // Normal fit: Metal viewport handles zoom/pan and letterboxing
@@ -643,10 +726,13 @@ struct EditWorkspaceView: View {
                             )
                                 .frame(width: geometry.size.width, height: geometry.size.height)
 
-                            // Ellipse mask overlay
+                            // Ellipse mask overlay — only for ellipse masks, and not while the
+                            // brush tool is active (its overlay owns the mouse then).
                             if let maskIdx = selectedMaskIndex,
                                let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
                                maskIdx < masks.count,
+                               masks[maskIdx].brush == nil,
+                               !isBrushPainting,
                                !isShowingBefore {
                                 MaskOverlayRepresentable(
                                     viewportOrigin: vpOrigin,
@@ -685,6 +771,41 @@ struct EditWorkspaceView: View {
                                 )
                             }
 
+                            // Watermark position handle.
+                            if let wmIdx = selectedWatermarkIndex,
+                               let layers = metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers,
+                               wmIdx < layers.count,
+                               !isShowingBefore, let imgSize = currentImageSize {
+                                WatermarkOverlayRepresentable(
+                                    viewportOrigin: vpOrigin,
+                                    viewportSize: vpSize,
+                                    viewSize: geometry.size,
+                                    geometry: watermarkGeometryForDisplay(dragWatermarkGeometry ?? layers[wmIdx].geometry),
+                                    assetAspect: assetAspect(forWatermarkAssetID: layers[wmIdx].libraryAssetID),
+                                    imageSize: imgSize,
+                                    onStart: { isDraggingEditSlider = true },
+                                    onChange: { newGeometry in
+                                        let sensorGeometry = watermarkGeometryForSensor(newGeometry)
+                                        dragWatermarkGeometry = sensorGeometry
+                                        if let pipeline = metalPipeline, pipeline.hasSourceTexture {
+                                            var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
+                                            settings.watermarkLayers?[wmIdx].geometry = sensorGeometry
+                                            pipeline.updateParams(settingsForPipeline(settings))
+                                        }
+                                    },
+                                    onCommit: {
+                                        if let finalGeo = dragWatermarkGeometry {
+                                            updateCameraRaw { cameraRaw in
+                                                cameraRaw.watermarkLayers?[wmIdx].geometry = finalGeo
+                                            }
+                                            dragWatermarkGeometry = nil
+                                        }
+                                        isDraggingEditSlider = false
+                                        commitEditAdjustments()
+                                    }
+                                )
+                            }
+
                             // White-balance eyedropper: click a neutral grey or drag a
                             // rectangle to average an area, then solve for temperature/tint.
                             if isPickingWhiteBalance, !isShowingBefore {
@@ -705,9 +826,15 @@ struct EditWorkspaceView: View {
                                 )
                                 .frame(width: geometry.size.width, height: geometry.size.height)
                             }
+
+                            // Freeform brush paint overlay (bare "B").
+                            brushOverlay(viewportOrigin: vpOrigin, viewportSize: vpSize, viewSize: geometry.size)
                         }
                         .frame(width: geometry.size.width, height: geometry.size.height)
-                        .gesture(editPanGesture(in: geometry.size, imageSize: imageSize))
+                        // While painting, disable the pan gesture so drags reach the brush overlay
+                        // instead of panning the zoomed image.
+                        .gesture(editPanGesture(in: geometry.size, imageSize: imageSize),
+                                 including: isBrushPainting ? .subviews : .all)
                     }
                 } else if isLoadingPreview {
                     ProgressView("Loading preview...")
@@ -791,6 +918,8 @@ struct EditWorkspaceView: View {
                             if editZoomScale <= 1.0 {
                                 editOffset = .zero
                                 lastEditOffset = .zero
+                            } else if isCropEnabled, !isShowingBefore {
+                                constrainEditOffset(in: geometry.size, imageSize: geometry.size)
                             }
                             syncViewportToMetal()
                         }
@@ -878,8 +1007,14 @@ struct EditWorkspaceView: View {
                     // ── Mask Selector ──
                     maskSelectorBar
 
+                    if isBrushPainting || selectedMaskIsBrush {
+                        brushToolbar
+                    }
+
                     if selectedMaskIndex != nil {
                         maskAdjustmentSliders
+                    } else if selectedWatermarkIndex != nil {
+                        watermarkLayerControls
                     } else {
                         globalAdjustmentSliders
                     }
@@ -1253,6 +1388,8 @@ struct EditWorkspaceView: View {
         previewRenderTask = nil
         sourceImage = nil
         sourceCIImage = nil
+        sourceLoadedURL = nil
+        sourceLoadedOrientation = nil
         asShotWhiteBalance = nil
         isPickingWhiteBalance = false
         wbPickDragRect = nil
@@ -1291,8 +1428,12 @@ struct EditWorkspaceView: View {
         // the orientation of the bytes it actually decoded — a single upfront read can
         // race the pending write (Phase 2 decodes seconds later) and over-rotate.
         let targetOrientation = selectedImageOrientation
+        // Record what the source is being decoded for, so a later in-app rotation of this
+        // same image can rotate the retained source in place instead of re-decoding.
+        sourceLoadedURL = selectedImageURL
+        sourceLoadedOrientation = targetOrientation
 
-        editLog.info("[\(filename)] loadSelectedImagePreview: starting previewTask (isRaw=\(isRaw), maxPx=\(Int(previewMaxPixelSize)))")
+        editLog.info("[\(filename)] loadSelectedImagePreview: starting previewTask (isRaw=\(isRaw), maxPx=\(Int(previewMaxPixelSize)), targetOrientation=\(targetOrientation))")
 
         previewTask = Task {
             guard !Task.isCancelled else {
@@ -1695,6 +1836,41 @@ struct EditWorkspaceView: View {
                 let elapsed = ContinuousClock.now - start
                 editLog.info("[\(url.lastPathComponent)] precache: done in \(elapsed)")
             }
+        }
+    }
+
+    /// Rotate the already-loaded source in place by the `from → to` orientation delta and
+    /// re-upload it, instead of re-decoding the file. The retained source is known-good at
+    /// `from`, so applying exactly the `from → to` correction yields a single, correct step —
+    /// sidestepping the ImageIO re-decode that double-applies the rotation for non-RAW files
+    /// (whose EXIF tag is rewritten on rotate). Full resolution is dropped and re-fetched
+    /// lazily on the next zoom, matching the normal load path.
+    private func rotateSourceInPlace(from: Int, to: Int) {
+        let (rotatedCI, rotatedNS) = Self.orientedToTarget(
+            ciImage: sourceCIImage, nsImage: sourceImage, from: from, to: to
+        )
+        sourceCIImage = rotatedCI
+        sourceImage = rotatedNS
+        sourceLoadedOrientation = to
+        // Aspect ratio swapped (landscape ↔ portrait) — re-fit and re-fetch full-res on zoom.
+        isEditFullResLoaded = false
+        editFullResTask?.cancel()
+        editFullResTask = nil
+        resetCropZoom()
+        resetEditZoom()
+
+        guard let ci = rotatedCI, let pipeline = metalPipeline else {
+            renderPreview()
+            return
+        }
+        previewTask?.cancel()
+        previewTask = Task {
+            await Task.detached(priority: .userInitiated) {
+                pipeline.uploadSourceImage(ci, exifOrientation: to)
+            }.value
+            guard !Task.isCancelled else { return }
+            syncViewportToMetal()
+            renderPreview()
         }
     }
 
@@ -2300,7 +2476,9 @@ struct EditWorkspaceView: View {
             || cameraRaw.toneCurve != nil
             || (cameraRaw.crop?.isEffectiveCrop == true)
             || !(cameraRaw.localAdjustments?.isEmpty ?? true)
+            || !(cameraRaw.watermarkLayers?.isEmpty ?? true)
             || !(cameraRaw.hslAdjustments?.isEmpty ?? true)
+            || (cameraRaw.anonymizer?.isEmpty == false)
     }
 
     private var hslAdjustmentsBinding: Binding<HSLAdjustments> {
@@ -2349,6 +2527,43 @@ struct EditWorkspaceView: View {
                     let rounded = (newValue * 100).rounded() / 100
                     cameraRaw.exposure2012 = rounded == 0 ? nil : rounded
                 }
+            }
+        )
+    }
+
+    private var anonymizerAmountBinding: Binding<Double> {
+        Binding(
+            get: { metadataViewModel.editingMetadata.cameraRaw?.anonymizer?.amount ?? 0 },
+            set: { newValue in
+                updateCameraRaw { cameraRaw in
+                    let clamped = min(max(newValue.rounded(), 0), 100)
+                    if clamped <= 0 {
+                        cameraRaw.anonymizer?.amount = nil
+                        if cameraRaw.anonymizer?.isEmpty == true { cameraRaw.anonymizer = nil }
+                    } else {
+                        if cameraRaw.anonymizer == nil { cameraRaw.anonymizer = AnonymizerSettings() }
+                        cameraRaw.anonymizer?.amount = clamped
+                    }
+                }
+            }
+        )
+    }
+
+    private var anonymizerBlackOutBinding: Binding<Bool> {
+        Binding(
+            get: { metadataViewModel.editingMetadata.cameraRaw?.anonymizer?.blackOut ?? false },
+            set: { newValue in
+                updateCameraRaw { cameraRaw in
+                    if newValue {
+                        if cameraRaw.anonymizer == nil { cameraRaw.anonymizer = AnonymizerSettings() }
+                        cameraRaw.anonymizer?.blackOut = true
+                    } else {
+                        cameraRaw.anonymizer?.blackOut = nil
+                        if cameraRaw.anonymizer?.isEmpty == true { cameraRaw.anonymizer = nil }
+                    }
+                }
+                // A Toggle has no "drag end" — every flip is a discrete commit.
+                commitEditAdjustments()
             }
         )
     }
@@ -2505,6 +2720,10 @@ struct EditWorkspaceView: View {
             // Reset zoom and unlock image rect when hiding controls
             resetCropZoom()
             lockedCropImageRect = nil
+            // The crop editor renders with an identity viewport because its MTKView
+            // is framed to the image. The confirmed-crop preview is pane-sized and
+            // needs the Metal crop viewport immediately when the tool closes.
+            syncViewportToMetal()
             // Crop tool deactivated — push the now-confirmed crop to the clean feed.
             syncCleanFeed()
         }
@@ -2777,6 +2996,55 @@ struct EditWorkspaceView: View {
                 commitEditAdjustments()
             }
         )
+
+        // ── Anonymizer ──
+        HStack(spacing: 6) {
+            Text("Anonymizer")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.secondary)
+                .onTapGesture(count: 2) {
+                    if hasAnonymizerAdjustments { resetAnonymizerAdjustments() }
+                }
+            Spacer()
+            Button {
+                resetAnonymizerAdjustments()
+            } label: {
+                Image(systemName: "arrow.counterclockwise")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .disabled(!hasAnonymizerAdjustments)
+            .help("Reset anonymizer")
+        }
+        .padding(.top, 2)
+        Divider()
+
+        sliderRow(
+            "Anonymizer",
+            value: anonymizerAmountBinding,
+            range: 0...100,
+            step: 1,
+            formatter: { "\(Int($0.rounded()))" },
+            settingsMutator: { settings, value in
+                let clamped = min(max(value.rounded(), 0), 100)
+                if clamped <= 0 {
+                    settings.anonymizer?.amount = nil
+                    if settings.anonymizer?.isEmpty == true { settings.anonymizer = nil }
+                } else {
+                    if settings.anonymizer == nil { settings.anonymizer = AnonymizerSettings() }
+                    settings.anonymizer?.amount = clamped
+                }
+            },
+            onReset: {
+                anonymizerAmountBinding.wrappedValue = 0
+            }
+        )
+        .disabled(anonymizerBlackOutBinding.wrappedValue)
+
+        Toggle("Black out", isOn: anonymizerBlackOutBinding)
+            .toggleStyle(.checkbox)
+            .help("Fully redact this region instead of the mosaic effect")
     }
 
     // MARK: - Section Headers
@@ -3034,7 +3302,69 @@ struct EditWorkspaceView: View {
             }
             if let id = selectedMaskID {
                 maskActionRow(id)
+            } else if let id = selectedWatermarkID {
+                watermarkActionRow(id)
             }
+        }
+    }
+
+    /// Whether the currently-selected layer is a freeform brush mask.
+    private var selectedMaskIsBrush: Bool {
+        guard let id = selectedMaskID else { return false }
+        return metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?
+            .first(where: { $0.id == id })?.brush != nil
+    }
+
+    /// Brush-settings toolbar, shown while the brush tool is active or a brush mask is selected.
+    /// The "Paint" toggle mirrors the bare-`B` shortcut so the tool is discoverable without it;
+    /// the sliders describe what's about to be painted (already-painted strokes keep their own).
+    private var brushToolbar: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "paintbrush.pointed")
+                Text("Brush").font(.system(size: 11, weight: .semibold))
+                Spacer()
+                Button {
+                    isBrushPainting.toggle()
+                    if isBrushPainting { isPickingWhiteBalance = false }
+                    syncMaskOverlayTarget()
+                } label: {
+                    Text(isBrushPainting ? "Painting" : "Paint")
+                        .frame(minWidth: 54)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(isBrushPainting ? .accentColor : .gray)
+                .controlSize(.small)
+                .help("Toggle the paint tool (shortcut: B)")
+            }
+            Picker("", selection: $brushErase) {
+                Text("Add").tag(false)
+                Text("Erase").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            brushSlider("Size", value: $brushRadius, range: 0.005...0.20)
+            brushSlider("Hardness", value: $brushHardness, range: 0...1)
+            brushSlider("Flow", value: $brushFlow, range: 0.05...1)
+            Text(isBrushPainting ? "Drag on the image to paint. Press B to exit."
+                                 : "Turn on Paint (or press B), then drag on the image.")
+                .font(.system(size: 9))
+                .foregroundStyle(.secondary)
+        }
+        .padding(8)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func brushSlider(_ label: String, value: Binding<Double>, range: ClosedRange<Double>) -> some View {
+        HStack(spacing: 8) {
+            Text(label)
+                .font(.system(size: 10))
+                .frame(width: 58, alignment: .leading)
+            Slider(value: value, in: range)
+            Text(String(format: "%.0f%%", value.wrappedValue / range.upperBound * 100))
+                .font(.system(size: 10).monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 34, alignment: .trailing)
         }
     }
 
@@ -3053,36 +3383,74 @@ struct EditWorkspaceView: View {
         return nil
     }
 
+    /// UUID of the selected watermark layer, or nil when a different layer is selected / the
+    /// layer was deleted.
+    private var selectedWatermarkID: UUID? {
+        if case .watermark(let id) = selectedLayer,
+           metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers?.contains(where: { $0.id == id }) == true {
+            return id
+        }
+        return nil
+    }
+
     private var addLayerButton: some View {
-        Button {
-            addNewMask()
-        } label: {
-            VStack(spacing: 3) {
+        VStack(spacing: 3) {
+            VStack(spacing: 4) {
+                addMaskMiniButton(kind: .ellipseMask, help: "Add radial mask") {
+                    addNewMask()
+                }
+                addMaskMiniButton(kind: .brushMask, help: "Add brush mask") {
+                    _ = addNewBrushMask()
+                    isBrushPainting = true
+                    isPickingWhiteBalance = false
+                    syncMaskOverlayTarget()
+                }
+                addMaskMiniButton(kind: .watermark, help: "Add watermark layer") {
+                    addNewWatermarkLayer()
+                }
+            }
+            Text("Add")
+                .font(.system(size: 9))
+                .foregroundStyle(.secondary)
+                .frame(width: 60)
+        }
+        .alert("No Watermarks in Library", isPresented: $showWatermarkLibraryEmptyAlert) {
+            Button("OK") {}
+        } message: {
+            Text("Import a PNG watermark first, from Settings \u{2192} Watermarks.")
+        }
+    }
+
+    /// One compact "add mask" button — the kind's icon plus a `+`. Two of these stack vertically
+    /// to fill a layer-card slot, so adding either mask kind is a single click.
+    private func addMaskMiniButton(kind: LayerKind, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: kind.systemImage)
+                Image(systemName: "plus").font(.system(size: 9, weight: .bold))
+            }
+            .font(.system(size: 12))
+            .foregroundStyle(.secondary)
+            .frame(width: 56, height: 26)
+            .background(
                 RoundedRectangle(cornerRadius: 6)
                     .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [3]))
                     .foregroundStyle(.secondary)
-                    .frame(width: 56, height: 56)
-                    .overlay(
-                        Image(systemName: "plus")
-                            .font(.system(size: 18))
-                            .foregroundStyle(.secondary)
-                    )
-                Text("Add")
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 60)
-            }
+            )
+            // The whole frame is the hit area, not just the (stroked) border + icon pixels.
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help("Add mask adjustment")
+        .help(help)
     }
 
     @ViewBuilder
     private func layerCard(_ ref: LayerRef) -> some View {
         let mask = maskFor(ref)
+        let watermark = watermarkFor(ref)
         let isSelected = ref == selectedLayer
-        let muted = mask.map { !$0.enabled } ?? false
-        let kind: LayerKind = mask?.layerKind ?? .global
+        let muted = mask.map { !$0.enabled } ?? watermark.map { !$0.enabled } ?? false
+        let kind: LayerKind = mask?.layerKind ?? watermark?.layerKind ?? .global
 
         VStack(spacing: 3) {
             ZStack {
@@ -3170,6 +3538,13 @@ struct EditWorkspaceView: View {
                     selectedLayer = ref
                     deleteSelectedMask()
                 }
+            } else if let watermark {
+                Button(watermark.enabled ? "Mute" : "Enable") { toggleWatermarkEnabled(watermark.id) }
+                Divider()
+                Button("Delete", role: .destructive) {
+                    selectedLayer = ref
+                    deleteSelectedWatermark()
+                }
             }
         }
         .help(layerName(ref, mask: mask))
@@ -3221,18 +3596,21 @@ struct EditWorkspaceView: View {
         return metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?.first { $0.id == id }
     }
 
+    private func watermarkFor(_ ref: LayerRef) -> WatermarkLayer? {
+        guard case .watermark(let id) = ref else { return nil }
+        return metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers?.first { $0.id == id }
+    }
+
     private func layerName(_ ref: LayerRef, mask: MaskAdjustment?) -> String {
         switch ref {
-        case .global: return "Global"
-        case .mask:   return mask?.name ?? "Mask"
+        case .global:    return "Global"
+        case .mask:      return mask?.name ?? "Mask"
+        case .watermark: return watermarkFor(ref)?.name ?? "Watermark"
         }
     }
 
     private func layerRefString(_ ref: LayerRef) -> String {
-        switch ref {
-        case .global:        return "global"
-        case .mask(let id):  return "mask:\(id.uuidString)"
-        }
+        ref.token
     }
 
     /// Reorders the layer chain so `dragged` takes `target`'s slot. A single `updateCameraRaw`
@@ -3276,6 +3654,51 @@ struct EditWorkspaceView: View {
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(.secondary)
             Divider()
+
+            // Per-mask opacity (the mask's overall strength). Only mask layers have this — the
+            // Global layer is always fully applied.
+            sliderRow(
+                "Opacity",
+                value: maskAmountBinding(idx),
+                range: 0...100,
+                step: 1,
+                formatter: { "\(Int($0.rounded()))%" },
+                settingsMutator: { settings, value in
+                    settings.localAdjustments?[idx].amount = min(max(value / 100, 0), 1)
+                },
+                onReset: { maskAmountBinding(idx).wrappedValue = 100 }
+            )
+
+            sliderRow(
+                "Temperature",
+                value: maskDoubleBinding(idx, \.temperature),
+                range: -100...100,
+                step: 1,
+                gradientColors: [.blue, .yellow],
+                formatter: signedIntString,
+                settingsMutator: { settings, value in
+                    let rounded = value.rounded()
+                    settings.localAdjustments?[idx].temperature = rounded == 0 ? nil : rounded
+                },
+                onReset: {
+                    maskDoubleBinding(idx, \.temperature).wrappedValue = 0
+                }
+            )
+            sliderRow(
+                "Tint",
+                value: maskDoubleBinding(idx, \.tint),
+                range: -100...100,
+                step: 1,
+                gradientColors: [.green, .pink],
+                formatter: signedIntString,
+                settingsMutator: { settings, value in
+                    let rounded = value.rounded()
+                    settings.localAdjustments?[idx].tint = rounded == 0 ? nil : rounded
+                },
+                onReset: {
+                    maskDoubleBinding(idx, \.tint).wrappedValue = 0
+                }
+            )
 
             sliderRow(
                 "Exposure",
@@ -3383,6 +3806,43 @@ struct EditWorkspaceView: View {
                     maskIntBinding(idx, \.vibrance).wrappedValue = 0
                 }
             )
+            // ── Anonymizer ──
+            Text("Anonymizer")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.secondary)
+                .padding(.top, 2)
+            Divider()
+
+            sliderRow(
+                "Anonymizer",
+                value: maskAnonymizerAmountBinding(idx),
+                range: 0...100,
+                step: 1,
+                formatter: { "\(Int($0.rounded()))" },
+                settingsMutator: { settings, value in
+                    let clamped = min(max(value.rounded(), 0), 100)
+                    if clamped <= 0 {
+                        settings.localAdjustments?[idx].anonymizer?.amount = nil
+                        if settings.localAdjustments?[idx].anonymizer?.isEmpty == true {
+                            settings.localAdjustments?[idx].anonymizer = nil
+                        }
+                    } else {
+                        if settings.localAdjustments?[idx].anonymizer == nil {
+                            settings.localAdjustments?[idx].anonymizer = AnonymizerSettings()
+                        }
+                        settings.localAdjustments?[idx].anonymizer?.amount = clamped
+                    }
+                },
+                onReset: {
+                    maskAnonymizerAmountBinding(idx).wrappedValue = 0
+                }
+            )
+            .disabled(maskAnonymizerBlackOutBinding(idx).wrappedValue)
+
+            Toggle("Black out", isOn: maskAnonymizerBlackOutBinding(idx))
+                .toggleStyle(.checkbox)
+                .help("Fully redact this mask instead of the mosaic effect")
+
             // ── Mask Shape ──
             Text("Mask Shape")
                 .font(.subheadline.weight(.medium))
@@ -3401,6 +3861,151 @@ struct EditWorkspaceView: View {
                 },
                 onReset: {
                     maskGeometryBinding(idx, \.feather).wrappedValue = 50
+                }
+            )
+        }
+    }
+
+    /// Watermark layer's control panel: which library image, size (px/% × width/height),
+    /// margin (px/%), and opacity. No color/tonal controls (a watermark layer doesn't have
+    /// any) and no invert (not a meaningful concept here).
+    @ViewBuilder
+    private var watermarkLayerControls: some View {
+        if let idx = selectedWatermarkIndex,
+           let layers = metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers,
+           idx < layers.count {
+
+            Text("Watermark")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.secondary)
+            Divider()
+
+            let library = WatermarkStore.shared.allAssets()
+            if library.isEmpty {
+                Label("No watermarks in your library yet — import a PNG from Settings \u{2192} Watermarks.",
+                      systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Picker("Image", selection: watermarkAssetIDBinding(idx)) {
+                    ForEach(library) { asset in
+                        Text(asset.name).tag(Optional(asset.id))
+                    }
+                }
+                .labelsHidden()
+            }
+
+            Text("Size")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.secondary)
+                .padding(.top, 2)
+            Divider()
+
+            HStack(spacing: 8) {
+                Picker("", selection: watermarkSizeUnitBinding(idx)) {
+                    Text("px").tag(WatermarkSizeUnit.pixel)
+                    Text("%").tag(WatermarkSizeUnit.percent)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 70)
+
+                Picker("", selection: watermarkSizeDimensionBinding(idx)) {
+                    Text("Width").tag(WatermarkDimension.width)
+                    Text("Height").tag(WatermarkDimension.height)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+
+            let assetAspectValue = assetAspect(forWatermarkAssetID: layers[idx].libraryAssetID)
+            let sizeIsPercent = watermarkSizeUnitBinding(idx).wrappedValue == .percent
+            sliderRow(
+                "Size",
+                value: watermarkSizeValueBinding(idx),
+                range: sizeIsPercent ? 1...100 : 8...4000,
+                step: 1,
+                formatter: { sizeIsPercent ? "\(Int($0.rounded()))%" : "\(Int($0.rounded()))px" },
+                settingsMutator: { settings, value in
+                    settings.watermarkLayers?[idx].geometry.sizeValue = value
+                    // Re-clamp live too, so the position visibly moves inward while dragging
+                    // the size slider, not just once the drag ends.
+                    if let g = settings.watermarkLayers?[idx].geometry {
+                        let reclamped = watermarkGeometryClampingOwnPosition(g, assetAspect: assetAspectValue)
+                        settings.watermarkLayers?[idx].geometry = reclamped
+                        // The overlay (footprint outline + dashed margin line) reads from
+                        // SwiftUI state, which this live-drag path otherwise bypasses entirely
+                        // (by design, to avoid a full body re-evaluation per mouse pixel) — feed
+                        // it through the same override the position-handle drag already uses,
+                        // so the overlay tracks the live resize instead of only updating on release.
+                        dragWatermarkGeometry = reclamped
+                    }
+                },
+                onReset: {
+                    watermarkSizeValueBinding(idx).wrappedValue = 20
+                }
+            )
+
+            Text("Margin")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.secondary)
+                .padding(.top, 2)
+            Divider()
+            Text("Restricts how close to the image edge the watermark can be dragged.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Picker("", selection: watermarkMarginUnitBinding(idx)) {
+                Text("px").tag(WatermarkMarginUnit.pixel)
+                Text("%").tag(WatermarkMarginUnit.percent)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 70)
+
+            let marginIsPercent = watermarkMarginUnitBinding(idx).wrappedValue == .percent
+            sliderRow(
+                "Margin",
+                value: watermarkMarginValueBinding(idx),
+                range: marginIsPercent ? 0...45 : 0...2000,
+                step: 1,
+                formatter: { marginIsPercent ? "\(Int($0.rounded()))%" : "\(Int($0.rounded()))px" },
+                settingsMutator: { settings, value in
+                    settings.watermarkLayers?[idx].geometry.marginValue = value
+                    // Re-clamp live too, so the position visibly moves inward while dragging
+                    // the margin slider, not just once the drag ends.
+                    if let g = settings.watermarkLayers?[idx].geometry {
+                        let reclamped = watermarkGeometryClampingOwnPosition(g, assetAspect: assetAspectValue)
+                        settings.watermarkLayers?[idx].geometry = reclamped
+                        // Feed the overlay (dashed margin line + footprint outline) through the
+                        // same live-override state the position-handle drag uses — see the Size
+                        // slider's identical comment above.
+                        dragWatermarkGeometry = reclamped
+                    }
+                },
+                onReset: {
+                    watermarkMarginValueBinding(idx).wrappedValue = 10
+                }
+            )
+
+            Text("Opacity")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.secondary)
+                .padding(.top, 2)
+            Divider()
+
+            sliderRow(
+                "Opacity",
+                value: watermarkOpacityBinding(idx),
+                range: 0...100,
+                step: 1,
+                formatter: { "\(Int($0.rounded()))%" },
+                settingsMutator: { settings, value in
+                    settings.watermarkLayers?[idx].opacity = min(max(value / 100, 0), 1)
+                },
+                onReset: {
+                    watermarkOpacityBinding(idx).wrappedValue = 100
                 }
             )
         }
@@ -3428,6 +4033,169 @@ struct EditWorkspaceView: View {
     private var selectedMaskIndex: Int? {
         guard case .mask(let id) = selectedLayer else { return nil }
         return metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?.firstIndex { $0.id == id }
+    }
+
+    /// Live array index of the selected watermark layer in `watermarkLayers`, mirroring
+    /// `selectedMaskIndex`.
+    private var selectedWatermarkIndex: Int? {
+        guard case .watermark(let id) = selectedLayer else { return nil }
+        return metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers?.firstIndex { $0.id == id }
+    }
+
+    // MARK: - Watermark bindings
+
+    /// Re-clamps a (sensor-frame) watermark geometry's position into the margin-inset safe
+    /// area implied by its OWN (possibly just-changed) size/margin fields — used whenever
+    /// size or margin changes so the watermark visibly moves inward immediately instead of
+    /// only correcting the next time the position handle is dragged. No-op if the display
+    /// image size isn't known yet.
+    private func watermarkGeometryClampingOwnPosition(_ geometry: WatermarkGeometry, assetAspect: Double) -> WatermarkGeometry {
+        guard let size = currentImageSize, size.width > 0, size.height > 0 else { return geometry }
+        let display = watermarkGeometryForDisplay(geometry)
+            .clamped(assetAspect: assetAspect, imageWidth: size.width, imageHeight: size.height)
+        return watermarkGeometryForSensor(display)
+    }
+
+    /// Applies `mutate` to the selected watermark layer's geometry, then re-clamps its
+    /// position — the shared commit path for every size/margin/unit control, so adjusting any
+    /// of them keeps the watermark visibly in bounds rather than deferring the correction to
+    /// the next drag.
+    private func updateWatermarkGeometry(_ index: Int, _ mutate: (inout WatermarkGeometry) -> Void) {
+        guard let layers = metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers, index < layers.count else { return }
+        let assetAspectValue = assetAspect(forWatermarkAssetID: layers[index].libraryAssetID)
+        updateCameraRaw { cameraRaw in
+            guard let ls = cameraRaw.watermarkLayers, index < ls.count else { return }
+            mutate(&cameraRaw.watermarkLayers![index].geometry)
+            cameraRaw.watermarkLayers![index].geometry = watermarkGeometryClampingOwnPosition(
+                cameraRaw.watermarkLayers![index].geometry, assetAspect: assetAspectValue
+            )
+        }
+    }
+
+    private func watermarkSizeValueBinding(_ index: Int) -> Binding<Double> {
+        Binding(
+            get: {
+                guard let layers = metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers,
+                      index < layers.count else { return 0 }
+                return layers[index].geometry.sizeValue
+            },
+            set: { newValue in
+                updateWatermarkGeometry(index) { $0.sizeValue = newValue }
+                // The committed value now matches — drop the live-drag overlay override so it
+                // reads straight from cameraRaw again (mirrors the position-handle drag's own
+                // onCommit clearing dragWatermarkGeometry).
+                dragWatermarkGeometry = nil
+            }
+        )
+    }
+
+    private func watermarkMarginValueBinding(_ index: Int) -> Binding<Double> {
+        Binding(
+            get: {
+                guard let layers = metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers,
+                      index < layers.count else { return 0 }
+                return layers[index].geometry.marginValue
+            },
+            set: { newValue in
+                updateWatermarkGeometry(index) { $0.marginValue = newValue }
+                dragWatermarkGeometry = nil
+            }
+        )
+    }
+
+    private func watermarkSizeDimensionBinding(_ index: Int) -> Binding<WatermarkDimension> {
+        Binding(
+            get: {
+                guard let layers = metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers,
+                      index < layers.count else { return .width }
+                return layers[index].geometry.sizeDimension
+            },
+            set: { newValue in
+                updateWatermarkGeometry(index) { $0.sizeDimension = newValue }
+                commitEditAdjustments()
+            }
+        )
+    }
+
+    private func watermarkSizeUnitBinding(_ index: Int) -> Binding<WatermarkSizeUnit> {
+        Binding(
+            get: {
+                guard let layers = metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers,
+                      index < layers.count else { return .percent }
+                return layers[index].geometry.sizeUnit
+            },
+            set: { newValue in
+                updateWatermarkGeometry(index) { $0.sizeUnit = newValue }
+                commitEditAdjustments()
+            }
+        )
+    }
+
+    private func watermarkMarginUnitBinding(_ index: Int) -> Binding<WatermarkMarginUnit> {
+        Binding(
+            get: {
+                guard let layers = metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers,
+                      index < layers.count else { return .percent }
+                return layers[index].geometry.marginUnit
+            },
+            set: { newValue in
+                updateWatermarkGeometry(index) { $0.marginUnit = newValue }
+                commitEditAdjustments()
+            }
+        )
+    }
+
+    /// Per-layer opacity (0–1) as a 0–100 slider value.
+    private func watermarkOpacityBinding(_ index: Int) -> Binding<Double> {
+        Binding(
+            get: {
+                guard let layers = metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers,
+                      index < layers.count else { return 100 }
+                return layers[index].opacity * 100
+            },
+            set: { newValue in
+                updateCameraRaw { cameraRaw in
+                    guard let layers = cameraRaw.watermarkLayers, index < layers.count else { return }
+                    cameraRaw.watermarkLayers?[index].opacity = min(max(newValue / 100, 0), 1)
+                }
+            }
+        )
+    }
+
+    private func watermarkAssetIDBinding(_ index: Int) -> Binding<UUID?> {
+        Binding(
+            get: {
+                guard let layers = metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers,
+                      index < layers.count else { return nil }
+                return layers[index].libraryAssetID
+            },
+            set: { newValue in
+                guard let newValue else { return }
+                updateCameraRaw { cameraRaw in
+                    guard let layers = cameraRaw.watermarkLayers, index < layers.count else { return }
+                    cameraRaw.watermarkLayers?[index].libraryAssetID = newValue
+                }
+                commitEditAdjustments()
+            }
+        )
+    }
+
+    /// Per-mask opacity (`amount`, 0–1) as a 0–100 slider value. `amount` is non-optional and
+    /// defaults to 1.0 (fully applied).
+    private func maskAmountBinding(_ maskIndex: Int) -> Binding<Double> {
+        Binding(
+            get: {
+                guard let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
+                      maskIndex < masks.count else { return 100 }
+                return masks[maskIndex].amount * 100
+            },
+            set: { newValue in
+                updateCameraRaw { cameraRaw in
+                    guard let masks = cameraRaw.localAdjustments, maskIndex < masks.count else { return }
+                    cameraRaw.localAdjustments?[maskIndex].amount = min(max(newValue / 100, 0), 1)
+                }
+            }
+        )
     }
 
     private func maskDoubleBinding(_ maskIndex: Int, _ keyPath: WritableKeyPath<MaskAdjustment, Double?>) -> Binding<Double> {
@@ -3463,6 +4231,69 @@ struct EditWorkspaceView: View {
         )
     }
 
+    private func maskAnonymizerAmountBinding(_ maskIndex: Int) -> Binding<Double> {
+        Binding(
+            get: {
+                guard let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
+                      maskIndex < masks.count else { return 0 }
+                return masks[maskIndex].anonymizer?.amount ?? 0
+            },
+            set: { newValue in
+                let clamped = min(max(newValue.rounded(), 0), 100)
+                updateCameraRaw { cameraRaw in
+                    guard let masks = cameraRaw.localAdjustments, maskIndex < masks.count else { return }
+                    if clamped <= 0 {
+                        cameraRaw.localAdjustments?[maskIndex].anonymizer?.amount = nil
+                        if cameraRaw.localAdjustments?[maskIndex].anonymizer?.isEmpty == true {
+                            cameraRaw.localAdjustments?[maskIndex].anonymizer = nil
+                        }
+                    } else {
+                        if cameraRaw.localAdjustments?[maskIndex].anonymizer == nil {
+                            cameraRaw.localAdjustments?[maskIndex].anonymizer = AnonymizerSettings()
+                        }
+                        cameraRaw.localAdjustments?[maskIndex].anonymizer?.amount = clamped
+                    }
+                }
+                // Anonymizing wants full coverage — a partially-opaque mask would leak the
+                // underlying detail through the pixelation. Nudge the brush to 100% flow so
+                // subsequent strokes fully obscure (only for brush masks).
+                if clamped > 0,
+                   let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
+                   maskIndex < masks.count, masks[maskIndex].brush != nil {
+                    brushFlow = 1.0
+                }
+            }
+        )
+    }
+
+    private func maskAnonymizerBlackOutBinding(_ maskIndex: Int) -> Binding<Bool> {
+        Binding(
+            get: {
+                guard let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
+                      maskIndex < masks.count else { return false }
+                return masks[maskIndex].anonymizer?.blackOut ?? false
+            },
+            set: { newValue in
+                updateCameraRaw { cameraRaw in
+                    guard let masks = cameraRaw.localAdjustments, maskIndex < masks.count else { return }
+                    if newValue {
+                        if cameraRaw.localAdjustments?[maskIndex].anonymizer == nil {
+                            cameraRaw.localAdjustments?[maskIndex].anonymizer = AnonymizerSettings()
+                        }
+                        cameraRaw.localAdjustments?[maskIndex].anonymizer?.blackOut = true
+                    } else {
+                        cameraRaw.localAdjustments?[maskIndex].anonymizer?.blackOut = nil
+                        if cameraRaw.localAdjustments?[maskIndex].anonymizer?.isEmpty == true {
+                            cameraRaw.localAdjustments?[maskIndex].anonymizer = nil
+                        }
+                    }
+                }
+                // A Toggle has no "drag end" — every flip is a discrete commit.
+                commitEditAdjustments()
+            }
+        )
+    }
+
     private func addNewMask() {
         let existingCount = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?.count ?? 0
         var geo = EllipseMaskGeometry()
@@ -3486,6 +4317,230 @@ struct EditWorkspaceView: View {
         }
         selectedLayer = .mask(newMask.id)
         commitEditAdjustments()
+    }
+
+    // MARK: - Watermark layers
+
+    /// Adds a new watermark layer using the first (alphabetically) library asset, defaulting
+    /// to the bottom-right corner of the margin-inset safe area per spec. If the library is
+    /// empty, prompts the user to import one from Settings instead of adding a layer with no
+    /// image to show.
+    private func addNewWatermarkLayer() {
+        guard let defaultAsset = WatermarkStore.shared.allAssets().first else {
+            showWatermarkLibraryEmptyAlert = true
+            return
+        }
+        let existingCount = metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers?.count ?? 0
+        var geo = WatermarkGeometry()   // defaults to the bottom-right corner
+        // Use this asset's own remembered size/margin (Settings ▸ Watermarks ▸ Default
+        // Placement) rather than the bare app-wide default (20% width / 10% margin).
+        geo.sizeDimension = defaultAsset.defaultSizeDimension
+        geo.sizeUnit = defaultAsset.defaultSizeUnit
+        geo.sizeValue = defaultAsset.defaultSizeValue
+        geo.marginUnit = defaultAsset.defaultMarginUnit
+        geo.marginValue = defaultAsset.defaultMarginValue
+        if let size = currentImageSize, size.width > 0, size.height > 0 {
+            geo = geo.clamped(assetAspect: defaultAsset.aspectRatio, imageWidth: size.width, imageHeight: size.height)
+        }
+        geo = watermarkGeometryForSensor(geo)
+        let newLayer = WatermarkLayer(name: "Watermark \(existingCount + 1)", libraryAssetID: defaultAsset.id, geometry: geo)
+        updateCameraRaw { cameraRaw in
+            if cameraRaw.watermarkLayers == nil { cameraRaw.watermarkLayers = [] }
+            cameraRaw.watermarkLayers?.append(newLayer)
+            if cameraRaw.layerOrder != nil {
+                cameraRaw.layerOrder?.append(.watermark(newLayer.id))
+            }
+        }
+        selectedLayer = .watermark(newLayer.id)
+        commitEditAdjustments()
+    }
+
+    private func deleteSelectedWatermark() {
+        guard case .watermark(let id) = selectedLayer,
+              let layers = metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers,
+              let idx = layers.firstIndex(where: { $0.id == id }) else { return }
+        updateCameraRaw { cameraRaw in
+            cameraRaw.watermarkLayers?.removeAll { $0.id == id }
+            cameraRaw.layerOrder?.removeAll { $0 == .watermark(id) }
+            if cameraRaw.watermarkLayers?.isEmpty == true {
+                cameraRaw.watermarkLayers = nil
+            }
+        }
+        let remaining = metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers ?? []
+        if remaining.isEmpty {
+            selectedLayer = .global
+        } else {
+            selectedLayer = .watermark(remaining[min(idx, remaining.count - 1)].id)
+        }
+        commitEditAdjustments()
+    }
+
+    private func toggleWatermarkEnabled(_ id: UUID) {
+        updateCameraRaw { cameraRaw in
+            guard let i = cameraRaw.watermarkLayers?.firstIndex(where: { $0.id == id }) else { return }
+            cameraRaw.watermarkLayers?[i].enabled.toggle()
+        }
+        commitEditAdjustments()
+    }
+
+    /// Mute / delete controls for the selected watermark layer, shown beneath the strip —
+    /// mirrors `maskActionRow` but omits invert (not a meaningful concept for a watermark).
+    @ViewBuilder
+    private func watermarkActionRow(_ id: UUID) -> some View {
+        if let layer = metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers?.first(where: { $0.id == id }) {
+            HStack(spacing: 10) {
+                Button {
+                    toggleWatermarkEnabled(id)
+                } label: {
+                    Image(systemName: layer.enabled ? "eye" : "eye.slash")
+                        .font(.system(size: 11))
+                        .foregroundStyle(layer.enabled ? Color.secondary : Color.red)
+                }
+                .buttonStyle(.plain)
+                .help(layer.enabled ? "Mute watermark effect" : "Enable watermark effect")
+
+                Spacer()
+
+                Button {
+                    deleteSelectedWatermark()
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Delete watermark layer")
+            }
+            .padding(.horizontal, 2)
+        }
+    }
+
+    // MARK: - Brush paint tool
+
+    /// Creates an empty freeform brush mask, selects it, and returns its id. Called lazily on the
+    /// first paint gesture when no brush mask is selected (like `addNewMask` for ellipses).
+    private func addNewBrushMask() -> UUID {
+        let existingCount = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?.count ?? 0
+        let newMask = MaskAdjustment(name: "Brush \(existingCount + 1)", brush: BrushMaskGeometry(strokes: []))
+        updateCameraRaw { cameraRaw in
+            if cameraRaw.localAdjustments == nil { cameraRaw.localAdjustments = [] }
+            cameraRaw.localAdjustments?.append(newMask)
+            if cameraRaw.layerOrder != nil {
+                cameraRaw.layerOrder?.append(.mask(newMask.id))
+            }
+        }
+        selectedLayer = .mask(newMask.id)
+        return newMask.id
+    }
+
+    /// The GPU alpha-array slice index for a brush mask, mirroring `MetalEditPipeline.updateParams`'
+    /// slice assignment (enabled masks in order, capped to the pipeline's mask limit, brush ones
+    /// numbered as encountered). Returns nil if the id isn't an enabled brush mask.
+    private func brushSliceIndex(forMaskID id: UUID) -> Int? {
+        guard let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments else { return nil }
+        var slice = 0
+        for mask in masks.filter({ $0.enabled }).prefix(8) {
+            if mask.id == id { return mask.brush != nil ? slice : nil }
+            if mask.brush != nil { slice += 1 }
+        }
+        return nil
+    }
+
+    /// Maps a display-frame stroke to the sensor (XMP) frame for storage — the inverse of the
+    /// EXIF-orientation transform the render path applies. (Crop straighten isn't applied to brush
+    /// dabs; painting on a straightened-but-unconfirmed image is an edge case, flagged for later.)
+    private func brushStrokeForSensor(_ stroke: BrushStroke) -> BrushStroke {
+        let orientation = selectedImageOrientation
+        guard orientation > 1 else { return stroke }
+        let g = BrushMaskGeometry(strokes: [stroke]).transformedForSensor(orientation: orientation)
+        return g.strokes.first ?? stroke
+    }
+
+    /// `onStrokeBegan`: resolve the target brush mask (selected one, or a fresh mask), make sure
+    /// the pipeline has rebuilt so the mask's alpha slice exists, and return that slice index.
+    private func ensureBrushTarget() -> Int? {
+        let targetID: UUID
+        if let id = selectedMaskID,
+           let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
+           masks.first(where: { $0.id == id })?.brush != nil {
+            targetID = id
+        } else {
+            targetID = addNewBrushMask()
+        }
+        // Rebuild params so a freshly-created mask's alpha slice is allocated before live
+        // stamping, and turn on the red coverage overlay for this mask so the stroke is visible
+        // as it's painted (auto-hidden once the mask gets an adjustment).
+        metalPipeline?.maskOverlayMaskID = targetID
+        if let pipeline = metalPipeline, pipeline.hasSourceTexture {
+            pipeline.updateParams(settingsForPipeline(metadataViewModel.editingMetadata.cameraRaw))
+        }
+        return brushSliceIndex(forMaskID: targetID)
+    }
+
+    /// Drives the ACR-style red mask-coverage overlay: shows it for the selected mask while the
+    /// brush tool is active or a brush mask is selected, and clears it otherwise. The kernel
+    /// itself hides the tint once the mask has an adjustment, so this only tracks selection.
+    private func syncMaskOverlayTarget() {
+        guard let pipeline = metalPipeline else { return }
+        pipeline.maskOverlayMaskID = (isBrushPainting || selectedMaskIsBrush) ? selectedMaskID : nil
+        if pipeline.hasSourceTexture {
+            pipeline.updateParams(settingsForPipeline(metadataViewModel.editingMetadata.cameraRaw))
+            metalCoordinator.requestRedraw()
+        }
+    }
+
+    /// `onStrokeChanged`: stamp the incremental dabs straight into the GPU alpha slice for
+    /// immediate feedback (the dabs are already display-frame, matching the display-oriented
+    /// alpha texture), then request a redraw. Transient — the model isn't touched until commit.
+    private func liveBrushStamp(_ stroke: BrushStroke, layer: Int) {
+        guard let pipeline = metalPipeline, pipeline.hasSourceTexture else { return }
+        pipeline.stampBrushStroke(stroke, layer: layer)
+        metalCoordinator.requestRedraw()
+    }
+
+    /// `onStrokeEnded`: append the finished gesture to the selected brush mask as ONE undo entry,
+    /// then rebuild the authoritative alpha from the model.
+    private func commitBrushStroke(_ stroke: BrushStroke) {
+        guard let id = selectedMaskID else { return }
+        let sensorStroke = brushStrokeForSensor(stroke)
+        updateCameraRaw { cameraRaw in
+            guard let idx = cameraRaw.localAdjustments?.firstIndex(where: { $0.id == id }) else { return }
+            if cameraRaw.localAdjustments?[idx].brush == nil {
+                cameraRaw.localAdjustments?[idx].brush = BrushMaskGeometry(strokes: [])
+            }
+            cameraRaw.localAdjustments?[idx].brush?.strokes.append(sensorStroke)
+        }
+        if let pipeline = metalPipeline, pipeline.hasSourceTexture {
+            pipeline.updateParams(settingsForPipeline(metadataViewModel.editingMetadata.cameraRaw))
+            metalCoordinator.requestRedraw()
+        }
+        commitEditAdjustments()
+    }
+
+    /// The paint overlay, parameterised by the region's viewport so it works in both the normal-fit
+    /// and crop-applied preview layouts.
+    @ViewBuilder
+    private func brushOverlay(viewportOrigin: SIMD2<Float>, viewportSize: SIMD2<Float>, viewSize: CGSize) -> some View {
+        if isBrushPainting, !isShowingBefore, canEditSingleImage, let imgSize = currentImageSize {
+            BrushMaskOverlayRepresentable(
+                viewportOrigin: viewportOrigin,
+                viewportSize: viewportSize,
+                viewSize: viewSize,
+                imageSize: imgSize,
+                radius: brushRadius,
+                hardness: brushHardness,
+                flow: brushFlow,
+                erase: brushErase,
+                onStrokeBegan: { ensureBrushTarget() },
+                onStrokeChanged: { stroke, layer in liveBrushStamp(stroke, layer: layer) },
+                onStrokeEnded: { stroke in commitBrushStroke(stroke) },
+                onBrushSettingsChanged: { radius, hardness in
+                    brushRadius = radius
+                    brushHardness = hardness
+                }
+            )
+            .frame(width: viewSize.width, height: viewSize.height)
+        }
     }
 
     private func deleteSelectedMask() {
@@ -3538,6 +4593,10 @@ struct EditWorkspaceView: View {
         !(metadataViewModel.editingMetadata.cameraRaw?.hslAdjustments?.isEmpty ?? true)
     }
 
+    private var hasAnonymizerAdjustments: Bool {
+        !(metadataViewModel.editingMetadata.cameraRaw?.anonymizer?.isEmpty ?? true)
+    }
+
     private func resetColorAdjustments() {
         updateCameraRaw { cameraRaw in
             cameraRaw.whiteBalance = isSelectedImageRaw ? "As Shot" : nil
@@ -3570,6 +4629,13 @@ struct EditWorkspaceView: View {
         commitEditAdjustments()
     }
 
+    private func resetAnonymizerAdjustments() {
+        updateCameraRaw { cameraRaw in
+            cameraRaw.anonymizer = nil
+        }
+        commitEditAdjustments()
+    }
+
     private func resetDevelopAdjustments() {
         resetCropZoom()
         selectedLayer = .global
@@ -3588,6 +4654,7 @@ struct EditWorkspaceView: View {
             cameraRaw.saturation = nil
             cameraRaw.vibrance = nil
             cameraRaw.localAdjustments = nil
+            cameraRaw.anonymizer = nil
             cameraRaw.crop = CameraRawCrop(
                 top: 0,
                 left: 0,
@@ -3617,6 +4684,7 @@ struct EditWorkspaceView: View {
             cameraRaw.vibrance = nil
             cameraRaw.toneCurve = nil
             cameraRaw.localAdjustments = nil
+            cameraRaw.anonymizer = nil
         }
         selectedLayer = .global
         commitDevelopReset()
@@ -3788,8 +4856,10 @@ struct EditWorkspaceView: View {
             let structuredData = StructuredWriteData(
                 toneCurve: cameraRaw.toneCurve,
                 masks: (cameraRaw.localAdjustments?.isEmpty == false) ? cameraRaw.localAdjustments : nil,
+                watermarkLayers: (cameraRaw.watermarkLayers?.isEmpty == false) ? cameraRaw.watermarkLayers : nil,
                 hslAdjustments: (cameraRaw.hslAdjustments?.isEmpty == false) ? cameraRaw.hslAdjustments : nil,
-                layerOrder: cameraRaw.layerOrder
+                layerOrder: cameraRaw.layerOrder,
+                anonymizer: (cameraRaw.anonymizer?.isEmpty == false) ? cameraRaw.anonymizer : nil
             )
 
             do {
@@ -3853,6 +4923,12 @@ struct EditWorkspaceView: View {
     // MARK: - Edit Zoom / Pan
 
     private let maxEditZoom: CGFloat = 10.0
+    private let appliedCropPreviewPadding: CGFloat = 48
+
+    private struct EditCropViewport {
+        var origin: SIMD2<Float>
+        var size: SIMD2<Float>
+    }
 
     /// Image dimensions from the Metal source texture (resolution-stable across Phase 1→2).
     /// Falls back to sourceCIImage/sourceImage for initial display before texture upload.
@@ -3911,12 +4987,52 @@ struct EditWorkspaceView: View {
         }
     }
 
+    private func editCropViewport(in containerSize: CGSize, imageSize: CGSize) -> EditCropViewport {
+        guard containerSize.width > 0, containerSize.height > 0,
+              imageSize.width > 0, imageSize.height > 0 else {
+            return EditCropViewport(origin: .zero, size: SIMD2<Float>(1, 1))
+        }
+
+        let crop = displayCrop
+        let imgW = Double(imageSize.width)
+        let imgH = Double(imageSize.height)
+        let actualW = max(crop.width, 0.0001) * imgW
+        let actualH = max(crop.height, 0.0001) * imgH
+        let centerX = crop.centerX
+        let centerY = crop.centerY
+
+        let availW = max(Double(containerSize.width - appliedCropPreviewPadding * 2), 1)
+        let availH = max(Double(containerSize.height - appliedCropPreviewPadding * 2), 1)
+        let fitScale = min(availW / max(actualW, 1), availH / max(actualH, 1)) * max(Double(editZoomScale), 0.0001)
+        guard fitScale > 0 else {
+            return EditCropViewport(origin: .zero, size: SIMD2<Float>(1, 1))
+        }
+
+        let vpW = Double(containerSize.width) / fitScale / imgW
+        let vpH = Double(containerSize.height) / fitScale / imgH
+
+        let radians = displayCropAngle * .pi / 180.0
+        let offsetPxX = Double(editOffset.width) / fitScale
+        let offsetPxY = Double(editOffset.height) / fitScale
+        let cosA = cos(radians)
+        let sinA = sin(radians)
+        let rotatedOffsetX = offsetPxX * cosA - offsetPxY * sinA
+        let rotatedOffsetY = offsetPxX * sinA + offsetPxY * cosA
+        let viewportCenterX = centerX - rotatedOffsetX / imgW
+        let viewportCenterY = centerY - rotatedOffsetY / imgH
+
+        return EditCropViewport(
+            origin: SIMD2<Float>(Float(viewportCenterX - vpW / 2), Float(viewportCenterY - vpH / 2)),
+            size: SIMD2<Float>(Float(vpW), Float(vpH))
+        )
+    }
+
     /// Sync the current zoom/pan state to the Metal pipeline's viewport parameters.
-    /// When crop is active, the MetalPreviewView frame already matches the source aspect
-    /// ratio (via cropFittedImageRect), so the shader uses an identity viewport.
+    /// Crop editing still uses a source-aspect MTKView and identity viewport, while
+    /// confirmed crops render through a Metal crop viewport so high zoom/pan stays stable.
     private func syncViewportToMetal() {
-        if (isCropEnabled || showCropControls), !isShowingBefore {
-            // Crop path: frame matches source aspect → identity viewport (stretch-to-fill)
+        if showCropControls, !isShowingBefore {
+            // Crop editing path: frame matches source aspect → identity viewport (stretch-to-fill)
             metalPipeline?.updateViewport(
                 zoomScale: 1.0,
                 offset: .zero,
@@ -3925,6 +5041,28 @@ struct EditWorkspaceView: View {
             )
             metalCoordinator.viewportOrigin = .zero
             metalCoordinator.viewportSize = SIMD2<Float>(1, 1)
+            metalCoordinator.requestRedraw()
+            return
+        }
+
+        if isCropEnabled, !isShowingBefore {
+            let imageSize = metalImageSize ?? currentImageSize ?? CGSize(width: 1, height: 1)
+            let crop = displayCrop
+            metalPipeline?.updateCropViewport(
+                containerSize: previewPaneFrame.size,
+                imageSize: imageSize,
+                cropLeft: crop.left,
+                cropTop: crop.top,
+                cropRight: crop.right,
+                cropBottom: crop.bottom,
+                angleDegrees: displayCropAngle,
+                zoomScale: editZoomScale,
+                offset: editOffset,
+                handlePadding: appliedCropPreviewPadding
+            )
+            let viewport = editCropViewport(in: previewPaneFrame.size, imageSize: imageSize)
+            metalCoordinator.viewportOrigin = viewport.origin
+            metalCoordinator.viewportSize = viewport.size
             metalCoordinator.requestRedraw()
             return
         }
@@ -3955,6 +5093,11 @@ struct EditWorkspaceView: View {
         let oldScale = editZoomScale
         let newScale = (oldScale * zoomFactor).clamped(to: 1.0...maxEditZoom)
         guard newScale != oldScale else { return }
+
+        if isCropEnabled, !showCropControls, !isShowingBefore {
+            handleCroppedEditScrollZoom(oldScale: oldScale, newScale: newScale, event: event)
+            return
+        }
 
         if newScale <= 1.0 {
             editZoomScale = newScale
@@ -4037,6 +5180,38 @@ struct EditWorkspaceView: View {
         syncViewportToMetal()
     }
 
+    private func handleCroppedEditScrollZoom(oldScale: CGFloat, newScale: CGFloat, event: NSEvent) {
+        let containerSize = previewPaneFrame.size
+        guard containerSize.width > 0, containerSize.height > 0 else {
+            editZoomScale = newScale
+            lastEditZoomScale = newScale
+            syncViewportToMetal()
+            return
+        }
+
+        if newScale <= 1.0 {
+            editZoomScale = newScale
+            lastEditZoomScale = newScale
+            editOffset = .zero
+            lastEditOffset = .zero
+            syncViewportToMetal()
+            return
+        }
+
+        let cursor = editCursorFromCenter(event: event)
+        let zoomRatio = newScale / oldScale
+        let anchoredOffset = CGSize(
+            width: cursor.width - (cursor.width - editOffset.width) * zoomRatio,
+            height: cursor.height - (cursor.height - editOffset.height) * zoomRatio
+        )
+
+        editZoomScale = newScale
+        lastEditZoomScale = newScale
+        editOffset = anchoredOffset
+        lastEditOffset = anchoredOffset
+        constrainEditOffset(in: containerSize, imageSize: containerSize)
+    }
+
     /// Compute cursor position relative to preview pane center (in SwiftUI coordinates).
     private func editCursorFromCenter(event: NSEvent) -> CGSize {
         guard let contentHeight = NSApp.keyWindow?.contentView?.bounds.height else {
@@ -4075,11 +5250,27 @@ struct EditWorkspaceView: View {
     }
 
     private func constrainEditOffset(in containerSize: CGSize, imageSize: CGSize) {
-        let imgSize = metalImageSize ?? imageSize
-        let fittedScale = min(containerSize.width / imgSize.width,
-                              containerSize.height / imgSize.height)
-        let scaledWidth = imgSize.width * fittedScale * editZoomScale
-        let scaledHeight = imgSize.height * fittedScale * editZoomScale
+        let scaledWidth: CGFloat
+        let scaledHeight: CGFloat
+        if isCropEnabled, !showCropControls, !isShowingBefore {
+            let imgSize = currentImageSize ?? metalImageSize ?? imageSize
+            let imageRect = cropFittedImageRect(
+                in: containerSize,
+                imageSize: imgSize,
+                crop: displayCrop,
+                angleDegrees: displayCropAngle,
+                zoom: editZoomScale
+            )
+            let cropRect = cropViewRect(crop: displayCrop, angleDegrees: displayCropAngle, imageRect: imageRect)
+            scaledWidth = cropRect.width
+            scaledHeight = cropRect.height
+        } else {
+            let imgSize = metalImageSize ?? imageSize
+            let fittedScale = min(containerSize.width / imgSize.width,
+                                  containerSize.height / imgSize.height)
+            scaledWidth = imgSize.width * fittedScale * editZoomScale
+            scaledHeight = imgSize.height * fittedScale * editZoomScale
+        }
         let maxOffsetX = max(0, (scaledWidth - containerSize.width) / 2)
         let maxOffsetY = max(0, (scaledHeight - containerSize.height) / 2)
         editOffset = CGSize(
@@ -4224,6 +5415,33 @@ struct EditWorkspaceView: View {
         if chars == "c" && modifiers.isDisjoint(with: [.command, .option, .control]) {
             guard canEditSingleImage else { return event }
             toggleCropControls()
+            return nil
+        }
+
+        // J — add a new ellipse (radial) mask. Bare-letter tool shortcut, matching the
+        // Photoshop-style convention (the brush mask tool is bare "B", below);
+        // Cmd+J still works too (menu item).
+        if chars == "j" && modifiers.isDisjoint(with: [.command, .option, .control]) {
+            guard canEditSingleImage else { return event }
+            addNewMask()
+            return nil
+        }
+
+        // B — toggle the freeform brush paint tool (Photoshop convention). Turning it on
+        // deselects the WB eyedropper so the two drag-driven tools don't fight over the mouse.
+        if chars == "b" && modifiers.isDisjoint(with: [.command, .option, .control]) {
+            guard canEditSingleImage else { return event }
+            isBrushPainting.toggle()
+            if isBrushPainting { isPickingWhiteBalance = false }
+            syncMaskOverlayTarget()
+            return nil
+        }
+
+        // X — swap the brush between Add and Erase (Photoshop swaps FG/BG on X). Only meaningful
+        // in a brush context, so pass the event through otherwise.
+        if chars == "x" && modifiers.isDisjoint(with: [.command, .option, .control]) {
+            guard canEditSingleImage, isBrushPainting || selectedMaskIsBrush else { return event }
+            brushErase.toggle()
             return nil
         }
 

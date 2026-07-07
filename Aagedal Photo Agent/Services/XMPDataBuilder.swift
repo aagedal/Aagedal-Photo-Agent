@@ -1,5 +1,6 @@
 import Foundation
 import SwiftExif
+import os
 
 /// Builds an `IPTCMetadata` value into a SwiftExif `XMPData` tree — the pure-Swift replacement
 /// for the old NSXML (`XMLElement`) construction in `XMPSidecarService`. Used by the `.xmp`
@@ -53,6 +54,8 @@ enum XMPDataBuilder {
 
         // Orientation to BOTH tiff (authoritative on read) and exif, in lockstep. nil clears both.
         let orientation = m.exifOrientation.map(String.init)
+        Logger(subsystem: "com.aagedal.photo-agent", category: "XMPWrite")
+            .info("sidecar write orientation=\(orientation ?? "nil", privacy: .public)")
         setSimpleOrRemove(&xmp, orientation, namespace: XMPNamespace.tiff, property: "Orientation")
         setSimpleOrRemove(&xmp, orientation, namespace: XMPNamespace.exif, property: "Orientation")
     }
@@ -122,7 +125,10 @@ enum XMPDataBuilder {
         setCRS(&xmp, "SDRBlend", settings.sdrBlend.map(formatSignedInt))
 
         applyToneCurves(settings.toneCurve, into: &xmp)
-        applyLayerChain(masks: settings.localAdjustments ?? [], layerOrder: settings.layerOrder, into: &xmp)
+        applyLayerChain(masks: settings.localAdjustments ?? [], watermarks: settings.watermarkLayers ?? [],
+                        layerOrder: settings.layerOrder,
+                        preserved: settings.unparsedMaskCorrections ?? [], into: &xmp)
+        applyAnonymizer(settings.anonymizer, into: &xmp)
     }
 
     /// Clear the develop block — the same fixed field list the old NSXML `removeCameraRawSettings`
@@ -144,6 +150,10 @@ enum XMPDataBuilder {
             xmp.removeValue(namespace: XMPNamespace.crs, property: field)
         }
         xmp.removeValue(namespace: aaphotoNamespace, property: "GlobalLayerIndex")
+        xmp.removeValue(namespace: aaphotoNamespace, property: "LayerOrder")
+        xmp.removeValue(namespace: aaphotoNamespace, property: "WatermarkLayers")
+        xmp.removeValue(namespace: aaphotoNamespace, property: "AnonymizerAmount")
+        xmp.removeValue(namespace: aaphotoNamespace, property: "AnonymizerBlackOut")
     }
 
     // MARK: - Shared develop encoders (also used by the embedded SwiftExifWriteEngine)
@@ -174,38 +184,144 @@ enum XMPDataBuilder {
     /// `encodeMaskGroupBasedCorrections`; this exact nesting is what `parseMaskGroupBasedCorrections`
     /// expects on read-back. Stamps AlreadyApplied="False"/CompatibleVersion so Bridge/ACR badge the
     /// file as edited (only when masks exist).
-    nonisolated static func applyMasks(_ masks: [MaskAdjustment], into xmp: inout XMPData) {
+    nonisolated static func applyMasks(_ masks: [MaskAdjustment], preserved: [PreservedMaskCorrection], into xmp: inout XMPData) {
         let encoded = encodeMaskGroupBasedCorrections(masks)
-        if encoded.isEmpty {
+        if encoded.isEmpty && preserved.isEmpty {
             xmp.removeValue(namespace: XMPNamespace.crs, property: "MaskGroupBasedCorrections")
             return
         }
-        let corrections: [[String: XMPValue]] = encoded.map { corr in
+        var corrections: [[String: XMPValue]] = encoded.map { corr in
             var fields = Dictionary(uniqueKeysWithValues: corr.correctionFields.map {
                 (XMPNamespace.crs + $0.name, XMPValue.simple($0.value))
             })
-            let maskStruct = Dictionary(uniqueKeysWithValues: corr.maskFields.map {
-                (XMPNamespace.crs + $0.name, XMPValue.simple($0.value))
-            })
-            fields[XMPNamespace.crs + "CorrectionMasks"] = .structuredArray([maskStruct])
+            // Brush masks carry a nested Mask/Aggregate → Masks → Mask/Paint → Dabs node tree;
+            // ellipse masks carry a single flat Mask/CircularGradient struct.
+            if let nodes = corr.correctionMasks {
+                fields[XMPNamespace.crs + "CorrectionMasks"] = .structuredArray(nodes.map(buildMaskNode))
+            } else {
+                let maskStruct = Dictionary(uniqueKeysWithValues: corr.maskFields.map {
+                    (XMPNamespace.crs + $0.name, XMPValue.simple($0.value))
+                })
+                fields[XMPNamespace.crs + "CorrectionMasks"] = .structuredArray([maskStruct])
+            }
+            // App-private siblings (e.g. Anonymizer) live under aaphoto:, never crs:.
+            for field in corr.appPrivateFields {
+                fields[aaphotoNamespace + field.name] = .simple(field.value)
+            }
             return fields
         }
+        // Re-emit unmodeled corrections (erase-brush blobs, unknown mask types) verbatim, after
+        // our own masks — the whole point of preserving them through the model.
+        corrections.append(contentsOf: preserved.map { $0.fields.mapValues(xmpValue(from:)) })
         xmp.setValue(.simple("False"), namespace: XMPNamespace.crs, property: "AlreadyApplied")
         xmp.setValue(.simple("234881024"), namespace: XMPNamespace.crs, property: "CompatibleVersion")
         xmp.setValue(.structuredArray(corrections), namespace: XMPNamespace.crs, property: "MaskGroupBasedCorrections")
     }
 
-    /// Write masks in render-stack order plus the app-private `aaphoto:GlobalLayerIndex` (the global
-    /// node's position in the reorderable chain). Reuses the shared model helpers so both stores agree.
-    nonisolated static func applyLayerChain(masks: [MaskAdjustment], layerOrder: [LayerRef]?, into xmp: inout XMPData) {
+    /// Recursively build one `crs` mask struct from an `ACRMaskNode` — simple fields, array
+    /// fields (`Dabs`), and nested structured-array children (`Masks`), all `crs:`-prefixed.
+    nonisolated private static func buildMaskNode(_ node: ACRMaskNode) -> [String: XMPValue] {
+        var fields: [String: XMPValue] = [:]
+        for field in node.fields { fields[XMPNamespace.crs + field.name] = .simple(field.value) }
+        for array in node.arrays { fields[XMPNamespace.crs + array.name] = .array(array.values) }
+        for child in node.children {
+            fields[XMPNamespace.crs + child.name] = .structuredArray(child.nodes.map(buildMaskNode))
+        }
+        return fields
+    }
+
+    /// Convert a preserved (verbatim) correction node back to `XMPValue`. Keys inside a
+    /// `PreservedMaskCorrection` are already full namespace-prefixed, so this only maps values.
+    nonisolated private static func xmpValue(from node: PreservedXMPNode) -> XMPValue {
+        switch node {
+        case .string(let s):     return .simple(s)
+        case .strings(let a):    return .array(a)
+        case .structure(let f):  return .structure(f.mapValues(xmpValue(from:)))
+        case .items(let items):  return .structuredArray(items.map { $0.mapValues(xmpValue(from:)) })
+        }
+    }
+
+    /// Write masks in render-stack order, watermark layers, and the layer-chain order —
+    /// plus the app-private `aaphoto:GlobalLayerIndex` (the global node's position). Reuses
+    /// the shared model helpers so both stores agree.
+    ///
+    /// Persistence has two modes, chosen by `CameraRawSettings.needsExplicitLayerOrderPersistence`:
+    /// the legacy encoding (masks in render-stack order + a single `GlobalLayerIndex` int) only
+    /// works when there are just 2 conceptual buckets (masks, global) — it's kept as-is so
+    /// watermark-free files round-trip byte-identically. Once any watermark layer exists there
+    /// are 3 independently-positioned kinds, which that one int can no longer reconstruct, so the
+    /// fully-explicit `aaphoto:LayerOrder` token array takes over instead.
+    nonisolated static func applyLayerChain(masks: [MaskAdjustment], watermarks: [WatermarkLayer] = [], layerOrder: [LayerRef]?, preserved: [PreservedMaskCorrection] = [], into xmp: inout XMPData) {
         var chain = CameraRawSettings()
         chain.localAdjustments = masks
+        chain.watermarkLayers = watermarks
         chain.layerOrder = layerOrder
-        applyMasks(chain.masksInRenderOrder() ?? masks, into: &xmp)
-        if let globalIndex = chain.globalLayerIndex(), globalIndex > 0 {
-            xmp.setValue(.simple(String(globalIndex)), namespace: aaphotoNamespace, property: "GlobalLayerIndex")
-        } else {
+        applyMasks(chain.masksInRenderOrder() ?? masks, preserved: preserved, into: &xmp)
+        applyWatermarkLayers(watermarks, into: &xmp)
+        if chain.needsExplicitLayerOrderPersistence {
             xmp.removeValue(namespace: aaphotoNamespace, property: "GlobalLayerIndex")
+            applyExplicitLayerOrder(chain.resolvedLayerOrder(), into: &xmp)
+        } else {
+            xmp.removeValue(namespace: aaphotoNamespace, property: "LayerOrder")
+            if let globalIndex = chain.globalLayerIndex(), globalIndex > 0 {
+                xmp.setValue(.simple(String(globalIndex)), namespace: aaphotoNamespace, property: "GlobalLayerIndex")
+            } else {
+                xmp.removeValue(namespace: aaphotoNamespace, property: "GlobalLayerIndex")
+            }
+        }
+    }
+
+    /// Write watermark layers as app-private `aaphoto:WatermarkLayers` — not an ACR/Lightroom
+    /// concept, so no `crs:` involvement, mirroring how Anonymizer settings live under `aaphoto:`.
+    nonisolated static func applyWatermarkLayers(_ layers: [WatermarkLayer], into xmp: inout XMPData) {
+        guard !layers.isEmpty else {
+            xmp.removeValue(namespace: aaphotoNamespace, property: "WatermarkLayers")
+            return
+        }
+        let encoded: [[String: XMPValue]] = layers.map { layer in
+            [
+                aaphotoNamespace + "ID": .simple(layer.id.uuidString),
+                aaphotoNamespace + "Name": .simple(layer.name),
+                aaphotoNamespace + "Enabled": .simple(formatBool(layer.enabled)),
+                aaphotoNamespace + "AssetID": .simple(layer.libraryAssetID.uuidString),
+                aaphotoNamespace + "CenterX": .simple(formatUnsignedDouble(layer.geometry.centerX, precision: 6)),
+                aaphotoNamespace + "CenterY": .simple(formatUnsignedDouble(layer.geometry.centerY, precision: 6)),
+                aaphotoNamespace + "SizeDimension": .simple(layer.geometry.sizeDimension.rawValue),
+                aaphotoNamespace + "SizeUnit": .simple(layer.geometry.sizeUnit.rawValue),
+                aaphotoNamespace + "SizeValue": .simple(formatUnsignedDouble(layer.geometry.sizeValue, precision: 4)),
+                aaphotoNamespace + "MarginUnit": .simple(layer.geometry.marginUnit.rawValue),
+                aaphotoNamespace + "MarginValue": .simple(formatUnsignedDouble(layer.geometry.marginValue, precision: 4)),
+                aaphotoNamespace + "Opacity": .simple(formatUnsignedDouble(layer.opacity, precision: 4)),
+            ]
+        }
+        xmp.setValue(.structuredArray(encoded), namespace: aaphotoNamespace, property: "WatermarkLayers")
+    }
+
+    /// Write the fully-explicit layer-chain order as an `aaphoto:LayerOrder` rdf:Seq of
+    /// compact tokens (`"global"` / `"mask:<uuid>"` / `"watermark:<uuid>"`) — see `LayerRef.token`.
+    nonisolated static func applyExplicitLayerOrder(_ resolved: [LayerRef], into xmp: inout XMPData) {
+        xmp.setValue(.array(resolved.map(\.token)), namespace: aaphotoNamespace, property: "LayerOrder")
+    }
+
+    /// Write the global Anonymizer redaction settings as app-private XMP (`aaphoto:AnonymizerAmount`
+    /// / `AnonymizerBlackOut`) — not an ACR/Lightroom concept, so other tools silently ignore it;
+    /// this app's own render/export pipeline is the only consumer. nil/empty clears both fields.
+    /// Shared with the embedded-file writer via `SwiftExifWriteEngine.applyAnonymizer`.
+    nonisolated static func applyAnonymizer(_ anon: AnonymizerSettings?, into xmp: inout XMPData) {
+        guard let anon, !anon.isEmpty else {
+            xmp.removeValue(namespace: aaphotoNamespace, property: "AnonymizerAmount")
+            xmp.removeValue(namespace: aaphotoNamespace, property: "AnonymizerBlackOut")
+            return
+        }
+        if let amount = anon.amount, amount > 0 {
+            xmp.setValue(.simple(String(format: "%.1f", amount)), namespace: aaphotoNamespace, property: "AnonymizerAmount")
+        } else {
+            xmp.removeValue(namespace: aaphotoNamespace, property: "AnonymizerAmount")
+        }
+        if anon.blackOut == true {
+            xmp.setValue(.simple(formatBool(true)), namespace: aaphotoNamespace, property: "AnonymizerBlackOut")
+        } else {
+            xmp.removeValue(namespace: aaphotoNamespace, property: "AnonymizerBlackOut")
         }
     }
 

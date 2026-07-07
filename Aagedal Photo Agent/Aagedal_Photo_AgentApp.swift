@@ -22,6 +22,7 @@ struct Aagedal_Photo_AgentApp: App {
             KnownPeopleService.shared.migrateLegacyDatabaseIfNeeded()
             KnownPeopleCloudCoordinator.shared.refresh()
             RosterCloudCoordinator.shared.refresh()
+            WatermarkCloudCoordinator.shared.refresh()
             PreferencesSyncService.shared.start()
             // Begin keeping local timestamped backups of every keyword list and
             // watch for empty-list-at-launch so we can offer a restore.
@@ -440,6 +441,9 @@ extension Notification.Name {
     static let scopeSourceImageDidChange = Notification.Name("scopeSourceImageDidChange")
     static let editSliderDragStateChanged = Notification.Name("editSliderDragStateChanged")
     static let showAllFilesChanged = Notification.Name("showAllFilesChanged")
+    /// Posted (object: URL) when a pane opens a root folder, so the shared sidebar —
+    /// always backed by the primary pane — lists it even if a non-primary split pane opened it.
+    static let browserDidOpenRootFolder = Notification.Name("browserDidOpenRootFolder")
     static let showRawMetadata = Notification.Name("showRawMetadata")
     static let applyTemplateShortcut = Notification.Name("applyTemplateShortcut")
     static let addNewMask = Notification.Name("addNewMask")

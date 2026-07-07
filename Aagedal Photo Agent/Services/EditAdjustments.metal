@@ -19,8 +19,26 @@ struct MaskParams {
     float vibrance;         // -1..1
     uint  activeFlags;      // bitmask: bit0=exposure, bit1=contrast,
                             // bit2=highlights, bit3=shadows, bit4=whites,
-                            // bit5=blacks, bit6=saturation, bit7=vibrance
-    uint  _pad;
+                            // bit5=blacks, bit6=saturation, bit7=vibrance,
+                            // bit8=anonymizer (replaces the other tonal bits when set),
+                            // bit9=temperature, bit10=tint
+    float anonymizerAmount;   // 0-1 strength, gated by activeFlags bit8
+    float anonymizerBlackOut; // 0 or 1 — full opaque redaction instead of the layered effect
+    float temperature;       // -1..1, local white balance warm/cool shift
+    float tint;              // -1..1, local white balance green/magenta shift
+    uint  maskType;          // 0 = analytic ellipse (SDF), 1 = freeform brush (sample brushAlpha)
+    uint  brushLayer;        // slice index into the brush alpha array (maskType == 1 only)
+};
+
+/// Per-instance watermark-layer parameters. `center`/`halfExtent` are UV (display frame,
+/// already aspect-corrected on the CPU side via WatermarkGeometry.renderedHalfExtentUV, so
+/// the shader needs no extra aspect term). `textureLayer` indexes the shared watermark
+/// texture array (deduped by library asset — several layers may reuse one slice).
+struct WatermarkParams {
+    float2 center;
+    float2 halfExtent;
+    float opacity;
+    uint textureLayer;
 };
 
 struct HSLChannelParams {
@@ -47,7 +65,8 @@ struct EditParams {
     float3x3 whiteBalanceMatrix; // Bradford chromatic adaptation (identity if no WB)
 
     uint activeFlags;        // bitmask: bit0=toneLUT, bit1=vibrance,
-                             // bit2=saturation, bit3=whiteBalance, bit4=hdrMode
+                             // bit2=saturation, bit3=whiteBalance, bit4=hdrMode,
+                             // bit5=anonymizer (global)
     uint maskCount;          // number of active masks (0-8)
 
     float2 scale;            // source→drawable scale (stretch-to-fill)
@@ -68,7 +87,13 @@ struct EditParams {
                              // (0.5,0.5) = no crop mask. Pixels beyond → background.
 
     uint orderCount;         // entries in the layer-order buffer (buffer 3); always ≥ 1
-    uint _padOrder;
+    float anonymizerAmount;   // 0-1 global slider strength, gated by activeFlags bit5
+    float anonymizerBlackOut; // 0 or 1 — full opaque redaction instead of the layered effect
+
+    int  maskOverlayIndex;    // mask buffer index to visualize as a red overlay, or -1 = none
+    float maskOverlayOpacity; // 0-1 red-tint strength for the mask overlay
+
+    uint watermarkCount;      // number of active watermark layers (0-4), see WatermarkParams
 };
 
 // ============================================================
@@ -334,11 +359,46 @@ static float maskWeight(constant MaskParams &mask, float2 uv, float2 sourceSize)
     return weight;
 }
 
+/// Alpha-composites one watermark layer over the running color, "over"-blending in
+/// premultiplied space (the texture is decoded/uploaded premultiplied — see
+/// `MetalEditPipeline.loadWatermarkTextures` — so no separate un-premultiply/re-premultiply
+/// step is needed). `wm.center`/`halfExtent` define the watermark's footprint in UV; a pixel
+/// outside it is returned unchanged. Degenerate (zero) `halfExtent` — e.g. the layer's
+/// library asset went missing — also returns `rgb` unchanged rather than dividing by zero.
+static half3 applyWatermark(half3 rgb, constant WatermarkParams &wm,
+                            texture2d_array<half, access::sample> tex, float2 uv)
+{
+    if (wm.halfExtent.x <= 0.0 || wm.halfExtent.y <= 0.0) return rgb;
+    float2 local = (uv - wm.center) / wm.halfExtent;
+    if (abs(local.x) > 1.0 || abs(local.y) > 1.0) return rgb;
+    float2 sampleUV = local * 0.5 + 0.5;
+    constexpr sampler wmSampler(filter::linear, address::clamp_to_edge);
+    half4 wmColor = tex.sample(wmSampler, sampleUV, wm.textureLayer);
+    half opacity = half(wm.opacity);
+    half alpha = wmColor.a * opacity;
+    return wmColor.rgb * opacity + rgb * (1.0h - alpha);
+}
+
 /// Per-mask local tonal adjustments applied to `rgb` (returns the fully-adjusted color;
 /// the kernel blends it back by the mask weight). Each adjustment is gated by mask.activeFlags.
 static half3 applyMaskColor(half3 rgb, constant MaskParams &mask)
 {
     half3 adjusted = rgb;
+
+    // Local white balance (Temperature/Tint): a lightweight multiplicative RGB gain, not
+    // the full Bradford chromatic-adaptation matrix the global WB uses — that requires a
+    // per-mask CPU CIContext render to derive, which doesn't belong in a GPU-resident,
+    // per-pixel mask function. Applied first, matching ACR's Local panel ordering (WB
+    // before tonal adjustments) and the global chain's own WB-before-tone order.
+    if (mask.activeFlags & (1u << 9)) {
+        // Warm (positive) boosts red / cuts blue; cool (negative) the reverse.
+        adjusted.r *= half(1.0 + mask.temperature * 0.3);
+        adjusted.b *= half(1.0 - mask.temperature * 0.3);
+    }
+    if (mask.activeFlags & (1u << 10)) {
+        // Magenta (positive) cuts green; green (negative) boosts it — matches Adobe's Tint sign.
+        adjusted.g *= half(1.0 - mask.tint * 0.3);
+    }
 
     // Exposure: multiplicative EV shift
     if (mask.activeFlags & (1u << 0)) {
@@ -430,14 +490,110 @@ static half3 applyMaskColor(half3 rgb, constant MaskParams &mask)
     return adjusted;
 }
 
+struct AnonymizerShape {
+    float distortAmountPx;
+    float distortScalePx;
+    float blurRadiusPx;
+    float mosaicSizePx;
+};
+
+static uint anonymizerIHash(uint x)
+{
+    x ^= x >> 16;
+    x *= 0x7feb352du;
+    x ^= x >> 15;
+    x *= 0x846ca68bu;
+    x ^= x >> 16;
+    return x;
+}
+
+static float anonymizerRand01(int ix, int iy, uint seed, uint channel)
+{
+    uint h = anonymizerIHash(uint(ix) * 0x9E3779B1u
+                             ^ uint(iy) * 0x85EBCA77u
+                             ^ seed * 0xC2B2AE3Du
+                             ^ channel * 0x27D4EB2Fu);
+    return float(h) * (1.0 / 4294967295.0);
+}
+
+static float anonymizerSmoothT(float t)
+{
+    return t * t * (3.0 - 2.0 * t);
+}
+
+static float anonymizerVNoise(float px, float py, uint seed, uint channel)
+{
+    float fx = floor(px);
+    float fy = floor(py);
+    int ix = int(fx);
+    int iy = int(fy);
+    float tx = anonymizerSmoothT(px - fx);
+    float ty = anonymizerSmoothT(py - fy);
+    float a = anonymizerRand01(ix,     iy,     seed, channel);
+    float b = anonymizerRand01(ix + 1, iy,     seed, channel);
+    float c = anonymizerRand01(ix,     iy + 1, seed, channel);
+    float d = anonymizerRand01(ix + 1, iy + 1, seed, channel);
+    float ab = a + (b - a) * tx;
+    float cd = c + (d - c) * tx;
+    return ab + (cd - ab) * ty;
+}
+
+/// Maps the app's single 0-1 amount slider onto the same 1080p-short-side pixel-space
+/// family as the standalone Multi-Layer Anonymizer: random distortion, Gaussian blur,
+/// then mosaic. The app still evaluates it in one shader sample so global and per-mask
+/// anonymizers remain cheap enough for live masked editing.
+static AnonymizerShape anonymizerShape(float strength, float2 sourceSize)
+{
+    float t = clamp(strength, 0.0, 1.0);
+    float shortSide = max(min(sourceSize.x, sourceSize.y), 1.0);
+    float resolutionScale = shortSide / 1080.0;
+    float mosaicBase = mix(4.0, 128.0, t * t);
+    AnonymizerShape shape;
+    shape.mosaicSizePx = max(mosaicBase * resolutionScale, 3.0);
+    shape.blurRadiusPx = max(shape.mosaicSizePx * 0.6, 1.0);
+    shape.distortAmountPx = max(shape.mosaicSizePx * 0.6, 1.0);
+    shape.distortScalePx = max(shape.mosaicSizePx * 0.4, 2.0);
+    return shape;
+}
+
+/// Anonymizer base-color sampler: approximates the standalone effect's
+/// distort -> Gaussian blur -> mosaic stack in one texture fetch. The square mosaic cell
+/// is resolved first; the cell center is spatially distorted by the same deterministic
+/// value-noise family as the plugin; blur is provided by the source texture's mip chain.
+static half3 sampleAnonymized(texture2d<half, access::sample> source,
+                              float2 uv,
+                              float2 sourceSize,
+                              AnonymizerShape shape)
+{
+    constexpr sampler mipSampler(filter::linear, mip_filter::linear, address::clamp_to_edge);
+    float2 px = uv * sourceSize;
+    float b = max(shape.mosaicSizePx, 1.0);
+    float2 blockOrigin = floor(px / b) * b;
+    float2 samplePx = min(blockOrigin + b * 0.5, sourceSize - 1.0);
+
+    uint seed = anonymizerIHash(0x5BD1E995u);
+    float invScale = 1.0 / max(shape.distortScalePx, 2.0);
+    float nx = anonymizerVNoise(samplePx.x * invScale, samplePx.y * invScale, seed, 0u);
+    float ny = anonymizerVNoise(samplePx.x * invScale, samplePx.y * invScale, seed, 1u);
+    float2 displacement = (float2(nx, ny) * 2.0 - 1.0) * shape.distortAmountPx;
+    float2 sampleUV = clamp((samplePx + displacement) / sourceSize, 0.0, 1.0);
+
+    float maxLevel = float(source.get_num_mip_levels() - 1);
+    float mipLevel = clamp(log2(max(shape.blurRadiusPx * 2.0, 1.0)), 0.0, maxLevel);
+    return source.sample(mipSampler, sampleUV, level(mipLevel)).rgb;
+}
+
 kernel void editAdjustments(
     texture2d<half, access::sample> source [[texture(0)]],
     texture2d<half, access::write> destination [[texture(1)]],
     texture1d<float, access::sample> toneLUT [[texture(2)]],
+    texture2d_array<half, access::sample> brushAlpha [[texture(3)]],
+    texture2d_array<half, access::sample> watermarkTex [[texture(4)]],
     constant EditParams &params [[buffer(0)]],
     constant MaskParams *masks [[buffer(1)]],
     constant HSLParams &hslParams [[buffer(2)]],
     constant uint *order [[buffer(3)]],
+    constant WatermarkParams *watermarks [[buffer(4)]],
     uint2 gid [[thread_position_in_grid]])
 {
     if (gid.x >= uint(params.drawableSize.x) || gid.y >= uint(params.drawableSize.y)) {
@@ -479,26 +635,86 @@ kernel void editAdjustments(
         return;
     }
 
-    constexpr sampler bilinear(filter::linear, address::clamp_to_edge);
-    half4 color = source.sample(bilinear, uv);
-    half3 rgb = color.rgb;
+    // Global Anonymizer changes how the base color itself is fetched (a different
+    // sampling strategy, not a per-pixel tone op on an already-sampled color) — so it's
+    // resolved here, before the layer chain runs, rather than as a chain node.
+    bool globalAnonActive = (params.activeFlags & (1u << 5)) != 0;
+    if (globalAnonActive && params.anonymizerBlackOut > 0.5) {
+        destination.write(half4(0.0h, 0.0h, 0.0h, 1.0h), gid);
+        return;
+    }
+    half4 color;
+    half3 rgb;
+    if (globalAnonActive) {
+        AnonymizerShape anonShape = anonymizerShape(params.anonymizerAmount, params.sourceSize);
+        rgb = sampleAnonymized(source, uv, params.sourceSize, anonShape);
+        color = half4(rgb, 1.0h);
+    } else {
+        constexpr sampler bilinear(filter::linear, address::clamp_to_edge);
+        color = source.sample(bilinear, uv);
+        rgb = color.rgb;
+    }
 
     // Layer chain: apply each node in the order given by the order buffer. The global
     // adjustment block (kGlobalOrderSentinel) is reorderable among the masks — every node
     // transforms the running color in sequence, so moving the global node before/after a
     // mask changes the result. Legacy edits resolve to [global, mask0, mask1, …], which
     // reproduces the previous fixed "global first, then masks" behavior exactly.
+    //
+    // Order-buffer entry encoding (3 buckets): 0xFFFFFFFF = global sentinel; the top bit
+    // (0x80000000) set on anything else = a watermark-layer index (low 31 bits) into
+    // `watermarks`; otherwise it's a plain mask index into `masks` (< maskCount). The global
+    // sentinel is checked FIRST since it also has the top bit set.
+    bool globalApplied = false;
     for (uint k = 0; k < params.orderCount; k++) {
         uint entry = order[k];
-        if (entry >= params.maskCount) {
+        if (entry == 0xFFFFFFFFu) {
             // Global node: the order buffer uses 0xFFFFFFFF as the global sentinel
-            // (MetalEditPipeline.globalOrderSentinel); any index ≥ maskCount is global.
+            // (MetalEditPipeline.globalOrderSentinel).
             rgb = applyGlobal(rgb, params, toneLUT, hslParams);
+            globalApplied = true;
+        } else if (entry & 0x80000000u) {
+            uint wIdx = entry & 0x7FFFFFFFu;
+            if (wIdx < params.watermarkCount) {
+                rgb = applyWatermark(rgb, watermarks[wIdx], watermarkTex, uv);
+            }
         } else {
             constant MaskParams &mask = masks[entry];
-            float weight = maskWeight(mask, uv, params.sourceSize);
+            // Brush masks resolve their coverage from the pre-rasterized alpha array (sampled
+            // in source UV space); ellipse masks use the analytic SDF. `applyMaskColor` below
+            // is identical for both — it only ever sees a resolved weight + rgb.
+            float weight;
+            if (mask.maskType == 1u) {
+                constexpr sampler brushSampler(filter::linear, address::clamp_to_edge);
+                weight = float(brushAlpha.sample(brushSampler, uv, mask.brushLayer).r);
+                if (mask.inverted > 0.5) weight = 1.0 - weight;
+                weight *= mask.amount;
+            } else {
+                weight = maskWeight(mask, uv, params.sourceSize);
+            }
             if (weight < 0.001) continue;
-            half3 adjusted = applyMaskColor(rgb, mask);
+            half3 adjusted;
+            if (mask.activeFlags & (1u << 8)) {
+                // Anonymizer: pixelate first (it re-samples the RAW source, so detail exposure
+                // would reveal is already destroyed), THEN apply the same adjustments the rest of
+                // the image gets so the patch matches — global (if it's already run; a later
+                // global node adjusts this region itself, so skip to avoid doubling) and the
+                // mask's OWN tonal adjustments (exposure/contrast/temp/tint/…). Black Out is a
+                // full redaction, so no adjustments apply to it. The feathered mix below still
+                // softens the mask edges.
+                if (mask.anonymizerBlackOut > 0.5) {
+                    adjusted = half3(0.0h, 0.0h, 0.0h);
+                } else {
+                    AnonymizerShape anonShape = anonymizerShape(mask.anonymizerAmount, params.sourceSize);
+                    adjusted = sampleAnonymized(source, uv, params.sourceSize, anonShape);
+                    if (globalApplied) {
+                        adjusted = applyGlobal(adjusted, params, toneLUT, hslParams);
+                    }
+                    adjusted = applyMaskColor(adjusted, mask);
+                }
+            } else {
+                adjusted = applyMaskColor(rgb, mask);
+            }
             rgb = mix(rgb, adjusted, half(weight));
         }
     }
@@ -526,5 +742,142 @@ kernel void editAdjustments(
         rgb = half3(AdobeRGBtoSRGB_edit * clamp(aRgb, 0.0, gamutHiF));
     }
 
+    // Mask-coverage overlay (ACR-style): tint the selected mask's region red so a freshly
+    // painted brush mask is visible before any adjustment moves a pixel. Auto-hidden by the CPU
+    // once the mask has an adjustment (it clears maskOverlayIndex), matching ACR's behaviour.
+    if (params.maskOverlayIndex >= 0 && uint(params.maskOverlayIndex) < params.maskCount
+            && masks[params.maskOverlayIndex].activeFlags == 0u) {
+        constant MaskParams &om = masks[params.maskOverlayIndex];
+        float ow;
+        if (om.maskType == 1u) {
+            constexpr sampler brushSampler(filter::linear, address::clamp_to_edge);
+            ow = float(brushAlpha.sample(brushSampler, uv, om.brushLayer).r);
+            if (om.inverted > 0.5) ow = 1.0 - ow;
+        } else {
+            ow = maskWeight(om, uv, params.sourceSize);
+        }
+        rgb = mix(rgb, half3(0.9h, 0.1h, 0.1h), half(ow * params.maskOverlayOpacity));
+    }
+
     destination.write(half4(rgb, color.a), gid);
+}
+
+// ============================================================
+// Brush-mask rasterization (Phase 2)
+//
+// A freeform paint mask is stored as a list of strokes, each a list of dabs — soft circular
+// stamps in normalized UV. `stampBrush` rasterizes ONE dab into a slice of a per-brush-mask
+// alpha texture array (R16Float), bounded to that dab's bounding box so the cost is the dab
+// footprint, not the whole texture (the same incremental-write shape as the LUT's
+// `replace(region:)` — cheap, not a full rebuild per dab). Dabs accumulate via a `max()`
+// blend for additive strokes; erase strokes subtract. The array is populated two ways on the
+// CPU: a full rebuild from the stroke list (image load / undo / resolution change) and live
+// per-drag stamping while painting. The compositing kernel (Phase 3) samples this alpha in
+// place of the analytic ellipse SDF — until then nothing reads it, so this is inert
+// infrastructure verifiable in isolation against a hardcoded stroke list.
+//
+// Dispatches share one serial compute encoder so each dab sees the prior dab's writes
+// (read_write accumulation is only race-free under serial dispatch).
+// ============================================================
+
+struct BrushDabParams {
+    float2 center;    // dab center, normalized UV [0,1] in the alpha texture's frame
+    float  radiusPx;  // dab radius in alpha-texture pixels
+    float  hardness;  // 0-1 (ACR CenterWeight): fraction of the radius at full coverage before falloff
+    float  flow;      // 0-1: this dab's opacity contribution
+    float  density;   // 0-1: accumulated-opacity ceiling for the owning stroke
+    uint   erase;     // 0 = add (max blend), 1 = subtract
+    uint   layer;     // target array slice (which brush mask)
+    uint2  originPx;  // bounding-box top-left in alpha-texture pixels (grid origin)
+};
+
+/// Clears every slice of the brush alpha array to 0 before a full rebuild.
+kernel void clearBrushAlpha(
+    texture2d_array<half, access::write> alpha [[texture(0)]],
+    uint3 gid [[thread_position_in_grid]])
+{
+    if (gid.x >= alpha.get_width() || gid.y >= alpha.get_height() || gid.z >= alpha.get_array_size()) {
+        return;
+    }
+    alpha.write(half4(0.0h), uint2(gid.x, gid.y), gid.z);
+}
+
+/// Zeros slice 0 of a scratch array over a bounding box (grid origin = originPx). Used to reset
+/// the per-stroke envelope scratch before each stroke's dabs are stamped into it.
+kernel void clearBrushRegion(
+    texture2d_array<half, access::write> tex [[texture(0)]],
+    constant uint2 &originPx [[buffer(0)]],
+    uint2 lid [[thread_position_in_grid]])
+{
+    uint2 px = originPx + lid;
+    if (px.x >= tex.get_width() || px.y >= tex.get_height()) return;
+    tex.write(half4(0.0h), px, 0);
+}
+
+/// Composites one stroke's coverage envelope (slice 0 of `env`) into `alpha`'s `layer` slice
+/// over a bounding box. This is what makes SEPARATE strokes accumulate: within a stroke the dabs
+/// are max-blended into `env` (a flat envelope capped at the stroke's flow), then source-over
+/// composited here — so clicking the same spot twice builds up (`a + e·(1-a)`) toward full
+/// opacity instead of clamping at one stroke's flow. Erase strokes multiply the mask down
+/// (`a·(1-e)`), the symmetric inverse. Pixels the stroke didn't touch (env 0) are left unchanged.
+struct BrushCompositeParams {
+    uint  layer;      // target alpha slice
+    uint  erase;      // 0 = source-over add, 1 = multiplicative erase
+    uint2 originPx;   // bounding-box top-left (grid origin)
+};
+
+kernel void compositeBrushStroke(
+    texture2d_array<half, access::read_write> alpha [[texture(0)]],
+    texture2d_array<half, access::read> env [[texture(1)]],
+    constant BrushCompositeParams &p [[buffer(0)]],
+    uint2 lid [[thread_position_in_grid]])
+{
+    uint2 px = p.originPx + lid;
+    if (px.x >= alpha.get_width() || px.y >= alpha.get_height()) return;
+    half e = env.read(px, 0).r;
+    if (e <= 0.0h) return;                       // stroke didn't cover this pixel
+    half a = alpha.read(px, p.layer).r;
+    half result = (p.erase != 0) ? (a * (1.0h - e)) : (a + e * (1.0h - a));
+    alpha.write(half4(result, 0.0h, 0.0h, 0.0h), px, p.layer);
+}
+
+/// Rasterizes one brush dab into `alpha`'s `layer` slice, bounded to the dab's bounding box
+/// (grid origin = `dab.originPx`, so `lid` is the offset within the box).
+kernel void stampBrush(
+    texture2d_array<half, access::read_write> alpha [[texture(0)]],
+    constant BrushDabParams &dab [[buffer(0)]],
+    uint2 lid [[thread_position_in_grid]])
+{
+    uint2 px = dab.originPx + lid;
+    uint w = alpha.get_width();
+    uint h = alpha.get_height();
+    if (px.x >= w || px.y >= h) return;
+
+    // Distance from the dab center in pixels (radius is already in pixel units, so the
+    // profile stays circular regardless of the texture's aspect ratio).
+    float2 centerPx = dab.center * float2(w, h);
+    float dist = length((float2(px.x, px.y) + 0.5) - centerPx);
+    if (dist > dab.radiusPx) return;
+
+    // Soft circular profile. `hardness` is the fraction of the radius held at full coverage;
+    // beyond it, smoothstep down to 0 at the edge. Clamp the inner edge below 1 so smoothstep
+    // stays well-defined for a hard-edged (hardness == 1) brush.
+    float t = dab.radiusPx > 0.0 ? dist / dab.radiusPx : 1.0;
+    float inner = min(dab.hardness, 0.999);
+    float falloff = 1.0 - smoothstep(inner, 1.0, t);
+
+    float coverage = min(falloff * dab.flow, dab.density);
+    half prev = alpha.read(px, dab.layer).r;
+    half result;
+    if (dab.erase != 0) {
+        // Symmetric with the additive `max` below: over overlapping dabs in one stroke,
+        // min(prev, 1 - coverage) collapses to min(prev, 1 - max(coverage)) — the erase
+        // *envelope*, so the soft falloff is preserved instead of being subtracted repeatedly
+        // (plain `prev - coverage` accumulates across the many overlapping dabs of a stroke and
+        // saturates the edge to hard). Erasing to full 0 needs flow 1 (mirrors add capping at flow).
+        result = min(prev, half(1.0 - coverage));
+    } else {
+        result = max(prev, half(coverage));
+    }
+    alpha.write(half4(result, 0.0h, 0.0h, 0.0h), px, dab.layer);
 }

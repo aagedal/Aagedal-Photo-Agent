@@ -79,7 +79,11 @@ struct ExpandedFaceManagementView: View {
     @State private var groupToDelete: FaceGroup?
     @State private var showDeleteGroupAlert = false
     @State private var showingNameListFilePicker = false
+    @State private var nameFromTeamSheetGroup: NamedGroupTarget?
     @State private var nameListImportMessage: String?
+    /// True while the review sidebar is being live-resized — freezes the grid layout so cards don't
+    /// stutter between column counts during the drag.
+    @State private var sidebarResizing = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -144,8 +148,12 @@ struct ExpandedFaceManagementView: View {
                             onChooseListFile: { showingNameListFilePicker = true },
                             onToggleExpand: nil, // Handled internally by controller
                             onOpenFullScreen: onOpenFullScreen,
-                            onPhotosDeleted: onPhotosDeleted
-                        )
+                            onPhotosDeleted: onPhotosDeleted,
+                            onNameFromTeamSheet: { groupID in
+                                nameFromTeamSheetGroup = NamedGroupTarget(id: groupID)
+                            }
+                        ),
+                        isResizing: sidebarResizing
                     )
                 } else {
                     // Expression: appearance-based collections, separate from the people
@@ -157,9 +165,19 @@ struct ExpandedFaceManagementView: View {
                     )
                 }
             }
+            // Review queue lives in a dedicated right-side bar in the Sports lens, so the triage
+            // list is vertical, roomier, and keyboard-drivable. Confirmed players stay in the strip.
+            if viewModel.activeLens == .sports {
+                SportsReviewSidebar(viewModel: viewModel,
+                                    onOpenFullScreen: onOpenFullScreen,
+                                    onResizingChanged: { sidebarResizing = $0 })
+            }
         }
         .onChange(of: selectionState.focusedFaceID) { _, newValue in
             updateThumbnailReplacementSelection(for: newValue)
+        }
+        .sheet(item: $nameFromTeamSheetGroup) { target in
+            NameFromTeamSheetView(viewModel: viewModel, groupID: target.id)
         }
         .alert(
             "Delete Group & Photos",
@@ -364,11 +382,16 @@ struct SportsAssistStrip: View {
 
     @State private var showMatchSetup = false
 
-    /// Standalone detections grouped by number, largest sets first.
-    private var unmatchedByNumber: [(number: Int, detections: [NumberDetection])] {
-        Dictionary(grouping: viewModel.standaloneNumberDetections, by: \.number)
-            .map { (number: $0.key, detections: $0.value) }
-            .sorted { ($0.detections.count, $1.number) > ($1.detections.count, $0.number) }
+    /// Header label for the configured match/event: the startlist, "Home vs Away", or — when only
+    /// one team is set up — just that team's name.
+    private func matchLabel(_ roster: MatchRoster) -> String {
+        if roster.effectiveMode == .event { return roster.eventStartlist?.name ?? "Startlist" }
+        switch (roster.homeTeamSnapshot?.name, roster.awayTeamSnapshot?.name) {
+        case let (home?, away?): return "\(home) vs \(away)"
+        case let (home?, nil): return home
+        case let (nil, away?): return away
+        case (nil, nil): return "—"
+        }
     }
 
     var body: some View {
@@ -378,22 +401,20 @@ struct SportsAssistStrip: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
-                if viewModel.lastJerseyMergeCount > 0 {
-                    Text("Merged \(viewModel.lastJerseyMergeCount) group\(viewModel.lastJerseyMergeCount == 1 ? "" : "s") by number")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                let mergeCount = viewModel.jerseyMergeCandidateCount
+                if mergeCount > 0 {
+                    Button("Merge \(mergeCount) split group\(mergeCount == 1 ? "" : "s")") {
+                        viewModel.lastJerseyMergeCount = viewModel.applyJerseyNumberMerges()
+                    }
+                    .controlSize(.small)
+                    .help("The same player was split into separate face groups that share one jersey number and kit colour — merge them into one group.")
                 }
-                Button("Merge by Numbers") {
-                    viewModel.lastJerseyMergeCount = viewModel.applyJerseyNumberMerges()
-                }
-                .controlSize(.small)
-                .help("Merge people groups that share one jersey number with agreeing kit colours")
             }
 
             // Match setup → number-to-player-name resolution.
             HStack(spacing: 8) {
                 if let roster = viewModel.matchRoster, roster.isReady {
-                    Text("\(roster.homeTeamSnapshot?.name ?? "Home") vs \(roster.awayTeamSnapshot?.name ?? "Away")")
+                    Text(matchLabel(roster))
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
                     Button("Resolve Names") {
@@ -403,15 +424,11 @@ struct SportsAssistStrip: View {
                         }
                     }
                     .controlSize(.small)
-                    .help("Name groups and back-turned numbers from the team rosters; Apply writes them as Person Shown")
+                    .help("Resolve numbers into player names; nothing is written until you confirm each claim")
                     if viewModel.pendingColorClusterConfirmation != nil {
                         Button("Confirm Colours…") { showMatchSetup = true }
                             .controlSize(.small)
                             .buttonStyle(.borderedProminent)
-                    }
-                    if !viewModel.ambiguousNumberDetections.isEmpty {
-                        Button("\(viewModel.ambiguousNumberDetections.count) Ambiguous…") { showMatchSetup = true }
-                            .controlSize(.small)
                     }
                 } else {
                     Text("Pick the two teams to resolve numbers into player names.")
@@ -423,35 +440,24 @@ struct SportsAssistStrip: View {
                 Spacer()
             }
 
-            if !unmatchedByNumber.isEmpty {
+            // Confirmed players — the names that Apply will write.
+            let cards = viewModel.confirmedPlayerCards
+            if !cards.isEmpty {
+                Divider()
                 HStack(spacing: 6) {
-                    Text("Unmatched numbers:")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 6) {
-                            ForEach(unmatchedByNumber, id: \.number) { entry in
-                                Button {
-                                    if let first = entry.detections.first {
-                                        onOpenFullScreen?(first.imageURL, nil)
-                                    }
-                                } label: {
-                                    HStack(spacing: 3) {
-                                        Text("#\(entry.number)")
-                                            .font(.caption.weight(.semibold))
-                                        if entry.detections.count > 1 {
-                                            Text("×\(entry.detections.count)")
-                                                .font(.caption2)
-                                                .foregroundStyle(.secondary)
-                                        }
-                                    }
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 3)
-                                    .background(.quaternary.opacity(0.6), in: Capsule())
-                                }
-                                .buttonStyle(.plain)
-                                .help("Back-turned detection\(entry.detections.count == 1 ? "" : "s") with no face — click to view")
-                            }
+                    Image(systemName: "checkmark.seal")
+                        .font(.caption2)
+                        .foregroundStyle(.green)
+                    Text("Confirmed players")
+                        .font(.caption.weight(.medium))
+                    Text("· written on Apply")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(cards) { card in
+                            SportsPlayerCardView(card: card, viewModel: viewModel, onOpenFullScreen: onOpenFullScreen)
                         }
                     }
                 }
@@ -466,6 +472,669 @@ struct SportsAssistStrip: View {
         }
         .sheet(isPresented: $showMatchSetup) {
             MatchSetupView(viewModel: viewModel, folderURL: folderURL)
+        }
+    }
+}
+
+// MARK: - Sports player card
+
+/// One confirmed player: face thumbnail (when a face is linked) badged with the jersey number in
+/// the team colour. Right-click to remove the player (rejects their number claims).
+private struct SportsPlayerCardView: View {
+    let card: FaceRecognitionViewModel.SportsPlayerCard
+    @Bindable var viewModel: FaceRecognitionViewModel
+    var onOpenFullScreen: ((URL, UUID?) -> Void)?
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ZStack(alignment: .bottomTrailing) {
+                Group {
+                    if let faceID = card.representativeFaceID, let image = viewModel.thumbnailImage(for: faceID) {
+                        Image(nsImage: image).resizable().scaledToFill()
+                    } else {
+                        Image(systemName: "person.fill")
+                            .font(.title3)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .background(.quaternary.opacity(0.5))
+                    }
+                }
+                .frame(width: 40, height: 40)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(card.name)
+                    .font(.caption.weight(.medium))
+                    .lineLimit(1)
+                Text("\(card.imageCount) photo\(card.imageCount == 1 ? "" : "s")")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
+        .contextMenu {
+            Button(role: .destructive) {
+                for id in card.detectionIDs { viewModel.rejectNumberClaim(id) }
+            } label: {
+                Label("Remove player (reject numbers)", systemImage: "person.fill.xmark")
+            }
+        }
+        .help("Confirmed from jersey number — right-click to remove")
+    }
+}
+
+// MARK: - Sports review sidebar
+
+/// The review queue as a dedicated right-side bar: a vertical, keyboard-drivable triage list.
+/// The active card is highlighted and shows its key hints inline — ↑↓ (or J/K) move, ⏎/Y confirm,
+/// ⌫/N reject, H/A pick a side for ambiguous numbers, O/Space open the photo. Each decision
+/// auto-advances to the next card. Confirmed players stay in the bottom strip; this bar only holds
+/// what still needs a decision, plus numbers with no roster match ("not on a team sheet").
+private struct SportsReviewSidebar: View {
+    @Bindable var viewModel: FaceRecognitionViewModel
+    var onOpenFullScreen: ((URL, UUID?) -> Void)?
+    /// Reports whether the user is mid-drag on the resize handle, so the parent can freeze the grid.
+    var onResizingChanged: (Bool) -> Void = { _ in }
+
+    @AppStorage("sportsReviewSidebarWidth") private var width: Double = 340
+    @State private var dragStartWidth: Double?
+    @State private var focusedID: UUID?
+    @FocusState private var keyboardFocused: Bool
+
+    private let minWidth: Double = 280
+    private let maxWidth: Double = 540
+
+    /// Standalone detections with no roster match (numbers not on either team sheet), grouped by
+    /// number. Resolved-but-unconfirmed claims live in the review list above instead.
+    private var unmatchedByNumber: [(number: Int, detections: [NumberDetection])] {
+        let unresolved = viewModel.standaloneNumberDetections.filter { $0.resolvedPlayerName == nil }
+        return Dictionary(grouping: unresolved, by: \.number)
+            .map { (number: $0.key, detections: $0.value) }
+            .sorted { ($0.detections.count, $1.number) > ($1.detections.count, $0.number) }
+    }
+
+    var body: some View {
+        let review = viewModel.sportsReviewItems
+        let unmatched = unmatchedByNumber
+        if !review.isEmpty || !unmatched.isEmpty {
+            HStack(spacing: 0) {
+                resizeHandle
+                content(review: review, unmatched: unmatched)
+                    .frame(width: width)
+            }
+            .onChange(of: review.map(\.id)) { _, ids in
+                if focusedID == nil || !ids.contains(focusedID!) {
+                    focusedID = ids.first
+                }
+            }
+            .onAppear {
+                if focusedID == nil { focusedID = review.first?.id }
+                keyboardFocused = true
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func content(review: [FaceRecognitionViewModel.SportsReviewItem],
+                         unmatched: [(number: Int, detections: [NumberDetection])]) -> some View {
+        VStack(spacing: 0) {
+            header(reviewCount: review.count)
+            Divider()
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 6) {
+                        ForEach(review) { item in
+                            SportsReviewSidebarRow(
+                                item: item,
+                                isActive: item.id == focusedID,
+                                viewModel: viewModel,
+                                onOpenFullScreen: onOpenFullScreen,
+                                onActivate: { focusedID = item.id; keyboardFocused = true },
+                                onConfirm: { confirm(item) },
+                                onReject: { reject(item) },
+                                onAssign: { side in assign(side, to: item) }
+                            )
+                            .id(item.id)
+                        }
+
+                        if !unmatched.isEmpty {
+                            HStack(spacing: 6) {
+                                Image(systemName: "nosign").font(.caption2).foregroundStyle(.secondary)
+                                Text("Not on a team sheet").font(.caption.weight(.medium))
+                                Spacer()
+                            }
+                            .padding(.top, 4)
+                            ForEach(unmatched, id: \.number) { entry in
+                                SportsUnmatchedCard(number: entry.number, detections: entry.detections,
+                                                    viewModel: viewModel, onOpenFullScreen: onOpenFullScreen)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                    }
+                    .padding(8)
+                }
+                .onChange(of: focusedID) { _, id in
+                    guard let id else { return }
+                    withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(id, anchor: .center) }
+                }
+            }
+            if !review.isEmpty { legend }
+        }
+        .background(.background)
+        .focusable()
+        .focusEffectDisabled()
+        .focused($keyboardFocused)
+        .onKeyPress { handleKey($0, items: viewModel.sportsReviewItems) }
+    }
+
+    private func header(reviewCount: Int) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "tray.full").font(.caption2).foregroundStyle(.secondary)
+            Text("Review queue").font(.caption.weight(.semibold))
+            Text("nothing written until confirmed")
+                .font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
+            Spacer()
+            if reviewCount > 0 {
+                Text("\(reviewCount)")
+                    .font(.caption2.monospacedDigit().weight(.semibold))
+                    .padding(.horizontal, 6).padding(.vertical, 1)
+                    .background(.tint, in: Capsule())
+                    .foregroundStyle(.white)
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 8)
+        .background(.bar)
+    }
+
+    private var legend: some View {
+        VStack(spacing: 0) {
+            Divider()
+            HStack(spacing: 10) {
+                legendItem("↑↓", "move")
+                legendItem("⏎", "confirm")
+                legendItem("N", "reject")
+                legendItem("H/A", "side")
+                Spacer()
+            }
+            .padding(.horizontal, 10).padding(.vertical, 6)
+        }
+    }
+
+    private func legendItem(_ key: String, _ label: String) -> some View {
+        HStack(spacing: 3) {
+            KeyCap(key)
+            Text(label).font(.system(size: 10)).foregroundStyle(.secondary)
+        }
+    }
+
+    private var resizeHandle: some View {
+        // A visible separator down the left edge that also serves as the drag target. The hit area
+        // is wider than the 1px line so it's easy to grab; the line brightens while dragging.
+        let dragging = dragStartWidth != nil
+        return Rectangle()
+            .fill(dragging ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(Color(nsColor: .separatorColor)))
+            .frame(width: dragging ? 2 : 1)
+            .frame(maxWidth: 10, maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .onHover { inside in
+                if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { value in
+                        if dragStartWidth == nil {
+                            dragStartWidth = width
+                            onResizingChanged(true)
+                        }
+                        let start = dragStartWidth ?? width
+                        width = min(maxWidth, max(minWidth, start - Double(value.translation.width)))
+                    }
+                    .onEnded { _ in
+                        dragStartWidth = nil
+                        onResizingChanged(false)
+                    }
+            )
+    }
+
+    // MARK: Actions (each advances focus to the next still-pending card)
+
+    private func nextFocus(after item: FaceRecognitionViewModel.SportsReviewItem,
+                           in items: [FaceRecognitionViewModel.SportsReviewItem]) -> UUID? {
+        guard let idx = items.firstIndex(where: { $0.id == item.id }) else { return items.first?.id }
+        if idx + 1 < items.count { return items[idx + 1].id }
+        if idx - 1 >= 0 { return items[idx - 1].id }
+        return nil
+    }
+
+    private func confirm(_ item: FaceRecognitionViewModel.SportsReviewItem) {
+        let next = nextFocus(after: item, in: viewModel.sportsReviewItems)
+        viewModel.confirmNumberClaim(item.detection.id)
+        focusedID = next
+    }
+
+    private func reject(_ item: FaceRecognitionViewModel.SportsReviewItem) {
+        let next = nextFocus(after: item, in: viewModel.sportsReviewItems)
+        viewModel.rejectNumberClaim(item.detection.id)
+        focusedID = next
+    }
+
+    private func assign(_ side: TeamSide, to item: FaceRecognitionViewModel.SportsReviewItem) {
+        let next = nextFocus(after: item, in: viewModel.sportsReviewItems)
+        viewModel.assignSide(side, toNumberDetection: item.detection.id)
+        focusedID = next
+    }
+
+    private func handleKey(_ press: KeyPress,
+                           items: [FaceRecognitionViewModel.SportsReviewItem]) -> KeyPress.Result {
+        guard !items.isEmpty else { return .ignored }
+        let idx = items.firstIndex { $0.id == focusedID } ?? 0
+        let current = items[idx]
+
+        switch press.key {
+        case .upArrow:
+            focusedID = items[max(0, idx - 1)].id; return .handled
+        case .downArrow:
+            focusedID = items[min(items.count - 1, idx + 1)].id; return .handled
+        case .return:
+            if current.reason != .ambiguousSide { confirm(current) }
+            return .handled
+        case .delete, .deleteForward:
+            reject(current); return .handled
+        case .space:
+            onOpenFullScreen?(current.detection.imageURL, nil); return .handled
+        default:
+            break
+        }
+
+        switch press.characters.lowercased() {
+        case "k": focusedID = items[max(0, idx - 1)].id; return .handled
+        case "j": focusedID = items[min(items.count - 1, idx + 1)].id; return .handled
+        case "y": if current.reason != .ambiguousSide { confirm(current) }; return .handled
+        case "n": reject(current); return .handled
+        case "h": if current.reason == .ambiguousSide { assign(.home, to: current) }; return .handled
+        case "a": if current.reason == .ambiguousSide { assign(.away, to: current) }; return .handled
+        case "o": onOpenFullScreen?(current.detection.imageURL, nil); return .handled
+        default: return .ignored
+        }
+    }
+}
+
+// MARK: - Key cap
+
+/// A tiny keyboard-key glyph, shown next to an action on the active review card so the shortcut
+/// is discoverable in place rather than hidden in a help string.
+private struct KeyCap: View {
+    let label: String
+    init(_ label: String) { self.label = label }
+
+    var body: some View {
+        Text(label)
+            .font(.system(size: 9, weight: .bold, design: .rounded))
+            .padding(.horizontal, 4).padding(.vertical, 1)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 3))
+            .overlay(RoundedRectangle(cornerRadius: 3).strokeBorder(.secondary.opacity(0.4), lineWidth: 0.5))
+    }
+}
+
+// MARK: - Sports review sidebar row
+
+/// One claim awaiting confirmation in the side bar: the number crop, the player it would name, and
+/// why it isn't auto-confirmed. The active row is accent-highlighted and shows its key hints next
+/// to each action. Confirm writes the name on Apply; reject removes it; drag binds it to a person.
+private struct SportsReviewSidebarRow: View {
+    let item: FaceRecognitionViewModel.SportsReviewItem
+    let isActive: Bool
+    @Bindable var viewModel: FaceRecognitionViewModel
+    var onOpenFullScreen: ((URL, UUID?) -> Void)?
+    var onActivate: () -> Void
+    var onConfirm: () -> Void
+    var onReject: () -> Void
+    var onAssign: (TeamSide) -> Void
+    @State private var hovering = false
+
+    private var reasonText: String {
+        switch item.reason {
+        case .numberOnly: "number only — no face. Could be a supporter."
+        case .unconfirmedFace: "face not yet identified — verify the number."
+        case .ambiguousSide: "on both teams — pick a side."
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
+                Button {
+                    onOpenFullScreen?(item.detection.imageURL, nil)
+                } label: {
+                    NumberCropThumbnail(detection: item.detection, size: 48)
+                }
+                .buttonStyle(.plain)
+                .onHover { hovering = $0 }
+                .popover(isPresented: $hovering, arrowEdge: .leading) {
+                    NumberContextPreview(detection: item.detection).padding(8)
+                }
+                .help("Detected number in context — hover to preview, click to open the photo")
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("#\(item.detection.number) → \(item.detection.resolvedPlayerName ?? "?")")
+                        .font(.callout.weight(.medium))
+                        .lineLimit(1)
+                    Text(reasonText)
+                        .font(.caption2)
+                        .foregroundStyle(item.reason == .numberOnly ? .orange : .secondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+
+            HStack(spacing: 6) {
+                if item.reason == .ambiguousSide {
+                    actionButton(title: "Home", systemImage: nil, key: "H", prominent: false) { onAssign(.home) }
+                    actionButton(title: "Away", systemImage: nil, key: "A", prominent: false) { onAssign(.away) }
+                } else {
+                    actionButton(title: "Confirm", systemImage: "checkmark", key: "⏎", prominent: true, action: onConfirm)
+                    actionButton(title: nil, systemImage: "xmark", key: "N", prominent: false, action: onReject)
+                }
+                Spacer(minLength: 0)
+                NumberCorrectionButton(current: item.detection.number) { newNumber in
+                    viewModel.correctNumber(item.detection.id, to: newNumber)
+                }
+            }
+        }
+        .padding(8)
+        .background(
+            isActive ? AnyShapeStyle(Color.accentColor.opacity(0.15)) : AnyShapeStyle(.quaternary.opacity(0.4)),
+            in: RoundedRectangle(cornerRadius: 8)
+        )
+        .overlay {
+            if isActive {
+                RoundedRectangle(cornerRadius: 8).strokeBorder(Color.accentColor, lineWidth: 1.5)
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { onActivate() }
+        .onDrag { NSItemProvider(object: NSString(string: "number:\(item.detection.id.uuidString)")) }
+        .help("Click to make active, then use the keyboard — or drag onto a person to assign this number")
+    }
+
+    @ViewBuilder
+    private func actionButton(title: String?, systemImage: String?, key: String,
+                              prominent: Bool, action: @escaping () -> Void) -> some View {
+        let button = Button(action: action) {
+            HStack(spacing: 4) {
+                if let systemImage { Image(systemName: systemImage) }
+                if let title { Text(title).font(.caption) }
+                if isActive { KeyCap(key) }
+            }
+        }
+        .controlSize(.small)
+
+        if prominent {
+            button.buttonStyle(.borderedProminent)
+        } else {
+            button.buttonStyle(.bordered)
+        }
+    }
+}
+
+// MARK: - Name from team sheet
+
+/// Identifiable wrapper so a group id can drive a `.sheet(item:)`.
+private struct NamedGroupTarget: Identifiable { let id: UUID }
+
+/// Sports lens: name a face group from the roster by entering a jersey number + team. For the
+/// case where the photographer can read the number on the shirt but can't place the name, or OCR
+/// missed a stylised number. Shows the suggested player and confirms before naming.
+private struct NameFromTeamSheetView: View {
+    @Bindable var viewModel: FaceRecognitionViewModel
+    let groupID: UUID
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var numberText = ""
+    @State private var side: TeamSide = .home
+
+    private var isEvent: Bool { viewModel.matchRoster?.effectiveMode == .event }
+    private var number: Int? {
+        guard let n = Int(numberText.trimmingCharacters(in: .whitespaces)), (0...99).contains(n) else { return nil }
+        return n
+    }
+    private var resolvedSide: TeamSide? { isEvent ? nil : side }
+    private var suggested: String? { number.flatMap { viewModel.rosterName(forNumber: $0, side: resolvedSide) } }
+
+    private var homeName: String { viewModel.matchRoster?.homeTeamSnapshot?.name ?? "Home" }
+    private var awayName: String { viewModel.matchRoster?.awayTeamSnapshot?.name ?? "Away" }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Form {
+                Section("Number") {
+                    TextField("Jersey number", text: $numberText)
+                        .frame(width: 120)
+                    if !isEvent {
+                        Picker("Team", selection: $side) {
+                            Text(homeName).tag(TeamSide.home)
+                            Text(awayName).tag(TeamSide.away)
+                        }
+                        .pickerStyle(.segmented)
+                    }
+                }
+
+                Section("Player") {
+                    if let suggested {
+                        Label(suggested, systemImage: "person.fill")
+                            .font(.body.weight(.medium))
+                    } else if number != nil {
+                        Label(isEvent ? "No athlete with that bib on the startlist"
+                                      : "No player with #\(number!) on \(side == .home ? homeName : awayName)",
+                              systemImage: "questionmark.circle")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("Enter a number to look up the player.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .formStyle(.grouped)
+
+            Divider()
+            HStack {
+                Button("Cancel") { dismiss() }
+                Spacer()
+                Button("Assign Name") {
+                    if let number { viewModel.nameGroup(groupID, fromNumber: number, side: resolvedSide) }
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(suggested == nil)
+            }
+            .padding()
+        }
+        .frame(width: 380, height: 300)
+    }
+}
+
+// MARK: - Number context preview
+
+/// The whole (downsampled) image with a box drawn around the detected number, so the number can
+/// be judged in context — which player, where on the pitch — not just as an isolated crop.
+private struct NumberContextPreview: View {
+    let detection: NumberDetection
+    var maxWidth: CGFloat = 460
+    var maxHeight: CGFloat = 380
+    @State private var image: NSImage?
+    @State private var pixelSize: CGSize = .zero
+
+    private var fitted: CGSize {
+        guard pixelSize.width > 0, pixelSize.height > 0 else { return CGSize(width: maxWidth, height: maxWidth * 0.66) }
+        let aspect = pixelSize.width / pixelSize.height
+        var w = maxWidth, h = maxWidth / aspect
+        if h > maxHeight { h = maxHeight; w = maxHeight * aspect }
+        return CGSize(width: w, height: h)
+    }
+
+    var body: some View {
+        Group {
+            if let image {
+                let size = fitted
+                let box = detection.boundingBox
+                Image(nsImage: image)
+                    .resizable()
+                    .frame(width: size.width, height: size.height)
+                    .overlay {
+                        // Vision box is normalised, origin bottom-left → flip y for SwiftUI.
+                        // Double stroke (dark under, yellow over) so the box reads on any background.
+                        ZStack {
+                            Rectangle().strokeBorder(Color.black.opacity(0.7), lineWidth: 4)
+                            Rectangle().strokeBorder(Color.yellow, lineWidth: 2)
+                        }
+                        .frame(width: max(8, box.width * size.width),
+                               height: max(8, box.height * size.height))
+                        .position(x: box.midX * size.width,
+                                  y: (1 - box.midY) * size.height)
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+            } else {
+                ProgressView()
+                    .frame(width: maxWidth, height: maxWidth * 0.66)
+            }
+        }
+        .task(id: detection.id) {
+            if let cg = await NumberCropCache.shared.preview(imageURL: detection.imageURL) {
+                pixelSize = CGSize(width: cg.width, height: cg.height)
+                image = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+            }
+        }
+    }
+}
+
+// MARK: - Number correction
+
+/// Pencil button → popover to fix a misread number (OCR read "1" but the shirt shows "21").
+/// Commits 0–99; the caller re-resolves the corrected number against the roster.
+private struct NumberCorrectionButton: View {
+    let current: Int
+    let onSet: (Int) -> Void
+    @State private var editing = false
+    @State private var text = ""
+
+    private var parsed: Int? {
+        guard let n = Int(text.trimmingCharacters(in: .whitespaces)), (0...99).contains(n) else { return nil }
+        return n
+    }
+
+    private func commit() {
+        if let n = parsed { onSet(n) }
+        editing = false
+    }
+
+    var body: some View {
+        Button {
+            text = "\(current)"
+            editing = true
+        } label: {
+            Image(systemName: "pencil")
+        }
+        .controlSize(.small)
+        .help("Correct the number")
+        .popover(isPresented: $editing, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Correct number").font(.caption.weight(.medium))
+                HStack(spacing: 6) {
+                    TextField("0–99", text: $text)
+                        .frame(width: 56)
+                        .onSubmit(commit)
+                    Button("Set", action: commit)
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(parsed == nil)
+                }
+            }
+            .padding(12)
+        }
+    }
+}
+
+// MARK: - Unmatched number card
+
+/// A detected number with no roster match, shown as a card alongside the review queue (after the
+/// divider). Hover previews it in context; the pencil corrects a misread; drag binds it to a
+/// person; click opens the photo.
+private struct SportsUnmatchedCard: View {
+    let number: Int
+    let detections: [NumberDetection]
+    @Bindable var viewModel: FaceRecognitionViewModel
+    var onOpenFullScreen: ((URL, UUID?) -> Void)?
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if let first = detections.first {
+                Button { onOpenFullScreen?(first.imageURL, nil) } label: {
+                    NumberCropThumbnail(detection: first, size: 40)
+                }
+                .buttonStyle(.plain)
+                .onHover { hovering = $0 }
+                .popover(isPresented: $hovering, arrowEdge: .top) {
+                    NumberContextPreview(detection: first).padding(8)
+                }
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(detections.count > 1 ? "#\(number) ×\(detections.count)" : "#\(number)")
+                    .font(.caption.weight(.medium))
+                Text("not on a team sheet")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: 120, alignment: .leading)
+            Spacer(minLength: 0)
+            NumberCorrectionButton(current: number) { newNumber in
+                for det in detections { viewModel.correctNumber(det.id, to: newNumber) }
+            }
+            Button {
+                for det in detections { viewModel.rejectNumberClaim(det.id) }
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .controlSize(.small)
+            .help("Not a real number — dismiss this detection (won't reappear)")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
+        .onDrag { NSItemProvider(object: NSString(string: "number:\(detections.first?.id.uuidString ?? "")")) }
+        .help("No roster match — correct the number, dismiss it, or drag onto a person")
+    }
+}
+
+// MARK: - Number crop thumbnail
+
+/// A small crop of the detected number from the source image, so the read can be eyeballed
+/// ("6" vs "8") rather than trusted. Falls back to the parsed digit while loading or if the
+/// image can't be decoded.
+private struct NumberCropThumbnail: View {
+    let detection: NumberDetection
+    var size: CGFloat = 40
+    @State private var image: NSImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(nsImage: image).resizable().scaledToFill()
+            } else {
+                Text("#\(detection.number)")
+                    .font(.caption.weight(.semibold).monospacedDigit())
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(.quaternary.opacity(0.6))
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .task(id: detection.id) {
+            if let cg = await NumberCropCache.shared.crop(imageURL: detection.imageURL, box: detection.boundingBox) {
+                image = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+            }
         }
     }
 }

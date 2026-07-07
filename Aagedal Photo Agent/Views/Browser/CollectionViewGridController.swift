@@ -7,15 +7,31 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
     enum Section { case main }
 
     let viewModel: BrowserViewModel
+    /// Called when the user clicks into this grid — split-view container uses it to
+    /// mark the pane active.
+    var onFocus: (() -> Void)?
     private var collectionView: ThumbnailCollectionView!
     private var dataSource: NSCollectionViewDiffableDataSource<Section, URL>!
     private var observationTasks: [Task<Void, Never>] = []
     private var lastSnapshotURLs: [URL] = []
     private var lastImageStates: [URL: ImageFile] = [:]
+    /// In-flight speculative prefetch tasks, keyed by URL so `cancelPrefetchingForItemsAt` can
+    /// actually stop work for items the user scrolled past before their decode started.
+    private var prefetchTasks: [URL: Task<Void, Never>] = [:]
 
     private let baseMinWidth: CGFloat = 190
-    private let itemSpacing: CGFloat = 4
+    /// Horizontal gap between thumbnails. Cells fill the row exactly, so this is the actual
+    /// gap (not just a floor the layout pads out unevenly).
+    private let interitemSpacing: CGFloat = 3
+    /// Vertical gap between rows (a touch larger, since each row has a label strip below it).
+    private let lineSpacing: CGFloat = 8
     private let gridPadding: CGFloat = 8
+    /// Matches ThumbnailItemView's internal padding and label area, so cell-height math lines up.
+    private let cellInnerPadding: CGFloat = 6
+    private let baseImageHeight: CGFloat = 140
+    private let textAreaHeight: CGFloat = 44
+    /// Last width we reflowed at, so `viewDidLayout` only re-lays-out on real width changes.
+    private var lastLayoutWidth: CGFloat = 0
 
     init(viewModel: BrowserViewModel) {
         self.viewModel = viewModel
@@ -43,13 +59,14 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
 
         collectionView = ThumbnailCollectionView()
         collectionView.viewModel = viewModel
+        collectionView.onFocus = { [weak self] in self?.onFocus?() }
         collectionView.isSelectable = false // We handle selection ourselves
         collectionView.backgroundColors = [.clear]
         collectionView.prefetchDataSource = self
 
         let layout = NSCollectionViewFlowLayout()
-        layout.minimumInteritemSpacing = itemSpacing
-        layout.minimumLineSpacing = itemSpacing
+        layout.minimumInteritemSpacing = interitemSpacing
+        layout.minimumLineSpacing = lineSpacing
         layout.sectionInset = NSEdgeInsets(top: gridPadding, left: gridPadding, bottom: gridPadding, right: gridPadding)
         updateLayoutItemSize(layout, scale: viewModel.thumbnailScale)
         collectionView.collectionViewLayout = layout
@@ -277,45 +294,83 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
     }
 
     private func updateLayoutItemSize(_ layout: NSCollectionViewFlowLayout, scale: Double) {
-        let itemWidth = baseMinWidth * scale
-        let itemHeight = 140 * scale + 50
-        layout.itemSize = NSSize(width: itemWidth, height: itemHeight)
+        let width = collectionView?.bounds.width ?? 0
+        layout.itemSize = itemSize(forWidth: width, scale: scale)
+        lastLayoutWidth = width
+    }
+
+    /// Fill-the-row item size: each cell grows so a row's leftover space is absorbed into the
+    /// cells (giving uniform `interitemSpacing` gaps and even edges) instead of NSCollectionView
+    /// dumping all of it between items. Height grows with width to preserve the image-box aspect.
+    private func itemSize(forWidth containerWidth: CGFloat, scale: Double) -> NSSize {
+        let target = baseMinWidth * scale
+        let available = max(containerWidth - gridPadding * 2, target)
+        let columns = max(1, Int((available + interitemSpacing) / (target + interitemSpacing)))
+        let itemWidth = ((available - interitemSpacing * CGFloat(columns - 1)) / CGFloat(columns)).rounded(.down)
+        let innerWidth = itemWidth - cellInnerPadding * 2
+        let boxAspect = (baseMinWidth - cellInnerPadding * 2) / baseImageHeight
+        let imageHeight = innerWidth / boxAspect
+        let itemHeight = (imageHeight + cellInnerPadding + textAreaHeight).rounded()
+        return NSSize(width: itemWidth, height: itemHeight)
+    }
+
+    // MARK: - Reflow on width change (window resize, split-divider drag, sidebar toggle)
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        guard let layout = collectionView?.collectionViewLayout as? NSCollectionViewFlowLayout else { return }
+        let width = collectionView.bounds.width
+        guard abs(width - lastLayoutWidth) > 0.5 else { return }
+        lastLayoutWidth = width
+        layout.itemSize = itemSize(forWidth: width, scale: viewModel.thumbnailScale)
+        layout.invalidateLayout()
     }
 
     // MARK: - NSCollectionViewDelegateFlowLayout
 
     func collectionView(_ collectionView: NSCollectionView, layout collectionViewLayout: NSCollectionViewLayout, sizeForItemAt indexPath: IndexPath) -> NSSize {
-        let scale = viewModel.thumbnailScale
-        let itemWidth = baseMinWidth * scale
-        let itemHeight = 140 * scale + 50
-        return NSSize(width: itemWidth, height: itemHeight)
+        itemSize(forWidth: collectionView.bounds.width, scale: viewModel.thumbnailScale)
     }
 
     // MARK: - NSCollectionViewPrefetching
 
     func collectionView(_ collectionView: NSCollectionView, prefetchItemsAt indexPaths: [IndexPath]) {
+        let service = viewModel.thumbnailService
+        let showOriginals = viewModel.showOriginalThumbnails
         for indexPath in indexPaths {
             guard indexPath.item < viewModel.visibleImages.count else { continue }
             let image = viewModel.visibleImages[indexPath.item]
-            if viewModel.thumbnailService.thumbnail(for: image.url, preferOriginal: viewModel.showOriginalThumbnails) == nil {
-                Task {
-                    _ = await viewModel.thumbnailService.loadThumbnail(for: image.url)
+            let url = image.url
+            guard prefetchTasks[url] == nil else { continue }
+
+            let needsOriginal = service.thumbnail(for: url, preferOriginal: showOriginals) == nil
+            let settings = image.cameraRawSettings
+            let needsEdited = !showOriginals
+                && settings?.isEmpty == false
+                && !service.hasEditedThumbnail(for: url)
+            guard needsOriginal || needsEdited else { continue }
+            let orientation = image.exifOrientation
+
+            prefetchTasks[url] = Task { [weak self] in
+                if needsOriginal {
+                    _ = await service.loadThumbnail(for: url)
                 }
-            }
-            // Pre-render edited thumbnails for images with develop edits
-            if !viewModel.showOriginalThumbnails,
-               let settings = image.cameraRawSettings, !settings.isEmpty,
-               !viewModel.thumbnailService.hasEditedThumbnail(for: image.url) {
-                let orientation = image.exifOrientation
-                Task {
-                    _ = await viewModel.thumbnailService.renderEditedThumbnail(
-                        for: image.url, settings: settings, exifOrientation: orientation)
+                // Pre-render edited thumbnails for images with develop edits, unless the user
+                // scrolled this item out of the prefetch window in the meantime.
+                if !Task.isCancelled, needsEdited, let settings {
+                    _ = await service.renderEditedThumbnail(
+                        for: url, settings: settings, exifOrientation: orientation)
                 }
+                self?.prefetchTasks.removeValue(forKey: url)
             }
         }
     }
 
     func collectionView(_ collectionView: NSCollectionView, cancelPrefetchingForItemsAt indexPaths: [IndexPath]) {
-        // ThumbnailService handles its own in-flight task management
+        for indexPath in indexPaths {
+            guard indexPath.item < viewModel.visibleImages.count else { continue }
+            let url = viewModel.visibleImages[indexPath.item].url
+            prefetchTasks.removeValue(forKey: url)?.cancel()
+        }
     }
 }

@@ -4,11 +4,22 @@ import Foundation
 struct StructuredWriteData: Sendable {
     var toneCurve: ToneCurve?
     var masks: [MaskAdjustment]?
+    /// Watermark layers — app-private, carried alongside `masks` through the same
+    /// `layerOrder` chain. nil ⇒ "don't touch" for a merge-style write.
+    var watermarkLayers: [WatermarkLayer]?
     var hslAdjustments: HSLAdjustments?
     /// The reorderable layer chain (incl. the global node's position). nil ⇒ canonical
     /// global-first. Carried so the embedded-XMP writer can persist `aaphoto:GlobalLayerIndex`
     /// and write masks in render-stack order, matching the .xmp sidecar.
     var layerOrder: [LayerRef]?
+    /// The global Anonymizer redaction settings (app-private, not an ACR concept). nil means
+    /// "don't touch" for a merge-style write; see `replaceCameraRawBlock` for full-replace writes.
+    var anonymizer: AnonymizerSettings?
+
+    /// Camera Raw mask corrections this app can't model (erase-brush blobs, unknown mask types),
+    /// carried through so a full-replace develop write re-emits them verbatim instead of dropping
+    /// them. See `PreservedMaskCorrection`.
+    var unparsedMaskCorrections: [PreservedMaskCorrection]?
 
     /// Replace the file's ENTIRE Camera Raw (crs) namespace block with this
     /// write's content — Adobe-faithful semantics: ACR drops settings it isn't
@@ -22,7 +33,10 @@ struct StructuredWriteData: Sendable {
     var isEmpty: Bool {
         (toneCurve == nil || (toneCurve?.isEmpty ?? true))
             && (masks == nil || (masks?.isEmpty ?? true))
+            && (watermarkLayers == nil || (watermarkLayers?.isEmpty ?? true))
             && (hslAdjustments == nil || (hslAdjustments?.isEmpty ?? true))
+            && (anonymizer == nil || (anonymizer?.isEmpty ?? true))
+            && (unparsedMaskCorrections?.isEmpty ?? true)
     }
 
     static let empty = StructuredWriteData()

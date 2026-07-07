@@ -77,6 +77,8 @@ nonisolated enum UserDefaultsKeys {
 
     // MARK: - Browser
     static let rawRenderAsHDR = "rawRenderAsHDR"
+    static let rawDecodeProfile = "rawDecodeProfile"
+    static let rawDecoderVersionPreference = "rawDecoderVersionPreference"
     static let showAllFiles = "showAllFiles"
     static let thumbnailSortOrder = "thumbnailSortOrder"
     static let thumbnailSortReversed = "thumbnailSortReversed"
@@ -85,6 +87,10 @@ nonisolated enum UserDefaultsKeys {
     static let showOriginalThumbnails = "showOriginalThumbnails"
     static let lastScopeMode = "lastScopeMode"
     static let metadataPanelWidth = "metadataPanelWidth"
+    /// Split-view layout of the thumbnail area (BrowserPaneLayout raw value).
+    static let browserPaneLayout = "browserPaneLayout"
+    /// First-pane fraction of the thumbnail split (0.15…0.85).
+    static let browserPaneSplitFraction = "browserPaneSplitFraction"
     /// True → full-screen viewer uses nearest-neighbor (pixel) magnification;
     /// false (default) → linear/bilinear smoothing.
     static let imageScalingNearestNeighbor = "imageScalingNearestNeighbor"
@@ -178,4 +184,6 @@ nonisolated enum UserDefaultsKeys {
     static let knownPeopleICloudEnabled = "knownPeople.iCloudEnabled"
     /// True when the Teams library lives in the iCloud ubiquity container.
     static let teamsICloudEnabled = "teams.iCloudEnabled"
+    /// True when the Watermark library lives in the iCloud ubiquity container.
+    static let watermarksICloudEnabled = "watermarks.iCloudEnabled"
 }

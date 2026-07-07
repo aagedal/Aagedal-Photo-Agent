@@ -207,6 +207,10 @@ struct FullScreenImageView: View {
     @State private var hiResApplied = false
     @State private var showLabelPicker = false
     @State private var hideOverlays = false
+    /// Persisted collapsed/expanded state of the bottom-right keyboard-shortcuts
+    /// hint card. Collapses to a small keyboard pill rather than disappearing, so
+    /// the user can always re-expand it; state survives across sessions.
+    @AppStorage("fullScreenShortcutsCollapsed") private var shortcutsCollapsed = false
     @FocusState private var isFocused: Bool
 
     // Image cache and prefetch
@@ -220,6 +224,15 @@ struct FullScreenImageView: View {
 
     // Face overlay state
     @State private var showFaceRectangles: Bool = false
+    // The face whose name popover is open (keyed by face id, carrying its group id).
+    @State private var renamingFace: RenamingFace?
+
+    /// Identifies the face box whose inline rename popover is currently presented.
+    private struct RenamingFace: Identifiable {
+        let id: UUID        // face id — keeps the popover unique even when two faces share a group
+        let groupID: UUID
+        let initialName: String
+    }
 
     // Zoom state
     @State private var zoomScale: CGFloat = 1.0
@@ -238,6 +251,9 @@ struct FullScreenImageView: View {
     /// Shared linear/nearest-neighbor scaling toggle (View menu + Option+S).
     @ObservedObject private var scaling = ImageScalingController.shared
     @State private var lastOrientationURL: URL?
+    /// Display orientation already baked into `currentImage`. This is deliberately
+    /// the target display orientation, not the embedded file tag: cache hits and
+    /// thumbnail placeholders have already been corrected to sidecar orientation.
     @State private var lastLoadedOrientation: Int = 1
 
     /// Minimum zoom allows zooming out to 1:1 pixel mapping for small images.
@@ -512,6 +528,17 @@ struct FullScreenImageView: View {
                             .padding(.bottom, 20)
                         }
 
+                        // Bottom-right: keyboard-shortcut tips (collapsible)
+                        VStack {
+                            Spacer()
+                            HStack {
+                                Spacer()
+                                shortcutsHintCard(for: file)
+                            }
+                            .padding(.trailing, 20)
+                            .padding(.bottom, 20)
+                        }
+
                         // Bottom-center: filename + indicators
                         VStack {
                             Spacer()
@@ -665,10 +692,13 @@ struct FullScreenImageView: View {
             // If the image was already decoded with this orientation (e.g. metadata
             // batch read catching up), the pixels are already correct — skip.
             guard newValue != lastLoadedOrientation else { return }
-            let clockwise = ImageFile.orientationAfterClockwiseRotation(oldValue) == newValue
-            if let rotated = Self.rotateCGImage90(current.cgImage, clockwise: clockwise) {
-                currentImage = makeLoadedImage(from: rotated)
-            }
+            let corrected = Self.applyOrientationCorrection(
+                current.cgImage,
+                fileOrientation: lastLoadedOrientation,
+                targetOrientation: newValue
+            )
+            currentImage = makeLoadedImage(from: corrected)
+            lastLoadedOrientation = newValue
             imageCache.invalidateImage(for: url)
         }
         .onChange(of: scopeViewModel.showClippedGamut) {
@@ -871,6 +901,75 @@ struct FullScreenImageView: View {
         return result
     }
 
+    /// Bottom-right keyboard-shortcut tips. Collapses to a small keyboard pill
+    /// (persisted in `shortcutsCollapsed`) instead of disappearing, so it can
+    /// always be re-expanded. The "toggle edits" row only appears when the image
+    /// actually has edits, since E is a no-op otherwise.
+    @ViewBuilder
+    private func shortcutsHintCard(for file: ImageFile) -> some View {
+        if shortcutsCollapsed {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) { shortcutsCollapsed = false }
+            } label: {
+                Image(systemName: "keyboard")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.8))
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 8)
+                    .background(.black.opacity(0.55), in: Capsule())
+                    .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .help("Show keyboard shortcuts")
+        } else {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 12) {
+                    Text("Shortcuts")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white)
+                    Spacer(minLength: 16)
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) { shortcutsCollapsed = true }
+                    } label: {
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(.white.opacity(0.6))
+                            .padding(3)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Collapse")
+                }
+                if file.hasDevelopEdits || file.hasCropEdits {
+                    shortcutRow("E", "Toggle edits / original")
+                }
+                shortcutRow("H", "Hide interface")
+                shortcutRow("Z", "Toggle 1:1 at cursor")
+                shortcutRow("F", "Toggle face boxes")
+                shortcutRow("\u{2325}S", "Toggle scaling filter")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 12))
+            .fixedSize(horizontal: true, vertical: false)
+        }
+    }
+
+    private func shortcutRow(_ key: String, _ label: String) -> some View {
+        HStack(spacing: 8) {
+            Text(key)
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white)
+                .frame(minWidth: 18, alignment: .center)
+                .padding(.horizontal, 3)
+                .frame(height: 18)
+                .background(.white.opacity(0.18), in: RoundedRectangle(cornerRadius: 4))
+            Text(label)
+                .font(.caption2)
+                .foregroundStyle(.white.opacity(0.75))
+        }
+    }
+
     @ViewBuilder
     private func loadingOverlay(text: String) -> some View {
         VStack(spacing: 8) {
@@ -935,20 +1034,30 @@ struct FullScreenImageView: View {
 
         let isEdited = renderEdits
         let isNativeHDR = currentImageFile?.isNativeHDR == true
-        let cameraRaw = Self.hdrNormalized(renderEdits ? currentImageFile?.cameraRawSettings : nil, isNativeHDR: isNativeHDR)
+        let modelCameraRaw = renderEdits ? currentImageFile?.cameraRawSettings : nil
+        let sidecarCameraRaw = renderEdits && modelCameraRaw == nil
+            ? XMPSidecarService().loadSidecar(for: url)?.cameraRaw
+            : nil
+        let cameraRaw = Self.hdrNormalized(modelCameraRaw ?? sidecarCameraRaw, isNativeHDR: isNativeHDR)
+        let renderToken = FullScreenImageCache.renderToken(settings: cameraRaw, isEdited: isEdited)
         let needsHDRLoad = cameraRaw != nil || isNativeHDR
         let maskCount = cameraRaw?.localAdjustments?.count ?? 0
         let enabledMaskCount = cameraRaw?.localAdjustments?.filter(\.enabled).count ?? 0
         imageLogger.info("\(filename): renderEdits=\(renderEdits), cameraRaw=\(cameraRaw != nil), nativeHDR=\(isNativeHDR), masks=\(maskCount) (enabled=\(enabledMaskCount)), exp=\(cameraRaw?.exposure2012 ?? 0)")
-        let imageOrientation = currentImageFile?.exifOrientation ?? 1
+        let imageOrientation = FullScreenImageCache.displayOrientation(
+            for: url,
+            fallback: currentImageFile?.exifOrientation ?? 1
+        )
 
         // Read source pixel dimensions (cheap metadata-only, no pixel decode)
+        let fileOrientation: Int
         // EXIF orientations 5-8 swap width/height after transform
         if let source = CGImageSourceCreateWithURL(url as CFURL, nil),
            let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
            let pw = props[kCGImagePropertyPixelWidth] as? Int,
            let ph = props[kCGImagePropertyPixelHeight] as? Int {
             let orientation = props[kCGImagePropertyOrientation] as? Int ?? 1
+            fileOrientation = orientation
             let swapped = orientation >= 5 && orientation <= 8
             var rawSize = swapped
                 ? CGSize(width: CGFloat(ph), height: CGFloat(pw))
@@ -966,22 +1075,16 @@ struct FullScreenImageView: View {
                 }
             }
             sourcePixelSize = rawSize
-            lastLoadedOrientation = orientation
         } else {
             sourcePixelSize = nil
-            lastLoadedOrientation = imageOrientation
+            fileOrientation = imageOrientation
         }
 
         // File orientation = what the OS baked into the loaded pixels.
         // When it differs from imageOrientation (e.g. C2PA images where
         // the file isn't modified), applyCameraRaw applies corrective rotation.
-        let fileOrientation = lastLoadedOrientation
-
-        // An in-flight prefetch decodes at the same resolution/edit-state as the
-        // foreground load, so reuse it instead of decoding twice during fast
-        // navigation. The prefetch path omits the fileOrientation corrective
-        // rotation, so only reuse it when that correction is a no-op.
-        let canReusePrefetch = fileOrientation == imageOrientation
+        // An in-flight prefetch decodes this exact URL/orientation/render-token
+        // variant, so reuse it instead of decoding twice during fast navigation.
         let cache = imageCache
 
         // If corrective rotation swaps width/height, adjust sourcePixelSize
@@ -991,17 +1094,29 @@ struct FullScreenImageView: View {
         }
 
         // Phase 0: Instant — check retina cache, then display preview cache, then thumbnail
-        if let cached = imageCache.cachedImage(for: url, isEdited: isEdited) {
+        if let cached = imageCache.cachedImage(
+            for: url,
+            orientation: imageOrientation,
+            renderToken: renderToken,
+            isEdited: isEdited
+        ) {
             imageLogger.info("\(filename): Phase 0 cache hit (edited=\(isEdited))")
             currentImage = makeLoadedImage(from: cached)
+            lastLoadedOrientation = imageOrientation
             isLoading = false
             triggerPrefetch(for: url)
             return
         }
 
-        if let displayPreview = imageCache.cachedDisplayPreview(for: url, isEdited: isEdited) {
+        if let displayPreview = imageCache.cachedDisplayPreview(
+            for: url,
+            orientation: imageOrientation,
+            renderToken: renderToken,
+            isEdited: isEdited
+        ) {
             imageLogger.info("\(filename): Phase 0 display preview cache hit (edited=\(isEdited))")
             currentImage = makeLoadedImage(from: displayPreview)
+            lastLoadedOrientation = imageOrientation
             isLoading = false
             // Skip Phase 0.5, go directly to Phase 2 for retina upgrade
             let screenScale = NSScreen.main?.backingScaleFactor ?? 2.0
@@ -1013,14 +1128,18 @@ struct FullScreenImageView: View {
                 guard !Task.isCancelled else { return }
                 // Reuse an in-flight prefetch decode rather than decoding this exact
                 // image a second time concurrently (fast navigation).
-                var image: CGImage? = canReusePrefetch
-                    ? await cache.awaitPrefetchedImage(for: url, isEdited: isEdited)
-                    : nil
+                var image: CGImage? = await cache.awaitPrefetchedImage(
+                    for: url,
+                    orientation: imageOrientation,
+                    renderToken: renderToken,
+                    isEdited: isEdited
+                )
                 if image == nil, needsHDRLoad {
                     if isRAWFile {
                         // Use CIRAWFilter for flat/neutral decode — get as-shot WB for correct rendering.
                         // Decode straight to screen resolution (not full sensor then shrink) — the
                         // wasted full-sensor demosaic was the multi-second culling stall on RAW.
+                        let rawFileOrientation = FullScreenImageCache.fileEXIFOrientation(at: url)
                         if let rawResult = FullScreenImageCache.loadRAWImage(from: url, draftMode: false, maxPixelSize: screenMaxPx) {
                             guard !Task.isCancelled else { return }
                             var settings = cameraRaw
@@ -1028,22 +1147,22 @@ struct FullScreenImageView: View {
                             settings?.asShotNeutralTint = Double(rawResult.neutralTint)
                             settings?.sourceHasHDRHeadroom = true
                             let ciImage = FullScreenImageCache.downsample(rawResult.image, maxPixelSize: screenMaxPx)
-                            image = Self.applyCameraRaw(to: ciImage, settings: settings, exifOrientation: imageOrientation, fileOrientation: fileOrientation)
+                            image = Self.applyCameraRaw(to: ciImage, settings: settings, exifOrientation: imageOrientation, fileOrientation: rawFileOrientation)
                         }
                     } else {
-                        if let ciImage = FullScreenImageCache.loadHDRPreview(from: url, maxPixelSize: screenMaxPx) {
+                        if let result = FullScreenImageCache.loadHDRPreviewWithOrientation(from: url, maxPixelSize: screenMaxPx) {
                             guard !Task.isCancelled else { return }
-                            image = Self.applyCameraRaw(to: ciImage, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: fileOrientation)
+                            image = Self.applyCameraRaw(to: result.image, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: result.orientation)
                         }
                     }
                 }
                 guard !Task.isCancelled else { return }
                 if image == nil {
-                    guard var loaded = FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: screenMaxPx) else {
+                    guard let result = FullScreenImageCache.loadDownsampledWithOrientation(from: url, maxPixelSize: screenMaxPx) else {
                         return
                     }
                     guard !Task.isCancelled else { return }
-                    loaded = Self.applyCameraRaw(to: loaded, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: fileOrientation)
+                    let loaded = Self.applyCameraRaw(to: result.image, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: result.orientation)
                     image = loaded
                 }
                 guard let image, !Task.isCancelled else { return }
@@ -1055,7 +1174,13 @@ struct FullScreenImageView: View {
                     currentImage = makeLoadedImage(from: image)
                     hiResApplied = true
                     lastLoadedOrientation = imageOrientation
-                    imageCache.store(image, for: url, isEdited: isEdited)
+                    imageCache.store(
+                        image,
+                        for: url,
+                        orientation: imageOrientation,
+                        renderToken: renderToken,
+                        isEdited: isEdited
+                    )
                     triggerPrefetch(for: url)
                 }
             }
@@ -1067,6 +1192,7 @@ struct FullScreenImageView: View {
            let thumbImage = makeLoadedImage(from: thumb) {
             imageLogger.info("\(filename): Phase 0 thumbnail placeholder")
             currentImage = thumbImage
+            lastLoadedOrientation = imageOrientation
         }
 
         isLoading = true
@@ -1085,13 +1211,17 @@ struct FullScreenImageView: View {
             guard !Task.isCancelled else { return }
             // Reuse an in-flight prefetch decode rather than decoding this exact
             // image a second time concurrently (fast navigation).
-            var image: CGImage? = canReusePrefetch
-                ? await cache.awaitPrefetchedImage(for: url, isEdited: isEdited)
-                : nil
+            var image: CGImage? = await cache.awaitPrefetchedImage(
+                for: url,
+                orientation: imageOrientation,
+                renderToken: renderToken,
+                isEdited: isEdited
+            )
             if image == nil, needsHDRLoad {
                 if isRAW {
                     // Use CIRAWFilter for flat/neutral decode — get as-shot WB for correct rendering.
                     // Decode straight to screen resolution (not full sensor then shrink).
+                    let rawFileOrientation = FullScreenImageCache.fileEXIFOrientation(at: url)
                     if let rawResult = FullScreenImageCache.loadRAWImage(from: url, draftMode: false, maxPixelSize: screenMaxPx) {
                         guard !Task.isCancelled else { return }
                         var settings = cameraRaw
@@ -1099,18 +1229,18 @@ struct FullScreenImageView: View {
                         settings?.asShotNeutralTint = Double(rawResult.neutralTint)
                         settings?.sourceHasHDRHeadroom = true
                         let ciImage = FullScreenImageCache.downsample(rawResult.image, maxPixelSize: screenMaxPx)
-                        image = Self.applyCameraRaw(to: ciImage, settings: settings, exifOrientation: imageOrientation, fileOrientation: fileOrientation)
+                        image = Self.applyCameraRaw(to: ciImage, settings: settings, exifOrientation: imageOrientation, fileOrientation: rawFileOrientation)
                     }
                 } else {
-                    if let ciImage = FullScreenImageCache.loadHDRPreview(from: url, maxPixelSize: screenMaxPx) {
+                    if let result = FullScreenImageCache.loadHDRPreviewWithOrientation(from: url, maxPixelSize: screenMaxPx) {
                         guard !Task.isCancelled else { return }
-                        image = Self.applyCameraRaw(to: ciImage, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: fileOrientation)
+                        image = Self.applyCameraRaw(to: result.image, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: result.orientation)
                     }
                 }
             }
             guard !Task.isCancelled else { return }
             if image == nil {
-                guard var loaded = FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: screenMaxPx) else {
+                guard let result = FullScreenImageCache.loadDownsampledWithOrientation(from: url, maxPixelSize: screenMaxPx) else {
                     imageLogger.error("\(filename): Phase 2 failed — could not decode image")
                     await MainActor.run {
                         if currentImageFile?.url == url {
@@ -1121,7 +1251,7 @@ struct FullScreenImageView: View {
                     return
                 }
                 guard !Task.isCancelled else { return }
-                loaded = Self.applyCameraRaw(to: loaded, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: fileOrientation)
+                let loaded = Self.applyCameraRaw(to: result.image, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: result.orientation)
                 image = loaded
             }
             guard let image else { return }
@@ -1142,7 +1272,13 @@ struct FullScreenImageView: View {
                     lastLoadedOrientation = imageOrientation
                     isLoading = false
                     loadError = nil
-                    imageCache.store(image, for: url, isEdited: isEdited)
+                    imageCache.store(
+                        image,
+                        for: url,
+                        orientation: imageOrientation,
+                        renderToken: renderToken,
+                        isEdited: isEdited
+                    )
                     triggerPrefetch(for: url)
                 } else {
                     imageLogger.info("\(filename): Phase 2 done but image changed, discarding")
@@ -1154,38 +1290,57 @@ struct FullScreenImageView: View {
         // Stored so it can be cancelled when the user toggles edit mode or navigates,
         // preventing orphaned tasks from exhausting the cooperative thread pool.
         let previewStart = CFAbsoluteTimeGetCurrent()
-        let p05 = Task.detached(priority: .userInitiated) { () -> CGImage? in
+        let p05 = Task.detached(priority: .medium) { () -> CGImage? in
             guard !Task.isCancelled else { return nil }
             if isRAW {
-                guard let raw = FullScreenImageCache.extractEmbeddedPreview(from: url) else { return nil }
+                // Sidecar-rotated RAWs can have embedded camera previews whose pixel
+                // orientation does not match the full CIRAWFilter decode. Showing/caching
+                // that fast JPEG causes the loupe to flash, or get stuck after rapid
+                // navigation, at 90 degrees while Phase 2 later renders the correct 180.
+                // Keep the thumbnail placeholder up and let Phase 2 be the first RAW
+                // bitmap for these files.
+                guard fileOrientation == imageOrientation else {
+                    imageLogger.info("\(filename): Phase 0.5 skipped for sidecar-rotated RAW (fileOrientation=\(fileOrientation), displayOrientation=\(imageOrientation))")
+                    return nil
+                }
+                guard let raw = FullScreenImageCache.extractEmbeddedPreviewWithOrientation(from: url) else { return nil }
                 guard !Task.isCancelled else { return nil }
-                return Self.applyCameraRaw(to: raw, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: fileOrientation)
+                return Self.applyCameraRaw(to: raw.image, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: raw.orientation)
             }
             // Try HDR CIImage path first; fall through to CGImage if crop/render fails
             if needsHDRLoad,
-               let ciImage = FullScreenImageCache.loadHDRPreview(from: url, maxPixelSize: 960) {
+               let result = FullScreenImageCache.loadHDRPreviewWithOrientation(from: url, maxPixelSize: 960) {
                 guard !Task.isCancelled else { return nil }
-                if let result = Self.applyCameraRaw(to: ciImage, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: fileOrientation) {
-                    return result
+                if let image = Self.applyCameraRaw(to: result.image, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: result.orientation) {
+                    return image
                 }
             }
             // CGImage fallback — applyCameraRaw(to: CGImage) always returns a valid image
             guard !Task.isCancelled else { return nil }
-            guard let raw = FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: 960) else { return nil }
+            guard let raw = FullScreenImageCache.loadDownsampledWithOrientation(from: url, maxPixelSize: 960) else { return nil }
             guard !Task.isCancelled else { return nil }
-            return Self.applyCameraRaw(to: raw, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: fileOrientation)
+            return Self.applyCameraRaw(to: raw.image, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: raw.orientation)
         }
         phase05Task = p05
         let preview = await p05.value
         let previewElapsed = CFAbsoluteTimeGetCurrent() - previewStart
         guard !Task.isCancelled else { return }
-        if let preview, currentImageFile?.url == url {
+        if let preview,
+           expectedGeneration == renderGeneration,
+           currentImageFile?.url == url {
             // Always cache the preview, but only show it if Phase 2 (retina) hasn't
             // already won the race — otherwise we'd downgrade a sharp image.
-            imageCache.storeDisplayPreview(preview, for: url, isEdited: isEdited)
+            imageCache.storeDisplayPreview(
+                preview,
+                for: url,
+                orientation: imageOrientation,
+                renderToken: renderToken,
+                isEdited: isEdited
+            )
             if !hiResApplied {
                 imageLogger.info("\(filename): Phase 0.5 in \(String(format: "%.1f", previewElapsed * 1000))ms (\(preview.width)x\(preview.height))")
                 currentImage = makeLoadedImage(from: preview)
+                lastLoadedOrientation = imageOrientation
             } else {
                 imageLogger.info("\(filename): Phase 0.5 ready but retina already applied — keeping hi-res")
             }
@@ -1214,11 +1369,17 @@ struct FullScreenImageView: View {
 
         let filename = url.lastPathComponent
         let isNativeHDR = currentImageFile?.isNativeHDR == true
-        let cameraRaw = Self.hdrNormalized(renderEdits ? currentImageFile?.cameraRawSettings : nil, isNativeHDR: isNativeHDR)
+        let modelCameraRaw = renderEdits ? currentImageFile?.cameraRawSettings : nil
+        let sidecarCameraRaw = renderEdits && modelCameraRaw == nil
+            ? XMPSidecarService().loadSidecar(for: url)?.cameraRaw
+            : nil
+        let cameraRaw = Self.hdrNormalized(modelCameraRaw ?? sidecarCameraRaw, isNativeHDR: isNativeHDR)
         let needsHDRFullRes = cameraRaw != nil || isNativeHDR
         let isRAWFile = SupportedImageFormats.isRaw(url: url)
-        let orientation = currentImageFile?.exifOrientation ?? 1
-        let zoomFileOrientation = lastLoadedOrientation
+        let orientation = FullScreenImageCache.displayOrientation(
+            for: url,
+            fallback: currentImageFile?.exifOrientation ?? 1
+        )
         let expectedGeneration = renderGeneration
         imageLogger.info("\(filename): Loading full resolution for zoom")
         // Hi-res overlay (not the cold-load overlay): the fit-view image is
@@ -1230,21 +1391,22 @@ struct FullScreenImageView: View {
             if !Task.isCancelled, needsHDRFullRes {
                 if isRAWFile {
                     // Use CIRAWFilter for flat/neutral full-res decode — get as-shot WB
+                    let rawFileOrientation = FullScreenImageCache.fileEXIFOrientation(at: url)
                     if let rawResult = FullScreenImageCache.loadRAWImage(from: url, draftMode: false), !Task.isCancelled {
                         var settings = cameraRaw
                         settings?.asShotNeutralTemperature = Double(rawResult.neutralTemperature)
                         settings?.asShotNeutralTint = Double(rawResult.neutralTint)
                         settings?.sourceHasHDRHeadroom = true
-                        image = Self.applyCameraRaw(to: rawResult.image, settings: settings, exifOrientation: orientation, fileOrientation: zoomFileOrientation)
+                        image = Self.applyCameraRaw(to: rawResult.image, settings: settings, exifOrientation: orientation, fileOrientation: rawFileOrientation)
                     }
                 } else {
-                    if let ciImage = FullScreenImageCache.loadHDRFullResolution(from: url), !Task.isCancelled {
-                        image = Self.applyCameraRaw(to: ciImage, settings: cameraRaw, exifOrientation: orientation, fileOrientation: zoomFileOrientation)
+                    if let result = FullScreenImageCache.loadHDRFullResolutionWithOrientation(from: url), !Task.isCancelled {
+                        image = Self.applyCameraRaw(to: result.image, settings: cameraRaw, exifOrientation: orientation, fileOrientation: result.orientation)
                     }
                 }
             }
-            if image == nil, !Task.isCancelled, let loaded = FullScreenImageCache.loadFullResolution(from: url), !Task.isCancelled {
-                image = Self.applyCameraRaw(to: loaded, settings: cameraRaw, exifOrientation: orientation, fileOrientation: zoomFileOrientation)
+            if image == nil, !Task.isCancelled, let result = FullScreenImageCache.loadFullResolutionWithOrientation(from: url), !Task.isCancelled {
+                image = Self.applyCameraRaw(to: result.image, settings: cameraRaw, exifOrientation: orientation, fileOrientation: result.orientation)
             }
             let elapsed = CFAbsoluteTimeGetCurrent() - fullStart
             // Always hop to main to clear the overlay, even on cancel/failure, so
@@ -1256,6 +1418,7 @@ struct FullScreenImageView: View {
                 guard let image else { return }
                 imageLogger.info("\(filename): Full resolution loaded in \(String(format: "%.1f", elapsed * 1000))ms (\(image.width)x\(image.height))")
                 currentImage = makeLoadedImage(from: image)
+                lastLoadedOrientation = orientation
                 isFullResLoaded = true
             }
         }
@@ -1393,13 +1556,101 @@ struct FullScreenImageView: View {
         }
     }
 
-    /// Convert Vision face rect (normalized, bottom-left origin) to display rect (pixels, top-left origin)
-    private func convertFaceRect(_ faceRect: CGRect, toDisplayIn imageDisplayRect: CGRect) -> CGRect {
-        let displayX = imageDisplayRect.minX + faceRect.origin.x * imageDisplayRect.width
-        let displayY = imageDisplayRect.minY + (1.0 - faceRect.origin.y - faceRect.height) * imageDisplayRect.height
-        let displayW = faceRect.width * imageDisplayRect.width
-        let displayH = faceRect.height * imageDisplayRect.height
-        return CGRect(x: displayX, y: displayY, width: displayW, height: displayH)
+    /// Maps a detection rect (Vision-normalized, bottom-left origin, in the full
+    /// display-oriented image frame) into display-space corners, replicating the
+    /// crop + straighten geometry that `CameraRawApproximation.applyCrop` bakes into
+    /// the rendered image. Without an effective crop this reduces to a plain
+    /// aspect-fit placement (the old `convertFaceRect` behaviour).
+    ///
+    /// Returns four corners (TL, TR, BR, BL in display space) so callers can stroke a
+    /// quad that follows the straighten angle — an axis-aligned rect would drift out
+    /// of alignment once the crop is rotated.
+    private func detectionCorners(
+        _ rect: CGRect,
+        crop: CameraRawCrop?,
+        imageSize: CGSize,
+        in imageDisplayRect: CGRect
+    ) -> [CGPoint] {
+        // Corners in normalized full-image space, y-up (Vision convention):
+        // TL, TR, BR, BL as they appear upright in the displayed image.
+        let normCorners = [
+            CGPoint(x: rect.minX, y: rect.maxY),
+            CGPoint(x: rect.maxX, y: rect.maxY),
+            CGPoint(x: rect.maxX, y: rect.minY),
+            CGPoint(x: rect.minX, y: rect.minY),
+        ]
+
+        // Plain aspect-fit placement when there is no crop to follow.
+        func placedDirectly() -> [CGPoint] {
+            normCorners.map { p in
+                CGPoint(
+                    x: imageDisplayRect.minX + p.x * imageDisplayRect.width,
+                    y: imageDisplayRect.minY + (1.0 - p.y) * imageDisplayRect.height
+                )
+            }
+        }
+
+        guard let crop, crop.isEffectiveCrop,
+              imageSize.width > 0, imageSize.height > 0 else {
+            return placedDirectly()
+        }
+
+        // Express the crop in the same display-oriented frame the face boxes live in,
+        // exactly as applyCrop does before rendering.
+        let dc = crop.transformedForDisplay(orientation: currentImageFile?.exifOrientation ?? 1)
+        let left = min(dc.left ?? 0, dc.right ?? 1)
+        let right = max(dc.left ?? 0, dc.right ?? 1)
+        let top = min(dc.top ?? 0, dc.bottom ?? 1)
+        let bottom = max(dc.top ?? 0, dc.bottom ?? 1)
+        let fracW = right - left
+        let fracH = bottom - top
+        guard fracW > 0.0001, fracH > 0.0001 else { return placedDirectly() }
+
+        // The renderer outputs exactly fracW·Wf × fracH·Hf pixels, so the full-image
+        // pixel dimensions can be recovered from the rendered (cropped) size. Only the
+        // aspect ratio matters (absolute scale cancels below), but using real pixels
+        // keeps the rotation math identical to applyCrop.
+        let wf = imageSize.width / fracW
+        let hf = imageSize.height / fracH
+        let cx = wf / 2, cy = hf / 2
+        // y-up, +angle — matches applyCrop's CGAffineTransform(rotationAngle:).
+        let theta = (dc.angle ?? 0) * .pi / 180.0
+        let cosT = cos(theta), sinT = sin(theta)
+
+        let cropW = imageSize.width   // == fracW · wf
+        let cropH = imageSize.height  // == fracH · hf
+        // Upright crop centre in full-image pixels (y-up: top edge is high y).
+        let cropCenterX = (left * wf) + cropW / 2
+        let cropCenterY = ((1 - bottom) * hf) + cropH / 2
+        // Rotate the crop centre about the image centre, as applyCrop does.
+        let rcx = cropCenterX - cx, rcy = cropCenterY - cy
+        let newCenterX = cx + rcx * cosT - rcy * sinT
+        let newCenterY = cy + rcx * sinT + rcy * cosT
+        let cropOriginX = newCenterX - cropW / 2
+        let cropOriginY = newCenterY - cropH / 2
+
+        return normCorners.map { p in
+            let px = p.x * wf, py = p.y * hf
+            let dx = px - cx, dy = py - cy
+            let rx = cx + dx * cosT - dy * sinT
+            let ry = cy + dx * sinT + dy * cosT
+            let u = (rx - cropOriginX) / cropW
+            let v = (ry - cropOriginY) / cropH
+            return CGPoint(
+                x: imageDisplayRect.minX + u * imageDisplayRect.width,
+                y: imageDisplayRect.minY + (1.0 - v) * imageDisplayRect.height
+            )
+        }
+    }
+
+    /// Closed quad path through four display-space corners.
+    private func quadPath(_ corners: [CGPoint]) -> Path {
+        var path = Path()
+        guard let first = corners.first else { return path }
+        path.move(to: first)
+        for corner in corners.dropFirst() { path.addLine(to: corner) }
+        path.closeSubpath()
+        return path
     }
 
     @ViewBuilder
@@ -1412,42 +1663,83 @@ struct FullScreenImageView: View {
            let url = currentImageFile?.url {
             let facesInImage = faceVM.facesForImage(url)
             let standaloneNumbers = faceVM.numberDetectionsForImage(url)
-            Canvas { context, _ in
-                for face in facesInImage {
-                    let isHighlighted = face.id == highlightedFaceID
-                    let faceDisplayRect = convertFaceRect(face.faceRect, toDisplayIn: imageDisplayRect)
-                    let groupColor = colorForGroup(face.groupID)
-                    let lineWidth: CGFloat = isHighlighted ? 4 : 2
-                    let opacity: CGFloat = isHighlighted ? 1.0 : 0.5
-                    let path = Path(roundedRect: faceDisplayRect, cornerRadius: 4)
-                    context.stroke(path, with: .color(groupColor.opacity(opacity)), lineWidth: lineWidth)
-                }
+            // Follow the crop/straighten geometry baked into the rendered image so the
+            // boxes stay glued to faces and numbers after a rotated crop.
+            let displayCrop = renderEdits ? currentImageFile?.cameraRawSettings?.crop : nil
+            ZStack {
+                Canvas { context, _ in
+                    for face in facesInImage {
+                        let isHighlighted = face.id == highlightedFaceID
+                        let corners = detectionCorners(face.faceRect, crop: displayCrop, imageSize: imageSize, in: imageDisplayRect)
+                        let groupColor = colorForGroup(face.groupID)
+                        let lineWidth: CGFloat = isHighlighted ? 4 : 2
+                        let opacity: CGFloat = isHighlighted ? 1.0 : 0.5
+                        context.stroke(quadPath(corners), with: .color(groupColor.opacity(opacity)), lineWidth: lineWidth)
+                        // Named faces get a tag under the box, mirroring the jersey-number
+                        // tags. In sports mode the player's number is prefixed: "9 Alice".
+                        if let groupID = face.groupID, let name = faceVM.groupName(groupID) {
+                            let label = faceVM.groupNumber(groupID).map { "#\($0) \(name)" } ?? name
+                            drawTag(
+                                context: context,
+                                text: label,
+                                box: quadPath(corners).boundingRect,
+                                color: groupColor,
+                                imageDisplayRect: imageDisplayRect,
+                                preferBelow: true
+                            )
+                        }
+                    }
 
-                // Jersey-number debug boxes (sports tagging): solid orange for numbers
-                // attached to a face's torso, red for standalone (back-turned) detections.
-                for face in facesInImage {
-                    guard let number = face.jerseyNumber, let box = face.jerseyNumberBox else { continue }
-                    drawNumberBox(
-                        context: context,
-                        rect: convertFaceRect(box, toDisplayIn: imageDisplayRect),
-                        number: number,
-                        confidence: face.numberConfidence,
-                        color: .orange,
-                        imageDisplayRect: imageDisplayRect
-                    )
+                    // Jersey-number debug boxes (sports tagging): solid orange for numbers
+                    // attached to a face's torso, red for standalone (back-turned) detections.
+                    for face in facesInImage {
+                        guard let number = face.jerseyNumber, let box = face.jerseyNumberBox else { continue }
+                        drawNumberBox(
+                            context: context,
+                            corners: detectionCorners(box, crop: displayCrop, imageSize: imageSize, in: imageDisplayRect),
+                            number: number,
+                            confidence: face.numberConfidence,
+                            color: .orange,
+                            imageDisplayRect: imageDisplayRect
+                        )
+                    }
+                    for detection in standaloneNumbers {
+                        drawNumberBox(
+                            context: context,
+                            corners: detectionCorners(detection.boundingBox, crop: displayCrop, imageSize: imageSize, in: imageDisplayRect),
+                            number: detection.number,
+                            confidence: detection.numberConfidence,
+                            color: .red,
+                            imageDisplayRect: imageDisplayRect
+                        )
+                    }
                 }
-                for detection in standaloneNumbers {
-                    drawNumberBox(
-                        context: context,
-                        rect: convertFaceRect(detection.boundingBox, toDisplayIn: imageDisplayRect),
-                        number: detection.number,
-                        confidence: detection.numberConfidence,
-                        color: .red,
-                        imageDisplayRect: imageDisplayRect
-                    )
+                .allowsHitTesting(false)
+
+                // Click a face box to name/rename it. Only faces with a group are
+                // addressable (synthetic-only faces have nothing to persist a name to).
+                ForEach(facesInImage, id: \.id) { face in
+                    if let groupID = face.groupID {
+                        let box = quadPath(detectionCorners(face.faceRect, crop: displayCrop, imageSize: imageSize, in: imageDisplayRect)).boundingRect
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .frame(width: max(box.width, 12), height: max(box.height, 12))
+                            .position(x: box.midX, y: box.midY)
+                            .onTapGesture {
+                                renamingFace = RenamingFace(id: face.id, groupID: groupID, initialName: faceVM.groupName(groupID) ?? "")
+                            }
+                            .popover(isPresented: Binding(
+                                get: { renamingFace?.id == face.id },
+                                set: { if !$0 { renamingFace = nil } }
+                            )) {
+                                FaceNamePopover(initialName: renamingFace?.initialName ?? "") { newName in
+                                    faceVM.nameGroup(groupID, name: newName.trimmingCharacters(in: .whitespacesAndNewlines))
+                                    renamingFace = nil
+                                }
+                            }
+                    }
                 }
             }
-            .allowsHitTesting(false)
         }
     }
 
@@ -1455,34 +1747,58 @@ struct FullScreenImageView: View {
     /// the box touches the top of the image).
     private func drawNumberBox(
         context: GraphicsContext,
-        rect: CGRect,
+        corners: [CGPoint],
         number: Int,
         confidence: Float?,
         color: Color,
         imageDisplayRect: CGRect
     ) {
-        context.stroke(Path(roundedRect: rect, cornerRadius: 2), with: .color(color.opacity(0.9)), lineWidth: 2)
-
+        context.stroke(quadPath(corners), with: .color(color.opacity(0.9)), lineWidth: 2)
         var label = "#\(number)"
         // Vision reports only coarse confidences (≈0.3/0.5/1.0); a full-confidence tag is
         // pure noise, so only flag the uncertain ones.
         if let confidence, confidence < 0.99 {
             label += " \(Int(confidence * 100))%"
         }
+        // Anchor the tag off the quad's upright bounding box so it stays legible even
+        // when the box is rotated by the straighten angle.
+        drawTag(
+            context: context,
+            text: label,
+            box: quadPath(corners).boundingRect,
+            color: color,
+            imageDisplayRect: imageDisplayRect,
+            preferBelow: false
+        )
+    }
+
+    /// Draw a small filled "#9" / "Alice" tag hugging `box` (display space). Sits above
+    /// the box by default and flips below when it would clip the image's top edge; pass
+    /// `preferBelow: true` for name tags, which read better under the face.
+    private func drawTag(
+        context: GraphicsContext,
+        text: String,
+        box: CGRect,
+        color: Color,
+        imageDisplayRect: CGRect,
+        preferBelow: Bool
+    ) {
         let resolved = context.resolve(
-            Text(label)
+            Text(text)
                 .font(.system(size: 11, weight: .bold))
                 .foregroundColor(.white)
         )
-        let textSize = resolved.measure(in: CGSize(width: 200, height: 40))
+        let textSize = resolved.measure(in: CGSize(width: 240, height: 40))
         let tagHeight = textSize.height + 2
-        let fitsAbove = rect.minY - tagHeight - 2 >= imageDisplayRect.minY
-        let tagRect = CGRect(
-            x: rect.minX,
-            y: fitsAbove ? rect.minY - tagHeight - 2 : rect.maxY + 2,
-            width: textSize.width + 8,
-            height: tagHeight
-        )
+        let aboveY = box.minY - tagHeight - 2
+        let belowY = box.maxY + 2
+        let y: CGFloat
+        if preferBelow {
+            y = (belowY + tagHeight <= imageDisplayRect.maxY) ? belowY : max(aboveY, imageDisplayRect.minY)
+        } else {
+            y = (aboveY >= imageDisplayRect.minY) ? aboveY : belowY
+        }
+        let tagRect = CGRect(x: box.minX, y: y, width: textSize.width + 8, height: tagHeight)
         context.fill(Path(roundedRect: tagRect, cornerRadius: 3), with: .color(color.opacity(0.85)))
         context.draw(resolved, at: CGPoint(x: tagRect.midX, y: tagRect.midY), anchor: .center)
     }
@@ -1685,5 +2001,42 @@ struct FullScreenPresenter: ViewModifier {
 extension View {
     func fullScreenImagePresenter(viewModel: BrowserViewModel, scopeViewModel: ScopeViewModel) -> some View {
         modifier(FullScreenPresenter(viewModel: viewModel, scopeViewModel: scopeViewModel))
+    }
+}
+
+/// Inline name/rename field shown in a popover when a face box is clicked in the
+/// full-screen viewer. Commits on Return or the Save button.
+private struct FaceNamePopover: View {
+    let initialName: String
+    let onCommit: (String) -> Void
+
+    @State private var name: String = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextField("Person name", text: $name)
+                .textFieldStyle(.roundedBorder)
+                .frame(minWidth: 220)
+                .focused($focused)
+                .onChange(of: name) { _, newValue in
+                    // Names are single-line.
+                    let filtered = newValue.replacingOccurrences(of: "\n", with: "")
+                        .replacingOccurrences(of: "\r", with: "")
+                    if filtered != newValue { name = filtered }
+                }
+                .onSubmit { onCommit(name) }
+            HStack {
+                Spacer()
+                Button("Save") { onCommit(name) }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(12)
+        .onAppear {
+            name = initialName
+            focused = true
+        }
     }
 }

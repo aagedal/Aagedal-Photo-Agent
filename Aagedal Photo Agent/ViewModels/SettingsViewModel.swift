@@ -24,6 +24,49 @@ enum DefaultEditDestination: String, CaseIterable, Identifiable {
     }
 }
 
+enum RAWDecodeProfile: String, CaseIterable, Identifiable {
+    case flat, native
+
+    var id: String { rawValue }
+
+    var title: String { self == .flat ? "Flat" : "Camera Native" }
+
+    var subtitle: String {
+        self == .flat
+            ? "Neutral, edit-ready decode (no auto tone curve)."
+            : "Apple's camera-matched boost/tone curve, closer to the Finder/Preview thumbnail. Default."
+    }
+}
+
+enum RAWDecoderVersionPreference: String, CaseIterable, Identifiable {
+    case auto, v9, v8, v7, v6
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .auto: return "Auto (Newest)"
+        case .v9: return "Version 9"
+        case .v8: return "Version 8"
+        case .v7: return "Version 7"
+        case .v6: return "Version 6"
+        }
+    }
+
+    /// Substring matched against CIRAWFilter.supportedDecoderVersions (which reports
+    /// e.g. "9" or "9DNG" depending on container) — nil means leave decoderVersion untouched.
+    /// nonisolated: read from FullScreenImageCache.loadRAWImage, which runs off-main.
+    nonisolated var matchToken: String? {
+        switch self {
+        case .auto: return nil
+        case .v9: return "9"
+        case .v8: return "8"
+        case .v7: return "7"
+        case .v6: return "6"
+        }
+    }
+}
+
 enum QuickListType: String, CaseIterable, Identifiable {
     case keywords
     case personShown
@@ -72,6 +115,14 @@ enum QuickListType: String, CaseIterable, Identifiable {
 final class SettingsViewModel {
     var rawRenderAsHDR: Bool {
         didSet { UserDefaults.standard.set(rawRenderAsHDR, forKey: UserDefaultsKeys.rawRenderAsHDR) }
+    }
+
+    var rawDecodeProfile: RAWDecodeProfile {
+        didSet { UserDefaults.standard.set(rawDecodeProfile.rawValue, forKey: UserDefaultsKeys.rawDecodeProfile) }
+    }
+
+    var rawDecoderVersionPreference: RAWDecoderVersionPreference {
+        didSet { UserDefaults.standard.set(rawDecoderVersionPreference.rawValue, forKey: UserDefaultsKeys.rawDecoderVersionPreference) }
     }
 
     var showAllFiles: Bool {
@@ -495,6 +546,10 @@ final class SettingsViewModel {
 
     init() {
         self.rawRenderAsHDR = UserDefaults.standard.bool(forKey: UserDefaultsKeys.rawRenderAsHDR)
+        let decodeProfileRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.rawDecodeProfile)
+        self.rawDecodeProfile = RAWDecodeProfile(rawValue: decodeProfileRaw ?? "") ?? .native
+        let decoderVersionRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.rawDecoderVersionPreference)
+        self.rawDecoderVersionPreference = RAWDecoderVersionPreference(rawValue: decoderVersionRaw ?? "") ?? .auto
         self.showAllFiles = UserDefaults.standard.bool(forKey: UserDefaultsKeys.showAllFiles)
 
         self.showOriginalThumbnails = UserDefaults.standard.bool(forKey: UserDefaultsKeys.showOriginalThumbnails)

@@ -52,7 +52,7 @@ struct XMPSidecarService: Sendable {
         return String(data: data, encoding: .utf8) ?? "Unable to read XMP sidecar"
     }
 
-    func loadSidecar(for imageURL: URL) -> IPTCMetadata? {
+    nonisolated func loadSidecar(for imageURL: URL) -> IPTCMetadata? {
         guard let data = sidecarDataIfExists(for: imageURL) else { return nil }
         return loadSidecar(fromData: data, imageAspect: { ImagePixelAspect.aspect(at: imageURL) })
     }
@@ -60,7 +60,7 @@ struct XMPSidecarService: Sendable {
     /// Parses already-read XMP bytes into IPTCMetadata. `imageAspect` supplies the image's
     /// sensor-frame width/height ratio for the ACR angled-crop conversion; it is only invoked when
     /// the sidecar carries an angled crop (the conversion is the identity at angle 0).
-    func loadSidecar(fromData data: Data, imageAspect: () -> Double? = { nil }) -> IPTCMetadata? {
+    nonisolated func loadSidecar(fromData data: Data, imageAspect: () -> Double? = { nil }) -> IPTCMetadata? {
         guard let xmp = try? XMPReader.readFromXML(data) else { return nil }
         return parseMetadata(from: xmp, imageAspect: imageAspect)
     }
@@ -149,7 +149,7 @@ struct XMPSidecarService: Sendable {
 
     // MARK: - Read
 
-    private func parseMetadata(from xmp: XMPData, imageAspect: () -> Double?) -> IPTCMetadata {
+    nonisolated private func parseMetadata(from xmp: XMPData, imageAspect: () -> Double?) -> IPTCMetadata {
         var dict = ImageMetadata(xmp: xmp).asMetadataDict()
         fillXMPOnlyGaps(&dict, xmp: xmp, imageAspect: imageAspect)
         return iptcMetadataFromDict(dict)
@@ -159,7 +159,7 @@ struct XMPSidecarService: Sendable {
     /// a sidecar-only `ImageMetadata(xmp:)` lacks. Fill those three from XMP, and seed the sensor
     /// dimensions for the angled-crop conversion (which otherwise reads dimensions a sidecar dict
     /// has none of) — all the other descriptive + crs fields `asMetadataDict` already covers.
-    private func fillXMPOnlyGaps(_ dict: inout [String: Any], xmp: XMPData, imageAspect: () -> Double?) {
+    nonisolated private func fillXMPOnlyGaps(_ dict: inout [String: Any], xmp: XMPData, imageAspect: () -> Double?) {
         // Orientation — tiff authoritative, exif fallback (matches the old reader).
         let orientationString = xmp.tiffOrientation
             ?? xmp.simpleValue(namespace: XMPNamespace.exif, property: "Orientation")
@@ -254,7 +254,7 @@ struct XMPSidecarService: Sendable {
     /// Sensor-frame aspect for the ACR crop-convention conversion — read from the image header only
     /// when the crop is angled (the conversion is the identity at angle 0, so straight crops skip
     /// the file I/O).
-    private func imageAspectIfCropAngled(for imageURL: URL, crop: CameraRawCrop?) -> Double? {
+    nonisolated private func imageAspectIfCropAngled(for imageURL: URL, crop: CameraRawCrop?) -> Double? {
         guard let crop, abs(crop.angle ?? 0) > 0.0001 else { return nil }
         return ImagePixelAspect.aspect(at: imageURL)
     }

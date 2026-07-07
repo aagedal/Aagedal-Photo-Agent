@@ -16,6 +16,8 @@ struct FaceGroupCardCallbacks {
     var onToggleExpand: ((UUID) -> Void)?
     var onOpenFullScreen: ((URL, UUID?) -> Void)?
     var onPhotosDeleted: ((Set<URL>) -> Void)?
+    /// Sports lens: name this group from the team roster by entering a number + team.
+    var onNameFromTeamSheet: ((UUID) -> Void)?
 }
 
 // MARK: - Face Thumbnail Subview
@@ -433,7 +435,10 @@ final class FaceGroupCardView: NSView {
         // Header
         let isUnmatched = group.id == FaceRecognitionViewModel.unmatchedGroupID
         let name = isUnmatched ? "Unmatched Faces" : (group.name ?? "Unnamed")
-        nameLabel.stringValue = name
+        // Prefix the player's jersey number in sports mode (display only — the number is
+        // never folded into group.name, so it can't leak into Person Shown metadata).
+        let number = isUnmatched ? nil : viewModel.groupNumber(group.id)
+        nameLabel.stringValue = number.map { "#\($0)  \(name)" } ?? name
         nameLabel.textColor = isUnmatched ? .tertiaryLabelColor : (group.name != nil ? .labelColor : .secondaryLabelColor)
         nameLabel.font = .systemFont(ofSize: 13, weight: .semibold)
 
@@ -869,6 +874,22 @@ final class FaceGroupCardView: NSView {
         renameItem.target = self
         menu.addItem(renameItem)
 
+        // Sports lens: name the group from the roster by jersey number + team — for when the
+        // photographer can read the number but doesn't remember who wears it (or OCR missed it).
+        if viewModel?.activeLens == .sports, viewModel?.matchRoster?.isReady == true {
+            let fromSheetItem = NSMenuItem(title: "Name from Team Sheet…", action: #selector(menuNameFromTeamSheet), keyEquivalent: "")
+            fromSheetItem.target = self
+            menu.addItem(fromSheetItem)
+        }
+
+        // Sports lens: hand-assign the jersey number when OCR missed it and there's no
+        // roster to resolve it from. Display-only; never written to Person Shown.
+        if viewModel?.activeLens == .sports {
+            let assignNumberItem = NSMenuItem(title: "Assign Number…", action: #selector(menuAssignNumber), keyEquivalent: "")
+            assignNumberItem.target = self
+            menu.addItem(assignNumberItem)
+        }
+
         if group.name != nil {
             let applyItem = NSMenuItem(title: "Apply Name to Metadata", action: #selector(menuApplyName), keyEquivalent: "")
             applyItem.target = self
@@ -901,6 +922,37 @@ final class FaceGroupCardView: NSView {
 
     @objc private func menuRename() {
         startEditing()
+    }
+
+    @objc private func menuNameFromTeamSheet() {
+        guard let groupID else { return }
+        callbacks.onNameFromTeamSheet?(groupID)
+    }
+
+    @objc private func menuAssignNumber() {
+        guard let groupID, let viewModel else { return }
+        let alert = NSAlert()
+        alert.messageText = "Assign Jersey Number"
+        alert.informativeText = "Enter a number (0–99), or leave blank to clear. This labels the group only — it isn't written to Person Shown."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
+        field.placeholderString = "Number"
+        // Pre-fill with the current manual number, falling back to the resolved one so an
+        // OCR'd/roster number can be corrected in place.
+        if let current = currentGroup?.manualNumber ?? viewModel.groupNumber(groupID) {
+            field.stringValue = "\(current)"
+        }
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Assign")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let trimmed = field.stringValue.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty {
+            viewModel.setManualNumber(nil, forGroup: groupID)
+        } else if let number = Int(trimmed), (0...99).contains(number) {
+            viewModel.setManualNumber(number, forGroup: groupID)
+        }
     }
 
     @objc private func menuSplitAllUnmatched() {

@@ -112,6 +112,9 @@ nonisolated struct FaceGroup: Codable, Identifiable {
     var faceIDs: [UUID]
     /// Groups explicitly created by the user (split, move-to-new-group) are excluded from the synthetic "Unmatched Faces" group.
     var userCreated: Bool?
+    /// A jersey number assigned by hand (sports mode). Display-only — it labels the group
+    /// and overrides OCR'd/roster numbers, but is never written into the name or Person Shown.
+    var manualNumber: Int?
 }
 
 // MARK: - Lenses
@@ -152,7 +155,7 @@ nonisolated enum FaceLens: String, Codable, CaseIterable, Sendable {
         switch self {
         case .face: "Groups people by who they are."
         case .redCarpet: "Same people groups — clothing suggests extra merges when faces are weak."
-        case .sports: "Same people groups — jersey numbers merge groups and catch back-turned players."
+        case .sports: "Names players from jersey numbers — review each claim before it's written."
         case .expression: "Groups by look and expression, not identity."
         }
     }

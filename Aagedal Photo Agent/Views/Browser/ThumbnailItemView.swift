@@ -57,6 +57,9 @@ final class ThumbnailItemView: NSView {
 
     private var currentData: ThumbnailCellData?
     private var currentScale: Double = 1.0
+    /// Height reserved below the image for the filename + rating/label row. Must match the
+    /// controller's cell-height math (CollectionViewGridController.textAreaHeight).
+    static let textAreaHeight: CGFloat = 44
 
     // MARK: - Badge images (rendered once at 2x for Retina, shared)
 
@@ -283,7 +286,10 @@ final class ThumbnailItemView: NSView {
         let w = bounds.width
         let padding: CGFloat = 6
         let imageWidth = w - padding * 2
-        let imageHeight = 140 * currentScale
+        // The image box fills the cell minus the top padding and the text area below
+        // (filename + rating row). The controller sizes the cell so this height keeps the
+        // image-box aspect ratio; deriving from bounds keeps fill-the-row cells proportional.
+        let imageHeight = max(bounds.height - padding - Self.textAreaHeight, 1)
         let imageFrame = CGRect(x: padding, y: bounds.height - padding - imageHeight, width: imageWidth, height: imageHeight)
         imageLayer.frame = imageFrame
 

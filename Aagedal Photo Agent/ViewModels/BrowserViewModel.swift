@@ -139,10 +139,14 @@ final class BrowserViewModel {
     var copiedIPTCMetadata: IPTCMetadata?
 
     let fileSystemService = FileSystemService()
-    let thumbnailService = ThumbnailService()
+    /// Injected so split-view panes can share a single decode gate + NSCache rather than
+    /// each pane spinning up its own (which would double concurrent decodes and thrash).
+    let thumbnailService: ThumbnailService
     let metadataReadService = SwiftExifReadService()
     @ObservationIgnored private(set) var writeEngine: any MetadataWriteEngine = SwiftExifWriteEngine()
-    @ObservationIgnored let fullScreenImageCache = FullScreenImageCache()
+    /// Injected for the same reason as `thumbnailService` — sharing one IOSurface pool across
+    /// panes avoids doubling full-screen-preview memory pressure.
+    @ObservationIgnored let fullScreenImageCache: FullScreenImageCache
     /// Content token (size+mtime) the thumbnail caches were last populated under, per
     /// URL, surviving folder navigation. Lets `loadFolder` drop a stale thumbnail when a
     /// file was replaced at a path it previously occupied (delete + re-export) while the
@@ -206,7 +210,10 @@ final class BrowserViewModel {
 
     @ObservationIgnored private(set) var selectedImagesCache: [ImageFile] = []
 
-    init() {
+    init(thumbnailService: ThumbnailService = ThumbnailService(),
+         fullScreenImageCache: FullScreenImageCache = FullScreenImageCache()) {
+        self.thumbnailService = thumbnailService
+        self.fullScreenImageCache = fullScreenImageCache
         if let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.thumbnailSortOrder),
            let stored = SortOrder(rawValue: raw) {
             sortOrder = stored
@@ -400,15 +407,23 @@ final class BrowserViewModel {
         // pre-cache into the matching slot (an edited render must NEVER land in
         // the unedited slot, or stale edits shadow the original).
         let isEdited = !showOriginalThumbnails
-        guard fullScreenImageCache.cachedImage(for: url, isEdited: isEdited) == nil else { return }
-
         let imageFile = images[index]
+        let orientation = FullScreenImageCache.displayOrientation(for: url, fallback: imageFile.exifOrientation)
+        let cameraRaw = showOriginalThumbnails
+            ? nil
+            : (imageFile.cameraRawSettings ?? XMPSidecarService().loadSidecar(for: url)?.cameraRaw)
+        let renderToken = FullScreenImageCache.renderToken(settings: cameraRaw, isEdited: isEdited)
+        guard fullScreenImageCache.cachedImage(
+            for: url,
+            orientation: orientation,
+            renderToken: renderToken,
+            isEdited: isEdited
+        ) == nil else { return }
+
         let screenScale = NSScreen.main?.backingScaleFactor ?? 2.0
         let screenLogicalPx = max(NSScreen.main?.frame.width ?? 3840,
                                    NSScreen.main?.frame.height ?? 2160)
         let screenMaxPx = screenLogicalPx * screenScale
-        let cameraRaw = showOriginalThumbnails ? nil : imageFile.cameraRawSettings
-        let orientation = imageFile.exifOrientation
 
         retinaPreCacheTask = Task.detached(priority: .utility) { [weak self] in
             guard let self, !Task.isCancelled else { return }
@@ -421,7 +436,13 @@ final class BrowserViewModel {
             guard let image = await FullScreenImageCache.decodedEditedPreview(
                 for: url, settings: cameraRaw, orientation: orientation, screenMaxPx: screenMaxPx
             ), !Task.isCancelled else { return }
-            self.fullScreenImageCache.store(image, for: url, isEdited: isEdited)
+            self.fullScreenImageCache.store(
+                image,
+                for: url,
+                orientation: orientation,
+                renderToken: renderToken,
+                isEdited: isEdited
+            )
         }
     }
 
@@ -555,15 +576,31 @@ final class BrowserViewModel {
         // into Open Folders, no matter which entry point opened them (tap,
         // Open Recent, drag-and-drop, import).
         let isFavoriteRoot = favoriteFolders.contains { $0.url == url }
-        if addToOpenFolders && !isFavoriteRoot && !openFolders.contains(url) && !isSubfolderOfOpenFolder(url) {
-            openFolders.append(url)
+        if addToOpenFolders && !isFavoriteRoot && !isSubfolderOfOpenFolder(url) {
+            if !openFolders.contains(url) {
+                openFolders.append(url)
+            }
+            // Announce so the shared sidebar (primary pane) lists this root even when a
+            // non-primary split-view pane opened it. Idempotent on the primary.
+            NotificationCenter.default.post(name: .browserDidOpenRootFolder, object: url)
         }
 
         loadFolderTask = Task {
             do {
                 // Phase 1: Scan folder and show grid immediately
-                let files = try await fileSystemService.scanFolder(at: url, includeAllFiles: showAllFiles)
+                var files = try await fileSystemService.scanFolder(at: url, includeAllFiles: showAllFiles)
                 guard !Task.isCancelled, self.currentFolderURL == url else { return }
+                // Same-folder reload: carry over already-known display orientations.
+                // scanFolder returns default orientation 1 and the eager/batch reads
+                // that repopulate it are async — without this, a mid-session reload
+                // transiently resets every rotation, and an open edit view re-renders
+                // at the wrong orientation until those passes catch up. (No-op on a
+                // genuine folder switch: no URLs match.)
+                for index in files.indices {
+                    if let existingIndex = self.urlToImageIndex[files[index].url] {
+                        files[index].exifOrientation = self.images[existingIndex].exifOrientation
+                    }
+                }
                 self.reconcileThumbnailCaches(against: files)
                 self.images = files
                 self.rebuildNow()
@@ -588,6 +625,13 @@ final class BrowserViewModel {
                     self.suppressImagesCascade = true
                     for file in nonDefault {
                         guard let index = self.urlToImageIndex[file.url] else { continue }
+                        if self.images[index].exifOrientation != file.exifOrientation {
+                            self.logger.info("[\(file.url.lastPathComponent, privacy: .public)] eager orientation (loadFolder) \(self.images[index].exifOrientation) → \(file.exifOrientation)")
+                            // See applyBatchMetadataResults: drop model-orientation-derived
+                            // renders produced under the old value.
+                            self.thumbnailService.invalidateEditedThumbnail(for: file.url)
+                            self.fullScreenImageCache.invalidateImage(for: file.url)
+                        }
                         self.images[index].exifOrientation = file.exifOrientation
                     }
                     self.suppressImagesCascade = false
@@ -746,6 +790,9 @@ final class BrowserViewModel {
                 if !orientations.isEmpty {
                     for index in merged.indices {
                         if let orientation = orientations[merged[index].url] {
+                            if merged[index].exifOrientation != orientation {
+                                logger.info("[\(merged[index].url.lastPathComponent, privacy: .public)] eager orientation (refresh newURLs) \(merged[index].exifOrientation) → \(orientation)")
+                            }
                             merged[index].exifOrientation = orientation
                         }
                     }
@@ -801,16 +848,25 @@ final class BrowserViewModel {
         }
     }
 
-    /// Read EXIF orientation (metadata-only) for the given image URLs off the main actor,
-    /// in parallel. Returns only non-default (≠1) orientations; callers leave the rest at
-    /// the default upright value. `nonisolated` so the per-file `CGImageSource` I/O runs on
-    /// the global executor, never blocking the MainActor — shared by the initial eager read
-    /// and the incremental auto-refresh path.
+    /// Read the display orientation for the given image URLs off the main actor, in
+    /// parallel. The XMP sidecar is authoritative when present (RAW/C2PA rotations are
+    /// sidecar-only and never touch the file), falling back to the file's embedded tag —
+    /// mirroring `ThumbnailService.orientedToSidecar` so the model, the thumbnails, and
+    /// the edit view all derive orientation from the same source. Reading only the
+    /// embedded tag here silently reverted sidecar rotations whenever this eager read
+    /// ran after the XMP-aware batch pass (edit view upside down vs. its own thumbnail).
+    /// Returns only non-default (≠1) orientations; callers leave the rest at the default
+    /// upright value. `nonisolated` so the per-file I/O runs on the global executor,
+    /// never blocking the MainActor — shared by the initial eager read and the
+    /// incremental auto-refresh path.
     private nonisolated static func readOrientations(for urls: [URL]) async -> [URL: Int] {
         guard !urls.isEmpty else { return [:] }
         return await withTaskGroup(of: (URL, Int)?.self) { group in
             for url in urls {
                 group.addTask {
+                    if let sidecarOrientation = XMPSidecarService().sidecarOrientation(for: url) {
+                        return sidecarOrientation != 1 ? (url, sidecarOrientation) : nil
+                    }
                     guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
                           let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
                           let orientation = props[kCGImagePropertyOrientation] as? Int,
@@ -951,6 +1007,7 @@ final class BrowserViewModel {
                 updated[index].hasC2PA = TechnicalMetadata.dictHasC2PA(dict)
                 updated[index].hasDevelopEdits = hasDevelopEdits(in: dict)
                 updated[index].hasCropEdits = hasCropEdits(in: dict)
+                let previousOrientation = updated[index].exifOrientation
                 updated[index].exifOrientation = parseIntValue(dict[MetadataDictKey.orientation]) ?? 1
                 updated[index].isNativeHDR = SupportedImageFormats.isHDR(url: sourceURL)
                     || (UserDefaults.standard.bool(forKey: UserDefaultsKeys.rawRenderAsHDR) && SupportedImageFormats.isRaw(url: sourceURL))
@@ -1039,6 +1096,18 @@ final class BrowserViewModel {
                         updated[index].cropRegion = cropRegion(
                             in: dict, exifOrientation: xmpOrientation)
                     }
+                }
+                if updated[index].exifOrientation != previousOrientation {
+                    let newOrientation = updated[index].exifOrientation
+                    let dictOrientation = parseIntValue(dict[MetadataDictKey.orientation]) ?? -1
+                    logger.info("[\(sourceURL.lastPathComponent, privacy: .public)] batch metadata orientation \(previousOrientation) → \(newOrientation) (dict=\(dictOrientation), xmp=\(xmpMeta?.exifOrientation ?? -1))")
+                    // Renders keyed off the model orientation (edited grid thumbs, loupe
+                    // prefetch/warm entries) were produced under the old value — drop them
+                    // or the loupe serves a stale-orientation frame until something else
+                    // forces a re-render. Base thumbnails/previews read the sidecar at
+                    // generation time and don't need this.
+                    thumbnailService.invalidateEditedThumbnail(for: sourceURL)
+                    fullScreenImageCache.invalidateImage(for: sourceURL)
                 }
 
                 // Populate the descriptive IPTC record for the grid. Without this, `metadata`
@@ -1496,6 +1565,7 @@ final class BrowserViewModel {
         var newOrientations: [URL: Int] = [:]
         for image in selectedImages {
             newOrientations[image.url] = ImageFile.orientationAfterClockwiseRotation(image.exifOrientation)
+            logger.info("[\(image.url.lastPathComponent, privacy: .public)] rotateClockwise \(image.exifOrientation) → \(newOrientations[image.url] ?? -1)")
         }
         applyMetadataField(
             updateImage: { image in
@@ -1539,6 +1609,7 @@ final class BrowserViewModel {
         var newOrientations: [URL: Int] = [:]
         for image in selectedImages {
             newOrientations[image.url] = ImageFile.orientationAfterCounterclockwiseRotation(image.exifOrientation)
+            logger.info("[\(image.url.lastPathComponent, privacy: .public)] rotateCounterclockwise \(image.exifOrientation) → \(newOrientations[image.url] ?? -1)")
         }
         applyMetadataField(
             updateImage: { image in
@@ -1995,6 +2066,74 @@ final class BrowserViewModel {
         }
     }
 
+    /// Re-scans the given folders' direct subfolders off MainActor and writes the
+    /// result back, the shared worker behind both the periodic and manual refresh.
+    /// Selection (`currentFolderURL`) and expansion (`expandedFavoriteFolders` /
+    /// `expandedOpenFolders`) are keyed independently of the child cache, so
+    /// replacing a child array never disturbs what's selected or open.
+    ///
+    /// A failed scan returns nil (distinct from a genuinely empty folder) and is
+    /// skipped, so a transient permission/IO hiccup during a background pass can't
+    /// blank out a folder that's really still there. When `force` is false the
+    /// cache is only reassigned if the contents actually changed, avoiding needless
+    /// view churn on the 10s tick.
+    private func rescanSubfolders(_ urls: Set<URL>, force: Bool) {
+        guard !urls.isEmpty else { return }
+        let service = fileSystemService
+        Task.detached(priority: .utility) {
+            let results: [(URL, [URL]?)] = await withTaskGroup(of: (URL, [URL]?).self) { group in
+                for url in urls {
+                    group.addTask {
+                        let subs = try? service.listSubfolders(at: url)
+                        return (url, subs)
+                    }
+                }
+                var out: [(URL, [URL]?)] = []
+                for await pair in group { out.append(pair) }
+                return out
+            }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                for (url, subs) in results {
+                    guard let subs else { continue }
+                    if force || self.subfoldersByOpenFolder[url] != subs {
+                        self.subfoldersByOpenFolder[url] = subs
+                        self.prefetchGrandchildren(of: url)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Periodic (~10s) sweep that keeps every visible folder's child list in sync
+    /// with disk, so subfolders created/renamed/removed externally show up without a
+    /// manual reopen. Only scans folders whose children are actually on screen:
+    /// favorite roots (always shown) and any expanded folder already in the cache.
+    func refreshExpandedSubfolders() {
+        var toScan: Set<URL> = Set(favoriteFolders.map(\.url))
+        toScan.formUnion(expandedFavoriteFolders)
+        toScan.formUnion(expandedOpenFolders)
+        let urls = toScan.filter { subfoldersByOpenFolder[$0] != nil }
+        rescanSubfolders(Set(urls), force: false)
+    }
+
+    /// Manual refresh (right-click → Refresh): force a re-scan of `url` plus any of
+    /// its currently-expanded descendants, so a deep refresh updates the whole open
+    /// subtree the user is looking at.
+    func refreshSubfolders(for url: URL) {
+        var toScan: Set<URL> = [url]
+        func collectExpanded(_ parent: URL) {
+            guard let children = subfoldersByOpenFolder[parent] else { return }
+            for child in children
+            where expandedFavoriteFolders.contains(child) || expandedOpenFolders.contains(child) {
+                toScan.insert(child)
+                collectExpanded(child)
+            }
+        }
+        collectExpanded(url)
+        rescanSubfolders(toScan, force: true)
+    }
+
     /// Recursively removes all cached subfolder entries rooted at a URL.
     private func removeSubfolderCacheRecursively(for url: URL) {
         guard let children = subfoldersByOpenFolder.removeValue(forKey: url) else { return }
@@ -2041,6 +2180,23 @@ final class BrowserViewModel {
             openFolders.append(url)
         }
         loadFolder(url: url)
+    }
+
+    /// Add a folder to this view model's Open Folders list (and discover its
+    /// subfolders for the tree) WITHOUT loading its images. Used so a folder opened
+    /// into another split-view pane still appears in the single, shared sidebar,
+    /// which is always backed by the primary pane.
+    func registerOpenFolderForSidebar(_ url: URL) {
+        guard !favoriteFolders.contains(where: { $0.url == url }),
+              !openFolders.contains(url),
+              !isSubfolderOfOpenFolder(url) else { return }
+        openFolders.append(url)
+        guard subfoldersByOpenFolder[url] == nil else { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let subs = (try? self.fileSystemService.listSubfolders(at: url)) ?? []
+            self.subfoldersByOpenFolder[url] = subs
+        }
     }
 
     var showTrashSubfolderConfirmation = false
@@ -3041,7 +3197,7 @@ final class BrowserViewModel {
             // Replace the whole crs block: clears masks, tone curves, and any
             // settings ACR wrote that the app doesn't manage — a reset means
             // no develop settings remain, whoever authored them.
-            let structuredData = StructuredWriteData(masks: [], replaceCameraRawBlock: true)
+            let structuredData = StructuredWriteData(masks: [], watermarkLayers: [], replaceCameraRawBlock: true)
 
             // RAW files keep their CRS in the XMP sidecar (cleared above) — never embed
             // into the RAW container, which corrupts proprietary maker data (e.g. Sony's
