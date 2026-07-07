@@ -594,6 +594,9 @@ struct BrushMaskOverlayRepresentable: NSViewRepresentable {
     let onStrokeChanged: (BrushStroke, Int) -> Void
     /// Called on mouse-up with the whole gesture's dabs (display frame) for one model commit.
     let onStrokeEnded: (BrushStroke) -> Void
+    /// Photoshop-style brush HUD adjustment. Horizontal drag changes size, vertical drag changes
+    /// hardness; this updates transient brush settings only and does not paint.
+    let onBrushSettingsChanged: (_ radius: Double, _ hardness: Double) -> Void
 
     func makeNSView(context: Context) -> BrushMaskOverlayNSView {
         let view = BrushMaskOverlayNSView(coordinator: context.coordinator)
@@ -637,10 +640,16 @@ final class BrushMaskOverlayNSView: NSView {
 
     // Active gesture state.
     private var isPainting = false
+    private var isAdjustingBrush = false
     private var targetLayer = 0
     private var allDabs: [BrushDab] = []
     private var lastDabImagePx: CGPoint?
     private var cursorPoint: CGPoint?
+    private var adjustStartPoint: CGPoint = .zero
+    private var adjustStartRadius: Double = 0.04
+    private var adjustStartHardness: Double = 0.5
+    private var adjustDelta: CGPoint = .zero
+    private var isMouseCursorDetached = false
 
     init(coordinator: BrushMaskOverlayRepresentable.Coordinator) {
         self.coordinator = coordinator
@@ -648,6 +657,10 @@ final class BrushMaskOverlayNSView: NSView {
         wantsLayer = true
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    deinit {
+        restoreMouseCursorIfNeeded()
+    }
 
     override var isFlipped: Bool { true }        // top-left origin, y-down — matches UV space
     override var acceptsFirstResponder: Bool { true }
@@ -697,17 +710,48 @@ final class BrushMaskOverlayNSView: NSView {
     private func makeStroke(_ dabs: [BrushDab]) -> BrushStroke {
         BrushStroke(dabs: dabs, radius: radius, density: 1.0, erase: erase)
     }
+    private func isBrushAdjustmentShortcut(_ event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        return modifiers.contains(.option) && modifiers.contains(.control)
+    }
+    private func clamped(_ value: Double, to range: ClosedRange<Double>) -> Double {
+        min(max(value, range.lowerBound), range.upperBound)
+    }
+    private func detachMouseCursorForAdjustment() {
+        guard !isMouseCursorDetached else { return }
+        if CGAssociateMouseAndMouseCursorPosition(0) == .success {
+            isMouseCursorDetached = true
+        }
+    }
+    private func restoreMouseCursorIfNeeded() {
+        guard isMouseCursorDetached else { return }
+        CGAssociateMouseAndMouseCursorPosition(1)
+        isMouseCursorDetached = false
+    }
 
     // MARK: Mouse
 
     override func mouseDown(with event: NSEvent) {
+        let loc = convert(event.locationInWindow, from: nil)
+        cursorPoint = loc
+
+        if isBrushAdjustmentShortcut(event) {
+            isAdjustingBrush = true
+            isPainting = false
+            adjustStartPoint = loc
+            adjustStartRadius = radius
+            adjustStartHardness = hardness
+            adjustDelta = .zero
+            detachMouseCursorForAdjustment()
+            needsDisplay = true
+            return
+        }
+
         guard let coordinator, imageSize.width > 0,
               let layer = coordinator.parent.onStrokeBegan() else { return }
         isPainting = true
         targetLayer = layer
         allDabs.removeAll(keepingCapacity: true)
-        let loc = convert(event.locationInWindow, from: nil)
-        cursorPoint = loc
         let uvPoint = uv(for: loc)
         let dab = makeDab(at: uvPoint)
         allDabs.append(dab)
@@ -717,6 +761,19 @@ final class BrushMaskOverlayNSView: NSView {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if isAdjustingBrush, let coordinator {
+            cursorPoint = adjustStartPoint
+            adjustDelta.x += event.deltaX
+            adjustDelta.y += event.deltaY
+            let newRadius = clamped(adjustStartRadius * pow(2.0, Double(adjustDelta.x) / 180.0), to: 0.005...0.20)
+            let newHardness = clamped(adjustStartHardness - Double(adjustDelta.y) / 300.0, to: 0...1)
+            radius = newRadius
+            hardness = newHardness
+            coordinator.parent.onBrushSettingsChanged(newRadius, newHardness)
+            needsDisplay = true
+            return
+        }
+
         guard isPainting, let coordinator else { return }
         let loc = convert(event.locationInWindow, from: nil)
         cursorPoint = loc
@@ -743,6 +800,14 @@ final class BrushMaskOverlayNSView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        if isAdjustingBrush {
+            isAdjustingBrush = false
+            adjustDelta = .zero
+            restoreMouseCursorIfNeeded()
+            needsDisplay = true
+            return
+        }
+
         guard isPainting, let coordinator else { return }
         isPainting = false
         let stroke = makeStroke(allDabs)
@@ -751,6 +816,30 @@ final class BrushMaskOverlayNSView: NSView {
         needsDisplay = true
         guard !stroke.dabs.isEmpty else { return }
         coordinator.parent.onStrokeEnded(stroke)
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        if isBrushAdjustmentShortcut(event) {
+            mouseDown(with: event)
+        } else {
+            super.rightMouseDown(with: event)
+        }
+    }
+
+    override func rightMouseDragged(with event: NSEvent) {
+        if isAdjustingBrush {
+            mouseDragged(with: event)
+        } else {
+            super.rightMouseDragged(with: event)
+        }
+    }
+
+    override func rightMouseUp(with event: NSEvent) {
+        if isAdjustingBrush {
+            mouseUp(with: event)
+        } else {
+            super.rightMouseUp(with: event)
+        }
     }
 
     override func mouseMoved(with event: NSEvent) {
@@ -767,15 +856,37 @@ final class BrushMaskOverlayNSView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         guard let point = cursorPoint else { return }
         let r = screenRadius
-        let rect = NSRect(x: point.x - r, y: point.y - r, width: r * 2, height: r * 2)
-        // Double-stroked ring (light over dark) stays visible over any image content.
-        NSColor.black.withAlphaComponent(0.55).setStroke()
-        let outer = NSBezierPath(ovalIn: rect)
-        outer.lineWidth = 2.5
-        outer.stroke()
-        (erase ? NSColor.systemRed : NSColor.white).setStroke()
-        let inner = NSBezierPath(ovalIn: rect)
-        inner.lineWidth = 1.0
-        inner.stroke()
+        let accentColor = erase ? NSColor.systemRed : NSColor.white
+
+        func strokeRing(radius: CGFloat, lightWidth: CGFloat, darkWidth: CGFloat, alpha: CGFloat, dashed: Bool = false) {
+            guard radius > 0 else { return }
+            let rect = NSRect(x: point.x - radius, y: point.y - radius, width: radius * 2, height: radius * 2)
+            let shadow = NSBezierPath(ovalIn: rect)
+            shadow.lineWidth = darkWidth
+            if dashed {
+                var dash: [CGFloat] = [5, 4]
+                shadow.setLineDash(&dash, count: dash.count, phase: 0)
+            }
+            NSColor.black.withAlphaComponent(0.55 * alpha).setStroke()
+            shadow.stroke()
+
+            let highlight = NSBezierPath(ovalIn: rect)
+            highlight.lineWidth = lightWidth
+            if dashed {
+                var dash: [CGFloat] = [5, 4]
+                highlight.setLineDash(&dash, count: dash.count, phase: 0)
+            }
+            accentColor.withAlphaComponent(alpha).setStroke()
+            highlight.stroke()
+        }
+
+        strokeRing(radius: r, lightWidth: 1.0, darkWidth: 2.5, alpha: 1.0)
+
+        // Inner ring shows brush hardness: inside it is full-strength paint, outside it feathers
+        // to the outer edge. At 100% hardness it coincides with the edge, so the outer ring is enough.
+        let hardRadius = r * CGFloat(clamped(hardness, to: 0...1))
+        if hardRadius > 2, hardRadius < r - 1 {
+            strokeRing(radius: hardRadius, lightWidth: 0.75, darkWidth: 2.0, alpha: 0.85, dashed: true)
+        }
     }
 }

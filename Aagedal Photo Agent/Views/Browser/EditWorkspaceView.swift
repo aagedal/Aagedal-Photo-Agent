@@ -4533,7 +4533,11 @@ struct EditWorkspaceView: View {
                 erase: brushErase,
                 onStrokeBegan: { ensureBrushTarget() },
                 onStrokeChanged: { stroke, layer in liveBrushStamp(stroke, layer: layer) },
-                onStrokeEnded: { stroke in commitBrushStroke(stroke) }
+                onStrokeEnded: { stroke in commitBrushStroke(stroke) },
+                onBrushSettingsChanged: { radius, hardness in
+                    brushRadius = radius
+                    brushHardness = hardness
+                }
             )
             .frame(width: viewSize.width, height: viewSize.height)
         }
