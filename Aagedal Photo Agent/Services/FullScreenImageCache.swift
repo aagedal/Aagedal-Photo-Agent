@@ -19,7 +19,7 @@ final class FullScreenImageCache: @unchecked Sendable {
     nonisolated(unsafe) private let editedCache = NSCache<NSString, CGImage>()
     nonisolated(unsafe) private let editedDisplayPreviewCache = NSCache<NSString, CGImage>()
 
-    nonisolated(unsafe) private var prefetchTasks: [URL: Task<Void, Never>] = [:]
+    nonisolated(unsafe) private var prefetchTasks: [PrefetchKey: Task<Void, Never>] = [:]
     nonisolated(unsafe) private var previewGenerationTask: Task<Void, Never>?
     nonisolated(unsafe) private var _isGeneratingPreviews = false
     nonisolated(unsafe) private var _previewsCompleted = 0
@@ -32,6 +32,13 @@ final class FullScreenImageCache: @unchecked Sendable {
     /// prefetch removes that out-of-band libxml2 consumer for the duration of editing.
     nonisolated(unsafe) private var _prefetchSuppressed = false
     private let lock = NSLock()
+
+    private struct PrefetchKey: Hashable, Sendable {
+        let url: URL
+        let orientation: Int?
+        let renderToken: String?
+        let isEdited: Bool
+    }
 
     init() {
         cache.countLimit = 12
@@ -139,8 +146,8 @@ final class FullScreenImageCache: @unchecked Sendable {
         editedDisplayPreviewCache.removeAllObjects()
         // Cancel any in-flight prefetch for this URL — otherwise after a move/delete
         // it'll resume against a missing path and log a flood of IIOImageSource errors.
-        let prefetch = lock.withLock { prefetchTasks.removeValue(forKey: url) }
-        prefetch?.cancel()
+        let prefetches = lock.withLock { removePrefetchTasksLocked(for: url) }
+        for prefetch in prefetches { prefetch.cancel() }
     }
 
     /// Drop only the edited (rendered) cache entries for one URL — the unedited RAW
@@ -150,8 +157,8 @@ final class FullScreenImageCache: @unchecked Sendable {
     nonisolated func invalidateEditedImage(for url: URL) {
         editedCache.removeAllObjects()
         editedDisplayPreviewCache.removeAllObjects()
-        let prefetch = lock.withLock { prefetchTasks.removeValue(forKey: url) }
-        prefetch?.cancel()
+        let prefetches = lock.withLock { removePrefetchTasksLocked(for: url) }
+        for prefetch in prefetches { prefetch.cancel() }
     }
 
     /// Clear edited caches only (e.g. when edit parameters change globally).
@@ -334,9 +341,10 @@ final class FullScreenImageCache: @unchecked Sendable {
 
         let tasksToCancel = lock.withLock { () -> [Task<Void, Never>] in
             var toCancel: [Task<Void, Never>] = []
-            for (url, task) in prefetchTasks where !targetURLs.contains(url) {
+            let keysToCancel = prefetchTasks.keys.filter { !targetURLs.contains($0.url) }
+            for key in keysToCancel {
+                guard let task = prefetchTasks.removeValue(forKey: key) else { continue }
                 toCancel.append(task)
-                prefetchTasks.removeValue(forKey: url)
             }
             return toCancel
         }
@@ -350,6 +358,12 @@ final class FullScreenImageCache: @unchecked Sendable {
                 Self.displayOrientation(for: url, fallback: $0)
             }
             let renderToken = Self.renderToken(settings: settings, isEdited: isEdited)
+            let prefetchKey = PrefetchKey(
+                url: url,
+                orientation: cacheOrientation,
+                renderToken: renderToken,
+                isEdited: isEdited
+            )
 
             // Atomically check cache/prefetch state AND register the task to prevent
             // a race where two concurrent callers both pass the guard and create duplicates.
@@ -360,11 +374,11 @@ final class FullScreenImageCache: @unchecked Sendable {
                     renderToken: renderToken,
                     isEdited: isEdited
                 ) != nil { return true }
-                if prefetchTasks[url] != nil { return true }
+                if prefetchTasks[prefetchKey] != nil { return true }
 
                 let task = Task.detached(priority: .medium) { [weak self] in
                     guard let self, !Task.isCancelled else { return }
-                    defer { self.removePrefetchTask(for: url) }
+                    defer { self.removePrefetchTask(for: prefetchKey) }
                     let filename = url.lastPathComponent
                     cacheLogger.info("Prefetching \(filename) (edited=\(isEdited))")
 
@@ -386,15 +400,26 @@ final class FullScreenImageCache: @unchecked Sendable {
                     cacheLogger.info("Prefetched \(filename) (\(image.width)x\(image.height), edited=\(isEdited))")
                 }
 
-                prefetchTasks[url] = task
+                prefetchTasks[prefetchKey] = task
                 return false
             }
             if alreadyHandled { continue }
         }
     }
 
-    nonisolated private func removePrefetchTask(for url: URL) {
-        _ = lock.withLock { prefetchTasks.removeValue(forKey: url) }
+    nonisolated private func removePrefetchTask(for key: PrefetchKey) {
+        _ = lock.withLock { prefetchTasks.removeValue(forKey: key) }
+    }
+
+    nonisolated private func removePrefetchTasksLocked(for url: URL) -> [Task<Void, Never>] {
+        var removed: [Task<Void, Never>] = []
+        let keysToRemove = prefetchTasks.keys.filter { $0.url == url }
+        for key in keysToRemove {
+            if let task = prefetchTasks.removeValue(forKey: key) {
+                removed.append(task)
+            }
+        }
+        return removed
     }
 
     /// If a prefetch for `url` is already in flight, await it instead of launching a
@@ -408,7 +433,13 @@ final class FullScreenImageCache: @unchecked Sendable {
         renderToken: String? = nil,
         isEdited: Bool = false
     ) async -> CGImage? {
-        guard let task = lock.withLock({ prefetchTasks[url] }) else { return nil }
+        let key = PrefetchKey(
+            url: url,
+            orientation: orientation,
+            renderToken: renderToken,
+            isEdited: isEdited
+        )
+        guard let task = lock.withLock({ prefetchTasks[key] }) else { return nil }
         await task.value
         return cachedImage(for: url, orientation: orientation, renderToken: renderToken, isEdited: isEdited)
     }

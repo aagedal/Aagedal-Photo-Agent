@@ -110,4 +110,32 @@ struct FullScreenImageCacheTests {
         // edited cache stays empty, so the caller is told to decode itself.
         #expect(await cache.awaitPrefetchedImage(for: url, isEdited: true) == nil)
     }
+
+    @Test("Orientation variants for the same URL prefetch independently")
+    func orientationVariantsPrefetchIndependently() async throws {
+        let cache = FullScreenImageCache()
+        let url = try makeTempPNG()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let placeholder = URL(fileURLWithPath: "/tmp/placeholder-\(UUID().uuidString).jpg")
+
+        cache.startPrefetch(
+            currentIndex: 0,
+            images: [placeholder, url],
+            direction: .forward,
+            screenMaxPx: 256,
+            orientationForURL: { _ in 1 }
+        )
+        cache.startPrefetch(
+            currentIndex: 0,
+            images: [placeholder, url],
+            direction: .forward,
+            screenMaxPx: 256,
+            orientationForURL: { _ in 3 }
+        )
+
+        #expect(await cache.awaitPrefetchedImage(for: url, orientation: 1) != nil)
+        #expect(await cache.awaitPrefetchedImage(for: url, orientation: 3) != nil)
+        #expect(cache.cachedImage(for: url, orientation: 1) != nil)
+        #expect(cache.cachedImage(for: url, orientation: 3) != nil)
+    }
 }

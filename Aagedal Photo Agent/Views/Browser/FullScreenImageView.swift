@@ -251,6 +251,9 @@ struct FullScreenImageView: View {
     /// Shared linear/nearest-neighbor scaling toggle (View menu + Option+S).
     @ObservedObject private var scaling = ImageScalingController.shared
     @State private var lastOrientationURL: URL?
+    /// Display orientation already baked into `currentImage`. This is deliberately
+    /// the target display orientation, not the embedded file tag: cache hits and
+    /// thumbnail placeholders have already been corrected to sidecar orientation.
     @State private var lastLoadedOrientation: Int = 1
 
     /// Minimum zoom allows zooming out to 1:1 pixel mapping for small images.
@@ -689,10 +692,13 @@ struct FullScreenImageView: View {
             // If the image was already decoded with this orientation (e.g. metadata
             // batch read catching up), the pixels are already correct — skip.
             guard newValue != lastLoadedOrientation else { return }
-            let clockwise = ImageFile.orientationAfterClockwiseRotation(oldValue) == newValue
-            if let rotated = Self.rotateCGImage90(current.cgImage, clockwise: clockwise) {
-                currentImage = makeLoadedImage(from: rotated)
-            }
+            let corrected = Self.applyOrientationCorrection(
+                current.cgImage,
+                fileOrientation: lastLoadedOrientation,
+                targetOrientation: newValue
+            )
+            currentImage = makeLoadedImage(from: corrected)
+            lastLoadedOrientation = newValue
             imageCache.invalidateImage(for: url)
         }
         .onChange(of: scopeViewModel.showClippedGamut) {
@@ -1044,12 +1050,14 @@ struct FullScreenImageView: View {
         )
 
         // Read source pixel dimensions (cheap metadata-only, no pixel decode)
+        let fileOrientation: Int
         // EXIF orientations 5-8 swap width/height after transform
         if let source = CGImageSourceCreateWithURL(url as CFURL, nil),
            let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
            let pw = props[kCGImagePropertyPixelWidth] as? Int,
            let ph = props[kCGImagePropertyPixelHeight] as? Int {
             let orientation = props[kCGImagePropertyOrientation] as? Int ?? 1
+            fileOrientation = orientation
             let swapped = orientation >= 5 && orientation <= 8
             var rawSize = swapped
                 ? CGSize(width: CGFloat(ph), height: CGFloat(pw))
@@ -1067,24 +1075,16 @@ struct FullScreenImageView: View {
                 }
             }
             sourcePixelSize = rawSize
-            lastLoadedOrientation = orientation
         } else {
             sourcePixelSize = nil
-            lastLoadedOrientation = imageOrientation
+            fileOrientation = imageOrientation
         }
 
         // File orientation = what the OS baked into the loaded pixels.
         // When it differs from imageOrientation (e.g. C2PA images where
         // the file isn't modified), applyCameraRaw applies corrective rotation.
-        let fileOrientation = lastLoadedOrientation
-
-        // An in-flight prefetch decodes at the same resolution/edit-state as the
-        // foreground load, so reuse it instead of decoding twice during fast
-        // navigation. The prefetch renders the file→model orientation correction
-        // (decodedEditedPreview), but its orientation lookup was snapshotted when it
-        // started — keep reuse restricted to the no-correction case so a rotation
-        // racing the prefetch can't serve a stale-orientation frame here.
-        let canReusePrefetch = fileOrientation == imageOrientation
+        // An in-flight prefetch decodes this exact URL/orientation/render-token
+        // variant, so reuse it instead of decoding twice during fast navigation.
         let cache = imageCache
 
         // If corrective rotation swaps width/height, adjust sourcePixelSize
@@ -1102,6 +1102,7 @@ struct FullScreenImageView: View {
         ) {
             imageLogger.info("\(filename): Phase 0 cache hit (edited=\(isEdited))")
             currentImage = makeLoadedImage(from: cached)
+            lastLoadedOrientation = imageOrientation
             isLoading = false
             triggerPrefetch(for: url)
             return
@@ -1115,6 +1116,7 @@ struct FullScreenImageView: View {
         ) {
             imageLogger.info("\(filename): Phase 0 display preview cache hit (edited=\(isEdited))")
             currentImage = makeLoadedImage(from: displayPreview)
+            lastLoadedOrientation = imageOrientation
             isLoading = false
             // Skip Phase 0.5, go directly to Phase 2 for retina upgrade
             let screenScale = NSScreen.main?.backingScaleFactor ?? 2.0
@@ -1126,14 +1128,12 @@ struct FullScreenImageView: View {
                 guard !Task.isCancelled else { return }
                 // Reuse an in-flight prefetch decode rather than decoding this exact
                 // image a second time concurrently (fast navigation).
-                var image: CGImage? = canReusePrefetch
-                    ? await cache.awaitPrefetchedImage(
-                        for: url,
-                        orientation: imageOrientation,
-                        renderToken: renderToken,
-                        isEdited: isEdited
-                    )
-                    : nil
+                var image: CGImage? = await cache.awaitPrefetchedImage(
+                    for: url,
+                    orientation: imageOrientation,
+                    renderToken: renderToken,
+                    isEdited: isEdited
+                )
                 if image == nil, needsHDRLoad {
                     if isRAWFile {
                         // Use CIRAWFilter for flat/neutral decode — get as-shot WB for correct rendering.
@@ -1192,6 +1192,7 @@ struct FullScreenImageView: View {
            let thumbImage = makeLoadedImage(from: thumb) {
             imageLogger.info("\(filename): Phase 0 thumbnail placeholder")
             currentImage = thumbImage
+            lastLoadedOrientation = imageOrientation
         }
 
         isLoading = true
@@ -1210,14 +1211,12 @@ struct FullScreenImageView: View {
             guard !Task.isCancelled else { return }
             // Reuse an in-flight prefetch decode rather than decoding this exact
             // image a second time concurrently (fast navigation).
-            var image: CGImage? = canReusePrefetch
-                ? await cache.awaitPrefetchedImage(
-                    for: url,
-                    orientation: imageOrientation,
-                    renderToken: renderToken,
-                    isEdited: isEdited
-                )
-                : nil
+            var image: CGImage? = await cache.awaitPrefetchedImage(
+                for: url,
+                orientation: imageOrientation,
+                renderToken: renderToken,
+                isEdited: isEdited
+            )
             if image == nil, needsHDRLoad {
                 if isRAW {
                     // Use CIRAWFilter for flat/neutral decode — get as-shot WB for correct rendering.
@@ -1341,6 +1340,7 @@ struct FullScreenImageView: View {
             if !hiResApplied {
                 imageLogger.info("\(filename): Phase 0.5 in \(String(format: "%.1f", previewElapsed * 1000))ms (\(preview.width)x\(preview.height))")
                 currentImage = makeLoadedImage(from: preview)
+                lastLoadedOrientation = imageOrientation
             } else {
                 imageLogger.info("\(filename): Phase 0.5 ready but retina already applied — keeping hi-res")
             }
@@ -1376,7 +1376,10 @@ struct FullScreenImageView: View {
         let cameraRaw = Self.hdrNormalized(modelCameraRaw ?? sidecarCameraRaw, isNativeHDR: isNativeHDR)
         let needsHDRFullRes = cameraRaw != nil || isNativeHDR
         let isRAWFile = SupportedImageFormats.isRaw(url: url)
-        let orientation = currentImageFile?.exifOrientation ?? 1
+        let orientation = FullScreenImageCache.displayOrientation(
+            for: url,
+            fallback: currentImageFile?.exifOrientation ?? 1
+        )
         let expectedGeneration = renderGeneration
         imageLogger.info("\(filename): Loading full resolution for zoom")
         // Hi-res overlay (not the cold-load overlay): the fit-view image is
@@ -1415,6 +1418,7 @@ struct FullScreenImageView: View {
                 guard let image else { return }
                 imageLogger.info("\(filename): Full resolution loaded in \(String(format: "%.1f", elapsed * 1000))ms (\(image.width)x\(image.height))")
                 currentImage = makeLoadedImage(from: image)
+                lastLoadedOrientation = orientation
                 isFullResLoaded = true
             }
         }
