@@ -490,58 +490,97 @@ static half3 applyMaskColor(half3 rgb, constant MaskParams &mask)
     return adjusted;
 }
 
-/// Cheap deterministic per-block hash → [0,1)². Used to jitter which neighborhood a
-/// mosaic block samples from (the "random distortion" layer) — same input always maps
-/// to the same output, so a block's displacement is stable across frames, but distinct
-/// blocks land on unrelated offsets.
-static float2 hash21(float2 p)
+struct AnonymizerShape {
+    float distortAmountPx;
+    float distortScalePx;
+    float blurRadiusPx;
+    float mosaicSizePx;
+};
+
+static uint anonymizerIHash(uint x)
 {
-    p = fract(p * float2(123.34, 456.21));
-    p += dot(p, p + 45.32);
-    return fract(float2(p.x * p.y, p.x + p.y) * float2(p.y, p.x));
+    x ^= x >> 16;
+    x *= 0x7feb352du;
+    x ^= x >> 15;
+    x *= 0x846ca68bu;
+    x ^= x >> 16;
+    return x;
 }
 
-/// Anonymizer base-color sampler: folds distortion + blur + mosaic into a single texture
-/// fetch. `blockPx` (in source pixels) sets both the mosaic cell size AND the mip level —
-/// hardware mip generation already box-filtered each level, so sampling at
-/// log2(blockPx) gets a free blur of exactly the right radius for that block size. All
-/// pixels within one block compute the same `blockOrigin`/`sampleUV`, which is what
-/// produces the hard mosaic edges (the only thing actually visible in the output); the
-/// per-block hash jitters which blurred neighborhood gets picked, scrambling block
-/// alignment so the mosaic can't be reversed by deconvolving against a known box filter.
-static half3 sampleAnonymized(texture2d<half, access::sample> source, float2 uv, float2 sourceSize, float blockPx)
+static float anonymizerRand01(int ix, int iy, uint seed, uint channel)
+{
+    uint h = anonymizerIHash(uint(ix) * 0x9E3779B1u
+                             ^ uint(iy) * 0x85EBCA77u
+                             ^ seed * 0xC2B2AE3Du
+                             ^ channel * 0x27D4EB2Fu);
+    return float(h) * (1.0 / 4294967295.0);
+}
+
+static float anonymizerSmoothT(float t)
+{
+    return t * t * (3.0 - 2.0 * t);
+}
+
+static float anonymizerVNoise(float px, float py, uint seed, uint channel)
+{
+    float fx = floor(px);
+    float fy = floor(py);
+    int ix = int(fx);
+    int iy = int(fy);
+    float tx = anonymizerSmoothT(px - fx);
+    float ty = anonymizerSmoothT(py - fy);
+    float a = anonymizerRand01(ix,     iy,     seed, channel);
+    float b = anonymizerRand01(ix + 1, iy,     seed, channel);
+    float c = anonymizerRand01(ix,     iy + 1, seed, channel);
+    float d = anonymizerRand01(ix + 1, iy + 1, seed, channel);
+    float ab = a + (b - a) * tx;
+    float cd = c + (d - c) * tx;
+    return ab + (cd - ab) * ty;
+}
+
+/// Maps the app's single 0-1 amount slider onto the same 1080p-short-side pixel-space
+/// family as the standalone Multi-Layer Anonymizer: random distortion, Gaussian blur,
+/// then mosaic. The app still evaluates it in one shader sample so global and per-mask
+/// anonymizers remain cheap enough for live masked editing.
+static AnonymizerShape anonymizerShape(float strength, float2 sourceSize)
+{
+    float t = clamp(strength, 0.0, 1.0);
+    float shortSide = max(min(sourceSize.x, sourceSize.y), 1.0);
+    float resolutionScale = shortSide / 1080.0;
+    float mosaicBase = mix(4.0, 128.0, t * t);
+    AnonymizerShape shape;
+    shape.mosaicSizePx = max(mosaicBase * resolutionScale, 3.0);
+    shape.blurRadiusPx = max(shape.mosaicSizePx * 0.6, 1.0);
+    shape.distortAmountPx = max(shape.mosaicSizePx * 0.6, 1.0);
+    shape.distortScalePx = max(shape.mosaicSizePx * 0.4, 2.0);
+    return shape;
+}
+
+/// Anonymizer base-color sampler: approximates the standalone effect's
+/// distort -> Gaussian blur -> mosaic stack in one texture fetch. The square mosaic cell
+/// is resolved first; the cell center is spatially distorted by the same deterministic
+/// value-noise family as the plugin; blur is provided by the source texture's mip chain.
+static half3 sampleAnonymized(texture2d<half, access::sample> source,
+                              float2 uv,
+                              float2 sourceSize,
+                              AnonymizerShape shape)
 {
     constexpr sampler mipSampler(filter::linear, mip_filter::linear, address::clamp_to_edge);
     float2 px = uv * sourceSize;
-    float2 blockOrigin = floor(px / blockPx) * blockPx;
-    float2 blockCenterUV = (blockOrigin + blockPx * 0.5) / sourceSize;
+    float b = max(shape.mosaicSizePx, 1.0);
+    float2 blockOrigin = floor(px / b) * b;
+    float2 samplePx = min(blockOrigin + b * 0.5, sourceSize - 1.0);
 
-    // Distortion: jitter by close to a full block width so adjacent blocks can draw from
-    // meaningfully different neighborhoods, not just a softened version of the same spot —
-    // this is what actually scrambles reconstruction, not just the box blur below.
-    float2 jitter = (hash21(blockOrigin) - 0.5) * (blockPx * 0.9) / sourceSize;
-    float2 sampleUV = clamp(blockCenterUV + jitter, 0.0, 1.0);
+    uint seed = anonymizerIHash(0x5BD1E995u);
+    float invScale = 1.0 / max(shape.distortScalePx, 2.0);
+    float nx = anonymizerVNoise(samplePx.x * invScale, samplePx.y * invScale, seed, 0u);
+    float ny = anonymizerVNoise(samplePx.x * invScale, samplePx.y * invScale, seed, 1u);
+    float2 displacement = (float2(nx, ny) * 2.0 - 1.0) * shape.distortAmountPx;
+    float2 sampleUV = clamp((samplePx + displacement) / sourceSize, 0.0, 1.0);
 
-    // Blur: sample from a mip level wider than the block itself, so each block's color
-    // already incorporates its neighbors. A mip exactly sized to the block would let a
-    // reversal attack assume "this block = average of exactly this square"; the extra
-    // headroom (2x the block's own footprint) breaks that assumption.
     float maxLevel = float(source.get_num_mip_levels() - 1);
-    float mipLevel = clamp(log2(max(blockPx * 2.0, 1.0)), 0.0, maxLevel);
+    float mipLevel = clamp(log2(max(shape.blurRadiusPx * 2.0, 1.0)), 0.0, maxLevel);
     return source.sample(mipSampler, sampleUV, level(mipLevel)).rgb;
-}
-
-/// Maps the Anonymizer's 0-1 slider strength to a mosaic block size, as a fraction of the
-/// source image's long edge (not a fixed pixel count) — so the same slider value produces
-/// the same *relative* block size whether the source is a 12MP JPEG or a 60MP RAW. Quadratic
-/// ramp: gentle at low values (still recognizable as a mosaic, not a single flat color),
-/// chunky enough at full strength to fully obscure a face-sized region on any resolution.
-static float anonymizerBlockSize(float strength, float2 sourceSize)
-{
-    float t = clamp(strength, 0.0, 1.0);
-    float longEdge = max(sourceSize.x, sourceSize.y);
-    float pct = mix(0.004, 0.09, t * t);   // 0.4% .. 9% of the long edge
-    return max(pct * longEdge, 3.0);        // floor so tiny sources don't degenerate to ~0px
 }
 
 kernel void editAdjustments(
@@ -607,8 +646,8 @@ kernel void editAdjustments(
     half4 color;
     half3 rgb;
     if (globalAnonActive) {
-        float blockPx = anonymizerBlockSize(params.anonymizerAmount, params.sourceSize);
-        rgb = sampleAnonymized(source, uv, params.sourceSize, blockPx);
+        AnonymizerShape anonShape = anonymizerShape(params.anonymizerAmount, params.sourceSize);
+        rgb = sampleAnonymized(source, uv, params.sourceSize, anonShape);
         color = half4(rgb, 1.0h);
     } else {
         constexpr sampler bilinear(filter::linear, address::clamp_to_edge);
@@ -666,8 +705,8 @@ kernel void editAdjustments(
                 if (mask.anonymizerBlackOut > 0.5) {
                     adjusted = half3(0.0h, 0.0h, 0.0h);
                 } else {
-                    float blockPx = anonymizerBlockSize(mask.anonymizerAmount, params.sourceSize);
-                    adjusted = sampleAnonymized(source, uv, params.sourceSize, blockPx);
+                    AnonymizerShape anonShape = anonymizerShape(mask.anonymizerAmount, params.sourceSize);
+                    adjusted = sampleAnonymized(source, uv, params.sourceSize, anonShape);
                     if (globalApplied) {
                         adjusted = applyGlobal(adjusted, params, toneLUT, hslParams);
                     }
