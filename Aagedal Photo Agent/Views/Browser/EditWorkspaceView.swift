@@ -592,6 +592,7 @@ struct EditWorkspaceView: View {
                             }
                         } else {
                             // Crop applied, normal editing: support zoom/pan
+                            let cropViewport = editCropViewport(in: geometry.size, imageSize: metalImageSize ?? imageSize)
                             ZStack {
                                 MetalPreviewView(
                                     ciImage: displayCIImage,
@@ -601,18 +602,7 @@ struct EditWorkspaceView: View {
 
                                     coordinator: metalCoordinator
                                 )
-                                    .frame(width: imageRect.width, height: imageRect.height)
-                                    .rotationEffect(.degrees(-displayCropAngle))
-                                    .position(x: imageRect.midX, y: imageRect.midY)
-
-                                // Black out area outside crop
-                                let cropRect = cropViewRect(crop: displayCrop, angleDegrees: displayCropAngle, imageRect: imageRect)
-                                Path { path in
-                                    path.addRect(CGRect(origin: .zero, size: geometry.size))
-                                    path.addRect(cropRect)
-                                }
-                                .fill(Self.previewBackground, style: FillStyle(eoFill: true))
-                                .allowsHitTesting(false)
+                                    .frame(width: geometry.size.width, height: geometry.size.height)
 
                                 // Ellipse mask overlay (crop-applied path) — ellipse masks only,
                                 // suppressed while the brush tool owns the mouse.
@@ -622,17 +612,9 @@ struct EditWorkspaceView: View {
                                    masks[maskIdx].brush == nil,
                                    !isBrushPainting,
                                    !isShowingBefore {
-                                    let cropVpOrigin = SIMD2<Float>(
-                                        Float(-imageRect.minX / imageRect.width),
-                                        Float(-imageRect.minY / imageRect.height)
-                                    )
-                                    let cropVpSize = SIMD2<Float>(
-                                        Float(geometry.size.width / imageRect.width),
-                                        Float(geometry.size.height / imageRect.height)
-                                    )
                                     MaskOverlayRepresentable(
-                                        viewportOrigin: cropVpOrigin,
-                                        viewportSize: cropVpSize,
+                                        viewportOrigin: cropViewport.origin,
+                                        viewportSize: cropViewport.size,
                                         viewSize: geometry.size,
                                         geometry: maskGeometryForDisplay(dragMaskGeometry ?? masks[maskIdx].geometry),
                                         inverted: masks[maskIdx].inverted,
@@ -669,17 +651,9 @@ struct EditWorkspaceView: View {
                                    let layers = metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers,
                                    wmIdx < layers.count,
                                    !isShowingBefore, let imgSize = currentImageSize {
-                                    let cropVpOrigin = SIMD2<Float>(
-                                        Float(-imageRect.minX / imageRect.width),
-                                        Float(-imageRect.minY / imageRect.height)
-                                    )
-                                    let cropVpSize = SIMD2<Float>(
-                                        Float(geometry.size.width / imageRect.width),
-                                        Float(geometry.size.height / imageRect.height)
-                                    )
                                     WatermarkOverlayRepresentable(
-                                        viewportOrigin: cropVpOrigin,
-                                        viewportSize: cropVpSize,
+                                        viewportOrigin: cropViewport.origin,
+                                        viewportSize: cropViewport.size,
                                         viewSize: geometry.size,
                                         geometry: watermarkGeometryForDisplay(dragWatermarkGeometry ?? layers[wmIdx].geometry),
                                         assetAspect: assetAspect(forWatermarkAssetID: layers[wmIdx].libraryAssetID),
@@ -709,26 +683,18 @@ struct EditWorkspaceView: View {
 
                                 // White-balance eyedropper over the crop-framed preview.
                                 if isPickingWhiteBalance, !isShowingBefore {
-                                    let cropVpOrigin = SIMD2<Float>(
-                                        Float(-imageRect.minX / imageRect.width),
-                                        Float(-imageRect.minY / imageRect.height)
-                                    )
-                                    let cropVpSize = SIMD2<Float>(
-                                        Float(geometry.size.width / imageRect.width),
-                                        Float(geometry.size.height / imageRect.height)
-                                    )
                                     WhiteBalancePickOverlay(
                                         marquee: $wbPickDragRect,
                                         probe: { rect in
                                             probeLinearRGB(
                                                 forPaneRect: rect, paneSize: geometry.size,
-                                                viewportOrigin: cropVpOrigin, viewportSize: cropVpSize
+                                                viewportOrigin: cropViewport.origin, viewportSize: cropViewport.size
                                             )
                                         },
                                         onPick: { rect in
                                             performWhiteBalancePick(
                                                 inPaneRect: rect, paneSize: geometry.size,
-                                                viewportOrigin: cropVpOrigin, viewportSize: cropVpSize
+                                                viewportOrigin: cropViewport.origin, viewportSize: cropViewport.size
                                             )
                                         }
                                     )
@@ -736,19 +702,9 @@ struct EditWorkspaceView: View {
                                 }
 
                                 // Freeform brush paint overlay (crop-applied path).
-                                let brushVpOrigin = SIMD2<Float>(
-                                    Float(-imageRect.minX / imageRect.width),
-                                    Float(-imageRect.minY / imageRect.height)
-                                )
-                                let brushVpSize = SIMD2<Float>(
-                                    Float(geometry.size.width / imageRect.width),
-                                    Float(geometry.size.height / imageRect.height)
-                                )
-                                brushOverlay(viewportOrigin: brushVpOrigin, viewportSize: brushVpSize, viewSize: geometry.size)
+                                brushOverlay(viewportOrigin: cropViewport.origin, viewportSize: cropViewport.size, viewSize: geometry.size)
                             }
                             .frame(width: geometry.size.width, height: geometry.size.height)
-                            .scaleEffect(editZoomScale)
-                            .offset(editOffset)
                             // While painting, disable the pan gesture so drags reach the brush
                             // overlay instead of panning the zoomed image.
                             .gesture(editPanGesture(in: geometry.size, imageSize: geometry.size),
@@ -962,6 +918,8 @@ struct EditWorkspaceView: View {
                             if editZoomScale <= 1.0 {
                                 editOffset = .zero
                                 lastEditOffset = .zero
+                            } else if isCropEnabled, !isShowingBefore {
+                                constrainEditOffset(in: geometry.size, imageSize: geometry.size)
                             }
                             syncViewportToMetal()
                         }
@@ -2762,6 +2720,10 @@ struct EditWorkspaceView: View {
             // Reset zoom and unlock image rect when hiding controls
             resetCropZoom()
             lockedCropImageRect = nil
+            // The crop editor renders with an identity viewport because its MTKView
+            // is framed to the image. The confirmed-crop preview is pane-sized and
+            // needs the Metal crop viewport immediately when the tool closes.
+            syncViewportToMetal()
             // Crop tool deactivated — push the now-confirmed crop to the clean feed.
             syncCleanFeed()
         }
@@ -4957,6 +4919,12 @@ struct EditWorkspaceView: View {
     // MARK: - Edit Zoom / Pan
 
     private let maxEditZoom: CGFloat = 10.0
+    private let appliedCropPreviewPadding: CGFloat = 48
+
+    private struct EditCropViewport {
+        var origin: SIMD2<Float>
+        var size: SIMD2<Float>
+    }
 
     /// Image dimensions from the Metal source texture (resolution-stable across Phase 1→2).
     /// Falls back to sourceCIImage/sourceImage for initial display before texture upload.
@@ -5015,12 +4983,52 @@ struct EditWorkspaceView: View {
         }
     }
 
+    private func editCropViewport(in containerSize: CGSize, imageSize: CGSize) -> EditCropViewport {
+        guard containerSize.width > 0, containerSize.height > 0,
+              imageSize.width > 0, imageSize.height > 0 else {
+            return EditCropViewport(origin: .zero, size: SIMD2<Float>(1, 1))
+        }
+
+        let crop = displayCrop
+        let imgW = Double(imageSize.width)
+        let imgH = Double(imageSize.height)
+        let actualW = max(crop.width, 0.0001) * imgW
+        let actualH = max(crop.height, 0.0001) * imgH
+        let centerX = crop.centerX
+        let centerY = crop.centerY
+
+        let availW = max(Double(containerSize.width - appliedCropPreviewPadding * 2), 1)
+        let availH = max(Double(containerSize.height - appliedCropPreviewPadding * 2), 1)
+        let fitScale = min(availW / max(actualW, 1), availH / max(actualH, 1)) * max(Double(editZoomScale), 0.0001)
+        guard fitScale > 0 else {
+            return EditCropViewport(origin: .zero, size: SIMD2<Float>(1, 1))
+        }
+
+        let vpW = Double(containerSize.width) / fitScale / imgW
+        let vpH = Double(containerSize.height) / fitScale / imgH
+
+        let radians = displayCropAngle * .pi / 180.0
+        let offsetPxX = Double(editOffset.width) / fitScale
+        let offsetPxY = Double(editOffset.height) / fitScale
+        let cosA = cos(radians)
+        let sinA = sin(radians)
+        let rotatedOffsetX = offsetPxX * cosA - offsetPxY * sinA
+        let rotatedOffsetY = offsetPxX * sinA + offsetPxY * cosA
+        let viewportCenterX = centerX - rotatedOffsetX / imgW
+        let viewportCenterY = centerY - rotatedOffsetY / imgH
+
+        return EditCropViewport(
+            origin: SIMD2<Float>(Float(viewportCenterX - vpW / 2), Float(viewportCenterY - vpH / 2)),
+            size: SIMD2<Float>(Float(vpW), Float(vpH))
+        )
+    }
+
     /// Sync the current zoom/pan state to the Metal pipeline's viewport parameters.
-    /// When crop is active, the MetalPreviewView frame already matches the source aspect
-    /// ratio (via cropFittedImageRect), so the shader uses an identity viewport.
+    /// Crop editing still uses a source-aspect MTKView and identity viewport, while
+    /// confirmed crops render through a Metal crop viewport so high zoom/pan stays stable.
     private func syncViewportToMetal() {
-        if (isCropEnabled || showCropControls), !isShowingBefore {
-            // Crop path: frame matches source aspect → identity viewport (stretch-to-fill)
+        if showCropControls, !isShowingBefore {
+            // Crop editing path: frame matches source aspect → identity viewport (stretch-to-fill)
             metalPipeline?.updateViewport(
                 zoomScale: 1.0,
                 offset: .zero,
@@ -5029,6 +5037,28 @@ struct EditWorkspaceView: View {
             )
             metalCoordinator.viewportOrigin = .zero
             metalCoordinator.viewportSize = SIMD2<Float>(1, 1)
+            metalCoordinator.requestRedraw()
+            return
+        }
+
+        if isCropEnabled, !isShowingBefore {
+            let imageSize = metalImageSize ?? currentImageSize ?? CGSize(width: 1, height: 1)
+            let crop = displayCrop
+            metalPipeline?.updateCropViewport(
+                containerSize: previewPaneFrame.size,
+                imageSize: imageSize,
+                cropLeft: crop.left,
+                cropTop: crop.top,
+                cropRight: crop.right,
+                cropBottom: crop.bottom,
+                angleDegrees: displayCropAngle,
+                zoomScale: editZoomScale,
+                offset: editOffset,
+                handlePadding: appliedCropPreviewPadding
+            )
+            let viewport = editCropViewport(in: previewPaneFrame.size, imageSize: imageSize)
+            metalCoordinator.viewportOrigin = viewport.origin
+            metalCoordinator.viewportSize = viewport.size
             metalCoordinator.requestRedraw()
             return
         }
@@ -5059,6 +5089,11 @@ struct EditWorkspaceView: View {
         let oldScale = editZoomScale
         let newScale = (oldScale * zoomFactor).clamped(to: 1.0...maxEditZoom)
         guard newScale != oldScale else { return }
+
+        if isCropEnabled, !showCropControls, !isShowingBefore {
+            handleCroppedEditScrollZoom(oldScale: oldScale, newScale: newScale, event: event)
+            return
+        }
 
         if newScale <= 1.0 {
             editZoomScale = newScale
@@ -5141,6 +5176,38 @@ struct EditWorkspaceView: View {
         syncViewportToMetal()
     }
 
+    private func handleCroppedEditScrollZoom(oldScale: CGFloat, newScale: CGFloat, event: NSEvent) {
+        let containerSize = previewPaneFrame.size
+        guard containerSize.width > 0, containerSize.height > 0 else {
+            editZoomScale = newScale
+            lastEditZoomScale = newScale
+            syncViewportToMetal()
+            return
+        }
+
+        if newScale <= 1.0 {
+            editZoomScale = newScale
+            lastEditZoomScale = newScale
+            editOffset = .zero
+            lastEditOffset = .zero
+            syncViewportToMetal()
+            return
+        }
+
+        let cursor = editCursorFromCenter(event: event)
+        let zoomRatio = newScale / oldScale
+        let anchoredOffset = CGSize(
+            width: cursor.width - (cursor.width - editOffset.width) * zoomRatio,
+            height: cursor.height - (cursor.height - editOffset.height) * zoomRatio
+        )
+
+        editZoomScale = newScale
+        lastEditZoomScale = newScale
+        editOffset = anchoredOffset
+        lastEditOffset = anchoredOffset
+        constrainEditOffset(in: containerSize, imageSize: containerSize)
+    }
+
     /// Compute cursor position relative to preview pane center (in SwiftUI coordinates).
     private func editCursorFromCenter(event: NSEvent) -> CGSize {
         guard let contentHeight = NSApp.keyWindow?.contentView?.bounds.height else {
@@ -5179,11 +5246,27 @@ struct EditWorkspaceView: View {
     }
 
     private func constrainEditOffset(in containerSize: CGSize, imageSize: CGSize) {
-        let imgSize = metalImageSize ?? imageSize
-        let fittedScale = min(containerSize.width / imgSize.width,
-                              containerSize.height / imgSize.height)
-        let scaledWidth = imgSize.width * fittedScale * editZoomScale
-        let scaledHeight = imgSize.height * fittedScale * editZoomScale
+        let scaledWidth: CGFloat
+        let scaledHeight: CGFloat
+        if isCropEnabled, !showCropControls, !isShowingBefore {
+            let imgSize = currentImageSize ?? metalImageSize ?? imageSize
+            let imageRect = cropFittedImageRect(
+                in: containerSize,
+                imageSize: imgSize,
+                crop: displayCrop,
+                angleDegrees: displayCropAngle,
+                zoom: editZoomScale
+            )
+            let cropRect = cropViewRect(crop: displayCrop, angleDegrees: displayCropAngle, imageRect: imageRect)
+            scaledWidth = cropRect.width
+            scaledHeight = cropRect.height
+        } else {
+            let imgSize = metalImageSize ?? imageSize
+            let fittedScale = min(containerSize.width / imgSize.width,
+                                  containerSize.height / imgSize.height)
+            scaledWidth = imgSize.width * fittedScale * editZoomScale
+            scaledHeight = imgSize.height * fittedScale * editZoomScale
+        }
         let maxOffsetX = max(0, (scaledWidth - containerSize.width) / 2)
         let maxOffsetY = max(0, (scaledHeight - containerSize.height) / 2)
         editOffset = CGSize(

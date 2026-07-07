@@ -1753,7 +1753,10 @@ final class MetalEditPipeline: @unchecked Sendable {
         cropTop: Double,
         cropRight: Double,
         cropBottom: Double,
-        angleDegrees: Double
+        angleDegrees: Double,
+        zoomScale: CGFloat = 1.0,
+        offset: CGSize = .zero,
+        handlePadding: CGFloat = 0
     ) {
         guard let buffer = paramsBuffer else { return }
         guard containerSize.width > 0, containerSize.height > 0,
@@ -1772,8 +1775,10 @@ final class MetalEditPipeline: @unchecked Sendable {
         // Fit the actual crop into the container (identical to cropFittedImageRect's baseScale).
         let radians = angleDegrees * .pi / 180.0
 
-        let fitScale = min(containerSize.width / max(actualW, 1),
-                           containerSize.height / max(actualH, 1))
+        let availW = max(Double(containerSize.width - handlePadding * 2), 1)
+        let availH = max(Double(containerSize.height - handlePadding * 2), 1)
+        let fitScale = min(availW / max(actualW, 1),
+                           availH / max(actualH, 1)) * max(Double(zoomScale), 0.0001)
         guard fitScale > 0 else { return }
 
         // The source region (in pixels) that maps to the full drawable — larger than the
@@ -1784,8 +1789,18 @@ final class MetalEditPipeline: @unchecked Sendable {
         let vpH = visiblePxH / imgH
 
         cachedViewportSize = SIMD2<Float>(Float(vpW), Float(vpH))
-        cachedViewportCenter = SIMD2<Float>(Float(centerX), Float(centerY))
-        cachedViewportOrigin = SIMD2<Float>(Float(centerX - vpW / 2), Float(centerY - vpH / 2))
+
+        let offsetPxX = Double(offset.width) / fitScale
+        let offsetPxY = Double(offset.height) / fitScale
+        let cosA = cos(radians)
+        let sinA = sin(radians)
+        let rotatedOffsetX = offsetPxX * cosA - offsetPxY * sinA
+        let rotatedOffsetY = offsetPxX * sinA + offsetPxY * cosA
+        let viewportCenterX = centerX - rotatedOffsetX / imgW
+        let viewportCenterY = centerY - rotatedOffsetY / imgH
+
+        cachedViewportCenter = SIMD2<Float>(Float(viewportCenterX), Float(viewportCenterY))
+        cachedViewportOrigin = SIMD2<Float>(Float(viewportCenterX - vpW / 2), Float(viewportCenterY - vpH / 2))
         cachedViewportRotation = Float(radians)
 
         // The crop occupies the central (actual·fitScale / container) fraction of the
