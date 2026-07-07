@@ -407,15 +407,23 @@ final class BrowserViewModel {
         // pre-cache into the matching slot (an edited render must NEVER land in
         // the unedited slot, or stale edits shadow the original).
         let isEdited = !showOriginalThumbnails
-        guard fullScreenImageCache.cachedImage(for: url, isEdited: isEdited) == nil else { return }
-
         let imageFile = images[index]
+        let orientation = FullScreenImageCache.displayOrientation(for: url, fallback: imageFile.exifOrientation)
+        let cameraRaw = showOriginalThumbnails
+            ? nil
+            : (imageFile.cameraRawSettings ?? XMPSidecarService().loadSidecar(for: url)?.cameraRaw)
+        let renderToken = FullScreenImageCache.renderToken(settings: cameraRaw, isEdited: isEdited)
+        guard fullScreenImageCache.cachedImage(
+            for: url,
+            orientation: orientation,
+            renderToken: renderToken,
+            isEdited: isEdited
+        ) == nil else { return }
+
         let screenScale = NSScreen.main?.backingScaleFactor ?? 2.0
         let screenLogicalPx = max(NSScreen.main?.frame.width ?? 3840,
                                    NSScreen.main?.frame.height ?? 2160)
         let screenMaxPx = screenLogicalPx * screenScale
-        let cameraRaw = showOriginalThumbnails ? nil : imageFile.cameraRawSettings
-        let orientation = imageFile.exifOrientation
 
         retinaPreCacheTask = Task.detached(priority: .utility) { [weak self] in
             guard let self, !Task.isCancelled else { return }
@@ -428,7 +436,13 @@ final class BrowserViewModel {
             guard let image = await FullScreenImageCache.decodedEditedPreview(
                 for: url, settings: cameraRaw, orientation: orientation, screenMaxPx: screenMaxPx
             ), !Task.isCancelled else { return }
-            self.fullScreenImageCache.store(image, for: url, isEdited: isEdited)
+            self.fullScreenImageCache.store(
+                image,
+                for: url,
+                orientation: orientation,
+                renderToken: renderToken,
+                isEdited: isEdited
+            )
         }
     }
 
@@ -574,8 +588,19 @@ final class BrowserViewModel {
         loadFolderTask = Task {
             do {
                 // Phase 1: Scan folder and show grid immediately
-                let files = try await fileSystemService.scanFolder(at: url, includeAllFiles: showAllFiles)
+                var files = try await fileSystemService.scanFolder(at: url, includeAllFiles: showAllFiles)
                 guard !Task.isCancelled, self.currentFolderURL == url else { return }
+                // Same-folder reload: carry over already-known display orientations.
+                // scanFolder returns default orientation 1 and the eager/batch reads
+                // that repopulate it are async — without this, a mid-session reload
+                // transiently resets every rotation, and an open edit view re-renders
+                // at the wrong orientation until those passes catch up. (No-op on a
+                // genuine folder switch: no URLs match.)
+                for index in files.indices {
+                    if let existingIndex = self.urlToImageIndex[files[index].url] {
+                        files[index].exifOrientation = self.images[existingIndex].exifOrientation
+                    }
+                }
                 self.reconcileThumbnailCaches(against: files)
                 self.images = files
                 self.rebuildNow()
@@ -600,6 +625,13 @@ final class BrowserViewModel {
                     self.suppressImagesCascade = true
                     for file in nonDefault {
                         guard let index = self.urlToImageIndex[file.url] else { continue }
+                        if self.images[index].exifOrientation != file.exifOrientation {
+                            self.logger.info("[\(file.url.lastPathComponent, privacy: .public)] eager orientation (loadFolder) \(self.images[index].exifOrientation) → \(file.exifOrientation)")
+                            // See applyBatchMetadataResults: drop model-orientation-derived
+                            // renders produced under the old value.
+                            self.thumbnailService.invalidateEditedThumbnail(for: file.url)
+                            self.fullScreenImageCache.invalidateImage(for: file.url)
+                        }
                         self.images[index].exifOrientation = file.exifOrientation
                     }
                     self.suppressImagesCascade = false
@@ -758,6 +790,9 @@ final class BrowserViewModel {
                 if !orientations.isEmpty {
                     for index in merged.indices {
                         if let orientation = orientations[merged[index].url] {
+                            if merged[index].exifOrientation != orientation {
+                                logger.info("[\(merged[index].url.lastPathComponent, privacy: .public)] eager orientation (refresh newURLs) \(merged[index].exifOrientation) → \(orientation)")
+                            }
                             merged[index].exifOrientation = orientation
                         }
                     }
@@ -813,16 +848,25 @@ final class BrowserViewModel {
         }
     }
 
-    /// Read EXIF orientation (metadata-only) for the given image URLs off the main actor,
-    /// in parallel. Returns only non-default (≠1) orientations; callers leave the rest at
-    /// the default upright value. `nonisolated` so the per-file `CGImageSource` I/O runs on
-    /// the global executor, never blocking the MainActor — shared by the initial eager read
-    /// and the incremental auto-refresh path.
+    /// Read the display orientation for the given image URLs off the main actor, in
+    /// parallel. The XMP sidecar is authoritative when present (RAW/C2PA rotations are
+    /// sidecar-only and never touch the file), falling back to the file's embedded tag —
+    /// mirroring `ThumbnailService.orientedToSidecar` so the model, the thumbnails, and
+    /// the edit view all derive orientation from the same source. Reading only the
+    /// embedded tag here silently reverted sidecar rotations whenever this eager read
+    /// ran after the XMP-aware batch pass (edit view upside down vs. its own thumbnail).
+    /// Returns only non-default (≠1) orientations; callers leave the rest at the default
+    /// upright value. `nonisolated` so the per-file I/O runs on the global executor,
+    /// never blocking the MainActor — shared by the initial eager read and the
+    /// incremental auto-refresh path.
     private nonisolated static func readOrientations(for urls: [URL]) async -> [URL: Int] {
         guard !urls.isEmpty else { return [:] }
         return await withTaskGroup(of: (URL, Int)?.self) { group in
             for url in urls {
                 group.addTask {
+                    if let sidecarOrientation = XMPSidecarService().sidecarOrientation(for: url) {
+                        return sidecarOrientation != 1 ? (url, sidecarOrientation) : nil
+                    }
                     guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
                           let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
                           let orientation = props[kCGImagePropertyOrientation] as? Int,
@@ -963,6 +1007,7 @@ final class BrowserViewModel {
                 updated[index].hasC2PA = TechnicalMetadata.dictHasC2PA(dict)
                 updated[index].hasDevelopEdits = hasDevelopEdits(in: dict)
                 updated[index].hasCropEdits = hasCropEdits(in: dict)
+                let previousOrientation = updated[index].exifOrientation
                 updated[index].exifOrientation = parseIntValue(dict[MetadataDictKey.orientation]) ?? 1
                 updated[index].isNativeHDR = SupportedImageFormats.isHDR(url: sourceURL)
                     || (UserDefaults.standard.bool(forKey: UserDefaultsKeys.rawRenderAsHDR) && SupportedImageFormats.isRaw(url: sourceURL))
@@ -1051,6 +1096,18 @@ final class BrowserViewModel {
                         updated[index].cropRegion = cropRegion(
                             in: dict, exifOrientation: xmpOrientation)
                     }
+                }
+                if updated[index].exifOrientation != previousOrientation {
+                    let newOrientation = updated[index].exifOrientation
+                    let dictOrientation = parseIntValue(dict[MetadataDictKey.orientation]) ?? -1
+                    logger.info("[\(sourceURL.lastPathComponent, privacy: .public)] batch metadata orientation \(previousOrientation) → \(newOrientation) (dict=\(dictOrientation), xmp=\(xmpMeta?.exifOrientation ?? -1))")
+                    // Renders keyed off the model orientation (edited grid thumbs, loupe
+                    // prefetch/warm entries) were produced under the old value — drop them
+                    // or the loupe serves a stale-orientation frame until something else
+                    // forces a re-render. Base thumbnails/previews read the sidecar at
+                    // generation time and don't need this.
+                    thumbnailService.invalidateEditedThumbnail(for: sourceURL)
+                    fullScreenImageCache.invalidateImage(for: sourceURL)
                 }
 
                 // Populate the descriptive IPTC record for the grid. Without this, `metadata`
@@ -1508,6 +1565,7 @@ final class BrowserViewModel {
         var newOrientations: [URL: Int] = [:]
         for image in selectedImages {
             newOrientations[image.url] = ImageFile.orientationAfterClockwiseRotation(image.exifOrientation)
+            logger.info("[\(image.url.lastPathComponent, privacy: .public)] rotateClockwise \(image.exifOrientation) → \(newOrientations[image.url] ?? -1)")
         }
         applyMetadataField(
             updateImage: { image in
@@ -1551,6 +1609,7 @@ final class BrowserViewModel {
         var newOrientations: [URL: Int] = [:]
         for image in selectedImages {
             newOrientations[image.url] = ImageFile.orientationAfterCounterclockwiseRotation(image.exifOrientation)
+            logger.info("[\(image.url.lastPathComponent, privacy: .public)] rotateCounterclockwise \(image.exifOrientation) → \(newOrientations[image.url] ?? -1)")
         }
         applyMetadataField(
             updateImage: { image in

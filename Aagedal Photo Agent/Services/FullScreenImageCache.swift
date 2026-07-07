@@ -13,11 +13,11 @@ nonisolated private let cacheLogger = Logger(subsystem: "com.aagedal.photo-agent
 /// NSCache also auto-evicts under system memory pressure.
 final class FullScreenImageCache: @unchecked Sendable {
     // Unedited image caches
-    nonisolated(unsafe) private let cache = NSCache<NSURL, CGImage>()
-    nonisolated(unsafe) private let displayPreviewCache = NSCache<NSURL, CGImage>()
+    nonisolated(unsafe) private let cache = NSCache<NSString, CGImage>()
+    nonisolated(unsafe) private let displayPreviewCache = NSCache<NSString, CGImage>()
     // Edited image caches (CameraRaw applied)
-    nonisolated(unsafe) private let editedCache = NSCache<NSURL, CGImage>()
-    nonisolated(unsafe) private let editedDisplayPreviewCache = NSCache<NSURL, CGImage>()
+    nonisolated(unsafe) private let editedCache = NSCache<NSString, CGImage>()
+    nonisolated(unsafe) private let editedDisplayPreviewCache = NSCache<NSString, CGImage>()
 
     nonisolated(unsafe) private var prefetchTasks: [URL: Task<Void, Never>] = [:]
     nonisolated(unsafe) private var previewGenerationTask: Task<Void, Never>?
@@ -46,26 +46,85 @@ final class FullScreenImageCache: @unchecked Sendable {
 
     // MARK: - Cache Access
 
-    nonisolated func cachedImage(for url: URL, isEdited: Bool = false) -> CGImage? {
-        let c = isEdited ? editedCache : cache
-        return c.object(forKey: url as NSURL)
+    nonisolated private static func cacheKey(for url: URL, orientation: Int?, renderToken: String? = nil) -> NSString {
+        let orientationSuffix = orientation.map { "|orientation=\($0)" } ?? ""
+        let renderSuffix = renderToken.map { "|render=\($0)" } ?? ""
+        return "\(url.standardizedFileURL.path)\(orientationSuffix)\(renderSuffix)" as NSString
     }
 
-    nonisolated func store(_ image: CGImage, for url: URL, isEdited: Bool = false) {
+    /// Display orientation for sidecar-backed files. RAW/C2PA rotations are written to
+    /// XMP, so speculative full-screen renders must not rely only on the browser model:
+    /// fast navigation can prefetch before the async metadata pass has populated it.
+    nonisolated static func displayOrientation(for url: URL, fallback: Int = 1) -> Int {
+        XMPSidecarService().sidecarOrientation(for: url) ?? fallback
+    }
+
+    nonisolated static func renderToken(settings: CameraRawSettings?, isEdited: Bool) -> String? {
+        guard isEdited else { return nil }
+        guard let settings else { return "none" }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(settings) else { return "settings" }
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in data {
+            hash ^= UInt64(byte)
+            hash &*= 0x100000001b3
+        }
+        return String(hash, radix: 16)
+    }
+
+    nonisolated private static func removeAllOrientations(
+        for url: URL,
+        from cache: NSCache<NSString, CGImage>
+    ) {
+        cache.removeObject(forKey: Self.cacheKey(for: url, orientation: nil))
+        for orientation in 1...8 {
+            cache.removeObject(forKey: Self.cacheKey(for: url, orientation: orientation))
+        }
+    }
+
+    nonisolated func cachedImage(
+        for url: URL,
+        orientation: Int? = nil,
+        renderToken: String? = nil,
+        isEdited: Bool = false
+    ) -> CGImage? {
         let c = isEdited ? editedCache : cache
-        c.setObject(image, forKey: url as NSURL, cost: Self.byteSize(of: image))
+        return c.object(forKey: Self.cacheKey(for: url, orientation: orientation, renderToken: renderToken))
+    }
+
+    nonisolated func store(
+        _ image: CGImage,
+        for url: URL,
+        orientation: Int? = nil,
+        renderToken: String? = nil,
+        isEdited: Bool = false
+    ) {
+        let c = isEdited ? editedCache : cache
+        c.setObject(image, forKey: Self.cacheKey(for: url, orientation: orientation, renderToken: renderToken), cost: Self.byteSize(of: image))
     }
 
     // MARK: - Display Preview Cache (960px)
 
-    nonisolated func cachedDisplayPreview(for url: URL, isEdited: Bool = false) -> CGImage? {
+    nonisolated func cachedDisplayPreview(
+        for url: URL,
+        orientation: Int? = nil,
+        renderToken: String? = nil,
+        isEdited: Bool = false
+    ) -> CGImage? {
         let c = isEdited ? editedDisplayPreviewCache : displayPreviewCache
-        return c.object(forKey: url as NSURL)
+        return c.object(forKey: Self.cacheKey(for: url, orientation: orientation, renderToken: renderToken))
     }
 
-    nonisolated func storeDisplayPreview(_ image: CGImage, for url: URL, isEdited: Bool = false) {
+    nonisolated func storeDisplayPreview(
+        _ image: CGImage,
+        for url: URL,
+        orientation: Int? = nil,
+        renderToken: String? = nil,
+        isEdited: Bool = false
+    ) {
         let c = isEdited ? editedDisplayPreviewCache : displayPreviewCache
-        c.setObject(image, forKey: url as NSURL, cost: Self.byteSize(of: image))
+        c.setObject(image, forKey: Self.cacheKey(for: url, orientation: orientation, renderToken: renderToken), cost: Self.byteSize(of: image))
     }
 
     nonisolated func clearDisplayPreviews() {
@@ -74,10 +133,10 @@ final class FullScreenImageCache: @unchecked Sendable {
     }
 
     nonisolated func invalidateImage(for url: URL) {
-        cache.removeObject(forKey: url as NSURL)
-        displayPreviewCache.removeObject(forKey: url as NSURL)
-        editedCache.removeObject(forKey: url as NSURL)
-        editedDisplayPreviewCache.removeObject(forKey: url as NSURL)
+        Self.removeAllOrientations(for: url, from: cache)
+        Self.removeAllOrientations(for: url, from: displayPreviewCache)
+        editedCache.removeAllObjects()
+        editedDisplayPreviewCache.removeAllObjects()
         // Cancel any in-flight prefetch for this URL — otherwise after a move/delete
         // it'll resume against a missing path and log a flood of IIOImageSource errors.
         let prefetch = lock.withLock { prefetchTasks.removeValue(forKey: url) }
@@ -89,8 +148,8 @@ final class FullScreenImageCache: @unchecked Sendable {
     /// slider changes only alter the render). Cancels any in-flight prefetch since it
     /// may be rendering with the old settings.
     nonisolated func invalidateEditedImage(for url: URL) {
-        editedCache.removeObject(forKey: url as NSURL)
-        editedDisplayPreviewCache.removeObject(forKey: url as NSURL)
+        editedCache.removeAllObjects()
+        editedDisplayPreviewCache.removeAllObjects()
         let prefetch = lock.withLock { prefetchTasks.removeValue(forKey: url) }
         prefetch?.cancel()
     }
@@ -157,7 +216,11 @@ final class FullScreenImageCache: @unchecked Sendable {
 
     nonisolated func startBackgroundPreviewGeneration(for urls: [URL], screenMaxPx: CGFloat) {
         // Filter outside the lock — NSCache is thread-safe
-        let uncached = urls.filter { displayPreviewCache.object(forKey: $0 as NSURL) == nil }
+        let uncached = urls.filter {
+            let sidecarOrientation = XMPSidecarService().sidecarOrientation(for: $0)
+            let orientation = sidecarOrientation ?? Self.fileEXIFOrientation(at: $0)
+            return displayPreviewCache.object(forKey: Self.cacheKey(for: $0, orientation: orientation)) == nil
+        }
 
         lock.withLock {
             // Cancel existing task atomically with new task creation
@@ -189,10 +252,31 @@ final class FullScreenImageCache: @unchecked Sendable {
                         for url in batch {
                             group.addTask {
                                 guard !Task.isCancelled else { return }
-                                guard self.displayPreviewCache.object(forKey: url as NSURL) == nil else { return }
-                                guard let image = await Self.loadDownsampledOffPool(from: url, maxPixelSize: screenMaxPx) else { return }
+                                let sidecarOrientation = XMPSidecarService().sidecarOrientation(for: url)
+                                let targetOrientation = sidecarOrientation ?? Self.fileEXIFOrientation(at: url)
+                                guard self.displayPreviewCache.object(forKey: Self.cacheKey(for: url, orientation: targetOrientation)) == nil else { return }
+                                guard let result = await Self.loadDownsampledOffPoolWithOrientation(from: url, maxPixelSize: screenMaxPx) else { return }
+                                var image = result.image
                                 guard !Task.isCancelled else { return }
-                                self.storeDisplayPreview(image, for: url)
+                                // The decode bakes the file's embedded tag; sidecar-only rotations
+                                // (RAW/C2PA) need the file→sidecar correction the thumbnails apply
+                                // (ThumbnailService.orientedToSidecar). Without it, a loupe Phase-0
+                                // display-preview hit — e.g. returning to an image after the small
+                                // retina cache evicted it — shows the capture orientation instead
+                                // of the user's rotation until the slow Phase-2 decode replaces it.
+                                if let sidecarOrientation {
+                                    let correction = ImageFile.orientationCorrection(
+                                        from: result.orientation, to: sidecarOrientation)
+                                    if correction != .up {
+                                        let rotated = CIImage(cgImage: image).oriented(correction)
+                                        if let corrected = CameraRawApproximation.createDisplayCGImage(
+                                            rotated, from: rotated.extent) {
+                                            image = corrected
+                                        }
+                                    }
+                                }
+                                guard !Task.isCancelled else { return }
+                                self.storeDisplayPreview(image, for: url, orientation: targetOrientation)
                             }
                         }
                     }
@@ -259,10 +343,23 @@ final class FullScreenImageCache: @unchecked Sendable {
         for task in tasksToCancel { task.cancel() }
 
         for url in targetURLs {
+            let settings = settingsForURL?(url)
+                ?? (isEdited ? XMPSidecarService().loadSidecar(for: url)?.cameraRaw : nil)
+            let requestedOrientation = orientationForURL?(url)
+            let cacheOrientation = requestedOrientation.map {
+                Self.displayOrientation(for: url, fallback: $0)
+            }
+            let renderToken = Self.renderToken(settings: settings, isEdited: isEdited)
+
             // Atomically check cache/prefetch state AND register the task to prevent
             // a race where two concurrent callers both pass the guard and create duplicates.
             let alreadyHandled = lock.withLock { () -> Bool in
-                if cachedImage(for: url, isEdited: isEdited) != nil { return true }
+                if cachedImage(
+                    for: url,
+                    orientation: cacheOrientation,
+                    renderToken: renderToken,
+                    isEdited: isEdited
+                ) != nil { return true }
                 if prefetchTasks[url] != nil { return true }
 
                 let task = Task.detached(priority: .medium) { [weak self] in
@@ -271,8 +368,7 @@ final class FullScreenImageCache: @unchecked Sendable {
                     let filename = url.lastPathComponent
                     cacheLogger.info("Prefetching \(filename) (edited=\(isEdited))")
 
-                    let settings = settingsForURL?(url)
-                    let orientation = orientationForURL?(url) ?? 1
+                    let orientation = cacheOrientation ?? Self.displayOrientation(for: url)
                     guard let image = await Self.decodedEditedPreview(
                         for: url, settings: settings, orientation: orientation, screenMaxPx: screenMaxPx
                     ), !Task.isCancelled else {
@@ -280,7 +376,13 @@ final class FullScreenImageCache: @unchecked Sendable {
                         return
                     }
 
-                    self.store(image, for: url, isEdited: isEdited)
+                    self.store(
+                        image,
+                        for: url,
+                        orientation: cacheOrientation,
+                        renderToken: renderToken,
+                        isEdited: isEdited
+                    )
                     cacheLogger.info("Prefetched \(filename) (\(image.width)x\(image.height), edited=\(isEdited))")
                 }
 
@@ -300,10 +402,15 @@ final class FullScreenImageCache: @unchecked Sendable {
     /// prefetch is in flight (or it produced a different edit variant / failed), in
     /// which case the caller decodes itself. Lets fast navigation reuse a decode that
     /// is already running rather than decoding the same image twice concurrently.
-    nonisolated func awaitPrefetchedImage(for url: URL, isEdited: Bool = false) async -> CGImage? {
+    nonisolated func awaitPrefetchedImage(
+        for url: URL,
+        orientation: Int? = nil,
+        renderToken: String? = nil,
+        isEdited: Bool = false
+    ) async -> CGImage? {
         guard let task = lock.withLock({ prefetchTasks[url] }) else { return nil }
         await task.value
-        return cachedImage(for: url, isEdited: isEdited)
+        return cachedImage(for: url, orientation: orientation, renderToken: renderToken, isEdited: isEdited)
     }
 
     /// Proactively re-render edited screen-res previews for specific URLs into the edited cache,
@@ -335,7 +442,8 @@ final class FullScreenImageCache: @unchecked Sendable {
                     for: url, settings: settings, orientation: orientation, screenMaxPx: screenMaxPx
                 ) else { continue }
                 guard !Task.isCancelled else { break }
-                self.store(image, for: url, isEdited: true)
+                let renderToken = Self.renderToken(settings: settings, isEdited: true)
+                self.store(image, for: url, orientation: orientation, renderToken: renderToken, isEdited: true)
                 cacheLogger.info("Warmed edited preview on exit: \(url.lastPathComponent) (\(image.width)x\(image.height))")
             }
         }
@@ -379,6 +487,19 @@ final class FullScreenImageCache: @unchecked Sendable {
         var image: CGImage?
         let isRAW = isRawFile(url)
 
+        // Every decode below bakes the FILE's orientation into the pixels (CIRAWFilter,
+        // CIImage's applyOrientationProperty, and CGImageSource's thumbnail transform all
+        // apply the embedded tag). The requested `orientation` (the in-memory/sidecar
+        // display orientation) can differ — RAW/C2PA rotations never touch the file.
+        // `applyWithCrop`'s exifOrientation parameter means "the frame the PIXELS are in"
+        // (it transforms sensor-frame crop/mask geometry, it does not rotate pixels), so
+        // crop/masks must be applied in the FILE frame and the pixels then rotated
+        // file → target as a separate step — exactly the loupe's two-step approach.
+        // Passing the target orientation to applyWithCrop instead mis-framed the crop and
+        // left the pixels unrotated: cropped-RAW grid thumbnails rendered 180° off from
+        // the edit view for sidecar-rotated files.
+        let rawFileOrientation = fileEXIFOrientation(at: url)
+
         if settings != nil {
             let ciImage: CIImage?
             if isRAW {
@@ -397,13 +518,17 @@ final class FullScreenImageCache: @unchecked Sendable {
                 guard !Task.isCancelled else { return nil }
             }
             if let ciImage {
-                let processed: CIImage
+                var processed: CIImage
                 if let settings {
                     // Async: suspends on the dedicated render queue rather than blocking this
                     // task's cooperative-pool thread across the GPU wait.
-                    processed = await CameraRawApproximation.applyWithCropAsync(to: ciImage, settings: settings, exifOrientation: orientation)
+                    processed = await CameraRawApproximation.applyWithCropAsync(to: ciImage, settings: settings, exifOrientation: rawFileOrientation)
                 } else {
                     processed = ciImage
+                }
+                let correction = ImageFile.orientationCorrection(from: rawFileOrientation, to: orientation)
+                if correction != .up {
+                    processed = processed.oriented(correction)
                 }
                 guard !Task.isCancelled else { return nil }
                 image = CameraRawApproximation.createDisplayCGImage(processed, from: processed.extent)
@@ -412,10 +537,19 @@ final class FullScreenImageCache: @unchecked Sendable {
         guard !Task.isCancelled else { return nil }
         if image == nil {
             // SDR fallback (or no edits active)
-            guard var loaded = loadDownsampled(from: url, maxPixelSize: screenMaxPx) else { return nil }
+            guard let loadedResult = loadDownsampledWithOrientation(from: url, maxPixelSize: screenMaxPx) else { return nil }
+            var loaded = loadedResult.image
+            let loadedOrientation = loadedResult.orientation
             guard !Task.isCancelled else { return nil }
             if let settings {
-                loaded = applyCameraRaw(to: loaded, settings: settings, exifOrientation: orientation)
+                loaded = applyCameraRaw(to: loaded, settings: settings, exifOrientation: loadedOrientation)
+            }
+            let correction = ImageFile.orientationCorrection(from: loadedOrientation, to: orientation)
+            if correction != .up {
+                let rotated = CIImage(cgImage: loaded).oriented(correction)
+                if let cg = CameraRawApproximation.createDisplayCGImage(rotated, from: rotated.extent) {
+                    loaded = cg
+                }
             }
             image = loaded
         }
@@ -432,18 +566,19 @@ final class FullScreenImageCache: @unchecked Sendable {
     }
 
     /// Variant of `loadHDRPreview` that also reports the EXIF orientation baked into the
-    /// returned pixels, read from the same decode. Rotation writes the new orientation tag
-    /// to the file asynchronously, so a caller that needs a file→display correction must
-    /// compute it against the orientation of the bytes it actually decoded — a separate
-    /// read can race the pending write and over-rotate.
+    /// returned pixels. `.applyOrientationProperty` bakes the file's orientation into the
+    /// pixels but RESETS the resulting CIImage's reported orientation to 1 (`up`) — so we
+    /// must read the file's tag directly for the correction, not `ciImage.properties`
+    /// (which would say 1 for an already-rotated file and make the caller over-rotate).
     nonisolated static func loadHDRPreviewWithOrientation(
         from url: URL, maxPixelSize: CGFloat
     ) -> (image: CIImage, orientation: Int)? {
+        // Read the tag first so it reflects the same bytes the decode below bakes in.
+        let orientation = fileEXIFOrientation(at: url)
         guard let ciImage = CIImage(contentsOf: url, options: [
             .applyOrientationProperty: true,
             .toneMapHDRtoSDR: false
         ]) else { return nil }
-        let orientation = ciImage.properties[kCGImagePropertyOrientation as String] as? Int ?? 1
 
         let extent = ciImage.extent
         let longestSide = max(extent.width, extent.height)
@@ -469,9 +604,17 @@ final class FullScreenImageCache: @unchecked Sendable {
 
     /// Run `loadDownsampled` off the Swift cooperative thread pool. See `backgroundDecodeQueue`.
     nonisolated static func loadDownsampledOffPool(from url: URL, maxPixelSize: CGFloat) async -> CGImage? {
+        await loadDownsampledOffPoolWithOrientation(from: url, maxPixelSize: maxPixelSize)?.image
+    }
+
+    /// Run `loadDownsampledWithOrientation` off the Swift cooperative thread pool.
+    /// See `backgroundDecodeQueue`.
+    nonisolated static func loadDownsampledOffPoolWithOrientation(
+        from url: URL, maxPixelSize: CGFloat
+    ) async -> (image: CGImage, orientation: Int)? {
         await withCheckedContinuation { continuation in
             backgroundDecodeQueue.async {
-                continuation.resume(returning: loadDownsampled(from: url, maxPixelSize: maxPixelSize))
+                continuation.resume(returning: loadDownsampledWithOrientation(from: url, maxPixelSize: maxPixelSize))
             }
         }
     }
@@ -619,15 +762,16 @@ final class FullScreenImageCache: @unchecked Sendable {
     }
 
     /// Variant of `loadHDRFullResolution` that also reports the EXIF orientation baked
-    /// into the returned pixels, read from the same decode. See `loadHDRPreviewWithOrientation`.
+    /// into the returned pixels. Reads the file's tag directly, not `ciImage.properties`,
+    /// which `.applyOrientationProperty` resets to 1. See `loadHDRPreviewWithOrientation`.
     nonisolated static func loadHDRFullResolutionWithOrientation(
         from url: URL
     ) -> (image: CIImage, orientation: Int)? {
+        let orientation = fileEXIFOrientation(at: url)
         guard let ciImage = CIImage(contentsOf: url, options: [
             .applyOrientationProperty: true,
             .toneMapHDRtoSDR: false
         ]) else { return nil }
-        let orientation = ciImage.properties[kCGImagePropertyOrientation as String] as? Int ?? 1
         return (ciImage, orientation)
     }
 

@@ -163,6 +163,9 @@ final class ThumbnailService {
                     for: url, settings: settings, orientation: exifOrientation, screenMaxPx: maxPixelSize)
                 await decodeGate.release()
                 guard let outputCG else { return nil }
+                // Drop the result if a rotation (or other invalidation) cancelled us mid-decode,
+                // so a render for the old orientation can't clobber the rotated cache entry.
+                guard !Task.isCancelled else { return nil }
                 let edited = NSImage(cgImage: outputCG, size: NSSize(width: outputCG.width, height: outputCG.height))
                 editedCache.setObject(edited, forKey: url as NSURL)
                 return edited
@@ -193,6 +196,9 @@ final class ThumbnailService {
                 cgImage: cgImage, settings: settings, exifOrientation: exifOrientation) else {
                 return nil
             }
+            // Drop the result if a rotation (or other invalidation) cancelled us mid-render,
+            // so a render for the old orientation can't clobber the rotated cache entry.
+            guard !Task.isCancelled else { return nil }
             let edited = NSImage(cgImage: outputCG, size: NSSize(width: outputCG.width, height: outputCG.height))
             editedCache.setObject(edited, forKey: url as NSURL)
             return edited
@@ -308,6 +314,12 @@ final class ThumbnailService {
     /// Rotates the cached thumbnail in-place for instant visual feedback during rotation.
     /// Falls back to invalidation if no cached thumbnail exists.
     func rotateThumbnailInCache(for url: URL, clockwise: Bool) {
+        // Cancel any in-flight edited render: it captured the pre-rotation orientation and,
+        // for a slow gated RAW decode, would finish *after* this rotation and overwrite the
+        // freshly-rotated cache entry with a stale-orientation image — leaving the grid
+        // thumbnail disagreeing with the edit view. (RAW edited renders are the only ones
+        // slow enough to lose this race, which is why uncropped/non-RAW files are unaffected.)
+        editedInFlightTasks.removeValue(forKey: url)?.cancel()
         if let existing = cache.object(forKey: url as NSURL),
            let rotated = rotateImage90(existing, clockwise: clockwise) {
             cache.setObject(rotated, forKey: url as NSURL)

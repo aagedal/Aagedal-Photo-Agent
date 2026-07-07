@@ -1,5 +1,6 @@
 import Foundation
 import SwiftExif
+import os
 
 /// Builds an `IPTCMetadata` value into a SwiftExif `XMPData` tree — the pure-Swift replacement
 /// for the old NSXML (`XMLElement`) construction in `XMPSidecarService`. Used by the `.xmp`
@@ -53,6 +54,8 @@ enum XMPDataBuilder {
 
         // Orientation to BOTH tiff (authoritative on read) and exif, in lockstep. nil clears both.
         let orientation = m.exifOrientation.map(String.init)
+        Logger(subsystem: "com.aagedal.photo-agent", category: "XMPWrite")
+            .info("sidecar write orientation=\(orientation ?? "nil", privacy: .public)")
         setSimpleOrRemove(&xmp, orientation, namespace: XMPNamespace.tiff, property: "Orientation")
         setSimpleOrRemove(&xmp, orientation, namespace: XMPNamespace.exif, property: "Orientation")
     }

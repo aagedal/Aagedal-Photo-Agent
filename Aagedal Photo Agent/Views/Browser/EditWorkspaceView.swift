@@ -19,6 +19,14 @@ struct EditWorkspaceView: View {
 
     @State private var sourceImage: NSImage?
     @State private var sourceCIImage: CIImage?
+    /// URL and orientation the retained `sourceCIImage`/`sourceImage` were decoded for.
+    /// Lets an in-app rotation of the *same* image rotate the known-good source in place
+    /// (see the `exifOrientation` onChange) instead of re-decoding from a file whose EXIF
+    /// tag was just rewritten — a re-decode double-applies the rotation (preview shows 180°
+    /// while the file rotated 90°) because ImageIO can serve new pixels with a stale
+    /// reported orientation.
+    @State private var sourceLoadedURL: URL?
+    @State private var sourceLoadedOrientation: Int?
     @State private var isDraggingEditSlider = false
     @State private var previewCIImage: CIImage?
     @State private var previewImage: NSImage?
@@ -414,6 +422,19 @@ struct EditWorkspaceView: View {
             }
         }
         .onChange(of: selectedImage?.exifOrientation) { oldVal, newVal in
+            // Same image rotated in-app: rotate the retained source by the known delta
+            // rather than re-decoding. A re-decode reads the file's just-rewritten EXIF
+            // tag, which ImageIO can serve inconsistently (new pixels + stale reported
+            // orientation) so the corrective rotation double-applies — the preview shows
+            // 180° while the file only rotated 90°. Rotating the already-correct source
+            // avoids the file round-trip entirely and is always a single, exact step.
+            if let url = selectedImageURL, url == sourceLoadedURL, sourceCIImage != nil,
+               let from = sourceLoadedOrientation, let newVal, from != newVal,
+               ImageFile.orientationCorrection(from: from, to: newVal) != .up {
+                editLog.info("[\(url.lastPathComponent)] in-place rotate source \(from) → \(newVal)")
+                rotateSourceInPlace(from: from, to: newVal)
+                return
+            }
             editLog.info("[\(selectedImageURL?.lastPathComponent ?? "nil")] loadSelectedImagePreview triggered by: onChange(exifOrientation) \(oldVal ?? 0) → \(newVal ?? 0)")
             loadSelectedImagePreview()
         }
@@ -1409,6 +1430,8 @@ struct EditWorkspaceView: View {
         previewRenderTask = nil
         sourceImage = nil
         sourceCIImage = nil
+        sourceLoadedURL = nil
+        sourceLoadedOrientation = nil
         asShotWhiteBalance = nil
         isPickingWhiteBalance = false
         wbPickDragRect = nil
@@ -1447,8 +1470,12 @@ struct EditWorkspaceView: View {
         // the orientation of the bytes it actually decoded — a single upfront read can
         // race the pending write (Phase 2 decodes seconds later) and over-rotate.
         let targetOrientation = selectedImageOrientation
+        // Record what the source is being decoded for, so a later in-app rotation of this
+        // same image can rotate the retained source in place instead of re-decoding.
+        sourceLoadedURL = selectedImageURL
+        sourceLoadedOrientation = targetOrientation
 
-        editLog.info("[\(filename)] loadSelectedImagePreview: starting previewTask (isRaw=\(isRaw), maxPx=\(Int(previewMaxPixelSize)))")
+        editLog.info("[\(filename)] loadSelectedImagePreview: starting previewTask (isRaw=\(isRaw), maxPx=\(Int(previewMaxPixelSize)), targetOrientation=\(targetOrientation))")
 
         previewTask = Task {
             guard !Task.isCancelled else {
@@ -1851,6 +1878,41 @@ struct EditWorkspaceView: View {
                 let elapsed = ContinuousClock.now - start
                 editLog.info("[\(url.lastPathComponent)] precache: done in \(elapsed)")
             }
+        }
+    }
+
+    /// Rotate the already-loaded source in place by the `from → to` orientation delta and
+    /// re-upload it, instead of re-decoding the file. The retained source is known-good at
+    /// `from`, so applying exactly the `from → to` correction yields a single, correct step —
+    /// sidestepping the ImageIO re-decode that double-applies the rotation for non-RAW files
+    /// (whose EXIF tag is rewritten on rotate). Full resolution is dropped and re-fetched
+    /// lazily on the next zoom, matching the normal load path.
+    private func rotateSourceInPlace(from: Int, to: Int) {
+        let (rotatedCI, rotatedNS) = Self.orientedToTarget(
+            ciImage: sourceCIImage, nsImage: sourceImage, from: from, to: to
+        )
+        sourceCIImage = rotatedCI
+        sourceImage = rotatedNS
+        sourceLoadedOrientation = to
+        // Aspect ratio swapped (landscape ↔ portrait) — re-fit and re-fetch full-res on zoom.
+        isEditFullResLoaded = false
+        editFullResTask?.cancel()
+        editFullResTask = nil
+        resetCropZoom()
+        resetEditZoom()
+
+        guard let ci = rotatedCI, let pipeline = metalPipeline else {
+            renderPreview()
+            return
+        }
+        previewTask?.cancel()
+        previewTask = Task {
+            await Task.detached(priority: .userInitiated) {
+                pipeline.uploadSourceImage(ci, exifOrientation: to)
+            }.value
+            guard !Task.isCancelled else { return }
+            syncViewportToMetal()
+            renderPreview()
         }
     }
 

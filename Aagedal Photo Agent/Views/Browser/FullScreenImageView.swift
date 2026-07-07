@@ -1028,12 +1028,20 @@ struct FullScreenImageView: View {
 
         let isEdited = renderEdits
         let isNativeHDR = currentImageFile?.isNativeHDR == true
-        let cameraRaw = Self.hdrNormalized(renderEdits ? currentImageFile?.cameraRawSettings : nil, isNativeHDR: isNativeHDR)
+        let modelCameraRaw = renderEdits ? currentImageFile?.cameraRawSettings : nil
+        let sidecarCameraRaw = renderEdits && modelCameraRaw == nil
+            ? XMPSidecarService().loadSidecar(for: url)?.cameraRaw
+            : nil
+        let cameraRaw = Self.hdrNormalized(modelCameraRaw ?? sidecarCameraRaw, isNativeHDR: isNativeHDR)
+        let renderToken = FullScreenImageCache.renderToken(settings: cameraRaw, isEdited: isEdited)
         let needsHDRLoad = cameraRaw != nil || isNativeHDR
         let maskCount = cameraRaw?.localAdjustments?.count ?? 0
         let enabledMaskCount = cameraRaw?.localAdjustments?.filter(\.enabled).count ?? 0
         imageLogger.info("\(filename): renderEdits=\(renderEdits), cameraRaw=\(cameraRaw != nil), nativeHDR=\(isNativeHDR), masks=\(maskCount) (enabled=\(enabledMaskCount)), exp=\(cameraRaw?.exposure2012 ?? 0)")
-        let imageOrientation = currentImageFile?.exifOrientation ?? 1
+        let imageOrientation = FullScreenImageCache.displayOrientation(
+            for: url,
+            fallback: currentImageFile?.exifOrientation ?? 1
+        )
 
         // Read source pixel dimensions (cheap metadata-only, no pixel decode)
         // EXIF orientations 5-8 swap width/height after transform
@@ -1072,8 +1080,10 @@ struct FullScreenImageView: View {
 
         // An in-flight prefetch decodes at the same resolution/edit-state as the
         // foreground load, so reuse it instead of decoding twice during fast
-        // navigation. The prefetch path omits the fileOrientation corrective
-        // rotation, so only reuse it when that correction is a no-op.
+        // navigation. The prefetch renders the file→model orientation correction
+        // (decodedEditedPreview), but its orientation lookup was snapshotted when it
+        // started — keep reuse restricted to the no-correction case so a rotation
+        // racing the prefetch can't serve a stale-orientation frame here.
         let canReusePrefetch = fileOrientation == imageOrientation
         let cache = imageCache
 
@@ -1084,7 +1094,12 @@ struct FullScreenImageView: View {
         }
 
         // Phase 0: Instant — check retina cache, then display preview cache, then thumbnail
-        if let cached = imageCache.cachedImage(for: url, isEdited: isEdited) {
+        if let cached = imageCache.cachedImage(
+            for: url,
+            orientation: imageOrientation,
+            renderToken: renderToken,
+            isEdited: isEdited
+        ) {
             imageLogger.info("\(filename): Phase 0 cache hit (edited=\(isEdited))")
             currentImage = makeLoadedImage(from: cached)
             isLoading = false
@@ -1092,7 +1107,12 @@ struct FullScreenImageView: View {
             return
         }
 
-        if let displayPreview = imageCache.cachedDisplayPreview(for: url, isEdited: isEdited) {
+        if let displayPreview = imageCache.cachedDisplayPreview(
+            for: url,
+            orientation: imageOrientation,
+            renderToken: renderToken,
+            isEdited: isEdited
+        ) {
             imageLogger.info("\(filename): Phase 0 display preview cache hit (edited=\(isEdited))")
             currentImage = makeLoadedImage(from: displayPreview)
             isLoading = false
@@ -1107,13 +1127,19 @@ struct FullScreenImageView: View {
                 // Reuse an in-flight prefetch decode rather than decoding this exact
                 // image a second time concurrently (fast navigation).
                 var image: CGImage? = canReusePrefetch
-                    ? await cache.awaitPrefetchedImage(for: url, isEdited: isEdited)
+                    ? await cache.awaitPrefetchedImage(
+                        for: url,
+                        orientation: imageOrientation,
+                        renderToken: renderToken,
+                        isEdited: isEdited
+                    )
                     : nil
                 if image == nil, needsHDRLoad {
                     if isRAWFile {
                         // Use CIRAWFilter for flat/neutral decode — get as-shot WB for correct rendering.
                         // Decode straight to screen resolution (not full sensor then shrink) — the
                         // wasted full-sensor demosaic was the multi-second culling stall on RAW.
+                        let rawFileOrientation = FullScreenImageCache.fileEXIFOrientation(at: url)
                         if let rawResult = FullScreenImageCache.loadRAWImage(from: url, draftMode: false, maxPixelSize: screenMaxPx) {
                             guard !Task.isCancelled else { return }
                             var settings = cameraRaw
@@ -1121,22 +1147,22 @@ struct FullScreenImageView: View {
                             settings?.asShotNeutralTint = Double(rawResult.neutralTint)
                             settings?.sourceHasHDRHeadroom = true
                             let ciImage = FullScreenImageCache.downsample(rawResult.image, maxPixelSize: screenMaxPx)
-                            image = Self.applyCameraRaw(to: ciImage, settings: settings, exifOrientation: imageOrientation, fileOrientation: fileOrientation)
+                            image = Self.applyCameraRaw(to: ciImage, settings: settings, exifOrientation: imageOrientation, fileOrientation: rawFileOrientation)
                         }
                     } else {
-                        if let ciImage = FullScreenImageCache.loadHDRPreview(from: url, maxPixelSize: screenMaxPx) {
+                        if let result = FullScreenImageCache.loadHDRPreviewWithOrientation(from: url, maxPixelSize: screenMaxPx) {
                             guard !Task.isCancelled else { return }
-                            image = Self.applyCameraRaw(to: ciImage, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: fileOrientation)
+                            image = Self.applyCameraRaw(to: result.image, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: result.orientation)
                         }
                     }
                 }
                 guard !Task.isCancelled else { return }
                 if image == nil {
-                    guard var loaded = FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: screenMaxPx) else {
+                    guard let result = FullScreenImageCache.loadDownsampledWithOrientation(from: url, maxPixelSize: screenMaxPx) else {
                         return
                     }
                     guard !Task.isCancelled else { return }
-                    loaded = Self.applyCameraRaw(to: loaded, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: fileOrientation)
+                    let loaded = Self.applyCameraRaw(to: result.image, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: result.orientation)
                     image = loaded
                 }
                 guard let image, !Task.isCancelled else { return }
@@ -1148,7 +1174,13 @@ struct FullScreenImageView: View {
                     currentImage = makeLoadedImage(from: image)
                     hiResApplied = true
                     lastLoadedOrientation = imageOrientation
-                    imageCache.store(image, for: url, isEdited: isEdited)
+                    imageCache.store(
+                        image,
+                        for: url,
+                        orientation: imageOrientation,
+                        renderToken: renderToken,
+                        isEdited: isEdited
+                    )
                     triggerPrefetch(for: url)
                 }
             }
@@ -1179,12 +1211,18 @@ struct FullScreenImageView: View {
             // Reuse an in-flight prefetch decode rather than decoding this exact
             // image a second time concurrently (fast navigation).
             var image: CGImage? = canReusePrefetch
-                ? await cache.awaitPrefetchedImage(for: url, isEdited: isEdited)
+                ? await cache.awaitPrefetchedImage(
+                    for: url,
+                    orientation: imageOrientation,
+                    renderToken: renderToken,
+                    isEdited: isEdited
+                )
                 : nil
             if image == nil, needsHDRLoad {
                 if isRAW {
                     // Use CIRAWFilter for flat/neutral decode — get as-shot WB for correct rendering.
                     // Decode straight to screen resolution (not full sensor then shrink).
+                    let rawFileOrientation = FullScreenImageCache.fileEXIFOrientation(at: url)
                     if let rawResult = FullScreenImageCache.loadRAWImage(from: url, draftMode: false, maxPixelSize: screenMaxPx) {
                         guard !Task.isCancelled else { return }
                         var settings = cameraRaw
@@ -1192,18 +1230,18 @@ struct FullScreenImageView: View {
                         settings?.asShotNeutralTint = Double(rawResult.neutralTint)
                         settings?.sourceHasHDRHeadroom = true
                         let ciImage = FullScreenImageCache.downsample(rawResult.image, maxPixelSize: screenMaxPx)
-                        image = Self.applyCameraRaw(to: ciImage, settings: settings, exifOrientation: imageOrientation, fileOrientation: fileOrientation)
+                        image = Self.applyCameraRaw(to: ciImage, settings: settings, exifOrientation: imageOrientation, fileOrientation: rawFileOrientation)
                     }
                 } else {
-                    if let ciImage = FullScreenImageCache.loadHDRPreview(from: url, maxPixelSize: screenMaxPx) {
+                    if let result = FullScreenImageCache.loadHDRPreviewWithOrientation(from: url, maxPixelSize: screenMaxPx) {
                         guard !Task.isCancelled else { return }
-                        image = Self.applyCameraRaw(to: ciImage, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: fileOrientation)
+                        image = Self.applyCameraRaw(to: result.image, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: result.orientation)
                     }
                 }
             }
             guard !Task.isCancelled else { return }
             if image == nil {
-                guard var loaded = FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: screenMaxPx) else {
+                guard let result = FullScreenImageCache.loadDownsampledWithOrientation(from: url, maxPixelSize: screenMaxPx) else {
                     imageLogger.error("\(filename): Phase 2 failed — could not decode image")
                     await MainActor.run {
                         if currentImageFile?.url == url {
@@ -1214,7 +1252,7 @@ struct FullScreenImageView: View {
                     return
                 }
                 guard !Task.isCancelled else { return }
-                loaded = Self.applyCameraRaw(to: loaded, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: fileOrientation)
+                let loaded = Self.applyCameraRaw(to: result.image, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: result.orientation)
                 image = loaded
             }
             guard let image else { return }
@@ -1235,7 +1273,13 @@ struct FullScreenImageView: View {
                     lastLoadedOrientation = imageOrientation
                     isLoading = false
                     loadError = nil
-                    imageCache.store(image, for: url, isEdited: isEdited)
+                    imageCache.store(
+                        image,
+                        for: url,
+                        orientation: imageOrientation,
+                        renderToken: renderToken,
+                        isEdited: isEdited
+                    )
                     triggerPrefetch(for: url)
                 } else {
                     imageLogger.info("\(filename): Phase 2 done but image changed, discarding")
@@ -1247,35 +1291,53 @@ struct FullScreenImageView: View {
         // Stored so it can be cancelled when the user toggles edit mode or navigates,
         // preventing orphaned tasks from exhausting the cooperative thread pool.
         let previewStart = CFAbsoluteTimeGetCurrent()
-        let p05 = Task.detached(priority: .userInitiated) { () -> CGImage? in
+        let p05 = Task.detached(priority: .medium) { () -> CGImage? in
             guard !Task.isCancelled else { return nil }
             if isRAW {
-                guard let raw = FullScreenImageCache.extractEmbeddedPreview(from: url) else { return nil }
+                // Sidecar-rotated RAWs can have embedded camera previews whose pixel
+                // orientation does not match the full CIRAWFilter decode. Showing/caching
+                // that fast JPEG causes the loupe to flash, or get stuck after rapid
+                // navigation, at 90 degrees while Phase 2 later renders the correct 180.
+                // Keep the thumbnail placeholder up and let Phase 2 be the first RAW
+                // bitmap for these files.
+                guard fileOrientation == imageOrientation else {
+                    imageLogger.info("\(filename): Phase 0.5 skipped for sidecar-rotated RAW (fileOrientation=\(fileOrientation), displayOrientation=\(imageOrientation))")
+                    return nil
+                }
+                guard let raw = FullScreenImageCache.extractEmbeddedPreviewWithOrientation(from: url) else { return nil }
                 guard !Task.isCancelled else { return nil }
-                return Self.applyCameraRaw(to: raw, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: fileOrientation)
+                return Self.applyCameraRaw(to: raw.image, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: raw.orientation)
             }
             // Try HDR CIImage path first; fall through to CGImage if crop/render fails
             if needsHDRLoad,
-               let ciImage = FullScreenImageCache.loadHDRPreview(from: url, maxPixelSize: 960) {
+               let result = FullScreenImageCache.loadHDRPreviewWithOrientation(from: url, maxPixelSize: 960) {
                 guard !Task.isCancelled else { return nil }
-                if let result = Self.applyCameraRaw(to: ciImage, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: fileOrientation) {
-                    return result
+                if let image = Self.applyCameraRaw(to: result.image, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: result.orientation) {
+                    return image
                 }
             }
             // CGImage fallback — applyCameraRaw(to: CGImage) always returns a valid image
             guard !Task.isCancelled else { return nil }
-            guard let raw = FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: 960) else { return nil }
+            guard let raw = FullScreenImageCache.loadDownsampledWithOrientation(from: url, maxPixelSize: 960) else { return nil }
             guard !Task.isCancelled else { return nil }
-            return Self.applyCameraRaw(to: raw, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: fileOrientation)
+            return Self.applyCameraRaw(to: raw.image, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: raw.orientation)
         }
         phase05Task = p05
         let preview = await p05.value
         let previewElapsed = CFAbsoluteTimeGetCurrent() - previewStart
         guard !Task.isCancelled else { return }
-        if let preview, currentImageFile?.url == url {
+        if let preview,
+           expectedGeneration == renderGeneration,
+           currentImageFile?.url == url {
             // Always cache the preview, but only show it if Phase 2 (retina) hasn't
             // already won the race — otherwise we'd downgrade a sharp image.
-            imageCache.storeDisplayPreview(preview, for: url, isEdited: isEdited)
+            imageCache.storeDisplayPreview(
+                preview,
+                for: url,
+                orientation: imageOrientation,
+                renderToken: renderToken,
+                isEdited: isEdited
+            )
             if !hiResApplied {
                 imageLogger.info("\(filename): Phase 0.5 in \(String(format: "%.1f", previewElapsed * 1000))ms (\(preview.width)x\(preview.height))")
                 currentImage = makeLoadedImage(from: preview)
@@ -1307,11 +1369,14 @@ struct FullScreenImageView: View {
 
         let filename = url.lastPathComponent
         let isNativeHDR = currentImageFile?.isNativeHDR == true
-        let cameraRaw = Self.hdrNormalized(renderEdits ? currentImageFile?.cameraRawSettings : nil, isNativeHDR: isNativeHDR)
+        let modelCameraRaw = renderEdits ? currentImageFile?.cameraRawSettings : nil
+        let sidecarCameraRaw = renderEdits && modelCameraRaw == nil
+            ? XMPSidecarService().loadSidecar(for: url)?.cameraRaw
+            : nil
+        let cameraRaw = Self.hdrNormalized(modelCameraRaw ?? sidecarCameraRaw, isNativeHDR: isNativeHDR)
         let needsHDRFullRes = cameraRaw != nil || isNativeHDR
         let isRAWFile = SupportedImageFormats.isRaw(url: url)
         let orientation = currentImageFile?.exifOrientation ?? 1
-        let zoomFileOrientation = lastLoadedOrientation
         let expectedGeneration = renderGeneration
         imageLogger.info("\(filename): Loading full resolution for zoom")
         // Hi-res overlay (not the cold-load overlay): the fit-view image is
@@ -1323,21 +1388,22 @@ struct FullScreenImageView: View {
             if !Task.isCancelled, needsHDRFullRes {
                 if isRAWFile {
                     // Use CIRAWFilter for flat/neutral full-res decode — get as-shot WB
+                    let rawFileOrientation = FullScreenImageCache.fileEXIFOrientation(at: url)
                     if let rawResult = FullScreenImageCache.loadRAWImage(from: url, draftMode: false), !Task.isCancelled {
                         var settings = cameraRaw
                         settings?.asShotNeutralTemperature = Double(rawResult.neutralTemperature)
                         settings?.asShotNeutralTint = Double(rawResult.neutralTint)
                         settings?.sourceHasHDRHeadroom = true
-                        image = Self.applyCameraRaw(to: rawResult.image, settings: settings, exifOrientation: orientation, fileOrientation: zoomFileOrientation)
+                        image = Self.applyCameraRaw(to: rawResult.image, settings: settings, exifOrientation: orientation, fileOrientation: rawFileOrientation)
                     }
                 } else {
-                    if let ciImage = FullScreenImageCache.loadHDRFullResolution(from: url), !Task.isCancelled {
-                        image = Self.applyCameraRaw(to: ciImage, settings: cameraRaw, exifOrientation: orientation, fileOrientation: zoomFileOrientation)
+                    if let result = FullScreenImageCache.loadHDRFullResolutionWithOrientation(from: url), !Task.isCancelled {
+                        image = Self.applyCameraRaw(to: result.image, settings: cameraRaw, exifOrientation: orientation, fileOrientation: result.orientation)
                     }
                 }
             }
-            if image == nil, !Task.isCancelled, let loaded = FullScreenImageCache.loadFullResolution(from: url), !Task.isCancelled {
-                image = Self.applyCameraRaw(to: loaded, settings: cameraRaw, exifOrientation: orientation, fileOrientation: zoomFileOrientation)
+            if image == nil, !Task.isCancelled, let result = FullScreenImageCache.loadFullResolutionWithOrientation(from: url), !Task.isCancelled {
+                image = Self.applyCameraRaw(to: result.image, settings: cameraRaw, exifOrientation: orientation, fileOrientation: result.orientation)
             }
             let elapsed = CFAbsoluteTimeGetCurrent() - fullStart
             // Always hop to main to clear the overlay, even on cancel/failure, so

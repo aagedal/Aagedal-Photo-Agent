@@ -201,6 +201,15 @@ final class MetadataViewModel {
         metadataLoadTask?.cancel()
         metadataLoadTask = nil
 
+        // Snapshot BEFORE overwriting: the "reloading the same image/batch" checks below
+        // must compare the new selection against what was previously loaded. Comparing
+        // against the just-assigned selectedURLs is always true, which made every
+        // navigation count as a same-image reload — carrying the previous file's
+        // metadataReferenceSource to the next file. A file without a sidecar legitimately
+        // lands on .embedded; the next (sidecar-backed) RAW then kept .embedded and showed
+        // empty fields even though its .xmp was intact.
+        let previousSelectedURLs = selectedURLs
+
         selectedCount = images.count
         selectedURLs = images.map(\.url)
         hasChanges = false
@@ -238,7 +247,7 @@ final class MetadataViewModel {
 
             // When reloading the same image (e.g. auto-refresh after external edit),
             // skip the synchronous reset to avoid flashing the preview to unedited state.
-            let isReloadingSameImage = selectedURLs.count == 1 && selectedURLs.first == imageURL && metadata != nil
+            let isReloadingSameImage = previousSelectedURLs.count == 1 && previousSelectedURLs.first == imageURL && metadata != nil
             if !isReloadingSameImage {
                 metadata = nil
                 editingMetadata = IPTCMetadata()
@@ -321,6 +330,7 @@ final class MetadataViewModel {
                     self.metadataLoadGeneration += 1
                     let totalMs = loadStart.elapsedMilliseconds()
                     self.perfLog.info("[MetadataVM] loadMetadata DONE — \(imageURL.lastPathComponent, privacy: .public) total \(totalMs)ms")
+                    self.logger.info("[\(imageURL.lastPathComponent, privacy: .public)] loadMetadata result: xmp=\(xmpMeta != nil), stale=\(sidecarIsStale), ref=\(String(describing: referenceSource), privacy: .public), reloadSame=\(isReloadingSameImage), title=\(self.editingMetadata.title ?? "nil", privacy: .public)")
                     if self.metadataReferenceSource == .xmp, self.xmpMetadata == nil {
                         self.metadataReferenceSource = .embedded
                     }
@@ -329,6 +339,7 @@ final class MetadataViewModel {
                     self.editingMetadata = IPTCMetadata()
                     self.previousEditingMetadata = nil
                     self.saveError = "Failed to load metadata: \(error.localizedDescription)"
+                    self.logger.error("[\(imageURL.lastPathComponent, privacy: .public)] loadMetadata FAILED: \(error.localizedDescription, privacy: .public)")
                 }
                 guard !Task.isCancelled else { return }
                 self.isLoading = false
@@ -343,7 +354,7 @@ final class MetadataViewModel {
             // optimisation.
             let selectionSnapshot = Set(images.map(\.url))
             let isReloadingSameBatch = selectedCount > 1
-                && selectionSnapshot == Set(selectedURLs)
+                && selectionSnapshot == Set(previousSelectedURLs)
                 && batchCommonMetadata != nil
 
             if !isReloadingSameBatch {
