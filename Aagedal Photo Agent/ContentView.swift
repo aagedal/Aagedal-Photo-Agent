@@ -2305,15 +2305,22 @@ struct AutoRefreshModifier: ViewModifier {
 }
 
 struct MetadataPanelDivider: View {
+    private let hitWidth: CGFloat = 7
+    private let visibleWidth: CGFloat = 1
+    private let minPanelWidth: Double = 280
+    private let maxPanelWidth: Double = 500
+
     @Binding var panelWidth: Double
     @State private var isDragging = false
     @State private var dragStartWidth: Double = 0
 
     var body: some View {
-        Rectangle()
-            .fill(isDragging ? Color.accentColor.opacity(0.5) : Color.clear)
-            .frame(width: 5)
-            .background(Divider())
+        ZStack {
+            Rectangle()
+                .fill(isDragging ? Color.accentColor.opacity(0.65) : Color(nsColor: .separatorColor))
+                .frame(width: visibleWidth)
+        }
+            .frame(width: hitWidth)
             .contentShape(Rectangle())
             .onHover { hovering in
                 if hovering {
@@ -2323,18 +2330,19 @@ struct MetadataPanelDivider: View {
                 }
             }
             .gesture(
-                DragGesture(coordinateSpace: .global)
+                DragGesture(minimumDistance: 0, coordinateSpace: .global)
                     .onChanged { value in
                         if !isDragging {
                             isDragging = true
                             dragStartWidth = panelWidth
                         }
                         let newWidth = dragStartWidth - Double(value.translation.width)
-                        panelWidth = min(max(newWidth, 280), 500)
+                        panelWidth = min(max(newWidth, minPanelWidth), maxPanelWidth)
                     }
                     .onEnded { _ in
                         isDragging = false
                     }
             )
+            .zIndex(1)
     }
 }
