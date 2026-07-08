@@ -139,8 +139,9 @@ final class CleanFeedController {
             var name = base
             if (nameCounts[base] ?? 0) > 1 {
                 let w = Int(screen.frame.width), h = Int(screen.frame.height)
-                seen[base, default: 0] += 1
-                name = "\(base) (\(w)×\(h) #\(seen[base]!))"
+                let duplicateIndex = (seen[base] ?? 0) + 1
+                seen[base] = duplicateIndex
+                name = "\(base) (\(w)×\(h) #\(duplicateIndex))"
             }
             return DisplayOption(id: id, name: name)
         }

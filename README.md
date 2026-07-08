@@ -20,7 +20,7 @@ brew install aagedal/casks/aagedal-photo-agent
 Or build from source:
 
 ```bash
-xcodebuild -project "Aagedal Photo Agent/Aagedal Photo Agent.xcodeproj" \
+xcodebuild -project "Aagedal Photo Agent.xcodeproj" \
   -scheme "Aagedal Photo Agent" build
 ```
 

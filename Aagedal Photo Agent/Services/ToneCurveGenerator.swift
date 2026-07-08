@@ -166,7 +166,8 @@ nonisolated struct ToneCurveGenerator: Sendable {
         // Scene-referred source in SDR mode: the LUT is never identity because the
         // SDR output tonemap must roll super-white data into display range.
         if s.sourceHasHDRHeadroom == true && (s.hdrEditMode ?? 0) != 1 { return false }
-        return (s.exposure2012 == nil || abs(s.exposure2012!) < 0.0001)
+        let hasExposureAdjustment = s.exposure2012.map { abs($0) >= 0.0001 } ?? false
+        return !hasExposureAdjustment
             && s.contrast2012 == nil
             && s.highlights2012 == nil
             && s.shadows2012 == nil
