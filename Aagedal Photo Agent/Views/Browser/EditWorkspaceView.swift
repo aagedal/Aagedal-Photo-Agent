@@ -215,6 +215,8 @@ struct EditWorkspaceView: View {
             || cameraRaw.whites2012 != nil
             || cameraRaw.blacks2012 != nil
             || cameraRaw.saturation != nil
+            || cameraRaw.vibrance != nil
+            || cameraRaw.globalDensity != nil
             || cameraRaw.toneCurve != nil
             || !(cameraRaw.localAdjustments?.isEmpty ?? true)
             || !(cameraRaw.watermarkLayers?.isEmpty ?? true)
@@ -1990,6 +1992,7 @@ struct EditWorkspaceView: View {
             s.asShotNeutralTint = nil
             s.saturation = nil
             s.vibrance = nil
+            s.globalDensity = nil
         }
         if isMutingDevelop || isMutingExposure {
             s.exposure2012 = nil
@@ -2473,6 +2476,7 @@ struct EditWorkspaceView: View {
             || cameraRaw.blacks2012 != nil
             || cameraRaw.saturation != nil
             || cameraRaw.vibrance != nil
+            || cameraRaw.globalDensity != nil
             || cameraRaw.toneCurve != nil
             || (cameraRaw.crop?.isEffectiveCrop == true)
             || !(cameraRaw.localAdjustments?.isEmpty ?? true)
@@ -2916,6 +2920,9 @@ struct EditWorkspaceView: View {
         })
         sliderRow("Vibrance", value: toneSliderBinding(\.vibrance), range: -100...100, step: 1, gradientColors: [.gray, .orange], formatter: signedIntString, settingsMutator: { $0.vibrance = Int($1.rounded()) }, onReset: {
             toneSliderBinding(\.vibrance).wrappedValue = 0
+        })
+        sliderRow("Density", value: toneSliderBinding(\.globalDensity), range: -100...100, step: 1, gradientColors: [.white, .black], formatter: signedIntString, settingsMutator: { $0.globalDensity = Int($1.rounded()) }, onReset: {
+            toneSliderBinding(\.globalDensity).wrappedValue = 0
         })
 
         // ── Exposure ──
@@ -4577,6 +4584,7 @@ struct EditWorkspaceView: View {
             || cameraRaw.incrementalTint != nil
             || cameraRaw.saturation != nil
             || cameraRaw.vibrance != nil
+            || cameraRaw.globalDensity != nil
     }
 
     private var hasExposureAdjustments: Bool {
@@ -4606,6 +4614,7 @@ struct EditWorkspaceView: View {
             cameraRaw.incrementalTint = nil
             cameraRaw.saturation = nil
             cameraRaw.vibrance = nil
+            cameraRaw.globalDensity = nil
         }
         commitEditAdjustments()
     }
@@ -4653,6 +4662,7 @@ struct EditWorkspaceView: View {
             cameraRaw.blacks2012 = nil
             cameraRaw.saturation = nil
             cameraRaw.vibrance = nil
+            cameraRaw.globalDensity = nil
             cameraRaw.localAdjustments = nil
             cameraRaw.anonymizer = nil
             cameraRaw.crop = CameraRawCrop(
@@ -4682,6 +4692,7 @@ struct EditWorkspaceView: View {
             cameraRaw.blacks2012 = nil
             cameraRaw.saturation = nil
             cameraRaw.vibrance = nil
+            cameraRaw.globalDensity = nil
             cameraRaw.toneCurve = nil
             cameraRaw.localAdjustments = nil
             cameraRaw.anonymizer = nil
@@ -4773,6 +4784,7 @@ struct EditWorkspaceView: View {
             cameraRaw.blacks2012 = source.blacks2012
             cameraRaw.saturation = source.saturation
             cameraRaw.vibrance = source.vibrance
+            cameraRaw.globalDensity = source.globalDensity
             cameraRaw.toneCurve = source.toneCurve
             cameraRaw.hslAdjustments = source.hslAdjustments
             // Paste masks only when the source carries some — pasting from a

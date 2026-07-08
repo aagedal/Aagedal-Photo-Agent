@@ -127,7 +127,23 @@ enum CameraRawApproximation {
             ]) ?? output
         }
 
-        // 3. Vibrance
+        // 3. Global Density
+        if let density = settings.globalDensity, density != 0 {
+            let amount = min(max(Double(density) / 100.0, -1.0), 1.0)
+            let gain = pow(2.0, -amount)
+            let delta = gain - 1.0
+            let wr = 0.2126
+            let wg = 0.7152
+            let wb = 0.0722
+            output = applyFilter(named: "CIColorMatrix", input: output, values: [
+                "inputRVector": CIVector(x: 1.0 + delta * wr, y: delta * wg, z: delta * wb, w: 0),
+                "inputGVector": CIVector(x: delta * wr, y: 1.0 + delta * wg, z: delta * wb, w: 0),
+                "inputBVector": CIVector(x: delta * wr, y: delta * wg, z: 1.0 + delta * wb, w: 0),
+                "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1),
+            ]) ?? output
+        }
+
+        // 4. Vibrance
         if let vib = settings.vibrance, vib != 0 {
             let amount = min(max(Double(vib) / 100.0, -1.0), 1.0)
             output = applyFilter(named: "CIVibrance", input: output, values: [
@@ -135,7 +151,7 @@ enum CameraRawApproximation {
             ]) ?? output
         }
 
-        // 4. Saturation
+        // 5. Saturation
         if let sat = settings.saturation, sat != 0 {
             let saturation = min(max(1.0 + Double(sat) / 100.0, 0.0), 2.0)
             output = applyFilter(named: "CIColorControls", input: output, values: [

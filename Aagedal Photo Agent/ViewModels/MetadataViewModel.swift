@@ -1089,6 +1089,7 @@ final class MetadataViewModel {
         fields[.crsBlacks2012] = ""
         fields[.crsSaturation] = ""
         fields[.crsVibrance] = ""
+        fields[.aaphotoGlobalDensity] = ""
         fields[.crsHasSettings] = "False"
         fields[.crsCropTop] = ""
         fields[.crsCropLeft] = ""

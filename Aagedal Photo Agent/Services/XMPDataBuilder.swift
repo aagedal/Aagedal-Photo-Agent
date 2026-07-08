@@ -12,7 +12,7 @@ import os
 enum XMPDataBuilder {
 
     /// App-private XMP namespace for settings ACR can't represent — the global node's position in
-    /// the reorderable layer chain. (crs uses `XMPNamespace.crs`.)
+    /// the reorderable layer chain and app-native render controls. (crs uses `XMPNamespace.crs`.)
     nonisolated static let aaphotoNamespace = "http://aagedal.me/ns/photo/1.0/"
 
     // MARK: - Descriptive fields
@@ -88,6 +88,7 @@ enum XMPDataBuilder {
         setCRS(&xmp, "Blacks2012", settings.blacks2012.map(formatSignedInt))
         setCRS(&xmp, "Saturation", settings.saturation.map(formatSignedInt))
         setCRS(&xmp, "Vibrance", settings.vibrance.map(formatSignedInt))
+        setAppPrivate(&xmp, "GlobalDensity", settings.globalDensity.map(formatSignedInt))
 
         let hasSettings = settings.hasSettings ?? !settings.isEmpty
         setCRS(&xmp, "HasSettings", formatBool(hasSettings))
@@ -154,6 +155,7 @@ enum XMPDataBuilder {
         xmp.removeValue(namespace: aaphotoNamespace, property: "WatermarkLayers")
         xmp.removeValue(namespace: aaphotoNamespace, property: "AnonymizerAmount")
         xmp.removeValue(namespace: aaphotoNamespace, property: "AnonymizerBlackOut")
+        xmp.removeValue(namespace: aaphotoNamespace, property: "GlobalDensity")
     }
 
     // MARK: - Shared develop encoders (also used by the embedded SwiftExifWriteEngine)
@@ -329,6 +331,10 @@ enum XMPDataBuilder {
 
     nonisolated private static func setCRS(_ xmp: inout XMPData, _ property: String, _ value: String?) {
         setSimpleOrRemove(&xmp, value, namespace: XMPNamespace.crs, property: property)
+    }
+
+    nonisolated private static func setAppPrivate(_ xmp: inout XMPData, _ property: String, _ value: String?) {
+        setSimpleOrRemove(&xmp, value, namespace: aaphotoNamespace, property: property)
     }
 
     nonisolated private static func setSimpleOrRemove(_ xmp: inout XMPData, _ value: String?, namespace: String, property: String) {

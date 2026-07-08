@@ -1170,6 +1170,14 @@ struct CameraRawCropACRConversionTests {
         #expect(hsl.skinTone == HSLColorAdjustment(saturation: nil, luminance: 12, hueShift: nil))
         #expect(hsl.green == nil)
     }
+
+    @Test("iptcMetadataFromDict decodes app-private global density")
+    func dictParseDecodesGlobalDensity() throws {
+        let dict: [String: Any] = [
+            MetadataDictKey.globalDensity: "+35",
+        ]
+        #expect(iptcMetadataFromDict(dict).cameraRaw?.globalDensity == 35)
+    }
 }
 
 @Suite("EllipseMaskGeometry ACR corner encoding")

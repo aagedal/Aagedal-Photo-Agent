@@ -89,6 +89,8 @@ nonisolated enum MetadataDictKey {
     /// App-private (aaphoto namespace): the global Anonymizer redaction settings.
     static let anonymizerAmount = "AnonymizerAmount"
     static let anonymizerBlackOut = "AnonymizerBlackOut"
+    /// App-private (aaphoto namespace): global density render adjustment.
+    static let globalDensity = "GlobalDensity"
 }
 
 nonisolated func parseStringOrArray(_ value: Any?) -> [String] {
@@ -763,6 +765,7 @@ nonisolated func iptcMetadataFromDict(_ dict: [String: Any]) -> IPTCMetadata {
         blacks2012: parseIntValue(dict[MetadataDictKey.crsBlacks2012]),
         saturation: parseIntValue(dict[MetadataDictKey.crsSaturation]),
         vibrance: parseIntValue(dict[MetadataDictKey.crsVibrance]),
+        globalDensity: parseIntValue(dict[MetadataDictKey.globalDensity]),
         hasSettings: parseBoolValue(dict[MetadataDictKey.crsHasSettings]),
         crop: cropValue,
         hdrEditMode: parseIntValue(dict[MetadataDictKey.crsHDREditMode]),

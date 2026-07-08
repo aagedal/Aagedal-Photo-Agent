@@ -993,6 +993,9 @@ struct MetadataPanel: View {
             || cameraRaw.shadows2012 != nil
             || cameraRaw.whites2012 != nil
             || cameraRaw.blacks2012 != nil
+            || cameraRaw.saturation != nil
+            || cameraRaw.vibrance != nil
+            || cameraRaw.globalDensity != nil
             || (cameraRaw.crop?.isEmpty == false)
     }
 

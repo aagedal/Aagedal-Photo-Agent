@@ -186,6 +186,10 @@ extension ImageMetadata {
                                        property: MetadataDictKey.anonymizerBlackOut) {
                 dict[MetadataDictKey.anonymizerBlackOut] = v
             }
+            if let v = xmp.simpleValue(namespace: aaphotoNamespaceURI,
+                                       property: MetadataDictKey.globalDensity) {
+                dict[MetadataDictKey.globalDensity] = v
+            }
         }
 
         // MARK: EXIF

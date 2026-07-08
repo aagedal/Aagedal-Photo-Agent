@@ -293,6 +293,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
             metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: "WatermarkLayers")
             metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: "AnonymizerAmount")
             metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: "AnonymizerBlackOut")
+            metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: "GlobalDensity")
         }
 
         // GPS coordinates are paired: SwiftExif's setGPS takes both at once and
@@ -548,6 +549,13 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         case .crsSDRWhites: setCRSField(&metadata, property: "SDRWhites", value: value)
         case .crsSDRBlend: setCRSField(&metadata, property: "SDRBlend", value: value)
         case .crsToneCurveName2012: setCRSField(&metadata, property: "ToneCurveName2012", value: value)
+        case .aaphotoGlobalDensity:
+            setXMPField(
+                &metadata,
+                namespace: aaphotoNamespace,
+                property: "GlobalDensity",
+                value: isEmpty ? nil : .simple(value)
+            )
         }
     }
 
@@ -704,4 +712,3 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         }
     }
 }
-

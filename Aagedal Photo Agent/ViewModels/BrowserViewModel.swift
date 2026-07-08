@@ -1305,6 +1305,7 @@ final class BrowserViewModel {
             blacks2012: parseIntValue(dict[MetadataDictKey.crsBlacks2012]),
             saturation: parseIntValue(dict[MetadataDictKey.crsSaturation]),
             vibrance: parseIntValue(dict[MetadataDictKey.crsVibrance]),
+            globalDensity: parseIntValue(dict[MetadataDictKey.globalDensity]),
             hasSettings: parseBoolValue(dict[MetadataDictKey.crsHasSettings]),
             crop: cropValue,
             hdrEditMode: parseIntValue(dict[MetadataDictKey.crsHDREditMode]),
@@ -3175,6 +3176,7 @@ final class BrowserViewModel {
             clearFields[.crsBlacks2012] = ""
             clearFields[.crsSaturation] = ""
             clearFields[.crsVibrance] = ""
+            clearFields[.aaphotoGlobalDensity] = ""
             clearFields[.crsHasSettings] = "False"
             clearFields[.crsCropTop] = ""
             clearFields[.crsCropLeft] = ""

@@ -105,16 +105,16 @@ struct HSLParams {
 }
 
 /// Uniform buffer layout matching the Metal `EditParams` struct.
-/// Contains all edit operations: tonal (via LUT), vibrance, saturation, white balance.
+/// Contains all edit operations: tonal (via LUT), vibrance, saturation, density, white balance.
 struct EditParams {
-    var exposure: Float = 0    // Legacy field kept for layout stability (baked into LUT)
+    var globalDensity: Float = 0
     var vibrance: Float = 0
     var saturation: Float = 1
     var gamutClipMode: UInt32 = 0
 
     var whiteBalanceMatrix: simd_float3x3 = matrix_identity_float3x3
 
-    var activeFlags: UInt32 = 0  // bit0=toneLUT, bit1=vibrance, bit2=saturation, bit3=whiteBalance, bit4=hdrMode, bit5=anonymizer
+    var activeFlags: UInt32 = 0  // bit0=toneLUT, bit1=vibrance, bit2=saturation, bit3=whiteBalance, bit4=hdrMode, bit5=anonymizer, bit6=globalDensity
     var maskCount: UInt32 = 0
 
     var scale: SIMD2<Float> = .zero
@@ -727,6 +727,12 @@ final class MetalEditPipeline: @unchecked Sendable {
         if let sat = settings.saturation, sat != 0 {
             params.saturation = Float(min(max(1.0 + Double(sat) / 100.0, 0.0), 2.0))
             flags |= (1 << 2)
+        }
+
+        // 3.5. Global density
+        if let density = settings.globalDensity, density != 0 {
+            params.globalDensity = Float(min(max(Double(density) / 100.0, -1.0), 1.0))
+            flags |= (1 << 6)
         }
 
         // 4. White balance — cached, only recomputes when temperature/tint change
@@ -2100,6 +2106,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         let noTonal = ToneCurveGenerator.isIdentity(settings: settings)
         let noVibrance = settings.vibrance == nil || settings.vibrance == 0
         let noSaturation = settings.saturation == nil || settings.saturation == 0
+        let noDensity = settings.globalDensity == nil || settings.globalDensity == 0
         let noWB = settings.whiteBalance == "As Shot"
             || (settings.temperature == nil && settings.incrementalTemperature == nil
                 && settings.tint == nil && settings.incrementalTint == nil)
@@ -2107,6 +2114,6 @@ final class MetalEditPipeline: @unchecked Sendable {
         let noWatermarks = settings.watermarkLayers?.isEmpty ?? true
         let noHSL = settings.hslAdjustments?.isEmpty ?? true
         let noAnonymizer = settings.anonymizer?.isEmpty ?? true
-        return noTonal && noVibrance && noSaturation && noWB && noMasks && noWatermarks && noHSL && noAnonymizer
+        return noTonal && noVibrance && noSaturation && noDensity && noWB && noMasks && noWatermarks && noHSL && noAnonymizer
     }
 }
