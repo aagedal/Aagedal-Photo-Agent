@@ -1471,19 +1471,17 @@ final class FaceRecognitionViewModel {
         return name
     }
 
-    /// The jersey number for a group (sports mode only), used to prefix the name tag.
+    /// The jersey number for a group (Sports lens only), used to prefix the name tag.
     /// Resolved first from numbers actually read off the group's faces, then — for
     /// players named from the team sheet or Known People without an OCR'd number — from
     /// the roster via the linked person or a name match. `nil` when nothing resolves.
     func groupNumber(_ groupID: UUID) -> Int? {
         guard let group = groupLookup[groupID] else { return nil }
+        guard activeLens == .sports else { return nil }
 
         // 0. A hand-assigned number is an explicit choice — always honored, and it wins
         //    over any detected/roster number (it's how the user corrects a misread).
         if let manual = group.manualNumber { return manual }
-
-        // Auto-resolved numbers only surface when jersey detection is on for scans.
-        guard UserDefaults.standard.bool(forKey: UserDefaultsKeys.sportsModeEnabled) else { return nil }
 
         // 1. Majority vote across detected face numbers (most authoritative).
         var votes: [Int: Int] = [:]

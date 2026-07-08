@@ -1662,7 +1662,8 @@ struct FullScreenImageView: View {
         if let faceVM = faceContext?.faceRecognitionViewModel,
            let url = currentImageFile?.url {
             let facesInImage = faceVM.facesForImage(url)
-            let standaloneNumbers = faceVM.numberDetectionsForImage(url)
+            let showsSportsNumbers = faceVM.activeLens == .sports
+            let standaloneNumbers = showsSportsNumbers ? faceVM.numberDetectionsForImage(url) : []
             // Follow the crop/straighten geometry baked into the rendered image so the
             // boxes stay glued to faces and numbers after a rotated crop.
             let displayCrop = renderEdits ? currentImageFile?.cameraRawSettings?.crop : nil
@@ -1690,28 +1691,30 @@ struct FullScreenImageView: View {
                         }
                     }
 
-                    // Jersey-number debug boxes (sports tagging): solid orange for numbers
-                    // attached to a face's torso, red for standalone (back-turned) detections.
-                    for face in facesInImage {
-                        guard let number = face.jerseyNumber, let box = face.jerseyNumberBox else { continue }
-                        drawNumberBox(
-                            context: context,
-                            corners: detectionCorners(box, crop: displayCrop, imageSize: imageSize, in: imageDisplayRect),
-                            number: number,
-                            confidence: face.numberConfidence,
-                            color: .orange,
-                            imageDisplayRect: imageDisplayRect
-                        )
-                    }
-                    for detection in standaloneNumbers {
-                        drawNumberBox(
-                            context: context,
-                            corners: detectionCorners(detection.boundingBox, crop: displayCrop, imageSize: imageSize, in: imageDisplayRect),
-                            number: detection.number,
-                            confidence: detection.numberConfidence,
-                            color: .red,
-                            imageDisplayRect: imageDisplayRect
-                        )
+                    if showsSportsNumbers {
+                        // Jersey-number debug boxes (sports tagging): solid orange for numbers
+                        // attached to a face's torso, red for standalone (back-turned) detections.
+                        for face in facesInImage {
+                            guard let number = face.jerseyNumber, let box = face.jerseyNumberBox else { continue }
+                            drawNumberBox(
+                                context: context,
+                                corners: detectionCorners(box, crop: displayCrop, imageSize: imageSize, in: imageDisplayRect),
+                                number: number,
+                                confidence: face.numberConfidence,
+                                color: .orange,
+                                imageDisplayRect: imageDisplayRect
+                            )
+                        }
+                        for detection in standaloneNumbers {
+                            drawNumberBox(
+                                context: context,
+                                corners: detectionCorners(detection.boundingBox, crop: displayCrop, imageSize: imageSize, in: imageDisplayRect),
+                                number: detection.number,
+                                confidence: detection.numberConfidence,
+                                color: .red,
+                                imageDisplayRect: imageDisplayRect
+                            )
+                        }
                     }
                 }
                 .allowsHitTesting(false)
