@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct TemplateEditorView: View {
@@ -5,6 +6,8 @@ struct TemplateEditorView: View {
 
     @State private var isShowingVariableReference = false
     @State private var activeFieldID: UUID?
+    @State private var fieldSelections: [UUID: NSRange] = [:]
+    @FocusState private var focusedTemplateValueFieldID: UUID?
 
     /// Returns field keys that are already used in the template
     private var usedFieldKeys: Set<String> {
@@ -88,8 +91,8 @@ struct TemplateEditorView: View {
                         .labelsHidden()
                         .frame(maxWidth: .infinity, alignment: .leading)
                     } else {
-                        TextField("Template value", text: $field.templateValue)
-                            .textFieldStyle(.roundedBorder)
+                        let fieldID = field.id
+                        templateValueField(for: $field, fieldID: fieldID)
 
                         variableMenu(for: $field)
                     }
@@ -136,50 +139,112 @@ struct TemplateEditorView: View {
         .sheet(isPresented: $isShowingVariableReference) {
             VariableReferenceView(isPresented: $isShowingVariableReference)
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSTextView.didChangeSelectionNotification)) { notification in
+            guard let activeFieldID,
+                  focusedTemplateValueFieldID == activeFieldID,
+                  let editor = notification.object as? NSTextView else {
+                return
+            }
+            fieldSelections[activeFieldID] = editor.selectedRange()
+        }
+        .onChange(of: focusedTemplateValueFieldID) { _, newValue in
+            guard let newValue else { return }
+            activeFieldID = newValue
+            if let editor = NSApp.keyWindow?.firstResponder as? NSTextView {
+                fieldSelections[newValue] = editor.selectedRange()
+            }
+        }
     }
 
+    @ViewBuilder
+    private func templateValueField(for field: Binding<TemplateField>, fieldID: UUID) -> some View {
+        if isMultilineTemplateField(field.wrappedValue.fieldKey) {
+            TextField("Template value", text: field.templateValue, axis: .vertical)
+                .lineLimit(3...8)
+                .textFieldStyle(.roundedBorder)
+                .focused($focusedTemplateValueFieldID, equals: fieldID)
+                .onTapGesture {
+                    activeFieldID = fieldID
+                }
+                .onSubmit {
+                    activeFieldID = fieldID
+                }
+        } else {
+            TextField("Template value", text: field.templateValue)
+                .textFieldStyle(.roundedBorder)
+                .focused($focusedTemplateValueFieldID, equals: fieldID)
+                .onTapGesture {
+                    activeFieldID = fieldID
+                }
+                .onSubmit {
+                    activeFieldID = fieldID
+                }
+        }
+    }
+
+    private func isMultilineTemplateField(_ fieldKey: String) -> Bool {
+        fieldKey == "description" || fieldKey == "extendedDescription"
+    }
+
+    @ViewBuilder
     private func variableMenu(for field: Binding<TemplateField>) -> some View {
+        let fieldID = field.wrappedValue.id
         Menu {
             Section("Date") {
                 Button("{date} — today, medium format") {
-                    field.wrappedValue.templateValue += "{date}"
+                    insertVariable("{date}", into: field)
                 }
                 Button("{date:yyyy-MM-dd}") {
-                    field.wrappedValue.templateValue += "{date:yyyy-MM-dd}"
+                    insertVariable("{date:yyyy-MM-dd}", into: field)
                 }
                 Button("{date:dd MMM yyyy}") {
-                    field.wrappedValue.templateValue += "{date:dd MMM yyyy}"
+                    insertVariable("{date:dd MMM yyyy}", into: field)
                 }
                 Button("{date:dd.MM.yyyy}") {
-                    field.wrappedValue.templateValue += "{date:dd.MM.yyyy}"
+                    insertVariable("{date:dd.MM.yyyy}", into: field)
                 }
                 Button("{date:yyyy}") {
-                    field.wrappedValue.templateValue += "{date:yyyy}"
+                    insertVariable("{date:yyyy}", into: field)
                 }
                 Button("{dateCreated} — metadata") {
-                    field.wrappedValue.templateValue += "{dateCreated}"
+                    insertVariable("{dateCreated}", into: field)
                 }
                 Button("{dateCaptured} — EXIF DateTimeOriginal") {
-                    field.wrappedValue.templateValue += "{dateCaptured}"
+                    insertVariable("{dateCaptured}", into: field)
+                }
+                Button("{dateCaptured:yyyy-MM-dd}") {
+                    insertVariable("{dateCaptured:yyyy-MM-dd}", into: field)
+                }
+                Button("{dateCaptured:YYYYMMDD}") {
+                    insertVariable("{dateCaptured:YYYYMMDD}", into: field)
+                }
+                Button("{dateCaptured:DDMMYYYY}") {
+                    insertVariable("{dateCaptured:DDMMYYYY}", into: field)
+                }
+                Button("{dateCaptured:YYYY-MM-DD}") {
+                    insertVariable("{dateCaptured:YYYY-MM-DD}", into: field)
+                }
+                Button("{dateCaptured:DD-MM-YYYY}") {
+                    insertVariable("{dateCaptured:DD-MM-YYYY}", into: field)
                 }
             }
 
             Section("Shortcuts") {
                 Button("{persons} — Person Shown names") {
-                    field.wrappedValue.templateValue += "{persons}"
+                    insertVariable("{persons}", into: field)
                 }
                 Button("{keywords} — Keywords list") {
-                    field.wrappedValue.templateValue += "{keywords}"
+                    insertVariable("{keywords}", into: field)
                 }
                 Button("{filename} — Image filename") {
-                    field.wrappedValue.templateValue += "{filename}"
+                    insertVariable("{filename}", into: field)
                 }
             }
 
             Section("Field Reference") {
                 ForEach(TemplateField.availableFields, id: \.key) { f in
                     Button("{field:\(f.key)}") {
-                        field.wrappedValue.templateValue += "{field:\(f.key)}"
+                        insertVariable("{field:\(f.key)}", into: field)
                     }
                 }
             }
@@ -189,5 +254,49 @@ struct TemplateEditorView: View {
         }
         .menuStyle(.borderlessButton)
         .frame(width: 24)
+        .onTapGesture {
+            activeFieldID = fieldID
+            if focusedTemplateValueFieldID == fieldID,
+               let editor = NSApp.keyWindow?.firstResponder as? NSTextView {
+                fieldSelections[fieldID] = editor.selectedRange()
+            }
+        }
+    }
+
+    private func insertVariable(_ variable: String, into field: Binding<TemplateField>) {
+        let fieldID = field.wrappedValue.id
+        activeFieldID = fieldID
+        let current = field.wrappedValue.templateValue
+        if focusedTemplateValueFieldID == fieldID,
+           let editor = NSApp.keyWindow?.firstResponder as? NSTextView {
+            fieldSelections[fieldID] = editor.selectedRange()
+        }
+        let selection = clampedSelection(
+            fieldSelections[fieldID] ?? NSRange(location: current.utf16.count, length: 0),
+            maxLength: current.utf16.count
+        )
+        let (updated, newSelection) = insertText(variable, into: current, selection: selection)
+        field.wrappedValue.templateValue = updated
+        fieldSelections[fieldID] = newSelection
+        if focusedTemplateValueFieldID == fieldID,
+           let editor = NSApp.keyWindow?.firstResponder as? NSTextView {
+            editor.selectedRange = newSelection
+        }
+    }
+
+    private func clampedSelection(_ selection: NSRange, maxLength: Int) -> NSRange {
+        let location = min(maxLength, max(0, selection.location))
+        let length = min(maxLength - location, max(0, selection.length))
+        return NSRange(location: location, length: length)
+    }
+
+    private func insertText(_ insertion: String, into current: String, selection: NSRange) -> (String, NSRange) {
+        guard let range = Range(selection, in: current) else {
+            let updated = current + insertion
+            return (updated, NSRange(location: updated.utf16.count, length: 0))
+        }
+        let updated = current.replacingCharacters(in: range, with: insertion)
+        let newLocation = selection.location + insertion.utf16.count
+        return (updated, NSRange(location: newLocation, length: 0))
     }
 }
