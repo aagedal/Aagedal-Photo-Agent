@@ -247,32 +247,11 @@ enum CameraRawApproximation {
     }
 
     nonisolated private static func temperatureTintTarget(for settings: CameraRawSettings) -> (temperature: CGFloat, tint: CGFloat)? {
-        // "As Shot" means no white balance adjustment
-        if settings.whiteBalance == "As Shot" { return nil }
-
-        let temperature: Double?
-        if let absolute = settings.temperature {
-            temperature = Double(absolute)
-        } else if let incremental = settings.incrementalTemperature {
-            // Non-RAW relative WB. Slider range is -135...+100; the negative end maps to the
-            // 2000 K floor (6500 - 135*33.33 ≈ 2000), so the slope is 5000/150 ≈ 33.33 K/step.
-            temperature = 6500 + (Double(incremental) * (5000.0 / 150.0))
-        } else {
-            temperature = nil
-        }
-
-        let tint: Double?
-        if let absolute = settings.tint {
-            tint = Double(absolute)
-        } else if let incremental = settings.incrementalTint {
-            tint = Double(incremental)
-        } else {
-            tint = nil
-        }
-
-        guard temperature != nil || tint != nil else { return nil }
-        let finalTemperature = min(max(temperature ?? 6500, minKelvin), maxKelvin)
-        let finalTint = min(max(tint ?? 0, -150), 150)
-        return (temperature: CGFloat(finalTemperature), tint: CGFloat(finalTint))
+        guard let target = settings.resolvedWhiteBalanceTarget(
+            absoluteDefaultTemperature: settings.asShotNeutralTemperature ?? 6500,
+            absoluteDefaultTint: settings.asShotNeutralTint ?? 0
+        ) else { return nil }
+        let finalTemperature = min(max(target.temperature, minKelvin), maxKelvin)
+        return (temperature: CGFloat(finalTemperature), tint: CGFloat(target.tint))
     }
 }

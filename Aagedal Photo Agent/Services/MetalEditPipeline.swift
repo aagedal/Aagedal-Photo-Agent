@@ -1490,44 +1490,24 @@ final class MetalEditPipeline: @unchecked Sendable {
             return nil
         }
 
-        let temperature: Double?
-        if let absolute = settings.temperature {
-            temperature = Double(absolute)
-        } else if let incremental = settings.incrementalTemperature {
-            // Non-RAW relative WB. Slider range is -135...+100; the negative end maps to the
-            // 2000 K floor (6500 - 135*33.33 ≈ 2000), so the slope is 5000/150 ≈ 33.33 K/step.
-            temperature = 6500 + (Double(incremental) * (5000.0 / 150.0))
-        } else {
-            temperature = nil
-        }
-
-        let tint: Double?
-        if let absolute = settings.tint {
-            tint = Double(absolute)
-        } else if let incremental = settings.incrementalTint {
-            tint = Double(incremental)
-        } else {
-            tint = nil
-        }
-
-        guard temperature != nil || tint != nil else {
+        guard let target = settings.resolvedWhiteBalanceTarget(
+            absoluteDefaultTemperature: asShotTemperature,
+            absoluteDefaultTint: asShotTint
+        ) else {
             cachedWBKey = nil
             cachedWBMatrix = nil
             return nil
         }
-        // CITemperatureAndTint returns an identity transform below 2000 K, so clamp there.
-        let finalTemp = min(max(temperature ?? 6500, 2000), 50000)
-        let finalTint = min(max(tint ?? 0, -150), 150)
 
         // Return cached matrix if temperature/tint and as-shot reference haven't changed
         if let key = cachedWBKey,
-           key.0 == finalTemp, key.1 == finalTint,
+           key.0 == target.temperature, key.1 == target.tint,
            key.2 == asShotTemperature, key.3 == asShotTint {
             return cachedWBMatrix
         }
 
-        let matrix = extractWBMatrix(temperature: finalTemp, tint: finalTint)
-        cachedWBKey = (finalTemp, finalTint, asShotTemperature, asShotTint)
+        let matrix = extractWBMatrix(temperature: target.temperature, tint: target.tint)
+        cachedWBKey = (target.temperature, target.tint, asShotTemperature, asShotTint)
         cachedWBMatrix = matrix
         return matrix
     }

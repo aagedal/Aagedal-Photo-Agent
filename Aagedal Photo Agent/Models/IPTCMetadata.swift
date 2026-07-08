@@ -1094,6 +1094,53 @@ nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
     }
 }
 
+nonisolated extension CameraRawSettings {
+    /// Resolves the white-balance target used by the render pipeline.
+    ///
+    /// RAW files store absolute Temperature/Tint controls. When only one component has been
+    /// touched, the untouched component must stay at the RAW decoder's as-shot value, not at
+    /// the generic D65/0 neutral used by relative non-RAW controls. Otherwise the first drag
+    /// on Tint can silently introduce a temperature correction even though the Temperature
+    /// slider still displays the as-shot value.
+    func resolvedWhiteBalanceTarget(
+        absoluteDefaultTemperature: Double = 6500,
+        absoluteDefaultTint: Double = 0
+    ) -> (temperature: Double, tint: Double)? {
+        if whiteBalance == "As Shot" { return nil }
+
+        let hasAbsoluteWhiteBalance = temperature != nil || tint != nil
+
+        let resolvedTemperature: Double?
+        if let temperature {
+            resolvedTemperature = Double(temperature)
+        } else if let incrementalTemperature {
+            // Non-RAW relative WB. Slider range is -135...+100; the negative end maps to the
+            // 2000 K floor (6500 - 135*33.33 ≈ 2000), so the slope is 5000/150 ≈ 33.33 K/step.
+            resolvedTemperature = 6500 + (Double(incrementalTemperature) * (5000.0 / 150.0))
+        } else if hasAbsoluteWhiteBalance {
+            resolvedTemperature = absoluteDefaultTemperature
+        } else {
+            resolvedTemperature = nil
+        }
+
+        let resolvedTint: Double?
+        if let tint {
+            resolvedTint = Double(tint)
+        } else if let incrementalTint {
+            resolvedTint = Double(incrementalTint)
+        } else if hasAbsoluteWhiteBalance {
+            resolvedTint = absoluteDefaultTint
+        } else {
+            resolvedTint = nil
+        }
+
+        guard resolvedTemperature != nil || resolvedTint != nil else { return nil }
+        let finalTemperature = min(max(resolvedTemperature ?? 6500, 2000), 50000)
+        let finalTint = min(max(resolvedTint ?? 0, -150), 150)
+        return (temperature: finalTemperature, tint: finalTint)
+    }
+}
+
 extension CameraRawCrop {
     /// Transform crop from sensor (XMP) orientation to display orientation.
     nonisolated func transformedForDisplay(orientation: Int) -> CameraRawCrop {

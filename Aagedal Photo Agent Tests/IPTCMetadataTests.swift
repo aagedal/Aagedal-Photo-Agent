@@ -156,6 +156,64 @@ struct ToWriteFieldsTests {
     }
 }
 
+@Suite("CameraRawSettings white balance resolution")
+struct CameraRawWhiteBalanceResolutionTests {
+    @Test("absolute RAW tint-only edit keeps as-shot temperature")
+    func rawTintOnlyDefaultsTemperatureToAsShot() {
+        var settings = CameraRawSettings()
+        settings.whiteBalance = "Custom"
+        settings.tint = 3
+
+        let target = settings.resolvedWhiteBalanceTarget(
+            absoluteDefaultTemperature: 4480,
+            absoluteDefaultTint: 3
+        )
+
+        #expect(target?.temperature == 4480)
+        #expect(target?.tint == 3)
+    }
+
+    @Test("absolute RAW temperature-only edit keeps as-shot tint")
+    func rawTemperatureOnlyDefaultsTintToAsShot() {
+        var settings = CameraRawSettings()
+        settings.whiteBalance = "Custom"
+        settings.temperature = 4480
+
+        let target = settings.resolvedWhiteBalanceTarget(
+            absoluteDefaultTemperature: 4480,
+            absoluteDefaultTint: 3
+        )
+
+        #expect(target?.temperature == 4480)
+        #expect(target?.tint == 3)
+    }
+
+    @Test("incremental non-RAW tint-only edit keeps neutral temperature")
+    func incrementalTintOnlyKeepsNeutralTemperature() {
+        var settings = CameraRawSettings()
+        settings.whiteBalance = "Custom"
+        settings.incrementalTint = 3
+
+        let target = settings.resolvedWhiteBalanceTarget(
+            absoluteDefaultTemperature: 4480,
+            absoluteDefaultTint: 3
+        )
+
+        #expect(target?.temperature == 6500)
+        #expect(target?.tint == 3)
+    }
+
+    @Test("as-shot white balance resolves to no adjustment")
+    func asShotWhiteBalanceIsNoAdjustment() {
+        var settings = CameraRawSettings()
+        settings.whiteBalance = "As Shot"
+        settings.temperature = 4480
+        settings.tint = 3
+
+        #expect(settings.resolvedWhiteBalanceTarget() == nil)
+    }
+}
+
 // MARK: - hasIPTCDifferences
 
 @Suite("IPTCMetadata.hasIPTCDifferences")
