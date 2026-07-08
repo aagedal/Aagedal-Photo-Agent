@@ -2,6 +2,71 @@
 
 All notable user-visible changes are documented here. Signed, notarized DMGs are self-hosted and delivered as in-app updates via Sparkle.
 
+## 2.1.0 — Unreleased
+
+### Highlights
+
+- Sports lens is now enabled, with a confirm-before-write review workflow for jersey numbers, bibs, team sheets, and player claims.
+- New freeform brush masks for local edits, including paint / erase controls, red mask coverage preview, persistent brush settings, and XMP round-tripping.
+- New watermark layer system with a PNG watermark library, Metal compositing, crop-aware placement, and iCloud-backed storage.
+- New anonymizer controls combine distortion, blur, and mosaic for global and mask-based redaction.
+- Browser and editing workflows are smoother: split/tabbed browser panes, improved thumbnail spacing, keyboard-driven sports review, and compact edit controls.
+
+### Sports lens
+
+- Added a safety-first sports tagging model where detected numbers are stored as reviewable claims instead of silently renaming face groups.
+- Added Confirm, Reject, Home / Away assignment, drag-to-person binding, and manual number correction for detected jersey or bib numbers.
+- Confirmed sports claims write metadata only while the Sports lens is active; rejected claims stay rejected.
+- Added auto-confirm only when an independently identified face agrees with the roster-resolved number.
+- Added support for individual-event bib mode, single-team matches, home / away kit colours, and team sport categorisation.
+- Added number-crop thumbnails in review rows so photographers can quickly verify ambiguous digits.
+- Added team sheet naming from the face-group menu and surfaced Teams management in Settings.
+- Improved sports overlay alignment with cropped images and labelled number-derived face groups.
+
+### Brush masks and anonymizer
+
+- Added brush-mask data model, ACR-style `Dabs` XMP read / write support, and preservation of unrecognized Adobe mask corrections to avoid data loss on save.
+- Added Metal brush rasterization and compositing so exposure, colour, temperature / tint, and anonymizer adjustments work on painted regions.
+- Added bare-B paint mode, brush size / hardness / flow controls, Add / Erase mode, X to toggle add / erase, and one-gesture undo for committed strokes.
+- Added additive multi-stroke flow, per-mask opacity handling, symmetric soft erasing, and paste-to-other-images support for brush masks.
+- Added red coverage overlay for masks and improved add-mask controls with separate radial and brush buttons.
+- Expanded anonymizer redaction with resolution-relative mosaic, blur / distortion layering, and support for mask-specific temperature / tint.
+
+### Watermarks
+
+- Added a watermark library for PNG assets, including local storage, iCloud coordination, and dedicated management UI.
+- Added GPU-composited watermark layers in the edit view, with controls for placement, scale, opacity, and visibility.
+- Fixed watermark aspect and scaling when crop editing is active.
+
+### RAW editing, previews, and browser
+
+- Added RAW decoding settings for decode profile and decoder version.
+- Added a global Density adjustment and compacted edit slider controls.
+- Improved edited RAW thumbnail generation by using the real RAW pipeline, off-main finalization, decode caps, and cancellable prefetch.
+- Added split / tab browser panes with a stable divider and less face-bar flicker.
+- Updated the thumbnail grid to fill rows evenly.
+- Added a collapsible full-screen keyboard-shortcut hint card.
+- Improved cropped edit zoom rendering and full-screen orientation cache reuse.
+- Fixed RAW white balance first-touch shifts and endpoint-only tone curves.
+- Restored grid focus after closing the template palette.
+- Kept sidebar subfolder lists in sync with changes on disk.
+
+### Metadata and templates
+
+- Added metadata date-format aliases and expanded template variable editing.
+- Added synonym selection for structured keywords.
+- Improved metadata panel resizing.
+- Expanded IPTC parsing / serialization coverage and metadata engine concurrency tests.
+
+### Bug fixes and reliability
+
+- Gated sports number-derived metadata to the Sports lens.
+- Fixed cropped edit zoom rendering, RAW full-screen orientation caching, and orientation cache reuse.
+- Fixed watermark scaling and aspect handling during crop workflows.
+- Fixed RAW white balance first-touch shifts and endpoint-only tone curve persistence.
+- Improved small safety issues across editing, metadata, and view-model code.
+- Added targeted test coverage for sports tagging, watermarks, brush rendering, IPTC metadata, tone curves, thumbnail/full-screen cache behavior, and metadata concurrency.
+
 ## 2.0.1 — 2026-06-23
 
 ### Highlights

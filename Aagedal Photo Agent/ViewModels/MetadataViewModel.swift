@@ -421,6 +421,15 @@ final class MetadataViewModel {
                         ? meta.replacingDescriptiveFields(from: xmpMeta)
                         : meta.merged(preferring: xmpMeta)
                 }
+                if let folder = currentFolderURL,
+                   let sidecar = sidecarService.loadSidecar(for: image.url, in: folder),
+                   sidecar.pendingChanges {
+                    let bestCameraRaw = meta.cameraRaw ?? sidecar.metadata.cameraRaw
+                    let bestOrientation = meta.exifOrientation
+                    meta = sidecar.metadata
+                    meta.cameraRaw = bestCameraRaw
+                    meta.exifOrientation = bestOrientation
+                }
                 allMetadata.append(meta)
             }
         } catch {
@@ -1470,6 +1479,7 @@ final class MetadataViewModel {
     /// resolves any variable placeholders, and writes back.
     func processVariablesForImages(_ images: [ImageFile]) {
         guard !images.isEmpty else { return }
+        flushPendingBatchEditsForVariableProcessing(targetURLs: Set(images.map(\.url)))
         isProcessingFolder = true
         folderProcessProgress = "0/\(images.count)"
         saveError = nil
@@ -1482,12 +1492,25 @@ final class MetadataViewModel {
     /// resolves any variable placeholders, and writes back.
     func processVariablesInFolder(images: [ImageFile]) {
         guard !images.isEmpty else { return }
+        flushPendingBatchEditsForVariableProcessing(targetURLs: Set(images.map(\.url)))
         isProcessingFolder = true
         folderProcessProgress = "0/\(images.count)"
         saveError = nil
         variableProcessingStatus = nil
         batchProcessTask?.cancel()
         batchProcessTask = Task { await processVariablesBatch(images) }
+    }
+
+    /// Batch template edits live only in the shared editing buffer until saved.
+    /// If variables are processed immediately after applying a template, flush
+    /// those literals first so the async per-file resolver reads the same values
+    /// the panel is showing.
+    private func flushPendingBatchEditsForVariableProcessing(targetURLs: Set<URL>) {
+        guard selectedCount > 1,
+              hasChanges,
+              hasVariables,
+              !targetURLs.isDisjoint(with: Set(selectedURLs)) else { return }
+        saveToSidecar()
     }
 
     /// Shared implementation for batch variable processing.
@@ -1652,7 +1675,7 @@ final class MetadataViewModel {
 
         // Refresh the metadata panel if the currently displayed image was processed
         if !updatedURLs.isEmpty {
-            await self.refreshMetadataAfterProcessing(updatedURLs: updatedURLs)
+            await self.refreshMetadataAfterProcessing(updatedURLs: updatedURLs, processedImages: images)
         }
 
         self.isProcessingFolder = false
@@ -1671,7 +1694,24 @@ final class MetadataViewModel {
 
     /// Re-read metadata from file for the currently displayed image after variable processing,
     /// so the UI reflects the resolved values instead of stale template strings.
-    private func refreshMetadataAfterProcessing(updatedURLs: Set<URL>) async {
+    private func refreshMetadataAfterProcessing(updatedURLs: Set<URL>, processedImages: [ImageFile]) async {
+        if selectedCount > 1 {
+            let selectionSnapshot = Set(selectedURLs)
+            guard !selectionSnapshot.isDisjoint(with: updatedURLs) else { return }
+            let selectedProcessedImages = processedImages.filter { selectionSnapshot.contains($0.url) }
+            guard Set(selectedProcessedImages.map(\.url)) == selectionSnapshot else { return }
+
+            await loadBatchMetadata(
+                for: selectedProcessedImages,
+                selectionSnapshot: selectionSnapshot,
+                isReload: false
+            )
+            selectedHavePendingSidecars = false
+            refreshPendingSidecarsFlag(for: selectionSnapshot)
+            hasChanges = false
+            return
+        }
+
         guard selectedCount == 1,
               let url = selectedURLs.first,
               updatedURLs.contains(url) else { return }
