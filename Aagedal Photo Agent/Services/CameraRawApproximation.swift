@@ -165,6 +165,13 @@ enum CameraRawApproximation {
     /// Applies tonal adjustments + crop/rotation in one pass.
     nonisolated static func applyWithCrop(to input: CIImage, settings: CameraRawSettings?, exifOrientation: Int = 1) -> CIImage {
         guard let settings else { return input }
+        if settings.crop?.isEffectiveCrop == true,
+           settings.watermarkLayers?.contains(where: { $0.enabled }) == true,
+           let croppedMetalResult = MetalEditPipeline.renderOffscreenCropped(
+                source: input, settings: settings, exifOrientation: exifOrientation
+           ) {
+            return croppedMetalResult
+        }
         let originalExtent = input.extent
         let adjusted = apply(to: input, settings: settings, exifOrientation: exifOrientation)
         return applyCrop(to: adjusted, originalExtent: originalExtent, settings: settings, exifOrientation: exifOrientation)
@@ -174,6 +181,13 @@ enum CameraRawApproximation {
     /// applies the (cheap, CPU-only) crop/rotation. Use from `Task`s to avoid blocking the pool.
     nonisolated static func applyWithCropAsync(to input: CIImage, settings: CameraRawSettings?, exifOrientation: Int = 1) async -> CIImage {
         guard let settings else { return input }
+        if settings.crop?.isEffectiveCrop == true,
+           settings.watermarkLayers?.contains(where: { $0.enabled }) == true,
+           let croppedMetalResult = await MetalEditPipeline.renderOffscreenCroppedAsync(
+                source: input, settings: settings, exifOrientation: exifOrientation
+           ) {
+            return croppedMetalResult
+        }
         let originalExtent = input.extent
         let adjusted = await applyAsync(to: input, settings: settings, exifOrientation: exifOrientation)
         return applyCrop(to: adjusted, originalExtent: originalExtent, settings: settings, exifOrientation: exifOrientation)

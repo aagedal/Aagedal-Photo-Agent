@@ -165,6 +165,46 @@ struct WatermarkRenderingTests {
         #expect(rightOfFootprint.r < 0.1, "expected no watermark red right of the footprint, got \(rightOfFootprint)")
     }
 
+    @Test("cropped renders place watermark geometry relative to the cropped output frame")
+    func croppedRenderUsesCropFrameForWatermark() throws {
+        let dir = makeTempDir()
+        activateStore(dir)
+        defer { teardownStore(dir) }
+
+        let pngData = try makeSolidColorPNGData(size: 20, red: 1, green: 0, blue: 0)
+        let pngURL = FileManager.default.temporaryDirectory.appendingPathComponent("wm-\(UUID().uuidString).png")
+        try pngData.write(to: pngURL)
+        defer { try? FileManager.default.removeItem(at: pngURL) }
+        let asset = try WatermarkStore.shared.importPNG(from: pngURL, name: "Red Square")
+
+        let sourceExtent = CGRect(x: 0, y: 0, width: 200, height: 100)
+        let source = CIImage(color: CIColor(red: 0, green: 0, blue: 1, alpha: 1)).cropped(to: sourceExtent)
+
+        var geometry = WatermarkGeometry()
+        geometry.centerX = 0.8
+        geometry.centerY = 0.5
+        geometry.sizeDimension = .width
+        geometry.sizeUnit = .percent
+        geometry.sizeValue = 20
+        var layer = WatermarkLayer(name: "Test", libraryAssetID: asset.id, geometry: geometry)
+        layer.opacity = 1.0
+
+        var settings = CameraRawSettings()
+        settings.crop = CameraRawCrop(top: 0, left: 0.25, bottom: 1, right: 0.75, angle: 0, hasCrop: true)
+        settings.watermarkLayers = [layer]
+
+        let result = CameraRawApproximation.applyWithCrop(to: source, settings: settings)
+
+        #expect(abs(result.extent.width - 100) < 0.5, "expected cropped output width near 100, got \(result.extent.width)")
+        let insideCropFrameWatermark = sampleMidRow(result, nx: 0.8)
+        #expect(insideCropFrameWatermark.r > 0.9, "expected watermark red at crop-frame x=0.8, got \(insideCropFrameWatermark)")
+        #expect(insideCropFrameWatermark.b < 0.1, "expected watermark to cover blue background at crop-frame x=0.8, got \(insideCropFrameWatermark)")
+
+        let outsideFootprint = sampleMidRow(result, nx: 0.55)
+        #expect(outsideFootprint.b > 0.9, "expected blue background outside crop-frame watermark, got \(outsideFootprint)")
+        #expect(outsideFootprint.r < 0.1, "expected no watermark red outside crop-frame footprint, got \(outsideFootprint)")
+    }
+
     @Test("opacity attenuates the watermark's blend toward the background")
     func opacityAttenuatesBlend() throws {
         let dir = makeTempDir()

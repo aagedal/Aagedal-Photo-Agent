@@ -94,6 +94,7 @@ struct EditParams {
     float maskOverlayOpacity; // 0-1 red-tint strength for the mask overlay
 
     uint watermarkCount;      // number of active watermark layers (0-4), see WatermarkParams
+    uint watermarkFrame;      // 0 = source UV, 1 = crop-output UV
 };
 
 // ============================================================
@@ -687,7 +688,13 @@ kernel void editAdjustments(
         } else if (entry & 0x80000000u) {
             uint wIdx = entry & 0x7FFFFFFFu;
             if (wIdx < params.watermarkCount) {
-                rgb = applyWatermark(rgb, watermarks[wIdx], watermarkTex, uv);
+                float2 watermarkUV = uv;
+                if (params.watermarkFrame == 1u) {
+                    float2 cropMin = 0.5 - params.cropHalfExtent;
+                    float2 cropSize = max(params.cropHalfExtent * 2.0, float2(0.000001));
+                    watermarkUV = (drawableNorm - cropMin) / cropSize;
+                }
+                rgb = applyWatermark(rgb, watermarks[wIdx], watermarkTex, watermarkUV);
             }
         } else {
             constant MaskParams &mask = masks[entry];
