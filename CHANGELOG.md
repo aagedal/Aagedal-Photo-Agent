@@ -11,6 +11,7 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 - New watermark layer system with a PNG watermark library, Metal compositing, crop-aware placement, and iCloud-backed storage.
 - New anonymizer controls combine distortion, blur, and mosaic for global and mask-based redaction.
 - Browser and editing workflows are smoother: split/tabbed browser panes, improved thumbnail spacing, keyboard-driven sports review, and compact edit controls.
+- Card import is more flexible, with date-folder skipping, split-shoot subfolders, slow-card thumbnail fallback, and already-imported photo detection.
 
 ### Sports lens
 
@@ -50,6 +51,14 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 - Fixed RAW white balance first-touch shifts and endpoint-only tone curves.
 - Restored grid focus after closing the template palette.
 - Kept sidebar subfolder lists in sync with changes on disk.
+
+### Import and upload
+
+- Added per-date-folder import checkboxes so individual days can be skipped before copying from a card.
+- Added an option to place split shoots inside the date folder (`date / Shoot 1`, `date / Shoot 2`) instead of creating sibling date folders, and remembered that preference across sessions.
+- Added automatic detection for previously imported photos using stable source fingerprints, with a toggle to skip those files even when importing to a different destination.
+- Import preview thumbnails now prefetch by default, but switch to hover/on-demand loading and warn the user when card thumbnail generation takes more than 10 seconds.
+- Added a quit warning while import, upload, or upload rendering is still running.
 
 ### Metadata and templates
 
