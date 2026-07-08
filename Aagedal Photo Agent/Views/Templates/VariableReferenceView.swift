@@ -65,6 +65,30 @@ private let allVariables: [VariableDefinition] = [
         example: "2026-01-27"
     ),
     VariableDefinition(
+        variable: "{dateCreated:YYYYMMDD}",
+        category: "Date",
+        description: "Date Created as year, month, and day with no separators.",
+        example: "20260127"
+    ),
+    VariableDefinition(
+        variable: "{dateCreated:DDMMYYYY}",
+        category: "Date",
+        description: "Date Created as day, month, and year with no separators.",
+        example: "27012026"
+    ),
+    VariableDefinition(
+        variable: "{dateCreated:YYYY-MM-DD}",
+        category: "Date",
+        description: "Date Created as year-month-day.",
+        example: "2026-01-27"
+    ),
+    VariableDefinition(
+        variable: "{dateCreated:DD-MM-YYYY}",
+        category: "Date",
+        description: "Date Created as day-month-year.",
+        example: "27-01-2026"
+    ),
+    VariableDefinition(
         variable: "{dateCaptured}",
         category: "Date",
         description: "EXIF DateTimeOriginal, date only.",
@@ -75,6 +99,30 @@ private let allVariables: [VariableDefinition] = [
         category: "Date",
         description: "EXIF DateTimeOriginal with custom format. Supports any DateFormatter pattern.",
         example: "2026-01-27"
+    ),
+    VariableDefinition(
+        variable: "{dateCaptured:YYYYMMDD}",
+        category: "Date",
+        description: "EXIF DateTimeOriginal as year, month, and day with no separators.",
+        example: "20260127"
+    ),
+    VariableDefinition(
+        variable: "{dateCaptured:DDMMYYYY}",
+        category: "Date",
+        description: "EXIF DateTimeOriginal as day, month, and year with no separators.",
+        example: "27012026"
+    ),
+    VariableDefinition(
+        variable: "{dateCaptured:YYYY-MM-DD}",
+        category: "Date",
+        description: "EXIF DateTimeOriginal as year-month-day.",
+        example: "2026-01-27"
+    ),
+    VariableDefinition(
+        variable: "{dateCaptured:DD-MM-YYYY}",
+        category: "Date",
+        description: "EXIF DateTimeOriginal as day-month-year.",
+        example: "27-01-2026"
     ),
 
     // Shortcuts

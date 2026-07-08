@@ -36,6 +36,20 @@ struct PresetVariableInterpolatorTests {
         #expect(result == "TA-Oslo")
     }
 
+    @Test("Metadata dates support friendly compact and dashed aliases")
+    func metadataDateAliases() {
+        var metadata = IPTCMetadata()
+        metadata.dateCreated = "2026:07:08"
+        metadata.captureDate = "2026:07:08 14:30:45"
+
+        let result = interpolator.resolve(
+            "{dateCreated:YYYYMMDD}|{dateCreated:DDMMYYYY}|{dateCreated:YYYY-MM-DD}|{dateCreated:DD-MM-YYYY}|{dateCaptured:YYYYMMDD}|{dateCaptured:DDMMYYYY}|{dateCaptured:YYYY-MM-DD}|{dateCaptured:DD-MM-YYYY}",
+            existingMetadata: metadata
+        )
+
+        #expect(result == "20260708|08072026|2026-07-08|08-07-2026|20260708|08072026|2026-07-08|08-07-2026")
+    }
+
     @Test("{field:…} expands variables inside the referenced field")
     func fieldReferenceExpandsNestedVariable() {
         var metadata = IPTCMetadata()
