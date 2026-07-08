@@ -57,7 +57,7 @@ struct HSLParams {
 };
 
 struct EditParams {
-    float exposure;          // EV (legacy field, baked into LUT when LUT is active)
+    float globalDensity;     // -1..1, positive = denser/darker
     float vibrance;          // -1..1
     float saturation;        // 0..2 (1=identity)
     uint gamutClipMode;      // 0=off, 1=sRGB, 2=P3, 3=Rec2020
@@ -66,7 +66,7 @@ struct EditParams {
 
     uint activeFlags;        // bitmask: bit0=toneLUT, bit1=vibrance,
                              // bit2=saturation, bit3=whiteBalance, bit4=hdrMode,
-                             // bit5=anonymizer (global)
+                             // bit5=anonymizer (global), bit6=globalDensity
     uint maskCount;          // number of active masks (0-8)
 
     float2 scale;            // source→drawable scale (stretch-to-fill)
@@ -94,6 +94,7 @@ struct EditParams {
     float maskOverlayOpacity; // 0-1 red-tint strength for the mask overlay
 
     uint watermarkCount;      // number of active watermark layers (0-4), see WatermarkParams
+    uint watermarkFrame;      // 0 = source UV, 1 = crop-output UV
 };
 
 // ============================================================
@@ -146,7 +147,7 @@ constant float3x3 AdobeRGBtoSRGB_edit = float3x3(
 // ============================================================
 
 /// Global adjustment block: white balance → tone LUT (+highlight desat) → per-color HSL
-/// → vibrance → saturation. Each step is gated by params.activeFlags, so an inactive
+/// → global density → vibrance → saturation. Each step is gated by params.activeFlags, so an inactive
 /// global node is a no-op. Returns the adjusted color.
 static half3 applyGlobal(half3 rgb,
                          constant EditParams &params,
@@ -317,7 +318,18 @@ static half3 applyGlobal(half3 rgb,
         }
     }
 
-    // 3. Vibrance: selective saturation boost on less-saturated pixels
+    // 3. Global Density — broad luminance density, preserving chroma.
+    //    Positive slider = more dense = darker; negative = less dense = brighter.
+    if (params.activeFlags & (1u << 6)) {
+        float3 rgbF = float3(rgb);
+        float Y = dot(rgbF, float3(0.2126, 0.7152, 0.0722));
+        float3 colorChroma = rgbF - float3(Y);
+        float gain = pow(2.0, -params.globalDensity);
+        float Y_new = max(Y * gain, 0.0);
+        rgb = half3(max(float3(Y_new) + colorChroma, 0.0));
+    }
+
+    // 4. Vibrance: selective saturation boost on less-saturated pixels
     if (params.activeFlags & (1u << 1)) {
         half lum = dot(rgb, half3(0.2126h, 0.7152h, 0.0722h));
         half maxC = max3(rgb.r, rgb.g, rgb.b);
@@ -327,7 +339,7 @@ static half3 applyGlobal(half3 rgb,
         rgb = mix(half3(lum), rgb, (half)1.0 + boost);
     }
 
-    // 4. Saturation — exact match to CIColorControls saturation
+    // 5. Saturation — exact match to CIColorControls saturation
     if (params.activeFlags & (1u << 2)) {
         half lum = dot(rgb, half3(0.2126h, 0.7152h, 0.0722h));
         rgb = mix(half3(lum), rgb, (half)params.saturation);
@@ -676,7 +688,13 @@ kernel void editAdjustments(
         } else if (entry & 0x80000000u) {
             uint wIdx = entry & 0x7FFFFFFFu;
             if (wIdx < params.watermarkCount) {
-                rgb = applyWatermark(rgb, watermarks[wIdx], watermarkTex, uv);
+                float2 watermarkUV = uv;
+                if (params.watermarkFrame == 1u) {
+                    float2 cropMin = 0.5 - params.cropHalfExtent;
+                    float2 cropSize = max(params.cropHalfExtent * 2.0, float2(0.000001));
+                    watermarkUV = (drawableNorm - cropMin) / cropSize;
+                }
+                rgb = applyWatermark(rgb, watermarks[wIdx], watermarkTex, watermarkUV);
             }
         } else {
             constant MaskParams &mask = masks[entry];

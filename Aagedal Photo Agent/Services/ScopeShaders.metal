@@ -6,14 +6,14 @@ using namespace metal;
 // ============================================================
 
 struct ScopeEditParams {
-    float exposure;
+    float globalDensity;
     float vibrance;
     float saturation;
     uint gamutClipMode;      // 0=off (unused by scopes, kept for struct layout match)
 
     float3x3 whiteBalanceMatrix;
 
-    uint activeFlags;    // bit0=toneLUT, bit1=vibrance, bit2=saturation, bit3=whiteBalance, bit4=hdrMode
+    uint activeFlags;    // bit0=toneLUT, bit1=vibrance, bit2=saturation, bit3=whiteBalance, bit4=hdrMode, bit5=globalDensity
     uint maskCount;
 
     float2 scale;
@@ -144,7 +144,7 @@ inline float linearToSRGB(float x) {
 // Apply edit adjustments (same logic as editAdjustments kernel)
 // ============================================================
 
-// Global adjustment block (white balance, tone LUT, vibrance, saturation, HSL) — the
+// Global adjustment block (white balance, tone LUT, HSL, global density, vibrance, saturation) — the
 // scope's mirror of EditAdjustments.metal's applyGlobal. Factored out so the kernel can
 // apply it at its ordered position relative to the masks (see applyEdits).
 inline float3 applyScopeGlobal(
@@ -179,23 +179,7 @@ inline float3 applyScopeGlobal(
         rgb = mix(rgb, float3(lum), desat);
     }
 
-    // 3. Vibrance
-    if (params.activeFlags & (1u << 1)) {
-        float lum = dot(rgb, float3(0.2126, 0.7152, 0.0722));
-        float maxC = max3(rgb.r, rgb.g, rgb.b);
-        float minC = min3(rgb.r, rgb.g, rgb.b);
-        float sat = (maxC > 0.001) ? ((maxC - minC) / maxC) : 0.0;
-        float boost = params.vibrance * (1.0 - sat);
-        rgb = mix(float3(lum), rgb, 1.0 + boost);
-    }
-
-    // 4. Saturation
-    if (params.activeFlags & (1u << 2)) {
-        float lum = dot(rgb, float3(0.2126, 0.7152, 0.0722));
-        rgb = mix(float3(lum), rgb, params.saturation);
-    }
-
-    // 5. Per-color HSL adjustments — mirrors EditAdjustments.metal
+    // 3. Per-color HSL adjustments — mirrors EditAdjustments.metal
     if (hslParams.activeFlags & 1u) {
         float hdrPeak = max3(rgb.r, rgb.g, rgb.b);
         float hdrScale = 1.0;
@@ -280,6 +264,31 @@ inline float3 applyScopeGlobal(
 
             rgb = max(rgb, 0.0) * hdrScale;
         }
+    }
+
+    // 4. Global Density
+    if (params.activeFlags & (1u << 5)) {
+        float Y = dot(rgb, float3(0.2126, 0.7152, 0.0722));
+        float3 colorChroma = rgb - float3(Y);
+        float gain = pow(2.0, -params.globalDensity);
+        float Y_new = max(Y * gain, 0.0);
+        rgb = max(float3(Y_new) + colorChroma, 0.0);
+    }
+
+    // 5. Vibrance
+    if (params.activeFlags & (1u << 1)) {
+        float lum = dot(rgb, float3(0.2126, 0.7152, 0.0722));
+        float maxC = max3(rgb.r, rgb.g, rgb.b);
+        float minC = min3(rgb.r, rgb.g, rgb.b);
+        float sat = (maxC > 0.001) ? ((maxC - minC) / maxC) : 0.0;
+        float boost = params.vibrance * (1.0 - sat);
+        rgb = mix(float3(lum), rgb, 1.0 + boost);
+    }
+
+    // 6. Saturation
+    if (params.activeFlags & (1u << 2)) {
+        float lum = dot(rgb, float3(0.2126, 0.7152, 0.0722));
+        rgb = mix(float3(lum), rgb, params.saturation);
     }
 
     return rgb;

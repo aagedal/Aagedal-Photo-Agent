@@ -156,6 +156,64 @@ struct ToWriteFieldsTests {
     }
 }
 
+@Suite("CameraRawSettings white balance resolution")
+struct CameraRawWhiteBalanceResolutionTests {
+    @Test("absolute RAW tint-only edit keeps as-shot temperature")
+    func rawTintOnlyDefaultsTemperatureToAsShot() {
+        var settings = CameraRawSettings()
+        settings.whiteBalance = "Custom"
+        settings.tint = 3
+
+        let target = settings.resolvedWhiteBalanceTarget(
+            absoluteDefaultTemperature: 4480,
+            absoluteDefaultTint: 3
+        )
+
+        #expect(target?.temperature == 4480)
+        #expect(target?.tint == 3)
+    }
+
+    @Test("absolute RAW temperature-only edit keeps as-shot tint")
+    func rawTemperatureOnlyDefaultsTintToAsShot() {
+        var settings = CameraRawSettings()
+        settings.whiteBalance = "Custom"
+        settings.temperature = 4480
+
+        let target = settings.resolvedWhiteBalanceTarget(
+            absoluteDefaultTemperature: 4480,
+            absoluteDefaultTint: 3
+        )
+
+        #expect(target?.temperature == 4480)
+        #expect(target?.tint == 3)
+    }
+
+    @Test("incremental non-RAW tint-only edit keeps neutral temperature")
+    func incrementalTintOnlyKeepsNeutralTemperature() {
+        var settings = CameraRawSettings()
+        settings.whiteBalance = "Custom"
+        settings.incrementalTint = 3
+
+        let target = settings.resolvedWhiteBalanceTarget(
+            absoluteDefaultTemperature: 4480,
+            absoluteDefaultTint: 3
+        )
+
+        #expect(target?.temperature == 6500)
+        #expect(target?.tint == 3)
+    }
+
+    @Test("as-shot white balance resolves to no adjustment")
+    func asShotWhiteBalanceIsNoAdjustment() {
+        var settings = CameraRawSettings()
+        settings.whiteBalance = "As Shot"
+        settings.temperature = 4480
+        settings.tint = 3
+
+        #expect(settings.resolvedWhiteBalanceTarget() == nil)
+    }
+}
+
 // MARK: - hasIPTCDifferences
 
 @Suite("IPTCMetadata.hasIPTCDifferences")
@@ -799,6 +857,16 @@ struct MalformedMetadataNumericTests {
         #expect(ToneCurvePoint(acr255: 128, 64) == ToneCurvePoint(x: 128.0 / 255, y: 64.0 / 255))
     }
 
+    @Test("two-point endpoint tone curves parse as edits")
+    func twoPointEndpointToneCurveParsesAsEdit() throws {
+        let identity = parseToneCurveArray(["0, 0", "255, 255"])
+        #expect(identity == nil)
+
+        let shadowLift = try #require(parseToneCurveArray(["0, 51", "255, 255"]))
+        #expect(shadowLift.count == 2)
+        #expect(shadowLift.isIdentityToneCurve == false)
+    }
+
     @Test("parsing then re-serializing a corrupt tone curve does not crash")
     func parseThenSerializeCorruptToneCurveIsSafe() throws {
         // Mirrors the reported crash: load a sidecar with inf/nan coordinates,
@@ -1101,6 +1169,14 @@ struct CameraRawCropACRConversionTests {
         #expect(hsl.cyan == HSLColorAdjustment(saturation: -40, luminance: nil, hueShift: nil))
         #expect(hsl.skinTone == HSLColorAdjustment(saturation: nil, luminance: 12, hueShift: nil))
         #expect(hsl.green == nil)
+    }
+
+    @Test("iptcMetadataFromDict decodes app-private global density")
+    func dictParseDecodesGlobalDensity() throws {
+        let dict: [String: Any] = [
+            MetadataDictKey.globalDensity: "+35",
+        ]
+        #expect(iptcMetadataFromDict(dict).cameraRaw?.globalDensity == 35)
     }
 }
 

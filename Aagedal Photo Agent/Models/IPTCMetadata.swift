@@ -26,10 +26,25 @@ nonisolated struct ToneCurve: Codable, Sendable, Equatable {
     var blue: [ToneCurvePoint]?
 
     var isEmpty: Bool {
-        (master?.count ?? 0) <= 2
-            && red == nil
-            && green == nil
-            && blue == nil
+        (master?.isIdentityToneCurve ?? true)
+            && (red?.isIdentityToneCurve ?? true)
+            && (green?.isIdentityToneCurve ?? true)
+            && (blue?.isIdentityToneCurve ?? true)
+    }
+}
+
+nonisolated extension Array where Element == ToneCurvePoint {
+    var isIdentityToneCurve: Bool {
+        guard count >= 2 else { return true }
+        let ordered = sorted { $0.x < $1.x }
+        let epsilon = 0.001
+        guard let first = ordered.first, let last = ordered.last,
+              abs(first.x) < epsilon,
+              abs(first.y) < epsilon,
+              abs(last.x - 1) < epsilon,
+              abs(last.y - 1) < epsilon
+        else { return false }
+        return ordered.allSatisfy { abs($0.x - $0.y) < epsilon }
     }
 }
 
@@ -743,6 +758,7 @@ nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
     var blacks2012: Int?
     var saturation: Int?
     var vibrance: Int?
+    var globalDensity: Int?
     var hasSettings: Bool?
     var crop: CameraRawCrop?
     var hdrEditMode: Int?
@@ -805,6 +821,7 @@ nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
             && blacks2012 == nil
             && saturation == nil
             && vibrance == nil
+            && globalDensity == nil
             && hasSettings == nil
             && (crop?.isEmpty ?? true)
             && hdrEditMode == nil
@@ -852,6 +869,7 @@ nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
         if let value = override.blacks2012 { result.blacks2012 = value }
         if let value = override.saturation { result.saturation = value }
         if let value = override.vibrance { result.vibrance = value }
+        if let value = override.globalDensity { result.globalDensity = value }
         if let value = override.hasSettings { result.hasSettings = value }
         if let crop = override.crop {
             if let existing = result.crop {
@@ -1036,6 +1054,7 @@ nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
         fields[.crsBlacks2012] = blacks2012.map(signedInt) ?? ""
         fields[.crsSaturation] = saturation.map(signedInt) ?? ""
         fields[.crsVibrance] = vibrance.map(signedInt) ?? ""
+        fields[.aaphotoGlobalDensity] = globalDensity.map(signedInt) ?? ""
 
         let settingsPresent = hasSettings ?? !isEmpty
         fields[.crsHasSettings] = settingsPresent ? "True" : "False"
@@ -1076,6 +1095,53 @@ nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
         fields[.crsSDRWhites] = sdrWhites.map(signedInt) ?? ""
         fields[.crsSDRBlend] = sdrBlend.map(signedInt) ?? ""
         return fields
+    }
+}
+
+nonisolated extension CameraRawSettings {
+    /// Resolves the white-balance target used by the render pipeline.
+    ///
+    /// RAW files store absolute Temperature/Tint controls. When only one component has been
+    /// touched, the untouched component must stay at the RAW decoder's as-shot value, not at
+    /// the generic D65/0 neutral used by relative non-RAW controls. Otherwise the first drag
+    /// on Tint can silently introduce a temperature correction even though the Temperature
+    /// slider still displays the as-shot value.
+    func resolvedWhiteBalanceTarget(
+        absoluteDefaultTemperature: Double = 6500,
+        absoluteDefaultTint: Double = 0
+    ) -> (temperature: Double, tint: Double)? {
+        if whiteBalance == "As Shot" { return nil }
+
+        let hasAbsoluteWhiteBalance = temperature != nil || tint != nil
+
+        let resolvedTemperature: Double?
+        if let temperature {
+            resolvedTemperature = Double(temperature)
+        } else if let incrementalTemperature {
+            // Non-RAW relative WB. Slider range is -135...+100; the negative end maps to the
+            // 2000 K floor (6500 - 135*33.33 ≈ 2000), so the slope is 5000/150 ≈ 33.33 K/step.
+            resolvedTemperature = 6500 + (Double(incrementalTemperature) * (5000.0 / 150.0))
+        } else if hasAbsoluteWhiteBalance {
+            resolvedTemperature = absoluteDefaultTemperature
+        } else {
+            resolvedTemperature = nil
+        }
+
+        let resolvedTint: Double?
+        if let tint {
+            resolvedTint = Double(tint)
+        } else if let incrementalTint {
+            resolvedTint = Double(incrementalTint)
+        } else if hasAbsoluteWhiteBalance {
+            resolvedTint = absoluteDefaultTint
+        } else {
+            resolvedTint = nil
+        }
+
+        guard resolvedTemperature != nil || resolvedTint != nil else { return nil }
+        let finalTemperature = min(max(resolvedTemperature ?? 6500, 2000), 50000)
+        let finalTint = min(max(resolvedTint ?? 0, -150), 150)
+        return (temperature: finalTemperature, tint: finalTint)
     }
 }
 

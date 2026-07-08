@@ -79,13 +79,11 @@ struct CurveEditorView: View {
         let sorted = points.sorted { $0.x < $1.x }
         switch channel {
         case .master: dragToneCurve?.master = sorted
-        case .red: dragToneCurve?.red = sorted.count <= 2 ? nil : sorted
-        case .green: dragToneCurve?.green = sorted.count <= 2 ? nil : sorted
-        case .blue: dragToneCurve?.blue = sorted.count <= 2 ? nil : sorted
+        case .red: dragToneCurve?.red = sorted.isIdentityToneCurve ? nil : sorted
+        case .green: dragToneCurve?.green = sorted.isIdentityToneCurve ? nil : sorted
+        case .blue: dragToneCurve?.blue = sorted.isIdentityToneCurve ? nil : sorted
         }
-        if let curve = dragToneCurve,
-           isIdentity(curve.master ?? defaultPoints),
-           curve.red == nil, curve.green == nil, curve.blue == nil {
+        if dragToneCurve?.isEmpty == true {
             dragToneCurve = nil
         }
         // Notify for direct Metal update
@@ -99,21 +97,13 @@ struct CurveEditorView: View {
         let sorted = points.sorted { $0.x < $1.x }
         switch channel {
         case .master: toneCurve?.master = sorted
-        case .red: toneCurve?.red = sorted.count <= 2 ? nil : sorted
-        case .green: toneCurve?.green = sorted.count <= 2 ? nil : sorted
-        case .blue: toneCurve?.blue = sorted.count <= 2 ? nil : sorted
+        case .red: toneCurve?.red = sorted.isIdentityToneCurve ? nil : sorted
+        case .green: toneCurve?.green = sorted.isIdentityToneCurve ? nil : sorted
+        case .blue: toneCurve?.blue = sorted.isIdentityToneCurve ? nil : sorted
         }
-        if let curve = toneCurve,
-           isIdentity(curve.master ?? defaultPoints),
-           curve.red == nil, curve.green == nil, curve.blue == nil {
+        if toneCurve?.isEmpty == true {
             toneCurve = nil
         }
-    }
-
-    /// Returns true if the given points represent the identity curve (no tonal change).
-    private func isIdentity(_ points: [ToneCurvePoint]) -> Bool {
-        guard points.count <= 2 else { return false }
-        return points.allSatisfy { abs($0.x - $0.y) < 0.001 }
     }
 
     private let pointRadius: CGFloat = 5
@@ -210,7 +200,7 @@ struct CurveEditorView: View {
                     // Inactive channel curves (dimmed)
                     ForEach(CurveChannel.allCases.filter { $0 != selectedChannel }, id: \.self) { channel in
                         let pts = pointsForChannel(channel)
-                        if pts.count > 2 || channel == .master {
+                        if !pts.isIdentityToneCurve || channel == .master {
                             curvePath(points: pts, in: size)
                                 .stroke(channel.color.opacity(0.2), lineWidth: 1)
                         }

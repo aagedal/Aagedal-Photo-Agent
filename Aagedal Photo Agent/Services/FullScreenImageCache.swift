@@ -711,10 +711,9 @@ final class FullScreenImageCache: @unchecked Sendable {
     }
 
     /// Load a RAW image via CIRAWFilter at a target max pixel size.
-    /// Decode profile (flat/neutral vs Apple's camera-native boost) and decoder version
-    /// are user-configurable in Settings; see `loadRAWImage` below. Decoding happens
-    /// directly at preview scale via CIRAWFilter.scaleFactor. Returns CIImage for
-    /// downstream processing.
+    /// Decode profile (Linear RAW vs Camera RAW) and decoder version are configurable
+    /// in Settings. Decoding happens directly at preview scale via CIRAWFilter.scaleFactor.
+    /// Returns CIImage for downstream processing.
     nonisolated static func loadRAWPreview(from url: URL, maxPixelSize: CGFloat, draftMode: Bool = false) -> CIImage? {
         guard let result = loadRAWImage(from: url, draftMode: draftMode, maxPixelSize: maxPixelSize) else { return nil }
         // Final clamp against scaleFactor rounding; a no-op once scaleFactor has shrunk it.
@@ -738,22 +737,19 @@ final class FullScreenImageCache: @unchecked Sendable {
         }
         rawFilter.isDraftModeEnabled = draftMode
 
-        // Decode profile: "native" (default) leaves CIRAWFilter's own camera-matched boost
-        // in place, closer to the Finder/Preview thumbnail; "flat" disables Apple's auto
-        // tone curve so the Metal shader gets predictable linear input instead. Develop
-        // sliders are unaffected either way — switching profiles just changes their baseline.
+        // Camera RAW (default) leaves CIRAWFilter's own camera-matched boost/tone curve
+        // in place, closer to Finder/Preview. Linear RAW disables that boost so the Metal
+        // shader gets neutral scene-referred input.
         let profileRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.rawDecodeProfile)
-        let profile = RAWDecodeProfile(rawValue: profileRaw ?? "") ?? .native
-        if profile == .flat {
-            rawFilter.boostAmount = 0        // disable auto-boost (Metal shader handles exposure)
-            rawFilter.boostShadowAmount = 0  // disable shadow recovery boost
+        let profile = RAWDecodeProfile(storedRawValue: profileRaw ?? "") ?? .camera
+        if profile == .linear {
+            rawFilter.boostAmount = 0
+            rawFilter.boostShadowAmount = 0
         }
-        // .native: leave CIRAWFilter's own defaults (boostAmount/boostShadowAmount = 1.0).
 
-        // Decoder version: "Auto" (default) leaves CIRAWFilter on the newest decoder for
-        // the image. A pinned preference is matched against this image's actual supported
-        // versions (which may report e.g. "9" or "9DNG" depending on container) and falls
-        // back to Auto if the image doesn't support the requested version.
+        // Auto leaves CIRAWFilter on the newest supported decoder for this image. Pinned
+        // versions are matched against the image-specific supported versions, which may be
+        // reported as e.g. "9" or "9DNG" depending on the container.
         let decoderVersionRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.rawDecoderVersionPreference)
         if let token = RAWDecoderVersionPreference(rawValue: decoderVersionRaw ?? "")?.matchToken,
            let match = rawFilter.supportedDecoderVersions.first(where: { $0.rawValue.contains(token) }) {

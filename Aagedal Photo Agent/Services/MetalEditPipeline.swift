@@ -105,16 +105,16 @@ struct HSLParams {
 }
 
 /// Uniform buffer layout matching the Metal `EditParams` struct.
-/// Contains all edit operations: tonal (via LUT), vibrance, saturation, white balance.
+/// Contains all edit operations: tonal (via LUT), vibrance, saturation, density, white balance.
 struct EditParams {
-    var exposure: Float = 0    // Legacy field kept for layout stability (baked into LUT)
+    var globalDensity: Float = 0
     var vibrance: Float = 0
     var saturation: Float = 1
     var gamutClipMode: UInt32 = 0
 
     var whiteBalanceMatrix: simd_float3x3 = matrix_identity_float3x3
 
-    var activeFlags: UInt32 = 0  // bit0=toneLUT, bit1=vibrance, bit2=saturation, bit3=whiteBalance, bit4=hdrMode, bit5=anonymizer
+    var activeFlags: UInt32 = 0  // bit0=toneLUT, bit1=vibrance, bit2=saturation, bit3=whiteBalance, bit4=hdrMode, bit5=anonymizer, bit6=globalDensity
     var maskCount: UInt32 = 0
 
     var scale: SIMD2<Float> = .zero
@@ -151,6 +151,7 @@ struct EditParams {
     var maskOverlayOpacity: Float = 0 // 0-1 red-tint strength
 
     var watermarkCount: UInt32 = 0    // number of active watermark layers (0-4)
+    var watermarkFrame: UInt32 = 0    // 0 = source UV, 1 = crop-output UV
 }
 
 /// Manages the Metal compute pipeline for real-time edit preview.
@@ -325,6 +326,12 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// `refreshWatermarkParams` when the asset-ID cache above hits, so a position/size/opacity-only
     /// change doesn't force a redecode.
     nonisolated(unsafe) private var lastBuiltWatermarkAspects: [UUID: (slice: Int, aspect: Double)] = [:]
+    /// Active display-frame watermark layers from the most recent params upload. Viewport-only
+    /// changes do not call `updateParams`, so crop/uncrop viewport updates reuse these layers to
+    /// recompute watermark sizes against the frame currently being displayed.
+    nonisolated(unsafe) private var activeDisplayWatermarkLayers: [WatermarkLayer] = []
+    nonisolated(unsafe) private var cachedWatermarkFrame: UInt32 = 0
+    nonisolated(unsafe) private var cachedWatermarkImageSize = MTLSize(width: 0, height: 0, depth: 0)
 
     nonisolated private static let colorSpace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
 
@@ -693,6 +700,7 @@ final class MetalEditPipeline: @unchecked Sendable {
             // and watermark textures.
             refreshBrushAlpha([], size: MTLSize(width: 0, height: 0, depth: 0))
             refreshWatermarkParams([], imageSize: MTLSize(width: 0, height: 0, depth: 0))
+            activeDisplayWatermarkLayers = []
             params.orderCount = uploadLayerOrder([.global], maskIndexByID: [:], watermarkIndexByID: [:])
             let ptr = buffer.contents().bindMemory(to: EditParams.self, capacity: 1)
             ptr.pointee = params
@@ -727,6 +735,12 @@ final class MetalEditPipeline: @unchecked Sendable {
         if let sat = settings.saturation, sat != 0 {
             params.saturation = Float(min(max(1.0 + Double(sat) / 100.0, 0.0), 2.0))
             flags |= (1 << 2)
+        }
+
+        // 3.5. Global density
+        if let density = settings.globalDensity, density != 0 {
+            params.globalDensity = Float(min(max(Double(density) / 100.0, -1.0), 1.0))
+            flags |= (1 << 6)
         }
 
         // 4. White balance — cached, only recomputes when temperature/tint change
@@ -914,13 +928,18 @@ final class MetalEditPipeline: @unchecked Sendable {
         // its working resolution is known — mirroring `rebuildBrushAlpha`'s split exactly.
         let displayWatermarks = (displaySettings.watermarkLayers ?? []).filter(\.enabled)
         let activeWatermarks = Array(displayWatermarks.prefix(Self.maxWatermarks))
+        activeDisplayWatermarkLayers = activeWatermarks
         params.watermarkCount = UInt32(activeWatermarks.count)
+        params.watermarkFrame = cachedWatermarkFrame
         var watermarkIndexByID: [UUID: Int] = [:]
         if !activeWatermarks.isEmpty {
             if let texSize = sourceTextureSize {
+                let watermarkSize = cachedWatermarkFrame == 1 && cachedWatermarkImageSize.width > 0 && cachedWatermarkImageSize.height > 0
+                    ? cachedWatermarkImageSize
+                    : MTLSize(width: Int(texSize.width), height: Int(texSize.height), depth: 1)
                 watermarkIndexByID = refreshWatermarkParams(
                     activeWatermarks,
-                    imageSize: MTLSize(width: Int(texSize.width), height: Int(texSize.height), depth: 1)
+                    imageSize: watermarkSize
                 )
             } else {
                 for (i, layer) in activeWatermarks.enumerated() { watermarkIndexByID[layer.id] = i }
@@ -946,6 +965,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         ptr.pointee.viewportCenter = cachedViewportCenter
         ptr.pointee.viewportRotation = cachedViewportRotation
         ptr.pointee.cropHalfExtent = cachedCropHalfExtent
+        ptr.pointee.watermarkFrame = cachedWatermarkFrame
 
         // Mirror params to the clean-feed pipeline so the second display tracks the
         // edit live. The mirror computes against its OWN cached viewport, so its
@@ -1490,44 +1510,24 @@ final class MetalEditPipeline: @unchecked Sendable {
             return nil
         }
 
-        let temperature: Double?
-        if let absolute = settings.temperature {
-            temperature = Double(absolute)
-        } else if let incremental = settings.incrementalTemperature {
-            // Non-RAW relative WB. Slider range is -135...+100; the negative end maps to the
-            // 2000 K floor (6500 - 135*33.33 ≈ 2000), so the slope is 5000/150 ≈ 33.33 K/step.
-            temperature = 6500 + (Double(incremental) * (5000.0 / 150.0))
-        } else {
-            temperature = nil
-        }
-
-        let tint: Double?
-        if let absolute = settings.tint {
-            tint = Double(absolute)
-        } else if let incremental = settings.incrementalTint {
-            tint = Double(incremental)
-        } else {
-            tint = nil
-        }
-
-        guard temperature != nil || tint != nil else {
+        guard let target = settings.resolvedWhiteBalanceTarget(
+            absoluteDefaultTemperature: asShotTemperature,
+            absoluteDefaultTint: asShotTint
+        ) else {
             cachedWBKey = nil
             cachedWBMatrix = nil
             return nil
         }
-        // CITemperatureAndTint returns an identity transform below 2000 K, so clamp there.
-        let finalTemp = min(max(temperature ?? 6500, 2000), 50000)
-        let finalTint = min(max(tint ?? 0, -150), 150)
 
         // Return cached matrix if temperature/tint and as-shot reference haven't changed
         if let key = cachedWBKey,
-           key.0 == finalTemp, key.1 == finalTint,
+           key.0 == target.temperature, key.1 == target.tint,
            key.2 == asShotTemperature, key.3 == asShotTint {
             return cachedWBMatrix
         }
 
-        let matrix = extractWBMatrix(temperature: finalTemp, tint: finalTint)
-        cachedWBKey = (finalTemp, finalTint, asShotTemperature, asShotTint)
+        let matrix = extractWBMatrix(temperature: target.temperature, tint: target.tint)
+        cachedWBKey = (target.temperature, target.tint, asShotTemperature, asShotTint)
         cachedWBMatrix = matrix
         return matrix
     }
@@ -1723,6 +1723,13 @@ final class MetalEditPipeline: @unchecked Sendable {
         cachedViewportCenter = SIMD2<Float>(Float(originX + vpW / 2), Float(originY + vpH / 2))
         cachedViewportRotation = 0
         cachedCropHalfExtent = SIMD2<Float>(0.5, 0.5)
+        cachedWatermarkFrame = 0
+        let watermarkReferenceSize = sourceTextureSize ?? imageSize
+        cachedWatermarkImageSize = MTLSize(
+            width: max(1, Int(watermarkReferenceSize.width.rounded())),
+            height: max(1, Int(watermarkReferenceSize.height.rounded())),
+            depth: 1
+        )
 
         let ptr = buffer.contents().bindMemory(to: EditParams.self, capacity: 1)
         ptr.pointee.viewportOrigin = cachedViewportOrigin
@@ -1730,6 +1737,10 @@ final class MetalEditPipeline: @unchecked Sendable {
         ptr.pointee.viewportCenter = cachedViewportCenter
         ptr.pointee.viewportRotation = cachedViewportRotation
         ptr.pointee.cropHalfExtent = cachedCropHalfExtent
+        ptr.pointee.watermarkFrame = cachedWatermarkFrame
+        if !activeDisplayWatermarkLayers.isEmpty {
+            refreshWatermarkParams(activeDisplayWatermarkLayers, imageSize: cachedWatermarkImageSize)
+        }
 
         // Also update overlay params
         if let overlayBuf = overlayParamsBuffer {
@@ -1808,6 +1819,12 @@ final class MetalEditPipeline: @unchecked Sendable {
         let cropHalfX = (actualW * fitScale) / (2 * Double(containerSize.width))
         let cropHalfY = (actualH * fitScale) / (2 * Double(containerSize.height))
         cachedCropHalfExtent = SIMD2<Float>(Float(cropHalfX), Float(cropHalfY))
+        cachedWatermarkFrame = 1
+        cachedWatermarkImageSize = MTLSize(
+            width: max(1, Int(actualW.rounded())),
+            height: max(1, Int(actualH.rounded())),
+            depth: 1
+        )
 
         let ptr = buffer.contents().bindMemory(to: EditParams.self, capacity: 1)
         ptr.pointee.viewportOrigin = cachedViewportOrigin
@@ -1815,6 +1832,10 @@ final class MetalEditPipeline: @unchecked Sendable {
         ptr.pointee.viewportCenter = cachedViewportCenter
         ptr.pointee.viewportRotation = cachedViewportRotation
         ptr.pointee.cropHalfExtent = cachedCropHalfExtent
+        ptr.pointee.watermarkFrame = cachedWatermarkFrame
+        if !activeDisplayWatermarkLayers.isEmpty {
+            refreshWatermarkParams(activeDisplayWatermarkLayers, imageSize: cachedWatermarkImageSize)
+        }
     }
 
     // MARK: - Texture Pre-Caching
@@ -1893,6 +1914,20 @@ final class MetalEditPipeline: @unchecked Sendable {
         }
     }
 
+    /// Renders the confirmed crop directly, so watermark coordinates and margins resolve
+    /// against the cropped output frame instead of the full source image.
+    nonisolated static func renderOffscreenCropped(
+        source: CIImage,
+        settings: CameraRawSettings?,
+        exifOrientation: Int = 1
+    ) -> CIImage? {
+        offscreenRenderQueue.sync {
+            renderOffscreenSerial(
+                source: source, settings: settings, exifOrientation: exifOrientation, cropToOutput: true
+            )
+        }
+    }
+
     /// Asynchronous entry: runs the render on `offscreenRenderQueue` and **suspends** the caller
     /// while it executes, so the blocking GPU wait happens on the dedicated render thread and
     /// never starves Swift concurrency's cooperative thread pool. Prefer this from any `Task`.
@@ -1928,6 +1963,37 @@ final class MetalEditPipeline: @unchecked Sendable {
         return outBox.image
     }
 
+    /// Async sibling of `renderOffscreenCropped`.
+    nonisolated static func renderOffscreenCroppedAsync(
+        source: CIImage,
+        settings: CameraRawSettings?,
+        exifOrientation: Int = 1
+    ) async -> CIImage? {
+        if Task.isCancelled { return nil }
+        let inBox = CIImageBox(image: source)
+        let flag = CancelFlag()
+        let outBox: CIImageBox = await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                offscreenRenderQueue.async {
+                    guard !flag.isCancelled else {
+                        continuation.resume(returning: CIImageBox(image: nil))
+                        return
+                    }
+                    let result = renderOffscreenSerial(
+                        source: inBox.image,
+                        settings: settings,
+                        exifOrientation: exifOrientation,
+                        cropToOutput: true
+                    )
+                    continuation.resume(returning: CIImageBox(image: result))
+                }
+            }
+        } onCancel: {
+            flag.cancel()
+        }
+        return outBox.image
+    }
+
     /// The actual render. Assumes it is running on `offscreenRenderQueue` (the serial owner of
     /// the shared pipeline's mutable LUT/params/WB-cache state); never call it directly off-queue.
     /// Uses the exact same shader as the live preview: LUT, vibrance, saturation,
@@ -1935,7 +2001,8 @@ final class MetalEditPipeline: @unchecked Sendable {
     nonisolated private static func renderOffscreenSerial(
         source: CIImage?,
         settings: CameraRawSettings?,
-        exifOrientation: Int = 1
+        exifOrientation: Int = 1,
+        cropToOutput: Bool = false
     ) -> CIImage? {
         guard let source else { return nil }
         guard var settings, !isIdentitySettings(settings) else { return nil }
@@ -1979,6 +2046,26 @@ final class MetalEditPipeline: @unchecked Sendable {
         let width = Int(extent.width)
         let height = Int(extent.height)
         guard width > 0, height > 0 else { return nil }
+        let outputCrop: CameraRawCrop?
+        if cropToOutput {
+            guard let crop = settings.crop, crop.isEffectiveCrop else { return nil }
+            outputCrop = crop
+        } else {
+            outputCrop = nil
+        }
+        let outputWidth: Int
+        let outputHeight: Int
+        if let crop = outputCrop {
+            let left = min(crop.left ?? 0, crop.right ?? 1)
+            let right = max(crop.left ?? 0, crop.right ?? 1)
+            let top = min(crop.top ?? 0, crop.bottom ?? 1)
+            let bottom = max(crop.top ?? 0, crop.bottom ?? 1)
+            outputWidth = max(1, Int((Double(width) * max(right - left, 0.0001)).rounded()))
+            outputHeight = max(1, Int((Double(height) * max(bottom - top, 0.0001)).rounded()))
+        } else {
+            outputWidth = width
+            outputHeight = height
+        }
 
         // Serialized by `offscreenRenderQueue` (this function only runs there), so the shared
         // pipeline's mutable state (LUT, params, WB cache) is never touched concurrently.
@@ -2028,6 +2115,8 @@ final class MetalEditPipeline: @unchecked Sendable {
         }
 
         // 3. Generate LUT and set parameters
+        pipeline.cachedWatermarkFrame = outputCrop == nil ? 0 : 1
+        pipeline.cachedWatermarkImageSize = MTLSize(width: outputWidth, height: outputHeight, depth: 1)
         pipeline.updateParams(settings)
 
         // The offscreen pipeline has no persistent source texture, so `updateParams` can't size
@@ -2052,12 +2141,12 @@ final class MetalEditPipeline: @unchecked Sendable {
             .prefix(Self.maxWatermarks)
         pipeline.refreshWatermarkParams(
             Array(watermarkLayersForExport),
-            imageSize: MTLSize(width: width, height: height, depth: 1)
+            imageSize: MTLSize(width: outputWidth, height: outputHeight, depth: 1)
         )
 
         // 3. Create output texture (managed — CIImage can create from it)
         let outDesc = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .rgba16Float, width: width, height: height, mipmapped: false
+            pixelFormat: .rgba16Float, width: outputWidth, height: outputHeight, mipmapped: false
         )
         outDesc.usage = [.shaderRead, .shaderWrite]
         outDesc.storageMode = .shared
@@ -2071,9 +2160,28 @@ final class MetalEditPipeline: @unchecked Sendable {
         let ptr = paramsBuffer.contents().bindMemory(to: EditParams.self, capacity: 1)
         ptr.pointee.scale = SIMD2<Float>(1.0, 1.0)
         ptr.pointee.sourceSize = SIMD2<Float>(Float(width), Float(height))
-        ptr.pointee.drawableSize = SIMD2<Float>(Float(width), Float(height))
-        ptr.pointee.viewportOrigin = .zero
-        ptr.pointee.viewportSize = SIMD2<Float>(1.0, 1.0)
+        ptr.pointee.drawableSize = SIMD2<Float>(Float(outputWidth), Float(outputHeight))
+        if let crop = outputCrop {
+            let left = min(crop.left ?? 0, crop.right ?? 1)
+            let right = max(crop.left ?? 0, crop.right ?? 1)
+            let top = min(crop.top ?? 0, crop.bottom ?? 1)
+            let bottom = max(crop.top ?? 0, crop.bottom ?? 1)
+            pipeline.updateCropViewport(
+                containerSize: CGSize(width: outputWidth, height: outputHeight),
+                imageSize: CGSize(width: width, height: height),
+                cropLeft: left,
+                cropTop: top,
+                cropRight: right,
+                cropBottom: bottom,
+                angleDegrees: crop.angle ?? 0
+            )
+            ptr.pointee.sourceSize = SIMD2<Float>(Float(width), Float(height))
+            ptr.pointee.drawableSize = SIMD2<Float>(Float(outputWidth), Float(outputHeight))
+        } else {
+            ptr.pointee.viewportOrigin = .zero
+            ptr.pointee.viewportSize = SIMD2<Float>(1.0, 1.0)
+            ptr.pointee.watermarkFrame = 0
+        }
 
         encoder.setComputePipelineState(pipeline.pipelineState)
         encoder.setTexture(srcTexture, index: 0)
@@ -2101,7 +2209,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         }
 
         let threadgroupSize = MTLSize(width: 16, height: 16, depth: 1)
-        let gridSize = MTLSize(width: width, height: height, depth: 1)
+        let gridSize = MTLSize(width: outputWidth, height: outputHeight, depth: 1)
         encoder.dispatchThreads(gridSize, threadsPerThreadgroup: threadgroupSize)
         encoder.endEncoding()
         computeCmdBuf.commit()
@@ -2120,6 +2228,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         let noTonal = ToneCurveGenerator.isIdentity(settings: settings)
         let noVibrance = settings.vibrance == nil || settings.vibrance == 0
         let noSaturation = settings.saturation == nil || settings.saturation == 0
+        let noDensity = settings.globalDensity == nil || settings.globalDensity == 0
         let noWB = settings.whiteBalance == "As Shot"
             || (settings.temperature == nil && settings.incrementalTemperature == nil
                 && settings.tint == nil && settings.incrementalTint == nil)
@@ -2127,6 +2236,6 @@ final class MetalEditPipeline: @unchecked Sendable {
         let noWatermarks = settings.watermarkLayers?.isEmpty ?? true
         let noHSL = settings.hslAdjustments?.isEmpty ?? true
         let noAnonymizer = settings.anonymizer?.isEmpty ?? true
-        return noTonal && noVibrance && noSaturation && noWB && noMasks && noWatermarks && noHSL && noAnonymizer
+        return noTonal && noVibrance && noSaturation && noDensity && noWB && noMasks && noWatermarks && noHSL && noAnonymizer
     }
 }

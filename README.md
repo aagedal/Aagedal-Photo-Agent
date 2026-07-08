@@ -20,7 +20,7 @@ brew install aagedal/casks/aagedal-photo-agent
 Or build from source:
 
 ```bash
-xcodebuild -project "Aagedal Photo Agent/Aagedal Photo Agent.xcodeproj" \
+xcodebuild -project "Aagedal Photo Agent.xcodeproj" \
   -scheme "Aagedal Photo Agent" build
 ```
 
@@ -75,7 +75,7 @@ Non-destructive RAW development with real-time Metal GPU preview:
 - Copy and paste metadata between images
 - Structured keywords — Photo Mechanic-style hierarchical keyword lists with categories and synonyms, with a tree picker in the metadata panel
 - Batch metadata application via templates with variable interpolation
-- Template variables: `{date}`, `{date:FORMAT}`, `{dateCreated}`, `{dateCaptured}`, `{filename}`, `{seq}`, `{persons}`, `{keywords}`, `{initials}`, `{field:FIELDNAME}` — variables also resolve inside keywords and Person Shown
+- Template variables: `{date}`, `{date:FORMAT}`, `{dateCreated}`, `{dateCreated:YYYYMMDD}`, `{dateCreated:DDMMYYYY}`, `{dateCreated:YYYY-MM-DD}`, `{dateCaptured}`, `{dateCaptured:YYYYMMDD}`, `{dateCaptured:DDMMYYYY}`, `{dateCaptured:YYYY-MM-DD}`, `{filename}`, `{seq}`, `{persons}`, `{keywords}`, `{initials}`, `{field:FIELDNAME}` — variables also resolve inside keywords and Person Shown
 - Template hotkeys (Ctrl+1-9) for rapid workflows
 - Required-metadata definitions that drive the browser's missing-field filter and the pre-upload check
 - Metadata mirrored to both IPTC and XMP for cross-tool interoperability

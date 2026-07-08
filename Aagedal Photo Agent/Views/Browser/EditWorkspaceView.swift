@@ -215,6 +215,8 @@ struct EditWorkspaceView: View {
             || cameraRaw.whites2012 != nil
             || cameraRaw.blacks2012 != nil
             || cameraRaw.saturation != nil
+            || cameraRaw.vibrance != nil
+            || cameraRaw.globalDensity != nil
             || cameraRaw.toneCurve != nil
             || !(cameraRaw.localAdjustments?.isEmpty ?? true)
             || !(cameraRaw.watermarkLayers?.isEmpty ?? true)
@@ -289,18 +291,22 @@ struct EditWorkspaceView: View {
     /// Sensor (stored) → display geometry for the watermark overlay, mirroring
     /// `maskGeometryForDisplay` — same two-stage EXIF-then-straighten transform, just for
     /// the simpler point-only `WatermarkGeometry`.
-    private func watermarkGeometryForDisplay(_ geometry: WatermarkGeometry) -> WatermarkGeometry {
+    private func watermarkGeometryForDisplay(_ geometry: WatermarkGeometry, includeStraighten: Bool = true) -> WatermarkGeometry {
         var g = geometry
         let orientation = selectedImageOrientation
         if orientation > 1 {
             g = g.transformedForDisplay(orientation: orientation)
         }
-        return g.rotatedInDisplay(byDegrees: -displayCropAngle, aspect: maskDisplayAspect)
+        return includeStraighten
+            ? g.rotatedInDisplay(byDegrees: -displayCropAngle, aspect: maskDisplayAspect)
+            : g
     }
 
     /// Display → sensor geometry on store: exact inverse of `watermarkGeometryForDisplay`.
-    private func watermarkGeometryForSensor(_ geometry: WatermarkGeometry) -> WatermarkGeometry {
-        var g = geometry.rotatedInDisplay(byDegrees: displayCropAngle, aspect: maskDisplayAspect)
+    private func watermarkGeometryForSensor(_ geometry: WatermarkGeometry, includeStraighten: Bool = true) -> WatermarkGeometry {
+        var g = includeStraighten
+            ? geometry.rotatedInDisplay(byDegrees: displayCropAngle, aspect: maskDisplayAspect)
+            : geometry
         let orientation = selectedImageOrientation
         if orientation > 1 {
             g = g.transformedForSensor(orientation: orientation)
@@ -343,6 +349,28 @@ struct EditWorkspaceView: View {
     private var sourceAspectRatio: Double {
         guard let size = sourceImage?.size, size.width > 0, size.height > 0 else { return 1.5 }
         return size.width / size.height
+    }
+
+    private func watermarkCropImageSize(from imageSize: CGSize) -> CGSize {
+        CGSize(
+            width: max(1, CGFloat(displayCrop.width) * imageSize.width),
+            height: max(1, CGFloat(displayCrop.height) * imageSize.height)
+        )
+    }
+
+    private func watermarkCropContentRect(in containerSize: CGSize, imageSize: CGSize) -> CGRect {
+        let cropSize = watermarkCropImageSize(from: imageSize)
+        let availW = max(containerSize.width - appliedCropPreviewPadding * 2, 1)
+        let availH = max(containerSize.height - appliedCropPreviewPadding * 2, 1)
+        let fitScale = min(availW / cropSize.width, availH / cropSize.height) * max(editZoomScale, 0.0001)
+        let width = cropSize.width * fitScale
+        let height = cropSize.height * fitScale
+        return CGRect(
+            x: (containerSize.width - width) * 0.5,
+            y: (containerSize.height - height) * 0.5,
+            width: width,
+            height: height
+        )
     }
 
     var body: some View {
@@ -651,16 +679,21 @@ struct EditWorkspaceView: View {
                                    let layers = metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers,
                                    wmIdx < layers.count,
                                    !isShowingBefore, let imgSize = currentImageSize {
+                                    let watermarkImageSize = watermarkCropImageSize(from: imgSize)
                                     WatermarkOverlayRepresentable(
                                         viewportOrigin: cropViewport.origin,
                                         viewportSize: cropViewport.size,
                                         viewSize: geometry.size,
-                                        geometry: watermarkGeometryForDisplay(dragWatermarkGeometry ?? layers[wmIdx].geometry),
+                                        geometry: watermarkGeometryForDisplay(
+                                            dragWatermarkGeometry ?? layers[wmIdx].geometry,
+                                            includeStraighten: false
+                                        ),
                                         assetAspect: assetAspect(forWatermarkAssetID: layers[wmIdx].libraryAssetID),
-                                        imageSize: imgSize,
+                                        imageSize: watermarkImageSize,
+                                        contentRect: watermarkCropContentRect(in: geometry.size, imageSize: imgSize),
                                         onStart: { isDraggingEditSlider = true },
                                         onChange: { newGeometry in
-                                            let sensorGeometry = watermarkGeometryForSensor(newGeometry)
+                                            let sensorGeometry = watermarkGeometryForSensor(newGeometry, includeStraighten: false)
                                             dragWatermarkGeometry = sensorGeometry
                                             if let pipeline = metalPipeline, pipeline.hasSourceTexture {
                                                 var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
@@ -783,6 +816,7 @@ struct EditWorkspaceView: View {
                                     geometry: watermarkGeometryForDisplay(dragWatermarkGeometry ?? layers[wmIdx].geometry),
                                     assetAspect: assetAspect(forWatermarkAssetID: layers[wmIdx].libraryAssetID),
                                     imageSize: imgSize,
+                                    contentRect: nil,
                                     onStart: { isDraggingEditSlider = true },
                                     onChange: { newGeometry in
                                         let sensorGeometry = watermarkGeometryForSensor(newGeometry)
@@ -955,7 +989,7 @@ struct EditWorkspaceView: View {
 
     private var controlsPane: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     Button {
                         onExit()
@@ -1990,6 +2024,7 @@ struct EditWorkspaceView: View {
             s.asShotNeutralTint = nil
             s.saturation = nil
             s.vibrance = nil
+            s.globalDensity = nil
         }
         if isMutingDevelop || isMutingExposure {
             s.exposure2012 = nil
@@ -2473,6 +2508,7 @@ struct EditWorkspaceView: View {
             || cameraRaw.blacks2012 != nil
             || cameraRaw.saturation != nil
             || cameraRaw.vibrance != nil
+            || cameraRaw.globalDensity != nil
             || cameraRaw.toneCurve != nil
             || (cameraRaw.crop?.isEffectiveCrop == true)
             || !(cameraRaw.localAdjustments?.isEmpty ?? true)
@@ -2916,6 +2952,9 @@ struct EditWorkspaceView: View {
         })
         sliderRow("Vibrance", value: toneSliderBinding(\.vibrance), range: -100...100, step: 1, gradientColors: [.gray, .orange], formatter: signedIntString, settingsMutator: { $0.vibrance = Int($1.rounded()) }, onReset: {
             toneSliderBinding(\.vibrance).wrappedValue = 0
+        })
+        sliderRow("Density", value: toneSliderBinding(\.globalDensity), range: -100...100, step: 1, gradientColors: [.white, .black], formatter: signedIntString, settingsMutator: { $0.globalDensity = Int($1.rounded()) }, onReset: {
+            toneSliderBinding(\.globalDensity).wrappedValue = 0
         })
 
         // ── Exposure ──
@@ -4051,9 +4090,11 @@ struct EditWorkspaceView: View {
     /// image size isn't known yet.
     private func watermarkGeometryClampingOwnPosition(_ geometry: WatermarkGeometry, assetAspect: Double) -> WatermarkGeometry {
         guard let size = currentImageSize, size.width > 0, size.height > 0 else { return geometry }
-        let display = watermarkGeometryForDisplay(geometry)
-            .clamped(assetAspect: assetAspect, imageWidth: size.width, imageHeight: size.height)
-        return watermarkGeometryForSensor(display)
+        let cropFrame = metadataViewModel.editingMetadata.cameraRaw?.crop?.isEffectiveCrop == true
+        let referenceSize = cropFrame ? watermarkCropImageSize(from: size) : size
+        let display = watermarkGeometryForDisplay(geometry, includeStraighten: !cropFrame)
+            .clamped(assetAspect: assetAspect, imageWidth: referenceSize.width, imageHeight: referenceSize.height)
+        return watermarkGeometryForSensor(display, includeStraighten: !cropFrame)
     }
 
     /// Applies `mutate` to the selected watermark layer's geometry, then re-clamps its
@@ -4577,6 +4618,7 @@ struct EditWorkspaceView: View {
             || cameraRaw.incrementalTint != nil
             || cameraRaw.saturation != nil
             || cameraRaw.vibrance != nil
+            || cameraRaw.globalDensity != nil
     }
 
     private var hasExposureAdjustments: Bool {
@@ -4606,6 +4648,7 @@ struct EditWorkspaceView: View {
             cameraRaw.incrementalTint = nil
             cameraRaw.saturation = nil
             cameraRaw.vibrance = nil
+            cameraRaw.globalDensity = nil
         }
         commitEditAdjustments()
     }
@@ -4653,6 +4696,7 @@ struct EditWorkspaceView: View {
             cameraRaw.blacks2012 = nil
             cameraRaw.saturation = nil
             cameraRaw.vibrance = nil
+            cameraRaw.globalDensity = nil
             cameraRaw.localAdjustments = nil
             cameraRaw.anonymizer = nil
             cameraRaw.crop = CameraRawCrop(
@@ -4682,6 +4726,7 @@ struct EditWorkspaceView: View {
             cameraRaw.blacks2012 = nil
             cameraRaw.saturation = nil
             cameraRaw.vibrance = nil
+            cameraRaw.globalDensity = nil
             cameraRaw.toneCurve = nil
             cameraRaw.localAdjustments = nil
             cameraRaw.anonymizer = nil
@@ -4773,6 +4818,7 @@ struct EditWorkspaceView: View {
             cameraRaw.blacks2012 = source.blacks2012
             cameraRaw.saturation = source.saturation
             cameraRaw.vibrance = source.vibrance
+            cameraRaw.globalDensity = source.globalDensity
             cameraRaw.toneCurve = source.toneCurve
             cameraRaw.hslAdjustments = source.hslAdjustments
             // Paste masks only when the source carries some — pasting from a

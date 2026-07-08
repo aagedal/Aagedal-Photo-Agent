@@ -75,6 +75,7 @@ struct EditExportPipelineTests {
         var baked = CameraRawSettings()
         baked.exposure2012 = 0.5
         baked.contrast2012 = 20
+        baked.globalDensity = 35
         // HSL is part of the develop edit and must be documented in the baked crs
         // too — including the ACR `Aqua` alias for cyan and a partial channel.
         baked.hslAdjustments = HSLAdjustments(
@@ -93,11 +94,13 @@ struct EditExportPipelineTests {
 
         let crsNS = "http://ns.adobe.com/camera-raw-settings/1.0/"
         let xmpNS = "http://ns.adobe.com/xap/1.0/"
+        let appNS = "http://aagedal.me/ns/photo/1.0/"
         let embedded = try SwiftExif.readMetadata(from: rendered)
         // The baked develop settings are present, but flagged as already applied.
         #expect(embedded.xmp?.simpleValue(namespace: crsNS, property: "AlreadyApplied") == "True")
         #expect(embedded.xmp?.simpleValue(namespace: crsNS, property: "Exposure2012") == "+0.50")
         #expect(embedded.xmp?.simpleValue(namespace: crsNS, property: "Contrast2012") == "+20")
+        #expect(embedded.xmp?.simpleValue(namespace: appNS, property: "GlobalDensity") == "+35")
         // HSL: signed ints, ACR `Aqua` for cyan, and only the authored channels.
         #expect(embedded.xmp?.simpleValue(namespace: crsNS, property: "HueAdjustmentRed") == "+10")
         #expect(embedded.xmp?.simpleValue(namespace: crsNS, property: "SaturationAdjustmentRed") == "+25")

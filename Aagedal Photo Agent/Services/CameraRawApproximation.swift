@@ -127,7 +127,23 @@ enum CameraRawApproximation {
             ]) ?? output
         }
 
-        // 3. Vibrance
+        // 3. Global Density
+        if let density = settings.globalDensity, density != 0 {
+            let amount = min(max(Double(density) / 100.0, -1.0), 1.0)
+            let gain = pow(2.0, -amount)
+            let delta = gain - 1.0
+            let wr = 0.2126
+            let wg = 0.7152
+            let wb = 0.0722
+            output = applyFilter(named: "CIColorMatrix", input: output, values: [
+                "inputRVector": CIVector(x: 1.0 + delta * wr, y: delta * wg, z: delta * wb, w: 0),
+                "inputGVector": CIVector(x: delta * wr, y: 1.0 + delta * wg, z: delta * wb, w: 0),
+                "inputBVector": CIVector(x: delta * wr, y: delta * wg, z: 1.0 + delta * wb, w: 0),
+                "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1),
+            ]) ?? output
+        }
+
+        // 4. Vibrance
         if let vib = settings.vibrance, vib != 0 {
             let amount = min(max(Double(vib) / 100.0, -1.0), 1.0)
             output = applyFilter(named: "CIVibrance", input: output, values: [
@@ -135,7 +151,7 @@ enum CameraRawApproximation {
             ]) ?? output
         }
 
-        // 4. Saturation
+        // 5. Saturation
         if let sat = settings.saturation, sat != 0 {
             let saturation = min(max(1.0 + Double(sat) / 100.0, 0.0), 2.0)
             output = applyFilter(named: "CIColorControls", input: output, values: [
@@ -149,6 +165,13 @@ enum CameraRawApproximation {
     /// Applies tonal adjustments + crop/rotation in one pass.
     nonisolated static func applyWithCrop(to input: CIImage, settings: CameraRawSettings?, exifOrientation: Int = 1) -> CIImage {
         guard let settings else { return input }
+        if settings.crop?.isEffectiveCrop == true,
+           settings.watermarkLayers?.contains(where: { $0.enabled }) == true,
+           let croppedMetalResult = MetalEditPipeline.renderOffscreenCropped(
+                source: input, settings: settings, exifOrientation: exifOrientation
+           ) {
+            return croppedMetalResult
+        }
         let originalExtent = input.extent
         let adjusted = apply(to: input, settings: settings, exifOrientation: exifOrientation)
         return applyCrop(to: adjusted, originalExtent: originalExtent, settings: settings, exifOrientation: exifOrientation)
@@ -158,6 +181,13 @@ enum CameraRawApproximation {
     /// applies the (cheap, CPU-only) crop/rotation. Use from `Task`s to avoid blocking the pool.
     nonisolated static func applyWithCropAsync(to input: CIImage, settings: CameraRawSettings?, exifOrientation: Int = 1) async -> CIImage {
         guard let settings else { return input }
+        if settings.crop?.isEffectiveCrop == true,
+           settings.watermarkLayers?.contains(where: { $0.enabled }) == true,
+           let croppedMetalResult = await MetalEditPipeline.renderOffscreenCroppedAsync(
+                source: input, settings: settings, exifOrientation: exifOrientation
+           ) {
+            return croppedMetalResult
+        }
         let originalExtent = input.extent
         let adjusted = await applyAsync(to: input, settings: settings, exifOrientation: exifOrientation)
         return applyCrop(to: adjusted, originalExtent: originalExtent, settings: settings, exifOrientation: exifOrientation)
@@ -247,32 +277,11 @@ enum CameraRawApproximation {
     }
 
     nonisolated private static func temperatureTintTarget(for settings: CameraRawSettings) -> (temperature: CGFloat, tint: CGFloat)? {
-        // "As Shot" means no white balance adjustment
-        if settings.whiteBalance == "As Shot" { return nil }
-
-        let temperature: Double?
-        if let absolute = settings.temperature {
-            temperature = Double(absolute)
-        } else if let incremental = settings.incrementalTemperature {
-            // Non-RAW relative WB. Slider range is -135...+100; the negative end maps to the
-            // 2000 K floor (6500 - 135*33.33 ≈ 2000), so the slope is 5000/150 ≈ 33.33 K/step.
-            temperature = 6500 + (Double(incremental) * (5000.0 / 150.0))
-        } else {
-            temperature = nil
-        }
-
-        let tint: Double?
-        if let absolute = settings.tint {
-            tint = Double(absolute)
-        } else if let incremental = settings.incrementalTint {
-            tint = Double(incremental)
-        } else {
-            tint = nil
-        }
-
-        guard temperature != nil || tint != nil else { return nil }
-        let finalTemperature = min(max(temperature ?? 6500, minKelvin), maxKelvin)
-        let finalTint = min(max(tint ?? 0, -150), 150)
-        return (temperature: CGFloat(finalTemperature), tint: CGFloat(finalTint))
+        guard let target = settings.resolvedWhiteBalanceTarget(
+            absoluteDefaultTemperature: settings.asShotNeutralTemperature ?? 6500,
+            absoluteDefaultTint: settings.asShotNeutralTint ?? 0
+        ) else { return nil }
+        let finalTemperature = min(max(target.temperature, minKelvin), maxKelvin)
+        return (temperature: CGFloat(finalTemperature), tint: CGFloat(target.tint))
     }
 }

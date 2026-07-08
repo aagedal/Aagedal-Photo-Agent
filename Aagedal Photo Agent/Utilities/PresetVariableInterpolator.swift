@@ -5,10 +5,13 @@ struct PresetVariableInterpolator: Sendable {
     /// Supported variables:
     /// - `{date}` — today's date in default format (e.g., "Jan 27, 2026")
     /// - `{date:FORMAT}` — today's date with custom DateFormatter format (e.g., `{date:dd.MM.yyyy}`)
+    ///   Friendly aliases are also supported: `YYYYMMDD`, `DDMMYYYY`, `YYYY-MM-DD`, `DD-MM-YYYY`.
     /// - `{dateCreated}` — Date Created from metadata, date only (e.g., "Mar 15, 2024")
     /// - `{dateCreated:FORMAT}` — Date Created with custom format (e.g., `{dateCreated:dd.MM.yyyy}`)
+    ///   Friendly aliases are also supported: `YYYYMMDD`, `DDMMYYYY`, `YYYY-MM-DD`, `DD-MM-YYYY`.
     /// - `{dateCaptured}` — EXIF DateTimeOriginal, date only (e.g., "Mar 15, 2024")
     /// - `{dateCaptured:FORMAT}` — DateTimeOriginal with custom format (e.g., `{dateCaptured:yyyy-MM-dd}`)
+    ///   Friendly aliases are also supported: `YYYYMMDD`, `DDMMYYYY`, `YYYY-MM-DD`, `DD-MM-YYYY`.
     /// - `{filename}` — filename of the target image (without extension)
     /// - `{initials}` — the user's initials from Settings (empty if unset)
     /// - `{persons}` — comma-separated list of Person Shown names
@@ -107,7 +110,8 @@ struct PresetVariableInterpolator: Sendable {
             let fullRange = startRange.lowerBound..<endRange.upperBound
             if let date = parsedDate {
                 let formatter = DateFormatter()
-                formatter.dateFormat = format
+                formatter.locale = Locale(identifier: "en_US_POSIX")
+                formatter.dateFormat = canonicalDateFormat(format)
                 result.replaceSubrange(fullRange, with: formatter.string(from: date))
             } else {
                 result.replaceSubrange(fullRange, with: "")
@@ -192,7 +196,8 @@ struct PresetVariableInterpolator: Sendable {
         for match in result.matches(of: formatPattern) {
             let format = String(match.1)
             let formatter = DateFormatter()
-            formatter.dateFormat = format
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.dateFormat = canonicalDateFormat(format)
             let dateStr = formatter.string(from: Date())
             result = result.replacingOccurrences(of: String(match.0), with: dateStr)
         }
@@ -203,6 +208,16 @@ struct PresetVariableInterpolator: Sendable {
         result = result.replacingOccurrences(of: "{date}", with: formatter.string(from: Date()))
 
         return result
+    }
+
+    private func canonicalDateFormat(_ format: String) -> String {
+        switch format.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() {
+        case "YYYYMMDD": return "yyyyMMdd"
+        case "DDMMYYYY": return "ddMMyyyy"
+        case "YYYY-MM-DD": return "yyyy-MM-dd"
+        case "DD-MM-YYYY": return "dd-MM-yyyy"
+        default: return format
+        }
     }
 
     private func resolveFields(

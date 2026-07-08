@@ -14,6 +14,7 @@ struct WatermarkOverlayRepresentable: NSViewRepresentable {
     let geometry: WatermarkGeometry   // display frame
     let assetAspect: Double           // decoded PNG aspect ratio (width/height); 1 if unknown
     let imageSize: CGSize             // display-frame image pixel dimensions
+    let contentRect: CGRect?
     let onStart: () -> Void
     let onChange: (WatermarkGeometry) -> Void
     let onCommit: () -> Void
@@ -33,6 +34,7 @@ struct WatermarkOverlayRepresentable: NSViewRepresentable {
         view.watermarkGeometry = geometry
         view.assetAspect = assetAspect
         view.imageSize = imageSize
+        view.contentRect = contentRect
         return view
     }
 
@@ -47,6 +49,7 @@ struct WatermarkOverlayRepresentable: NSViewRepresentable {
             nsView.watermarkGeometry = geometry
             nsView.assetAspect = assetAspect
             nsView.imageSize = imageSize
+            nsView.contentRect = contentRect
             nsView.needsDisplay = true
         }
     }
@@ -75,6 +78,7 @@ final class WatermarkOverlayNSView: NSView {
     var watermarkGeometry: WatermarkGeometry = WatermarkGeometry()
     var assetAspect: Double = 1
     var imageSize: CGSize = .zero
+    var contentRect: CGRect?
 
     private let handleHitRadius: CGFloat = 10
 
@@ -94,17 +98,29 @@ final class WatermarkOverlayNSView: NSView {
     // MARK: - Viewport coordinate helpers (identical projection to MaskOverlayNSView)
 
     private var uvToScreenScaleX: CGFloat {
+        if let contentRect {
+            return contentRect.width
+        }
         guard viewportSize.x > 0 else { return 0 }
         return bounds.width / CGFloat(viewportSize.x)
     }
 
     private var uvToScreenScaleY: CGFloat {
+        if let contentRect {
+            return contentRect.height
+        }
         guard viewportSize.y > 0 else { return 0 }
         return bounds.height / CGFloat(viewportSize.y)
     }
 
     private func screenPoint(forUV uv: (x: Double, y: Double)) -> CGPoint {
-        CGPoint(
+        if let contentRect {
+            return CGPoint(
+                x: contentRect.minX + CGFloat(uv.x) * contentRect.width,
+                y: contentRect.minY + CGFloat(uv.y) * contentRect.height
+            )
+        }
+        return CGPoint(
             x: (CGFloat(uv.x) - CGFloat(viewportOrigin.x)) / CGFloat(viewportSize.x) * bounds.width,
             y: (CGFloat(uv.y) - CGFloat(viewportOrigin.y)) / CGFloat(viewportSize.y) * bounds.height
         )

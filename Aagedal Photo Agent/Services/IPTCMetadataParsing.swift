@@ -89,6 +89,8 @@ nonisolated enum MetadataDictKey {
     /// App-private (aaphoto namespace): the global Anonymizer redaction settings.
     static let anonymizerAmount = "AnonymizerAmount"
     static let anonymizerBlackOut = "AnonymizerBlackOut"
+    /// App-private (aaphoto namespace): global density render adjustment.
+    static let globalDensity = "GlobalDensity"
 }
 
 nonisolated func parseStringOrArray(_ value: Any?) -> [String] {
@@ -167,7 +169,7 @@ nonisolated func parseBoolValue(_ value: Any?) -> Bool? {
 
 /// Parse a tone curve from a `[String]` of `"x, y"` pairs (Adobe Camera Raw 0-255 scale).
 nonisolated func parseToneCurveArray(_ value: Any?) -> [ToneCurvePoint]? {
-    guard let array = value as? [String], array.count > 2 else { return nil }
+    guard let array = value as? [String], array.count >= 2 else { return nil }
     let points = array.compactMap { str -> ToneCurvePoint? in
         let parts = str.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
         guard parts.count == 2,
@@ -175,7 +177,7 @@ nonisolated func parseToneCurveArray(_ value: Any?) -> [ToneCurvePoint]? {
               let y = Double(parts[1]) else { return nil }
         return ToneCurvePoint(acr255: x, y)
     }
-    return points.count > 2 ? points : nil
+    return points.isIdentityToneCurve ? nil : points
 }
 
 /// Serialize tone-curve points to Adobe Camera Raw `"x, y"` strings on the 0–255
@@ -763,6 +765,7 @@ nonisolated func iptcMetadataFromDict(_ dict: [String: Any]) -> IPTCMetadata {
         blacks2012: parseIntValue(dict[MetadataDictKey.crsBlacks2012]),
         saturation: parseIntValue(dict[MetadataDictKey.crsSaturation]),
         vibrance: parseIntValue(dict[MetadataDictKey.crsVibrance]),
+        globalDensity: parseIntValue(dict[MetadataDictKey.globalDensity]),
         hasSettings: parseBoolValue(dict[MetadataDictKey.crsHasSettings]),
         crop: cropValue,
         hdrEditMode: parseIntValue(dict[MetadataDictKey.crsHDREditMode]),
