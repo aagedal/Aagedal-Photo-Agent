@@ -1724,9 +1724,10 @@ final class MetalEditPipeline: @unchecked Sendable {
         cachedViewportRotation = 0
         cachedCropHalfExtent = SIMD2<Float>(0.5, 0.5)
         cachedWatermarkFrame = 0
+        let watermarkReferenceSize = sourceTextureSize ?? imageSize
         cachedWatermarkImageSize = MTLSize(
-            width: max(1, Int(imageSize.width.rounded())),
-            height: max(1, Int(imageSize.height.rounded())),
+            width: max(1, Int(watermarkReferenceSize.width.rounded())),
+            height: max(1, Int(watermarkReferenceSize.height.rounded())),
             depth: 1
         )
 
