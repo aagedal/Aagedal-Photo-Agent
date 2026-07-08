@@ -248,11 +248,6 @@ struct SettingsView: View {
                 Text("When enabled, browser thumbnails always show the original image without develop edits. Edited thumbnails are still rendered in the background for quick toggling.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-
-                Toggle("Render RAW images as HDR", isOn: $settingsViewModel.rawRenderAsHDR)
-                Text("Display RAW files using Extended Dynamic Range. Requires re-opening the folder to take effect.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
@@ -271,21 +266,31 @@ struct SettingsView: View {
                     }
                 }
                 .pickerStyle(.segmented)
+
                 Text(settingsViewModel.rawDecodeProfile.subtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("Develop sliders are unaffected and start from this profile's baseline. Requires re-opening the folder/image to take effect.")
+
+                Text("Develop sliders are unaffected and start from this profile's baseline. Requires re-opening the folder or image to take effect.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            Section("Decoder Version") {
+            Section("Dynamic Range") {
+                Toggle("Render RAW images as HDR", isOn: $settingsViewModel.rawRenderAsHDR)
+                Text("Display RAW files using Extended Dynamic Range. Requires re-opening the folder or image to take effect.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Apple RAW Decoder") {
                 Picker("Decoder", selection: $settingsViewModel.rawDecoderVersionPreference) {
-                    ForEach(RAWDecoderVersionPreference.allCases) { pref in
-                        Text(pref.title).tag(pref)
+                    ForEach(RAWDecoderVersionPreference.allCases) { preference in
+                        Text(preference.title).tag(preference)
                     }
                 }
-                Text("Pin RAW decoding to an older decoder version (e.g. to opt out of a newer AI-assisted decoder) instead of always using the newest available. Falls back to Auto for files that don't support the selected version. Requires re-opening the folder/image to take effect.")
+
+                Text("Pin RAW decoding to an older Apple decoder instead of always using the newest available. Falls back to Auto for files that do not support the selected version. Requires re-opening the folder or image to take effect.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
