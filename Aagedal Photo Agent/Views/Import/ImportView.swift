@@ -26,7 +26,7 @@ struct ImportView: View {
                 formContent
             }
         }
-        .frame(minWidth: 620, minHeight: 480)
+        .frame(minWidth: 680, minHeight: 480)
         .frame(maxHeight: maxSheetHeight)
         .alert("Thumbnail previews are slow", isPresented: $showSlowThumbnailWarning) {
             Button("OK") { }
@@ -179,8 +179,13 @@ struct ImportView: View {
                 }
 
                 if viewModel.sortByDate {
-                    Toggle("Group date folders by year", isOn: $viewModel.groupByYear)
-                        .controlSize(.small)
+                    Picker("Group date folders", selection: $viewModel.dateFolderGrouping) {
+                        ForEach(ImportDateFolderGrouping.allCases, id: \.self) { grouping in
+                            Text(grouping.displayName).tag(grouping)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .controlSize(.small)
                     Toggle("Put split shoots in subfolders", isOn: $viewModel.splitShootsIntoSubfolders)
                         .controlSize(.small)
 
@@ -206,8 +211,9 @@ struct ImportView: View {
                                     }
                                     .frame(width: 100, alignment: .leading)
 
-                                    if viewModel.groupByYear, let year = group.yearFolder {
-                                        Text("\(year)/")
+                                    let groupingPrefix = viewModel.folderPathGroupingPrefix(for: group)
+                                    if !groupingPrefix.isEmpty {
+                                        Text("\(groupingPrefix)/")
                                             .font(.callout)
                                             .foregroundStyle(.secondary)
                                     }
@@ -282,9 +288,7 @@ struct ImportView: View {
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
 
-                        Text(viewModel.groupByYear
-                             ? "Each date group will be imported under <year>/<date>/."
-                             : "Each date group will be imported under the destination base.")
+                        Text(viewModel.dateFolderGrouping.description)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -323,7 +327,13 @@ struct ImportView: View {
     private var fileTypeSection: some View {
         GroupBox("File Types") {
             VStack(alignment: .leading, spacing: 8) {
-                Picker("Filter", selection: $viewModel.configuration.fileTypeFilter) {
+                Picker("Filter", selection: Binding(
+                    get: { viewModel.configuration.fileTypeFilter },
+                    set: { newValue in
+                        viewModel.configuration.fileTypeFilter = newValue
+                        UserDefaults.standard.set(newValue.rawValue, forKey: UserDefaultsKeys.importFileTypeFilter)
+                    }
+                )) {
                     ForEach(ImportFileTypeFilter.allCases, id: \.self) { filter in
                         Text(filter.rawValue).tag(filter)
                     }

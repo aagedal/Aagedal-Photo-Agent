@@ -55,6 +55,31 @@ enum CopyVerificationMode: String, CaseIterable, Sendable {
     }
 }
 
+enum ImportDateFolderGrouping: String, CaseIterable, Sendable {
+    case none
+    case year
+    case month
+
+    var displayName: String {
+        switch self {
+        case .none: return "None"
+        case .year: return "Year"
+        case .month: return "Month"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .none:
+            return "Each date group will be imported under the destination base."
+        case .year:
+            return "Each date group will be imported under <year>/<date>."
+        case .month:
+            return "Each date group will be imported under <year>/<month>/<date>."
+        }
+    }
+}
+
 struct BackupDestination: Sendable, Equatable {
     var url: URL
     var verifyAfterWrite: Bool = true

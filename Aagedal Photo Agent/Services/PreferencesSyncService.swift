@@ -60,7 +60,9 @@ final class PreferencesSyncService {
         // Import behavior (portable modes only, not backup folders)
         UserDefaultsKeys.importVerificationMode,
         UserDefaultsKeys.importBackupVerifyAfterWrite,
+        UserDefaultsKeys.importFileTypeFilter,
         UserDefaultsKeys.importGroupByYear,
+        UserDefaultsKeys.importDateFolderGrouping,
         // Signing author name (portable; the certificate itself is not synced)
         UserDefaultsKeys.c2paDefaultAuthor,
     ]

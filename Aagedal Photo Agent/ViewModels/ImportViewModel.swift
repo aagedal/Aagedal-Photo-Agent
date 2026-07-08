@@ -38,6 +38,9 @@ struct ImportDateGroup: Identifiable {
     /// not be parsed; such groups stay flat under the destination base even when
     /// "Group by year" is enabled, to avoid creating a bogus year folder.
     var yearFolder: String?
+    /// Month folder derived from the parsed capture date. Used below `yearFolder`
+    /// when month grouping is enabled.
+    var monthFolder: String? = nil
     var files: [URL]
     /// Full per-file capture timestamps (EXIF `DateTimeOriginal`, or file mtime as a
     /// fallback). A file may be absent here when no timestamp could be read. Used for
@@ -82,10 +85,11 @@ final class ImportViewModel {
     var dateGroups: [ImportDateGroup] = []
     /// Whether the user wants to sort files into per-date folders.
     var sortByDate: Bool = false
-    /// When `sortByDate` is on, wrap each date folder in a `yyyy/` parent.
-    var groupByYear: Bool = false {
+    /// When `sortByDate` is on, optionally wrap date folders in a parent folder.
+    var dateFolderGrouping: ImportDateFolderGrouping = .none {
         didSet {
-            UserDefaults.standard.set(groupByYear, forKey: UserDefaultsKeys.importGroupByYear)
+            UserDefaults.standard.set(dateFolderGrouping.rawValue, forKey: UserDefaultsKeys.importDateFolderGrouping)
+            UserDefaults.standard.set(dateFolderGrouping == .year, forKey: UserDefaultsKeys.importGroupByYear)
         }
     }
     /// When a single capture date is split into multiple shoots, import the shoots
@@ -123,9 +127,19 @@ final class ImportViewModel {
            let mode = CopyVerificationMode(rawValue: raw) {
             self.configuration.verificationMode = mode
         }
+        if let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.importFileTypeFilter),
+           let filter = ImportFileTypeFilter(rawValue: raw) {
+            self.configuration.fileTypeFilter = filter
+        }
 
-        // Restore last-used year-grouping preference (default = false).
-        self.groupByYear = UserDefaults.standard.bool(forKey: UserDefaultsKeys.importGroupByYear)
+        // Restore last-used date-folder grouping. Fall back to the legacy year
+        // toggle so existing installs keep their previous behavior.
+        if let rawGrouping = UserDefaults.standard.string(forKey: UserDefaultsKeys.importDateFolderGrouping),
+           let grouping = ImportDateFolderGrouping(rawValue: rawGrouping) {
+            self.dateFolderGrouping = grouping
+        } else {
+            self.dateFolderGrouping = UserDefaults.standard.bool(forKey: UserDefaultsKeys.importGroupByYear) ? .year : .none
+        }
         self.splitShootsIntoSubfolders = UserDefaults.standard.bool(forKey: UserDefaultsKeys.importSplitShootsIntoSubfolders)
         if UserDefaults.standard.object(forKey: UserDefaultsKeys.importSkipPreviouslyImported) != nil {
             self.configuration.skipPreviouslyImported = UserDefaults.standard.bool(forKey: UserDefaultsKeys.importSkipPreviouslyImported)
@@ -300,19 +314,8 @@ final class ImportViewModel {
 
         // Persist verification mode for next run.
         UserDefaults.standard.set(configuration.verificationMode.rawValue, forKey: UserDefaultsKeys.importVerificationMode)
+        UserDefaults.standard.set(configuration.fileTypeFilter.rawValue, forKey: UserDefaultsKeys.importFileTypeFilter)
         UserDefaults.standard.set(configuration.skipPreviouslyImported, forKey: UserDefaultsKeys.importSkipPreviouslyImported)
-
-        // Determine the primary destination folder (first date group or single folder).
-        let primaryDestURL: URL
-        if sortByDate, let first = dateGroups.first(where: \.isIncluded) {
-            primaryDestURL = destinationFolderURL(for: first)
-        } else {
-            primaryDestURL = configuration.destinationFolderURL
-        }
-
-        // Immediately close the sheet and open the destination folder so the
-        // browser can show thumbnails arriving via auto-refresh.
-        NotificationCenter.default.post(name: .importStarted, object: primaryDestURL)
 
         // Capture configuration values for the background copy.
         let createSubFolders = configuration.createSubFolders
@@ -322,7 +325,7 @@ final class ImportViewModel {
         let applyMetadata = configuration.applyMetadata
         let processVariables = configuration.processVariables
         let sortByDate = self.sortByDate
-        let groupByYear = self.groupByYear
+        let dateFolderGrouping = self.dateFolderGrouping
         let dateGroups = self.dateGroups
         let destURL = configuration.destinationFolderURL
         let baseURL = configuration.destinationBaseURL
@@ -336,15 +339,13 @@ final class ImportViewModel {
 
         // Pre-compute file→date-group folder name (and optional year prefix) for O(1) lookup.
         var fileDateFolder: [URL: String] = [:]
-        var fileDateYear: [URL: String] = [:]
+        var fileDateGroupingFolders: [URL: [String]] = [:]
         var fileShootFolder: [URL: String] = [:]
         if sortByDate {
             for group in dateGroups where group.isIncluded {
                 for file in group.files {
                     fileDateFolder[file] = group.folderName
-                    if let year = group.yearFolder {
-                        fileDateYear[file] = year
-                    }
+                    fileDateGroupingFolders[file] = folderGroupingComponents(for: group, grouping: dateFolderGrouping)
                     if let shoot = group.shootFolderName?.trimmingCharacters(in: .whitespaces), !shoot.isEmpty {
                         fileShootFolder[file] = shoot
                     }
@@ -357,18 +358,14 @@ final class ImportViewModel {
         // under the chosen backup root.
         var jobs: [ImportCopyService.CopyJob] = []
         var allDestFolders: Set<URL> = []
+        var allRevealFolders: Set<URL> = []
         let knownFingerprints = configuration.skipPreviouslyImported ? Self.loadImportedFingerprints() : []
         for file in filesToCopy {
             let baseFolder: URL
             if sortByDate {
                 if let folderName = fileDateFolder[file] {
-                    if groupByYear, let year = fileDateYear[file] {
-                        baseFolder = baseURL
-                            .appendingPathComponent(year)
-                            .appendingPathComponent(folderName)
-                    } else {
-                        baseFolder = baseURL.appendingPathComponent(folderName)
-                    }
+                    baseFolder = Self.appendingPathComponents(fileDateGroupingFolders[file] ?? [], to: baseURL)
+                        .appendingPathComponent(folderName)
                 } else {
                     baseFolder = destURL
                 }
@@ -389,6 +386,7 @@ final class ImportViewModel {
             } else {
                 primaryFolder = shootBaseFolder
             }
+            allRevealFolders.insert(shootBaseFolder)
             allDestFolders.insert(primaryFolder)
 
             let primaryURL = primaryFolder.appendingPathComponent(file.lastPathComponent)
@@ -421,6 +419,11 @@ final class ImportViewModel {
         }
 
         let allFolders = allDestFolders
+        let folderToOpen = Self.commonAncestor(of: Array(allRevealFolders)) ?? destURL
+        // Immediately close the sheet and open the most useful common destination
+        // so the browser can show thumbnails arriving via auto-refresh without
+        // expanding every imported date or shoot folder.
+        NotificationCenter.default.post(name: .importStarted, object: folderToOpen)
         let verifyBackup = backupDestination?.verifyAfterWrite ?? true
         let copyService = self.copyService
 
@@ -639,6 +642,23 @@ final class ImportViewModel {
         return urlComponents[rootComponents.count..<urlComponents.count].joined(separator: "/")
     }
 
+    nonisolated static func commonAncestor(of urls: [URL]) -> URL? {
+        guard var commonComponents = urls.first?.standardizedFileURL.pathComponents else { return nil }
+        for url in urls.dropFirst() {
+            let components = url.standardizedFileURL.pathComponents
+            var sharedCount = 0
+            while sharedCount < commonComponents.count,
+                  sharedCount < components.count,
+                  commonComponents[sharedCount] == components[sharedCount] {
+                sharedCount += 1
+            }
+            commonComponents = Array(commonComponents.prefix(sharedCount))
+            if commonComponents.isEmpty { return nil }
+        }
+        guard !commonComponents.isEmpty else { return nil }
+        return URL(fileURLWithPath: NSString.path(withComponents: commonComponents))
+    }
+
     nonisolated private static func fileDateTimestamp(for file: URL, in groups: [ImportDateGroup]) -> Date? {
         for group in groups {
             if let timestamp = group.captureTimes[file] {
@@ -820,18 +840,23 @@ final class ImportViewModel {
             folderDateFormatter.dateFormat = "yyyy-MM-dd"
             let yearFormatter = DateFormatter()
             yearFormatter.dateFormat = "yyyy"
+            let monthFormatter = DateFormatter()
+            monthFormatter.dateFormat = "MM"
             let parseDateFormatter = DateFormatter()
             parseDateFormatter.dateFormat = "yyyy:MM:dd"
 
             let groups = grouped.keys.sorted().map { dateKey -> ImportDateGroup in
                 let folderDate: String
                 let yearFolder: String?
+                let monthFolder: String?
                 if let parsed = parseDateFormatter.date(from: dateKey) {
                     folderDate = folderDateFormatter.string(from: parsed)
                     yearFolder = yearFormatter.string(from: parsed)
+                    monthFolder = monthFormatter.string(from: parsed)
                 } else {
                     folderDate = dateKey
                     yearFolder = nil
+                    monthFolder = nil
                 }
                 let leaf = trimmedTitle.isEmpty
                     ? folderDate
@@ -847,6 +872,7 @@ final class ImportViewModel {
                     shootFolderName: nil,
                     isIncluded: true,
                     yearFolder: yearFolder,
+                    monthFolder: monthFolder,
                     files: groupFiles,
                     captureTimes: groupTimes
                 )
@@ -973,7 +999,7 @@ final class ImportViewModel {
     /// Full destination path preview for a group, e.g. "Photos / 2026 / 2026-05-12 – Vacation".
     func folderPathPreview(for group: ImportDateGroup) -> String {
         var parts = [configuration.destinationBaseURL.lastPathComponent]
-        if groupByYear, let year = group.yearFolder { parts.append(year) }
+        parts.append(contentsOf: folderGroupingComponents(for: group, grouping: dateFolderGrouping))
         parts.append(group.folderName)
         if let shoot = group.shootFolderName?.trimmingCharacters(in: .whitespaces), !shoot.isEmpty {
             parts.append(shoot)
@@ -981,16 +1007,38 @@ final class ImportViewModel {
         return parts.joined(separator: " / ")
     }
 
+    func folderPathGroupingPrefix(for group: ImportDateGroup) -> String {
+        folderGroupingComponents(for: group, grouping: dateFolderGrouping).joined(separator: "/")
+    }
+
     private func destinationFolderURL(for group: ImportDateGroup) -> URL {
-        var url = configuration.destinationBaseURL
-        if groupByYear, let year = group.yearFolder {
-            url = url.appendingPathComponent(year)
-        }
+        var url = Self.appendingPathComponents(
+            folderGroupingComponents(for: group, grouping: dateFolderGrouping),
+            to: configuration.destinationBaseURL
+        )
         url = url.appendingPathComponent(group.folderName)
         if let shoot = group.shootFolderName?.trimmingCharacters(in: .whitespaces), !shoot.isEmpty {
             url = url.appendingPathComponent(shoot)
         }
         return url
+    }
+
+    private func folderGroupingComponents(for group: ImportDateGroup, grouping: ImportDateFolderGrouping) -> [String] {
+        switch grouping {
+        case .none:
+            return []
+        case .year:
+            return group.yearFolder.map { [$0] } ?? []
+        case .month:
+            guard let year = group.yearFolder, let month = group.monthFolder else { return [] }
+            return [year, month]
+        }
+    }
+
+    nonisolated private static func appendingPathComponents(_ components: [String], to baseURL: URL) -> URL {
+        components.reduce(baseURL) { partial, component in
+            partial.appendingPathComponent(component)
+        }
     }
 
     // MARK: - Shoot Splitting
@@ -1031,6 +1079,7 @@ final class ImportViewModel {
                 shootFolderName: splitShootsIntoSubfolders ? shootName : nil,
                 isIncluded: group.isIncluded,
                 yearFolder: group.yearFolder,
+                monthFolder: group.monthFolder,
                 files: segFiles,
                 captureTimes: segTimes
             ))
@@ -1070,6 +1119,7 @@ final class ImportViewModel {
             shootFolderName: splitShootsIntoSubfolders ? shootName : nil,
             isIncluded: source.isIncluded,
             yearFolder: source.yearFolder,
+            monthFolder: source.monthFolder,
             files: moved,
             captureTimes: movedTimes
         )
@@ -1157,11 +1207,11 @@ final class ImportViewModel {
             let shoot = dateGroups[i].shootFolderName?.trimmingCharacters(in: .whitespaces)
             var candidate = name
             var counter = 2
-            var uniqueKey = folderUniquenessKey(folderName: candidate, shootFolderName: shoot, yearFolder: dateGroups[i].yearFolder)
+            var uniqueKey = folderUniquenessKey(for: dateGroups[i], folderName: candidate, shootFolderName: shoot)
             while !used.insert(uniqueKey).inserted {
                 candidate = "\(name) (\(counter))"
                 counter += 1
-                uniqueKey = folderUniquenessKey(folderName: candidate, shootFolderName: shoot, yearFolder: dateGroups[i].yearFolder)
+                uniqueKey = folderUniquenessKey(for: dateGroups[i], folderName: candidate, shootFolderName: shoot)
             }
             if candidate != dateGroups[i].folderName {
                 dateGroups[i].folderName = candidate
@@ -1169,9 +1219,8 @@ final class ImportViewModel {
         }
     }
 
-    private func folderUniquenessKey(folderName: String, shootFolderName: String?, yearFolder: String?) -> String {
-        var parts: [String] = []
-        if groupByYear, let yearFolder { parts.append(yearFolder.lowercased()) }
+    private func folderUniquenessKey(for group: ImportDateGroup, folderName: String, shootFolderName: String?) -> String {
+        var parts = folderGroupingComponents(for: group, grouping: dateFolderGrouping).map { $0.lowercased() }
         parts.append(folderName.lowercased())
         if let shootFolderName, !shootFolderName.isEmpty { parts.append(shootFolderName.lowercased()) }
         return parts.joined(separator: "/")
@@ -1190,22 +1239,24 @@ final class ImportViewModel {
 
     private func normalizeSplitFolderLayout() {
         guard sortByDate, !dateGroups.isEmpty else { return }
+        var normalizedGroups = dateGroups
         var dateCounters: [String: Int] = [:]
-        for i in dateGroups.indices {
-            let siblings = dateGroups.filter { $0.dateString == dateGroups[i].dateString }
-            guard siblings.count > 1 || dateGroups[i].shootFolderName != nil else { continue }
+        for i in normalizedGroups.indices {
+            let siblings = normalizedGroups.filter { $0.dateString == normalizedGroups[i].dateString }
+            guard siblings.count > 1 || normalizedGroups[i].shootFolderName != nil else { continue }
 
-            dateCounters[dateGroups[i].dateString, default: 0] += 1
-            let shootName = dateGroups[i].shootFolderName ?? "Shoot \(dateCounters[dateGroups[i].dateString] ?? 1)"
+            dateCounters[normalizedGroups[i].dateString, default: 0] += 1
+            let shootName = normalizedGroups[i].shootFolderName ?? "Shoot \(dateCounters[normalizedGroups[i].dateString] ?? 1)"
             if splitShootsIntoSubfolders {
-                dateGroups[i].folderName = baseDateFolderName(for: dateGroups[i])
-                dateGroups[i].shootFolderName = shootName
+                normalizedGroups[i].folderName = baseDateFolderName(for: normalizedGroups[i])
+                normalizedGroups[i].shootFolderName = shootName
             } else {
-                let baseName = baseDateFolderName(for: dateGroups[i])
-                dateGroups[i].folderName = "\(baseName) \u{2013} \(shootName)"
-                dateGroups[i].shootFolderName = nil
+                let baseName = baseDateFolderName(for: normalizedGroups[i])
+                normalizedGroups[i].folderName = "\(baseName) \u{2013} \(shootName)"
+                normalizedGroups[i].shootFolderName = nil
             }
         }
+        dateGroups = normalizedGroups
         ensureUniqueFolderNames()
     }
 
@@ -1224,11 +1275,13 @@ final class ImportViewModel {
     }
 
     func reset() {
+        let preservedFileTypeFilter = configuration.fileTypeFilter
         let preservedVerificationMode = configuration.verificationMode
         let preservedBackup = configuration.backupDestination
         let preservedSkipPreviouslyImported = configuration.skipPreviouslyImported
         configuration = ImportConfiguration()
-        // Preserve the user's verification + backup choices across "Import More".
+        // Preserve the user's import-mode choices across "Import More".
+        configuration.fileTypeFilter = preservedFileTypeFilter
         configuration.verificationMode = preservedVerificationMode
         configuration.backupDestination = preservedBackup
         configuration.skipPreviouslyImported = preservedSkipPreviouslyImported
