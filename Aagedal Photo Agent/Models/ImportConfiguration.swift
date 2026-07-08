@@ -89,16 +89,32 @@ struct ImportConfiguration {
     var sourceURL: URL?
     var destinationBaseURL: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Photos")
     var importTitle: String = ""
-    var fileTypeFilter: ImportFileTypeFilter = .both
-    var conflictPolicy: ImportConflictPolicy = .renameWithSuffix
-    var createSubFolders: Bool = true
+    var fileTypeFilter: ImportFileTypeFilter = .both {
+        didSet { UserDefaults.standard.set(fileTypeFilter.rawValue, forKey: UserDefaultsKeys.importFileTypeFilter) }
+    }
+    var conflictPolicy: ImportConflictPolicy = .renameWithSuffix {
+        didSet { UserDefaults.standard.set(conflictPolicy.rawValue, forKey: UserDefaultsKeys.importConflictPolicy) }
+    }
+    var createSubFolders: Bool = true {
+        didSet { UserDefaults.standard.set(createSubFolders, forKey: UserDefaultsKeys.importCreateSubFolders) }
+    }
     var applyMetadata: Bool = false
     var processVariables: Bool = false
     var metadata: IPTCMetadata = IPTCMetadata()
     var openFolderAfterImport: Bool = true
-    var verificationMode: CopyVerificationMode = .on
-    var backupDestination: BackupDestination?
-    var skipPreviouslyImported: Bool = true
+    var verificationMode: CopyVerificationMode = .on {
+        didSet { UserDefaults.standard.set(verificationMode.rawValue, forKey: UserDefaultsKeys.importVerificationMode) }
+    }
+    var backupDestination: BackupDestination? {
+        didSet {
+            if let backupDestination {
+                UserDefaults.standard.set(backupDestination.verifyAfterWrite, forKey: UserDefaultsKeys.importBackupVerifyAfterWrite)
+            }
+        }
+    }
+    var skipPreviouslyImported: Bool = true {
+        didSet { UserDefaults.standard.set(skipPreviouslyImported, forKey: UserDefaultsKeys.importSkipPreviouslyImported) }
+    }
 
     var destinationFolderName: String {
         let formatter = DateFormatter()

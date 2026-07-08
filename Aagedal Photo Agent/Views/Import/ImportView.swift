@@ -429,7 +429,10 @@ struct ImportView: View {
 
                     Toggle("Verify backup copies", isOn: Binding(
                         get: { viewModel.configuration.backupDestination?.verifyAfterWrite ?? true },
-                        set: { viewModel.configuration.backupDestination?.verifyAfterWrite = $0 }
+                        set: {
+                            viewModel.configuration.backupDestination?.verifyAfterWrite = $0
+                            UserDefaults.standard.set($0, forKey: UserDefaultsKeys.importBackupVerifyAfterWrite)
+                        }
                     ))
                     .disabled(viewModel.configuration.verificationMode == .off)
 

@@ -1,10 +1,10 @@
 import SwiftUI
 
 /// Compact, overlapping "stack of photos" preview for a set of import files.
-/// Shows up to ~8 thumbnails sampled evenly across the set (chronologically when
+/// Shows five fixed-width frames sampled evenly across the set (chronologically when
 /// capture times are known); hovering pops a larger row so the user can quickly see
-/// what was shot. When the set has more photos than are shown, the last card carries a
-/// "+N" badge so it's clear the preview is a representative subset, not the whole set.
+/// what was shot. Short shoots render empty frames so every row reserves the same
+/// layout space, and a top badge always shows the total photo count.
 /// Only the sampled representatives are ever decoded, so it stays cheap on large sets.
 struct ImportThumbnailStripView: View {
     let files: [URL]
@@ -16,45 +16,64 @@ struct ImportThumbnailStripView: View {
     @State private var isHovering = false
     @State private var finishedLoads: Set<URL> = []
 
+    private static let visibleTileCount = 5
+    private static let tileSize: CGFloat = 28
+    private static let tileOverlap: CGFloat = -12
+    private static let cornerRadius: CGFloat = 4
+    private static let stripWidth = tileSize * CGFloat(visibleTileCount)
+        + tileOverlap * CGFloat(visibleTileCount - 1)
+
     private var representatives: [URL] {
-        ImportViewModel.representativeFiles(from: files, captureTimes: captureTimes, max: 8)
+        ImportViewModel.representativeFiles(from: files, captureTimes: captureTimes, max: Self.visibleTileCount)
     }
 
     var body: some View {
         let urls = representatives
         let remaining = max(0, files.count - urls.count)
-        HStack(spacing: -12) {
-            ForEach(Array(urls.enumerated()), id: \.element) { index, url in
-                ImportStripTile(
-                    url: url,
-                    thumbnailService: thumbnailService,
-                    onLoadFinished: { finishedLoads.insert(url) }
-                )
-                    .environment(\.importStripShouldLoadThumbnail, prefetchThumbnails || isHovering)
-                    .frame(width: 28, height: 28)
-                    .overlay {
-                        // Mark the last visible card with the count of hidden photos.
-                        if remaining > 0, index == urls.count - 1 {
-                            ZStack {
-                                Color.black.opacity(0.55)
-                                Text("+\(remaining)")
-                                    .font(.system(size: 10, weight: .semibold))
-                                    .foregroundStyle(.white)
-                                    .minimumScaleFactor(0.6)
-                                    .lineLimit(1)
-                                    .padding(.horizontal, 1)
-                            }
+        ZStack(alignment: .topTrailing) {
+            HStack(spacing: Self.tileOverlap) {
+                ForEach(0..<Self.visibleTileCount, id: \.self) { index in
+                    Group {
+                        if index < urls.count {
+                            ImportStripTile(
+                                url: urls[index],
+                                thumbnailService: thumbnailService,
+                                onLoadFinished: { finishedLoads.insert(urls[index]) }
+                            )
+                            .environment(\.importStripShouldLoadThumbnail, prefetchThumbnails || isHovering)
+                        } else {
+                            ImportStripPlaceholderTile()
                         }
                     }
-                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                    .frame(width: Self.tileSize, height: Self.tileSize)
+                    .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius))
                     .overlay(
-                        RoundedRectangle(cornerRadius: 4)
+                        RoundedRectangle(cornerRadius: Self.cornerRadius)
                             .strokeBorder(Color(nsColor: .windowBackgroundColor), lineWidth: 1.5)
                     )
                     .shadow(color: .black.opacity(0.15), radius: 1, x: 0, y: 0.5)
-                    .zIndex(Double(urls.count - index))
+                    .zIndex(Double(Self.visibleTileCount - index))
+                }
+            }
+
+            if files.count > 0 {
+                Text("\(files.count)")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                    .padding(.horizontal, 4)
+                    .frame(minWidth: 18, minHeight: 16)
+                    .background(.black.opacity(0.68), in: Capsule())
+                    .overlay(
+                        Capsule()
+                            .strokeBorder(Color.white.opacity(0.24), lineWidth: 0.5)
+                    )
+                    .offset(x: 2, y: -5)
+                    .zIndex(100)
             }
         }
+        .frame(width: Self.stripWidth, height: Self.tileSize, alignment: .leading)
         .opacity(urls.isEmpty ? 0 : 1)
         .onHover { isHovering = $0 }
         .onAppear {
@@ -82,6 +101,22 @@ struct ImportThumbnailStripView: View {
             )
         }
         .help("\(files.count) photos — hover to preview")
+    }
+}
+
+/// Empty frame used to keep short shoots aligned with longer shoots.
+private struct ImportStripPlaceholderTile: View {
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 4)
+                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.35))
+            RoundedRectangle(cornerRadius: 3)
+                .inset(by: 4)
+                .strokeBorder(Color.secondary.opacity(0.22), lineWidth: 1)
+            Image(systemName: "photo")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.tertiary)
+        }
     }
 }
 

@@ -84,7 +84,11 @@ final class ImportViewModel {
     /// Capture-date groups detected from source files.
     var dateGroups: [ImportDateGroup] = []
     /// Whether the user wants to sort files into per-date folders.
-    var sortByDate: Bool = false
+    var sortByDate: Bool = false {
+        didSet {
+            UserDefaults.standard.set(sortByDate, forKey: UserDefaultsKeys.importSortByDate)
+        }
+    }
     /// When `sortByDate` is on, optionally wrap date folders in a parent folder.
     var dateFolderGrouping: ImportDateFolderGrouping = .none {
         didSet {
@@ -131,9 +135,19 @@ final class ImportViewModel {
            let filter = ImportFileTypeFilter(rawValue: raw) {
             self.configuration.fileTypeFilter = filter
         }
+        if let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.importConflictPolicy),
+           let policy = ImportConflictPolicy(rawValue: raw) {
+            self.configuration.conflictPolicy = policy
+        }
+        if UserDefaults.standard.object(forKey: UserDefaultsKeys.importCreateSubFolders) != nil {
+            self.configuration.createSubFolders = UserDefaults.standard.bool(forKey: UserDefaultsKeys.importCreateSubFolders)
+        }
 
         // Restore last-used date-folder grouping. Fall back to the legacy year
         // toggle so existing installs keep their previous behavior.
+        if UserDefaults.standard.object(forKey: UserDefaultsKeys.importSortByDate) != nil {
+            self.sortByDate = UserDefaults.standard.bool(forKey: UserDefaultsKeys.importSortByDate)
+        }
         if let rawGrouping = UserDefaults.standard.string(forKey: UserDefaultsKeys.importDateFolderGrouping),
            let grouping = ImportDateFolderGrouping(rawValue: rawGrouping) {
             self.dateFolderGrouping = grouping
@@ -143,6 +157,10 @@ final class ImportViewModel {
         self.splitShootsIntoSubfolders = UserDefaults.standard.bool(forKey: UserDefaultsKeys.importSplitShootsIntoSubfolders)
         if UserDefaults.standard.object(forKey: UserDefaultsKeys.importSkipPreviouslyImported) != nil {
             self.configuration.skipPreviouslyImported = UserDefaults.standard.bool(forKey: UserDefaultsKeys.importSkipPreviouslyImported)
+        }
+        if let backupURL = Self.resolveBookmark(key: UserDefaultsKeys.importBackupBookmark) {
+            let verifyAfterWrite = UserDefaults.standard.object(forKey: UserDefaultsKeys.importBackupVerifyAfterWrite) as? Bool ?? true
+            self.configuration.backupDestination = BackupDestination(url: backupURL, verifyAfterWrite: verifyAfterWrite)
         }
     }
 
@@ -432,6 +450,13 @@ final class ImportViewModel {
             _ = readService
 
             do {
+                let didStartAccessingBackup = backupDestination?.url.startAccessingSecurityScopedResource() ?? false
+                defer {
+                    if didStartAccessingBackup {
+                        backupDestination?.url.stopAccessingSecurityScopedResource()
+                    }
+                }
+
                 let fm = FileManager.default
                 for folder in allFolders {
                     try fm.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -1276,12 +1301,17 @@ final class ImportViewModel {
 
     func reset() {
         let preservedFileTypeFilter = configuration.fileTypeFilter
+        let preservedConflictPolicy = configuration.conflictPolicy
+        let preservedCreateSubFolders = configuration.createSubFolders
         let preservedVerificationMode = configuration.verificationMode
         let preservedBackup = configuration.backupDestination
         let preservedSkipPreviouslyImported = configuration.skipPreviouslyImported
+        let preservedSortByDate = sortByDate
         configuration = ImportConfiguration()
         // Preserve the user's import-mode choices across "Import More".
         configuration.fileTypeFilter = preservedFileTypeFilter
+        configuration.conflictPolicy = preservedConflictPolicy
+        configuration.createSubFolders = preservedCreateSubFolders
         configuration.verificationMode = preservedVerificationMode
         configuration.backupDestination = preservedBackup
         configuration.skipPreviouslyImported = preservedSkipPreviouslyImported
@@ -1302,7 +1332,7 @@ final class ImportViewModel {
         errorMessage = nil
         failureRecords = []
         dateGroups = []
-        sortByDate = false
+        sortByDate = preservedSortByDate
         isScanningDates = false
         dateScanTask?.cancel()
         importTask?.cancel()
@@ -1319,13 +1349,51 @@ final class ImportViewModel {
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
         if configuration.backupDestination == nil {
-            configuration.backupDestination = BackupDestination(url: url)
+            let verifyAfterWrite = UserDefaults.standard.object(forKey: UserDefaultsKeys.importBackupVerifyAfterWrite) as? Bool ?? true
+            configuration.backupDestination = BackupDestination(url: url, verifyAfterWrite: verifyAfterWrite)
         } else {
             configuration.backupDestination?.url = url
         }
+        Self.saveBookmark(for: url, key: UserDefaultsKeys.importBackupBookmark)
     }
 
     func clearBackupDestination() {
         configuration.backupDestination = nil
+        UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.importBackupBookmark)
+    }
+
+    private static func saveBookmark(for url: URL, key: String) {
+        let didStartAccessing = url.startAccessingSecurityScopedResource()
+        defer {
+            if didStartAccessing {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+        do {
+            let bookmarkData = try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
+            UserDefaults.standard.set(bookmarkData, forKey: key)
+        } catch {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
+    }
+
+    private static func resolveBookmark(key: String) -> URL? {
+        guard let bookmarkData = UserDefaults.standard.data(forKey: key) else { return nil }
+        var isStale = false
+        do {
+            let url = try URL(
+                resolvingBookmarkData: bookmarkData,
+                options: .withSecurityScope,
+                relativeTo: nil,
+                bookmarkDataIsStale: &isStale
+            )
+            if isStale {
+                saveBookmark(for: url, key: key)
+            }
+            return url
+        } catch {
+            UserDefaults.standard.removeObject(forKey: key)
+            return nil
+        }
     }
 }

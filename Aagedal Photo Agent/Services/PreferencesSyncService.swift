@@ -61,8 +61,13 @@ final class PreferencesSyncService {
         UserDefaultsKeys.importVerificationMode,
         UserDefaultsKeys.importBackupVerifyAfterWrite,
         UserDefaultsKeys.importFileTypeFilter,
+        UserDefaultsKeys.importConflictPolicy,
+        UserDefaultsKeys.importCreateSubFolders,
+        UserDefaultsKeys.importSortByDate,
         UserDefaultsKeys.importGroupByYear,
         UserDefaultsKeys.importDateFolderGrouping,
+        UserDefaultsKeys.importSkipPreviouslyImported,
+        UserDefaultsKeys.importSplitShootsIntoSubfolders,
         // Signing author name (portable; the certificate itself is not synced)
         UserDefaultsKeys.c2paDefaultAuthor,
     ]

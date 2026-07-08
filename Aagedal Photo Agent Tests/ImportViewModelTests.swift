@@ -2,33 +2,79 @@ import Foundation
 import Testing
 @testable import Aagedal_Photo_Agent
 
-@Suite("ImportViewModel")
+@Suite("ImportViewModel", .serialized)
 @MainActor
 struct ImportViewModelTests {
-    @Test("File type filter restores from defaults and survives reset")
-    func fileTypeFilterRestoresFromDefaultsAndSurvivesReset() {
+    @Test("Import behavior settings restore from defaults and survive reset")
+    func importBehaviorSettingsRestoreFromDefaultsAndSurviveReset() {
         let defaults = UserDefaults.standard
-        let original = defaults.object(forKey: UserDefaultsKeys.importFileTypeFilter)
+        let keys = [
+            UserDefaultsKeys.importFileTypeFilter,
+            UserDefaultsKeys.importConflictPolicy,
+            UserDefaultsKeys.importCreateSubFolders,
+            UserDefaultsKeys.importVerificationMode,
+            UserDefaultsKeys.importSkipPreviouslyImported,
+            UserDefaultsKeys.importSortByDate,
+            UserDefaultsKeys.importDateFolderGrouping,
+            UserDefaultsKeys.importSplitShootsIntoSubfolders,
+        ]
+        var originals: [String: Any] = [:]
+        for key in keys {
+            if let original = defaults.object(forKey: key) {
+                originals[key] = original
+            }
+        }
         defer {
-            if let original {
-                defaults.set(original, forKey: UserDefaultsKeys.importFileTypeFilter)
-            } else {
-                defaults.removeObject(forKey: UserDefaultsKeys.importFileTypeFilter)
+            for key in keys {
+                if let original = originals[key] {
+                    defaults.set(original, forKey: key)
+                } else {
+                    defaults.removeObject(forKey: key)
+                }
             }
         }
 
         defaults.set(ImportFileTypeFilter.rawOnly.rawValue, forKey: UserDefaultsKeys.importFileTypeFilter)
+        defaults.set(ImportConflictPolicy.skipExisting.rawValue, forKey: UserDefaultsKeys.importConflictPolicy)
+        defaults.set(false, forKey: UserDefaultsKeys.importCreateSubFolders)
+        defaults.set(CopyVerificationMode.off.rawValue, forKey: UserDefaultsKeys.importVerificationMode)
+        defaults.set(false, forKey: UserDefaultsKeys.importSkipPreviouslyImported)
+        defaults.set(true, forKey: UserDefaultsKeys.importSortByDate)
+        defaults.set(ImportDateFolderGrouping.month.rawValue, forKey: UserDefaultsKeys.importDateFolderGrouping)
+        defaults.set(true, forKey: UserDefaultsKeys.importSplitShootsIntoSubfolders)
+
         let viewModel = ImportViewModel(
             readService: SwiftExifReadService(),
             writeEngine: SwiftExifWriteEngine()
         )
 
         #expect(viewModel.configuration.fileTypeFilter == .rawOnly)
+        #expect(viewModel.configuration.conflictPolicy == .skipExisting)
+        #expect(viewModel.configuration.createSubFolders == false)
+        #expect(viewModel.configuration.verificationMode == .off)
+        #expect(viewModel.configuration.skipPreviouslyImported == false)
+        #expect(viewModel.sortByDate == true)
+        #expect(viewModel.dateFolderGrouping == .month)
+        #expect(viewModel.splitShootsIntoSubfolders == true)
 
         viewModel.configuration.fileTypeFilter = .jpegOnly
+        viewModel.configuration.conflictPolicy = .overwrite
+        viewModel.configuration.createSubFolders = true
+        viewModel.configuration.verificationMode = .on
+        viewModel.configuration.skipPreviouslyImported = true
+        viewModel.sortByDate = false
+        viewModel.dateFolderGrouping = .year
+        viewModel.splitShootsIntoSubfolders = false
         viewModel.reset()
 
         #expect(viewModel.configuration.fileTypeFilter == .jpegOnly)
+        #expect(viewModel.configuration.conflictPolicy == .overwrite)
+        #expect(viewModel.configuration.createSubFolders == true)
+        #expect(viewModel.configuration.verificationMode == .on)
+        #expect(viewModel.configuration.skipPreviouslyImported == true)
+        #expect(viewModel.sortByDate == false)
+        #expect(viewModel.dateFolderGrouping == .year)
+        #expect(viewModel.splitShootsIntoSubfolders == false)
     }
 
     @Test("Split-shoot folder preview updates when subfolder layout toggles")
