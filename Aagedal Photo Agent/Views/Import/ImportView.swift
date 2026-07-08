@@ -12,6 +12,8 @@ struct ImportView: View {
     @State private var showAdditionalFields = false
     /// Date group currently being edited in the shoot-split sheet.
     @State private var splitTarget: ImportDateGroup?
+    @State private var prefetchImportThumbnails = true
+    @State private var showSlowThumbnailWarning = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -26,6 +28,11 @@ struct ImportView: View {
         }
         .frame(minWidth: 620, minHeight: 480)
         .frame(maxHeight: maxSheetHeight)
+        .alert("Thumbnail previews are slow", isPresented: $showSlowThumbnailWarning) {
+            Button("OK") { }
+        } message: {
+            Text("Generating previews from this card is taking more than 10 seconds. Import can continue normally; thumbnails will load only when you hover a preview strip.")
+        }
     }
 
     // MARK: - Form Content
@@ -95,7 +102,9 @@ struct ImportView: View {
                     ImportThumbnailStripView(
                         files: viewModel.filteredSourceFiles,
                         captureTimes: [:],
-                        thumbnailService: thumbnailService
+                        thumbnailService: thumbnailService,
+                        prefetchThumbnails: prefetchImportThumbnails,
+                        onPrefetchTimeout: handleSlowThumbnailPrefetch
                     )
                     .padding(.top, 2)
                 }
@@ -172,6 +181,8 @@ struct ImportView: View {
                 if viewModel.sortByDate {
                     Toggle("Group date folders by year", isOn: $viewModel.groupByYear)
                         .controlSize(.small)
+                    Toggle("Put split shoots in subfolders", isOn: $viewModel.splitShootsIntoSubfolders)
+                        .controlSize(.small)
 
                     if viewModel.dateGroups.isEmpty && !viewModel.isScanningDates {
                         Text("Click \"Scan Dates\" to detect capture dates from source files.")
@@ -181,6 +192,10 @@ struct ImportView: View {
                         ForEach($viewModel.dateGroups) { $group in
                             VStack(alignment: .leading, spacing: 4) {
                                 HStack(spacing: 8) {
+                                    Toggle("", isOn: $group.isIncluded)
+                                        .labelsHidden()
+                                        .help(group.isIncluded ? "Import this date folder" : "Skip this date folder")
+
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(group.dateString)
                                             .font(.caption)
@@ -200,11 +215,29 @@ struct ImportView: View {
                                         .textFieldStyle(.roundedBorder)
                                         .font(.callout)
                                         .onSubmit { viewModel.ensureUniqueFolderNames() }
+                                        .disabled(!group.isIncluded)
+
+                                    if group.shootFolderName != nil {
+                                        Text("/")
+                                            .font(.callout)
+                                            .foregroundStyle(.secondary)
+                                        TextField("Shoot folder", text: Binding(
+                                            get: { group.shootFolderName ?? "" },
+                                            set: { group.shootFolderName = $0.trimmingCharacters(in: .whitespaces).isEmpty ? nil : $0 }
+                                        ))
+                                        .textFieldStyle(.roundedBorder)
+                                        .font(.callout)
+                                        .frame(width: 110)
+                                        .onSubmit { viewModel.ensureUniqueFolderNames() }
+                                        .disabled(!group.isIncluded)
+                                    }
 
                                     ImportThumbnailStripView(
                                         files: group.files,
                                         captureTimes: group.captureTimes,
-                                        thumbnailService: thumbnailService
+                                        thumbnailService: thumbnailService,
+                                        prefetchThumbnails: prefetchImportThumbnails,
+                                        onPrefetchTimeout: handleSlowThumbnailPrefetch
                                     )
 
                                     if group.files.count > 1 {
@@ -215,6 +248,7 @@ struct ImportView: View {
                                         }
                                         .buttonStyle(.borderless)
                                         .help("Split this day into multiple shoots")
+                                        .disabled(!group.isIncluded)
                                     }
 
                                     if viewModel.hasSiblingGroups(group) {
@@ -225,19 +259,21 @@ struct ImportView: View {
                                         }
                                         .buttonStyle(.borderless)
                                         .help("Merge this day’s shoots back into one folder")
+                                        .disabled(!group.isIncluded)
                                     }
                                 }
+                                .opacity(group.isIncluded ? 1 : 0.55)
 
                                 // Full destination preview for this group.
                                 HStack(spacing: 4) {
-                                    Image(systemName: "folder")
-                                    Text(viewModel.folderPathPreview(for: group))
+                                    Image(systemName: group.isIncluded ? "folder" : "nosign")
+                                    Text(group.isIncluded ? viewModel.folderPathPreview(for: group) : "Skipped")
                                         .lineLimit(1)
                                         .truncationMode(.middle)
                                 }
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
-                                .padding(.leading, 108)
+                                .padding(.leading, 132)
                             }
                             .padding(.vertical, 4)
                         }
@@ -247,8 +283,8 @@ struct ImportView: View {
                             .foregroundStyle(.tertiary)
 
                         Text(viewModel.groupByYear
-                             ? "Each date group will be imported into <year>/<date>/ under the destination base."
-                             : "Each date group will be imported into a separate folder under the destination base.")
+                             ? "Each date group will be imported under <year>/<date>/."
+                             : "Each date group will be imported under the destination base.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -299,7 +335,7 @@ struct ImportView: View {
                 }
 
                 if !viewModel.sourceFiles.isEmpty {
-                    Text("\(viewModel.filteredSourceFiles.count) files will be imported")
+                    Text("\(viewModel.selectedSourceFiles.count) files will be imported")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -324,6 +360,9 @@ struct ImportView: View {
                 Text(viewModel.configuration.conflictPolicy.description)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                Toggle("Skip photos imported before", isOn: $viewModel.configuration.skipPreviouslyImported)
+                    .controlSize(.small)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -595,7 +634,7 @@ struct ImportView: View {
             }
             .buttonStyle(.borderedProminent)
             .keyboardShortcut(.defaultAction)
-            .disabled(viewModel.filteredSourceFiles.isEmpty || (!viewModel.sortByDate && viewModel.configuration.importTitle.trimmingCharacters(in: .whitespaces).isEmpty) || (viewModel.sortByDate && viewModel.dateGroups.isEmpty))
+            .disabled(viewModel.selectedSourceFiles.isEmpty || (!viewModel.sortByDate && viewModel.configuration.importTitle.trimmingCharacters(in: .whitespaces).isEmpty) || (viewModel.sortByDate && viewModel.dateGroups.isEmpty))
         }
         .padding()
     }
@@ -660,5 +699,11 @@ struct ImportView: View {
             }
             .padding(.bottom)
         }
+    }
+
+    private func handleSlowThumbnailPrefetch() {
+        guard prefetchImportThumbnails else { return }
+        prefetchImportThumbnails = false
+        showSlowThumbnailWarning = true
     }
 }

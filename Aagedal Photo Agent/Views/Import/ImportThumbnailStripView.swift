@@ -10,8 +10,11 @@ struct ImportThumbnailStripView: View {
     let files: [URL]
     let captureTimes: [URL: Date]
     let thumbnailService: ThumbnailService
+    var prefetchThumbnails: Bool = true
+    var onPrefetchTimeout: (() -> Void)?
 
     @State private var isHovering = false
+    @State private var finishedLoads: Set<URL> = []
 
     private var representatives: [URL] {
         ImportViewModel.representativeFiles(from: files, captureTimes: captureTimes, max: 8)
@@ -22,7 +25,12 @@ struct ImportThumbnailStripView: View {
         let remaining = max(0, files.count - urls.count)
         HStack(spacing: -12) {
             ForEach(Array(urls.enumerated()), id: \.element) { index, url in
-                ImportStripTile(url: url, thumbnailService: thumbnailService)
+                ImportStripTile(
+                    url: url,
+                    thumbnailService: thumbnailService,
+                    onLoadFinished: { finishedLoads.insert(url) }
+                )
+                    .environment(\.importStripShouldLoadThumbnail, prefetchThumbnails || isHovering)
                     .frame(width: 28, height: 28)
                     .overlay {
                         // Mark the last visible card with the count of hidden photos.
@@ -49,6 +57,21 @@ struct ImportThumbnailStripView: View {
         }
         .opacity(urls.isEmpty ? 0 : 1)
         .onHover { isHovering = $0 }
+        .onAppear {
+            finishedLoads = []
+        }
+        .onChange(of: urls) { _, _ in
+            finishedLoads = []
+        }
+        .task(id: prefetchThumbnails ? urls : []) {
+            guard prefetchThumbnails, !urls.isEmpty else { return }
+            try? await Task.sleep(for: .seconds(10))
+            guard !Task.isCancelled, prefetchThumbnails else { return }
+            let expected = Set(urls)
+            if !expected.isSubset(of: finishedLoads) {
+                onPrefetchTimeout?()
+            }
+        }
         .popover(isPresented: $isHovering, arrowEdge: .bottom) {
             ImportThumbnailStripPreview(
                 urls: urls,
@@ -66,7 +89,9 @@ struct ImportThumbnailStripView: View {
 private struct ImportStripTile: View {
     let url: URL
     let thumbnailService: ThumbnailService
+    var onLoadFinished: () -> Void = {}
 
+    @Environment(\.importStripShouldLoadThumbnail) private var shouldLoadThumbnail
     @State private var thumbnail: NSImage?
 
     var body: some View {
@@ -82,9 +107,22 @@ private struct ImportStripTile: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
-        .task(id: url) {
+        .task(id: shouldLoadThumbnail ? url : nil) {
+            guard shouldLoadThumbnail else { return }
             thumbnail = await thumbnailService.loadThumbnail(for: url)
+            onLoadFinished()
         }
+    }
+}
+
+private struct ImportStripShouldLoadThumbnailKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+private extension EnvironmentValues {
+    var importStripShouldLoadThumbnail: Bool {
+        get { self[ImportStripShouldLoadThumbnailKey.self] }
+        set { self[ImportStripShouldLoadThumbnailKey.self] = newValue }
     }
 }
 

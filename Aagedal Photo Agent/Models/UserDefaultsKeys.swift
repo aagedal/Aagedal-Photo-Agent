@@ -145,6 +145,9 @@ nonisolated enum UserDefaultsKeys {
     static let importBackupVerifyAfterWrite = "importBackupVerifyAfterWrite"
     static let editedFolderBackupBookmark = "editedFolderBackupBookmark"
     static let importGroupByYear = "importGroupByYear"
+    static let importSkipPreviouslyImported = "importSkipPreviouslyImported"
+    static let importedPhotoFingerprints = "importedPhotoFingerprints"
+    static let importSplitShootsIntoSubfolders = "importSplitShootsIntoSubfolders"
 
     // MARK: - Quick List Bookmarks
     static let keywordsListBookmark = "keywordsListBookmark"

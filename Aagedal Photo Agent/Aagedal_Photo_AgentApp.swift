@@ -1,7 +1,9 @@
+import AppKit
 import SwiftUI
 
 @main
 struct Aagedal_Photo_AgentApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var updater = SparkleUpdaterService.shared
     @ObservedObject private var imageScaling = ImageScalingController.shared
     private let recentFolders = RecentFoldersStore.shared
@@ -403,6 +405,47 @@ struct Aagedal_Photo_AgentApp: App {
         Settings {
             SettingsView()
         }
+    }
+}
+
+@MainActor
+final class BackgroundOperationMonitor {
+    static let shared = BackgroundOperationMonitor()
+
+    var isImporting = false
+    var isUploading = false
+    var isRenderingForUpload = false
+
+    var hasActiveOperation: Bool {
+        isImporting || isUploading || isRenderingForUpload
+    }
+
+    var activeOperationSummary: String {
+        var parts: [String] = []
+        if isImporting { parts.append("an import") }
+        if isUploading { parts.append("an upload") }
+        if isRenderingForUpload { parts.append("upload rendering") }
+        return parts.joined(separator: " and ")
+    }
+
+    private init() {}
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    @MainActor
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let monitor = BackgroundOperationMonitor.shared
+        guard monitor.hasActiveOperation else { return .terminateNow }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Import or upload still in progress"
+        let summary = monitor.activeOperationSummary.isEmpty ? "background work" : monitor.activeOperationSummary
+        alert.informativeText = "Quitting now will stop \(summary). Wait for it to finish, or quit anyway?"
+        alert.addButton(withTitle: "Keep Running")
+        alert.addButton(withTitle: "Quit Anyway")
+
+        return alert.runModal() == .alertFirstButtonReturn ? .terminateCancel : .terminateNow
     }
 }
 

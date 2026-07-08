@@ -208,6 +208,15 @@ struct ContentView: View {
                 browserViewModel.fullScreenImageCache.setEditingMemoryProfile(editing)
                 browserViewModel.thumbnailService.suppressBackgroundGeneration(editing)
             }
+            .onChange(of: importViewModel.isImporting) { _, isImporting in
+                BackgroundOperationMonitor.shared.isImporting = isImporting
+            }
+            .onChange(of: ftpViewModel.isUploading) { _, isUploading in
+                BackgroundOperationMonitor.shared.isUploading = isUploading
+            }
+            .onChange(of: ftpViewModel.isRendering) { _, isRendering in
+                BackgroundOperationMonitor.shared.isRenderingForUpload = isRendering
+            }
     }
 
     private var contentWithSheets: some View {
@@ -517,6 +526,9 @@ struct ContentView: View {
                 templateViewModel.loadTemplates()
                 ftpViewModel.loadConnections()
                 ftpViewModel.activityHistory = activityHistory
+                BackgroundOperationMonitor.shared.isImporting = importViewModel.isImporting
+                BackgroundOperationMonitor.shared.isUploading = ftpViewModel.isUploading
+                BackgroundOperationMonitor.shared.isRenderingForUpload = ftpViewModel.isRendering
             }
     }
 

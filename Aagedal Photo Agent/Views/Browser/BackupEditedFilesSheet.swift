@@ -305,7 +305,7 @@ struct BackupEditedFilesSheet: View {
         switch result.primary {
         case .copied:
             copiedFiles += 1
-        case .skipped:
+        case .skipped(_):
             break
         case .failed(let detail):
             failedFiles += 1

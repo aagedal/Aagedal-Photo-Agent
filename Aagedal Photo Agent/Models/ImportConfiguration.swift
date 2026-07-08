@@ -73,6 +73,7 @@ struct ImportConfiguration {
     var openFolderAfterImport: Bool = true
     var verificationMode: CopyVerificationMode = .on
     var backupDestination: BackupDestination?
+    var skipPreviouslyImported: Bool = true
 
     var destinationFolderName: String {
         let formatter = DateFormatter()
