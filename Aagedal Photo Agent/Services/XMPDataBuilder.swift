@@ -158,11 +158,11 @@ enum XMPDataBuilder {
 
     // MARK: - Shared develop encoders (also used by the embedded SwiftExifWriteEngine)
 
-    /// Tone curves as crs rdf:Seq arrays of "x, y" strings (ACR 0–255 scale). A channel with ≤2
-    /// points is the identity and is removed. Sets ToneCurveName2012="Custom" when any curve is set.
+    /// Tone curves as crs rdf:Seq arrays of "x, y" strings (ACR 0–255 scale). Identity
+    /// channels are removed. Sets ToneCurveName2012="Custom" when any curve is set.
     nonisolated static func applyToneCurves(_ tc: ToneCurve?, into xmp: inout XMPData) {
         func setChannel(_ property: String, _ points: [ToneCurvePoint]?) {
-            if let points, points.count > 2 {
+            if let points, !points.isIdentityToneCurve {
                 xmp.setValue(.array(serializeToneCurvePoints(points)), namespace: XMPNamespace.crs, property: property)
             } else {
                 xmp.removeValue(namespace: XMPNamespace.crs, property: property)

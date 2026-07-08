@@ -90,6 +90,33 @@ struct ToneCurveGeneratorTests {
         #expect(ToneCurveGenerator.isIdentity(settings: settings(headroom: false)) == true)
         #expect(ToneCurveGenerator.isIdentity(settings: nil) == true)
     }
+
+    @Test("Two-point endpoint curves are active")
+    func twoPointEndpointCurvesAreActive() {
+        let identityCurve = ToneCurve(master: [
+            ToneCurvePoint(x: 0, y: 0),
+            ToneCurvePoint(x: 1, y: 1),
+        ])
+        #expect(identityCurve.isEmpty)
+
+        var blackLift = CameraRawSettings()
+        blackLift.toneCurve = ToneCurve(master: [
+            ToneCurvePoint(x: 0, y: 0.2),
+            ToneCurvePoint(x: 1, y: 1),
+        ])
+        #expect(blackLift.toneCurve?.isEmpty == false)
+        let lifted = ToneCurveGenerator.generatePerChannelLUT(settings: blackLift).r
+        #expect(lutValue(lifted, at: 0) > 0.02)
+
+        var whitePull = CameraRawSettings()
+        whitePull.toneCurve = ToneCurve(master: [
+            ToneCurvePoint(x: 0, y: 0),
+            ToneCurvePoint(x: 1, y: 0.8),
+        ])
+        #expect(whitePull.toneCurve?.isEmpty == false)
+        let lowered = ToneCurveGenerator.generatePerChannelLUT(settings: whitePull).r
+        #expect(lutValue(lowered, at: 1) < 0.8)
+    }
 }
 
 /// Empirical check on the "loupe vs edit view disagree on color" caveat.

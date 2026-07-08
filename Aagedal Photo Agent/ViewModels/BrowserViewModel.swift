@@ -1256,7 +1256,7 @@ final class BrowserViewModel {
     // Don't reintroduce private copies; reuse the shared, hardened helpers.
 
     private func parseToneCurve(_ value: Any?) -> [ToneCurvePoint]? {
-        guard let array = value as? [String], array.count > 2 else { return nil }
+        guard let array = value as? [String], array.count >= 2 else { return nil }
         let points = array.compactMap { str -> ToneCurvePoint? in
             let parts = str.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
             guard parts.count == 2,
@@ -1264,7 +1264,7 @@ final class BrowserViewModel {
                   let y = Double(parts[1]) else { return nil }
             return ToneCurvePoint(acr255: x, y)
         }
-        return points.count > 2 ? points : nil
+        return points.isIdentityToneCurve ? nil : points
     }
 
     private func cameraRawSettings(in dict: [String: Any]) -> CameraRawSettings? {

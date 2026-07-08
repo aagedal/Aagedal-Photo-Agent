@@ -188,10 +188,10 @@ nonisolated struct ToneCurveGenerator: Sendable {
         let gPoints = curve?.green
         let bPoints = curve?.blue
 
-        let hasMaster = (masterPoints?.count ?? 0) > 2
-        let hasR = rPoints != nil
-        let hasG = gPoints != nil
-        let hasB = bPoints != nil
+        let hasMaster = !(masterPoints?.isIdentityToneCurve ?? true)
+        let hasR = !(rPoints?.isIdentityToneCurve ?? true)
+        let hasG = !(gPoints?.isIdentityToneCurve ?? true)
+        let hasB = !(bPoints?.isIdentityToneCurve ?? true)
 
         if !hasMaster && !hasR && !hasG && !hasB {
             // No curves — all channels identical

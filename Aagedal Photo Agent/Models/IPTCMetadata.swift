@@ -26,10 +26,25 @@ nonisolated struct ToneCurve: Codable, Sendable, Equatable {
     var blue: [ToneCurvePoint]?
 
     var isEmpty: Bool {
-        (master?.count ?? 0) <= 2
-            && red == nil
-            && green == nil
-            && blue == nil
+        (master?.isIdentityToneCurve ?? true)
+            && (red?.isIdentityToneCurve ?? true)
+            && (green?.isIdentityToneCurve ?? true)
+            && (blue?.isIdentityToneCurve ?? true)
+    }
+}
+
+nonisolated extension Array where Element == ToneCurvePoint {
+    var isIdentityToneCurve: Bool {
+        guard count >= 2 else { return true }
+        let ordered = sorted { $0.x < $1.x }
+        let epsilon = 0.001
+        guard let first = ordered.first, let last = ordered.last,
+              abs(first.x) < epsilon,
+              abs(first.y) < epsilon,
+              abs(last.x - 1) < epsilon,
+              abs(last.y - 1) < epsilon
+        else { return false }
+        return ordered.allSatisfy { abs($0.x - $0.y) < epsilon }
     }
 }
 

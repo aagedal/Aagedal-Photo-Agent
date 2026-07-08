@@ -799,6 +799,16 @@ struct MalformedMetadataNumericTests {
         #expect(ToneCurvePoint(acr255: 128, 64) == ToneCurvePoint(x: 128.0 / 255, y: 64.0 / 255))
     }
 
+    @Test("two-point endpoint tone curves parse as edits")
+    func twoPointEndpointToneCurveParsesAsEdit() throws {
+        let identity = parseToneCurveArray(["0, 0", "255, 255"])
+        #expect(identity == nil)
+
+        let shadowLift = try #require(parseToneCurveArray(["0, 51", "255, 255"]))
+        #expect(shadowLift.count == 2)
+        #expect(shadowLift.isIdentityToneCurve == false)
+    }
+
     @Test("parsing then re-serializing a corrupt tone curve does not crash")
     func parseThenSerializeCorruptToneCurveIsSafe() throws {
         // Mirrors the reported crash: load a sidecar with inf/nan coordinates,
