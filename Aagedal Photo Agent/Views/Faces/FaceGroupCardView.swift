@@ -175,7 +175,7 @@ final class FaceGroupCardView: NSView {
 
     private var isEditingName = false
     private var editingName = ""
-    /// Structured Person Shown names backing the name combo box's list + completion.
+    /// Structured Person Shown names backing the name combo box's dropdown list.
     private var structuredNameCache: [String] = []
 
     // MARK: - Face grid
@@ -264,9 +264,9 @@ final class FaceGroupCardView: NSView {
         nameEditor.target = self
         nameEditor.action = #selector(nameEditorCommit)
         nameEditor.delegate = self
-        // Structured Person Shown autocomplete: full-string prefix completion plus
-        // a browsable dropdown of all names, backed by `structuredNameCache`.
-        nameEditor.completes = true
+        // Structured Person Shown suggestions: show a browsable dropdown without
+        // inline completion mutating whatever the user is typing.
+        nameEditor.completes = false
         nameEditor.usesDataSource = true
         nameEditor.dataSource = self
         nameEditor.numberOfVisibleItems = 8
@@ -807,8 +807,8 @@ final class FaceGroupCardView: NSView {
         countBadge.isHidden = true
         nameEditor.isHidden = false
 
-        // Refresh structured Person Shown names for autocomplete + dropdown.
-        structuredNameCache = StructuredKeywordService.personShown.allNodeNames()
+        // Refresh structured Person Shown names for the dropdown.
+        structuredNameCache = StructuredKeywordService.personShown.allSearchableNames()
         nameEditor.reloadData()
 
         window?.makeFirstResponder(nameEditor)
@@ -823,7 +823,8 @@ final class FaceGroupCardView: NSView {
     }
 
     @objc private func nameEditorCommit() {
-        let name = nameEditor.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let typedName = nameEditor.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = StructuredKeywordService.personShown.canonicalName(forNameOrSynonym: typedName) ?? typedName
         if let groupID, !name.isEmpty {
             viewModel?.nameGroup(groupID, name: name)
         }
@@ -1034,14 +1035,6 @@ extension FaceGroupCardView: NSComboBoxDataSource {
     }
 
     func comboBox(_ comboBox: NSComboBox, completedString string: String) -> String? {
-        let needle = string.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !needle.isEmpty else { return nil }
-        // Prefer a prefix match for natural inline completion; fall back to substring.
-        if let prefix = structuredNameCache.first(where: {
-            $0.range(of: needle, options: [.caseInsensitive, .anchored]) != nil
-        }) {
-            return prefix
-        }
-        return structuredNameCache.first { $0.localizedCaseInsensitiveContains(needle) }
+        nil
     }
 }

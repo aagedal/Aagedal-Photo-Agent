@@ -84,7 +84,7 @@ struct MetadataPanel: View {
             // keyword tree.
             let candidates = Self.mergeSuggestionCandidates(
                 quickList,
-                StructuredKeywordService.shared.allNodeNames()
+                StructuredKeywordService.shared.allSearchableNames()
             )
             guard !candidates.isEmpty else { return nil }
             return { prefix in ApprovedListService.suggestions(prefix: prefix, in: candidates) }
@@ -178,7 +178,7 @@ struct MetadataPanel: View {
         // recognition.
         let candidates = Self.mergeSuggestionCandidates(
             quickList,
-            StructuredKeywordService.personShown.allNodeNames(),
+            StructuredKeywordService.personShown.allSearchableNames(),
             KnownPeopleService.shared.getAllPeople().map(\.name)
         )
         let suggestionProvider: ((String) -> [ApprovedListSuggestion])? = candidates.isEmpty

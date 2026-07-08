@@ -139,11 +139,11 @@ final class StructuredKeywordService {
         return result
     }
 
-    /// Expands the keyword node whose canonical name matches `name`
+    /// Expands the keyword node whose canonical name or synonym matches `name`
     /// (case-insensitive) as if it had been activated in the picker — see
     /// `expand(_:)`. Returns nil when no keyword node matches, so callers can
     /// fall back to the plain name. The first match in tree order wins when
-    /// the same name appears under multiple categories.
+    /// the same name or synonym appears under multiple categories.
     func expansion(forName name: String) -> [String]? {
         _ = version
         let needle = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -152,8 +152,34 @@ final class StructuredKeywordService {
         var result: [String]?
         for root in roots {
             walk(root, ancestors: []) { node, ancestors in
-                guard node.isKeyword, node.name.lowercased() == needle else { return true }
+                guard node.isKeyword else { return true }
+                let matchesName = node.name.lowercased() == needle
+                let matchesSynonym = node.synonyms.contains { $0.lowercased() == needle }
+                guard matchesName || matchesSynonym else { return true }
                 result = expand(StructuredKeywordPath(ancestors: ancestors, node: node))
+                return false
+            }
+            if result != nil { break }
+        }
+        return result
+    }
+
+    /// Returns the canonical node name for an exact node-name or synonym match.
+    /// Useful for fields that need one resolved display value rather than the
+    /// full `expand(_:)` payload.
+    func canonicalName(forNameOrSynonym name: String) -> String? {
+        _ = version
+        let needle = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !needle.isEmpty else { return nil }
+
+        var result: String?
+        for root in roots {
+            walk(root, ancestors: []) { node, _ in
+                guard node.isKeyword else { return true }
+                let matchesName = node.name.lowercased() == needle
+                let matchesSynonym = node.synonyms.contains { $0.lowercased() == needle }
+                guard matchesName || matchesSynonym else { return true }
+                result = node.name
                 return false
             }
             if result != nil { break }
@@ -197,6 +223,29 @@ final class StructuredKeywordService {
                 if node.isKeyword, !node.name.isEmpty,
                    seen.insert(node.name.lowercased()).inserted {
                     out.append(node.name)
+                }
+                return true
+            }
+        }
+        return out
+    }
+
+    /// All searchable names for keyword nodes, including synonyms. Canonical
+    /// node names are emitted before their synonyms so autocomplete keeps the
+    /// primary spelling first while still allowing alias searches.
+    func allSearchableNames() -> [String] {
+        _ = version
+        var seen = Set<String>()
+        var out: [String] = []
+        for root in roots {
+            walk(root, ancestors: []) { node, _ in
+                guard node.isKeyword else { return true }
+                for value in [node.name] + node.synonyms {
+                    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !trimmed.isEmpty else { continue }
+                    if seen.insert(trimmed.lowercased()).inserted {
+                        out.append(trimmed)
+                    }
                 }
                 return true
             }

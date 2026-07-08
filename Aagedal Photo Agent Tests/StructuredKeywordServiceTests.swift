@@ -36,7 +36,7 @@ struct StructuredKeywordServiceTests {
         #expect(!expanded.contains("Politicians"))
     }
 
-    @Test("expansion(forName:) matches keyword nodes case-insensitively and expands like the picker")
+    @Test("expansion(forName:) matches keyword nodes and synonyms case-insensitively")
     func expansionForName() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("structured-service-expansion-\(UUID().uuidString)", isDirectory: true)
@@ -53,9 +53,32 @@ struct StructuredKeywordServiceTests {
             ])
 
             #expect(service.expansion(forName: "jonas gahr støre") == ["Norway", "Jonas Gahr Støre", "Store"])
+            #expect(service.expansion(forName: "store") == ["Norway", "Jonas Gahr Støre", "Store"])
             // Containers are navigation-only and never expand.
             #expect(service.expansion(forName: "Politicians") == nil)
             #expect(service.expansion(forName: "Not In Tree") == nil)
+        }
+    }
+
+    @Test("searchable names include synonyms and canonical resolver maps aliases to node names")
+    func searchableNamesAndCanonicalResolver() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("structured-service-searchable-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try KeywordListsStoreStorageOverride.$current.withValue(root) {
+            let service = StructuredKeywordService(key: .structuredPersonShown, includesAncestors: false)
+            try service.saveTree([
+                StructuredKeyword(name: "People", kind: .container, children: [
+                    StructuredKeyword(name: "Jonas Gahr Støre", kind: .keyword, synonyms: ["Store", "Statsministeren"]),
+                    StructuredKeyword(name: "Store", kind: .keyword),
+                ]),
+            ])
+
+            #expect(service.allSearchableNames() == ["Jonas Gahr Støre", "Store", "Statsministeren"])
+            #expect(service.canonicalName(forNameOrSynonym: "statsministeren") == "Jonas Gahr Støre")
+            #expect(service.canonicalName(forNameOrSynonym: "Store") == "Jonas Gahr Støre")
+            #expect(service.canonicalName(forNameOrSynonym: "People") == nil)
         }
     }
 }
