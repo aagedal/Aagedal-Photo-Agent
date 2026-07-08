@@ -14,7 +14,7 @@ nonisolated private let sliderLog = Logger(
 /// cascades. Instead, `onDragValueChanged` is called with the raw value for direct
 /// Metal pipeline updates. The binding is committed once on drag end.
 ///
-/// Thin 4pt track with a 2pt vertical playhead line instead of the default circle knob.
+/// Thin track with a vertical playhead line instead of the default circle knob.
 /// Hold Option while dragging for 10x precision scrubbing.
 /// Double-click to reset to default via `onReset` callback.
 struct EditSlider: NSViewRepresentable {
@@ -236,14 +236,15 @@ final class EditSliderNSView: NSView {
     override var acceptsFirstResponder: Bool { true }
 
     override var intrinsicContentSize: NSSize {
-        NSSize(width: NSView.noIntrinsicMetric, height: 20)
+        NSSize(width: NSView.noIntrinsicMetric, height: 16)
     }
 
     override func draw(_ dirtyRect: NSRect) {
         let bounds = self.bounds
-        let trackY = (bounds.height - 4) / 2
-        let trackRect = NSRect(x: 0, y: trackY, width: bounds.width, height: 4)
-        let trackPath = NSBezierPath(roundedRect: trackRect, xRadius: 2, yRadius: 2)
+        let trackHeight: CGFloat = 3
+        let trackY = (bounds.height - trackHeight) / 2
+        let trackRect = NSRect(x: 0, y: trackY, width: bounds.width, height: trackHeight)
+        let trackPath = NSBezierPath(roundedRect: trackRect, xRadius: trackHeight / 2, yRadius: trackHeight / 2)
 
         // Track background — gradient or solid
         if let colors = gradientNSColors, colors.count >= 2,
@@ -262,15 +263,17 @@ final class EditSliderNSView: NSView {
         // Center mark for bipolar sliders
         if isBipolar {
             let centerX = bounds.width * CGFloat(centerFraction)
-            let markRect = NSRect(x: centerX - 0.5, y: (bounds.height - 8) / 2, width: 1, height: 8)
+            let markHeight: CGFloat = 7
+            let markRect = NSRect(x: centerX - 0.5, y: (bounds.height - markHeight) / 2, width: 1, height: markHeight)
             NSColor.white.withAlphaComponent(0.25).setFill()
             markRect.fill()
         }
 
         // Playhead
         let isDragging = coordinator?.isDragging ?? false
+        let playheadHeight: CGFloat = 12
         let playheadX = max(0, min(bounds.width - 2, bounds.width * CGFloat(fraction) - 1))
-        let playheadRect = NSRect(x: playheadX, y: (bounds.height - 14) / 2, width: 2, height: 14)
+        let playheadRect = NSRect(x: playheadX, y: (bounds.height - playheadHeight) / 2, width: 2, height: playheadHeight)
         NSColor.white.withAlphaComponent(isDragging ? 1.0 : 0.8).setFill()
         playheadRect.fill()
     }

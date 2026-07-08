@@ -955,7 +955,7 @@ struct EditWorkspaceView: View {
 
     private var controlsPane: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     Button {
                         onExit()

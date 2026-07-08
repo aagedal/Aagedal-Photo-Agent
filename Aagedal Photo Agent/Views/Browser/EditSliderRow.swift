@@ -24,11 +24,12 @@ struct EditSliderRow: View {
     @State private var dragDisplayValue: Double?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 4) {
                 Text(label)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
                 if let onReset, shouldShowReset {
                     Button {
                         onReset()
@@ -44,6 +45,7 @@ struct EditSliderRow: View {
                 Text(formattedDisplayValue)
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
             EditSlider(
                 value: $value,
@@ -62,7 +64,7 @@ struct EditSliderRow: View {
                 },
                 onReset: onReset
             )
-            .frame(height: 20)
+            .frame(height: 16)
         }
     }
 
