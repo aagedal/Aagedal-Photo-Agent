@@ -126,7 +126,44 @@ enum C2PASigningError: Error, LocalizedError {
     }
 }
 
+enum C2PAValidationError: Error, LocalizedError {
+    case malformedOutput
+
+    var errorDescription: String? {
+        switch self {
+        case .malformedOutput:
+            return "c2patool returned unsupported validation output"
+        }
+    }
+}
+
+/// Small, file-version-aware cache. Validation is deliberately opt-in from the
+/// inspector; no metadata or thumbnail path reads this cache.
+private actor C2PAValidationCache {
+    struct FileVersion: Equatable {
+        let modificationDate: Date?
+        let size: UInt64
+    }
+
+    private var values: [URL: (FileVersion, C2PAValidationResult)] = [:]
+
+    func value(for url: URL, version: FileVersion) -> C2PAValidationResult? {
+        guard let cached = values[url], cached.0 == version else { return nil }
+        return cached.1
+    }
+
+    func store(_ result: C2PAValidationResult, for url: URL, version: FileVersion) {
+        values[url] = (version, result)
+    }
+
+    func removeValue(for url: URL) {
+        values.removeValue(forKey: url)
+    }
+}
+
 nonisolated enum C2PASigningService {
+
+    private static let validationCache = C2PAValidationCache()
 
     // MARK: - Discovery
 
@@ -136,6 +173,113 @@ nonisolated enum C2PASigningService {
 
     static var isAvailable: Bool {
         c2patoolPath != nil
+    }
+
+    // MARK: - Validation
+
+    /// Validates the C2PA store using only the bundled `c2patool`. It does not
+    /// configure a trust list, download one, or otherwise introduce network access.
+    static func validate(imageURL: URL) async throws -> C2PAValidationResult {
+        try await validate(imageURL: imageURL, forceRefresh: false)
+    }
+
+    static func validate(imageURL: URL, forceRefresh: Bool) async throws -> C2PAValidationResult {
+        guard let toolPath = c2patoolPath else {
+            throw C2PASigningError.c2patoolMissing
+        }
+
+        let normalizedURL = imageURL.standardizedFileURL
+        let attributes = try FileManager.default.attributesOfItem(atPath: normalizedURL.path(percentEncoded: false))
+        let version = C2PAValidationCache.FileVersion(
+            modificationDate: attributes[.modificationDate] as? Date,
+            size: (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+        )
+        if !forceRefresh, let cached = await validationCache.value(for: normalizedURL, version: version) {
+            return cached
+        }
+
+        // Process.run is cancellation-aware and terminates c2patool when the detail
+        // sheet closes or its owning task is cancelled.
+        let output = try await Process.run(
+            executableURL: URL(fileURLWithPath: toolPath),
+            arguments: [normalizedURL.path(percentEncoded: false), "--info"]
+        )
+        try Task.checkCancellation()
+        let result = try parseValidationInfoJSON(Data(output.stdout.utf8))
+        await validationCache.store(result, for: normalizedURL, version: version)
+        return result
+    }
+
+    static func invalidateValidationCache(for imageURL: URL) async {
+        await validationCache.removeValue(for: imageURL.standardizedFileURL)
+    }
+
+    /// Parses `c2patool <image> --info` output. Kept independent of SwiftExif's
+    /// manifest decoding so c2patool format changes cannot affect metadata display.
+    static func parseValidationInfoJSON(_ data: Data) throws -> C2PAValidationResult {
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw C2PAValidationError.malformedOutput
+        }
+
+        let state = (root["validation_state"] as? String)?.lowercased()
+        let entries = validationEntries(in: root["validation_status"])
+        let codes = entries.compactMap(\.code)
+        // `signingCredential.untrusted` is a trust warning, not proof that the
+        // signature is broken. c2patool versions may report that warning as false.
+        let hasFailures = entries.contains {
+            $0.success == false && !($0.code?.lowercased().contains("signingcredential.untrusted") ?? false)
+        }
+            || state?.contains("invalid") == true
+            || state?.contains("fail") == true
+        let isTrusted = codes.contains { $0.lowercased().contains("signingcredential.trusted") }
+        let isUntrusted = codes.contains { $0.lowercased().contains("signingcredential.untrusted") }
+        let signer = stringValue(in: root, keys: ["signer", "signer_name", "signerName", "subject"])
+        let issuer = stringValue(in: root, keys: ["issuer", "issuer_name", "issuerName"])
+        let explanation = entries.compactMap(\.explanation).first
+
+        if state == nil && entries.isEmpty {
+            throw C2PAValidationError.malformedOutput
+        }
+        if state?.contains("not present") == true || state?.contains("no manifest") == true {
+            return C2PAValidationResult(status: .notPresent, signer: signer, issuer: issuer, message: "No Content Credentials were found.", rawValidationCodes: codes)
+        }
+        if hasFailures {
+            return C2PAValidationResult(status: .invalid, signer: signer, issuer: issuer, message: explanation ?? "The Content Credentials signature did not validate.", rawValidationCodes: codes)
+        }
+        if isTrusted {
+            return C2PAValidationResult(status: .trusted, signer: signer, issuer: issuer, message: explanation ?? "The signature is valid and the signer is trusted.", rawValidationCodes: codes)
+        }
+        if isUntrusted {
+            return C2PAValidationResult(status: .untrusted, signer: signer, issuer: issuer, message: "The signature is valid, but this signer is not in the active trust list.", rawValidationCodes: codes)
+        }
+        if state?.contains("valid") == true {
+            return C2PAValidationResult(status: .validationFailed, signer: signer, issuer: issuer, message: explanation ?? "The signature is valid, but c2patool did not report signer trust.", rawValidationCodes: codes)
+        }
+        return C2PAValidationResult(status: .unsupported, signer: signer, issuer: issuer, message: explanation ?? "This c2patool validation format is not supported.", rawValidationCodes: codes)
+    }
+
+    private struct ValidationEntry {
+        let code: String?
+        let success: Bool?
+        let explanation: String?
+    }
+
+    private static func validationEntries(in value: Any?) -> [ValidationEntry] {
+        guard let values = value as? [[String: Any]] else { return [] }
+        return values.map { value in
+            ValidationEntry(
+                code: value["code"] as? String,
+                success: value["success"] as? Bool ?? value["passed"] as? Bool,
+                explanation: value["explanation"] as? String ?? value["message"] as? String
+            )
+        }
+    }
+
+    private static func stringValue(in root: [String: Any], keys: [String]) -> String? {
+        for key in keys {
+            if let value = root[key] as? String, !value.isEmpty { return value }
+        }
+        return nil
     }
 
     // MARK: - Signing

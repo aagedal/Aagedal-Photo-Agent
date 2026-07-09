@@ -84,6 +84,8 @@ struct ContentView: View {
     @State private var backupEditedFolderItem: BackupEditedItem?
     @State private var isShowingWriteAllC2PAWarning = false
     @State private var c2paMetadata: C2PAMetadata?
+    @State private var c2paDetailImageURL: URL?
+    @State private var c2paValidation: C2PAValidationResult?
     @State private var pendingWriteAllC2PACount = 0
     @State private var saveTemplateName = ""
     @AppStorage(UserDefaultsKeys.metadataPanelWidth) private var metadataPanelWidth: Double = 320
@@ -141,6 +143,13 @@ struct ContentView: View {
 
     var body: some View {
         contentWithStateHandlers
+            .onChange(of: browserViewModel.selectedImageIDs) { _, _ in
+                // Closing the inspector cancels its validation task; validation is only
+                // meaningful for the image that opened it.
+                c2paMetadata = nil
+                c2paDetailImageURL = nil
+                c2paValidation = nil
+            }
             .onReceive(NotificationCenter.default.publisher(for: .showStructuredKeywords)) { _ in
                 openWindow(id: "structuredKeywords")
             }
@@ -242,7 +251,14 @@ struct ContentView: View {
                 )
             }
             .sheet(item: $c2paMetadata) { metadata in
-                C2PADetailSheet(metadata: metadata)
+                if let imageURL = c2paDetailImageURL {
+                    C2PADetailSheet(
+                        metadata: metadata,
+                        imageURL: imageURL,
+                        initialValidation: c2paValidation,
+                        onValidationChanged: { c2paValidation = $0 }
+                    )
+                }
             }
     }
 
@@ -1131,7 +1147,7 @@ struct ContentView: View {
                     ScopeDisplayView(scopeViewModel: scopeViewModel)
                     Divider()
                     if let meta = technicalMetadata, meta.hasC2PA {
-                        C2PAMetadataView(metadata: meta) {
+                        C2PAMetadataView(metadata: meta, validation: c2paValidation) {
                             loadC2PADetail()
                         }
                         Divider()
@@ -1738,6 +1754,8 @@ struct ContentView: View {
     private func loadC2PADetail() {
         guard let image = browserViewModel.selectedImages.first else { return }
         let service = browserViewModel.metadataReadService
+        c2paDetailImageURL = image.url
+        c2paValidation = nil
         Task {
             do {
                 var result = try await service.readC2PAMetadata(url: image.url)

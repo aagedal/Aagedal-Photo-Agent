@@ -2,12 +2,30 @@ import SwiftUI
 
 struct C2PADetailSheet: View {
     let metadata: C2PAMetadata
+    let imageURL: URL
+    let initialValidation: C2PAValidationResult?
+    let onValidationChanged: (C2PAValidationResult) -> Void
     @Environment(\.dismiss) private var dismiss
+    @State private var validation: C2PAValidationResult?
+    @State private var validationTask: Task<Void, Never>?
+
+    init(
+        metadata: C2PAMetadata,
+        imageURL: URL,
+        initialValidation: C2PAValidationResult? = nil,
+        onValidationChanged: @escaping (C2PAValidationResult) -> Void = { _ in }
+    ) {
+        self.metadata = metadata
+        self.imageURL = imageURL
+        self.initialValidation = initialValidation
+        self.onValidationChanged = onValidationChanged
+        _validation = State(initialValue: initialValidation)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                Label("Content Credentials", systemImage: "checkmark.seal.fill")
+                Label("Content Credentials", systemImage: "c.circle")
                     .font(.headline)
                     .foregroundStyle(.blue)
                 Spacer()
@@ -19,12 +37,15 @@ struct C2PADetailSheet: View {
                     .keyboardShortcut(.cancelAction)
             }
 
-            if metadata.manifests.isEmpty {
-                Text("No C2PA manifests found.")
-                    .foregroundStyle(.secondary)
-            } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    validationSection
+                    Divider()
+                    if metadata.manifests.isEmpty {
+                        Text("No C2PA manifests found.")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Divider()
                         // Thumbnails section
                         if let thumbnails = metadata.thumbnails,
                            thumbnails.claimThumbnail != nil || thumbnails.ingredientThumbnail != nil {
@@ -45,6 +66,85 @@ struct C2PADetailSheet: View {
         .padding()
         .frame(minWidth: 620, idealWidth: 700, minHeight: 400)
         .frame(idealHeight: NSScreen.main.map { $0.visibleFrame.height * 0.9 } ?? 700)
+        .task { validate() }
+        .onDisappear { validationTask?.cancel() }
+    }
+
+    @ViewBuilder
+    private var validationSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                if let validation {
+                    let presentation = validationPresentation(validation)
+                    Label(presentation.title, systemImage: presentation.icon)
+                        .font(.headline)
+                        .foregroundStyle(presentation.color)
+                        .accessibilityLabel(presentation.accessibilityLabel)
+                } else {
+                    Label("Validating…", systemImage: "arrow.triangle.2.circlepath")
+                        .font(.headline)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Refresh") { validate(forceRefresh: true) }
+                    .disabled(validation == nil)
+            }
+            if let validation {
+                Text(validation.message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if validation.status == .untrusted {
+                    Text("Images signed with this app’s built-in test credential are expected to show as untrusted.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if let signer = validation.signer { row("Signer", signer) }
+                if let issuer = validation.issuer { row("Issuer", issuer) }
+                if !validation.rawValidationCodes.isEmpty {
+                    DisclosureGroup("Validation details") {
+                        ForEach(validation.rawValidationCodes, id: \.self) { code in
+                            Text(code).font(.caption.monospaced())
+                        }
+                    }
+                    .font(.caption)
+                }
+            }
+        }
+    }
+
+    private func validationPresentation(_ result: C2PAValidationResult) -> (title: String, icon: String, color: Color, accessibilityLabel: String) {
+        switch result.status {
+        case .trusted:
+            ("Trusted", "checkmark.circle.fill", .green, "Trusted Content Credentials")
+        case .untrusted:
+            ("Valid signature — untrusted signer", "exclamationmark.triangle.fill", .yellow, "Valid signature, untrusted signer")
+        case .invalid:
+            ("Invalid", "xmark.octagon.fill", .red, "Invalid Content Credentials")
+        case .unsupported, .notPresent, .validationFailed:
+            ("Could not validate", "questionmark.circle.fill", .gray, "Content Credentials could not be validated")
+        }
+    }
+
+    private func validate(forceRefresh: Bool = false) {
+        validationTask?.cancel()
+        validation = forceRefresh ? nil : validation
+        validationTask = Task {
+            let result: C2PAValidationResult
+            do {
+                result = try await C2PASigningService.validate(imageURL: imageURL, forceRefresh: forceRefresh)
+            } catch is CancellationError {
+                return
+            } catch C2PASigningError.c2patoolMissing {
+                result = .unavailable
+            } catch C2PAValidationError.malformedOutput {
+                result = C2PAValidationResult(status: .unsupported, message: "c2patool returned unsupported validation output.")
+            } catch {
+                result = C2PAValidationResult(status: .validationFailed, message: "Could not validate: \(error.localizedDescription)")
+            }
+            guard !Task.isCancelled else { return }
+            validation = result
+            onValidationChanged(result)
+        }
     }
 
     @ViewBuilder
