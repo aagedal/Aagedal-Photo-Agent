@@ -32,6 +32,7 @@ final class BrowserViewModel {
     var isLoading = false
     var isFullScreen = false
     var shouldRestoreGridFocus = false
+    var iCloudDownloadNotice: String?
 
     struct FullScreenFaceNavigationItem {
         let imageURL: URL
@@ -561,6 +562,7 @@ final class BrowserViewModel {
         RecentFoldersStore.shared.track(url)
         isLoading = true
         errorMessage = nil
+        iCloudDownloadNotice = nil
         images = []
         selectedImageIDs.removeAll()
         lastClickedImageURL = nil
@@ -588,8 +590,12 @@ final class BrowserViewModel {
         loadFolderTask = Task {
             do {
                 // Phase 1: Scan folder and show grid immediately
-                var files = try await fileSystemService.scanFolder(at: url, includeAllFiles: showAllFiles)
+                let scanResult = try await fileSystemService.scanFolderWithStatus(at: url, includeAllFiles: showAllFiles)
+                var files = scanResult.files
                 guard !Task.isCancelled, self.currentFolderURL == url else { return }
+                self.iCloudDownloadNotice = scanResult.hasDeferredICloudItems
+                    ? Self.iCloudDownloadMessage(for: scanResult.deferredICloudItemCount)
+                    : nil
                 // Same-folder reload: carry over already-known display orientations.
                 // scanFolder returns default orientation 1 and the eager/batch reads
                 // that repopulate it are async — without this, a mid-session reload
@@ -662,12 +668,14 @@ final class BrowserViewModel {
 
                 // Phase 4: Background display preview generation
                 self.fullScreenImageCache.startBackgroundPreviewGeneration(
-                    for: self.visibleImages.map(\.url),
+                    for: self.visibleImages.filter { !$0.isICloudDownloadPending }.map(\.url),
                     screenMaxPx: 960
                 )
 
                 // Phase 5: Load metadata
-                let metadataURLs = self.images.filter(\.isImageFile).map(\.url)
+                let metadataURLs = self.images
+                    .filter { $0.isImageFile && !$0.isICloudDownloadPending }
+                    .map(\.url)
                 await loadBasicMetadata(for: metadataURLs, cachedSidecars: allSidecars)
             } catch {
                 guard !Task.isCancelled, self.currentFolderURL == url else { return }
@@ -682,6 +690,13 @@ final class BrowserViewModel {
     /// unchanged and its edited thumbnail survives navigation; a re-export changes it.
     nonisolated private static func thumbnailContentToken(for file: ImageFile) -> String {
         "\(file.fileSize)|\(file.dateModified.timeIntervalSinceReferenceDate)"
+    }
+
+    nonisolated private static func iCloudDownloadMessage(for deferredItemCount: Int) -> String {
+        if deferredItemCount == 1 {
+            return "An iCloud file is downloading. Thumbnails will appear as soon as the file is ready."
+        }
+        return "\(deferredItemCount) iCloud files are downloading. Thumbnails will appear as soon as the files are ready."
     }
 
     /// Drop URL-keyed thumbnail caches for files whose bytes changed since we last
@@ -708,12 +723,16 @@ final class BrowserViewModel {
         autoRefreshTask = Task {
             defer { self.isAutoRefreshing = false }
 
-            let scanned: [ImageFile]
+            let scanResult: FileSystemService.FolderScanResult
             do {
-                scanned = try await fileSystemService.scanFolder(at: folderURL, includeAllFiles: showAllFiles)
+                scanResult = try await fileSystemService.scanFolderWithStatus(at: folderURL, includeAllFiles: showAllFiles)
             } catch {
                 return
             }
+            self.iCloudDownloadNotice = scanResult.hasDeferredICloudItems
+                ? Self.iCloudDownloadMessage(for: scanResult.deferredICloudItemCount)
+                : nil
+            let scanned = scanResult.files
 
             let existingByURL = Dictionary(uniqueKeysWithValues: images.map { ($0.url, $0) })
             let existingURLs = Set(existingByURL.keys)
@@ -826,7 +845,8 @@ final class BrowserViewModel {
 
             self.lastRefreshModifiedURLs = Set(changedURLs)
 
-            let metadataRefreshURLs = newURLs + changedURLs
+            let pendingICloudURLs = Set(scanned.filter(\.isICloudDownloadPending).map(\.url))
+            let metadataRefreshURLs = (newURLs + changedURLs).filter { !pendingICloudURLs.contains($0) }
             if !metadataRefreshURLs.isEmpty {
                 pendingMetadataURLs.formUnion(metadataRefreshURLs)
                 drainPendingMetadataIfNeeded()
@@ -838,7 +858,7 @@ final class BrowserViewModel {
     /// Called eagerly after folder scan so exifOrientation is correct before
     /// the full batch metadata read.
     private func readOrientationsEagerly(for images: inout [ImageFile]) async {
-        let urls = images.compactMap { $0.isImageFile ? $0.url : nil }
+        let urls = images.compactMap { $0.isImageFile && !$0.isICloudDownloadPending ? $0.url : nil }
         let orientations = await Self.readOrientations(for: urls)
         guard !orientations.isEmpty else { return }
         for index in images.indices where images[index].isImageFile {

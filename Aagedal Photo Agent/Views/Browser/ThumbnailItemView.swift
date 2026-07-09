@@ -11,6 +11,7 @@ struct ThumbnailCellData: Equatable {
     let hasDevelopEdits: Bool
     let hasCropEdits: Bool
     let isHDR: Bool
+    let isICloudDownloadPending: Bool
     let hasPendingMetadataChanges: Bool
     let pendingFieldNames: [String]
 
@@ -23,6 +24,7 @@ struct ThumbnailCellData: Equatable {
         self.hasDevelopEdits = image.hasDevelopEdits
         self.hasCropEdits = image.hasCropEdits
         self.isHDR = image.cameraRawSettings?.hdrEditMode == 1
+        self.isICloudDownloadPending = image.isICloudDownloadPending
         self.hasPendingMetadataChanges = image.hasPendingMetadataChanges
         self.pendingFieldNames = image.pendingFieldNames
     }
@@ -46,6 +48,7 @@ final class ThumbnailItemView: NSView {
     private let pendingDotBorder = CALayer()
 
     // Text fields
+    private let downloadStatusField = NSTextField(labelWithString: "Downloading from iCloud")
     private let filenameField = NSTextField(labelWithString: "")
     private let starsField = NSTextField(labelWithString: "")
     private let labelDot = NSView()
@@ -194,6 +197,14 @@ final class ThumbnailItemView: NSView {
         placeholderLayer.contents = ThumbnailItemView.getPlaceholderImage()
         imageLayer.addSublayer(placeholderLayer)
 
+        downloadStatusField.font = .systemFont(ofSize: 11, weight: .medium)
+        downloadStatusField.textColor = .secondaryLabelColor
+        downloadStatusField.alignment = .center
+        downloadStatusField.maximumNumberOfLines = 2
+        downloadStatusField.lineBreakMode = .byWordWrapping
+        downloadStatusField.isHidden = true
+        addSubview(downloadStatusField)
+
         // Badge layers — fully composited at 2x
         configureBadge(c2paBadge, color: .systemBlue, systemName: "checkmark.seal.fill")
         configureBadge(editedBadge, color: .systemOrange, systemName: "slider.horizontal.3")
@@ -293,8 +304,18 @@ final class ThumbnailItemView: NSView {
         let imageFrame = CGRect(x: padding, y: bounds.height - padding - imageHeight, width: imageWidth, height: imageHeight)
         imageLayer.frame = imageFrame
 
-        // Placeholder centered in image layer
-        placeholderLayer.frame = imageLayer.bounds
+        // Placeholder centered in image layer, or stacked above the iCloud status label.
+        if currentData?.isICloudDownloadPending == true {
+            let iconBandHeight = min(imageFrame.height * 0.22, 48)
+            placeholderLayer.frame = CGRect(
+                x: 0,
+                y: imageLayer.bounds.midY + 4,
+                width: imageLayer.bounds.width,
+                height: iconBandHeight
+            )
+        } else {
+            placeholderLayer.frame = imageLayer.bounds
+        }
 
         // Badge positions (top-right of image, in view coordinates)
         let badgeX = imageFrame.maxX - 24
@@ -311,6 +332,12 @@ final class ThumbnailItemView: NSView {
         // Text below image
         let textTop = imageFrame.minY - 4
         let textWidth = imageWidth
+        downloadStatusField.frame = CGRect(
+            x: imageFrame.minX + 8,
+            y: imageFrame.midY - 44,
+            width: max(0, imageFrame.width - 16),
+            height: 34
+        )
         let filenameHeight: CGFloat = 16
         filenameField.frame = CGRect(x: padding, y: textTop - filenameHeight, width: textWidth, height: filenameHeight)
 
@@ -339,7 +366,10 @@ final class ThumbnailItemView: NSView {
         // Pending dot
         pendingDot.isHidden = !data.hasPendingMetadataChanges
         pendingDotBorder.isHidden = !data.hasPendingMetadataChanges
-        if data.hasPendingMetadataChanges {
+        downloadStatusField.isHidden = !data.isICloudDownloadPending
+        if data.isICloudDownloadPending {
+            self.toolTip = "Downloading from iCloud. The thumbnail will appear when the file is ready."
+        } else if data.hasPendingMetadataChanges {
             let tooltip: String
             if data.pendingFieldNames.isEmpty {
                 tooltip = "Pending metadata changes"
@@ -438,6 +468,7 @@ final class ThumbnailItemView: NSView {
 
     func reset() {
         currentData = nil
+        downloadStatusField.isHidden = true
         setThumbnail(nil)
         updateSelection(isSelected: false, isActive: false)
         toolTip = nil

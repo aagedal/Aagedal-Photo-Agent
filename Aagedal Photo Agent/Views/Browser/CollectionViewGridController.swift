@@ -340,6 +340,7 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
         for indexPath in indexPaths {
             guard indexPath.item < viewModel.visibleImages.count else { continue }
             let image = viewModel.visibleImages[indexPath.item]
+            guard !image.isICloudDownloadPending else { continue }
             let url = image.url
             guard prefetchTasks[url] == nil else { continue }
 

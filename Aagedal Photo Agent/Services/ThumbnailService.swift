@@ -100,6 +100,7 @@ final class ThumbnailService {
     /// async` keeps the whole finalize on the cooperative pool. `XMPReader` (SwiftExif) is a
     /// pure-Swift parser, so the sidecar read is safe off-main.
     nonisolated private func generateOrientedThumbnail(for url: URL) async -> NSImage? {
+        guard Self.isLocallyAvailableForThumbnail(url) else { return nil }
         await decodeGate.acquire()
         var oriented: NSImage?
         if let ql = await generateQLThumbnail(for: url) {
@@ -158,6 +159,7 @@ final class ThumbnailService {
             // and downscaled to thumbnail size, and only ever for edited RAWs (unedited RAWs
             // keep the fast QL preview), so a fast scroll can't saturate the RAW engine.
             if SupportedImageFormats.isRaw(url: url) {
+                guard Self.isLocallyAvailableForThumbnail(url) else { return nil }
                 await decodeGate.acquire()
                 let outputCG = await FullScreenImageCache.decodedEditedPreview(
                     for: url, settings: settings, orientation: exifOrientation, screenMaxPx: maxPixelSize)
@@ -378,6 +380,23 @@ final class ThumbnailService {
         editedInFlightTasks.removeAll()
     }
 
+    /// Avoid handing not-yet-downloaded iCloud placeholders to QuickLook/ImageIO.
+    /// Those APIs may block until the download completes; if enough placeholders
+    /// enter the shared decode gate, thumbnails for unrelated local folders stall.
+    /// Kick the download and let a later visible/prefetch/background request retry
+    /// after iCloud has materialized the file.
+    nonisolated private static func isLocallyAvailableForThumbnail(_ url: URL) -> Bool {
+        let fileManager = FileManager.default
+        guard fileManager.isUbiquitousItem(at: url) else { return true }
+
+        let values = try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey])
+        guard values?.ubiquitousItemDownloadingStatus == .notDownloaded else { return true }
+
+        try? fileManager.startDownloadingUbiquitousItem(at: url)
+        thumbnailLogger.info("Deferred thumbnail for not-downloaded iCloud item: \(url.lastPathComponent, privacy: .public)")
+        return false
+    }
+
     // MARK: - Background Pre-generation
 
     /// Suspend (and cancel) the speculative background sweep while the develop editor is active so
@@ -391,7 +410,9 @@ final class ThumbnailService {
     func startBackgroundGeneration(for images: [ImageFile]) {
         guard !backgroundGenerationSuppressed else { return }
         cancelBackgroundGeneration()
-        let uncached = images.filter { cache.object(forKey: $0.url as NSURL) == nil }
+        let uncached = images.filter {
+            !$0.isICloudDownloadPending && cache.object(forKey: $0.url as NSURL) == nil
+        }
         guard !uncached.isEmpty else { return }
 
         preGenerateTotal = uncached.count

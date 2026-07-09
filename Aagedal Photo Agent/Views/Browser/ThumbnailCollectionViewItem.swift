@@ -36,6 +36,11 @@ final class ThumbnailCollectionViewItem: NSCollectionViewItem {
 
         thumbnailLoadTask?.cancel()
         let url = data.url
+        if imageFile.isICloudDownloadPending {
+            thumbnailView.setThumbnailNSImage(nil)
+            return
+        }
+
         let needsEditedRender = !showOriginals
             && imageFile.cameraRawSettings?.isEmpty == false
 

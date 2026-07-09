@@ -29,6 +29,7 @@ struct ImageFile: Identifiable, Hashable, Sendable {
     let fileSize: Int64
     let dateModified: Date
     let dateAdded: Date
+    let isICloudDownloadPending: Bool
     /// Modification date of the adjacent `.xmp` sidecar (nil when none). Tracked so the
     /// folder refresh can notice an external sidecar edit (e.g. ACR rotating a RAW) even
     /// though the image file itself is untouched. Not part of `==` — it drives the refresh
@@ -73,17 +74,20 @@ struct ImageFile: Identifiable, Hashable, Sendable {
         return try? sidecar.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
     }
 
-    nonisolated init(url: URL) {
+    nonisolated init(url: URL, isICloudDownloadPending: Bool = false) {
         self.url = url
         self.filename = url.lastPathComponent
         self.filenameLowercased = url.lastPathComponent.lowercased()
         self.fileType = UTType(filenameExtension: url.pathExtension)
 
-        let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey, .addedToDirectoryDateKey])
+        let values = isICloudDownloadPending
+            ? nil
+            : try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey, .addedToDirectoryDateKey])
         self.fileSize = Int64(values?.fileSize ?? 0)
         self.dateModified = values?.contentModificationDate ?? Date.distantPast
         self.dateAdded = values?.addedToDirectoryDate ?? Date.distantPast
-        self.sidecarModified = Self.sidecarModificationDate(for: url)
+        self.isICloudDownloadPending = isICloudDownloadPending
+        self.sidecarModified = isICloudDownloadPending ? nil : Self.sidecarModificationDate(for: url)
 
         self.starRating = .none
         self.colorLabel = .none
@@ -108,11 +112,14 @@ struct ImageFile: Identifiable, Hashable, Sendable {
         self.filenameLowercased = url.lastPathComponent.lowercased()
         self.fileType = UTType(filenameExtension: url.pathExtension)
 
-        let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey, .addedToDirectoryDateKey])
+        let values = source.isICloudDownloadPending
+            ? nil
+            : try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey, .addedToDirectoryDateKey])
         self.fileSize = Int64(values?.fileSize ?? 0)
         self.dateModified = values?.contentModificationDate ?? Date.distantPast
         self.dateAdded = values?.addedToDirectoryDate ?? Date.distantPast
-        self.sidecarModified = Self.sidecarModificationDate(for: url)
+        self.isICloudDownloadPending = source.isICloudDownloadPending
+        self.sidecarModified = source.isICloudDownloadPending ? nil : Self.sidecarModificationDate(for: url)
 
         self.starRating = source.starRating
         self.colorLabel = source.colorLabel
@@ -211,6 +218,7 @@ struct ImageFile: Identifiable, Hashable, Sendable {
             && lhs.hasC2PA == rhs.hasC2PA
             && lhs.hasDevelopEdits == rhs.hasDevelopEdits
             && lhs.hasCropEdits == rhs.hasCropEdits
+            && lhs.isICloudDownloadPending == rhs.isICloudDownloadPending
             && lhs.cameraRawSettings == rhs.cameraRawSettings
             && lhs.exifOrientation == rhs.exifOrientation
             && lhs.isNativeHDR == rhs.isNativeHDR

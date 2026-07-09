@@ -17,9 +17,15 @@ struct BrowserView: View {
                 ProgressView("Loading images...")
             } else if viewModel.images.isEmpty {
                 ContentUnavailableView {
-                    Label("No Images", systemImage: "photo.on.rectangle.angled")
+                    if viewModel.iCloudDownloadNotice != nil {
+                        Label("Downloading from iCloud", systemImage: "icloud.and.arrow.down")
+                    } else {
+                        Label("No Images", systemImage: "photo.on.rectangle.angled")
+                    }
                 } description: {
-                    if viewModel.currentFolderURL == nil {
+                    if let notice = viewModel.iCloudDownloadNotice {
+                        Text(notice)
+                    } else if viewModel.currentFolderURL == nil {
                         Text("Open a folder to browse images")
                     } else {
                         Text("No supported images found in this folder")
@@ -64,6 +70,16 @@ struct BrowserView: View {
                                 .transition(.opacity.combined(with: .move(edge: .bottom)))
                         }
 
+                        if let notice = viewModel.iCloudDownloadNotice {
+                            Label(notice, systemImage: "icloud.and.arrow.down")
+                                .font(.callout)
+                                .foregroundStyle(.primary)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
+                                .transition(.move(edge: .bottom).combined(with: .opacity))
+                        }
+
                         // Thumbnail generation progress (conditional)
                         if viewModel.thumbnailService.isPreGenerating {
                             ThumbnailGenerationProgressView(
@@ -87,6 +103,7 @@ struct BrowserView: View {
                     .padding(8)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
                     .animation(.easeInOut(duration: 0.2), value: viewModel.sortFeedback)
+                    .animation(.easeInOut(duration: 0.25), value: viewModel.iCloudDownloadNotice)
                     .animation(.easeInOut(duration: 0.25), value: viewModel.thumbnailService.isPreGenerating)
 
                     // Thumbnail size slider (bottom-right)
