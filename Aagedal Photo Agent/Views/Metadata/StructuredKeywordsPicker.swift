@@ -17,6 +17,9 @@ struct StructuredKeywordsPicker: View {
     /// Called when the user activates a keyword. The receiver is responsible for
     /// deduping against existing keywords and appending in whatever order it prefers.
     let onAddKeywords: ([String]) -> Void
+    /// Called with the full activation payload. When nil, activation falls back
+    /// to `onAddKeywords` with only the primary values.
+    var onActivate: ((StructuredKeywordActivation) -> Void)? = nil
 
     /// Optional dismiss handler used by the modal-sheet presentation.
     var onClose: (() -> Void)? = nil
@@ -24,6 +27,8 @@ struct StructuredKeywordsPicker: View {
     /// Which tree to browse. Defaults to the keyword tree; Person Shown passes
     /// `.personShown`.
     var service: StructuredKeywordService = .shared
+    /// Shows and applies `#keyword` side payloads. Used by the Person Shown tree.
+    var supportsRelatedKeywords: Bool = false
 
     /// Placeholder shown in the search field.
     var searchPrompt: String = "Search keywords or synonyms…"
@@ -217,6 +222,11 @@ struct StructuredKeywordsPicker: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
             }
+            if supportsRelatedKeywords, !row.node.relatedKeywords.isEmpty, !row.node.isContainer {
+                Text("\(row.node.relatedKeywords.count) #")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
             Spacer()
         }
         .padding(.vertical, 1)
@@ -309,6 +319,11 @@ struct StructuredKeywordsPicker: View {
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
                         .truncationMode(.tail)
+                }
+                if supportsRelatedKeywords, !hit.node.relatedKeywords.isEmpty {
+                    Text("\(hit.node.relatedKeywords.count) #")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
                 }
             }
             if !hit.ancestors.isEmpty {
@@ -468,10 +483,20 @@ struct StructuredKeywordsPicker: View {
     private func activate(_ node: StructuredKeyword, ancestors: [StructuredKeyword]) {
         guard node.isKeyword else { return }
         let path = StructuredKeywordPath(ancestors: ancestors, node: node)
-        let expanded = service.expand(path)
-        guard !expanded.isEmpty else { return }
-        onAddKeywords(expanded)
-        let detail = expanded.joined(separator: ", ")
+        let activation = service.activation(path)
+        guard !activation.values.isEmpty else { return }
+        if let onActivate {
+            onActivate(activation)
+        } else {
+            onAddKeywords(activation.values)
+        }
+        var sideKeywords = activation.relatedKeywords
+        if supportsRelatedKeywords,
+           UserDefaults.standard.bool(forKey: UserDefaultsKeys.structuredPersonShownCategoriesAsKeywords) {
+            sideKeywords = activation.categoryKeywords + sideKeywords
+        }
+        let detailValues = activation.values + (supportsRelatedKeywords ? sideKeywords.map { "#\($0)" } : [])
+        let detail = detailValues.joined(separator: ", ")
         feedback = Feedback(message: "Added: \(detail)", kind: .added)
     }
 }

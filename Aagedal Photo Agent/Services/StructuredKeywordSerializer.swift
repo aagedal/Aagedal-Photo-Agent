@@ -30,6 +30,9 @@ enum StructuredKeywordSerializer {
         for synonym in node.synonyms {
             lines.append(childIndent + "{\(synonym)}")
         }
+        for relatedKeyword in node.relatedKeywords {
+            lines.append(childIndent + "#\(relatedKeyword)")
+        }
         for child in node.children {
             emit(child, depth: depth + 1, into: &lines)
         }

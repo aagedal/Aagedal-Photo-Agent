@@ -28,6 +28,7 @@ struct SettingsView: View {
     // Structured Person Shown state
     @State private var structuredPersonShownErrorMessage: String?
     @State private var editingStructuredPersonShown = false
+    @AppStorage(UserDefaultsKeys.structuredPersonShownCategoriesAsKeywords) private var structuredPersonShownCategoriesAsKeywords = false
 
     // Quick Lists state
     @State private var editingQuickList: QuickListType?
@@ -453,7 +454,8 @@ struct SettingsView: View {
                 service: .personShown,
                 title: "Structured Person Shown",
                 leafNoun: "Name",
-                exportFilename: "Structured Person Shown.txt"
+                exportFilename: "Structured Person Shown.txt",
+                supportsRelatedKeywords: true
             )
         }
         .onAppear {
@@ -989,7 +991,10 @@ struct SettingsView: View {
                     .foregroundStyle(.red)
             }
 
-            Text("A PhotoMechanic-style tree of people — group names under [brackets] like [Politicians] or [Athletes], and add {braces} for alternate spellings or nicknames so they're easy to search. Picking a name writes it (plus any synonyms) but never the category. Open the picker via the tree icon next to the Person Shown field.")
+            Toggle("Add category names as keywords", isOn: $structuredPersonShownCategoriesAsKeywords)
+                .help("When picking a structured person, also add the parent category path as Keywords.")
+
+            Text("A PhotoMechanic-style tree of people — group names under [brackets] like [Politicians] or [Athletes], add {braces} for alternate spellings, and add #keyword lines under a person for keywords that should be added with that name. Picking a name writes it (plus any synonyms) but never the category unless category keywords are enabled. Open the picker via the tree icon next to the Person Shown field.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

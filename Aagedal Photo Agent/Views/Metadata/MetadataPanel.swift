@@ -94,9 +94,9 @@ struct MetadataPanel: View {
         // ancestor + synonym expansion as the picker. Only wired when the
         // approved list is inactive — its suggestions are approved entries,
         // never structured nodes.
-        let suggestionExpander: ((String) -> [String]?)? = approvedActive
+        let suggestionExpander: ((String) -> StructuredKeywordActivation?)? = approvedActive
             ? nil
-            : { name in StructuredKeywordService.shared.expansion(forName: name) }
+            : { name in StructuredKeywordService.shared.activation(forName: name) }
 
         let validator: ((String) -> KeywordValidation)? = approvedActive
             ? { value in approved.validate(value, in: .keywords) }
@@ -215,7 +215,10 @@ struct MetadataPanel: View {
             // spellings, same as the picker. Quick-list and Known People names
             // fall back to the plain name.
             suggestionExpander: { name in
-                StructuredKeywordService.personShown.expansion(forName: name)
+                StructuredKeywordService.personShown.activation(forName: name)
+            },
+            onSuggestionExpansionCommit: { activation in
+                addStructuredPersonSideKeywords(for: activation)
             },
             onShowStructuredKeywords: {
                 showingStructuredPersonShown = true
@@ -227,10 +230,14 @@ struct MetadataPanel: View {
                 onAddKeywords: { expanded in
                     addStructuredPeople(expanded)
                 },
+                onActivate: { activation in
+                    addStructuredPeople(activation.values, activation: activation)
+                },
                 onClose: {
                     showingStructuredPersonShown = false
                 },
                 service: .personShown,
+                supportsRelatedKeywords: true,
                 searchPrompt: "Search names or alternate spellings…",
                 emptyTitle: "No structured Person Shown file loaded",
                 emptySubtitle: "Build or import a name tree in Settings → Metadata → Structured Person Shown."
@@ -277,11 +284,34 @@ struct MetadataPanel: View {
     }
 
     /// Adds names picked from the structured Person Shown tree. Person Shown has
-    /// no approved list, so names are appended directly (deduped) and committed.
-    private func addStructuredPeople(_ expanded: [String]) {
-        let added = viewModel.appendPersonShown(expanded)
-        guard added > 0 else { return }
+    /// no approved list, so names are appended directly; related `#keyword`
+    /// entries are routed through the approved-keyword validation path.
+    private func addStructuredPeople(_ expanded: [String], activation: StructuredKeywordActivation? = nil) {
+        let addedPeople = viewModel.appendPersonShown(expanded)
+        let addedSideKeywords = activation.map(addStructuredPersonSideKeywords(for:)) ?? false
+        guard addedPeople > 0 || addedSideKeywords else { return }
         commitEdits()
+    }
+
+    @discardableResult
+    private func addStructuredPersonSideKeywords(for activation: StructuredKeywordActivation) -> Bool {
+        var incoming = activation.relatedKeywords
+        if UserDefaults.standard.bool(forKey: UserDefaultsKeys.structuredPersonShownCategoriesAsKeywords) {
+            incoming = activation.categoryKeywords + incoming
+        }
+        guard !incoming.isEmpty else { return false }
+        let validated = ApprovedListService.shared.validateBulk(incoming, in: .keywords, source: .structuredTree)
+        let added = viewModel.appendKeywords(validated.accepted)
+        if !validated.rejected.isEmpty {
+            let count = validated.rejected.count
+            let word = count == 1 ? "keyword" : "keywords"
+            viewModel.notice = MetadataPanelNotice(
+                title: "\(count) related \(word) not added — Not in approved list",
+                detail: validated.rejected,
+                severity: .warning
+            )
+        }
+        return added > 0
     }
 
     private func addCurrentToQuickList(type: QuickListType, values: [String]) {
@@ -1594,12 +1624,15 @@ struct KeywordsEditorWithDiff: View {
     // Approved-keywords integration. All optional — other callers keep current behavior.
     var suggestionProvider: ((String) -> [ApprovedListSuggestion])? = nil
     var validator: ((String) -> KeywordValidation)? = nil
-    /// Maps a committed suggestion to the full value list to add. Wired to the
+    /// Maps a committed suggestion to the full activation payload. Wired to the
     /// structured trees so accepting a typed suggestion applies the same
     /// ancestor + synonym expansion as the picker. A nil return falls back to
     /// the plain single-value commit. Expanded values bypass the validator,
     /// matching the picker's structured-tree bypass.
-    var suggestionExpander: ((String) -> [String]?)? = nil
+    var suggestionExpander: ((String) -> StructuredKeywordActivation?)? = nil
+    /// Lets callers react to side payloads, such as Person Shown related
+    /// `#keyword` entries. Return true when the callback changed metadata.
+    var onSuggestionExpansionCommit: ((StructuredKeywordActivation) -> Bool)? = nil
     var flaggedKeywords: Set<String> = []
     var hideQuickListMenu: Bool = false
     /// When true, the first suggestion is highlighted as soon as the popover opens,
@@ -1901,12 +1934,15 @@ struct KeywordsEditorWithDiff: View {
     private func commitSuggestion(_ suggestion: ApprovedListSuggestion) {
         if let expansion = suggestionExpander?(suggestion.canonical) {
             var added: [String] = []
-            for value in expansion where !keywords.contains(value) && !added.contains(value) {
+            for value in expansion.values where !keywords.contains(value) && !added.contains(value) {
                 added.append(value)
             }
             if !added.isEmpty {
                 keywords.append(contentsOf: added)
                 onChange?()
+            }
+            let sideEffectChanged = onSuggestionExpansionCommit?(expansion) ?? false
+            if !added.isEmpty || sideEffectChanged {
                 onCommit?()
             }
             inputText = ""

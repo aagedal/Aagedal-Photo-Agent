@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 /// In-app tree editor for the PhotoMechanic-style structured keywords list.
 /// The user works only with words and relationships — the on-disk tab-indented
 /// `{synonym}` / `[container]` syntax is rendered by `StructuredKeywordSerializer`
-/// when the tree is saved.
+/// when the tree is saved, along with `#keyword` lines for related keywords.
 ///
 /// Keyboard:
 /// - Up / Down — change focused row
@@ -27,6 +27,8 @@ struct StructuredKeywordEditor: View {
     var leafNoun: String = "Keyword"
     /// Default filename offered when exporting the tree.
     var exportFilename: String = "Structured Keywords.txt"
+    /// Enables `#keyword` side payload editing for Person Shown trees.
+    var supportsRelatedKeywords: Bool = false
 
     private var leafNounLower: String { leafNoun.lowercased() }
 
@@ -36,6 +38,7 @@ struct StructuredKeywordEditor: View {
     @State private var focusedID: UUID?
     @State private var renamingID: UUID?
     @State private var synonymPopoverFor: UUID?
+    @State private var relatedKeywordsPopoverFor: UUID?
     @State private var feedback: String?
     @FocusState private var renameFieldFocused: Bool
 
@@ -226,6 +229,19 @@ struct StructuredKeywordEditor: View {
                 .buttonStyle(.plain)
                 .help(node.synonyms.joined(separator: ", "))
             }
+            if supportsRelatedKeywords, !node.relatedKeywords.isEmpty {
+                Button {
+                    relatedKeywordsPopoverFor = node.id
+                } label: {
+                    Text("\(node.relatedKeywords.count) #")
+                        .font(.caption2)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(.secondary.opacity(0.15), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .help(node.relatedKeywords.joined(separator: ", "))
+            }
 
             Spacer()
 
@@ -243,6 +259,12 @@ struct StructuredKeywordEditor: View {
             set: { if !$0 { synonymPopoverFor = nil } }
         )) {
             SynonymEditorPopover(node: node)
+        }
+        .popover(isPresented: Binding(
+            get: { relatedKeywordsPopoverFor == node.id },
+            set: { if !$0 { relatedKeywordsPopoverFor = nil } }
+        )) {
+            RelatedKeywordsEditorPopover(node: node)
         }
         .contextMenu {
             rowMenu(for: node)
@@ -267,6 +289,9 @@ struct StructuredKeywordEditor: View {
     private func rowMenu(for node: EditableStructuredKeyword) -> some View {
         Button("Rename") { startRename(node) }
         Button("Add Synonym…") { synonymPopoverFor = node.id }
+        if supportsRelatedKeywords {
+            Button("Add Related Keyword…") { relatedKeywordsPopoverFor = node.id }
+        }
         Divider()
         Button("Add Child \(leafNoun)") { addChild(under: node, kind: .keyword) }
         Button("Add Child Category") { addChild(under: node, kind: .container) }
@@ -563,6 +588,7 @@ struct StructuredKeywordEditor: View {
             name: name,
             kind: node.kind,
             synonyms: node.synonyms.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty },
+            relatedKeywords: node.relatedKeywords.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty },
             children: cleanedChildren
         )
     }
@@ -668,6 +694,63 @@ private struct SynonymEditorPopover: View {
             node.synonyms.append(trimmed)
         }
         newSynonym = ""
+    }
+}
+
+private struct RelatedKeywordsEditorPopover: View {
+    let node: EditableStructuredKeyword
+    @State private var newKeyword: String = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Related keywords for \"\(node.name.isEmpty ? "(unnamed)" : node.name)\"")
+                .font(.headline)
+            Text("These are added to Keywords when this row is picked.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 4) {
+                TextField("Add related keyword", text: $newKeyword, onCommit: addKeyword)
+                    .textFieldStyle(.roundedBorder)
+                Button("Add", action: addKeyword)
+                    .disabled(newKeyword.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            if node.relatedKeywords.isEmpty {
+                Text("No related keywords yet")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.vertical, 8)
+            } else {
+                List {
+                    ForEach(Array(node.relatedKeywords.enumerated()), id: \.offset) { idx, keyword in
+                        HStack {
+                            Text(keyword)
+                            Spacer()
+                            Button {
+                                node.relatedKeywords.remove(at: idx)
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .listStyle(.plain)
+                .frame(minHeight: 100, maxHeight: 200)
+            }
+        }
+        .padding(12)
+        .frame(width: 300)
+    }
+
+    private func addKeyword() {
+        let trimmed = newKeyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if !node.relatedKeywords.contains(where: { $0.caseInsensitiveCompare(trimmed) == .orderedSame }) {
+            node.relatedKeywords.append(trimmed)
+        }
+        newKeyword = ""
     }
 }
 

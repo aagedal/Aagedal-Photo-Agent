@@ -36,6 +36,14 @@ struct StructuredKeywordServiceTests {
         #expect(!expanded.contains("Politicians"))
     }
 
+    @Test("Activation carries ancestor category names separately from expanded values")
+    func activationCarriesCategoryKeywords() {
+        let activation = StructuredKeywordService.personShown.activation(samplePath())
+        #expect(activation.values == ["Jonas Gahr Støre", "Store"])
+        #expect(activation.categoryKeywords == ["Politicians", "Norway"])
+        #expect(activation.relatedKeywords.isEmpty)
+    }
+
     @Test("expansion(forName:) matches keyword nodes and synonyms case-insensitively")
     func expansionForName() throws {
         let root = FileManager.default.temporaryDirectory
@@ -57,6 +65,30 @@ struct StructuredKeywordServiceTests {
             // Containers are navigation-only and never expand.
             #expect(service.expansion(forName: "Politicians") == nil)
             #expect(service.expansion(forName: "Not In Tree") == nil)
+        }
+    }
+
+    @Test("activation(forName:) carries related keywords for node and synonym matches")
+    func activationForNameIncludesRelatedKeywords() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("structured-service-activation-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try KeywordListsStoreStorageOverride.$current.withValue(root) {
+            let service = StructuredKeywordService(key: .structuredPersonShown, includesAncestors: false)
+            try service.saveTree([
+                StructuredKeyword(name: "People", kind: .container, children: [
+                    StructuredKeyword(
+                        name: "Ada Lovelace",
+                        kind: .keyword,
+                        synonyms: ["Countess of Lovelace"],
+                        relatedKeywords: ["mathematician", "computing pioneer"]
+                    ),
+                ]),
+            ])
+
+            #expect(service.activation(forName: "Ada Lovelace")?.values == ["Ada Lovelace", "Countess of Lovelace"])
+            #expect(service.activation(forName: "countess of lovelace")?.relatedKeywords == ["mathematician", "computing pioneer"])
         }
     }
 

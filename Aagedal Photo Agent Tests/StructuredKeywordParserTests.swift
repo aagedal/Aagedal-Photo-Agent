@@ -37,6 +37,16 @@ struct StructuredKeywordParserTests {
         #expect(cattle.synonyms == ["cows"])
     }
 
+    @Test("#Keywords are attached as related keywords of the owning parent")
+    func relatedKeywords() {
+        let input = "People\n\tAda Lovelace\n\t\t#mathematician\n\t\t# computing pioneer\n\t\t{Countess of Lovelace}\n"
+        let roots = StructuredKeywordParser.parseString(input)
+        let person = roots[0].children[0]
+        #expect(person.name == "Ada Lovelace")
+        #expect(person.relatedKeywords == ["mathematician", "computing pioneer"])
+        #expect(person.synonyms == ["Countess of Lovelace"])
+    }
+
     @Test("[Brackets] become non-keyword containers")
     func bracketContainers() {
         let input = "reptile\n\t[ALLIGATOR & CROCODILES]\n\t\talligators\n"
@@ -83,6 +93,14 @@ struct StructuredKeywordParserTests {
         let roots = StructuredKeywordParser.parseString(input)
         #expect(roots.map(\.name) == ["animals"])
         #expect(roots[0].synonyms.isEmpty)
+    }
+
+    @Test("Top-level orphan related keywords (with no owner above) are ignored")
+    func orphanTopLevelRelatedKeyword() {
+        let input = "#orphan\nanimals\n"
+        let roots = StructuredKeywordParser.parseString(input)
+        #expect(roots.map(\.name) == ["animals"])
+        #expect(roots[0].relatedKeywords.isEmpty)
     }
 
     @Test("Closing a deep branch returns to the right sibling level")
@@ -149,6 +167,23 @@ struct StructuredKeywordExpandTests {
         let path = StructuredKeywordPath(ancestors: [reptile, bracket], node: alligators)
         let expanded = StructuredKeywordService.shared.expand(path)
         #expect(expanded == ["reptile", "alligators"])
+    }
+
+    @Test("Activation carries related keywords separately from expanded values")
+    func activationIncludesRelatedKeywords() {
+        let input = """
+        People
+        \tAda Lovelace
+        \t\t{Countess of Lovelace}
+        \t\t#mathematician
+        """
+        let roots = StructuredKeywordParser.parseString(input)
+        let people = roots[0]
+        let ada = people.children[0]
+        let path = StructuredKeywordPath(ancestors: [people], node: ada)
+        let activation = StructuredKeywordService.personShown.activation(path)
+        #expect(activation.values == ["Ada Lovelace", "Countess of Lovelace"])
+        #expect(activation.relatedKeywords == ["mathematician"])
     }
 
     @Test("Container node itself yields no expansion")

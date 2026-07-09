@@ -43,6 +43,7 @@ final class PreferencesSyncService {
         UserDefaultsKeys.multiSelectKeywordsMode,
         UserDefaultsKeys.multiSelectPersonShownMode,
         UserDefaultsKeys.addJobIdToKeywords,
+        UserDefaultsKeys.structuredPersonShownCategoriesAsKeywords,
         // Face recognition
         UserDefaultsKeys.faceCleanupPolicy,
         UserDefaultsKeys.faceMinConfidence,

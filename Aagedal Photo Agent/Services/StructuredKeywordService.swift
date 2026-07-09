@@ -14,6 +14,22 @@ struct StructuredKeywordPath: Hashable {
     let node: StructuredKeyword
 }
 
+/// Values produced by activating a structured-tree node.
+struct StructuredKeywordActivation: Hashable {
+    /// The values for the field being browsed: keywords for the keyword tree,
+    /// person names for the Person Shown tree.
+    let values: [String]
+    /// Extra IPTC keywords attached with `#keyword` lines under the activated node.
+    let relatedKeywords: [String]
+    /// Ancestor names above the activated node. For Person Shown these are
+    /// navigation categories that can optionally be applied as IPTC keywords.
+    let categoryKeywords: [String]
+
+    var isEmpty: Bool {
+        values.isEmpty && relatedKeywords.isEmpty && categoryKeywords.isEmpty
+    }
+}
+
 @Observable
 final class StructuredKeywordService {
     /// Keyword tree: activation includes keyword-ancestors + node + synonyms.
@@ -126,6 +142,13 @@ final class StructuredKeywordService {
     /// synonyms — in a stable order suitable for appending to an existing keyword list.
     /// Container ancestors and container nodes themselves are skipped.
     func expand(_ path: StructuredKeywordPath) -> [String] {
+        return activation(path).values
+    }
+
+    /// Computes the full activation payload for a node. For Person Shown trees,
+    /// `values` are names while `relatedKeywords` are keywords to add alongside
+    /// those names.
+    func activation(_ path: StructuredKeywordPath) -> StructuredKeywordActivation {
         var result: [String] = []
         if includesAncestors {
             for ancestor in path.ancestors where ancestor.isKeyword {
@@ -136,7 +159,14 @@ final class StructuredKeywordService {
             result.append(path.node.name)
             result.append(contentsOf: path.node.synonyms)
         }
-        return result
+        return StructuredKeywordActivation(
+            values: result,
+            relatedKeywords: path.node.relatedKeywords,
+            categoryKeywords: path.ancestors
+                .map(\.name)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        )
     }
 
     /// Expands the keyword node whose canonical name or synonym matches `name`
@@ -145,18 +175,24 @@ final class StructuredKeywordService {
     /// fall back to the plain name. The first match in tree order wins when
     /// the same name or synonym appears under multiple categories.
     func expansion(forName name: String) -> [String]? {
+        return activation(forName: name)?.values
+    }
+
+    /// Returns the activation payload for the keyword node whose canonical name
+    /// or synonym matches `name` case-insensitively.
+    func activation(forName name: String) -> StructuredKeywordActivation? {
         _ = version
         let needle = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !needle.isEmpty else { return nil }
 
-        var result: [String]?
+        var result: StructuredKeywordActivation?
         for root in roots {
             walk(root, ancestors: []) { node, ancestors in
                 guard node.isKeyword else { return true }
                 let matchesName = node.name.lowercased() == needle
                 let matchesSynonym = node.synonyms.contains { $0.lowercased() == needle }
                 guard matchesName || matchesSynonym else { return true }
-                result = expand(StructuredKeywordPath(ancestors: ancestors, node: node))
+                result = activation(StructuredKeywordPath(ancestors: ancestors, node: node))
                 return false
             }
             if result != nil { break }

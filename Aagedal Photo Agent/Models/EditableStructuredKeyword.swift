@@ -10,6 +10,7 @@ final class EditableStructuredKeyword: Identifiable {
     var name: String
     var kind: StructuredKeyword.Kind
     var synonyms: [String]
+    var relatedKeywords: [String]
     var children: [EditableStructuredKeyword]
     /// Tracked so indent / outdent / move-up / move-down operations can find a
     /// node's siblings without walking the whole tree. Reassigned whenever the
@@ -21,6 +22,7 @@ final class EditableStructuredKeyword: Identifiable {
         name: String,
         kind: StructuredKeyword.Kind,
         synonyms: [String] = [],
+        relatedKeywords: [String] = [],
         children: [EditableStructuredKeyword] = [],
         parent: EditableStructuredKeyword? = nil
     ) {
@@ -28,6 +30,7 @@ final class EditableStructuredKeyword: Identifiable {
         self.name = name
         self.kind = kind
         self.synonyms = synonyms
+        self.relatedKeywords = relatedKeywords
         self.children = children
         self.parent = parent
         for child in children { child.parent = self }
@@ -49,6 +52,7 @@ final class EditableStructuredKeyword: Identifiable {
             name: node.name,
             kind: node.kind,
             synonyms: node.synonyms,
+            relatedKeywords: node.relatedKeywords,
             parent: parent
         )
         copy.children = node.children.map { convert($0, parent: copy) }
@@ -68,6 +72,7 @@ final class EditableStructuredKeyword: Identifiable {
             name: name,
             kind: kind,
             synonyms: synonyms,
+            relatedKeywords: relatedKeywords,
             children: children.map { $0.snapshot() }
         )
     }

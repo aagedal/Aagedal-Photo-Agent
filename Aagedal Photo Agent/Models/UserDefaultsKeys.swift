@@ -175,6 +175,7 @@ nonisolated enum UserDefaultsKeys {
 
     // MARK: - Structured Keywords (PhotoMechanic-style tree)
     static let structuredKeywordsBookmark = "structuredKeywords.bookmark"
+    static let structuredPersonShownCategoriesAsKeywords = "structuredPersonShown.categoriesAsKeywords"
 
     // MARK: - Keyword Lists Sync & Migration
     /// True when the user has opted in to syncing keyword lists via iCloud.

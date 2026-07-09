@@ -31,6 +31,13 @@ struct StructuredKeywordSerializerTests {
         #expect(text == "animals\n\t{animal}\n\t{beast}\n")
     }
 
+    @Test("Related keywords render under their parent with # prefix")
+    func relatedKeywords() {
+        let person = StructuredKeyword(name: "Ada Lovelace", kind: .keyword, relatedKeywords: ["mathematician", "computing pioneer"])
+        let text = StructuredKeywordSerializer.serialize([person])
+        #expect(text == "Ada Lovelace\n\t#mathematician\n\t#computing pioneer\n")
+    }
+
     @Test("Container nodes render with [brackets]")
     func containers() {
         let bracket = StructuredKeyword(name: "ALLIGATOR & CROCODILES", kind: .container)
@@ -44,9 +51,11 @@ struct StructuredKeywordSerializerTests {
         let input = """
         animals
         \t{animal}
+        \t#wildlife
         \tlivestock
         \t\tcattle
         \t\t\t{cows}
+        \t\t\t#farm
         \t[REPTILE]
         \t\talligators
         places
@@ -62,7 +71,7 @@ struct StructuredKeywordSerializerTests {
             func walk(_ node: StructuredKeyword, depth: Int) {
                 let pad = String(repeating: "  ", count: depth)
                 let kind = node.isContainer ? "[CONT]" : "[KW]"
-                out += "\(pad)\(kind) \(node.name) syn=\(node.synonyms.joined(separator: ","))\n"
+                out += "\(pad)\(kind) \(node.name) syn=\(node.synonyms.joined(separator: ",")) rel=\(node.relatedKeywords.joined(separator: ","))\n"
                 for child in node.children { walk(child, depth: depth + 1) }
             }
             for root in nodes { walk(root, depth: 0) }

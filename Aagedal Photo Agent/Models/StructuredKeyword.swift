@@ -7,6 +7,8 @@ import Foundation
 ///   headers and are never applied as keywords. They group their children.
 /// - `synonyms` are extra strings attached to this node; in PhotoMechanic these
 ///   appear as `{synonym}` lines under the parent keyword.
+/// - `relatedKeywords` are extra IPTC keywords attached to this node; these
+///   appear as `#keyword` lines under the parent keyword.
 struct StructuredKeyword: Identifiable, Hashable {
     enum Kind: Hashable {
         case keyword
@@ -17,6 +19,7 @@ struct StructuredKeyword: Identifiable, Hashable {
     let name: String
     let kind: Kind
     let synonyms: [String]
+    let relatedKeywords: [String]
     let children: [StructuredKeyword]
 
     init(
@@ -24,12 +27,14 @@ struct StructuredKeyword: Identifiable, Hashable {
         name: String,
         kind: Kind,
         synonyms: [String] = [],
+        relatedKeywords: [String] = [],
         children: [StructuredKeyword] = []
     ) {
         self.id = id
         self.name = name
         self.kind = kind
         self.synonyms = synonyms
+        self.relatedKeywords = relatedKeywords
         self.children = children
     }
 

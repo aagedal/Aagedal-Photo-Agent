@@ -53,7 +53,7 @@ enum StructuredKeywordParser {
             .replacingOccurrences(of: "\u{FEFF}", with: "")
             .replacingOccurrences(of: "\u{00A0}", with: " ")
 
-        // Invariant during the walk: `stack[i]` is the most recent non-synonym node at
+        // Invariant during the walk: `stack[i]` is the most recent real node at
         // file-depth `i - 1`. `stack[0]` is the synthetic root (file-depth -1). After a
         // keyword at file-depth D is processed, it sits at `stack[D + 1]`.
         let root = Builder(name: "", kind: .container)
@@ -69,6 +69,13 @@ enum StructuredKeywordParser {
             if let synonym = extractBraced(trimmed) {
                 if depth >= 1, depth < stack.count {
                     stack[depth].synonyms.append(synonym)
+                }
+                return
+            }
+
+            if let relatedKeyword = extractRelatedKeyword(trimmed) {
+                if depth >= 1, depth < stack.count {
+                    stack[depth].relatedKeywords.append(relatedKeyword)
                 }
                 return
             }
@@ -138,6 +145,12 @@ enum StructuredKeywordParser {
         return inner.isEmpty ? nil : inner
     }
 
+    private static func extractRelatedKeyword(_ s: String) -> String? {
+        guard s.hasPrefix("#"), s.count >= 2 else { return nil }
+        let inner = s.dropFirst().trimmingCharacters(in: .whitespacesAndNewlines)
+        return inner.isEmpty ? nil : inner
+    }
+
     private static func decode(_ data: Data) -> String? {
         if let s = String(data: data, encoding: .utf8) { return s }
         if let s = String(data: data, encoding: .utf16) { return s }
@@ -153,6 +166,7 @@ enum StructuredKeywordParser {
         let name: String
         let kind: StructuredKeyword.Kind
         var synonyms: [String] = []
+        var relatedKeywords: [String] = []
         var children: [Builder] = []
 
         init(name: String, kind: StructuredKeyword.Kind) {
@@ -165,6 +179,7 @@ enum StructuredKeywordParser {
                 name: name,
                 kind: kind,
                 synonyms: synonyms,
+                relatedKeywords: relatedKeywords,
                 children: children.map { $0.freeze() }
             )
         }
