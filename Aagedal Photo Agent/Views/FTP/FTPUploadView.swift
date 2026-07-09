@@ -630,8 +630,10 @@ struct FTPUploadView: View {
     private func signFilesWithC2PA(_ files: [URL]) async {
         let certPath = UserDefaults.standard.string(forKey: UserDefaultsKeys.c2paCertificatePath) ?? ""
         let author = UserDefaults.standard.string(forKey: UserDefaultsKeys.c2paDefaultAuthor)
-        guard !certPath.isEmpty,
-              let privateKeyPEM = KeychainService.load(forKey: "c2pa_private_key"),
+        let usesTestCertificate = UserDefaults.standard.bool(forKey: UserDefaultsKeys.c2paUseTestCertificate)
+        let privateKeyPEM = usesTestCertificate ? "" : KeychainService.load(forKey: "c2pa_private_key")
+        guard (usesTestCertificate || !certPath.isEmpty),
+              let privateKeyPEM,
               C2PASigningService.isAvailable else { return }
 
         isSigningC2PA = true
@@ -642,7 +644,7 @@ struct FTPUploadView: View {
             do {
                 try await C2PASigningService.sign(
                     imageURL: url,
-                    certificatePath: certPath,
+                    certificatePath: usesTestCertificate ? "" : certPath,
                     privateKeyPEM: privateKeyPEM,
                     author: author?.isEmpty == true ? nil : author
                 )

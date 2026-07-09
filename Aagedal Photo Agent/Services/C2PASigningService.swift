@@ -199,7 +199,7 @@ nonisolated enum C2PASigningService {
             _ = try await Process.run(
                 executableURL: URL(fileURLWithPath: toolPath),
                 arguments: arguments,
-                environment: ["C2PA_PRIVATE_KEY": privateKeyPEM]
+                environment: signingEnvironment(privateKeyPEM)
             )
         } catch {
             let message = error.localizedDescription
@@ -318,7 +318,7 @@ nonisolated enum C2PASigningService {
             _ = try await Process.run(
                 executableURL: URL(fileURLWithPath: toolPath),
                 arguments: signArguments,
-                environment: ["C2PA_PRIVATE_KEY": privateKeyPEM]
+                environment: signingEnvironment(privateKeyPEM)
             )
         } catch {
             let message = error.localizedDescription
@@ -434,7 +434,7 @@ nonisolated enum C2PASigningService {
             _ = try await Process.run(
                 executableURL: URL(fileURLWithPath: toolPath),
                 arguments: signArguments,
-                environment: ["C2PA_PRIVATE_KEY": privateKeyPEM]
+                environment: signingEnvironment(privateKeyPEM)
             )
         } catch {
             let message = error.localizedDescription
@@ -476,9 +476,8 @@ nonisolated enum C2PASigningService {
 
     /// Build c2patool manifest definition JSON.
     ///
-    /// The signing certificate is referenced by path via `sign_cert`. The private key
-    /// is intentionally NOT placed here: it is passed to c2patool through the
-    /// `C2PA_PRIVATE_KEY` environment variable instead, so it never touches the disk.
+    /// Empty credentials select c2patool's built-in test credential. It is useful for
+    /// exercising the workflow but is not trusted by C2PA validators.
     static func buildManifestJSON(
         title: String?,
         author: String?,
@@ -490,12 +489,14 @@ nonisolated enum C2PASigningService {
 
         var manifest: [String: Any] = [
             "alg": "es256",
-            "sign_cert": certificatePath,
             "claim_generator": claimGenerator,
             "claim_generator_info": [
                 ["name": "Aagedal Photo Agent", "version": version]
             ],
         ]
+        if !certificatePath.isEmpty {
+            manifest["sign_cert"] = certificatePath
+        }
 
         if let title {
             manifest["title"] = title
@@ -544,5 +545,9 @@ nonisolated enum C2PASigningService {
         }
 
         return try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
+    }
+
+    private static func signingEnvironment(_ privateKeyPEM: String) -> [String: String]? {
+        privateKeyPEM.isEmpty ? nil : ["C2PA_PRIVATE_KEY": privateKeyPEM]
     }
 }

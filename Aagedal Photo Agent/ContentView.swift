@@ -1324,6 +1324,7 @@ struct ContentView: View {
         guard !isRenderingEditedFolder else { return }
 
         let certPath = settingsViewModel.c2paCertificatePath
+        let usesTestCertificate = settingsViewModel.c2paUseTestCertificate
         guard settingsViewModel.c2paHasCertificate else {
             browserViewModel.errorMessage = "No signing certificate configured. Import one in Settings → Signing."
             return
@@ -1335,7 +1336,8 @@ struct ContentView: View {
             return
         }
 
-        guard let privateKeyPEM = KeychainService.load(forKey: "c2pa_private_key") else {
+        let privateKeyPEM = usesTestCertificate ? "" : KeychainService.load(forKey: "c2pa_private_key")
+        guard let privateKeyPEM else {
             browserViewModel.errorMessage = "No private key found in Keychain for C2PA signing."
             return
         }
@@ -1420,7 +1422,7 @@ struct ContentView: View {
                         try await C2PASigningService.signWithParentIngredient(
                             imageURL: renderedURL,
                             parentURL: image.url,
-                            certificatePath: certPath,
+                            certificatePath: usesTestCertificate ? "" : certPath,
                             privateKeyPEM: privateKeyPEM,
                             author: author,
                             actions: actions
@@ -1428,7 +1430,7 @@ struct ContentView: View {
                     } else {
                         try await C2PASigningService.sign(
                             imageURL: renderedURL,
-                            certificatePath: certPath,
+                            certificatePath: usesTestCertificate ? "" : certPath,
                             privateKeyPEM: privateKeyPEM,
                             author: author,
                             actions: actions

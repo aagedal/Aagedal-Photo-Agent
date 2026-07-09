@@ -1357,7 +1357,26 @@ struct SettingsView: View {
             }
 
             Section("Signing Certificate") {
-                if settingsViewModel.c2paHasCertificate {
+                if settingsViewModel.c2paUseTestCertificate {
+                    LabeledContent("Credential") {
+                        Text("Built-in test credential")
+                            .foregroundStyle(.secondary)
+                    }
+                    Label("Signatures can be checked cryptographically, but are not trusted C2PA credentials.", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+
+                    HStack {
+                        Button("Use Imported Certificate") {
+                            settingsViewModel.c2paUseTestCertificate = false
+                        }
+                        Spacer()
+                        Button("Disable Test Signing", role: .destructive) {
+                            settingsViewModel.c2paUseTestCertificate = false
+                            signingMessage = "Test signing disabled"
+                        }
+                    }
+                } else if settingsViewModel.c2paHasCertificate {
                     LabeledContent("Subject") {
                         Text(settingsViewModel.c2paCertificateSubject)
                             .foregroundStyle(.secondary)
@@ -1398,6 +1417,13 @@ struct SettingsView: View {
                 Text("Import a .pem or .p12 certificate for C2PA signing. Private keys are stored in the macOS Keychain.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                if !settingsViewModel.c2paUseTestCertificate {
+                    Button("Enable Test Signing (Untrusted)") {
+                        settingsViewModel.c2paUseTestCertificate = true
+                        signingMessage = "Test signing enabled — signatures will not be trusted"
+                    }
+                }
             }
 
             Section("Claim Defaults") {

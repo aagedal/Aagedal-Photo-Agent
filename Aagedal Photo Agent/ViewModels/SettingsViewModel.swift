@@ -423,11 +423,18 @@ final class SettingsViewModel {
         didSet { UserDefaults.standard.set(c2paDefaultAuthor.isEmpty ? nil : c2paDefaultAuthor, forKey: UserDefaultsKeys.c2paDefaultAuthor) }
     }
 
+    /// Uses c2patool's built-in test credential. It creates valid signatures which are
+    /// deliberately untrusted, so users can try the workflow before obtaining a credential.
+    var c2paUseTestCertificate: Bool {
+        didSet { UserDefaults.standard.set(c2paUseTestCertificate, forKey: UserDefaultsKeys.c2paUseTestCertificate) }
+    }
+
     var c2paHasCertificate: Bool {
-        !c2paCertificatePath.isEmpty && FileManager.default.fileExists(atPath: c2paCertificatePath)
+        c2paUseTestCertificate || (!c2paCertificatePath.isEmpty && FileManager.default.fileExists(atPath: c2paCertificatePath))
     }
 
     static var hasC2PASigningCertificate: Bool {
+        if UserDefaults.standard.bool(forKey: UserDefaultsKeys.c2paUseTestCertificate) { return C2PASigningService.isAvailable }
         guard let path = UserDefaults.standard.string(forKey: UserDefaultsKeys.c2paCertificatePath),
               !path.isEmpty else { return false }
         return FileManager.default.fileExists(atPath: path) && C2PASigningService.isAvailable
@@ -643,6 +650,7 @@ final class SettingsViewModel {
         self.c2paCertificateSubject = UserDefaults.standard.string(forKey: UserDefaultsKeys.c2paCertificateSubject) ?? ""
         self.c2paCertificateExpiry = UserDefaults.standard.string(forKey: UserDefaultsKeys.c2paCertificateExpiry) ?? ""
         self.c2paDefaultAuthor = UserDefaults.standard.string(forKey: UserDefaultsKeys.c2paDefaultAuthor) ?? ""
+        self.c2paUseTestCertificate = UserDefaults.standard.bool(forKey: UserDefaultsKeys.c2paUseTestCertificate)
 
         // Format & Compression settings
         let storedFormatSDR = UserDefaults.standard.string(forKey: UserDefaultsKeys.exportFormatSDR) ?? ExportFormatSDR.jpeg.rawValue

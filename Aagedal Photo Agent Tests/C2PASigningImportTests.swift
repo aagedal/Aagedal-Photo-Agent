@@ -5,6 +5,20 @@ import Testing
 @Suite("C2PA signing import transaction", .serialized)
 @MainActor
 struct C2PASigningImportTests {
+    @Test("Test signer manifest omits the user certificate")
+    func testSignerManifestOmitsCertificate() throws {
+        let data = try C2PASigningService.buildManifestJSON(
+            title: "test.jpg",
+            author: nil,
+            actions: [],
+            certificatePath: "",
+            claimGenerator: "Aagedal Photo Agent/1.0"
+        )
+        let manifest = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(manifest["sign_cert"] == nil)
+        #expect(manifest["alg"] as? String == "es256")
+    }
+
     @Test("Private-key export failure leaves the prior pair untouched")
     func keyExportFailurePreservesExistingPair() throws {
         let fixture = try Fixture(importer: .failure)
