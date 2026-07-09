@@ -422,11 +422,11 @@ final class FullScreenImageCache: @unchecked Sendable {
         return removed
     }
 
-    /// If a prefetch for `url` is already in flight, await it instead of launching a
-    /// duplicate decode, then return the freshly-cached image. Returns nil when no
-    /// prefetch is in flight (or it produced a different edit variant / failed), in
-    /// which case the caller decodes itself. Lets fast navigation reuse a decode that
-    /// is already running rather than decoding the same image twice concurrently.
+    /// Return a completed prefetch cache hit, or await an in-flight prefetch for `url`
+    /// instead of launching a duplicate decode. Returns nil when no matching prefetch
+    /// exists (or it produced a different edit variant / failed), in which case the
+    /// caller decodes itself. Lets fast navigation reuse a decode that is already
+    /// running rather than decoding the same image twice concurrently.
     nonisolated func awaitPrefetchedImage(
         for url: URL,
         orientation: Int? = nil,
@@ -439,6 +439,9 @@ final class FullScreenImageCache: @unchecked Sendable {
             renderToken: renderToken,
             isEdited: isEdited
         )
+        if let cached = cachedImage(for: url, orientation: orientation, renderToken: renderToken, isEdited: isEdited) {
+            return cached
+        }
         guard let task = lock.withLock({ prefetchTasks[key] }) else { return nil }
         await task.value
         return cachedImage(for: url, orientation: orientation, renderToken: renderToken, isEdited: isEdited)

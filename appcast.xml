@@ -34,6 +34,26 @@
         -->
 
         <item>
+            <title>Version 2.0.1</title>
+            <pubDate>Tue, 23 Jun 2026 17:18:11 +0200</pubDate>
+            <sparkle:version>380</sparkle:version>
+            <sparkle:shortVersionString>2.0.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <description><![CDATA[
+                <ul>
+                    <li>Fixed "Remove All IPTC Metadata" leaving embedded XMP behind — IPTC and XMP are now fully stripped from JPEG, PNG, and JPEG XL files.</li>
+                </ul>
+            ]]></description>
+            <enclosure
+                url="https://aagedal.me/apps/Aagedal-Photo-Agent-2.0.1.dmg"
+                sparkle:version="380"
+                sparkle:shortVersionString="2.0.1"
+                sparkle:edSignature="vYA3GDBr5nNavzg9ykkWn56gzhaSWVB/mrlkYFpGWYSyk6AnFItn55uq0HHbuNtQSPFW+Fhm1vxzQ747zKbaCg=="
+                length="148542270"
+                type="application/octet-stream" />
+        </item>
+
+        <item>
             <title>Version 2.0.0</title>
             <pubDate>Tue, 23 Jun 2026 14:07:43 +0200</pubDate>
             <sparkle:version>378</sparkle:version>
@@ -55,26 +75,6 @@
                 sparkle:shortVersionString="2.0.0"
                 sparkle:edSignature="Ku0QBuDJ/4kTqLuKTzA1NuhIPGRoDHx8JZgcc+6urea8eou3KGmbyLexPjxvuLL6fTa90YnhXsTcNdQMmTBUAg=="
                 length="148541385"
-                type="application/octet-stream" />
-        </item>
-
-        <item>
-            <title>Version 2.0.1</title>
-            <pubDate>Tue, 23 Jun 2026 17:18:11 +0200</pubDate>
-            <sparkle:version>380</sparkle:version>
-            <sparkle:shortVersionString>2.0.1</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
-            <description><![CDATA[
-                <ul>
-                    <li>Fixed "Remove All IPTC Metadata" leaving embedded XMP behind — IPTC and XMP are now fully stripped from JPEG, PNG, and JPEG XL files.</li>
-                </ul>
-            ]]></description>
-            <enclosure
-                url="https://aagedal.me/apps/Aagedal-Photo-Agent-2.0.1.dmg"
-                sparkle:version="380"
-                sparkle:shortVersionString="2.0.1"
-                sparkle:edSignature="vYA3GDBr5nNavzg9ykkWn56gzhaSWVB/mrlkYFpGWYSyk6AnFItn55uq0HHbuNtQSPFW+Fhm1vxzQ747zKbaCg=="
-                length="148542270"
                 type="application/octet-stream" />
         </item>
 

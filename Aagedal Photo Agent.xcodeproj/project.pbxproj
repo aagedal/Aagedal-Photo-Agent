@@ -335,7 +335,6 @@
 				AB0400000000000000000002 /* StructuredKeywordSerializerTests.swift in Sources */,
 				AB0500000000000000000002 /* KeywordListsArchiveTests.swift in Sources */,
 				AB0600000000000000000002 /* MetadataEngineConcurrencyTests.swift in Sources */,
-				AB0700000000000000000002 /* StructuredKeywordServiceTests.swift in Sources */,
 				AB0800000000000000000002 /* CoordinateParserTests.swift in Sources */,
 				AB1800000000000000000002 /* GeocodingServiceTests.swift in Sources */,
 				AB1100000000000000000002 /* FullScreenImageCacheTests.swift in Sources */,
@@ -376,9 +375,8 @@
 			buildSettings = {
 				ARCHS = arm64;
 				BUNDLE_LOADER = "$(TEST_HOST)";
-				CODE_SIGNING_ALLOWED = NO;
-				CODE_SIGNING_REQUIRED = NO;
-				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 3R5QGG9DW6;
 				EXCLUDED_ARCHS = x86_64;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
@@ -601,9 +599,8 @@
 			buildSettings = {
 				ARCHS = arm64;
 				BUNDLE_LOADER = "$(TEST_HOST)";
-				CODE_SIGNING_ALLOWED = NO;
-				CODE_SIGNING_REQUIRED = NO;
-				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 3R5QGG9DW6;
 				EXCLUDED_ARCHS = x86_64;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",

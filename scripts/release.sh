@@ -216,7 +216,7 @@ if grep -q "<sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>" "
   printf '%s\n' "$ITEM" >"$OUTPUT_DIR/appcast-item.xml"
   ok "$VERSION already in $APPCAST — wrote the regenerated item to $OUTPUT_DIR/appcast-item.xml instead"
 else
-  awk -v item="$ITEM" '/<\/channel>/ && !d { print item; print ""; d=1 } { print }' "$APPCAST" >"$APPCAST.tmp" && mv "$APPCAST.tmp" "$APPCAST"
+  awk -v item="$ITEM" '/^[[:space:]]*<item>/ && !d { print item; print ""; d=1 } { print }' "$APPCAST" >"$APPCAST.tmp" && mv "$APPCAST.tmp" "$APPCAST"
   xmllint --noout "$APPCAST" || die "appcast.xml is no longer well-formed."
   ok "Inserted the $VERSION item into $APPCAST"
 fi
