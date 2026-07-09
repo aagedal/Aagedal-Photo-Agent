@@ -73,6 +73,7 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 - Fixed cropped edit zoom rendering, RAW full-screen orientation caching, and orientation cache reuse.
 - Fixed watermark scaling and aspect handling during crop workflows.
 - Fixed RAW white balance first-touch shifts and endpoint-only tone curve persistence.
+- Hardened C2PA PKCS#12 certificate import so malformed or incomplete signing bundles fail with clear errors instead of crashing or silently saving partial signing state.
 - Improved small safety issues across editing, metadata, and view-model code.
 - Added targeted test coverage for sports tagging, watermarks, brush rendering, IPTC metadata, tone curves, thumbnail/full-screen cache behavior, and metadata concurrency.
 

@@ -451,48 +451,54 @@ final class SettingsViewModel {
             throw C2PASigningError.processFailed("Failed to import PKCS#12 file (status: \(status))")
         }
 
-        // Extract certificate
-        if let identity = first[kSecImportItemIdentity as String] {
-            var certRef: SecCertificate?
-            // swiftlint:disable:next force_cast — SecPKCS12Import guarantees SecIdentity type
-            SecIdentityCopyCertificate(identity as! SecIdentity, &certRef)
-            if let cert = certRef {
-                let certData = SecCertificateCopyData(cert) as Data
-                let certPEM = "-----BEGIN CERTIFICATE-----\n" +
-                    certData.base64EncodedString(options: [.lineLength76Characters, .endLineWithLineFeed]) +
-                    "\n-----END CERTIFICATE-----\n"
-
-                let certURL = AppPaths.certificatesDirectory.appendingPathComponent("signing_cert.pem")
-                try certPEM.write(to: certURL, atomically: true, encoding: .utf8)
-                c2paCertificatePath = certURL.path(percentEncoded: false)
-
-                // Parse certificate info
-                let subject = SecCertificateCopySubjectSummary(cert) as String? ?? "Unknown"
-                c2paCertificateSubject = subject
-
-                // Try to read expiry from certificate properties
-                if let values = SecCertificateCopyValues(cert, nil, nil) as? [String: Any],
-                   let validityEntry = values["2.5.4.24"] as? [String: Any],
-                   let notAfter = validityEntry[kSecPropertyKeyValue as String] as? Date {
-                    let formatter = DateFormatter()
-                    formatter.dateStyle = .medium
-                    c2paCertificateExpiry = formatter.string(from: notAfter)
-                } else {
-                    c2paCertificateExpiry = ""
-                }
-            }
-
-            // Extract and store private key in Keychain
-            var keyRef: SecKey?
-            // swiftlint:disable:next force_cast — SecPKCS12Import guarantees SecIdentity type
-            SecIdentityCopyPrivateKey(identity as! SecIdentity, &keyRef)
-            if let key = keyRef, let keyData = SecKeyCopyExternalRepresentation(key, nil) as Data? {
-                let keyPEM = "-----BEGIN PRIVATE KEY-----\n" +
-                    keyData.base64EncodedString(options: [.lineLength76Characters, .endLineWithLineFeed]) +
-                    "\n-----END PRIVATE KEY-----\n"
-                try KeychainService.save(password: keyPEM, forKey: "c2pa_private_key")
-            }
+        guard let identityValue = first[kSecImportItemIdentity as String],
+              CFGetTypeID(identityValue as CFTypeRef) == SecIdentityGetTypeID() else {
+            throw C2PASigningError.processFailed("PKCS#12 file did not contain a signing identity")
         }
+        let identity = identityValue as! SecIdentity
+
+        var certRef: SecCertificate?
+        let certificateStatus = SecIdentityCopyCertificate(identity, &certRef)
+        guard certificateStatus == errSecSuccess, let cert = certRef else {
+            throw C2PASigningError.processFailed("Failed to read certificate from PKCS#12 file (status: \(certificateStatus))")
+        }
+
+        let certData = SecCertificateCopyData(cert) as Data
+        let certPEM = "-----BEGIN CERTIFICATE-----\n" +
+            certData.base64EncodedString(options: [.lineLength76Characters, .endLineWithLineFeed]) +
+            "\n-----END CERTIFICATE-----\n"
+
+        let certURL = AppPaths.certificatesDirectory.appendingPathComponent("signing_cert.pem")
+        try certPEM.write(to: certURL, atomically: true, encoding: .utf8)
+        c2paCertificatePath = certURL.path(percentEncoded: false)
+
+        let subject = SecCertificateCopySubjectSummary(cert) as String? ?? "Unknown"
+        c2paCertificateSubject = subject
+
+        if let values = SecCertificateCopyValues(cert, nil, nil) as? [String: Any],
+           let validityEntry = values["2.5.4.24"] as? [String: Any],
+           let notAfter = validityEntry[kSecPropertyKeyValue as String] as? Date {
+            let formatter = DateFormatter()
+            formatter.dateStyle = .medium
+            c2paCertificateExpiry = formatter.string(from: notAfter)
+        } else {
+            c2paCertificateExpiry = ""
+        }
+
+        var keyRef: SecKey?
+        let keyStatus = SecIdentityCopyPrivateKey(identity, &keyRef)
+        guard keyStatus == errSecSuccess, let key = keyRef else {
+            throw C2PASigningError.processFailed("Failed to read private key from PKCS#12 file (status: \(keyStatus))")
+        }
+
+        guard let keyData = SecKeyCopyExternalRepresentation(key, nil) as Data? else {
+            throw C2PASigningError.processFailed("Failed to export private key from PKCS#12 file")
+        }
+
+        let keyPEM = "-----BEGIN PRIVATE KEY-----\n" +
+            keyData.base64EncodedString(options: [.lineLength76Characters, .endLineWithLineFeed]) +
+            "\n-----END PRIVATE KEY-----\n"
+        try KeychainService.save(password: keyPEM, forKey: "c2pa_private_key")
     }
 
     private func importPEMCertificate(from url: URL) throws {
