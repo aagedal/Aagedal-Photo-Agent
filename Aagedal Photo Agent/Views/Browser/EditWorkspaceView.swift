@@ -2549,7 +2549,16 @@ struct EditWorkspaceView: View {
         // Keep the settings alive while the crop tool is active (crop.hasCrop) even if
         // the crop is still a full-frame no-op — the overlay reads `crop.hasCrop` — but
         // an identity crop must NOT set hasSettings above, or it lights the edit badge.
-        let newSettings = (cameraRawHasEdits(cameraRaw) || cameraRaw.crop?.hasCrop == true) ? cameraRaw : nil
+        // HDR mode is display state rather than an adjustment, so it deliberately does not
+        // contribute to `hasSettings`. It must still keep the Camera Raw container alive:
+        // otherwise resetting the last adjustment (for example by double-clicking an exposure
+        // slider) drops `hdrEditMode` with the container and silently switches the image to SDR.
+        // Preserve both explicit values: `0` also prevents native/RAW auto-enable from turning
+        // HDR back on after the user has deliberately disabled it.
+        let shouldKeepSettings = cameraRawHasEdits(cameraRaw)
+            || cameraRaw.crop?.hasCrop == true
+            || cameraRaw.hdrEditMode != nil
+        let newSettings = shouldKeepSettings ? cameraRaw : nil
         metadataViewModel.editingMetadata.cameraRaw = newSettings
         metadataViewModel.markChanged()
 
