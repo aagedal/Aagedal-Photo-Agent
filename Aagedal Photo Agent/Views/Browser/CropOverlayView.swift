@@ -207,8 +207,9 @@ struct CropOverlayView: View {
                 .frame(width: rect.width, height: rect.height)
                 .position(x: rect.midX, y: rect.midY)
 
-            // Rule of thirds — straight lines
-            ruleOfThirdsGrid(in: rect)
+            // Nine-part composition grid: stronger rule-of-thirds guides with two finer
+            // subdivisions inside each third.
+            compositionGrid(in: rect)
 
             // Rotation gesture area — full view, behind move area and handles
             Color.clear
@@ -347,24 +348,36 @@ struct CropOverlayView: View {
     }
 
     @ViewBuilder
-    private func ruleOfThirdsGrid(in rect: CGRect) -> some View {
-        Path { path in
-            // Vertical lines at 1/3 and 2/3
-            let x1 = rect.minX + rect.width / 3
-            let x2 = rect.minX + rect.width * 2 / 3
-            path.move(to: CGPoint(x: x1, y: rect.minY))
-            path.addLine(to: CGPoint(x: x1, y: rect.maxY))
-            path.move(to: CGPoint(x: x2, y: rect.minY))
-            path.addLine(to: CGPoint(x: x2, y: rect.maxY))
-            // Horizontal lines at 1/3 and 2/3
-            let y1 = rect.minY + rect.height / 3
-            let y2 = rect.minY + rect.height * 2 / 3
-            path.move(to: CGPoint(x: rect.minX, y: y1))
-            path.addLine(to: CGPoint(x: rect.maxX, y: y1))
-            path.move(to: CGPoint(x: rect.minX, y: y2))
-            path.addLine(to: CGPoint(x: rect.maxX, y: y2))
+    private func compositionGrid(in rect: CGRect) -> some View {
+        ZStack {
+            // Fine ninths retain the previous rule-of-thirds line weight.
+            Path { path in
+                for division in [1, 2, 4, 5, 7, 8] {
+                    let fraction = CGFloat(division) / 9
+                    let x = rect.minX + rect.width * fraction
+                    let y = rect.minY + rect.height * fraction
+                    path.move(to: CGPoint(x: x, y: rect.minY))
+                    path.addLine(to: CGPoint(x: x, y: rect.maxY))
+                    path.move(to: CGPoint(x: rect.minX, y: y))
+                    path.addLine(to: CGPoint(x: rect.maxX, y: y))
+                }
+            }
+            .stroke(Color.white.opacity(0.35), lineWidth: 0.5)
+
+            // Primary thirds remain the dominant composition guides.
+            Path { path in
+                for division in [1, 2] {
+                    let fraction = CGFloat(division) / 3
+                    let x = rect.minX + rect.width * fraction
+                    let y = rect.minY + rect.height * fraction
+                    path.move(to: CGPoint(x: x, y: rect.minY))
+                    path.addLine(to: CGPoint(x: x, y: rect.maxY))
+                    path.move(to: CGPoint(x: rect.minX, y: y))
+                    path.addLine(to: CGPoint(x: rect.maxX, y: y))
+                }
+            }
+            .stroke(Color.white.opacity(0.45), lineWidth: 1)
         }
-        .stroke(Color.white.opacity(0.35), lineWidth: 0.5)
     }
 
     // MARK: - Gestures
