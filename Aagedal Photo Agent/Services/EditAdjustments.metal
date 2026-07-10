@@ -66,7 +66,8 @@ struct EditParams {
 
     uint activeFlags;        // bitmask: bit0=toneLUT, bit1=vibrance,
                              // bit2=saturation, bit3=whiteBalance, bit4=hdrMode,
-                             // bit5=anonymizer (global), bit6=globalDensity
+                             // bit5=anonymizer (global), bit6=globalDensity,
+                             // bit7=source has scene-referred HDR headroom
     uint maskCount;          // number of active masks (0-8)
 
     float2 scale;            // source→drawable scale (stretch-to-fill)
@@ -502,6 +503,17 @@ static half3 applyMaskColor(half3 rgb, constant MaskParams &mask)
     return adjusted;
 }
 
+/// Roll scene-referred super-whites into the SDR display range. This is an output transform,
+/// not an adjustment-layer operation: applying it only after the full chain preserves highlight
+/// differences for a later masked layer to pull back below the shoulder.
+static float sdrOutputToneMap(float x)
+{
+    if (x <= 0.7) return x;
+    float t = min((x - 0.7) / 0.9, 1.0);
+    float u = t - 1.0;
+    return 1.0 + 0.3 * u * u * u;
+}
+
 struct AnonymizerShape {
     float distortAmountPx;
     float distortScalePx;
@@ -735,6 +747,18 @@ kernel void editAdjustments(
             }
             rgb = mix(rgb, adjusted, half(weight));
         }
+    }
+
+    // Final SDR output transform for scene-referred sources. It must remain after every layer:
+    // moving this into applyGlobal irreversibly flattens super-whites before local recovery.
+    bool sourceHasHeadroom = (params.activeFlags & (1u << 7)) != 0;
+    bool hdrEditMode = (params.activeFlags & (1u << 4)) != 0;
+    if (sourceHasHeadroom && !hdrEditMode) {
+        float3 rgbF = float3(rgb);
+        rgbF.r = sdrOutputToneMap(rgbF.r);
+        rgbF.g = sdrOutputToneMap(rgbF.g);
+        rgbF.b = sdrOutputToneMap(rgbF.b);
+        rgb = half3(rgbF);
     }
 
     // Gamut-clip soft proof: simulate target gamut by clamping out-of-gamut values

@@ -115,8 +115,12 @@ enum CameraRawApproximation {
         }
 
         // 2. Tonal operations via ToneCurveGenerator LUT, approximated as 5-point CIToneCurve.
-        if !ToneCurveGenerator.isIdentity(settings: settings) {
-            let (rLUT, _, _) = ToneCurveGenerator.generatePerChannelLUT(settings: settings)
+        let needsSDROutputToneMap = settings.sourceHasHDRHeadroom == true && settings.hdrEditMode != 1
+        if !ToneCurveGenerator.isIdentity(settings: settings) || needsSDROutputToneMap {
+            let (rLUT, _, _) = ToneCurveGenerator.generatePerChannelLUT(
+                settings: settings,
+                includeOutputToneMap: needsSDROutputToneMap
+            )
             let points = ToneCurveGenerator.sampleForToneCurve(rLUT)
             output = applyFilter(named: "CIToneCurve", input: output, values: [
                 "inputPoint0": CIVector(x: points[0].x, y: points[0].y),

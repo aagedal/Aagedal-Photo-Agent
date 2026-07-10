@@ -2362,4 +2362,48 @@ struct BrushCompositingTests {
         #expect(center > corner + 0.2)          // ellipse center brightened
         #expect(abs(corner - 0.4) < 0.05)       // outside the ellipse ~unchanged
     }
+
+    @Test("a later local layer can recover highlights raised above SDR white globally")
+    func localLayerRecoversGlobalSuperWhites() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else { return }
+
+        // Two distinct scene-referred highlights. Global Whites pushes both well beyond the
+        // old SDR shoulder's hard ceiling; the following full-image mask pulls them down again.
+        let width = 64, height = 16
+        var pixels = [Float](repeating: 1, count: width * height * 4)
+        for y in 0..<height {
+            for x in 0..<width {
+                let value: Float = x < width / 2 ? 2.0 : 3.0
+                let i = (y * width + x) * 4
+                pixels[i] = value
+                pixels[i + 1] = value
+                pixels[i + 2] = value
+            }
+        }
+        let data = Data(bytes: pixels, count: pixels.count * MemoryLayout<Float>.size)
+        let source = CIImage(bitmapData: data,
+                             bytesPerRow: width * 4 * MemoryLayout<Float>.size,
+                             size: CGSize(width: width, height: height),
+                             format: .RGBAf,
+                             colorSpace: space)
+
+        var recovery = MaskAdjustment()
+        recovery.geometry = EllipseMaskGeometry(centerX: 0.5, centerY: 0.5,
+                                                 radiusX: 1.0, radiusY: 1.0,
+                                                 rotation: 0, feather: 0)
+        recovery.exposure = -2.0
+
+        var settings = CameraRawSettings()
+        settings.sourceHasHDRHeadroom = true
+        settings.whites2012 = 100
+        settings.localAdjustments = [recovery]
+
+        let result = try #require(MetalEditPipeline.renderOffscreen(source: source, settings: settings))
+        let lowerHighlight = sample(result, x: 16, y: 8)
+        let higherHighlight = sample(result, x: 48, y: 8)
+
+        #expect(lowerHighlight < 0.95)
+        #expect(higherHighlight > lowerHighlight + 0.08,
+                "the global layer must not flatten distinct super-whites before local recovery")
+    }
 }

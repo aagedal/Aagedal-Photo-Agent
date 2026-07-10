@@ -15,7 +15,7 @@ nonisolated struct ToneCurveGenerator: Sendable {
     /// Generates a 1D LUT from CameraRawSettings.
     /// Maps input values in [domainMin, domainMax] to output values.
     /// Operations applied in order: Exposure, Contrast, Blacks, Shadows, Highlights, Whites.
-    static func generateLUT(settings: CameraRawSettings?) -> [Float] {
+    static func generateLUT(settings: CameraRawSettings?, includeOutputToneMap: Bool = false) -> [Float] {
         let range = domainMax - domainMin
 
         let ev = Float(settings?.exposure2012 ?? 0)
@@ -25,7 +25,6 @@ nonisolated struct ToneCurveGenerator: Sendable {
         let highlights = Float(settings?.highlights2012 ?? 0) / 100.0
         let whites = Float(settings?.whites2012 ?? 0) / 100.0
         let isHDR = (settings?.hdrEditMode ?? 0) == 1
-        let tonemapToSDR = !isHDR && (settings?.sourceHasHDRHeadroom == true)
 
         var lut = [Float](repeating: 0, count: lutSize)
 
@@ -138,20 +137,10 @@ nonisolated struct ToneCurveGenerator: Sendable {
                 }
             }
 
-            // 7. SDR output tonemap (scene-referred sources only): RAW files always
-            //    decode with full EDR headroom, so in SDR edit mode the super-white
-            //    scene data must be rolled off into display range here instead of
-            //    being clamped at decode. Calibrated against Apple's own EDR=0 RAW
-            //    tonemap (identity below 0.7 linear, saturating to 1.0 by ~2.0× SDR
-            //    white) so the default rendering matches the previous SDR decode.
-            //    Closed-form monotone cubic: identity slope at the knee, zero slope
-            //    at the 1.6 white point, exactly 1.0 above. Because this runs AFTER
-            //    exposure, pulling exposure down shifts recoverable highlight detail
-            //    below the knee — true highlight recovery in SDR mode.
-            if tonemapToSDR && x > 0.7 {
-                let t = min((x - 0.7) / 0.9, Float(1.0))
-                let u = t - 1.0
-                x = 1.0 + 0.3 * u * u * u
+            // Compatibility path for the global-only Core Image fallback. The real Metal
+            // renderer leaves this out and performs the transform after its full layer chain.
+            if includeOutputToneMap && !isHDR && settings?.sourceHasHDRHeadroom == true {
+                x = sdrOutputToneMap(x)
             }
 
             lut[i] = x
@@ -163,9 +152,6 @@ nonisolated struct ToneCurveGenerator: Sendable {
     /// Returns true if no tonal adjustments are active (LUT would be identity).
     static func isIdentity(settings: CameraRawSettings?) -> Bool {
         guard let s = settings else { return true }
-        // Scene-referred source in SDR mode: the LUT is never identity because the
-        // SDR output tonemap must roll super-white data into display range.
-        if s.sourceHasHDRHeadroom == true && (s.hdrEditMode ?? 0) != 1 { return false }
         let hasExposureAdjustment = s.exposure2012.map { abs($0) >= 0.0001 } ?? false
         return !hasExposureAdjustment
             && s.contrast2012 == nil
@@ -176,10 +162,22 @@ nonisolated struct ToneCurveGenerator: Sendable {
             && s.toneCurve == nil
     }
 
+    /// Final display transform for scene-referred sources edited in SDR mode.
+    ///
+    /// This deliberately does not participate in the adjustment LUT: it must run after every
+    /// develop layer so a later local layer can pull globally-raised highlights back below the
+    /// display shoulder. The Metal shader contains the same small closed-form function.
+    static func sdrOutputToneMap(_ x: Float) -> Float {
+        guard x > 0.7 else { return x }
+        let t = min((x - 0.7) / 0.9, 1.0)
+        let u = t - 1.0
+        return 1.0 + 0.3 * u * u * u
+    }
+
     /// Generates per-channel LUTs (R, G, B), each 4096 entries.
     /// Applies slider-based tonal operations first, then composes custom curve on top.
-    static func generatePerChannelLUT(settings: CameraRawSettings?) -> (r: [Float], g: [Float], b: [Float]) {
-        let baseLUT = generateLUT(settings: settings)
+    static func generatePerChannelLUT(settings: CameraRawSettings?, includeOutputToneMap: Bool = false) -> (r: [Float], g: [Float], b: [Float]) {
+        let baseLUT = generateLUT(settings: settings, includeOutputToneMap: includeOutputToneMap)
         let curve = settings?.toneCurve
 
         // Apply master curve, then per-channel curves

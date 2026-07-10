@@ -114,7 +114,7 @@ struct EditParams {
 
     var whiteBalanceMatrix: simd_float3x3 = matrix_identity_float3x3
 
-    var activeFlags: UInt32 = 0  // bit0=toneLUT, bit1=vibrance, bit2=saturation, bit3=whiteBalance, bit4=hdrMode, bit5=anonymizer, bit6=globalDensity
+    var activeFlags: UInt32 = 0  // bit0=toneLUT, bit1=vibrance, bit2=saturation, bit3=whiteBalance, bit4=hdrMode, bit5=anonymizer, bit6=globalDensity, bit7=sourceHeadroom
     var maskCount: UInt32 = 0
 
     var scale: SIMD2<Float> = .zero
@@ -752,6 +752,13 @@ final class MetalEditPipeline: @unchecked Sendable {
         // 5. HDR mode flag — propagated to Metal shaders for HDR-aware processing
         if settings.hdrEditMode == 1 {
             flags |= (1 << 4)
+        }
+
+        // Scene-referred RAW decodes retain values above SDR white. The shader applies their
+        // SDR display roll-off only after the complete layer chain so later layers can recover
+        // highlights raised by an earlier layer.
+        if settings.sourceHasHDRHeadroom == true {
+            flags |= (1 << 7)
         }
 
         // 6. Anonymizer (global) — multi-layer redaction effect or full Black Out.
@@ -2226,6 +2233,7 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// Returns true if settings have no visual adjustments (all filters would be identity).
     nonisolated private static func isIdentitySettings(_ settings: CameraRawSettings) -> Bool {
         let noTonal = ToneCurveGenerator.isIdentity(settings: settings)
+        let noOutputToneMap = settings.sourceHasHDRHeadroom != true || settings.hdrEditMode == 1
         let noVibrance = settings.vibrance == nil || settings.vibrance == 0
         let noSaturation = settings.saturation == nil || settings.saturation == 0
         let noDensity = settings.globalDensity == nil || settings.globalDensity == 0
@@ -2236,6 +2244,6 @@ final class MetalEditPipeline: @unchecked Sendable {
         let noWatermarks = settings.watermarkLayers?.isEmpty ?? true
         let noHSL = settings.hslAdjustments?.isEmpty ?? true
         let noAnonymizer = settings.anonymizer?.isEmpty ?? true
-        return noTonal && noVibrance && noSaturation && noDensity && noWB && noMasks && noWatermarks && noHSL && noAnonymizer
+        return noTonal && noOutputToneMap && noVibrance && noSaturation && noDensity && noWB && noMasks && noWatermarks && noHSL && noAnonymizer
     }
 }
