@@ -643,8 +643,14 @@ final class BrowserViewModel {
                     self.suppressImagesCascade = false
                 }
 
-                // Phase 2: Discover subfolders (non-blocking, after grid is visible)
-                let discoveredSubfolders = (try? fileSystemService.listSubfolders(at: url)) ?? []
+                // Phase 2: Discover subfolders after the grid is visible. `listSubfolders` is
+                // synchronous; calling it directly from this main-actor task can block SwiftUI
+                // while iCloud resolves directory placeholders. Force the enumeration onto a
+                // utility task just as the initial image scan is forced off the main actor.
+                let service = fileSystemService
+                let discoveredSubfolders = await Task.detached(priority: .utility) {
+                    (try? service.listSubfolders(at: url)) ?? []
+                }.value
                 guard !Task.isCancelled, self.currentFolderURL == url else { return }
                 self.subfoldersByOpenFolder[url] = discoveredSubfolders
                 if !discoveredSubfolders.isEmpty {

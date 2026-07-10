@@ -32,6 +32,10 @@ struct EditWorkspaceView: View {
     @State private var previewImage: NSImage?
     @State private var previewTask: Task<Void, Never>?
     @State private var previewRenderTask: Task<Void, Never>?
+    /// Speculative adjacent-RAW decoding must have a single owner. Without retaining this task,
+    /// rapid navigation left every previous pair decoding and uploading concurrently even after
+    /// its preview was cancelled, causing extreme Core Image/IOSurface memory growth.
+    @State private var adjacentRAWPrecacheTask: Task<Void, Never>?
     @State private var isLoadingPreview = false
     @State private var isDecodingFullResolution = false
     @State private var isSavingRenderedJPEG = false
@@ -1187,7 +1191,13 @@ struct EditWorkspaceView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            .padding(14)
+            .padding(.leading, 14)
+            .padding(.vertical, 14)
+            // macOS uses a substantially wider, permanently visible scroller when
+            // “Show scroll bars: Always” is enabled (common on desktop Macs without a
+            // trackpad). ScrollView overlays that scroller, so reserve enough trailing
+            // space to keep slider values, reset buttons, and picker edges unobscured.
+            .padding(.trailing, 28)
             .disabled(isDecodingFullResolution)
             .opacity(isDecodingFullResolution ? 0.6 : 1.0)
             .animation(.easeInOut(duration: 0.15), value: isDecodingFullResolution)
@@ -1257,6 +1267,8 @@ struct EditWorkspaceView: View {
         scopeViewModel.clearMetal()
         previewTask?.cancel()
         previewTask = nil
+        adjacentRAWPrecacheTask?.cancel()
+        adjacentRAWPrecacheTask = nil
         previewRenderTask?.cancel()
         previewRenderTask = nil
         scopeThrottleTask?.cancel()
@@ -1418,6 +1430,8 @@ struct EditWorkspaceView: View {
         editLog.info("[\(filename)] loadSelectedImagePreview: resetting state, cancelling previous tasks")
         previewTask?.cancel()
         previewTask = nil
+        adjacentRAWPrecacheTask?.cancel()
+        adjacentRAWPrecacheTask = nil
         previewRenderTask?.cancel()
         previewRenderTask = nil
         sourceImage = nil
@@ -1837,7 +1851,8 @@ struct EditWorkspaceView: View {
         let screenMaxPx = previewWorkingMaxPixelSize
         editLog.info("[\(currentURL.lastPathComponent)] precacheAdjacent: \(adjacentRAWs.map(\.url.lastPathComponent)) at \(Int(screenMaxPx))px")
 
-        Task.detached(priority: .background) {
+        adjacentRAWPrecacheTask?.cancel()
+        adjacentRAWPrecacheTask = Task.detached(priority: .background) {
             for (url, neighborOrientation) in adjacentRAWs {
                 guard !Task.isCancelled else {
                     editLog.info("[\(url.lastPathComponent)] precache: cancelled")
@@ -1861,6 +1876,10 @@ struct EditWorkspaceView: View {
                     ciImage: rawResult.image, nsImage: nil,
                     from: fileOrientation, to: neighborOrientation
                 ).ciImage ?? rawResult.image
+                guard !Task.isCancelled else {
+                    editLog.info("[\(url.lastPathComponent)] precache: cancelled after decode")
+                    return
+                }
                 let ciImage = FullScreenImageCache.downsample(oriented, maxPixelSize: screenMaxPx)
                 pipeline.precacheTexture(
                     for: url, ciImage: ciImage,

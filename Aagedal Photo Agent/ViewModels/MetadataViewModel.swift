@@ -209,6 +209,10 @@ final class MetadataViewModel {
         // lands on .embedded; the next (sidecar-backed) RAW then kept .embedded and showed
         // empty fields even though its .xmp was intact.
         let previousSelectedURLs = selectedURLs
+        let selectionSnapshot = Set(images.map(\.url))
+        let isReloadingSameBatch = images.count > 1
+            && selectionSnapshot == Set(previousSelectedURLs)
+            && batchCommonMetadata != nil
 
         selectedCount = images.count
         selectedURLs = images.map(\.url)
@@ -222,10 +226,15 @@ final class MetadataViewModel {
         originalImageMetadata = nil
         embeddedMetadata = nil
         xmpMetadata = nil
-        batchCommonMetadata = nil
-        batchDifferingFields = []
-        batchPartialKeywords = []
-        batchPartialPersonShown = []
+        // Keep the displayed batch state intact across a redundant reload. Clearing it here
+        // made `isReloadingSameBatch` impossible to detect and blanked/replaced fields while
+        // the user was typing whenever a folder refresh reloaded the same selection.
+        if !isReloadingSameBatch {
+            batchCommonMetadata = nil
+            batchDifferingFields = []
+            batchPartialKeywords = []
+            batchPartialPersonShown = []
+        }
 
         if let folderURL {
             currentFolderURL = folderURL
@@ -352,11 +361,6 @@ final class MetadataViewModel {
             // while the user is editing.  The async load will update only if values
             // actually changed — mirroring the single-image isReloadingSameImage
             // optimisation.
-            let selectionSnapshot = Set(images.map(\.url))
-            let isReloadingSameBatch = selectedCount > 1
-                && selectionSnapshot == Set(previousSelectedURLs)
-                && batchCommonMetadata != nil
-
             if !isReloadingSameBatch {
                 metadata = nil
                 editingMetadata = IPTCMetadata()
