@@ -123,6 +123,8 @@ nonisolated enum UserDefaultsKeys {
     static let c2paCertificateExpiry = "c2paCertificateExpiry"
     static let c2paDefaultAuthor = "c2paDefaultAuthor"
     static let c2paUseTestCertificate = "c2paUseTestCertificate"
+    static let c2paTrustListLastRefreshed = "c2paTrustListLastRefreshed"
+    static let c2paTrustListLastError = "c2paTrustListLastError"
 
     // MARK: - Templates
     static let templatesFolderBookmark = "templatesFolderBookmark"

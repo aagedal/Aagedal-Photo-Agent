@@ -1346,6 +1346,8 @@ struct SettingsView: View {
     @State private var showP12PasswordPrompt = false
     @State private var pendingP12URL: URL?
     @State private var signingMessage: String?
+    @State private var c2paTrustListStatus: C2PATrustListStatus?
+    @State private var isRefreshingC2PATrustList = false
 
     @ViewBuilder
     private var signingTab: some View {
@@ -1434,6 +1436,55 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("Signer Trust") {
+                if let c2paTrustListStatus, c2paTrustListStatus.isAvailable {
+                    LabeledContent("Trust List") {
+                        Text(c2paTrustListStatus.hasLegacyCompatibilityList
+                             ? "Official C2PA + legacy compatibility"
+                             : "Official C2PA Trust List")
+                            .foregroundStyle(.secondary)
+                    }
+                    if let date = c2paTrustListStatus.lastRefreshed {
+                        LabeledContent("Last Updated") {
+                            Text(date.formatted(date: .abbreviated, time: .shortened))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } else {
+                    Label("Signer trust has not been checked yet.", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                    Text("Signature integrity can still be checked, but a trusted signer cannot be identified until the official C2PA trust list is downloaded.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Button {
+                    refreshC2PATrustList()
+                } label: {
+                    if isRefreshingC2PATrustList {
+                        HStack(spacing: 6) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Refreshing Trust List…")
+                        }
+                    } else {
+                        Text("Refresh Trust List")
+                    }
+                }
+                .disabled(isRefreshingC2PATrustList)
+
+                Text("The official public C2PA trust list is refreshed automatically in the background on first launch and then weekly. A frozen legacy compatibility list is also checked for older credentials. The last known-good lists remain in use while offline.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if let error = c2paTrustListStatus?.lastError {
+                    Text("Last refresh failed: \(error)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             if let signingMessage {
                 Section {
                     Text(signingMessage)
@@ -1444,6 +1495,7 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
+        .task { await loadC2PATrustListStatus() }
         .fileImporter(
             isPresented: $isImportingCertificate,
             allowedContentTypes: [.x509Certificate, .pkcs12, .data],
@@ -1491,6 +1543,26 @@ struct SettingsView: View {
             }
         case .failure(let error):
             signingMessage = "File selection failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func loadC2PATrustListStatus() async {
+        c2paTrustListStatus = await C2PATrustListService.shared.status()
+    }
+
+    private func refreshC2PATrustList() {
+        guard !isRefreshingC2PATrustList else { return }
+        isRefreshingC2PATrustList = true
+        Task {
+            defer { isRefreshingC2PATrustList = false }
+            do {
+                let status = try await C2PATrustListService.shared.refreshNow()
+                c2paTrustListStatus = status
+                signingMessage = "Official C2PA trust list refreshed"
+            } catch {
+                c2paTrustListStatus = await C2PATrustListService.shared.status()
+                signingMessage = "Trust-list refresh failed: \(error.localizedDescription)"
+            }
         }
     }
 

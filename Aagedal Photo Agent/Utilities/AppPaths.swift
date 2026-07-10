@@ -100,6 +100,14 @@ nonisolated enum AppPaths {
         return url
     }
 
+    /// Cached public trust anchors used to establish C2PA signer trust. These are
+    /// local application data, never iCloud-synced user content.
+    static var c2paTrustDirectory: URL {
+        let url = applicationSupport.appendingPathComponent("C2PATrust", isDirectory: true)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
     static var cacheDirectory: URL {
         let url = applicationSupport.appendingPathComponent("Cache", isDirectory: true)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)

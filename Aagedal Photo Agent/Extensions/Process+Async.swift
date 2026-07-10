@@ -54,7 +54,8 @@ extension Process {
         executableURL: URL,
         arguments: [String],
         currentDirectoryURL: URL? = nil,
-        environment: [String: String]? = nil
+        environment: [String: String]? = nil,
+        allowNonZeroExit: Bool = false
     ) async throws -> (stdout: String, stderr: String) {
         let process = Process()
         process.executableURL = executableURL
@@ -130,7 +131,7 @@ extension Process {
         let stdout = String(data: await stdoutData, encoding: .utf8) ?? ""
         let stderr = String(data: await stderrData, encoding: .utf8) ?? ""
 
-        if status != 0 {
+        if status != 0 && !allowNonZeroExit {
             let message = stderr.isEmpty
                 ? "Process exited with status \(status)"
                 : "Process exited with status \(status): \(stderr.prefix(500))"

@@ -36,6 +36,12 @@ struct Aagedal_Photo_AgentApp: App {
         Task.detached(priority: .utility) {
             ScopeRenderService.precomputeChromaticityBackground()
         }
+
+        // Refreshing is opportunistic: validation uses the local cache immediately
+        // and never waits for this network request.
+        Task.detached(priority: .utility) {
+            await C2PATrustListService.shared.refreshIfNeeded()
+        }
     }
 
     /// Radio selection for the View-menu clean-feed display list: the active target

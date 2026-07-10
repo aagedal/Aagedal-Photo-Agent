@@ -143,6 +143,10 @@ private actor C2PAValidationCache {
     struct FileVersion: Equatable {
         let modificationDate: Date?
         let size: UInt64
+        /// A changed trust list can turn an otherwise identical asset from
+        /// "trust not checked" or "untrusted" into trusted, so it is part of
+        /// the cache identity as well as the asset's own file version.
+        let trustListModificationDates: [Date?]
     }
 
     private var values: [URL: (FileVersion, C2PAValidationResult)] = [:]
@@ -177,8 +181,9 @@ nonisolated enum C2PASigningService {
 
     // MARK: - Validation
 
-    /// Validates the C2PA store using only the bundled `c2patool`. It does not
-    /// configure a trust list, download one, or otherwise introduce network access.
+    /// Validates the C2PA store using the bundled `c2patool` and local C2PA trust
+    /// lists. The current official list is primary; the frozen interim list is a
+    /// compatibility fallback for credentials created before the official program.
     static func validate(imageURL: URL) async throws -> C2PAValidationResult {
         try await validate(imageURL: imageURL, forceRefresh: false)
     }
@@ -189,35 +194,123 @@ nonisolated enum C2PASigningService {
         }
 
         let normalizedURL = imageURL.standardizedFileURL
+        let trustConfigurations = await C2PATrustListService.shared.cachedTrustConfigurations()
         let attributes = try FileManager.default.attributesOfItem(atPath: normalizedURL.path(percentEncoded: false))
+        let trustListModificationDates = trustConfigurations.flatMap(\.fileURLs).map {
+            try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        }
         let version = C2PAValidationCache.FileVersion(
             modificationDate: attributes[.modificationDate] as? Date,
-            size: (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+            size: (attributes[.size] as? NSNumber)?.uint64Value ?? 0,
+            trustListModificationDates: trustListModificationDates
         )
         if !forceRefresh, let cached = await validationCache.value(for: normalizedURL, version: version) {
             return cached
         }
 
-        // Process.run is cancellation-aware and terminates c2patool when the detail
-        // sheet closes or its owning task is cancelled.
-        let output = try await Process.run(
-            executableURL: URL(fileURLWithPath: toolPath),
-            arguments: [normalizedURL.path(percentEncoded: false), "--info"]
-        )
-        try Task.checkCancellation()
-        let result = try parseValidationInfoJSON(Data(output.stdout.utf8))
+        var result: C2PAValidationResult
+        if let primaryConfiguration = trustConfigurations.first {
+            result = try await validationResult(
+                toolPath: toolPath,
+                imageURL: normalizedURL,
+                trustConfiguration: primaryConfiguration
+            )
+            if result.status == .trusted {
+                result = withTrustSource(result, primaryConfiguration.source)
+            }
+            // Existing credentials often predate the official program. Check the
+            // frozen interim list only when the official list did not recognize an
+            // otherwise valid signature, never to override an invalid result.
+            if result.status == .untrusted {
+                for compatibilityConfiguration in trustConfigurations.dropFirst() {
+                    let compatibilityResult = try await validationResult(
+                        toolPath: toolPath,
+                        imageURL: normalizedURL,
+                        trustConfiguration: compatibilityConfiguration
+                    )
+                    if compatibilityResult.status == .trusted {
+                        result = C2PAValidationResult(
+                            status: .trusted,
+                            signer: compatibilityResult.signer,
+                            issuer: compatibilityResult.issuer,
+                            message: "The signature is valid and trusted by the legacy C2PA compatibility list.",
+                            rawValidationCodes: compatibilityResult.rawValidationCodes,
+                            trustSource: compatibilityConfiguration.source
+                        )
+                        break
+                    }
+                }
+            }
+        } else {
+            result = try await validationResult(toolPath: toolPath, imageURL: normalizedURL, trustConfiguration: nil)
+        }
+        if trustConfigurations.isEmpty, result.status == .untrusted {
+            result = C2PAValidationResult(
+                status: .trustNotConfigured,
+                signer: result.signer,
+                issuer: result.issuer,
+                message: "The signature is valid, but no C2PA trust list is available to check its signer.",
+                rawValidationCodes: result.rawValidationCodes
+            )
+        }
         await validationCache.store(result, for: normalizedURL, version: version)
         return result
+    }
+
+    private static func validationResult(
+        toolPath: String,
+        imageURL: URL,
+        trustConfiguration: C2PATrustConfiguration?
+    ) async throws -> C2PAValidationResult {
+        var arguments = [imageURL.path(percentEncoded: false)]
+        if let trustConfiguration {
+            arguments.append("trust")
+            arguments.append(contentsOf: trustConfiguration.arguments)
+        }
+        // Process.run is cancellation-aware and terminates c2patool when the detail
+        // sheet closes. Validation failures may use a non-zero status while still
+        // supplying a useful JSON report on stdout.
+        let output = try await Process.run(
+            executableURL: URL(fileURLWithPath: toolPath),
+            arguments: arguments,
+            allowNonZeroExit: true
+        )
+        try Task.checkCancellation()
+        guard !output.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            let detail = output.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw C2PASigningError.processFailed(detail.isEmpty ? "c2patool produced no validation report" : detail)
+        }
+        do {
+            return try parseValidationInfoJSON(Data(output.stdout.utf8))
+        } catch {
+            let detail = output.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !detail.isEmpty {
+                throw C2PASigningError.processFailed(detail)
+            }
+            throw error
+        }
     }
 
     static func invalidateValidationCache(for imageURL: URL) async {
         await validationCache.removeValue(for: imageURL.standardizedFileURL)
     }
 
-    /// Parses `c2patool <image> --info` output. Kept independent of SwiftExif's
+    private static func withTrustSource(_ result: C2PAValidationResult, _ source: C2PATrustSource) -> C2PAValidationResult {
+        C2PAValidationResult(
+            status: result.status,
+            signer: result.signer,
+            issuer: result.issuer,
+            message: result.message,
+            rawValidationCodes: result.rawValidationCodes,
+            trustSource: source
+        )
+    }
+
+    /// Parses the default `c2patool <image>` JSON report. Kept independent of SwiftExif's
     /// manifest decoding so c2patool format changes cannot affect metadata display.
     static func parseValidationInfoJSON(_ data: Data) throws -> C2PAValidationResult {
-        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        guard let jsonObject = try? JSONSerialization.jsonObject(with: data),
+              let root = jsonObject as? [String: Any] else {
             throw C2PAValidationError.malformedOutput
         }
 
@@ -246,14 +339,11 @@ nonisolated enum C2PASigningService {
         if hasFailures {
             return C2PAValidationResult(status: .invalid, signer: signer, issuer: issuer, message: explanation ?? "The Content Credentials signature did not validate.", rawValidationCodes: codes)
         }
-        if isTrusted {
+        if state?.contains("trusted") == true || isTrusted {
             return C2PAValidationResult(status: .trusted, signer: signer, issuer: issuer, message: explanation ?? "The signature is valid and the signer is trusted.", rawValidationCodes: codes)
         }
-        if isUntrusted {
-            return C2PAValidationResult(status: .untrusted, signer: signer, issuer: issuer, message: "The signature is valid, but this signer is not in the active trust list.", rawValidationCodes: codes)
-        }
-        if state?.contains("valid") == true {
-            return C2PAValidationResult(status: .validationFailed, signer: signer, issuer: issuer, message: explanation ?? "The signature is valid, but c2patool did not report signer trust.", rawValidationCodes: codes)
+        if state?.contains("valid") == true || isUntrusted {
+            return C2PAValidationResult(status: .untrusted, signer: signer, issuer: issuer, message: explanation ?? "The signature is valid, but signer trust could not be established.", rawValidationCodes: codes)
         }
         return C2PAValidationResult(status: .unsupported, signer: signer, issuer: issuer, message: explanation ?? "This c2patool validation format is not supported.", rawValidationCodes: codes)
     }

@@ -93,8 +93,13 @@ struct C2PADetailSheet: View {
                 Text(validation.message)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if validation.trustSource == .legacy {
+                    Text("Trusted only by the frozen legacy C2PA list; this signer is not recognized by the current official list.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 if validation.status == .untrusted {
-                    Text("Images signed with this app’s built-in test credential are expected to show as untrusted.")
+                    Text("The image signature is intact, but its signer is not trusted by the active C2PA trust configuration.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -115,11 +120,20 @@ struct C2PADetailSheet: View {
     private func validationPresentation(_ result: C2PAValidationResult) -> (title: String, icon: String, color: Color, accessibilityLabel: String) {
         switch result.status {
         case .trusted:
-            ("Trusted", "checkmark.circle.fill", .green, "Trusted Content Credentials")
+            switch result.trustSource {
+            case .official:
+                ("Trusted — official list", "checkmark.circle.fill", .green, "Trusted by the official C2PA list")
+            case .legacy:
+                ("Trusted — legacy list", "checkmark.circle.fill", .yellow, "Trusted only by the legacy C2PA compatibility list")
+            case nil:
+                ("Trusted", "checkmark.circle.fill", .green, "Trusted Content Credentials")
+            }
         case .untrusted:
             ("Valid signature — untrusted signer", "exclamationmark.triangle.fill", .yellow, "Valid signature, untrusted signer")
         case .invalid:
             ("Invalid", "xmark.octagon.fill", .red, "Invalid Content Credentials")
+        case .trustNotConfigured:
+            ("Signer trust not checked", "exclamationmark.triangle.fill", .orange, "Signer trust was not checked")
         case .unsupported, .notPresent, .validationFailed:
             ("Could not validate", "questionmark.circle.fill", .gray, "Content Credentials could not be validated")
         }

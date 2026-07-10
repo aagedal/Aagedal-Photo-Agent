@@ -41,9 +41,15 @@ struct C2PAMetadataView: View {
     @ViewBuilder
     private func validationIndicator(_ validation: C2PAValidationResult) -> some View {
         let presentation: (String, Color, String) = switch validation.status {
-        case .trusted: ("Trusted", .green, "Validated Content Credentials: trusted")
+        case .trusted:
+            switch validation.trustSource {
+            case .official: ("Trusted", .green, "Trusted by the official C2PA list")
+            case .legacy: ("Trusted (legacy)", .yellow, "Trusted only by the legacy C2PA compatibility list")
+            case nil: ("Trusted", .green, "Validated Content Credentials: trusted")
+            }
         case .untrusted: ("Untrusted", .yellow, "Validated Content Credentials: valid signature, untrusted signer")
         case .invalid: ("Invalid", .red, "Validated Content Credentials: invalid")
+        case .trustNotConfigured: ("Trust not checked", .orange, "Content Credentials are valid but signer trust was not checked")
         case .unsupported, .notPresent, .validationFailed: ("Could not validate", .gray, "Content Credentials could not be validated")
         }
         Text(presentation.0)

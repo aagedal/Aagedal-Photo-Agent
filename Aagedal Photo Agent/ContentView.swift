@@ -23,6 +23,15 @@ private struct BackupEditedItem: Identifiable {
     let url: URL
 }
 
+/// Keeps the credentials sheet's content and source URL in one state value. A
+/// `.sheet(item:)` closure that receives a missing URL renders an empty macOS
+/// sheet, which presents as a small rounded rectangle on first launch.
+private struct C2PADetailPresentation: Identifiable {
+    let id = UUID()
+    let metadata: C2PAMetadata
+    let imageURL: URL
+}
+
 /// Pulls the new safety and culling notification handlers out of the main
 /// `contentWithNotificationHandlers` chain so the type-checker can finish
 /// inside its time budget.
@@ -83,8 +92,7 @@ struct ContentView: View {
     @State private var windowContentHeight: CGFloat = 0
     @State private var backupEditedFolderItem: BackupEditedItem?
     @State private var isShowingWriteAllC2PAWarning = false
-    @State private var c2paMetadata: C2PAMetadata?
-    @State private var c2paDetailImageURL: URL?
+    @State private var c2paDetailPresentation: C2PADetailPresentation?
     @State private var c2paValidation: C2PAValidationResult?
     @State private var pendingWriteAllC2PACount = 0
     @State private var saveTemplateName = ""
@@ -146,8 +154,7 @@ struct ContentView: View {
             .onChange(of: browserViewModel.selectedImageIDs) { _, _ in
                 // Closing the inspector cancels its validation task; validation is only
                 // meaningful for the image that opened it.
-                c2paMetadata = nil
-                c2paDetailImageURL = nil
+                c2paDetailPresentation = nil
                 c2paValidation = nil
             }
             .onReceive(NotificationCenter.default.publisher(for: .showStructuredKeywords)) { _ in
@@ -250,15 +257,13 @@ struct ContentView: View {
                     onDismiss: { backupEditedFolderItem = nil }
                 )
             }
-            .sheet(item: $c2paMetadata) { metadata in
-                if let imageURL = c2paDetailImageURL {
-                    C2PADetailSheet(
-                        metadata: metadata,
-                        imageURL: imageURL,
-                        initialValidation: c2paValidation,
-                        onValidationChanged: { c2paValidation = $0 }
-                    )
-                }
+            .sheet(item: $c2paDetailPresentation) { presentation in
+                C2PADetailSheet(
+                    metadata: presentation.metadata,
+                    imageURL: presentation.imageURL,
+                    initialValidation: c2paValidation,
+                    onValidationChanged: { c2paValidation = $0 }
+                )
             }
     }
 
@@ -1754,17 +1759,19 @@ struct ContentView: View {
     private func loadC2PADetail() {
         guard let image = browserViewModel.selectedImages.first else { return }
         let service = browserViewModel.metadataReadService
-        c2paDetailImageURL = image.url
+        let imageURL = image.url
         c2paValidation = nil
         Task {
             do {
-                var result = try await service.readC2PAMetadata(url: image.url)
+                var result = try await service.readC2PAMetadata(url: imageURL)
                 // Best-effort thumbnail extraction — don't fail the sheet if this errors
-                let thumbnails = try? await service.readC2PAThumbnails(url: image.url)
+                let thumbnails = try? await service.readC2PAThumbnails(url: imageURL)
                 result.thumbnails = thumbnails
-                c2paMetadata = result
+                guard !Task.isCancelled,
+                      browserViewModel.selectedImages.first?.url == imageURL else { return }
+                c2paDetailPresentation = C2PADetailPresentation(metadata: result, imageURL: imageURL)
             } catch {
-                c2paMetadata = nil
+                c2paDetailPresentation = nil
             }
         }
     }

@@ -18,9 +18,16 @@ struct C2PAValidationTests {
     func builtInTestSignerIsUntrusted() throws {
         let result = try parse("""
         {"validation_state":"Valid","validation_status":[
-          {"code":"signingCredential.untrusted","success":true}
+          {"code":"signingCredential.untrusted","explanation":"signing certificate untrusted"}
         ]}
         """)
+        #expect(result.status == .untrusted)
+        #expect(result.message.contains("valid"))
+    }
+
+    @Test("valid validation state without trusted status maps to untrusted")
+    func validButNotTrusted() throws {
+        let result = try parse("{\"validation_state\":\"Valid\"}")
         #expect(result.status == .untrusted)
         #expect(result.message.contains("valid"))
     }
@@ -48,6 +55,17 @@ struct C2PAValidationTests {
         #expect(throws: C2PAValidationError.self) {
             try C2PASigningService.parseValidationInfoJSON(Data("{\"error\":\"unable to read file\"}".utf8))
         }
+    }
+
+    @Test("trust-list cache accepts PEM certificates but rejects non-certificate downloads")
+    func trustAnchorPEMValidation() {
+        let pem = Data("""
+        -----BEGIN CERTIFICATE-----
+        MIIBqTCCAU+gAwIBAgIUXg8yA0QmBkyZgY8X3I5y02SAr9AwCgYIKoZIzj0EAwIw
+        -----END CERTIFICATE-----
+        """.utf8)
+        #expect(C2PATrustListService.isValidTrustAnchorPEM(pem))
+        #expect(!C2PATrustListService.isValidTrustAnchorPEM(Data("<html>error</html>".utf8)))
     }
 
     private func parse(_ json: String) throws -> C2PAValidationResult {
