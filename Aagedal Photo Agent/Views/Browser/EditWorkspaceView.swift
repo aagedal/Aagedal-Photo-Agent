@@ -47,6 +47,8 @@ struct EditWorkspaceView: View {
     @State private var isCursorOverPreview = false
     @State private var scrollEventMonitor: Any?
     @State private var keyEventMonitor: Any?
+    @State private var middleMouseEventMonitor: Any?
+    @State private var hoveredFilmstripURL: URL?
     @State private var isShowingBefore = false
     @State private var isMutingDevelop = false
     @State private var isMutingSelectedMask = false
@@ -1239,6 +1241,34 @@ struct EditWorkspaceView: View {
                         browserViewModel.lastClickedImageURL = image.url
                         isWorkspaceFocused = true
                     }
+                    .onContinuousHover { phase in
+                        switch phase {
+                        case .active:
+                            hoveredFilmstripURL = image.url
+                        case .ended:
+                            if hoveredFilmstripURL == image.url {
+                                hoveredFilmstripURL = nil
+                            }
+                        }
+                    }
+                    .contextMenu {
+                        Button("Copy Settings", systemImage: "doc.on.doc") {
+                            copyFilmstripSettings(from: image)
+                        }
+
+                        Button("Paste Settings", systemImage: "doc.on.clipboard") {
+                            pasteCopiedSettings(to: [image.url])
+                        }
+                        .disabled(browserViewModel.copiedCameraRawSettings == nil)
+
+                        if image.url != selectedImageURL {
+                            Divider()
+                            Button("Copy Settings to Current Selection", systemImage: "paintbrush") {
+                                applyFilmstripSettingsFromImageToCurrentSelection(image)
+                            }
+                            .disabled(browserViewModel.selectedImageIDs.isEmpty)
+                        }
+                    }
                 }
             }
             .padding(.horizontal, 12)
@@ -1277,6 +1307,11 @@ struct EditWorkspaceView: View {
             NSEvent.removeMonitor(monitor)
             keyEventMonitor = nil
         }
+        if let monitor = middleMouseEventMonitor {
+            NSEvent.removeMonitor(monitor)
+            middleMouseEventMonitor = nil
+        }
+        hoveredFilmstripURL = nil
 
         // Proactively re-warm caches for every image whose develop settings changed this session,
         // so the return to the grid/loupe is instant and correct instead of catching up reactively
@@ -1367,6 +1402,17 @@ struct EditWorkspaceView: View {
         loadSelectedImagePreview()
         keyEventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { [self] event in
             handleKeyEvent(event)
+        }
+        // DaVinci Resolve-style grade copy: middle-click the hovered filmstrip thumbnail to
+        // apply its develop settings to the current selection without changing that selection.
+        middleMouseEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .otherMouseDown) { [self] event in
+            guard event.buttonNumber == 2,
+                  let sourceURL = hoveredFilmstripURL,
+                  let source = browserViewModel.images.first(where: { $0.url == sourceURL }) else {
+                return event
+            }
+            applyFilmstripSettingsFromImageToCurrentSelection(source)
+            return nil
         }
     }
 
@@ -4820,6 +4866,52 @@ struct EditWorkspaceView: View {
         if value > 0 { return "+\(absValue)" }
         if value < 0 { return "-\(absValue)" }
         return absValue
+    }
+
+    /// The current edit buffer is newer than the filmstrip model until the next commit, so use
+    /// it when the clicked thumbnail is the actively edited image. Other thumbnails use their
+    /// already-loaded Camera Raw settings.
+    private func filmstripSettings(for image: ImageFile) -> CameraRawSettings? {
+        if image.url == selectedImageURL,
+           let current = metadataViewModel.editingMetadata.cameraRaw {
+            return current
+        }
+        return image.cameraRawSettings
+    }
+
+    private func copyFilmstripSettings(from image: ImageFile) {
+        guard let settings = filmstripSettings(for: image) else {
+            showCopyPasteFeedback("No develop settings")
+            return
+        }
+        browserViewModel.copiedCameraRawSettings = settings
+        showCopyPasteFeedback("Copied from \(image.filename)")
+    }
+
+    /// Apply the shared settings clipboard to explicit targets without changing which thumbnails
+    /// are selected. A single active-image target takes the live edit-buffer path; every other
+    /// case uses the existing multi-image writer.
+    private func pasteCopiedSettings(to urls: Set<URL>) {
+        guard let settings = browserViewModel.copiedCameraRawSettings, !urls.isEmpty else { return }
+        if urls.count == 1, urls.first == selectedImageURL {
+            pasteCameraRawSettings(settings, includeCrop: false)
+        } else {
+            pasteToMultipleImages(settings, urls: urls, includeCrop: false)
+        }
+        showCopyPasteFeedback("Pasted to \(urls.count) image\(urls.count == 1 ? "" : "s")")
+    }
+
+    /// Resolve-style direct copy: the clicked thumbnail is the source and the selection remains
+    /// the destination. Crop stays opt-in, matching every other ordinary settings paste.
+    private func applyFilmstripSettingsFromImageToCurrentSelection(_ image: ImageFile) {
+        guard let settings = filmstripSettings(for: image) else {
+            showCopyPasteFeedback("No develop settings")
+            return
+        }
+        let targets = browserViewModel.selectedImageIDs
+        guard !targets.isEmpty else { return }
+        browserViewModel.copiedCameraRawSettings = settings
+        pasteCopiedSettings(to: targets)
     }
 
     private func pasteCameraRawSettings(_ source: CameraRawSettings, includeCrop: Bool) {
