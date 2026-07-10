@@ -73,6 +73,25 @@ struct EditFilmstripItemView: View {
                         Spacer()
                     }
                 }
+
+                // Rating at a glance without spending permanent vertical space beneath the
+                // compact filmstrip thumbnail. Unrated images remain visually clean.
+                if image.starRating != .none {
+                    VStack {
+                        Spacer()
+                        HStack {
+                            Text(image.starRating.displayString)
+                                .font(.system(size: 7, weight: .semibold))
+                                .foregroundStyle(.yellow)
+                                .lineLimit(1)
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 2)
+                                .background(.black.opacity(0.62), in: Capsule())
+                                .padding(4)
+                            Spacer()
+                        }
+                    }
+                }
             }
             .frame(width: 94, height: 72)
             .clipShape(RoundedRectangle(cornerRadius: 6))

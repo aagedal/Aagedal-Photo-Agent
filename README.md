@@ -177,7 +177,7 @@ Opt-in sync that keeps your library settings in step across Macs, configured in 
 | Cmd+U / Shift+Cmd+U | Upload selected / all |
 | Shift+1-4 | Scope: Waveform / Parade / Vector / Chromaticity |
 | Space | Full-screen toggle |
-| 0-5 (full-screen) | Set rating |
+| 0-5 (full-screen or Develop) | Set rating; 0 clears |
 
 ## Architecture
 

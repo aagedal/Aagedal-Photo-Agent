@@ -5458,6 +5458,20 @@ struct EditWorkspaceView: View {
         guard isKeyDown else { return event }
         guard !isTextFieldActive() else { return event }
 
+        // Bare 0–5 — rate the current selection without leaving Develop. This mirrors the
+        // culling/full-screen shortcut: 0 clears the rating and 1–5 assign that many stars.
+        // Modified digits remain available to scope and system shortcuts.
+        let ratingModifiers: NSEvent.ModifierFlags = [.command, .option, .control, .shift]
+        if modifiers.intersection(ratingModifiers).isEmpty,
+           !event.isARepeat,
+           let digit = chars.first?.wholeNumberValue,
+           (0...5).contains(digit),
+           let rating = StarRating(rawValue: digit),
+           !browserViewModel.selectedImageIDs.isEmpty {
+            browserViewModel.setRating(rating)
+            return nil
+        }
+
         // Arrow keys
         if event.keyCode == 123 { // left arrow
             browserViewModel.selectPrevious()
