@@ -34,6 +34,31 @@
         -->
 
         <item>
+            <title>Version 2.1.0</title>
+            <pubDate>Fri, 10 Jul 2026 12:32:23 +0200</pubDate>
+            <sparkle:version>419</sparkle:version>
+            <sparkle:shortVersionString>2.1.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <description><![CDATA[
+                <ul>
+                    <li>Sports lens is now enabled, with a confirm-before-write review workflow for jersey numbers, bibs, team sheets, and player claims.</li>
+                    <li>New freeform brush masks for local edits, including paint / erase controls, red mask coverage preview, persistent brush settings, and XMP round-tripping.</li>
+                    <li>New watermark layer system with a PNG watermark library, Metal compositing, crop-aware placement, and iCloud-backed storage.</li>
+                    <li>New anonymizer controls combine distortion, blur, and mosaic for global and mask-based redaction.</li>
+                    <li>Browser and editing workflows are smoother: split/tabbed browser panes, improved thumbnail spacing, keyboard-driven sports review, and compact edit controls.</li>
+                    <li>Card import is more flexible, with date-folder skipping, split-shoot subfolders, slow-card thumbnail fallback, and already-imported photo detection.</li>
+                </ul>
+            ]]></description>
+            <enclosure
+                url="https://aagedal.me/apps/Aagedal-Photo-Agent-2.1.0.dmg"
+                sparkle:version="419"
+                sparkle:shortVersionString="2.1.0"
+                sparkle:edSignature="Omzk9tDDpD3S4U3cKLWuYnQDgD6j/qjQdM6kp5y8Bva9UKjF6xrFyKQwFOF9UTQCfH+Rq8/9CQaD5mmwgXlPBg=="
+                length="162768693"
+                type="application/octet-stream" />
+        </item>
+
+        <item>
             <title>Version 2.0.1</title>
             <pubDate>Tue, 23 Jun 2026 17:18:11 +0200</pubDate>
             <sparkle:version>380</sparkle:version>
