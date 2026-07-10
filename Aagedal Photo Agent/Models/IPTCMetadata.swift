@@ -1574,6 +1574,46 @@ extension IPTCMetadata {
             }
         }
 
+        func textValue(in metadata: IPTCMetadata) -> String? {
+            switch self {
+            case .title: return metadata.title
+            case .description: return metadata.description
+            case .extendedDescription: return metadata.extendedDescription
+            case .keywords: return metadata.keywords.joined(separator: ", ")
+            case .personShown: return metadata.personShown.joined(separator: ", ")
+            case .creator: return metadata.creator
+            case .credit: return metadata.credit
+            case .copyright: return metadata.copyright
+            case .jobId: return metadata.jobId
+            case .dateCreated: return metadata.dateCreated
+            case .city: return metadata.city
+            case .country: return metadata.country
+            case .event: return metadata.event
+            }
+        }
+
+        func setTextValue(_ value: String, in metadata: inout IPTCMetadata) {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            let scalar: String? = trimmed.isEmpty ? nil : trimmed
+            switch self {
+            case .title: metadata.title = scalar
+            case .description: metadata.description = scalar
+            case .extendedDescription: metadata.extendedDescription = scalar
+            case .keywords:
+                metadata.keywords = value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }.uniqued()
+            case .personShown:
+                metadata.personShown = value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }.uniqued()
+            case .creator: metadata.creator = scalar
+            case .credit: metadata.credit = scalar
+            case .copyright: metadata.copyright = scalar
+            case .jobId: metadata.jobId = scalar
+            case .dateCreated: metadata.dateCreated = scalar
+            case .city: metadata.city = scalar
+            case .country: metadata.country = scalar
+            case .event: metadata.event = scalar
+            }
+        }
+
         static let defaultCheckedFields: Set<FieldKey> = [.title, .description, .creator, .copyright]
 
         /// Fields offered in the required-metadata settings and the browser's "Missing Field" filter.

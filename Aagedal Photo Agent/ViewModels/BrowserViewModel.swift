@@ -475,7 +475,9 @@ final class BrowserViewModel {
         if requiredMetadataFilter != .any {
             let missingAny: Bool
             if let meta = image.metadata {
-                missingAny = requiredFields.contains { $0.isEmpty(in: meta) }
+                let levels = Dictionary(uniqueKeysWithValues: requiredFields.map { ($0, MetadataRequirementLevel.require) })
+                let minimums = MetadataRequirements.loadMinimumLengths()
+                missingAny = requiredFields.contains { MetadataRequirements.fieldFails($0, in: meta, levels: levels, minimumLengths: minimums) }
             } else {
                 missingAny = !requiredFields.isEmpty
             }
@@ -2588,6 +2590,51 @@ final class BrowserViewModel {
                 }
             }
             self.images = updated
+        }
+    }
+
+    /// Saves an inline edit from Metadata Review as the same pending JSON/XMP sidecar record used
+    /// by the metadata panel. Updating the in-memory image first keeps the review list responsive.
+    func saveMetadataReviewEdit(_ edited: IPTCMetadata, for url: URL) {
+        guard let folderURL = currentFolderURL,
+              let index = images.firstIndex(where: { $0.url == url }) else { return }
+        let previous = images[index].metadata ?? IPTCMetadata()
+        guard edited != previous else { return }
+
+        var updated = images
+        updated[index].metadata = edited
+        updated[index].keywords = edited.keywords
+        updated[index].personShown = edited.personShown
+        updated[index].hasPendingMetadataChanges = true
+        updated[index].pendingFieldNames = IPTCMetadata.FieldKey.userSelectable.compactMap { field in
+            field.textValue(in: previous) != field.textValue(in: edited) ? field.displayName : nil
+        }
+        images = updated
+
+        let existing = sidecarService.loadSidecar(for: url, in: folderURL)
+        var history = existing?.history ?? []
+        let now = Date()
+        for field in IPTCMetadata.FieldKey.userSelectable {
+            let old = field.textValue(in: previous)
+            let new = field.textValue(in: edited)
+            if old != new {
+                history.append(MetadataHistoryEntry(timestamp: now, fieldName: field.displayName, oldValue: old, newValue: new))
+            }
+        }
+        history.trimToHistoryLimit()
+        let record = MetadataSidecar(
+            sourceFile: url.lastPathComponent,
+            lastModified: now,
+            pendingChanges: true,
+            metadata: edited,
+            imageMetadataSnapshot: existing?.imageMetadataSnapshot ?? previous,
+            history: history
+        )
+        do {
+            try sidecarService.saveSidecar(record, for: url, in: folderURL)
+            try xmpSidecarService.saveSidecarPreservingDevelopSettings(metadata: edited, for: url)
+        } catch {
+            errorMessage = "Failed to save metadata for \(url.lastPathComponent): \(error.localizedDescription)"
         }
     }
 

@@ -74,6 +74,7 @@ nonisolated enum UserDefaultsKeys {
     /// (Optional / Warn / Require) config driving the browser's Required Metadata filter and the FTP
     /// upload checks. Fields absent from the map are `.optional`.
     static let metadataRequirementLevels = "metadataRequirementLevels"
+    static let metadataMinimumLengths = "metadataMinimumLengths"
 
     // MARK: - Browser
     static let rawRenderAsHDR = "rawRenderAsHDR"

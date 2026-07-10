@@ -7,6 +7,7 @@ import SwiftUI
 /// live (the app keeps two; see settings-viewmodel notes).
 struct RequiredMetadataFieldsSection: View {
     @State private var levels: MetadataRequirements.Levels = MetadataRequirements.load()
+    @State private var minimumLengths = MetadataRequirements.loadMinimumLengths()
 
     var body: some View {
         Section("Required Metadata") {
@@ -21,6 +22,12 @@ struct RequiredMetadataFieldsSection: View {
                     Text("Require").tag(MetadataRequirementLevel.require)
                 }
             }
+
+            LabeledContent("Headline minimum length") { minimumLengthField(for: .title) }
+            LabeledContent("Description minimum length") { minimumLengthField(for: .description) }
+            Text("Minimum length is checked only when that field is set to Warn or Require. Set it to 0 to disable the length check.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -32,5 +39,18 @@ struct RequiredMetadataFieldsSection: View {
                 MetadataRequirements.save(levels)
             }
         )
+    }
+
+
+    private func minimumLengthField(for field: IPTCMetadata.FieldKey) -> some View {
+        TextField("Characters", value: Binding(
+            get: { minimumLengths[field] ?? 0 },
+            set: { value in
+                minimumLengths[field] = max(0, value)
+                MetadataRequirements.saveMinimumLengths(minimumLengths)
+            }
+        ), format: .number)
+        .frame(width: 70)
+        .multilineTextAlignment(.trailing)
     }
 }

@@ -21,6 +21,9 @@ nonisolated enum MetadataRequirementLevel: String, Codable, CaseIterable, Sendab
 /// `.require` — falling back to `FieldKey.defaultCheckedFields` when nothing was ever configured.
 nonisolated enum MetadataRequirements {
     typealias Levels = [IPTCMetadata.FieldKey: MetadataRequirementLevel]
+    typealias MinimumLengths = [IPTCMetadata.FieldKey: Int]
+
+    static let defaultMinimumLengths: MinimumLengths = [.title: 10, .description: 30]
 
     static func load(from defaults: UserDefaults = .standard) -> Levels {
         if let data = defaults.data(forKey: UserDefaultsKeys.metadataRequirementLevels),
@@ -51,6 +54,36 @@ nonisolated enum MetadataRequirements {
     /// requirements (not warnings) as making an image incomplete.
     static func requireFields(from defaults: UserDefaults = .standard) -> Set<IPTCMetadata.FieldKey> {
         Set(load(from: defaults).filter { $0.value == .require }.keys)
+    }
+
+    static func loadMinimumLengths(from defaults: UserDefaults = .standard) -> MinimumLengths {
+        guard let data = defaults.data(forKey: UserDefaultsKeys.metadataMinimumLengths),
+              let raw = try? JSONDecoder().decode([String: Int].self, from: data) else {
+            return defaultMinimumLengths
+        }
+        return raw.reduce(into: MinimumLengths()) { result, pair in
+            if let field = IPTCMetadata.FieldKey(rawValue: pair.key), pair.value > 0 {
+                result[field] = pair.value
+            }
+        }
+    }
+
+    static func saveMinimumLengths(_ lengths: MinimumLengths, to defaults: UserDefaults = .standard) {
+        let raw = lengths.reduce(into: [String: Int]()) { result, pair in
+            if pair.value > 0 { result[pair.key.rawValue] = pair.value }
+        }
+        if let data = try? JSONEncoder().encode(raw) {
+            defaults.set(data, forKey: UserDefaultsKeys.metadataMinimumLengths)
+        }
+    }
+
+    static func fieldFails(_ field: IPTCMetadata.FieldKey, in metadata: IPTCMetadata,
+                           levels: Levels, minimumLengths: MinimumLengths) -> Bool {
+        guard (levels[field] ?? .optional) != .optional else { return false }
+        if field.isEmpty(in: metadata) { return true }
+        guard let minimum = minimumLengths[field], minimum > 0,
+              let value = field.textValue(in: metadata) else { return false }
+        return value.trimmingCharacters(in: .whitespacesAndNewlines).count < minimum
     }
 
     private static func legacyRequiredSet(from defaults: UserDefaults) -> Set<IPTCMetadata.FieldKey> {

@@ -475,15 +475,16 @@ struct FTPUploadView: View {
     nonisolated private static func evaluateRequirements(url: URL, embedded: IPTCMetadata?, sidecar: IPTCMetadata?, willRender: Bool, levels: MetadataRequirements.Levels, face: FaceInfo?) -> UploadMetadataStatus {
         var missingRequired: [String] = []
         var missingWarn: [String] = []
+        let minimumLengths = MetadataRequirements.loadMinimumLengths()
         for field in IPTCMetadata.FieldKey.userSelectable {
             guard let level = levels[field], level != .optional else { continue }
-            let embeddedEmpty = embedded.map { field.isEmpty(in: $0) } ?? true
+            let embeddedEmpty = embedded.map { MetadataRequirements.fieldFails(field, in: $0, levels: levels, minimumLengths: minimumLengths) } ?? true
             // For a rendered upload the sidecar's value reaches the output, so the field is
             // satisfied if either source has it. For an as-is upload only the embedded value
             // ships, so the sidecar can't satisfy the requirement.
             let empty: Bool
             if willRender, let sidecar {
-                empty = embeddedEmpty && field.isEmpty(in: sidecar)
+                empty = embeddedEmpty && MetadataRequirements.fieldFails(field, in: sidecar, levels: levels, minimumLengths: minimumLengths)
             } else {
                 empty = embeddedEmpty
             }

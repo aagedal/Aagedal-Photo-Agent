@@ -8,6 +8,7 @@ import UniformTypeIdentifiers
 
 enum MainViewMode {
     case browser           // Normal photo browsing
+    case metadataReview    // Folder-wide metadata comparison list
     case editing           // Dedicated image editing workspace
     case faceManagement    // Expanded face management (existing)
     case peopleDatabase    // Known People database view
@@ -568,7 +569,7 @@ struct ContentView: View {
     private var detailContent: some View {
         VStack(spacing: 0) {
             // Face bar shown full-width for non-browser, non-editing modes
-            if !browserViewModel.images.isEmpty, mainViewMode != .editing, mainViewMode != .browser {
+            if !browserViewModel.images.isEmpty, mainViewMode == .faceManagement {
                 faceBar
                 Divider()
             }
@@ -576,6 +577,8 @@ struct ContentView: View {
             switch mainViewMode {
             case .browser:
                 browserAndMetadataPanel
+            case .metadataReview:
+                MetadataReviewView(viewModel: browserViewModel)
             case .editing:
                 editingWorkspaceView
             case .faceManagement:
@@ -803,14 +806,25 @@ struct ContentView: View {
     /// Layout switcher for the thumbnail area (single / side-by-side / top-bottom / tabs).
     private var paneLayoutMenu: some View {
         Menu {
+            Button {
+                mainViewMode = .browser
+            } label: {
+                Label("Thumbnail Browser", systemImage: mainViewMode == .browser ? "checkmark" : "square.grid.3x3")
+            }
+            Button {
+                mainViewMode = .metadataReview
+            } label: {
+                Label("Metadata Review", systemImage: mainViewMode == .metadataReview ? "checkmark" : "list.bullet.rectangle")
+            }
+            Divider()
             paneLayoutButton(.single, "Single", "rectangle")
             paneLayoutButton(.splitHorizontal, "Split Side by Side", "rectangle.split.2x1")
             paneLayoutButton(.splitVertical, "Split Top and Bottom", "rectangle.split.1x2")
             paneLayoutButton(.tabs, "Tabs", "square.on.square")
         } label: {
-            Image(systemName: paneLayoutIcon)
+            Image(systemName: mainViewMode == .metadataReview ? "list.bullet.rectangle" : paneLayoutIcon)
         }
-        .help("Thumbnail area layout")
+        .help("Switch view or thumbnail area layout")
     }
 
     private func paneLayoutButton(_ layout: BrowserPaneLayout, _ title: String, _ icon: String) -> some View {
@@ -832,6 +846,51 @@ struct ContentView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
+        if mainViewMode == .metadataReview {
+            ToolbarItemGroup(placement: .automatic) {
+                ColorLabelFilterBar(selectedLabels: Bindable(browserViewModel).selectedColorLabels)
+                    .disabled(browserViewModel.images.isEmpty)
+                    .padding(8)
+            }
+
+            ToolbarItemGroup(placement: .automatic) {
+                StarRatingFilterBar(minimumRating: Bindable(browserViewModel).minimumStarRating)
+                    .disabled(browserViewModel.images.isEmpty)
+                    .padding(8)
+
+                metadataReviewFilterMenu
+            }
+
+            ToolbarItemGroup(placement: .automatic) {
+                Button {
+                    browserViewModel.sortReversed.toggle()
+                } label: {
+                    Image(systemName: browserViewModel.sortReversed ? "arrow.up" : "arrow.down")
+                }
+                .help(browserViewModel.sortReversed ? "Sort ascending" : "Sort descending")
+                .disabled(browserViewModel.sortOrder == .manual)
+
+                Picker("Sort", selection: Binding(
+                    get: { browserViewModel.sortOrder },
+                    set: { newValue in
+                        if newValue == .manual && browserViewModel.sortOrder != .manual {
+                            browserViewModel.initializeManualOrder(from: browserViewModel.sortedImages)
+                        }
+                        browserViewModel.sortOrder = newValue
+                    }
+                )) {
+                    ForEach(BrowserViewModel.SortOrder.allCases, id: \.self) { order in
+                        Text(order.rawValue).tag(order)
+                    }
+                }
+                .pickerStyle(.menu)
+            }
+
+            ToolbarItemGroup(placement: .automatic) {
+                metadataReviewSearchField
+            }
+        }
+
         // Show filter and sort controls in the toolbar when in edit mode
         // (BrowserView provides these in browser mode, but isn't in the hierarchy during editing)
         if mainViewMode == .editing {
@@ -876,7 +935,7 @@ struct ContentView: View {
         }
 
         ToolbarItem(placement: .automatic) {
-            if mainViewMode == .browser {
+            if mainViewMode == .browser || mainViewMode == .metadataReview {
                 paneLayoutMenu
             }
         }
@@ -951,6 +1010,68 @@ struct ContentView: View {
                 }
             }
         }
+    }
+
+    private var metadataReviewFilterMenu: some View {
+        Menu {
+            Picker("Person Shown", selection: Bindable(browserViewModel).personShownFilter) {
+                ForEach(BrowserViewModel.PersonShownFilter.allCases, id: \.self) { filter in
+                    Text(filter.displayName).tag(filter)
+                }
+            }
+            Picker("Edited", selection: Bindable(browserViewModel).editedFilter) {
+                ForEach(BrowserViewModel.EditedFilter.allCases, id: \.self) { filter in
+                    Text(filter.displayName).tag(filter)
+                }
+            }
+            Picker("Required Metadata", selection: Bindable(browserViewModel).requiredMetadataFilter) {
+                ForEach(BrowserViewModel.RequiredMetadataFilter.allCases, id: \.self) { filter in
+                    Text(filter.displayName).tag(filter)
+                }
+            }
+            Menu("Missing Field") {
+                ForEach(IPTCMetadata.FieldKey.userSelectable, id: \.self) { field in
+                    Toggle(field.displayName, isOn: Binding(
+                        get: { browserViewModel.missingFieldFilters.contains(field) },
+                        set: { enabled in
+                            if enabled { browserViewModel.missingFieldFilters.insert(field) }
+                            else { browserViewModel.missingFieldFilters.remove(field) }
+                        }
+                    ))
+                }
+            }
+            Divider()
+            Button("Clear Filters") { browserViewModel.clearFilters() }
+                .disabled(!browserViewModel.isFilteringActive)
+        } label: {
+            Label(
+                "Filters",
+                systemImage: browserViewModel.isFilteringActive
+                    ? "line.3.horizontal.decrease.circle.fill"
+                    : "line.3.horizontal.decrease.circle"
+            )
+        }
+        .help("Filter images")
+        .disabled(browserViewModel.images.isEmpty)
+    }
+
+    private var metadataReviewSearchField: some View {
+        HStack(spacing: 6) {
+            TextField("Search", text: Bindable(browserViewModel).searchText)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 200)
+            if !browserViewModel.searchText.isEmpty {
+                Button {
+                    browserViewModel.searchText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Clear search")
+            }
+        }
+        .disabled(browserViewModel.images.isEmpty)
     }
 
     private var editFilterMenu: some View {
