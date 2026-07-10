@@ -51,6 +51,7 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 - Fixed RAW white balance first-touch shifts and endpoint-only tone curves.
 - Restored grid focus after closing the template palette.
 - Kept sidebar subfolder lists in sync with changes on disk.
+- Show clear placeholders while images are downloading from iCloud, rather than presenting an empty browser or missing thumbnails.
 
 ### Import and upload
 
@@ -58,12 +59,14 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 - Added an option to place split shoots inside the date folder (`date / Shoot 1`, `date / Shoot 2`) instead of creating sibling date folders, and remembered that preference across sessions.
 - Added automatic detection for previously imported photos using stable source fingerprints, with a toggle to skip those files even when importing to a different destination.
 - Import preview thumbnails now prefetch by default, but switch to hover/on-demand loading and warn the user when card thumbnail generation takes more than 10 seconds.
+- Added optional year or month/date import-folder grouping, and remember import file-type, backup-verification, and related overlay preferences.
 - Added a quit warning while import, upload, or upload rendering is still running.
 
 ### Metadata and templates
 
 - Added metadata date-format aliases and expanded template variable editing.
 - Added synonym selection for structured keywords.
+- Added related keywords to structured keyword lists, so choosing a Person Shown entry can also add its associated IPTC keywords.
 - Improved metadata panel resizing.
 - Expanded IPTC parsing / serialization coverage and metadata engine concurrency tests.
 
@@ -74,6 +77,7 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 - Fixed watermark scaling and aspect handling during crop workflows.
 - Fixed RAW white balance first-touch shifts and endpoint-only tone curve persistence.
 - Hardened C2PA PKCS#12 certificate import so malformed or incomplete signing bundles fail with clear errors instead of crashing or silently saving partial signing state.
+- Made C2PA signing-certificate imports transactional, preserving the existing signing configuration if an import fails.
 - Improved small safety issues across editing, metadata, and view-model code.
 - Added targeted test coverage for sports tagging, watermarks, brush rendering, IPTC metadata, tone curves, thumbnail/full-screen cache behavior, and metadata concurrency.
 
