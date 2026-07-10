@@ -87,4 +87,43 @@ struct PresetVariableInterpolatorTests {
         let result = interpolator.resolve("{field:city}/{field:city}", existingMetadata: metadata)
         #expect(result == "Oslo/Oslo")
     }
+
+    @Test("GPS shortcut variables resolve map coordinates")
+    func gpsShortcutVariables() {
+        let metadata = IPTCMetadata(latitude: 59.9139, longitude: 10.7522)
+        let result = interpolator.resolve(
+            "{gps}|{latitude}|{longitude}",
+            existingMetadata: metadata
+        )
+        #expect(result == "59.913900, 10.752200|59.913900|10.752200")
+    }
+
+    @Test("GPS field references accept GPS-prefixed aliases")
+    func gpsFieldReferences() {
+        let metadata = IPTCMetadata(latitude: -33.8688, longitude: 151.2093)
+        let result = interpolator.resolve(
+            "{field:gps}|{field:GPS Latitude}|{field:gps_longitude}",
+            existingMetadata: metadata
+        )
+        #expect(result == "-33.868800, 151.209300|-33.868800|151.209300")
+    }
+
+    @Test("GPS variables are empty when coordinates are unavailable")
+    func gpsVariablesEmptyWithoutCoordinates() {
+        let result = interpolator.resolve(
+            "{gps}|{latitude}|{longitude}|{field:gps}",
+            existingMetadata: IPTCMetadata()
+        )
+        #expect(result == "|||")
+    }
+
+    @Test("GPS place variables become empty when coordinates are unavailable")
+    func gpsPlaceVariablesEmptyWithoutCoordinates() async {
+        var metadata = IPTCMetadata()
+        metadata.city = "{gps:city}"
+        metadata.country = "{gps:country}"
+        let result = await interpolator.resolvingGPSPlaceVariables(in: metadata)
+        #expect(result.city == "")
+        #expect(result.country == "")
+    }
 }

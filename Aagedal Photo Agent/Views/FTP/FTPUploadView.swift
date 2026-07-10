@@ -673,11 +673,12 @@ struct FTPUploadView: View {
 
         for url in files {
             do {
-                let meta = try await readService.readFullMetadata(url: url)
+                let unresolvedMeta = try await readService.readFullMetadata(url: url)
+                let meta = await interpolator.resolvingGPSPlaceVariables(in: unresolvedMeta)
                 let snapshot = meta
                 let filename = url.lastPathComponent
 
-                var changed = false
+                var changed = meta != unresolvedMeta
                 var resolved = meta
 
                 resolved.title = resolveIfChanged(meta.title, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)

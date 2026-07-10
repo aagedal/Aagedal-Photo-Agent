@@ -1323,7 +1323,7 @@ final class MetadataViewModel {
         processVariablesForImages(images)
     }
 
-    private static let variablePattern = /\{(date|date:[^}]+|dateCreated|dateCreated:[^}]+|dateCaptured|dateCaptured:[^}]+|filename|initials|persons|keywords|field:[^}]+|seq|seq:\d+)\}/
+    private static let variablePattern = /\{(date|date:[^}]+|dateCreated|dateCreated:[^}]+|dateCaptured|dateCaptured:[^}]+|filename|initials|persons|keywords|gps|gps:city|gps:country|latitude|longitude|field:[^}]+|seq|seq:\d+)\}/
 
     /// Checks whether any text field, keyword, or person in editingMetadata contains variable placeholders.
     var hasVariables: Bool {
@@ -1352,8 +1352,16 @@ final class MetadataViewModel {
 
     /// Resolves all variable placeholders in editingMetadata text fields in-place.
     func processVariables(filename: String = "", sequenceIndex: Int = 1) {
+        batchProcessTask?.cancel()
+        batchProcessTask = Task {
+            await processVariablesInEditingBuffer(filename: filename, sequenceIndex: sequenceIndex)
+        }
+    }
+
+    private func processVariablesInEditingBuffer(filename: String, sequenceIndex: Int) async {
         let interpolator = PresetVariableInterpolator()
         let initials = UserDefaults.standard.string(forKey: UserDefaultsKeys.creatorInitials) ?? ""
+        editingMetadata = await interpolator.resolvingGPSPlaceVariables(in: editingMetadata)
         // Use a snapshot of current editing state for field references
         let snapshot = editingMetadata
 
@@ -1564,7 +1572,7 @@ final class MetadataViewModel {
             // resolve variables directly in the editing buffer
             if url == currentlyDisplayedURL {
                 let before = self.editingMetadata
-                self.processVariables(filename: filename, sequenceIndex: sequenceNumber)
+                await self.processVariablesInEditingBuffer(filename: filename, sequenceIndex: sequenceNumber)
                 if self.editingMetadata != before {
                     // Honor the Simple/Professional/Custom write-mode toggle for the
                     // displayed image too, rather than forcing a history-only sidecar.
@@ -1614,15 +1622,16 @@ final class MetadataViewModel {
                 } else {
                     existingSidecar = nil
                 }
-                let meta: IPTCMetadata
+                let unresolvedMeta: IPTCMetadata
                 if let sidecar = existingSidecar, sidecar.pendingChanges {
-                    meta = sidecar.metadata
+                    unresolvedMeta = sidecar.metadata
                 } else {
-                    meta = baseMeta
+                    unresolvedMeta = baseMeta
                 }
+                let meta = await interpolator.resolvingGPSPlaceVariables(in: unresolvedMeta)
                 let snapshot = meta
 
-                var changed = false
+                var changed = meta != unresolvedMeta
                 var resolvedMeta = meta
 
                 resolvedMeta.title = resolveIfChanged(meta.title, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)

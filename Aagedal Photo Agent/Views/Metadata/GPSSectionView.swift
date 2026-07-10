@@ -262,20 +262,28 @@ struct GPSSectionView: View {
             .help("Set coordinates")
 
             if let onReverseGeocode {
-                Button { onReverseGeocode() } label: {
-                    if isReverseGeocoding {
-                        if !geocodingProgress.isEmpty {
-                            Text(geocodingProgress)
-                                .font(.caption2)
+                // Keep `.help` on a non-disabled wrapper: AppKit does not reliably show
+                // tooltips attached directly to a disabled SwiftUI Button (the common state
+                // before coordinates have been entered).
+                HStack(spacing: 0) {
+                    Button { onReverseGeocode() } label: {
+                        if isReverseGeocoding {
+                            if !geocodingProgress.isEmpty {
+                                Text(geocodingProgress)
+                                    .font(.caption2)
+                            } else {
+                                ProgressView()
+                                    .controlSize(.mini)
+                            }
                         } else {
-                            ProgressView()
-                                .controlSize(.mini)
+                            Image(systemName: "location.fill")
                         }
-                    } else {
-                        Image(systemName: "location.fill")
                     }
+                    .accessibilityLabel(isBatchMode
+                        ? "Auto-fill City and Country for selected images"
+                        : "Auto-fill City and Country from GPS")
+                    .disabled((!hasGPS && !isBatchMode) || isReverseGeocoding)
                 }
-                .disabled((!hasGPS && !isBatchMode) || isReverseGeocoding)
                 .help(isBatchMode ? "Auto-fill City/Country for all selected images" : "Auto-fill City and Country from GPS")
             }
 

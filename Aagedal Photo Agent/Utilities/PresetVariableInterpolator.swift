@@ -1,6 +1,66 @@
 import Foundation
 
 struct PresetVariableInterpolator: Sendable {
+    private static let gpsCityToken = "{gps:city}"
+    private static let gpsCountryToken = "{gps:country}"
+
+    /// Resolves the two place-name variables with one reverse-geocode lookup, then returns a
+    /// metadata copy that can continue through the normal synchronous variable interpolator.
+    /// On lookup failure the tokens are deliberately preserved so processing can be retried.
+    func resolvingGPSPlaceVariables(in metadata: IPTCMetadata) async -> IPTCMetadata {
+        let strings = [
+            metadata.title, metadata.description, metadata.extendedDescription,
+            metadata.creator, metadata.credit, metadata.copyright, metadata.jobId,
+            metadata.dateCreated, metadata.city, metadata.country, metadata.event,
+        ].compactMap { $0 } + metadata.keywords + metadata.personShown
+        guard strings.contains(where: {
+            $0.contains(Self.gpsCityToken) || $0.contains(Self.gpsCountryToken)
+        }) else { return metadata }
+        guard let latitude = metadata.latitude, let longitude = metadata.longitude else {
+            return replacingGPSPlaceTokens(in: metadata, city: "", country: "")
+        }
+        do {
+            let location = try await GeocodingService().reverseGeocode(
+                latitude: latitude,
+                longitude: longitude
+            )
+            return replacingGPSPlaceTokens(
+                in: metadata,
+                city: location.city ?? "",
+                country: location.country ?? ""
+            )
+        } catch {
+            return metadata
+        }
+    }
+
+    private func replacingGPSPlaceTokens(
+        in metadata: IPTCMetadata,
+        city: String,
+        country: String
+    ) -> IPTCMetadata {
+        func replace(_ value: String?) -> String? {
+            value?
+                .replacingOccurrences(of: Self.gpsCityToken, with: city)
+                .replacingOccurrences(of: Self.gpsCountryToken, with: country)
+        }
+        var result = metadata
+        result.title = replace(result.title)
+        result.description = replace(result.description)
+        result.extendedDescription = replace(result.extendedDescription)
+        result.creator = replace(result.creator)
+        result.credit = replace(result.credit)
+        result.copyright = replace(result.copyright)
+        result.jobId = replace(result.jobId)
+        result.dateCreated = replace(result.dateCreated)
+        result.city = replace(result.city)
+        result.country = replace(result.country)
+        result.event = replace(result.event)
+        result.keywords = result.keywords.compactMap { replace($0) }
+        result.personShown = result.personShown.compactMap { replace($0) }
+        return result
+    }
+
     /// Resolves template variables in a string.
     /// Supported variables:
     /// - `{date}` — today's date in default format (e.g., "Jan 27, 2026")
@@ -16,6 +76,9 @@ struct PresetVariableInterpolator: Sendable {
     /// - `{initials}` — the user's initials from Settings (empty if unset)
     /// - `{persons}` — comma-separated list of Person Shown names
     /// - `{keywords}` — comma-separated list of keywords
+    /// - `{gps}` — latitude and longitude in decimal degrees (six decimal places)
+    /// - `{latitude}` / `{longitude}` — individual decimal-degree GPS coordinates
+    /// - `{gps:city}` / `{gps:country}` — reverse-geocoded place names
     /// - `{seq}` — 1-based sequence number for batch processing
     /// - `{seq:N}` — zero-padded sequence number (e.g., `{seq:3}` produces "001", "002", …)
     /// - `{field:FIELDNAME}` — value from existing metadata (case-insensitive, matches key or label)
@@ -77,9 +140,13 @@ struct PresetVariableInterpolator: Sendable {
                 of: "{keywords}",
                 with: metadata.keywords.joined(separator: ", ")
             )
+            result = resolveGPS(in: result, metadata: metadata)
         } else {
             result = result.replacingOccurrences(of: "{persons}", with: "")
             result = result.replacingOccurrences(of: "{keywords}", with: "")
+            result = result.replacingOccurrences(of: "{gps}", with: "")
+            result = result.replacingOccurrences(of: "{latitude}", with: "")
+            result = result.replacingOccurrences(of: "{longitude}", with: "")
         }
 
         // {field:FIELDNAME}
@@ -92,6 +159,19 @@ struct PresetVariableInterpolator: Sendable {
             visitedFields: visitedFields
         )
 
+        return result
+    }
+
+    private func resolveGPS(in template: String, metadata: IPTCMetadata) -> String {
+        var result = template
+        let latitude = metadata.latitude.map { String(format: "%.6f", $0) } ?? ""
+        let longitude = metadata.longitude.map { String(format: "%.6f", $0) } ?? ""
+        let coordinate = latitude.isEmpty || longitude.isEmpty
+            ? ""
+            : "\(latitude), \(longitude)"
+        result = result.replacingOccurrences(of: "{gps}", with: coordinate)
+        result = result.replacingOccurrences(of: "{latitude}", with: latitude)
+        result = result.replacingOccurrences(of: "{longitude}", with: longitude)
         return result
     }
 
@@ -283,6 +363,13 @@ struct PresetVariableInterpolator: Sendable {
         case "datecreated": return metadata.dateCreated ?? ""
         case "city": return metadata.city ?? ""
         case "country": return metadata.country ?? ""
+        case "gps", "gpscoordinates":
+            guard let latitude = metadata.latitude, let longitude = metadata.longitude else { return "" }
+            return String(format: "%.6f, %.6f", latitude, longitude)
+        case "latitude", "gpslatitude":
+            return metadata.latitude.map { String(format: "%.6f", $0) } ?? ""
+        case "longitude", "gpslongitude":
+            return metadata.longitude.map { String(format: "%.6f", $0) } ?? ""
         case "event": return metadata.event ?? ""
         case "digitalsourcetype": return metadata.digitalSourceType?.displayName ?? ""
         default: return ""

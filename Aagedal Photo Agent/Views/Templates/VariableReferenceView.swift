@@ -139,6 +139,36 @@ private let allVariables: [VariableDefinition] = [
         example: "landscape, sunset, mountains"
     ),
     VariableDefinition(
+        variable: "{gps}",
+        category: "Shortcuts",
+        description: "GPS latitude and longitude from the current metadata in decimal degrees.",
+        example: "59.913900, 10.752200"
+    ),
+    VariableDefinition(
+        variable: "{latitude}",
+        category: "Shortcuts",
+        description: "GPS latitude from the current metadata in decimal degrees.",
+        example: "59.913900"
+    ),
+    VariableDefinition(
+        variable: "{longitude}",
+        category: "Shortcuts",
+        description: "GPS longitude from the current metadata in decimal degrees.",
+        example: "10.752200"
+    ),
+    VariableDefinition(
+        variable: "{gps:city}",
+        category: "Shortcuts",
+        description: "City reverse-geocoded from the current GPS coordinates using the configured online or offline lookup.",
+        example: "Oslo"
+    ),
+    VariableDefinition(
+        variable: "{gps:country}",
+        category: "Shortcuts",
+        description: "Country reverse-geocoded from the current GPS coordinates using the configured place-name language.",
+        example: "Norway"
+    ),
+    VariableDefinition(
         variable: "{filename}",
         category: "Shortcuts",
         description: "Filename of the selected image without its file extension.",
@@ -235,6 +265,24 @@ private let allVariables: [VariableDefinition] = [
         category: "Field Reference",
         description: "Value of the Country field.",
         example: ""
+    ),
+    VariableDefinition(
+        variable: "{field:gps}",
+        category: "Field Reference",
+        description: "GPS latitude and longitude in decimal degrees (same as {gps}).",
+        example: "59.913900, 10.752200"
+    ),
+    VariableDefinition(
+        variable: "{field:latitude}",
+        category: "Field Reference",
+        description: "GPS latitude in decimal degrees (same as {latitude}).",
+        example: "59.913900"
+    ),
+    VariableDefinition(
+        variable: "{field:longitude}",
+        category: "Field Reference",
+        description: "GPS longitude in decimal degrees (same as {longitude}).",
+        example: "10.752200"
     ),
     VariableDefinition(
         variable: "{field:event}",

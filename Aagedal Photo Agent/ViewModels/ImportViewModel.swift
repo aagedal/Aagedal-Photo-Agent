@@ -751,6 +751,12 @@ final class ImportViewModel {
             reference = fileMetadata.merged(preferring: metadata)
         }
 
+        // Import presets usually don't carry GPS themselves; use coordinates read from the
+        // source file/map-backed reference while resolving the preset's place variables.
+        var variableMetadata = metadata
+        variableMetadata.latitude = variableMetadata.latitude ?? reference.latitude
+        variableMetadata.longitude = variableMetadata.longitude ?? reference.longitude
+        let metadata = await interpolator.resolvingGPSPlaceVariables(in: variableMetadata)
         var resolved = metadata
         resolved.title = Self.resolveField(metadata.title, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
         resolved.description = Self.resolveField(metadata.description, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
