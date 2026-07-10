@@ -103,6 +103,7 @@ struct ContentView: View {
     @State private var technicalMetadata: TechnicalMetadata?
     @State private var technicalMetadataCache: [URL: TechnicalMetadata] = [:]
     @State private var technicalMetadataTask: Task<Void, Never>?
+    @AppStorage(UserDefaultsKeys.scopesExpanded) private var scopesExpanded = true
     @State private var isRenderingEditedFolder = false
     @State private var renderExportCurrent = 0
     @State private var renderExportTotal = 0
@@ -1149,7 +1150,10 @@ struct ContentView: View {
                let selectedImage = browserViewModel.selectedImages.first {
                 Divider()
                 VStack(alignment: .leading, spacing: 8) {
-                    ScopeDisplayView(scopeViewModel: scopeViewModel)
+                    ScopeDisplayView(
+                        scopeViewModel: scopeViewModel,
+                        isExpanded: $scopesExpanded
+                    )
                     Divider()
                     if let meta = technicalMetadata, meta.hasC2PA {
                         C2PAMetadataView(metadata: meta, validation: c2paValidation) {

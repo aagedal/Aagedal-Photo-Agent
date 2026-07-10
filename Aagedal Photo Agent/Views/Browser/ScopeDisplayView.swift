@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ScopeDisplayView: View {
     let scopeViewModel: ScopeViewModel
+    @Binding var isExpanded: Bool
     @State private var hoveredMode: ScopeViewModel.ScopeMode?
 
     /// Fixed height of the scope area — independent of the sidebar width.
@@ -11,44 +12,75 @@ struct ScopeDisplayView: View {
 
     var body: some View {
         VStack(spacing: 4) {
-            HStack(spacing: 8) {
-                ForEach(ScopeViewModel.ScopeMode.allCases, id: \.self) { mode in
-                    Text(label(for: mode))
+            HStack(spacing: 6) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        isExpanded.toggle()
+                    }
+                } label: {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                }
+                .buttonStyle(.plain)
+                .help(isExpanded ? "Collapse scopes" : "Expand scopes")
+
+                if isExpanded {
+                    ForEach(ScopeViewModel.ScopeMode.allCases, id: \.self) { mode in
+                        Text(label(for: mode))
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(
+                                scopeViewModel.scopeMode == mode
+                                    ? Color.primary
+                                    : Color.secondary.opacity(0.5)
+                            )
+                            .underline(hoveredMode == mode)
+                            .onHover { hovering in
+                                hoveredMode = hovering ? mode : nil
+                            }
+                            .onTapGesture {
+                                scopeViewModel.scopeMode = mode
+                            }
+                    }
+                } else {
+                    Text("Scopes")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(
-                            scopeViewModel.scopeMode == mode
-                                ? Color.primary
-                                : Color.secondary.opacity(0.5)
-                        )
-                        .underline(hoveredMode == mode)
-                        .onHover { hovering in
-                            hoveredMode = hovering ? mode : nil
-                        }
+                        .foregroundStyle(.secondary)
                         .onTapGesture {
-                            scopeViewModel.scopeMode = mode
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                isExpanded = true
+                            }
                         }
+                    Spacer()
+                    Text(label(for: scopeViewModel.scopeMode))
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
-            // GeometryReader sizes from its parent (not its children), so the
-            // background tracks the sidebar width and shrinks back correctly
-            // when the sidebar narrows again.
-            GeometryReader { geo in
-                let content = scopeContentSize(forWidth: geo.size.width)
-                ZStack {
-                    // Background always fills the full available width. Black so
-                    // it's seamless with the scopes' own black backgrounds
-                    // (e.g. the centered vectorscope square).
-                    Color.black
+            if isExpanded {
+                // GeometryReader sizes from its parent (not its children), so the
+                // background tracks the sidebar width and shrinks back correctly
+                // when the sidebar narrows again.
+                GeometryReader { geo in
+                    let content = scopeContentSize(forWidth: geo.size.width)
+                    ZStack {
+                        // Background always fills the full available width. Black so
+                        // it's seamless with the scopes' own black backgrounds
+                        // (e.g. the centered vectorscope square).
+                        Color.black
 
-                    // The scope graphic, sized per-mode and centered.
-                    scopeGraphic
-                        .frame(width: content.width, height: content.height)
+                        // The scope graphic, sized per-mode and centered.
+                        scopeGraphic
+                            .frame(width: content.width, height: content.height)
+                    }
+                    .frame(width: geo.size.width, height: scopeHeight)
                 }
-                .frame(width: geo.size.width, height: scopeHeight)
+                .frame(height: scopeHeight)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
             }
-            .frame(height: scopeHeight)
-            .clipShape(RoundedRectangle(cornerRadius: 4))
         }
     }
 

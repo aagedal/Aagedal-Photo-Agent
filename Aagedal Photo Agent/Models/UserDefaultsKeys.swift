@@ -86,6 +86,7 @@ nonisolated enum UserDefaultsKeys {
     static let previewMode = "previewMode"
     static let showOriginalThumbnails = "showOriginalThumbnails"
     static let lastScopeMode = "lastScopeMode"
+    static let scopesExpanded = "scopesExpanded"
     static let metadataPanelWidth = "metadataPanelWidth"
     /// Split-view layout of the thumbnail area (BrowserPaneLayout raw value).
     static let browserPaneLayout = "browserPaneLayout"
