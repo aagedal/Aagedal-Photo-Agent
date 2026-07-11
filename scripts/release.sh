@@ -69,7 +69,7 @@ run_with_progress() {
 # submission ID. Full notarytool output remains visible and is also retained in OUTPUT_DIR.
 notarize() {
   local artifact="$1" label="$2" log="$3" submit_status
-  say "Notarizing $label…"
+  say "Notarizing ${label}…"
   set +e
   xcrun notarytool submit "$artifact" --keychain-profile "$NOTARY_PROFILE" --wait --verbose 2>&1 | tee "$log"
   submit_status=${PIPESTATUS[0]}
