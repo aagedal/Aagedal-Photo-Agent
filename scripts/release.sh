@@ -38,6 +38,68 @@ say()  { printf '\n\033[1;34m▶ %s\033[0m\n' "$*"; }
 ok()   { printf '\033[1;32m✓ %s\033[0m\n' "$*"; }
 die()  { printf '\033[1;31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 
+# Run a normally-silent command with a small terminal spinner while keeping its complete output in
+# a log. On failure, print the useful tail immediately so the user does not have to hunt for it.
+run_with_progress() {
+  local label="$1" log="$2"
+  shift 2
+  "$@" >"$log" 2>&1 &
+  local pid=$! start=$SECONDS frame=0
+  local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+  while kill -0 "$pid" 2>/dev/null; do
+    printf '\r\033[2K  %s %s… %ds' "${frames[$frame]}" "$label" "$((SECONDS - start))"
+    frame=$(((frame + 1) % ${#frames[@]}))
+    sleep 0.2
+  done
+  set +e
+  wait "$pid"
+  local status=$?
+  set -e
+  if [ "$status" -eq 0 ]; then
+    printf '\r\033[2K'
+    return 0
+  fi
+  printf '\r\033[2K' >&2
+  printf '\033[1;31mLast 60 lines of %s:\033[0m\n' "$log" >&2
+  tail -60 "$log" >&2
+  return "$status"
+}
+
+# Submit an artifact and, if Apple rejects it, automatically fetch the detailed issue log using the
+# submission ID. Full notarytool output remains visible and is also retained in OUTPUT_DIR.
+notarize() {
+  local artifact="$1" label="$2" log="$3" submit_status
+  say "Notarizing $label…"
+  set +e
+  xcrun notarytool submit "$artifact" --keychain-profile "$NOTARY_PROFILE" --wait --verbose 2>&1 | tee "$log"
+  submit_status=${PIPESTATUS[0]}
+  set -e
+
+  local submission_id
+  submission_id="$(sed -n 's/^[[:space:]]*id:[[:space:]]*//p' "$log" | head -1)"
+  if [ "$submit_status" -eq 0 ] && grep -Eq '^[[:space:]]*status:[[:space:]]*Accepted[[:space:]]*$' "$log"; then
+    ok "$label notarization accepted${submission_id:+ (submission $submission_id)}"
+    return 0
+  fi
+
+  printf '\033[1;31m✗ %s notarization was not accepted (notarytool exit %s).\033[0m\n' "$label" "$submit_status" >&2
+  if [ -n "$submission_id" ]; then
+    local issue_log="$OUTPUT_DIR/notarize-$label-issues.json"
+    printf 'Current Apple submission state:\n' >&2
+    xcrun notarytool info --keychain-profile "$NOTARY_PROFILE" "$submission_id" 2>&1 | tee "$OUTPUT_DIR/notarize-$label-info.log" >&2 || true
+    printf 'Fetching Apple diagnostic log for submission %s…\n' "$submission_id" >&2
+    if xcrun notarytool log --keychain-profile "$NOTARY_PROFILE" "$submission_id" "$issue_log"; then
+      printf '\n\033[1;31mApple notarization diagnostics:\033[0m\n' >&2
+      cat "$issue_log" >&2
+    else
+      printf 'Could not download the diagnostic log; inspect submission %s manually.\n' "$submission_id" >&2
+    fi
+  else
+    printf 'No submission ID was returned. Check credentials/network output in %s.\n' "$log" >&2
+  fi
+  die "$label notarization failed — full submit output: $log"
+}
+
 # ─── 1. Toolchain: full Xcode (not just Command Line Tools) ───────────────────
 # WHY: archiving/exporting a .app needs the full Xcode toolchain. The CLT-only
 # path that `xcode-select` often points at cannot build app targets.
@@ -94,6 +156,10 @@ EOF
   [ -n "$NOTARY_PROFILE" ] || die "A notarytool profile name is required."
 fi
 ok "Notary profile: $NOTARY_PROFILE"
+say "Validating notarization credentials…"
+xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null \
+  || die "Notary profile '$NOTARY_PROFILE' could not authenticate. Recreate it with 'xcrun notarytool store-credentials'."
+ok "Notarization credentials accepted"
 
 # ─── 5. Sparkle tools + key sanity ────────────────────────────────────────────
 # WHY: the appcast enclosure needs an EdDSA signature from Sparkle's sign_update.
@@ -115,8 +181,9 @@ fi
 rm -rf "$OUTPUT_DIR" && mkdir -p "$OUTPUT_DIR"
 ARCHIVE="$OUTPUT_DIR/$DMG_STEM.xcarchive"
 say "Archiving (Release)…"
-xcodebuild -scheme "$SCHEME" -configuration Release -destination 'generic/platform=macOS' \
-  -archivePath "$ARCHIVE" archive >"$OUTPUT_DIR/archive.log" 2>&1 \
+run_with_progress "Archiving" "$OUTPUT_DIR/archive.log" \
+  xcodebuild -scheme "$SCHEME" -configuration Release -destination 'generic/platform=macOS' \
+  -archivePath "$ARCHIVE" archive \
   || die "Archive failed — see $OUTPUT_DIR/archive.log"
 ok "Archived"
 
@@ -145,12 +212,9 @@ codesign --verify --deep --strict "$APP" || die "Exported app failed signature v
 ok "Exported & verified: $APP"
 
 # ─── 8. Notarize the app, then staple ─────────────────────────────────────────
-say "Notarizing app…"
 ZIP="$OUTPUT_DIR/$DMG_STEM-app.zip"
 ditto -c -k --keepParent "$APP" "$ZIP"
-xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait 2>&1 | tee "$OUTPUT_DIR/notarize-app.log" | grep -E 'id:|status:' \
-  || die "Notarization submit failed."
-grep -q 'status: Accepted' "$OUTPUT_DIR/notarize-app.log" || die "App notarization not Accepted — see $OUTPUT_DIR/notarize-app.log"
+notarize "$ZIP" "App" "$OUTPUT_DIR/notarize-app.log"
 xcrun stapler staple "$APP" && xcrun stapler validate "$APP"
 ok "App notarized & stapled"
 
@@ -163,10 +227,7 @@ ditto "$APP" "$STAGE/$(basename "$APP")"
 ln -s /Applications "$STAGE/Applications"
 hdiutil create -volname "$VOL_NAME" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
 codesign --force --sign "$SIGN_ID" --timestamp "$DMG"
-say "Notarizing DMG…"
-xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait 2>&1 | tee "$OUTPUT_DIR/notarize-dmg.log" | grep -E 'id:|status:' \
-  || die "DMG notarization submit failed."
-grep -q 'status: Accepted' "$OUTPUT_DIR/notarize-dmg.log" || die "DMG notarization not Accepted — see $OUTPUT_DIR/notarize-dmg.log"
+notarize "$DMG" "DMG" "$OUTPUT_DIR/notarize-dmg.log"
 xcrun stapler staple "$DMG" && xcrun stapler validate "$DMG"
 spctl -a -t open --context context:primary-signature "$DMG" >/dev/null 2>&1 && ok "Gatekeeper accepts the DMG"
 ok "DMG ready: $DMG"
