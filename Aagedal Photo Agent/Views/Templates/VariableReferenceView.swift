@@ -1,14 +1,17 @@
 import SwiftUI
 
 struct VariableDefinition: Identifiable {
-    let id = UUID()
+    var id: String { variable }
     let variable: String
     let category: String
     let description: String
     let example: String
 }
 
-private let allVariables: [VariableDefinition] = [
+/// Single source of truth for variables shown by both metadata and template editors.
+enum VariableCatalog {
+    static let categoryOrder = ["Date", "Shortcuts", "Field Reference"]
+    static let all: [VariableDefinition] = [
     // Date
     VariableDefinition(
         variable: "{date}",
@@ -296,7 +299,16 @@ private let allVariables: [VariableDefinition] = [
         description: "Display name of the Digital Source Type.",
         example: ""
     ),
-]
+    ]
+
+    static var grouped: [(category: String, items: [VariableDefinition])] {
+        let byCategory = Dictionary(grouping: all, by: \.category)
+        return categoryOrder.compactMap { category in
+            guard let items = byCategory[category], !items.isEmpty else { return nil }
+            return (category, items)
+        }
+    }
+}
 
 struct VariableReferenceView: View {
     @Binding var isPresented: Bool
@@ -307,9 +319,9 @@ struct VariableReferenceView: View {
     @FocusState private var searchFocused: Bool
 
     private var filteredVariables: [VariableDefinition] {
-        guard !searchText.isEmpty else { return allVariables }
+        guard !searchText.isEmpty else { return VariableCatalog.all }
         let query = searchText.lowercased()
-        return allVariables.filter {
+        return VariableCatalog.all.filter {
             $0.variable.lowercased().contains(query) ||
             $0.description.lowercased().contains(query) ||
             $0.category.lowercased().contains(query) ||
@@ -318,9 +330,8 @@ struct VariableReferenceView: View {
     }
 
     private var groupedVariables: [(category: String, items: [VariableDefinition])] {
-        let order = ["Date", "Shortcuts", "Field Reference"]
         let grouped = Dictionary(grouping: filteredVariables, by: \.category)
-        return order.compactMap { cat in
+        return VariableCatalog.categoryOrder.compactMap { cat in
             guard let items = grouped[cat], !items.isEmpty else { return nil }
             return (category: cat, items: items)
         }

@@ -22,6 +22,7 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 ### Editing and workflow improvements
 
 - Added GPS coordinate and reverse-geocoded city, country, and location variables for metadata templates.
+- Unified the metadata-pane and template-editor variable lists so every supported variable is available consistently from one shared catalog.
 - Added 1–5 rating shortcuts in Develop and rating badges to the edit filmstrip.
 - Added middle-click copying of develop settings from a filmstrip image.
 - Added a nine-part composition grid to the crop overlay.

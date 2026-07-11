@@ -190,61 +190,13 @@ struct TemplateEditorView: View {
     private func variableMenu(for field: Binding<TemplateField>) -> some View {
         let fieldID = field.wrappedValue.id
         Menu {
-            Section("Date") {
-                Button("{date} — today, medium format") {
-                    insertVariable("{date}", into: field)
-                }
-                Button("{date:yyyy-MM-dd}") {
-                    insertVariable("{date:yyyy-MM-dd}", into: field)
-                }
-                Button("{date:dd MMM yyyy}") {
-                    insertVariable("{date:dd MMM yyyy}", into: field)
-                }
-                Button("{date:dd.MM.yyyy}") {
-                    insertVariable("{date:dd.MM.yyyy}", into: field)
-                }
-                Button("{date:yyyy}") {
-                    insertVariable("{date:yyyy}", into: field)
-                }
-                Button("{dateCreated} — metadata") {
-                    insertVariable("{dateCreated}", into: field)
-                }
-                Button("{dateCaptured} — EXIF DateTimeOriginal") {
-                    insertVariable("{dateCaptured}", into: field)
-                }
-                Button("{dateCaptured:yyyy-MM-dd}") {
-                    insertVariable("{dateCaptured:yyyy-MM-dd}", into: field)
-                }
-                Button("{dateCaptured:YYYYMMDD}") {
-                    insertVariable("{dateCaptured:YYYYMMDD}", into: field)
-                }
-                Button("{dateCaptured:DDMMYYYY}") {
-                    insertVariable("{dateCaptured:DDMMYYYY}", into: field)
-                }
-                Button("{dateCaptured:YYYY-MM-DD}") {
-                    insertVariable("{dateCaptured:YYYY-MM-DD}", into: field)
-                }
-                Button("{dateCaptured:DD-MM-YYYY}") {
-                    insertVariable("{dateCaptured:DD-MM-YYYY}", into: field)
-                }
-            }
-
-            Section("Shortcuts") {
-                Button("{persons} — Person Shown names") {
-                    insertVariable("{persons}", into: field)
-                }
-                Button("{keywords} — Keywords list") {
-                    insertVariable("{keywords}", into: field)
-                }
-                Button("{filename} — Image filename") {
-                    insertVariable("{filename}", into: field)
-                }
-            }
-
-            Section("Field Reference") {
-                ForEach(TemplateField.availableFields, id: \.key) { f in
-                    Button("{field:\(f.key)}") {
-                        insertVariable("{field:\(f.key)}", into: field)
+            ForEach(VariableCatalog.grouped, id: \.category) { group in
+                Menu(group.category) {
+                    ForEach(group.items) { variable in
+                        Button(variable.variable) {
+                            insertVariable(variable.variable, into: field)
+                        }
+                        .help(variable.description)
                     }
                 }
             }
