@@ -157,8 +157,15 @@ EOF
 fi
 ok "Notary profile: $NOTARY_PROFILE"
 say "Validating notarization credentials…"
-xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null \
-  || die "Notary profile '$NOTARY_PROFILE' could not authenticate. Recreate it with 'xcrun notarytool store-credentials'."
+set +e
+NOTARY_CHECK="$(xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" 2>&1)"
+NOTARY_CHECK_STATUS=$?
+set -e
+if [ "$NOTARY_CHECK_STATUS" -ne 0 ] || grep -Eqi '(^Error:|No Keychain password item|could not be found in the keychain|invalid credentials|authentication failed)' <<<"$NOTARY_CHECK"; then
+  printf '%s\n' "$NOTARY_CHECK" >&2
+  die "Notary profile '$NOTARY_PROFILE' could not authenticate. Recreate it with:
+  xcrun notarytool store-credentials '$NOTARY_PROFILE' --apple-id '<your-apple-id>' --team-id '$TEAM_ID'"
+fi
 ok "Notarization credentials accepted"
 
 # ─── 5. Sparkle tools + key sanity ────────────────────────────────────────────
