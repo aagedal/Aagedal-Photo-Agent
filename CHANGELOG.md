@@ -2,7 +2,35 @@
 
 All notable user-visible changes are documented here. Signed, notarized DMGs are self-hosted and delivered as in-app updates via Sparkle.
 
-## 2.1.0 — Unreleased
+## 2.1.1 — 2026-07-11
+
+### Highlights
+
+- New Metadata Review view makes it fast to compare and edit IPTC metadata across a filtered folder, with at-a-glance validation and enlarged thumbnail previews on hover.
+- Added GPS-powered template variables for coordinates and reverse-geocoded place information.
+- Expanded culling and editing shortcuts with filmstrip rating badges, number-key ratings in Develop, and middle-click copying of develop settings.
+
+### Metadata Review
+
+- Added Metadata Review to the main toolbar view switcher: a scrollable folder-wide list with thumbnails and every editable IPTC field laid out for quick comparison.
+- Added inline metadata editing in review rows, including multi-line text and comma-separated Keywords / Person Shown values, using the existing pending-sidecar and history workflow.
+- Added red and amber field borders for missing required and warning metadata, respectively.
+- Added configurable minimum lengths for Headline and Description (defaulting to 10 and 30 characters), shared by Metadata Review, browser completeness filtering, and FTP upload validation.
+- Added delayed, enlarged thumbnail previews on hover to make people and image content easier to identify while reviewing metadata.
+- Kept search, rating, colour-label, sort, completeness, and missing-field filters available in Metadata Review, so the list can be narrowed to only the relevant photos.
+
+### Editing and workflow improvements
+
+- Added GPS coordinate and reverse-geocoded city, country, and location variables for metadata templates.
+- Added 1–5 rating shortcuts in Develop and rating badges to the edit filmstrip.
+- Added middle-click copying of develop settings from a filmstrip image.
+- Added a nine-part composition grid to the crop overlay.
+- Added a collapsible scopes display.
+- Preserved Camera Raw settings while HDR mode is active.
+- Separated SDR output tone mapping from local-adjustment LUT processing for more consistent rendering.
+- Reduced main-thread stalls and redundant preview reloads while browsing and editing.
+
+## 2.1.0 — 2026-07-10
 
 ### Highlights
 
