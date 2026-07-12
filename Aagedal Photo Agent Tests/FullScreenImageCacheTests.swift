@@ -139,3 +139,51 @@ struct FullScreenImageCacheTests {
         #expect(cache.cachedImage(for: url, orientation: 3) != nil)
     }
 }
+
+@Suite("ThumbnailDecodeGate")
+struct ThumbnailDecodeGateTests {
+    @Test("Canceled waiters do not receive permits")
+    func canceledWaiterDoesNotReceivePermit() async {
+        let gate = ThumbnailDecodeGate(limit: 1)
+        let firstPermit = await gate.acquire()
+        #expect(firstPermit)
+
+        let waiter = Task {
+            await gate.acquire()
+        }
+        await Task.yield()
+        waiter.cancel()
+
+        let canceledPermit = await waiter.value
+        #expect(!canceledPermit)
+
+        await gate.release()
+        let nextPermit = await gate.acquire()
+        #expect(nextPermit)
+        await gate.release()
+    }
+
+    @Test("Release skips canceled waiters and hands off to the next live waiter")
+    func releaseSkipsCanceledWaiter() async {
+        let gate = ThumbnailDecodeGate(limit: 1)
+        let firstPermit = await gate.acquire()
+        #expect(firstPermit)
+
+        let canceledWaiter = Task {
+            await gate.acquire()
+        }
+        let liveWaiter = Task {
+            await gate.acquire()
+        }
+        await Task.yield()
+        canceledWaiter.cancel()
+
+        let canceledPermit = await canceledWaiter.value
+        #expect(!canceledPermit)
+
+        await gate.release()
+        let livePermit = await liveWaiter.value
+        #expect(livePermit)
+        await gate.release()
+    }
+}

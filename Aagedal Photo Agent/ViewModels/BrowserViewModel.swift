@@ -48,6 +48,9 @@ final class BrowserViewModel {
 
     @ObservationIgnored var fullScreenFaceContext: FullScreenFaceContext?
     var errorMessage: String?
+    /// Reserved for failures that prevent the current folder from producing a usable
+    /// grid. Ordinary operation failures use `errorMessage` and remain non-modal.
+    var folderLoadErrorMessage: String?
     var sortOrder: SortOrder = .name {
         didSet {
             UserDefaults.standard.set(sortOrder.rawValue, forKey: UserDefaultsKeys.thumbnailSortOrder)
@@ -593,6 +596,7 @@ final class BrowserViewModel {
         RecentFoldersStore.shared.track(url)
         isLoading = true
         errorMessage = nil
+        folderLoadErrorMessage = nil
         iCloudDownloadNotice = nil
         images = []
         selectedImageIDs.removeAll()
@@ -710,7 +714,7 @@ final class BrowserViewModel {
                 await loadBasicMetadata(for: metadataURLs, cachedSidecars: allSidecars)
             } catch {
                 guard !Task.isCancelled, self.currentFolderURL == url else { return }
-                self.errorMessage = error.localizedDescription
+                self.folderLoadErrorMessage = error.localizedDescription
                 self.isLoading = false
             }
         }
