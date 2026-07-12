@@ -598,7 +598,6 @@ final class BrowserViewModel {
         selectedImageIDs.removeAll()
         lastClickedImageURL = nil
         manualOrder.removeAll()
-        thumbnailService.cancelBackgroundGeneration()
         fullScreenImageCache.clearAll()
 
         restoreFilterState(for: url)
@@ -642,7 +641,6 @@ final class BrowserViewModel {
                 self.images = files
                 self.rebuildNow()
                 self.isLoading = false
-                self.thumbnailService.startBackgroundGeneration(for: self.visibleImages)
 
                 // Phase 1.5: Read EXIF orientations in background (deferred).
                 // Thumbnails don't need this (QL/CGImageSource apply transforms internally).
@@ -703,13 +701,9 @@ final class BrowserViewModel {
                 self.images = updated
                 self.rebuildNow()
 
-                // Phase 4: Background display preview generation
-                self.fullScreenImageCache.startBackgroundPreviewGeneration(
-                    for: self.visibleImages.filter { !$0.isICloudDownloadPending }.map(\.url),
-                    screenMaxPx: 960
-                )
-
-                // Phase 5: Load metadata
+                // Phase 4: Load metadata. Thumbnails and display previews are decoded only
+                // for visible/prefetched items instead of warming the entire folder into
+                // bounded memory caches.
                 let metadataURLs = self.images
                     .filter { $0.isImageFile && !$0.isICloudDownloadPending }
                     .map(\.url)
@@ -995,6 +989,15 @@ final class BrowserViewModel {
                 async let xmpDataLoad = loadXMPSidecarDataBatch(for: batchURLs)
                 let results = try await metadataReadService.readBatchBasicMetadata(urls: batchURLs)
                 let xmpDataMap = await xmpDataLoad
+                let imageAspects = Dictionary(uniqueKeysWithValues: results.compactMap { dict -> (URL, Double)? in
+                    guard let sourcePath = dict[MetadataDictKey.sourceFile] as? String,
+                          let aspect = metadataDictPixelAspect(dict) else { return nil }
+                    return (URL(fileURLWithPath: sourcePath), aspect)
+                })
+                let xmpMetadataMap = await Self.parseXMPSidecarMetadataBatch(
+                    xmpDataMap,
+                    imageAspects: imageAspects
+                )
                 let batchMs = batchTimer.elapsedMilliseconds()
                 perfLog.info("[BrowserVM] batch \(batchIndex)/\(totalBatches) DONE — \(batchURLs.count) files in \(batchMs)ms")
                 applyBatchMetadataResults(
@@ -1002,7 +1005,7 @@ final class BrowserViewModel {
                     to: &images,
                     localIndex: urlToImageIndex,
                     cachedSidecars: cachedSidecars,
-                    xmpDataMap: xmpDataMap
+                    xmpMetadataMap: xmpMetadataMap
                 )
             } catch {
                 logger.warning("Batch metadata load failed (batch at offset \(batchStart)): \(error.localizedDescription)")
@@ -1034,6 +1037,35 @@ final class BrowserViewModel {
         }
     }
 
+    /// Parses already-read sidecars outside the main actor. The embedded metadata aspect
+    /// is preferred for angled-crop conversion; only sidecars that need an aspect and lack
+    /// one in the embedded metadata touch the image header as a fallback.
+    private nonisolated static func parseXMPSidecarMetadataBatch(
+        _ dataByURL: [URL: Data],
+        imageAspects: [URL: Double]
+    ) async -> [URL: IPTCMetadata] {
+        let service = XMPSidecarService()
+        return await withTaskGroup(of: (URL, IPTCMetadata?).self) { group in
+            for (url, data) in dataByURL {
+                group.addTask {
+                    guard !Task.isCancelled else { return (url, nil) }
+                    let metadata = service.loadSidecar(
+                        fromData: data,
+                        imageAspect: { imageAspects[url] ?? ImagePixelAspect.aspect(at: url) }
+                    )
+                    return (url, metadata)
+                }
+            }
+
+            var result: [URL: IPTCMetadata] = [:]
+            result.reserveCapacity(dataByURL.count)
+            for await (url, metadata) in group {
+                if let metadata { result[url] = metadata }
+            }
+            return result
+        }
+    }
+
     private func drainPendingMetadataIfNeeded() {
         guard !isMetadataLoading else { return }
         guard !pendingMetadataURLs.isEmpty else { return }
@@ -1052,7 +1084,7 @@ final class BrowserViewModel {
         to updated: inout [ImageFile],
         localIndex: [URL: Int],
         cachedSidecars: [URL: MetadataSidecar] = [:],
-        xmpDataMap: [URL: Data] = [:]
+        xmpMetadataMap: [URL: IPTCMetadata] = [:]
     ) {
         for dict in results {
             guard let sourcePath = dict[MetadataDictKey.sourceFile] as? String else { continue }
@@ -1089,18 +1121,8 @@ final class BrowserViewModel {
                 }
                 updated[index].cameraRawSettings = newSettings
 
-                // Load XMP sidecar. Bytes were preloaded in parallel off-main when
-                // a `xmpDataMap` is supplied (the loadBasicMetadata path); fall back
-                // to the synchronous read for other callers.
-                let xmpMeta: IPTCMetadata?
-                if let data = xmpDataMap[sourceURL] {
-                    xmpMeta = xmpSidecarService.loadSidecar(
-                        fromData: data,
-                        imageAspect: { metadataDictPixelAspect(dict) ?? ImagePixelAspect.aspect(at: sourceURL) }
-                    )
-                } else {
-                    xmpMeta = xmpSidecarService.loadSidecar(for: sourceURL)
-                }
+                // XMP I/O and XML parsing completed off-main before this model merge.
+                let xmpMeta = xmpMetadataMap[sourceURL]
 
                 // metadata reads CRS from the image file itself but NOT from the
                 // adjacent .xmp sidecar where edited CameraRaw settings are stored.

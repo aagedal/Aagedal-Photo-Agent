@@ -20,11 +20,6 @@ final class FullScreenImageCache: @unchecked Sendable {
     nonisolated(unsafe) private let editedDisplayPreviewCache = NSCache<NSString, CGImage>()
 
     nonisolated(unsafe) private var prefetchTasks: [PrefetchKey: Task<Void, Never>] = [:]
-    nonisolated(unsafe) private var previewGenerationTask: Task<Void, Never>?
-    nonisolated(unsafe) private var _isGeneratingPreviews = false
-    nonisolated(unsafe) private var _previewsCompleted = 0
-    nonisolated(unsafe) private var _previewsTotal = 0
-    nonisolated(unsafe) private var _previewGeneration: UInt64 = 0
     /// When true, `startPrefetch` is a no-op and in-flight prefetch is cancelled. Set while the
     /// develop editor is active: speculative prefetch decodes call ImageIO's XMP parsing
     /// (`CGImageSourceCopyPropertiesAtIndex`), which races the editor's concurrent NSXML sidecar
@@ -175,11 +170,6 @@ final class FullScreenImageCache: @unchecked Sendable {
         editedCache.removeAllObjects()
         editedDisplayPreviewCache.removeAllObjects()
         cancelAllPrefetch()
-        cancelPreviewGeneration()
-    }
-
-    nonisolated var isGeneratingPreviews: Bool {
-        lock.withLock { _isGeneratingPreviews }
     }
 
     // MARK: - Prefetch Suppression (develop editor)
@@ -208,107 +198,6 @@ final class FullScreenImageCache: @unchecked Sendable {
         } else {
             editedCache.countLimit = 12
             editedCache.totalCostLimit = 256 * 1024 * 1024             // 256 MB — matches init()
-        }
-    }
-
-    nonisolated var previewsCompleted: Int {
-        lock.withLock { _previewsCompleted }
-    }
-
-    nonisolated var previewsTotal: Int {
-        lock.withLock { _previewsTotal }
-    }
-
-    // MARK: - Background Display Preview Generation
-
-    nonisolated func startBackgroundPreviewGeneration(for urls: [URL], screenMaxPx: CGFloat) {
-        // Filter outside the lock — NSCache is thread-safe
-        let uncached = urls.filter {
-            let sidecarOrientation = XMPSidecarService().sidecarOrientation(for: $0)
-            let orientation = sidecarOrientation ?? Self.fileEXIFOrientation(at: $0)
-            return displayPreviewCache.object(forKey: Self.cacheKey(for: $0, orientation: orientation)) == nil
-        }
-
-        lock.withLock {
-            // Cancel existing task atomically with new task creation
-            previewGenerationTask?.cancel()
-
-            guard !uncached.isEmpty else {
-                previewGenerationTask = nil
-                _isGeneratingPreviews = false
-                _previewsCompleted = 0
-                _previewsTotal = 0
-                return
-            }
-
-            _isGeneratingPreviews = true
-            _previewsCompleted = 0
-            _previewsTotal = uncached.count
-            _previewGeneration += 1
-            let generation = _previewGeneration
-
-            previewGenerationTask = Task.detached(priority: .utility) { [weak self] in
-                guard let self else { return }
-                let batchSize = 4
-                for batchStart in stride(from: 0, to: uncached.count, by: batchSize) {
-                    guard !Task.isCancelled else { break }
-                    let batchEnd = min(batchStart + batchSize, uncached.count)
-                    let batch = uncached[batchStart..<batchEnd]
-
-                    await withTaskGroup(of: Void.self) { group in
-                        for url in batch {
-                            group.addTask {
-                                guard !Task.isCancelled else { return }
-                                let sidecarOrientation = XMPSidecarService().sidecarOrientation(for: url)
-                                let targetOrientation = sidecarOrientation ?? Self.fileEXIFOrientation(at: url)
-                                guard self.displayPreviewCache.object(forKey: Self.cacheKey(for: url, orientation: targetOrientation)) == nil else { return }
-                                guard let result = await Self.loadDownsampledOffPoolWithOrientation(from: url, maxPixelSize: screenMaxPx) else { return }
-                                var image = result.image
-                                guard !Task.isCancelled else { return }
-                                // The decode bakes the file's embedded tag; sidecar-only rotations
-                                // (RAW/C2PA) need the file→sidecar correction the thumbnails apply
-                                // (ThumbnailService.orientedToSidecar). Without it, a loupe Phase-0
-                                // display-preview hit — e.g. returning to an image after the small
-                                // retina cache evicted it — shows the capture orientation instead
-                                // of the user's rotation until the slow Phase-2 decode replaces it.
-                                if let sidecarOrientation {
-                                    let correction = ImageFile.orientationCorrection(
-                                        from: result.orientation, to: sidecarOrientation)
-                                    if correction != .up {
-                                        let rotated = CIImage(cgImage: image).oriented(correction)
-                                        if let corrected = CameraRawApproximation.createDisplayCGImage(
-                                            rotated, from: rotated.extent) {
-                                            image = corrected
-                                        }
-                                    }
-                                }
-                                guard !Task.isCancelled else { return }
-                                self.storeDisplayPreview(image, for: url, orientation: targetOrientation)
-                            }
-                        }
-                    }
-
-                    self.lock.withLock {
-                        guard self._previewGeneration == generation else { return }
-                        self._previewsCompleted = batchEnd
-                    }
-                }
-                self.lock.withLock {
-                    guard self._previewGeneration == generation else { return }
-                    self._isGeneratingPreviews = false
-                }
-            }
-        }
-    }
-
-    nonisolated func cancelPreviewGeneration() {
-        lock.withLock {
-            previewGenerationTask?.cancel()
-            previewGenerationTask = nil
-            _previewGeneration += 1
-            _isGeneratingPreviews = false
-            _previewsCompleted = 0
-            _previewsTotal = 0
         }
     }
 

@@ -80,16 +80,6 @@ struct BrowserView: View {
                                 .transition(.move(edge: .bottom).combined(with: .opacity))
                         }
 
-                        // Thumbnail generation progress (conditional)
-                        if viewModel.thumbnailService.isPreGenerating {
-                            ThumbnailGenerationProgressView(
-                                completed: viewModel.thumbnailService.preGenerateCompleted,
-                                total: viewModel.thumbnailService.preGenerateTotal,
-                                onCancel: { viewModel.thumbnailService.cancelBackgroundGeneration() }
-                            )
-                            .transition(.move(edge: .bottom).combined(with: .opacity))
-                        }
-
                         // Permanent image count overlay
                         ImageCountOverlayView(
                             totalImageCount: viewModel.images.count,
@@ -104,7 +94,6 @@ struct BrowserView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
                     .animation(.easeInOut(duration: 0.2), value: viewModel.sortFeedback)
                     .animation(.easeInOut(duration: 0.25), value: viewModel.iCloudDownloadNotice)
-                    .animation(.easeInOut(duration: 0.25), value: viewModel.thumbnailService.isPreGenerating)
 
                     // Thumbnail size slider (bottom-right)
                     VStack {

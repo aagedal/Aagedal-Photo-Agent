@@ -216,15 +216,13 @@ struct ContentView: View {
                 technicalMetadata: $technicalMetadata
             ))
             // Single source of truth for the develop-editor gate (multiple enter/exit sites set
-            // `mainViewMode`). While editing, suppress speculative prefetch + background thumbnail
-            // decode — their ImageIO XMP parsing races the editor's concurrent NSXML sidecar write
-            // on libxml2's process-global state (EXC_BAD_ACCESS) — and tighten the edited-image
-            // cache to relieve the IOSurface memory pressure that amplifies the fault.
+            // `mainViewMode`). While editing, suppress speculative full-screen prefetch — its
+            // ImageIO XMP parsing races the editor's concurrent sidecar write — and tighten the
+            // edited-image cache to relieve the IOSurface memory pressure that amplifies the fault.
             .onChange(of: mainViewMode) { _, mode in
                 let editing = (mode == .editing)
                 browserViewModel.fullScreenImageCache.setPrefetchSuppressed(editing)
                 browserViewModel.fullScreenImageCache.setEditingMemoryProfile(editing)
-                browserViewModel.thumbnailService.suppressBackgroundGeneration(editing)
             }
             .onChange(of: importViewModel.isImporting) { _, isImporting in
                 BackgroundOperationMonitor.shared.isImporting = isImporting

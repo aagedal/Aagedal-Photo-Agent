@@ -13,22 +13,11 @@ final class ThumbnailService {
     @ObservationIgnored private var editedInFlightTasks: [URL: Task<NSImage?, Never>] = [:]
     private let thumbnailSize = CGSize(width: 240, height: 240)
 
-    /// Caps how many thumbnail decodes run concurrently across the whole app — cell loads,
-    /// prefetch, and the background sweep all funnel through it. Without a cap a fast scroll or a
+    /// Caps how many thumbnail decodes run concurrently across the whole app — visible cell loads
+    /// and collection-view prefetch both funnel through it. Without a cap a fast scroll or a
     /// held arrow key spawns hundreds of QuickLook/ImageIO decodes at once, saturating `thumbnailsd`
     /// and the cooperative pool so the thumbnails actually on screen queue behind off-screen ones.
     private let decodeGate = ThumbnailDecodeGate(limit: 6)
-
-    // Background pre-generation state
-    var isPreGenerating = false
-    var preGenerateCompleted = 0
-    var preGenerateTotal = 0
-    @ObservationIgnored private var backgroundGenerationTask: Task<Void, Never>?
-    /// When true, the speculative background sweep is suspended. Set while the develop editor is
-    /// active: background thumbnail decodes call ImageIO's XMP parsing, which races the editor's
-    /// concurrent NSXML sidecar write on libxml2's process-global state. On-demand `loadThumbnail`
-    /// is left ungated (the filmstrip is user-visible).
-    @ObservationIgnored private var backgroundGenerationSuppressed = false
 
     init() {
         cache.countLimit = 500
@@ -367,7 +356,6 @@ final class ThumbnailService {
     }
 
     func clearCache() {
-        cancelBackgroundGeneration()
         cache.removeAllObjects()
         editedCache.removeAllObjects()
         for task in inFlightTasks.values {
@@ -383,7 +371,7 @@ final class ThumbnailService {
     /// Avoid handing not-yet-downloaded iCloud placeholders to QuickLook/ImageIO.
     /// Those APIs may block until the download completes; if enough placeholders
     /// enter the shared decode gate, thumbnails for unrelated local folders stall.
-    /// Kick the download and let a later visible/prefetch/background request retry
+    /// Kick the download and let a later visible or prefetch request retry
     /// after iCloud has materialized the file.
     nonisolated private static func isLocallyAvailableForThumbnail(_ url: URL) -> Bool {
         let fileManager = FileManager.default
@@ -395,58 +383,6 @@ final class ThumbnailService {
         try? fileManager.startDownloadingUbiquitousItem(at: url)
         thumbnailLogger.info("Deferred thumbnail for not-downloaded iCloud item: \(url.lastPathComponent, privacy: .public)")
         return false
-    }
-
-    // MARK: - Background Pre-generation
-
-    /// Suspend (and cancel) the speculative background sweep while the develop editor is active so
-    /// its ImageIO XMP parsing can't race the editor's NSXML sidecar write — see
-    /// `backgroundGenerationSuppressed`.
-    func suppressBackgroundGeneration(_ suppressed: Bool) {
-        backgroundGenerationSuppressed = suppressed
-        if suppressed { cancelBackgroundGeneration() }
-    }
-
-    func startBackgroundGeneration(for images: [ImageFile]) {
-        guard !backgroundGenerationSuppressed else { return }
-        cancelBackgroundGeneration()
-        let uncached = images.filter {
-            !$0.isICloudDownloadPending && cache.object(forKey: $0.url as NSURL) == nil
-        }
-        guard !uncached.isEmpty else { return }
-
-        preGenerateTotal = uncached.count
-        preGenerateCompleted = 0
-        isPreGenerating = true
-
-        backgroundGenerationTask = Task {
-            let batchSize = 6
-            for batchStart in stride(from: 0, to: uncached.count, by: batchSize) {
-                guard !Task.isCancelled else { break }
-                let batchEnd = min(batchStart + batchSize, uncached.count)
-                let batch = Array(uncached[batchStart..<batchEnd])
-
-                await withTaskGroup(of: Void.self) { group in
-                    for image in batch {
-                        group.addTask {
-                            _ = await self.loadThumbnail(for: image.url)
-                        }
-                    }
-                }
-
-                guard !Task.isCancelled else { break }
-                self.preGenerateCompleted = batchEnd
-            }
-            self.isPreGenerating = false
-        }
-    }
-
-    func cancelBackgroundGeneration() {
-        backgroundGenerationTask?.cancel()
-        backgroundGenerationTask = nil
-        isPreGenerating = false
-        preGenerateCompleted = 0
-        preGenerateTotal = 0
     }
 }
 
