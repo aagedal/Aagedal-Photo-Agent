@@ -34,6 +34,28 @@
         -->
 
         <item>
+            <title>Version 2.1.1</title>
+            <pubDate>Sun, 12 Jul 2026 04:20:55 +0200</pubDate>
+            <sparkle:version>420</sparkle:version>
+            <sparkle:shortVersionString>2.1.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <description><![CDATA[
+                <ul>
+                    <li>New Metadata Review view makes it fast to compare and edit IPTC metadata across a filtered folder, with at-a-glance validation and enlarged thumbnail previews on hover.</li>
+                    <li>Added GPS-powered template variables for coordinates and reverse-geocoded place information.</li>
+                    <li>Expanded culling and editing shortcuts with filmstrip rating badges, number-key ratings in Develop, and middle-click copying of develop settings.</li>
+                </ul>
+            ]]></description>
+            <enclosure
+                url="https://aagedal.me/apps/Aagedal-Photo-Agent-2.1.1.dmg"
+                sparkle:version="420"
+                sparkle:shortVersionString="2.1.1"
+                sparkle:edSignature="2mAfyoC83nM18v78U45ixe2G+R+II4lCl3N3ls5soAeA+qR/8OUPjtmlSwDPmg7vCqdFztkBAPvJ5fCgA5e3DQ=="
+                length="162821987"
+                type="application/octet-stream" />
+        </item>
+
+        <item>
             <title>Version 2.1.0</title>
             <pubDate>Fri, 10 Jul 2026 12:32:23 +0200</pubDate>
             <sparkle:version>419</sparkle:version>
