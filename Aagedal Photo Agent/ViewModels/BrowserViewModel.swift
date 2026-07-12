@@ -447,7 +447,34 @@ final class BrowserViewModel {
         }
     }
 
-    private func imagePassesFilter(_ image: ImageFile, query: String, requiredFields: Set<IPTCMetadata.FieldKey>) -> Bool {
+    private struct ImageFilterContext {
+        let query: String
+        let requiredFields: Set<IPTCMetadata.FieldKey>
+        let requiredLevels: MetadataRequirements.Levels
+        let minimumLengths: MetadataRequirements.MinimumLengths
+    }
+
+    private func makeImageFilterContext() -> ImageFilterContext {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard requiredMetadataFilter != .any else {
+            return ImageFilterContext(
+                query: query,
+                requiredFields: [],
+                requiredLevels: [:],
+                minimumLengths: [:]
+            )
+        }
+
+        let requiredFields = MetadataRequirements.requireFields()
+        return ImageFilterContext(
+            query: query,
+            requiredFields: requiredFields,
+            requiredLevels: Dictionary(uniqueKeysWithValues: requiredFields.map { ($0, .require) }),
+            minimumLengths: MetadataRequirements.loadMinimumLengths()
+        )
+    }
+
+    private func imagePassesFilter(_ image: ImageFile, context: ImageFilterContext) -> Bool {
         if image.starRating.rawValue < minimumStarRating.rawValue {
             return false
         }
@@ -475,11 +502,16 @@ final class BrowserViewModel {
         if requiredMetadataFilter != .any {
             let missingAny: Bool
             if let meta = image.metadata {
-                let levels = Dictionary(uniqueKeysWithValues: requiredFields.map { ($0, MetadataRequirementLevel.require) })
-                let minimums = MetadataRequirements.loadMinimumLengths()
-                missingAny = requiredFields.contains { MetadataRequirements.fieldFails($0, in: meta, levels: levels, minimumLengths: minimums) }
+                missingAny = context.requiredFields.contains {
+                    MetadataRequirements.fieldFails(
+                        $0,
+                        in: meta,
+                        levels: context.requiredLevels,
+                        minimumLengths: context.minimumLengths
+                    )
+                }
             } else {
-                missingAny = !requiredFields.isEmpty
+                missingAny = !context.requiredFields.isEmpty
             }
             switch requiredMetadataFilter {
             case .any: break
@@ -495,31 +527,28 @@ final class BrowserViewModel {
             }
             if !missesOne { return false }
         }
-        guard !query.isEmpty else { return true }
-        if image.filenameLowercased.contains(query) {
+        guard !context.query.isEmpty else { return true }
+        if image.filenameLowercased.contains(context.query) {
             return true
         }
-        if image.personShownLowercased.contains(where: { $0.contains(query) }) {
+        if image.personShownLowercased.contains(where: { $0.contains(context.query) }) {
             return true
         }
-        if image.keywordsLowercased.contains(where: { $0.contains(query) }) {
+        if image.keywordsLowercased.contains(where: { $0.contains(context.query) }) {
             return true
         }
         // Search IPTC metadata fields (title, description, creator, city, country, event) via the
         // pre-lowercased blob built when metadata was assigned — `query` is already lowercased, so
         // this is a single substring scan instead of six locale-folding searches per image.
-        if image.metadataSearchLowercased.contains(query) {
+        if image.metadataSearchLowercased.contains(context.query) {
             return true
         }
         return false
     }
 
     private func applyFilters(to images: [ImageFile]) -> [ImageFile] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        // Read the configured required set once per rebuild (not per image) so the filter always
-        // reflects the latest Settings without the view model observing UserDefaults.
-        let requiredFields = requiredMetadataFilter == .any ? [] : MetadataRequirements.requireFields()
-        return images.filter { imagePassesFilter($0, query: query, requiredFields: requiredFields) }
+        let context = makeImageFilterContext()
+        return images.filter { imagePassesFilter($0, context: context) }
     }
 
     func clearFilters() {
@@ -1707,13 +1736,12 @@ final class BrowserViewModel {
             }
 
             if affectsFilterKey || isFilteringActive {
-                let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                let requiredFields = requiredMetadataFilter == .any ? [] : MetadataRequirements.requireFields()
+                let filterContext = makeImageFilterContext()
                 var needsFullRebuild = false
                 for url in selectedImageIDs {
                     guard let imageIdx = urlToImageIndex[url] else { continue }
                     let updatedImage = images[imageIdx]
-                    let passes = imagePassesFilter(updatedImage, query: query, requiredFields: requiredFields)
+                    let passes = imagePassesFilter(updatedImage, context: filterContext)
                     if let visibleIdx = urlToVisibleIndex[url] {
                         if passes {
                             visibleImages[visibleIdx] = updatedImage
