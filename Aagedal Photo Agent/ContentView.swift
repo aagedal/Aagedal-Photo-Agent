@@ -2393,77 +2393,36 @@ struct ContentViewModifiers: ViewModifier {
 struct AutoRefreshModifier: ViewModifier {
     let panes: BrowserPanesModel
     let metadataViewModel: MetadataViewModel
-    @State private var autoRefreshTask: Task<Void, Never>?
+    @State private var coordinator: BrowserAutoRefreshCoordinator
+
+    init(panes: BrowserPanesModel, metadataViewModel: MetadataViewModel) {
+        self.panes = panes
+        self.metadataViewModel = metadataViewModel
+        _coordinator = State(
+            initialValue: BrowserAutoRefreshCoordinator(
+                panes: panes,
+                metadataViewModel: metadataViewModel
+            )
+        )
+    }
 
     func body(content: Content) -> some View {
+        let folderURLs = panes.panes.map(\.currentFolderURL)
         content
             .onAppear {
-                if autoRefreshTask == nil {
-                    autoRefreshTask = Task {
-                        while !Task.isCancelled {
-                            // Poll interval for picking up new files and external
-                            // metadata edits. Kept short enough that newly-added files
-                            // appear promptly; the rescan early-returns when nothing
-                            // changed on disk, so idle cost stays low.
-                            try? await Task.sleep(nanoseconds: 3_000_000_000)
-                            await MainActor.run {
-                                let active = panes.active
-
-                                // Keep every inactive split-view pane's grid in sync with
-                                // disk — this is the "watch a second folder" behavior. They
-                                // don't drive the metadata panel, so the active-pane edit
-                                // guards below don't apply to them. Skipped in single mode,
-                                // where the off-screen pane isn't visible.
-                                if panes.layout.usesSecondPane {
-                                    for pane in panes.panes where pane !== active {
-                                        pane.refreshCurrentFolderIfNeeded()
-                                        pane.clearLastRefreshModifiedURLs()
-                                    }
-                                }
-
-                                // Skip the active-pane folder refresh while in the edit
-                                // view — reassigning `images`/`visibleImages` causes
-                                // @Observable to re-render the edit workspace (filmstrip,
-                                // metadata panel) even when content hasn't changed,
-                                // disturbing the user's in-progress edits.
-                                guard !metadataViewModel.isInEditView else { return }
-
-                                // Skip while the user is typing in the search field —
-                                // the rebuild cascade steals TextField focus.
-                                guard active.searchText.isEmpty else { return }
-
-                                // Skip the folder refresh while the user has unsaved
-                                // metadata edits — the rebuildVisibleCache cascade can
-                                // change selectedImageIDs (via the filter intersection
-                                // check), which triggers onChange → loadMetadata and
-                                // overwrites the in-progress edits.  The refresh will
-                                // run on the next cycle after the user saves/commits.
-                                guard !metadataViewModel.hasChanges else { return }
-
-                                active.refreshCurrentFolderIfNeeded()
-
-                                // If any currently selected file was modified externally,
-                                // reload full metadata so the browser reflects the changes.
-                                let selectedURLs = Set(metadataViewModel.selectedURLs)
-                                if !selectedURLs.isEmpty,
-                                   !metadataViewModel.isSaving,
-                                   !active.lastRefreshModifiedURLs.isDisjoint(with: selectedURLs) {
-                                    metadataViewModel.loadMetadata(
-                                        for: active.selectedImages,
-                                        folderURL: active.currentFolderURL
-                                    )
-                                }
-                                // Clear after processing so stale URLs don't trigger
-                                // repeated reloads on every subsequent cycle.
-                                active.clearLastRefreshModifiedURLs()
-                            }
-                        }
-                    }
-                }
+                coordinator.start()
+            }
+            .onChange(of: folderURLs) {
+                coordinator.synchronizeMonitors()
+            }
+            .onChange(of: panes.layout) {
+                coordinator.synchronizeMonitors()
+            }
+            .onChange(of: panes.activePaneIndex) {
+                coordinator.synchronizeMonitors()
             }
             .onDisappear {
-                autoRefreshTask?.cancel()
-                autoRefreshTask = nil
+                coordinator.stop()
             }
     }
 }

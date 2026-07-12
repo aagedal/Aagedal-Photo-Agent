@@ -2,6 +2,22 @@ import Testing
 import Foundation
 @testable import Aagedal_Photo_Agent
 
+private actor FolderEventProbe {
+    private var eventCount = 0
+
+    func recordEvent() {
+        eventCount += 1
+    }
+
+    func waitForEvent(timeout: Duration = .seconds(3)) async -> Bool {
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        while eventCount == 0, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+        return eventCount > 0
+    }
+}
+
 @Suite("MetadataSidecarService")
 struct MetadataSidecarServiceTests {
 
@@ -355,6 +371,27 @@ struct MetadataSidecarServiceTests {
         let service = MetadataSidecarService()
         let all = await service.loadAllSidecars(in: folder)
         #expect(all.isEmpty)
+    }
+
+    @Test("folder monitor observes nested sidecar writes")
+    func folderMonitorObservesNestedSidecarWrite() async throws {
+        let folder = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let probe = FolderEventProbe()
+        let monitor = try #require(FolderChangeMonitor(url: folder) {
+            Task { await probe.recordEvent() }
+        })
+        defer { monitor.cancel() }
+
+        // Give the dispatch-backed stream a moment to begin delivery before mutating
+        // the directory. The production path naturally has this gap while a folder loads.
+        try await Task.sleep(for: .milliseconds(100))
+        let metadataFolder = folder.appendingPathComponent(".photo_metadata")
+        try FileManager.default.createDirectory(at: metadataFolder, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: metadataFolder.appendingPathComponent("photo.jpg.meta.json"))
+
+        #expect(await probe.waitForEvent())
     }
 
     // MARK: - Unicode / Special Characters

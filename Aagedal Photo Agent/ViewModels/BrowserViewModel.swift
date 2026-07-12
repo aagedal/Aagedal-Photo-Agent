@@ -751,14 +751,19 @@ final class BrowserViewModel {
         }
     }
 
-    func refreshCurrentFolderIfNeeded() {
-        guard let folderURL = currentFolderURL else { return }
-        guard !isLoading, !isMetadataLoading, !isAutoRefreshing else { return }
+    @discardableResult
+    func refreshCurrentFolderIfNeeded(onComplete: ((Set<URL>) -> Void)? = nil) -> Bool {
+        guard let folderURL = currentFolderURL else { return false }
+        guard !isLoading, !isMetadataLoading, !isAutoRefreshing else { return false }
         isAutoRefreshing = true
         autoRefreshTask?.cancel()
 
         autoRefreshTask = Task {
-            defer { self.isAutoRefreshing = false }
+            var completedModifiedURLs: Set<URL> = []
+            defer {
+                self.isAutoRefreshing = false
+                onComplete?(completedModifiedURLs)
+            }
 
             let scanResult: FileSystemService.FolderScanResult
             do {
@@ -881,6 +886,7 @@ final class BrowserViewModel {
             }
 
             self.lastRefreshModifiedURLs = Set(changedURLs)
+            completedModifiedURLs = self.lastRefreshModifiedURLs
 
             let pendingICloudURLs = Set(scanned.filter(\.isICloudDownloadPending).map(\.url))
             let metadataRefreshURLs = (newURLs + changedURLs).filter { !pendingICloudURLs.contains($0) }
@@ -889,6 +895,7 @@ final class BrowserViewModel {
                 drainPendingMetadataIfNeeded()
             }
         }
+        return true
     }
 
     /// Read EXIF orientation via CGImageSource (metadata-only, ~0.1ms/file).
