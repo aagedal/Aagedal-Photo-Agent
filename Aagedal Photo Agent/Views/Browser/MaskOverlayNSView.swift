@@ -625,6 +625,25 @@ struct BrushMaskOverlayRepresentable: NSViewRepresentable {
     }
 }
 
+/// Axis inference and projection for Photoshop-style Shift-drag brush strokes.
+nonisolated enum BrushStrokeAxis: Equatable {
+    case horizontal
+    case vertical
+
+    static func inferred(from start: CGPoint, to point: CGPoint) -> Self {
+        abs(point.x - start.x) >= abs(point.y - start.y) ? .horizontal : .vertical
+    }
+
+    func constrain(_ point: CGPoint, from start: CGPoint) -> CGPoint {
+        switch self {
+        case .horizontal:
+            CGPoint(x: point.x, y: start.y)
+        case .vertical:
+            CGPoint(x: start.x, y: point.y)
+        }
+    }
+}
+
 /// The paint-capture NSView. Captures every mouse event within the image area (unlike the
 /// ellipse overlay, which only hit-tests near its handles) and draws a brush-size cursor ring.
 final class BrushMaskOverlayNSView: NSView {
@@ -645,6 +664,9 @@ final class BrushMaskOverlayNSView: NSView {
     private var allDabs: [BrushDab] = []
     private var lastDabImagePx: CGPoint?
     private var cursorPoint: CGPoint?
+    private var strokeStartPoint: CGPoint?
+    private var strokeAxis: BrushStrokeAxis?
+    private var isStrokeAxisConstrained = false
     private var adjustStartPoint: CGPoint = .zero
     private var adjustStartRadius: Double = 0.04
     private var adjustStartHardness: Double = 0.5
@@ -750,6 +772,9 @@ final class BrushMaskOverlayNSView: NSView {
         guard let coordinator, imageSize.width > 0,
               let layer = coordinator.parent.onStrokeBegan() else { return }
         isPainting = true
+        isStrokeAxisConstrained = event.modifierFlags.contains(.shift)
+        strokeStartPoint = loc
+        strokeAxis = nil
         targetLayer = layer
         allDabs.removeAll(keepingCapacity: true)
         let uvPoint = uv(for: loc)
@@ -775,7 +800,14 @@ final class BrushMaskOverlayNSView: NSView {
         }
 
         guard isPainting, let coordinator else { return }
-        let loc = convert(event.locationInWindow, from: nil)
+        var loc = convert(event.locationInWindow, from: nil)
+        if isStrokeAxisConstrained, let start = strokeStartPoint {
+            if strokeAxis == nil {
+                // The first drag event chooses the axis; it remains fixed for this stroke.
+                strokeAxis = BrushStrokeAxis.inferred(from: start, to: loc)
+            }
+            loc = strokeAxis?.constrain(loc, from: start) ?? loc
+        }
         cursorPoint = loc
         let uvPoint = uv(for: loc)
         let px = imagePx(uvPoint)
@@ -813,6 +845,9 @@ final class BrushMaskOverlayNSView: NSView {
         let stroke = makeStroke(allDabs)
         allDabs.removeAll(keepingCapacity: true)
         lastDabImagePx = nil
+        strokeStartPoint = nil
+        strokeAxis = nil
+        isStrokeAxisConstrained = false
         needsDisplay = true
         guard !stroke.dabs.isEmpty else { return }
         coordinator.parent.onStrokeEnded(stroke)

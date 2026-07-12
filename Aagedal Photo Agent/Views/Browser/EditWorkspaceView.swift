@@ -49,6 +49,9 @@ struct EditWorkspaceView: View {
     @State private var keyEventMonitor: Any?
     @State private var middleMouseEventMonitor: Any?
     @State private var hoveredFilmstripURL: URL?
+    /// Set only by left/right keyboard navigation so the filmstrip follows keyboard selection
+    /// without recentering itself when the user clicks or extends a selection with the mouse.
+    @State private var filmstripKeyboardScrollTarget: URL?
     @State private var isShowingBefore = false
     @State private var isMutingDevelop = false
     @State private var isMutingSelectedMask = false
@@ -1207,72 +1210,82 @@ struct EditWorkspaceView: View {
     }
 
     private var filmstrip: some View {
-        ScrollView(.horizontal, showsIndicators: true) {
-            LazyHStack(spacing: 8) {
-                ForEach(browserViewModel.visibleImages) { image in
-                    EditFilmstripItemView(
-                        image: image,
-                        thumbnailService: browserViewModel.thumbnailService,
-                        isSelected: browserViewModel.selectedImageIDs.contains(image.url)
-                    )
-                    .onTapGesture {
-                        let modifiers = NSEvent.modifierFlags
-                        if modifiers.contains(.command) {
-                            // ⌘-click: toggle selection
-                            if browserViewModel.selectedImageIDs.contains(image.url) {
-                                browserViewModel.selectedImageIDs.remove(image.url)
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: true) {
+                LazyHStack(spacing: 8) {
+                    ForEach(browserViewModel.visibleImages) { image in
+                        EditFilmstripItemView(
+                            image: image,
+                            thumbnailService: browserViewModel.thumbnailService,
+                            isSelected: browserViewModel.selectedImageIDs.contains(image.url)
+                        )
+                        .id(image.url)
+                        .onTapGesture {
+                            let modifiers = NSEvent.modifierFlags
+                            if modifiers.contains(.command) {
+                                // ⌘-click: toggle selection
+                                if browserViewModel.selectedImageIDs.contains(image.url) {
+                                    browserViewModel.selectedImageIDs.remove(image.url)
+                                } else {
+                                    browserViewModel.selectedImageIDs.insert(image.url)
+                                }
+                            } else if modifiers.contains(.shift), let anchor = browserViewModel.lastClickedImageURL {
+                                // Shift-click: range select (O(1) lookup via urlToVisibleIndex)
+                                if let anchorIdx = browserViewModel.urlToVisibleIndex[anchor],
+                                   let clickIdx = browserViewModel.urlToVisibleIndex[image.url] {
+                                    let images = browserViewModel.visibleImages
+                                    let range = min(anchorIdx, clickIdx)...max(anchorIdx, clickIdx)
+                                    for i in range {
+                                        browserViewModel.selectedImageIDs.insert(images[i].url)
+                                    }
+                                }
                             } else {
-                                browserViewModel.selectedImageIDs.insert(image.url)
+                                // Normal click: single select
+                                browserViewModel.selectedImageIDs = [image.url]
                             }
-                        } else if modifiers.contains(.shift), let anchor = browserViewModel.lastClickedImageURL {
-                            // Shift-click: range select (O(1) lookup via urlToVisibleIndex)
-                            if let anchorIdx = browserViewModel.urlToVisibleIndex[anchor],
-                               let clickIdx = browserViewModel.urlToVisibleIndex[image.url] {
-                                let images = browserViewModel.visibleImages
-                                let range = min(anchorIdx, clickIdx)...max(anchorIdx, clickIdx)
-                                for i in range {
-                                    browserViewModel.selectedImageIDs.insert(images[i].url)
+                            browserViewModel.lastClickedImageURL = image.url
+                            isWorkspaceFocused = true
+                        }
+                        .onContinuousHover { phase in
+                            switch phase {
+                            case .active:
+                                hoveredFilmstripURL = image.url
+                            case .ended:
+                                if hoveredFilmstripURL == image.url {
+                                    hoveredFilmstripURL = nil
                                 }
                             }
-                        } else {
-                            // Normal click: single select
-                            browserViewModel.selectedImageIDs = [image.url]
                         }
-                        browserViewModel.lastClickedImageURL = image.url
-                        isWorkspaceFocused = true
-                    }
-                    .onContinuousHover { phase in
-                        switch phase {
-                        case .active:
-                            hoveredFilmstripURL = image.url
-                        case .ended:
-                            if hoveredFilmstripURL == image.url {
-                                hoveredFilmstripURL = nil
+                        .contextMenu {
+                            Button("Copy Settings", systemImage: "doc.on.doc") {
+                                copyFilmstripSettings(from: image)
                             }
-                        }
-                    }
-                    .contextMenu {
-                        Button("Copy Settings", systemImage: "doc.on.doc") {
-                            copyFilmstripSettings(from: image)
-                        }
 
-                        Button("Paste Settings", systemImage: "doc.on.clipboard") {
-                            pasteCopiedSettings(to: [image.url])
-                        }
-                        .disabled(browserViewModel.copiedCameraRawSettings == nil)
-
-                        if image.url != selectedImageURL {
-                            Divider()
-                            Button("Copy Settings to Current Selection", systemImage: "paintbrush") {
-                                applyFilmstripSettingsFromImageToCurrentSelection(image)
+                            Button("Paste Settings", systemImage: "doc.on.clipboard") {
+                                pasteCopiedSettings(to: [image.url])
                             }
-                            .disabled(browserViewModel.selectedImageIDs.isEmpty)
+                            .disabled(browserViewModel.copiedCameraRawSettings == nil)
+
+                            if image.url != selectedImageURL {
+                                Divider()
+                                Button("Copy Settings to Current Selection", systemImage: "paintbrush") {
+                                    applyFilmstripSettingsFromImageToCurrentSelection(image)
+                                }
+                                .disabled(browserViewModel.selectedImageIDs.isEmpty)
+                            }
                         }
                     }
                 }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            .onChange(of: filmstripKeyboardScrollTarget) { _, target in
+                guard let target else { return }
+                withAnimation(.easeInOut(duration: 0.16)) {
+                    // No anchor means SwiftUI moves only as far as necessary to reveal the item.
+                    proxy.scrollTo(target)
+                }
+            }
         }
         .frame(height: 120)
         .background(Color(nsColor: .underPageBackgroundColor))
@@ -5576,10 +5589,12 @@ struct EditWorkspaceView: View {
         // Arrow keys
         if event.keyCode == 123 { // left arrow
             browserViewModel.selectPrevious()
+            filmstripKeyboardScrollTarget = browserViewModel.lastClickedImageURL
             return nil
         }
         if event.keyCode == 124 { // right arrow
             browserViewModel.selectNext()
+            filmstripKeyboardScrollTarget = browserViewModel.lastClickedImageURL
             return nil
         }
 

@@ -2731,24 +2731,66 @@ final class BrowserViewModel {
         showDeleteConfirmation = true
     }
 
+    /// Finds the nearest item to the active image in the pre-deletion filmstrip order. The next
+    /// item wins an equal-distance tie, matching the usual “same slot after deletion” behavior.
+    nonisolated static func closestSurvivingImageURL(
+        in orderedURLs: [URL],
+        around anchorURL: URL?,
+        deleting deletedURLs: Set<URL>
+    ) -> URL? {
+        guard !orderedURLs.isEmpty else { return nil }
+        guard let anchorURL,
+              let anchorIndex = orderedURLs.firstIndex(of: anchorURL) else {
+            return orderedURLs.first { !deletedURLs.contains($0) }
+        }
+        if !deletedURLs.contains(anchorURL) { return anchorURL }
+
+        for distance in 1..<orderedURLs.count {
+            let nextIndex = anchorIndex + distance
+            if nextIndex < orderedURLs.count {
+                let candidate = orderedURLs[nextIndex]
+                if !deletedURLs.contains(candidate) { return candidate }
+            }
+
+            let previousIndex = anchorIndex - distance
+            if previousIndex >= 0 {
+                let candidate = orderedURLs[previousIndex]
+                if !deletedURLs.contains(candidate) { return candidate }
+            }
+        }
+        return nil
+    }
+
     func deleteSelectedImages() {
         let urlsToDelete = selectedImageIDs
         guard !urlsToDelete.isEmpty else { return }
+        let orderedURLs = visibleImages.map(\.url)
+        let anchorURL = lastClickedImageURL.flatMap { urlsToDelete.contains($0) ? $0 : nil }
+            ?? orderedURLs.first(where: urlsToDelete.contains)
+        var deletedURLs: Set<URL> = []
 
         for url in urlsToDelete {
             do {
                 try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+                deletedURLs.insert(url)
             } catch {
                 // Skip files that can't be trashed
                 continue
             }
         }
 
-        images.removeAll { urlsToDelete.contains($0.url) }
-        manualOrder.removeAll { urlsToDelete.contains($0) }
-        selectedImageIDs.removeAll()
-        lastClickedImageURL = nil
-        onImagesDeleted?(urlsToDelete)
+        guard !deletedURLs.isEmpty else { return }
+        images.removeAll { deletedURLs.contains($0.url) }
+        manualOrder.removeAll { deletedURLs.contains($0) }
+
+        let closestURL = Self.closestSurvivingImageURL(
+            in: orderedURLs,
+            around: anchorURL,
+            deleting: deletedURLs
+        )
+        selectedImageIDs = closestURL.map { Set([$0]) } ?? []
+        lastClickedImageURL = closestURL
+        onImagesDeleted?(deletedURLs)
     }
 
     // MARK: - Move to Subfolder
