@@ -906,9 +906,9 @@ final class BrowserViewModel {
         }
     }
 
-    /// Read the display orientation for the given image URLs off the main actor, in
-    /// parallel. The XMP sidecar is authoritative when present (RAW/C2PA rotations are
-    /// sidecar-only and never touch the file), falling back to the file's embedded tag —
+    /// Read the display orientation for the given image URLs off the main actor, with
+    /// bounded parallelism. The XMP sidecar is authoritative when present (RAW/C2PA
+    /// rotations are sidecar-only and never touch the file), falling back to the file's embedded tag —
     /// mirroring `ThumbnailService.orientedToSidecar` so the model, the thumbnails, and
     /// the edit view all derive orientation from the same source. Reading only the
     /// embedded tag here silently reverted sidecar rotations whenever this eager read
@@ -920,24 +920,45 @@ final class BrowserViewModel {
     private nonisolated static func readOrientations(for urls: [URL]) async -> [URL: Int] {
         guard !urls.isEmpty else { return [:] }
         return await withTaskGroup(of: (URL, Int)?.self) { group in
-            for url in urls {
+            var iterator = urls.makeIterator()
+            let concurrencyLimit = min(8, urls.count)
+
+            for _ in 0..<concurrencyLimit {
+                guard let url = iterator.next() else { break }
                 group.addTask {
-                    if let sidecarOrientation = XMPSidecarService().sidecarOrientation(for: url) {
-                        return sidecarOrientation != 1 ? (url, sidecarOrientation) : nil
-                    }
-                    guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-                          let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-                          let orientation = props[kCGImagePropertyOrientation] as? Int,
-                          orientation != 1 else { return nil }
-                    return (url, orientation)
+                    guard !Task.isCancelled else { return nil }
+                    return Self.readOrientation(for: url)
                 }
             }
+
             var result: [URL: Int] = [:]
-            for await pair in group {
+            while let pair = await group.next() {
                 if let pair { result[pair.0] = pair.1 }
+
+                guard !Task.isCancelled else {
+                    group.cancelAll()
+                    break
+                }
+                if let url = iterator.next() {
+                    group.addTask {
+                        guard !Task.isCancelled else { return nil }
+                        return Self.readOrientation(for: url)
+                    }
+                }
             }
             return result
         }
+    }
+
+    private nonisolated static func readOrientation(for url: URL) -> (URL, Int)? {
+        if let sidecarOrientation = XMPSidecarService().sidecarOrientation(for: url) {
+            return sidecarOrientation != 1 ? (url, sidecarOrientation) : nil
+        }
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let orientation = props[kCGImagePropertyOrientation] as? Int,
+              orientation != 1 else { return nil }
+        return (url, orientation)
     }
 
     /// Reads IPTC/XMP basic metadata for the given URLs in batches of 50 and merges
