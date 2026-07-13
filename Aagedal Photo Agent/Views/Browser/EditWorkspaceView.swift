@@ -1286,6 +1286,15 @@ struct EditWorkspaceView: View {
                     proxy.scrollTo(target)
                 }
             }
+            .onAppear {
+                // Defer until the lazy stack has completed its first layout. Otherwise a
+                // selection far into the folder can be highlighted while remaining outside
+                // the filmstrip's initial visible range.
+                DispatchQueue.main.async {
+                    guard let target = selectedImageURL else { return }
+                    proxy.scrollTo(target, anchor: .center)
+                }
+            }
         }
         .frame(height: 120)
         .background(Color(nsColor: .underPageBackgroundColor))
