@@ -91,13 +91,13 @@ struct EditParams {
     float anonymizerAmount;   // 0-1 global slider strength, gated by activeFlags bit5
     float anonymizerBlackOut; // 0 or 1 — full opaque redaction instead of the layered effect
 
-    int  maskOverlayIndex;    // mask buffer index to visualize as a red overlay, or -1 = none
-    float maskOverlayOpacity; // 0-1 red-tint strength for the mask overlay
+    int  maskOverlayIndex;    // mask buffer index to visualize, or -1 = none
+    float maskOverlayOpacity; // 0-1 red-tint strength (matte mode replaces the image)
 
     uint watermarkCount;      // number of active watermark layers (0-4), see WatermarkParams
     uint watermarkFrame;      // 0 = source UV, 1 = crop-output UV
     uint useNearestNeighbor;  // shared viewer/editor display-scaling preference
-    uint _padScaling;
+    uint maskOverlayMode;     // 0 = red coverage tint, 1 = black/white matte preview
 };
 
 // ============================================================
@@ -351,12 +351,27 @@ static half3 applyGlobal(half3 rgb,
     return rgb;
 }
 
+/// Gaussian feather for an analytic ellipse. The stored ellipse remains the editable nominal
+/// outline, but is a 10%-coverage contour whenever feathering is active rather than a hard zero
+/// boundary. The low-valued tail therefore continues outside the handles and becomes visually
+/// negligible before it underflows, avoiding a finite rim in the matte.
+static float ellipseFeatherCoverage(float dist, float feather)
+{
+    float f = clamp(feather, 0.0, 1.0);
+    if (f <= 0.0) return dist <= 1.0 ? 1.0 : 0.0;
+    float inner = 1.0 - f;
+    if (dist <= inner) return 1.0;
+    float t = (dist - inner) / f;
+    return exp2(-3.32192809489 * t * t); // 10^(-t²): 10% at the nominal outline
+}
+
 /// Analytical ellipse-mask coverage weight at `uv` (0 = outside / no effect). mask.radii
 /// carries ACR's SIGNED oriented-corner box half-extents (see EllipseMaskGeometry):
 /// un-rotating the aspect-corrected corner vector recovers the true semi-axes. All
 /// rotation happens in aspect-corrected (pixel) space — raw-UV rotation would shear the
-/// ellipse by the image aspect ratio. Includes inversion and overall amount.
-static float maskWeight(constant MaskParams &mask, float2 uv, float2 sourceSize)
+/// ellipse by the image aspect ratio. Includes inversion, but not adjustment-layer amount so
+/// the same coverage can drive a true black/white mask matte.
+static float ellipseMaskCoverage(constant MaskParams &mask, float2 uv, float2 sourceSize)
 {
     float maskAspect = sourceSize.y > 0.0 ? sourceSize.x / sourceSize.y : 1.0;
     float cosR = cos(mask.rotation);
@@ -367,11 +382,14 @@ static float maskWeight(constant MaskParams &mask, float2 uv, float2 sourceSize)
     float2 d = (uv - mask.center) * float2(maskAspect, 1.0);
     float2 local = float2(d.x * cosR + d.y * sinR, -d.x * sinR + d.y * cosR);
     float dist = length(local / ab);
-    float inner = 1.0 - mask.feather;
-    float weight = 1.0 - smoothstep(inner, 1.0, dist);
+    float weight = ellipseFeatherCoverage(dist, mask.feather);
     if (mask.inverted > 0.5) weight = 1.0 - weight;
-    weight *= mask.amount;
     return weight;
+}
+
+static float maskWeight(constant MaskParams &mask, float2 uv, float2 sourceSize)
+{
+    return ellipseMaskCoverage(mask, uv, sourceSize) * mask.amount;
 }
 
 /// Alpha-composites one watermark layer over the running color, "over"-blending in
@@ -789,11 +807,11 @@ kernel void editAdjustments(
         rgb = half3(AdobeRGBtoSRGB_edit * clamp(aRgb, 0.0, gamutHiF));
     }
 
-    // Mask-coverage overlay (ACR-style): tint the selected mask's region red so a freshly
-    // painted brush mask is visible before any adjustment moves a pixel. Auto-hidden by the CPU
-    // once the mask has an adjustment (it clears maskOverlayIndex), matching ACR's behaviour.
-    if (params.maskOverlayIndex >= 0 && uint(params.maskOverlayIndex) < params.maskCount
-            && masks[params.maskOverlayIndex].activeFlags == 0u) {
+    // Selected-mask visualization. Normal paint mode uses an ACR-style red tint for an otherwise
+    // unadjusted mask; hovering a mask-type icon switches to a black/white coverage matte. The
+    // latter intentionally includes inversion and feather/brush softness while remaining
+    // independent of adjustment opacity, so the fully selected region stays white.
+    if (params.maskOverlayIndex >= 0 && uint(params.maskOverlayIndex) < params.maskCount) {
         constant MaskParams &om = masks[params.maskOverlayIndex];
         float ow;
         if (om.maskType == 1u) {
@@ -801,9 +819,15 @@ kernel void editAdjustments(
             ow = float(brushAlpha.sample(brushSampler, uv, om.brushLayer).r);
             if (om.inverted > 0.5) ow = 1.0 - ow;
         } else {
-            ow = maskWeight(om, uv, params.sourceSize);
+            ow = params.maskOverlayMode == 1u
+                ? ellipseMaskCoverage(om, uv, params.sourceSize)
+                : maskWeight(om, uv, params.sourceSize);
         }
-        rgb = mix(rgb, half3(0.9h, 0.1h, 0.1h), half(ow * params.maskOverlayOpacity));
+        if (params.maskOverlayMode == 1u) {
+            rgb = half3(clamp(ow, 0.0, 1.0));
+        } else if (om.activeFlags == 0u) {
+            rgb = mix(rgb, half3(0.9h, 0.1h, 0.1h), half(ow * params.maskOverlayOpacity));
+        }
     }
 
     destination.write(half4(rgb, color.a), gid);
@@ -829,8 +853,8 @@ kernel void editAdjustments(
 
 struct BrushDabParams {
     float2 center;    // dab center, normalized UV [0,1] in the alpha texture's frame
-    float  radiusPx;  // dab radius in alpha-texture pixels
-    float  hardness;  // 0-1 (ACR CenterWeight): fraction of the radius at full coverage before falloff
+    float  radiusPx;  // nominal/50%-coverage radius in alpha-texture pixels
+    float  hardness;  // 0-1 (ACR CenterWeight): fraction of the nominal radius at full coverage
     float  flow;      // 0-1: this dab's opacity contribution
     float  density;   // 0-1: accumulated-opacity ceiling for the owning stroke
     uint   erase;     // 0 = add (max blend), 1 = subtract
@@ -904,14 +928,22 @@ kernel void stampBrush(
     // profile stays circular regardless of the texture's aspect ratio).
     float2 centerPx = dab.center * float2(w, h);
     float dist = length((float2(px.x, px.y) + 0.5) - centerPx);
-    if (dist > dab.radiusPx) return;
-
-    // Soft circular profile. `hardness` is the fraction of the radius held at full coverage;
-    // beyond it, smoothstep down to 0 at the edge. Clamp the inner edge below 1 so smoothstep
-    // stays well-defined for a hard-edged (hardness == 1) brush.
-    float t = dab.radiusPx > 0.0 ? dist / dab.radiusPx : 1.0;
-    float inner = min(dab.hardness, 0.999);
-    float falloff = 1.0 - smoothstep(inner, 1.0, t);
+    // Brush size is the nominal 50%-coverage boundary shown by the solid cursor ring. Below 100%
+    // hardness, a Gaussian begins at the full-strength inner radius and continues well past the
+    // nominal circle. We only clip once it falls below 1/1024 coverage, where the boundary is no
+    // longer perceptible; a hard brush retains a one-pixel antialiasing transition.
+    float hardness = clamp(dab.hardness, 0.0, 1.0);
+    float softnessRadius = dab.radiusPx * (1.0 - hardness);
+    float falloff;
+    if (softnessRadius <= 0.5) {
+        falloff = 1.0 - smoothstep(dab.radiusPx - 0.5, dab.radiusPx + 0.5, dist);
+    } else {
+        float innerRadius = dab.radiusPx - softnessRadius;
+        float outerRadius = innerRadius + 3.16227766017 * softnessRadius; // sqrt(log2(1024))
+        if (dist > outerRadius) return;
+        float t = max((dist - innerRadius) / softnessRadius, 0.0);
+        falloff = exp2(-t * t); // 50% at the nominal cursor circle
+    }
 
     float coverage = min(falloff * dab.flow, dab.density);
     half prev = alpha.read(px, dab.layer).r;

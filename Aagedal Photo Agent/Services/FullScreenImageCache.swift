@@ -100,7 +100,7 @@ final class FullScreenImageCache: @unchecked Sendable {
     ) {
         let c = isEdited ? editedCache : cache
         let key = Self.cacheKey(for: url, orientation: orientation, renderToken: renderToken)
-        _ = lock.withLock {
+        lock.withLock {
             c.setObject(image, forKey: key, cost: Self.byteSize(of: image))
             if isEdited {
                 editedImageKeysByURL[url, default: []].insert(key)
@@ -131,7 +131,7 @@ final class FullScreenImageCache: @unchecked Sendable {
     ) {
         let c = isEdited ? editedDisplayPreviewCache : displayPreviewCache
         let key = Self.cacheKey(for: url, orientation: orientation, renderToken: renderToken)
-        _ = lock.withLock {
+        lock.withLock {
             c.setObject(image, forKey: key, cost: Self.byteSize(of: image))
             if isEdited {
                 editedDisplayPreviewKeysByURL[url, default: []].insert(key)

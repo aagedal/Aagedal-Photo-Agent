@@ -49,6 +49,39 @@ struct BrushDabParams {
     var originPx: SIMD2<UInt32> = .zero
 }
 
+/// Shared CPU/cursor description of the Gaussian radial profile implemented by `stampBrush`.
+/// The nominal radius is the 50%-coverage circle. Lower hardness moves the full-strength inner
+/// radius inward and lengthens the outer tail; rasterization clips only below 1/1024 coverage.
+nonisolated enum BrushDabProfile {
+    static let minimumAntialiasRadiusPixels = 0.5
+    static let gaussianCutoffDistance = 3.1622776601683795 // sqrt(log2(1024))
+    static let tenPercentGaussianDistance = 1.8226157288049947 // sqrt(log2(10))
+
+    static func softnessRadius(nominalRadius: Double, hardness: Double) -> Double {
+        let clampedHardness = min(max(hardness, 0), 1)
+        return nominalRadius * (1 - clampedHardness)
+    }
+
+    static func innerRadius(nominalRadius: Double, hardness: Double) -> Double {
+        nominalRadius - softnessRadius(nominalRadius: nominalRadius, hardness: hardness)
+    }
+
+    static func outerRadius(nominalRadius: Double, hardness: Double) -> Double {
+        let softness = softnessRadius(nominalRadius: nominalRadius, hardness: hardness)
+        guard softness > minimumAntialiasRadiusPixels else {
+            return nominalRadius + minimumAntialiasRadiusPixels
+        }
+        return innerRadius(nominalRadius: nominalRadius, hardness: hardness)
+            + gaussianCutoffDistance * softness
+    }
+
+    static func tenPercentRadius(nominalRadius: Double, hardness: Double) -> Double {
+        let softness = softnessRadius(nominalRadius: nominalRadius, hardness: hardness)
+        return innerRadius(nominalRadius: nominalRadius, hardness: hardness)
+            + tenPercentGaussianDistance * softness
+    }
+}
+
 /// GPU stroke-composite parameters matching the Metal `BrushCompositeParams` struct.
 struct BrushCompositeParams {
     var layer: UInt32 = 0
@@ -147,13 +180,13 @@ struct EditParams {
     var anonymizerAmount: Float = 0   // 0-1 global slider strength, gated by activeFlags bit5
     var anonymizerBlackOut: Float = 0 // 0 or 1
 
-    var maskOverlayIndex: Int32 = -1  // mask buffer index to red-tint, or -1 = none
-    var maskOverlayOpacity: Float = 0 // 0-1 red-tint strength
+    var maskOverlayIndex: Int32 = -1  // mask buffer index to visualize, or -1 = none
+    var maskOverlayOpacity: Float = 0 // 0-1 red-tint strength (matte mode replaces the image)
 
     var watermarkCount: UInt32 = 0    // number of active watermark layers (0-4)
     var watermarkFrame: UInt32 = 0    // 0 = source UV, 1 = crop-output UV
     var useNearestNeighbor: UInt32 = 0
-    var _padScaling: UInt32 = 0
+    var maskOverlayMode: UInt32 = 0   // 0 = red coverage tint, 1 = black/white matte
 }
 
 /// Manages the Metal compute pipeline for real-time edit preview.
@@ -229,6 +262,11 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// brush mask is visible before any adjustment. The kernel auto-hides it once the mask gains
     /// an adjustment. Set by the editor from selection / paint-mode state.
     nonisolated(unsafe) var maskOverlayMaskID: UUID? = nil
+
+    /// When set, the selected mask replaces the editor image with a black/white coverage matte.
+    /// This is intentionally not mirrored to the clean-feed pipeline: it is a transient editor
+    /// hover aid rather than part of the rendered develop state.
+    nonisolated(unsafe) var maskMattePreviewMaskID: UUID? = nil
 
     /// As-shot white balance from the RAW decoder. Used as the reference point for WB
     /// adjustments so that "Custom at as-shot temperature" produces an identity matrix.
@@ -787,7 +825,16 @@ final class MetalEditPipeline: @unchecked Sendable {
         // Both ellipse and brush masks participate. Brush masks resolve their coverage from a
         // pre-rasterized alpha array (rebuilt below), sampled by `editAdjustments` when the mask's
         // `maskType` is 1; ellipse masks use the analytic SDF.
-        let masks = displaySettings.localAdjustments?.filter { $0.enabled } ?? []
+        let enabledMasks = displaySettings.localAdjustments?.filter { $0.enabled } ?? []
+        var masks = enabledMasks
+        // A muted mask normally has no GPU slot. Include the hovered matte target solely for
+        // coverage visualization, while keeping it out of the processing-order map below so its
+        // adjustments remain muted. Put it first so it remains previewable at the mask limit.
+        if let previewID = maskMattePreviewMaskID,
+           !masks.contains(where: { $0.id == previewID }),
+           let previewMask = displaySettings.localAdjustments?.first(where: { $0.id == previewID }) {
+            masks.insert(previewMask, at: 0)
+        }
         let maskCount = min(masks.count, Self.maxMasks)
         params.maskCount = UInt32(maskCount)
 
@@ -803,12 +850,14 @@ final class MetalEditPipeline: @unchecked Sendable {
         // collected in the same iteration order so their `brushLayer` slice indices line up
         // with the alpha array `refreshBrushAlpha` rasterizes below.
         var maskIndexByID: [UUID: Int] = [:]
+        var enabledMaskIndexByID: [UUID: Int] = [:]
         var brushGeometries: [BrushMaskGeometry] = []
         if maskCount > 0, let maskBuf = maskBuffer {
             let maskPtr = maskBuf.contents().bindMemory(to: MaskParams.self, capacity: Self.maxMasks)
             for i in 0..<maskCount {
                 let mask = masks[i]
                 maskIndexByID[mask.id] = i
+                if mask.enabled { enabledMaskIndexByID[mask.id] = i }
                 var mp = MaskParams()
                 mp.center = SIMD2<Float>(Float(mask.geometry.centerX), Float(mask.geometry.centerY))
                 mp.radii = SIMD2<Float>(Float(mask.geometry.radiusX), Float(mask.geometry.radiusY))
@@ -885,15 +934,21 @@ final class MetalEditPipeline: @unchecked Sendable {
             )
         }
 
-        // Mask-coverage overlay target: red-tint the editor-selected mask until it's adjusted
-        // (the kernel gates on the mask's activeFlags being 0). Mapped from the UUID here so it
-        // stays consistent with the current mask buffer layout.
-        if let oid = maskOverlayMaskID, let idx = maskIndexByID[oid] {
+        // The hover matte takes precedence over the automatic red paint-coverage tint. Both use
+        // the same selected-mask slot, with an explicit mode so the shader can either replace the
+        // image with coverage or blend the legacy red overlay.
+        if let previewID = maskMattePreviewMaskID, let idx = maskIndexByID[previewID] {
+            params.maskOverlayIndex = Int32(idx)
+            params.maskOverlayOpacity = 1
+            params.maskOverlayMode = 1
+        } else if let oid = maskOverlayMaskID, let idx = maskIndexByID[oid] {
             params.maskOverlayIndex = Int32(idx)
             params.maskOverlayOpacity = 0.5
+            params.maskOverlayMode = 0
         } else {
             params.maskOverlayIndex = -1
             params.maskOverlayOpacity = 0
+            params.maskOverlayMode = 0
         }
 
         // 6. HSL per-color adjustments
@@ -962,7 +1017,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         // layers (absent from the index maps) are skipped; the global node is always present.
         params.orderCount = uploadLayerOrder(
             displaySettings.resolvedLayerOrder(),
-            maskIndexByID: maskIndexByID,
+            maskIndexByID: enabledMaskIndexByID,
             watermarkIndexByID: watermarkIndexByID
         )
 
@@ -1053,14 +1108,18 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// `size`, or nil if empty. Used to bound the per-stroke clear/composite dispatches so cost is
     /// the painted area, not the whole slice.
     nonisolated private static func strokeBoundingBox(_ stroke: BrushStroke, size: MTLSize) -> (Int, Int, Int, Int)? {
-        let r = Double(brushRadiusPixels(normalized: stroke.radius, size: size))
-        guard r > 0, !stroke.dabs.isEmpty else { return nil }
+        let nominalRadius = Double(brushRadiusPixels(normalized: stroke.radius, size: size))
+        guard nominalRadius > 0, !stroke.dabs.isEmpty else { return nil }
         var minX = Double.greatestFiniteMagnitude, minY = Double.greatestFiniteMagnitude
         var maxX = -Double.greatestFiniteMagnitude, maxY = -Double.greatestFiniteMagnitude
         for dab in stroke.dabs {
             let cx = dab.x * Double(size.width), cy = dab.y * Double(size.height)
-            minX = min(minX, cx - r); minY = min(minY, cy - r)
-            maxX = max(maxX, cx + r); maxY = max(maxY, cy + r)
+            let outerRadius = BrushDabProfile.outerRadius(
+                nominalRadius: nominalRadius,
+                hardness: dab.hardness
+            )
+            minX = min(minX, cx - outerRadius); minY = min(minY, cy - outerRadius)
+            maxX = max(maxX, cx + outerRadius); maxY = max(maxY, cy + outerRadius)
         }
         let x0 = max(0, Int(minX.rounded(.down))), y0 = max(0, Int(minY.rounded(.down)))
         let x1 = min(size.width, Int(maxX.rounded(.up))), y1 = min(size.height, Int(maxY.rounded(.up)))
@@ -1068,8 +1127,8 @@ final class MetalEditPipeline: @unchecked Sendable {
         return (x0, y0, x1 - x0, y1 - y0)
     }
 
-    /// Converts a normalized brush radius (ACR `Radius`) into pixels for a texture of the given
-    /// dimensions. The normalization reference is the long edge — self-consistent with
+    /// Converts a normalized brush radius (ACR `Radius`) into the nominal 50%-coverage radius
+    /// in pixels for a texture of the given dimensions. The normalization reference is the long edge — self-consistent with
     /// `anonymizerBlockSize` and the other long-edge-relative sizing in the pipeline, which is
     /// what makes a stroke rebuild identically into a 1500px preview or a 9000px export texture.
     /// The absolute scale vs. Lightroom's own brush-size display is one of the two constants
@@ -1211,11 +1270,14 @@ final class MetalEditPipeline: @unchecked Sendable {
         for dab in stroke.dabs {
             let cx = Double(dab.x) * Double(size.width)
             let cy = Double(dab.y) * Double(size.height)
-            let r = Double(radiusPx)
-            let minX = max(0, Int((cx - r).rounded(.down)))
-            let minY = max(0, Int((cy - r).rounded(.down)))
-            let maxX = min(size.width, Int((cx + r).rounded(.up)))
-            let maxY = min(size.height, Int((cy + r).rounded(.up)))
+            let outerRadius = BrushDabProfile.outerRadius(
+                nominalRadius: Double(radiusPx),
+                hardness: dab.hardness
+            )
+            let minX = max(0, Int((cx - outerRadius).rounded(.down)))
+            let minY = max(0, Int((cy - outerRadius).rounded(.down)))
+            let maxX = min(size.width, Int((cx + outerRadius).rounded(.up)))
+            let maxY = min(size.height, Int((cy + outerRadius).rounded(.up)))
             let boxW = maxX - minX
             let boxH = maxY - minY
             guard boxW > 0, boxH > 0 else { continue }

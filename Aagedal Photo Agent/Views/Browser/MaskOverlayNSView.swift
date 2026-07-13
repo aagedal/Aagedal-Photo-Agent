@@ -262,7 +262,8 @@ final class MaskOverlayNSView: NSView {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
         guard viewportSize.x > 0, viewportSize.y > 0 else { return }
 
-        // Outer ellipse
+        // Editable nominal ellipse. With feathering this is the Gaussian's 10%-coverage contour,
+        // not a finite cutoff; the tail continues outside it.
         let unitCircle = CGPath(ellipseIn: CGRect(x: -1, y: -1, width: 2, height: 2), transform: nil)
         let outerTransform = ellipseTransform()
         if let transformedPath = unitCircle.copy(using: [outerTransform]) {
@@ -272,16 +273,30 @@ final class MaskOverlayNSView: NSView {
             ctx.strokePath()
         }
 
-        // Inner feather boundary (dashed)
+        // Full-strength inner feather boundary (dashed).
         let featherNorm = maskGeometry.feather / 100.0
         if featherNorm > 0.01 {
-            let innerScale = max(1.0 - featherNorm, 0.05)
-            let innerTransform = ellipseTransform(radiusScale: innerScale)
-            if let innerPath = unitCircle.copy(using: [innerTransform]) {
-                ctx.addPath(innerPath)
-                ctx.setStrokeColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.35))
+            let innerScale = max(1.0 - featherNorm, 0.0)
+            if innerScale > 0.05 {
+                let innerTransform = ellipseTransform(radiusScale: innerScale)
+                if let innerPath = unitCircle.copy(using: [innerTransform]) {
+                    ctx.addPath(innerPath)
+                    ctx.setStrokeColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.35))
+                    ctx.setLineWidth(0.5)
+                    ctx.setLineDash(phase: 0, lengths: [4, 4])
+                    ctx.strokePath()
+                    ctx.setLineDash(phase: 0, lengths: [])
+                }
+            }
+
+            // A faint 1%-coverage guide communicates that the feather extends beyond the handles.
+            let tailScale = innerScale + sqrt(2.0) * featherNorm
+            let tailTransform = ellipseTransform(radiusScale: tailScale)
+            if let tailPath = unitCircle.copy(using: [tailTransform]) {
+                ctx.addPath(tailPath)
+                ctx.setStrokeColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.2))
                 ctx.setLineWidth(0.5)
-                ctx.setLineDash(phase: 0, lengths: [4, 4])
+                ctx.setLineDash(phase: 0, lengths: [2, 4])
                 ctx.strokePath()
                 ctx.setLineDash(phase: 0, lengths: [])
             }
@@ -942,11 +957,20 @@ final class BrushMaskOverlayNSView: NSView {
 
         strokeRing(radius: r, lightWidth: 1.0, darkWidth: 2.5, alpha: 1.0)
 
-        // Inner ring shows brush hardness: inside it is full-strength paint, outside it feathers
-        // to the outer edge. At 100% hardness it coincides with the edge, so the outer ring is enough.
-        let hardRadius = r * CGFloat(clamped(hardness, to: 0...1))
-        if hardRadius > 2, hardRadius < r - 1 {
-            strokeRing(radius: hardRadius, lightWidth: 0.75, darkWidth: 2.0, alpha: 0.85, dashed: true)
+        // The solid ring remains the nominal 50%-coverage contour. Dashed rings show the
+        // full-strength inner region and the Gaussian tail's 10%-coverage contour; the actual
+        // raster tail continues beyond the latter until it is visually negligible.
+        let innerRadius = CGFloat(BrushDabProfile.innerRadius(
+            nominalRadius: Double(r), hardness: hardness
+        ))
+        let outerRadius = CGFloat(BrushDabProfile.tenPercentRadius(
+            nominalRadius: Double(r), hardness: hardness
+        ))
+        if innerRadius > 2, innerRadius < r - 1 {
+            strokeRing(radius: innerRadius, lightWidth: 0.75, darkWidth: 2.0, alpha: 0.65, dashed: true)
+        }
+        if outerRadius > r + 1 {
+            strokeRing(radius: outerRadius, lightWidth: 0.75, darkWidth: 2.0, alpha: 0.65, dashed: true)
         }
     }
 }

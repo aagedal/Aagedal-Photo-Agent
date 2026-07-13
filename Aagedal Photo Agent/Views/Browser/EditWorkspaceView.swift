@@ -86,6 +86,12 @@ struct EditWorkspaceView: View {
     @State private var isDraggingMask = false
     @State private var dragMaskGeometry: EllipseMaskGeometry?
     @State private var dragWatermarkGeometry: WatermarkGeometry?
+    /// Global visibility for interactive ellipse outlines/handles. Kept separate from the
+    /// selected mask's enabled state so users can inspect the adjusted image without deselecting.
+    @State private var showsMaskOutlines = true
+    /// The selected mask whose black/white matte is temporarily replacing the image while the
+    /// pointer hovers its type icon. Nil restores the normal edited preview.
+    @State private var maskMattePreviewMaskID: UUID?
     /// Shown when "Add Watermark" is tapped but the Watermark library (Settings ▸ Watermarks)
     /// has no PNGs imported yet.
     @State private var showWatermarkLibraryEmptyAlert = false
@@ -491,6 +497,7 @@ struct EditWorkspaceView: View {
             renderPreview()
         }
         .onChange(of: selectedLayer) { _, _ in
+            clearMaskMattePreview()
             // Clear Metal overlay — the AppKit MaskOverlayNSView handles
             // static display with interactive handles. Metal overlay is only used
             // during active mask drags for real-time feedback.
@@ -652,6 +659,8 @@ struct EditWorkspaceView: View {
                                    let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
                                    maskIdx < masks.count,
                                    masks[maskIdx].brush == nil,
+                                   showsMaskOutlines,
+                                   maskMattePreviewMaskID == nil,
                                    !isBrushPainting,
                                    !isShowingBefore {
                                     MaskOverlayRepresentable(
@@ -783,6 +792,8 @@ struct EditWorkspaceView: View {
                                let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
                                maskIdx < masks.count,
                                masks[maskIdx].brush == nil,
+                               showsMaskOutlines,
+                               maskMattePreviewMaskID == nil,
                                !isBrushPainting,
                                !isShowingBefore {
                                 MaskOverlayRepresentable(
@@ -1082,6 +1093,8 @@ struct EditWorkspaceView: View {
 
                     if isBrushPainting || selectedMaskIsBrush {
                         brushToolbar
+                    } else if let idx = selectedMaskIndex, let id = selectedMaskID {
+                        ellipseMaskToolbar(index: idx, id: id)
                     }
 
                     if selectedMaskIndex != nil {
@@ -1332,6 +1345,8 @@ struct EditWorkspaceView: View {
 
     private func handleEditWorkspaceDisappear() {
         isSpaceHandToolActive = false
+        maskMattePreviewMaskID = nil
+        metalPipeline?.maskMattePreviewMaskID = nil
         NSCursor.arrow.set()
 
         // Flush any unsaved edit adjustments (CRS) to disk before tearing down.
@@ -1542,6 +1557,8 @@ struct EditWorkspaceView: View {
         asShotWhiteBalance = nil
         isPickingWhiteBalance = false
         wbPickDragRect = nil
+        maskMattePreviewMaskID = nil
+        metalPipeline?.maskMattePreviewMaskID = nil
         metalPipeline?.asShotTemperature = 6500
         metalPipeline?.asShotTint = 0
         previewCIImage = nil
@@ -3489,7 +3506,12 @@ struct EditWorkspaceView: View {
     private var brushToolbar: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                Image(systemName: "paintbrush.pointed")
+                if selectedMaskIsBrush, let id = selectedMaskID {
+                    maskMattePreviewIcon(systemName: "paintbrush.pointed", maskID: id)
+                } else {
+                    Image(systemName: "paintbrush.pointed")
+                        .frame(width: 20, height: 20)
+                }
                 Text("Brush").font(.system(size: 11, weight: .semibold))
                 Spacer()
                 Button {
@@ -3521,6 +3543,48 @@ struct EditWorkspaceView: View {
         }
         .padding(8)
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// Ellipse geometry controls occupy the same compact, top-of-panel card as brush settings.
+    /// Keeping feather here makes the two mask types scan consistently and avoids presenting an
+    /// ellipse-only property at the bottom of the shared adjustment stack.
+    private func ellipseMaskToolbar(index: Int, id: UUID) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                maskMattePreviewIcon(systemName: "circle.dashed", maskID: id)
+                Text("Ellipse Mask").font(.system(size: 11, weight: .semibold))
+                Spacer()
+            }
+
+            sliderRow(
+                "Feather",
+                value: maskGeometryBinding(index, \.feather),
+                range: 0...100,
+                step: 1,
+                formatter: { "\(Int($0.rounded()))" },
+                settingsMutator: { settings, value in
+                    settings.localAdjustments?[index].geometry.feather = value.rounded()
+                },
+                onReset: {
+                    maskGeometryBinding(index, \.feather).wrappedValue = 50
+                }
+            )
+        }
+        .padding(8)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// Shared hover affordance for every mask type. Future mask tools can opt into the same
+    /// matte behavior by using this icon rather than owning preview state themselves.
+    private func maskMattePreviewIcon(systemName: String, maskID: UUID) -> some View {
+        Image(systemName: systemName)
+            .foregroundStyle(maskMattePreviewMaskID == maskID ? Color.primary : Color.secondary)
+            .frame(width: 20, height: 20)
+            .contentShape(Rectangle())
+            .onHover { isHovering in
+                setMaskMattePreview(maskID: maskID, visible: isHovering)
+            }
+            .help("Hover to preview the mask matte")
     }
 
     private func brushSlider(_ label: String, value: Binding<Double>, range: ClosedRange<Double>) -> some View {
@@ -3698,7 +3762,7 @@ struct EditWorkspaceView: View {
         .contextMenu {
             if let mask {
                 Button(mask.enabled ? "Mute" : "Enable") { toggleMaskEnabled(mask.id) }
-                Button(mask.inverted ? "Normal (inside ellipse)" : "Invert (outside ellipse)") {
+                Button(mask.inverted ? "Normal (inside mask)" : "Invert (outside mask)") {
                     toggleMaskInverted(mask.id)
                 }
                 Divider()
@@ -3731,7 +3795,7 @@ struct EditWorkspaceView: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
-                .help(mask.inverted ? "Invert: adjustments apply outside ellipse" : "Normal: adjustments apply inside ellipse")
+                .help(mask.inverted ? "Inverted: adjustments apply outside the mask" : "Normal: adjustments apply inside the mask")
 
                 Button {
                     toggleMaskEnabled(id)
@@ -3742,6 +3806,26 @@ struct EditWorkspaceView: View {
                 }
                 .buttonStyle(.plain)
                 .help(mask.enabled ? "Mute mask effect" : "Enable mask effect")
+
+                Button {
+                    showsMaskOutlines.toggle()
+                    if !showsMaskOutlines {
+                        metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
+                    }
+                } label: {
+                    ZStack {
+                        Image(systemName: "circle.dashed")
+                        if !showsMaskOutlines {
+                            Image(systemName: "slash")
+                                .font(.system(size: 9, weight: .bold))
+                        }
+                    }
+                    .font(.system(size: 11))
+                    .foregroundStyle(showsMaskOutlines ? Color.secondary : Color.red)
+                    .frame(width: 14, height: 14)
+                }
+                .buttonStyle(.plain)
+                .help(showsMaskOutlines ? "Hide all mask outlines" : "Show mask outlines")
 
                 Spacer()
 
@@ -4010,27 +4094,6 @@ struct EditWorkspaceView: View {
             Toggle("Black out", isOn: maskAnonymizerBlackOutBinding(idx))
                 .toggleStyle(.checkbox)
                 .help("Fully redact this mask instead of the mosaic effect")
-
-            // ── Mask Shape ──
-            Text("Mask Shape")
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(.secondary)
-                .padding(.top, 2)
-            Divider()
-
-            sliderRow(
-                "Feather",
-                value: maskGeometryBinding(idx, \.feather),
-                range: 0...100,
-                step: 1,
-                formatter: { "\(Int($0.rounded()))" },
-                settingsMutator: { settings, value in
-                    settings.localAdjustments?[idx].geometry.feather = value.rounded()
-                },
-                onReset: {
-                    maskGeometryBinding(idx, \.feather).wrappedValue = 50
-                }
-            )
         }
     }
 
@@ -4653,6 +4716,39 @@ struct EditWorkspaceView: View {
     private func syncMaskOverlayTarget() {
         guard let pipeline = metalPipeline else { return }
         pipeline.maskOverlayMaskID = (isBrushPainting || selectedMaskIsBrush) ? selectedMaskID : nil
+        if pipeline.hasSourceTexture {
+            pipeline.updateParams(settingsForPipeline(metadataViewModel.editingMetadata.cameraRaw))
+            metalCoordinator.requestRedraw()
+        }
+    }
+
+    /// Replaces the edited image with the selected mask's black/white coverage while its tool
+    /// icon is hovered. The pipeline keeps this preview editor-local; its clean-feed mirror still
+    /// receives the ordinary settings and therefore never shows the temporary matte.
+    private func setMaskMattePreview(maskID: UUID, visible: Bool) {
+        let nextID: UUID?
+        if visible {
+            nextID = maskID
+        } else {
+            guard maskMattePreviewMaskID == maskID else { return }
+            nextID = nil
+        }
+        guard nextID != maskMattePreviewMaskID else { return }
+
+        maskMattePreviewMaskID = nextID
+        guard let pipeline = metalPipeline else { return }
+        pipeline.maskMattePreviewMaskID = nextID
+        if pipeline.hasSourceTexture {
+            pipeline.updateParams(settingsForPipeline(metadataViewModel.editingMetadata.cameraRaw))
+            metalCoordinator.requestRedraw()
+        }
+    }
+
+    private func clearMaskMattePreview() {
+        guard maskMattePreviewMaskID != nil || metalPipeline?.maskMattePreviewMaskID != nil else { return }
+        maskMattePreviewMaskID = nil
+        guard let pipeline = metalPipeline else { return }
+        pipeline.maskMattePreviewMaskID = nil
         if pipeline.hasSourceTexture {
             pipeline.updateParams(settingsForPipeline(metadataViewModel.editingMetadata.cameraRaw))
             metalCoordinator.requestRedraw()

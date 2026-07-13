@@ -294,6 +294,17 @@ inline float3 applyScopeGlobal(
     return rgb;
 }
 
+// Keep scope-side ellipse rendering in lockstep with EditAdjustments.metal. A feathered ellipse's
+// nominal outline is the 10% contour; its Gaussian tail continues outside instead of ending there.
+inline float ellipseFeatherCoverage(float dist, float feather) {
+    float f = clamp(feather, 0.0, 1.0);
+    if (f <= 0.0) return dist <= 1.0 ? 1.0 : 0.0;
+    float inner = 1.0 - f;
+    if (dist <= inner) return 1.0;
+    float t = (dist - inner) / f;
+    return exp2(-3.32192809489 * t * t);
+}
+
 // Ellipse-mask coverage weight at `uv` (0 ⇒ no effect). Mirrors the scope's prior inline
 // formula; kept separate from the color application so the kernel can sequence nodes.
 inline float applyScopeMaskWeight(constant MaskParams &mask, float2 uv) {
@@ -302,8 +313,7 @@ inline float applyScopeMaskWeight(constant MaskParams &mask, float2 uv) {
     float2 d = uv - mask.center;
     float2 local = float2(d.x * cosR + d.y * sinR, -d.x * sinR + d.y * cosR);
     float dist = length(local / mask.radii);
-    float inner = 1.0 - mask.feather;
-    float weight = 1.0 - smoothstep(inner, 1.0, dist);
+    float weight = ellipseFeatherCoverage(dist, mask.feather);
     if (mask.inverted > 0.5) weight = 1.0 - weight;
     weight *= mask.amount;
     return weight;

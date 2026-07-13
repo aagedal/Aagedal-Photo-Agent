@@ -2104,23 +2104,28 @@ struct BrushRasterizationTests {
         return raw.map { halfToFloat($0) }
     }
 
-    @Test("a centered additive dab is opaque at its center and empty outside its radius")
+    @Test("a soft dab fades across its nominal circle and extends beyond it")
     func centeredDabCoverage() throws {
         guard let pipeline = makePipeline() else { return }
         #expect(pipeline.hasBrushPipeline)
-        let size = MTLSize(width: 64, height: 64, depth: 1)
-        // radius 0.25 of long edge (64) = 16px, centered soft dab at full flow.
+        let size = MTLSize(width: 128, height: 128, depth: 1)
+        // radius 0.125 of long edge (128) = 16px, centered soft dab at full flow.
         let brush = BrushMaskGeometry(strokes: [
             BrushStroke(dabs: [BrushDab(x: 0.5, y: 0.5, flow: 1.0, hardness: 0.0)],
-                        radius: 0.25, density: 1.0, erase: false)
+                        radius: 0.125, density: 1.0, erase: false)
         ])
         let tex = try #require(pipeline.rebuildBrushAlpha([brush], size: size))
         #expect(tex.arrayLength == 1)
         let px = readSlice(tex, slice: 0)
-        func at(_ x: Int, _ y: Int) -> Float { px[y * 64 + x] }
-        #expect(at(32, 32) > 0.5)          // center ~fully covered
-        #expect(at(0, 0) == 0)             // corner well outside the 16px radius
-        #expect(at(32, 55) == 0)           // 22px below center, outside radius
+        func at(_ x: Int, _ y: Int) -> Float { px[y * 128 + x] }
+        #expect(at(64, 64) > 0.99)         // center pixel is effectively fully covered
+        let nominalBoundary = at(80, 64)   // approximately 16px from center
+        #expect(nominalBoundary > 0.4 && nominalBoundary < 0.6)
+        let outsidePreviewCircle = at(88, 64)
+        #expect(outsidePreviewCircle > 0.15 && outsidePreviewCircle < nominalBoundary)
+        let outerTail = at(104, 64)        // >2.5× radius: beyond the previous finite cutoff
+        #expect(outerTail > 0.005 && outerTail < outsidePreviewCircle)
+        #expect(at(120, 64) == 0)          // beyond the 1/1024 raster cutoff
     }
 
     @Test("passing no brush masks frees the alpha texture")
@@ -2196,9 +2201,9 @@ struct BrushRasterizationTests {
         let px = readSlice(tex, slice: 0)
         func at(_ x: Int, _ y: Int) -> Float { px[y * 64 + x] }
         #expect(at(32, 32) < 0.05)              // center fully erased (falloff 1)
-        // 8px right of center = half the 16px erase radius → soft falloff ≈ 0.5 coverage, so the
-        // mask should be partially (not fully) erased. Subtractive over-accumulation would zero it.
-        let half = at(40, 32)
+        // The nominal 16px circle is the midpoint of the new feather, so the mask should be
+        // partially (not fully) erased there. Subtractive over-accumulation would zero it.
+        let half = at(48, 32)
         #expect(half > 0.25 && half < 0.75)
     }
 
@@ -2361,6 +2366,27 @@ struct BrushCompositingTests {
         let corner = sample(result, x: 3, y: 3)
         #expect(center > corner + 0.2)          // ellipse center brightened
         #expect(abs(corner - 0.4) < 0.05)       // outside the ellipse ~unchanged
+    }
+
+    @Test("a fully feathered ellipse extends a Gaussian tail beyond its nominal outline")
+    func ellipseFeatherExtendsBeyondOutline() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else { return }
+        var mask = MaskAdjustment()
+        mask.geometry = EllipseMaskGeometry(centerX: 0.5, centerY: 0.5,
+                                            radiusX: 0.25, radiusY: 0.25,
+                                            rotation: 0, feather: 100)
+        mask.exposure = 1.0
+        var settings = CameraRawSettings()
+        settings.localAdjustments = [mask]
+        let result = try #require(MetalEditPipeline.renderOffscreen(source: solidGray(0.4), settings: settings))
+        let midpoint = sample(result, x: 40, y: 32)
+        let nominalOutline = sample(result, x: 48, y: 32)
+        let outsideTail = sample(result, x: 51, y: 32)
+        let farOutside = sample(result, x: 60, y: 32)
+        #expect(midpoint > 0.60 && midpoint < 0.66)
+        #expect(nominalOutline > 0.43 && nominalOutline < midpoint)
+        #expect(outsideTail > 0.408 && outsideTail < nominalOutline)
+        #expect(abs(farOutside - 0.4) < 0.01)
     }
 
     @Test("a later local layer can recover highlights raised above SDR white globally")
