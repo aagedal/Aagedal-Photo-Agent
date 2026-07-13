@@ -8,6 +8,17 @@ nonisolated private let editLog = Logger(
     subsystem: "com.aagedal.photo-agent", category: "EditWorkspace"
 )
 
+private struct DevelopTemplateNotificationHandler: ViewModifier {
+    let onApply: (DevelopTemplate) -> Void
+
+    func body(content: Content) -> some View {
+        content.onReceive(NotificationCenter.default.publisher(for: .applyDevelopTemplate)) { notification in
+            guard let template = notification.object as? DevelopTemplate else { return }
+            onApply(template)
+        }
+    }
+}
+
 /// Shared semantics for the Global and per-mask anonymizer switches. Keeping the default here
 /// prevents the two control panels from drifting apart while leaving imported strengths intact.
 nonisolated enum AnonymizerToggleBehavior {
@@ -599,6 +610,10 @@ struct EditWorkspaceView: View {
             guard canEditSingleImage else { return }
             removeOrResetSelectedEditLayer()
         }
+        .modifier(DevelopTemplateNotificationHandler { template in
+            guard canEditSingleImage else { return }
+            applyDevelopTemplate(template)
+        })
         .onReceive(NotificationCenter.default.publisher(for: .toggleHDR)) { _ in
             guard canEditSingleImage else { return }
             hdrToggleBinding.wrappedValue.toggle()
@@ -2738,6 +2753,10 @@ struct EditWorkspaceView: View {
             || !(cameraRaw.watermarkLayers?.isEmpty ?? true)
             || !(cameraRaw.hslAdjustments?.isEmpty ?? true)
             || (cameraRaw.anonymizer?.isEmpty == false)
+            // Unknown ACR corrections are image-bound and must survive a
+            // template application even when the template resets every edit
+            // this app can model.
+            || !(cameraRaw.unparsedMaskCorrections?.isEmpty ?? true)
     }
 
     private var hslAdjustmentsBinding: Binding<HSLAdjustments> {
@@ -5272,6 +5291,25 @@ struct EditWorkspaceView: View {
             }
         }
         commitEditAdjustments()
+    }
+
+    private func applyDevelopTemplate(_ template: DevelopTemplate) {
+        let current = metadataViewModel.editingMetadata.cameraRaw
+        let applied = template.settingsForApplication(preserving: current)
+
+        resetCropZoom()
+        selectedLayer = .global
+        isBrushPainting = false
+        updateCameraRaw { cameraRaw in
+            cameraRaw = applied
+        }
+
+        if metadataViewModel.editingMetadata.cameraRaw == nil {
+            commitDevelopReset()
+        } else {
+            commitEditAdjustments()
+        }
+        showCopyPasteFeedback("Applied \(template.name)")
     }
 
     private func pasteToMultipleImages(_ source: CameraRawSettings, urls: Set<URL>, includeCrop: Bool) {

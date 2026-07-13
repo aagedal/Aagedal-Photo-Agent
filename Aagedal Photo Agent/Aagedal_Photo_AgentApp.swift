@@ -500,6 +500,7 @@ extension Notification.Name {
     static let browserDidOpenRootFolder = Notification.Name("browserDidOpenRootFolder")
     static let showRawMetadata = Notification.Name("showRawMetadata")
     static let applyTemplateShortcut = Notification.Name("applyTemplateShortcut")
+    static let applyDevelopTemplate = Notification.Name("applyDevelopTemplate")
     static let addNewMask = Notification.Name("addNewMask")
     static let removeOrResetSelectedEditLayer = Notification.Name("removeOrResetSelectedEditLayer")
     static let setScopeMode = Notification.Name("setScopeMode")

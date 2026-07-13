@@ -94,6 +94,16 @@ nonisolated enum AppPaths {
         return (defaultTemplatesDirectory, {})
     }
 
+    /// Develop presets share the configured Templates root (including iCloud
+    /// and security-scoped custom folders) but live in a separate directory so
+    /// their JSON cannot be mistaken for metadata templates.
+    static func developTemplatesDirectory() -> (url: URL, release: () -> Void) {
+        let (root, release) = templatesDirectory()
+        let url = root.appendingPathComponent("Develop", isDirectory: true)
+        try? CloudCoordinatedIO.ensureDirectory(url)
+        return (url, release)
+    }
+
     static var certificatesDirectory: URL {
         let url = applicationSupport.appendingPathComponent("Certificates", isDirectory: true)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)

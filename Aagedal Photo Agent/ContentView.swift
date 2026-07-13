@@ -14,6 +14,19 @@ enum MainViewMode {
     case peopleDatabase    // Known People database view
 }
 
+enum TemplateCommandTarget: Equatable {
+    case metadata
+    case develop
+}
+
+extension MainViewMode {
+    /// Develop owns the shared template shortcuts only while its workspace is
+    /// active. Every other view intentionally falls back to metadata templates.
+    var templateCommandTarget: TemplateCommandTarget {
+        self == .editing ? .develop : .metadata
+    }
+}
+
 struct FTPUploadItem: Identifiable {
     let id = UUID()
     let urls: [URL]
@@ -77,6 +90,7 @@ struct ContentView: View {
     @State private var metadataViewModel: MetadataViewModel
     @State private var faceRecognitionViewModel: FaceRecognitionViewModel
     @State private var templateViewModel = TemplateViewModel()
+    @State private var developTemplateViewModel = DevelopTemplateViewModel()
     @State private var ftpViewModel = FTPViewModel()
     @State private var settingsViewModel = SettingsViewModel()
     @State private var importViewModel: ImportViewModel
@@ -86,8 +100,10 @@ struct ContentView: View {
     @State private var isShowingTemplateEditor = false
     @State private var isShowingTemplatePicker = false
     @State private var isShowingTemplatePalette = false
+    @State private var isShowingDevelopTemplatePalette = false
     @State private var ftpUploadItem: FTPUploadItem?
     @State private var isShowingSaveTemplateName = false
+    @State private var isShowingSaveDevelopTemplateName = false
     @State private var isShowingImport = false
     /// Height of the main window's content area, used to cap sheet heights.
     @State private var windowContentHeight: CGFloat = 0
@@ -97,6 +113,8 @@ struct ContentView: View {
     @State private var c2paValidation: C2PAValidationResult?
     @State private var pendingWriteAllC2PACount = 0
     @State private var saveTemplateName = ""
+    @State private var saveDevelopTemplateName = ""
+    @State private var saveDevelopTemplateIncludesCrop = true
     @AppStorage(UserDefaultsKeys.metadataPanelWidth) private var metadataPanelWidth: Double = 320
     @State private var mainViewMode: MainViewMode = .browser
     @State private var lastNonPeopleViewMode: MainViewMode = .browser
@@ -239,6 +257,7 @@ struct ContentView: View {
         contentBase
             .sheet(isPresented: $isShowingTemplatePicker) { templatePickerSheet }
             .sheet(isPresented: $isShowingSaveTemplateName) { saveTemplateSheet }
+            .sheet(isPresented: $isShowingSaveDevelopTemplateName) { saveDevelopTemplateSheet }
             .sheet(item: $ftpUploadItem) { item in
                 FTPUploadView(
                     viewModel: ftpViewModel,
@@ -406,6 +425,30 @@ struct ContentView: View {
                             closeTemplatePalette(restoringGridFocus: true)
                         }
                     )
+                } else if isShowingDevelopTemplatePalette {
+                    Color.black.opacity(0.3)
+                        .ignoresSafeArea()
+                        .onTapGesture {
+                            closeDevelopTemplatePalette()
+                        }
+                        .onAppear {
+                            developTemplateViewModel.loadTemplates()
+                        }
+                    DevelopTemplatePaletteView(
+                        templates: developTemplateViewModel.templates,
+                        onApply: { template in
+                            NotificationCenter.default.post(name: .applyDevelopTemplate, object: template)
+                            closeDevelopTemplatePalette()
+                        },
+                        onSaveNew: {
+                            closeDevelopTemplatePalette()
+                            saveDevelopTemplateIncludesCrop = true
+                            isShowingSaveDevelopTemplateName = true
+                        },
+                        onDismiss: {
+                            closeDevelopTemplatePalette()
+                        }
+                    )
                 }
             }
     }
@@ -465,13 +508,27 @@ struct ContentView: View {
                 metadataViewModel.processVariablesInFolder(images: browserViewModel.images)
             }
             .onReceive(NotificationCenter.default.publisher(for: .showTemplatePalette)) { _ in
-                isShowingTemplatePalette = true
+                switch mainViewMode.templateCommandTarget {
+                case .metadata:
+                    isShowingTemplatePalette = true
+                case .develop:
+                    isShowingDevelopTemplatePalette = true
+                }
             }
             .onReceive(NotificationCenter.default.publisher(for: .applyTemplateShortcut)) { notification in
-                if let slot = notification.object as? Int,
-                   let template = templateViewModel.template(forSlot: slot) {
-                    applyTemplate(template)
-                    restoreGridFocus()
+                guard let slot = notification.object as? Int else { return }
+                switch mainViewMode.templateCommandTarget {
+                case .metadata:
+                    templateViewModel.loadTemplates()
+                    if let template = templateViewModel.template(forSlot: slot) {
+                        applyTemplate(template)
+                        restoreGridFocus()
+                    }
+                case .develop:
+                    developTemplateViewModel.loadTemplates()
+                    if let template = developTemplateViewModel.template(forSlot: slot) {
+                        NotificationCenter.default.post(name: .applyDevelopTemplate, object: template)
+                    }
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .uploadSelected)) { _ in
@@ -545,6 +602,7 @@ struct ContentView: View {
                 sidebarViewModel.loadFavorites()
                 sidebarViewModel.loadFavoriteTopLevelSubfolders()
                 templateViewModel.loadTemplates()
+                developTemplateViewModel.loadTemplates()
                 ftpViewModel.loadConnections()
                 ftpViewModel.activityHistory = activityHistory
                 BackgroundOperationMonitor.shared.isImporting = importViewModel.isImporting
@@ -1443,6 +1501,45 @@ struct ContentView: View {
         .frame(minWidth: 300)
     }
 
+    @ViewBuilder
+    private var saveDevelopTemplateSheet: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Save Develop Template")
+                .font(.headline)
+            TextField("Template Name", text: $saveDevelopTemplateName)
+                .textFieldStyle(.roundedBorder)
+            Toggle("Include crop", isOn: $saveDevelopTemplateIncludesCrop)
+                .toggleStyle(.checkbox)
+            Text("When crop is excluded, applying this template preserves the destination image's current crop. Image-specific RAW decoder data is never included.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack {
+                Spacer()
+                Button("Cancel") {
+                    isShowingSaveDevelopTemplateName = false
+                    saveDevelopTemplateName = ""
+                    saveDevelopTemplateIncludesCrop = true
+                }
+                .keyboardShortcut(.cancelAction)
+                Button("Save") {
+                    developTemplateViewModel.createTemplate(
+                        from: metadataViewModel.editingMetadata.cameraRaw,
+                        name: saveDevelopTemplateName.trimmingCharacters(in: .whitespacesAndNewlines),
+                        includesCrop: saveDevelopTemplateIncludesCrop
+                    )
+                    isShowingSaveDevelopTemplateName = false
+                    saveDevelopTemplateName = ""
+                    saveDevelopTemplateIncludesCrop = true
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+                .disabled(saveDevelopTemplateName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding()
+        .frame(minWidth: 360)
+    }
+
     // MARK: - Render and Sign
 
     /// Prompts the user to pick a destination folder for `.askOnSave` exports.
@@ -1711,6 +1808,10 @@ struct ContentView: View {
         if restoringGridFocus {
             restoreGridFocus()
         }
+    }
+
+    private func closeDevelopTemplatePalette() {
+        isShowingDevelopTemplatePalette = false
     }
 
     private func restoreGridFocus() {

@@ -8,6 +8,8 @@ struct SettingsView: View {
     @State private var ftpViewModel = FTPViewModel()
     @AppStorage(UserDefaultsKeys.ftpAlwaysRenderRAW) private var ftpAlwaysRenderRAW = true
     @State private var templateViewModel = TemplateViewModel()
+    @State private var developTemplateViewModel = DevelopTemplateViewModel()
+    @State private var selectedTemplateKind: TemplateKind = .metadata
     @StateObject private var sparkle = SparkleUpdaterService.shared
 
     // Known People state
@@ -42,6 +44,13 @@ struct SettingsView: View {
     private struct ImportSource: Identifiable {
         let url: URL
         var id: String { url.path }
+    }
+
+    private enum TemplateKind: String, CaseIterable, Identifiable {
+        case metadata = "Metadata"
+        case develop = "Develop"
+
+        var id: String { rawValue }
     }
 
     // MARK: - Sidebar Sections
@@ -160,6 +169,7 @@ struct SettingsView: View {
         .onAppear {
             ftpViewModel.loadConnections()
             templateViewModel.loadTemplates()
+            developTemplateViewModel.loadTemplates()
         }
     }
 
@@ -1185,6 +1195,7 @@ struct SettingsView: View {
                     set: {
                         coordinator.setAllEnabled($0)
                         templateViewModel.loadTemplates()
+                        developTemplateViewModel.loadTemplates()
                     }
                 ))
                 .toggleStyle(.switch)
@@ -1215,9 +1226,10 @@ struct SettingsView: View {
                     set: {
                         coordinator.setTemplatesEnabled($0)
                         templateViewModel.loadTemplates()
+                        developTemplateViewModel.loadTemplates()
                     }
                 ))
-                Text("Metadata templates. Overrides any custom templates folder while enabled.")
+                Text("Metadata and develop templates. Overrides any custom templates folder while enabled.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -1707,6 +1719,7 @@ struct SettingsView: View {
                             Button("Reset") {
                                 settingsViewModel.clearTemplatesFolder()
                                 templateViewModel.loadTemplates()
+                                developTemplateViewModel.loadTemplates()
                             }
                         }
                     }
@@ -1714,30 +1727,44 @@ struct SettingsView: View {
                 .padding(.vertical, 4)
             }
 
-            TemplateListView(viewModel: templateViewModel)
-
-            GroupBox("Import / Export") {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Button("Export All…") {
-                            exportTemplates()
-                        }
-                        .disabled(templateViewModel.templates.isEmpty)
-                        Button("Import…") {
-                            importTemplates()
-                        }
-                        Spacer()
-                    }
-                    Text("Exports all templates as a single .json bundle, or imports templates from one. Importing merges by template, with a confirmation showing how many are new or will be overwritten.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+            Picker("Template Type", selection: $selectedTemplateKind) {
+                ForEach(TemplateKind.allCases) { kind in
+                    Text(kind.rawValue).tag(kind)
                 }
-                .padding(.vertical, 4)
+            }
+            .pickerStyle(.segmented)
+
+            if selectedTemplateKind == .metadata {
+                TemplateListView(viewModel: templateViewModel)
+
+                GroupBox("Import / Export") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Button("Export All…") {
+                                exportTemplates()
+                            }
+                            .disabled(templateViewModel.templates.isEmpty)
+                            Button("Import…") {
+                                importTemplates()
+                            }
+                            Spacer()
+                        }
+                        Text("Exports all metadata templates as a single .json bundle, or imports templates from one. Importing merges by template, with a confirmation showing how many are new or will be overwritten.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 4)
+                }
+            } else {
+                DevelopTemplateListView(viewModel: developTemplateViewModel)
             }
         }
         .padding()
         .sheet(isPresented: $templateViewModel.isEditing) {
             TemplateEditorView(viewModel: templateViewModel)
+        }
+        .sheet(isPresented: $developTemplateViewModel.isEditing) {
+            DevelopTemplateEditorView(viewModel: developTemplateViewModel)
         }
         .sheet(item: $templateViewModel.pendingImportPreview) { preview in
             TemplateImportConfirmationView(
@@ -1764,6 +1791,7 @@ struct SettingsView: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         settingsViewModel.setTemplatesFolderURL(url)
         templateViewModel.loadTemplates()
+        developTemplateViewModel.loadTemplates()
     }
 
     private func exportTemplates() {
