@@ -49,6 +49,10 @@ struct EditWorkspaceView: View {
     @State private var keyEventMonitor: Any?
     @State private var middleMouseEventMonitor: Any?
     @State private var hoveredFilmstripURL: URL?
+    /// Hold-Space override for panning the zoomed preview. A transparent drag surface is
+    /// installed above the active brush/mask/watermark overlay while this is true, so the
+    /// current editing tool remains selected but temporarily gives up pointer input.
+    @State private var isSpaceHandToolActive = false
     /// Set only by left/right keyboard navigation so the filmstrip follows keyboard selection
     /// without recentering itself when the user clicks or extends a selection with the mouse.
     @State private var filmstripKeyboardScrollTarget: URL?
@@ -112,6 +116,7 @@ struct EditWorkspaceView: View {
     @State private var brushFlow: Double = 1.0        // 0-1 dab flow
     @State private var brushErase = false             // subtract from the mask instead of adding
     @FocusState private var isWorkspaceFocused: Bool
+    @ObservedObject private var scaling = ImageScalingController.shared
 
     private static let previewBackground = Color(red: 0.15, green: 0.15, blue: 0.15)
 
@@ -571,7 +576,7 @@ struct EditWorkspaceView: View {
                                 isHDR: isHDREnabled && !isShowingBefore,
                                 metalPipeline: metalPipeline,
                                 useComputeShader: !isShowingBefore && metalPipeline?.hasSourceTexture == true,
-
+                                useNearestNeighbor: scaling.useNearestNeighbor,
                                 coordinator: metalCoordinator
                             )
                                 .frame(width: imageRect.width, height: imageRect.height)
@@ -636,7 +641,7 @@ struct EditWorkspaceView: View {
                                     isHDR: isHDREnabled && !isShowingBefore,
                                     metalPipeline: metalPipeline,
                                     useComputeShader: !isShowingBefore && metalPipeline?.hasSourceTexture == true,
-
+                                    useNearestNeighbor: scaling.useNearestNeighbor,
                                     coordinator: metalCoordinator
                                 )
                                     .frame(width: geometry.size.width, height: geometry.size.height)
@@ -681,6 +686,7 @@ struct EditWorkspaceView: View {
                                             commitEditAdjustments()
                                         }
                                     )
+                                    .allowsHitTesting(!isSpaceHandToolActive)
                                 }
 
                                 // Watermark position handle (crop-applied path).
@@ -721,6 +727,7 @@ struct EditWorkspaceView: View {
                                             commitEditAdjustments()
                                         }
                                     )
+                                    .allowsHitTesting(!isSpaceHandToolActive)
                                 }
 
                                 // White-balance eyedropper over the crop-framed preview.
@@ -741,16 +748,18 @@ struct EditWorkspaceView: View {
                                         }
                                     )
                                     .frame(width: geometry.size.width, height: geometry.size.height)
+                                    .allowsHitTesting(!isSpaceHandToolActive)
                                 }
 
                                 // Freeform brush paint overlay (crop-applied path).
                                 brushOverlay(viewportOrigin: cropViewport.origin, viewportSize: cropViewport.size, viewSize: geometry.size)
+                                    .allowsHitTesting(!isSpaceHandToolActive)
                             }
                             .frame(width: geometry.size.width, height: geometry.size.height)
-                            // While painting, disable the pan gesture so drags reach the brush
-                            // overlay instead of panning the zoomed image.
+                            // The normal pan gesture yields to both brush painting and the
+                            // temporary Space hand-tool surface installed above all tools.
                             .gesture(editPanGesture(in: geometry.size, imageSize: geometry.size),
-                                     including: isBrushPainting ? .subviews : .all)
+                                     including: (isBrushPainting || isSpaceHandToolActive) ? .subviews : .all)
                         }
                     } else {
                         // Normal fit: Metal viewport handles zoom/pan and letterboxing
@@ -763,7 +772,7 @@ struct EditWorkspaceView: View {
                                 isHDR: isHDREnabled && !isShowingBefore,
                                 metalPipeline: metalPipeline,
                                 useComputeShader: !isShowingBefore && metalPipeline?.hasSourceTexture == true,
-
+                                useNearestNeighbor: scaling.useNearestNeighbor,
                                 coordinator: metalCoordinator
                             )
                                 .frame(width: geometry.size.width, height: geometry.size.height)
@@ -811,6 +820,7 @@ struct EditWorkspaceView: View {
                                         commitEditAdjustments()
                                     }
                                 )
+                                .allowsHitTesting(!isSpaceHandToolActive)
                             }
 
                             // Watermark position handle.
@@ -847,6 +857,7 @@ struct EditWorkspaceView: View {
                                         commitEditAdjustments()
                                     }
                                 )
+                                .allowsHitTesting(!isSpaceHandToolActive)
                             }
 
                             // White-balance eyedropper: click a neutral grey or drag a
@@ -868,16 +879,18 @@ struct EditWorkspaceView: View {
                                     }
                                 )
                                 .frame(width: geometry.size.width, height: geometry.size.height)
+                                .allowsHitTesting(!isSpaceHandToolActive)
                             }
 
                             // Freeform brush paint overlay (bare "B").
                             brushOverlay(viewportOrigin: vpOrigin, viewportSize: vpSize, viewSize: geometry.size)
+                                .allowsHitTesting(!isSpaceHandToolActive)
                         }
                         .frame(width: geometry.size.width, height: geometry.size.height)
-                        // While painting, disable the pan gesture so drags reach the brush overlay
-                        // instead of panning the zoomed image.
+                        // The normal pan gesture yields to both brush painting and the
+                        // temporary Space hand-tool surface installed above all tools.
                         .gesture(editPanGesture(in: geometry.size, imageSize: imageSize),
-                                 including: isBrushPainting ? .subviews : .all)
+                                 including: (isBrushPainting || isSpaceHandToolActive) ? .subviews : .all)
                     }
                 } else if isLoadingPreview {
                     ProgressView("Loading preview...")
@@ -919,7 +932,22 @@ struct EditWorkspaceView: View {
                         }
                     }
                 }
+
+                // Space temporarily owns all pointer input over the preview. Keeping this
+                // surface above the AppKit brush/mask/watermark overlays makes panning work
+                // consistently without changing or dismissing the selected editing tool.
+                if isSpaceHandToolActive, !showCropControls {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .gesture(
+                            editHandPanGesture(
+                                in: geometry.size,
+                                imageSize: currentImageSize ?? geometry.size
+                            )
+                        )
+                }
             }
+            .environment(\.suppressesEditCursorOverlays, isSpaceHandToolActive)
             .clipped()
             .background(
                 GeometryReader { proxy in
@@ -938,8 +966,10 @@ struct EditWorkspaceView: View {
                 switch phase {
                 case .active:
                     isCursorOverPreview = true
+                    if isSpaceHandToolActive { NSCursor.openHand.set() }
                 case .ended:
                     isCursorOverPreview = false
+                    if isSpaceHandToolActive { NSCursor.arrow.set() }
                 }
             }
             .simultaneousGesture(
@@ -1301,6 +1331,9 @@ struct EditWorkspaceView: View {
     }
 
     private func handleEditWorkspaceDisappear() {
+        isSpaceHandToolActive = false
+        NSCursor.arrow.set()
+
         // Flush any unsaved edit adjustments (CRS) to disk before tearing down.
         commitEditAdjustments()
 
@@ -5282,8 +5315,22 @@ struct EditWorkspaceView: View {
         let newScale = (oldScale * zoomFactor).clamped(to: 1.0...maxEditZoom)
         guard newScale != oldScale else { return }
 
+        applyEditZoom(
+            oldScale: oldScale,
+            newScale: newScale,
+            cursorFromCenter: editCursorFromCenter(event: event)
+        )
+    }
+
+    /// Applies an edit zoom while preserving the source point beneath the cursor. Both scroll
+    /// zoom and the Z-key 1:1 toggle use this path so their anchoring behavior stays identical.
+    private func applyEditZoom(oldScale: CGFloat, newScale: CGFloat, cursorFromCenter: CGSize) {
         if isCropEnabled, !showCropControls, !isShowingBefore {
-            handleCroppedEditScrollZoom(oldScale: oldScale, newScale: newScale, event: event)
+            handleCroppedEditZoom(
+                oldScale: oldScale,
+                newScale: newScale,
+                cursorFromCenter: cursorFromCenter
+            )
             return
         }
 
@@ -5308,7 +5355,6 @@ struct EditWorkspaceView: View {
             return
         }
 
-        let cursorFromCenter = editCursorFromCenter(event: event)
         let screenNormX = 0.5 + cursorFromCenter.width / containerSize.width
         let screenNormY = 0.5 + cursorFromCenter.height / containerSize.height
 
@@ -5368,7 +5414,11 @@ struct EditWorkspaceView: View {
         syncViewportToMetal()
     }
 
-    private func handleCroppedEditScrollZoom(oldScale: CGFloat, newScale: CGFloat, event: NSEvent) {
+    private func handleCroppedEditZoom(
+        oldScale: CGFloat,
+        newScale: CGFloat,
+        cursorFromCenter cursor: CGSize
+    ) {
         let containerSize = previewPaneFrame.size
         guard containerSize.width > 0, containerSize.height > 0 else {
             editZoomScale = newScale
@@ -5386,7 +5436,6 @@ struct EditWorkspaceView: View {
             return
         }
 
-        let cursor = editCursorFromCenter(event: event)
         let zoomRatio = newScale / oldScale
         let anchoredOffset = CGSize(
             width: cursor.width - (cursor.width - editOffset.width) * zoomRatio,
@@ -5415,6 +5464,21 @@ struct EditWorkspaceView: View {
         )
     }
 
+    /// Key events do not reliably carry the pointer location. Match the full-screen viewer by
+    /// reading the live screen-space mouse location and converting it into preview coordinates.
+    private func currentEditCursorFromCenter() -> CGSize {
+        guard let window = NSApp.keyWindow,
+              let contentHeight = window.contentView?.bounds.height else {
+            return .zero
+        }
+        let windowLocation = window.convertPoint(fromScreen: NSEvent.mouseLocation)
+        let swiftUIY = contentHeight - windowLocation.y
+        return CGSize(
+            width: windowLocation.x - previewPaneFrame.midX,
+            height: swiftUIY - previewPaneFrame.midY
+        )
+    }
+
     private func editPanGesture(in containerSize: CGSize, imageSize: CGSize) -> some Gesture {
         DragGesture()
             .onChanged { value in
@@ -5434,6 +5498,37 @@ struct EditWorkspaceView: View {
                 }
                 lastEditOffset = editOffset
                 constrainEditOffset(in: containerSize, imageSize: imageSize)
+            }
+    }
+
+    /// Dedicated pan gesture used by the hold-Space hand-tool surface. It mirrors normal
+    /// preview panning, but sits above every editing overlay and provides hand cursor feedback.
+    private func editHandPanGesture(in containerSize: CGSize, imageSize: CGSize) -> some Gesture {
+        DragGesture()
+            .onChanged { value in
+                guard editZoomScale > 1.0 else { return }
+                NSCursor.closedHand.set()
+                editOffset = CGSize(
+                    width: lastEditOffset.width + value.translation.width,
+                    height: lastEditOffset.height + value.translation.height
+                )
+                syncViewportToMetal()
+            }
+            .onEnded { _ in
+                guard editZoomScale > 1.0 else {
+                    editOffset = .zero
+                    lastEditOffset = .zero
+                    syncViewportToMetal()
+                    NSCursor.openHand.set()
+                    return
+                }
+                lastEditOffset = editOffset
+                constrainEditOffset(in: containerSize, imageSize: imageSize)
+                if isSpaceHandToolActive {
+                    NSCursor.openHand.set()
+                } else {
+                    NSCursor.arrow.set()
+                }
             }
     }
 
@@ -5478,15 +5573,15 @@ struct EditWorkspaceView: View {
 
         if isAt100 || editZoomScale > 1.0 {
             // Return to fit
-            editZoomScale = 1.0
-            editOffset = .zero
+            resetEditZoom()
         } else {
-            // Zoom to 100% (clamped to max)
-            editZoomScale = min(zoom100, maxEditZoom)
+            // Zoom to 100% (clamped to max), preserving the point beneath the cursor.
+            applyEditZoom(
+                oldScale: editZoomScale,
+                newScale: min(zoom100, maxEditZoom),
+                cursorFromCenter: isCursorOverPreview ? currentEditCursorFromCenter() : .zero
+            )
         }
-        lastEditZoomScale = editZoomScale
-        lastEditOffset = editOffset
-        syncViewportToMetal()
     }
 
     private func calculateEditZoomTo100(in containerSize: CGSize) -> CGFloat {
@@ -5513,6 +5608,22 @@ struct EditWorkspaceView: View {
         if event.keyCode == 53, isKeyDown {
             guard !isTextFieldActive() else { return event }
             onExit()
+            return nil
+        }
+
+        // Hold Space to temporarily override every image-interaction tool with a hand tool.
+        // Keep text entry and the dedicated crop editor untouched; normal Develop zoom/pan
+        // includes brush, ellipse, watermark, and white-balance overlays.
+        if event.keyCode == 49 {
+            if isKeyUp {
+                guard isSpaceHandToolActive else { return event }
+                isSpaceHandToolActive = false
+                NSCursor.arrow.set()
+                return nil
+            }
+            guard isKeyDown, !isTextFieldActive(), !showCropControls else { return event }
+            isSpaceHandToolActive = true
+            if isCursorOverPreview { NSCursor.openHand.set() }
             return nil
         }
 
@@ -5740,6 +5851,7 @@ private struct DisplayGamutObserver: View {
 /// spot; a drag sweeps a marquee whose area is averaged. Reports the chosen rectangle in
 /// its own (preview-pane) coordinate space; the workspace maps that to source pixels.
 private struct WhiteBalancePickOverlay: View {
+    @Environment(\.suppressesEditCursorOverlays) private var suppressesCursorOverlays
     @Binding var marquee: CGRect?
     /// Synchronous averaged-colour probe (linear) for the rect — drives the debug readout.
     let probe: (CGRect) -> SIMD3<Float>?
@@ -5808,7 +5920,7 @@ private struct WhiteBalancePickOverlay: View {
                 }
             }
             .overlay(alignment: .topLeading) {
-                if let cursor, let readout {
+                if !suppressesCursorOverlays, let cursor, let readout {
                     WhiteBalanceReadout(color: readout)
                         .allowsHitTesting(false)
                         .alignmentGuide(.leading) { _ in -(cursor.x + 16) }
@@ -5818,7 +5930,17 @@ private struct WhiteBalancePickOverlay: View {
             // Crosshair cursor on top: a cursorUpdate tracking area re-asserts the cursor on
             // every mouse-move, so the Metal view's own tracking area can't reset it to the
             // arrow (a one-shot NSCursor.push does get overridden).
-            .overlay { CrosshairCursorView().allowsHitTesting(false) }
+            .overlay {
+                if !suppressesCursorOverlays {
+                    CrosshairCursorView().allowsHitTesting(false)
+                }
+            }
+            .onChange(of: suppressesCursorOverlays) { _, isSuppressed in
+                if isSuppressed {
+                    cursor = nil
+                    readout = nil
+                }
+            }
     }
 }
 

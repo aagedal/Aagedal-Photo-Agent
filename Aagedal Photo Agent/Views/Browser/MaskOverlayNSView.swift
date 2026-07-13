@@ -2,6 +2,19 @@ import AppKit
 import simd
 import SwiftUI
 
+private struct SuppressesEditCursorOverlaysKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    /// Set while a temporary interaction, such as the Space hand tool, owns the pointer.
+    /// Cursor-following edit overlays should hide themselves whenever this is true.
+    var suppressesEditCursorOverlays: Bool {
+        get { self[SuppressesEditCursorOverlaysKey.self] }
+        set { self[SuppressesEditCursorOverlaysKey.self] = newValue }
+    }
+}
+
 // MARK: - NSViewRepresentable wrapper
 
 struct MaskOverlayRepresentable: NSViewRepresentable {
@@ -578,6 +591,8 @@ final class MaskOverlayNSView: NSView {
 /// the user drags, and hands the finished stroke to `onStrokeEnded` on mouse-up for a single
 /// model commit (one undo entry per gesture, matching ellipse dragging).
 struct BrushMaskOverlayRepresentable: NSViewRepresentable {
+    @Environment(\.suppressesEditCursorOverlays) private var suppressesCursorOverlays
+
     let viewportOrigin: SIMD2<Float>
     let viewportSize: SIMD2<Float>
     let viewSize: CGSize
@@ -601,6 +616,7 @@ struct BrushMaskOverlayRepresentable: NSViewRepresentable {
     func makeNSView(context: Context) -> BrushMaskOverlayNSView {
         let view = BrushMaskOverlayNSView(coordinator: context.coordinator)
         context.coordinator.view = view
+        view.suppressesCursorOverlays = suppressesCursorOverlays
         return view
     }
 
@@ -613,6 +629,7 @@ struct BrushMaskOverlayRepresentable: NSViewRepresentable {
         nsView.hardness = hardness
         nsView.flow = flow
         nsView.erase = erase
+        nsView.suppressesCursorOverlays = suppressesCursorOverlays
         nsView.needsDisplay = true
     }
 
@@ -656,6 +673,13 @@ final class BrushMaskOverlayNSView: NSView {
     var hardness: Double = 0.5
     var flow: Double = 1.0
     var erase: Bool = false
+    var suppressesCursorOverlays = false {
+        didSet {
+            guard suppressesCursorOverlays != oldValue else { return }
+            if suppressesCursorOverlays { cursorPoint = nil }
+            needsDisplay = true
+        }
+    }
 
     // Active gesture state.
     private var isPainting = false
@@ -878,6 +902,7 @@ final class BrushMaskOverlayNSView: NSView {
     }
 
     override func mouseMoved(with event: NSEvent) {
+        guard !suppressesCursorOverlays else { return }
         cursorPoint = convert(event.locationInWindow, from: nil)
         needsDisplay = true
     }
@@ -889,7 +914,7 @@ final class BrushMaskOverlayNSView: NSView {
     // MARK: Cursor
 
     override func draw(_ dirtyRect: NSRect) {
-        guard let point = cursorPoint else { return }
+        guard !suppressesCursorOverlays, let point = cursorPoint else { return }
         let r = screenRadius
         let accentColor = erase ? NSColor.systemRed : NSColor.white
 

@@ -21,6 +21,8 @@ struct MetalPreviewView: NSViewRepresentable {
     let isHDR: Bool
     var metalPipeline: MetalEditPipeline?
     var useComputeShader: Bool = false
+    /// Shared display scaling preference used by both the full-screen viewer and editor.
+    var useNearestNeighbor: Bool = false
     /// Shared coordinator owned by the parent view for direct redraw requests.
     var coordinator: Coordinator?
 
@@ -55,6 +57,7 @@ struct MetalPreviewView: NSViewRepresentable {
         context.coordinator.ciImage = ciImage
         context.coordinator.metalPipeline = metalPipeline
         context.coordinator.useComputeShader = useComputeShader
+        context.coordinator.useNearestNeighbor = useNearestNeighbor
         if let metalLayer = mtkView.layer as? CAMetalLayer {
             // Always set wantsExtendedDynamicRangeContent — this is the fundamental
             // CAMetalLayer EDR enabler. preferredDynamicRange (macOS 26+) controls
@@ -120,6 +123,7 @@ struct MetalPreviewView: NSViewRepresentable {
         var ciImage: CIImage?
         var metalPipeline: MetalEditPipeline?
         var useComputeShader: Bool = false
+        var useNearestNeighbor: Bool = false
         weak var mtkView: MTKView?
 
         /// Viewport for CIImage fallback rendering (set from EditWorkspaceView)
@@ -192,7 +196,11 @@ struct MetalPreviewView: NSViewRepresentable {
 
             // Fast path: Metal compute shader during slider drag
             if useComputeShader, let pipeline = metalPipeline, pipeline.hasSourceTexture {
-                if pipeline.render(to: drawable, drawableSize: drawableSize) {
+                if pipeline.render(
+                    to: drawable,
+                    drawableSize: drawableSize,
+                    useNearestNeighbor: useNearestNeighbor
+                ) {
                     return
                 }
             }
@@ -214,7 +222,8 @@ struct MetalPreviewView: NSViewRepresentable {
             // Scale the viewport region to fill the drawable
             let scaleX = drawableSize.width / vpWidth
             let scaleY = drawableSize.height / vpHeight
-            let scaled = ciImage
+            let sampledImage = useNearestNeighbor ? ciImage.samplingNearest() : ciImage
+            let scaled = sampledImage
                 .transformed(by: CGAffineTransform(
                     translationX: -vpOriginX,
                     y: -vpOriginY

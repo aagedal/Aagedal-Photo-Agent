@@ -96,6 +96,8 @@ struct EditParams {
 
     uint watermarkCount;      // number of active watermark layers (0-4), see WatermarkParams
     uint watermarkFrame;      // 0 = source UV, 1 = crop-output UV
+    uint useNearestNeighbor;  // shared viewer/editor display-scaling preference
+    uint _padScaling;
 };
 
 // ============================================================
@@ -675,7 +677,10 @@ kernel void editAdjustments(
         color = half4(rgb, 1.0h);
     } else {
         constexpr sampler bilinear(filter::linear, address::clamp_to_edge);
-        color = source.sample(bilinear, uv);
+        constexpr sampler nearestNeighbor(filter::nearest, address::clamp_to_edge);
+        color = params.useNearestNeighbor != 0u
+            ? source.sample(nearestNeighbor, uv)
+            : source.sample(bilinear, uv);
         rgb = color.rgb;
     }
 

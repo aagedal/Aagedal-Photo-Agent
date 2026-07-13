@@ -152,6 +152,8 @@ struct EditParams {
 
     var watermarkCount: UInt32 = 0    // number of active watermark layers (0-4)
     var watermarkFrame: UInt32 = 0    // 0 = source UV, 1 = crop-output UV
+    var useNearestNeighbor: UInt32 = 0
+    var _padScaling: UInt32 = 0
 }
 
 /// Manages the Metal compute pipeline for real-time edit preview.
@@ -1428,7 +1430,11 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// Single compute dispatch to drawable. Returns true on success.
     nonisolated(unsafe) private var lastLoggedWidth: Int = 0
 
-    nonisolated func render(to drawable: CAMetalDrawable, drawableSize: CGSize) -> Bool {
+    nonisolated func render(
+        to drawable: CAMetalDrawable,
+        drawableSize: CGSize,
+        useNearestNeighbor: Bool = false
+    ) -> Bool {
         guard let source = sourceTexture,
               let buffer = paramsBuffer,
               let commandBuffer = commandQueue.makeCommandBuffer(),
@@ -1453,6 +1459,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         ptr.pointee.scale = SIMD2<Float>(scaleX, scaleY)
         ptr.pointee.sourceSize = SIMD2<Float>(srcW, srcH)
         ptr.pointee.drawableSize = SIMD2<Float>(dstW, dstH)
+        ptr.pointee.useNearestNeighbor = useNearestNeighbor ? 1 : 0
 
         encoder.setComputePipelineState(pipelineState)
         encoder.setTexture(source, index: 0)
