@@ -159,6 +159,25 @@ struct BrowserView: View {
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
 
+                    if let progress = viewModel.metadataLoadingProgress {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Label(
+                                "Reading metadata \(progress.completed)/\(progress.total)",
+                                systemImage: "info.circle"
+                            )
+                            .font(.callout)
+                            ProgressView(value: progress.fraction)
+                                .frame(width: 220)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                        .accessibilityLabel(
+                            "Reading metadata, \(progress.completed) of \(progress.total) images"
+                        )
+                    }
+
                     // Permanent image count overlay
                     ImageCountOverlayView(
                         totalImageCount: viewModel.images.count,
@@ -173,6 +192,7 @@ struct BrowserView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
                 .animation(.easeInOut(duration: 0.2), value: viewModel.sortFeedback)
                 .animation(.easeInOut(duration: 0.25), value: viewModel.iCloudDownloadNotice)
+                .animation(.easeInOut(duration: 0.2), value: viewModel.metadataLoadingProgress)
 
                 // Thumbnail size slider (bottom-right)
                 VStack {

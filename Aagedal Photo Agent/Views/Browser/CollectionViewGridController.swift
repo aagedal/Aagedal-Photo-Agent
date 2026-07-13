@@ -125,7 +125,18 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
             isSelected: isSelected,
             isActive: isActive
         )
+        item.thumbnailView.onAccessibilityPress = { [weak self] in
+            self?.selectItemFromAccessibility(url)
+        }
         item.thumbnailView.updateScale(viewModel.thumbnailScale)
+    }
+
+    private func selectItemFromAccessibility(_ url: URL) {
+        onFocus?()
+        viewModel.selectedImageIDs = [url]
+        viewModel.lastClickedImageURL = url
+        updateVisibleSelections(selectedIDs: [url], lastClicked: url)
+        view.window?.makeFirstResponder(collectionView)
     }
 
     // MARK: - Observation

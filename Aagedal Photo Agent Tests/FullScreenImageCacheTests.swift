@@ -138,6 +138,33 @@ struct FullScreenImageCacheTests {
         #expect(cache.cachedImage(for: url, orientation: 1) != nil)
         #expect(cache.cachedImage(for: url, orientation: 3) != nil)
     }
+
+    @Test("Invalidating one URL preserves another URL's edited variants")
+    func editedInvalidationIsScopedToURL() throws {
+        let cache = FullScreenImageCache()
+        let firstURL = URL(fileURLWithPath: "/tmp/first-\(UUID().uuidString).jpg")
+        let secondURL = URL(fileURLWithPath: "/tmp/second-\(UUID().uuidString).jpg")
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let context = CGContext(
+            data: nil, width: 8, height: 8,
+            bitsPerComponent: 8, bytesPerRow: 0, space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ), let image = context.makeImage() else {
+            throw CocoaError(.featureUnsupported)
+        }
+
+        cache.store(image, for: firstURL, orientation: 1, renderToken: "first", isEdited: true)
+        cache.store(image, for: secondURL, orientation: 3, renderToken: "second", isEdited: true)
+        cache.storeDisplayPreview(image, for: firstURL, orientation: 1, renderToken: "first", isEdited: true)
+        cache.storeDisplayPreview(image, for: secondURL, orientation: 3, renderToken: "second", isEdited: true)
+
+        cache.invalidateEditedImage(for: firstURL)
+
+        #expect(cache.cachedImage(for: firstURL, orientation: 1, renderToken: "first", isEdited: true) == nil)
+        #expect(cache.cachedDisplayPreview(for: firstURL, orientation: 1, renderToken: "first", isEdited: true) == nil)
+        #expect(cache.cachedImage(for: secondURL, orientation: 3, renderToken: "second", isEdited: true) != nil)
+        #expect(cache.cachedDisplayPreview(for: secondURL, orientation: 3, renderToken: "second", isEdited: true) != nil)
+    }
 }
 
 @Suite("ThumbnailDecodeGate")

@@ -6,6 +6,10 @@ private nonisolated let sidecarLogger = Logger(subsystem: "com.aagedal.photo-age
 struct MetadataSidecarService: Sendable {
 
     nonisolated static let sidecarDirectoryName = ".photo_metadata"
+    /// Small JSON reads are cheap individually, but one task per sidecar creates thousands
+    /// of runnable jobs for large event folders. A bounded pool keeps I/O parallel without
+    /// overwhelming the cooperative executor or the filesystem.
+    private nonisolated static let maxConcurrentReads = 12
 
     // MARK: - Directory Helpers
 
@@ -80,16 +84,25 @@ struct MetadataSidecarService: Sendable {
         let jsonFiles = files.filter { $0.pathExtension == "json" }
 
         return await withTaskGroup(of: (URL, MetadataSidecar)?.self) { group in
-            for file in jsonFiles {
+            var iterator = jsonFiles.makeIterator()
+            for _ in 0..<min(Self.maxConcurrentReads, jsonFiles.count) {
+                guard let file = iterator.next() else { break }
                 group.addTask {
-                    Self.decodeSidecar(at: file, folderURL: folderURL)
+                    guard !Task.isCancelled else { return nil }
+                    return Self.decodeSidecar(at: file, folderURL: folderURL)
                 }
             }
             var result: [URL: MetadataSidecar] = [:]
             result.reserveCapacity(jsonFiles.count)
-            for await item in group {
+            while let item = await group.next() {
                 if let (imageURL, sidecar) = item {
                     result[imageURL] = sidecar
+                }
+                if let file = iterator.next() {
+                    group.addTask {
+                        guard !Task.isCancelled else { return nil }
+                        return Self.decodeSidecar(at: file, folderURL: folderURL)
+                    }
                 }
             }
             return result
@@ -98,10 +111,14 @@ struct MetadataSidecarService: Sendable {
 
     nonisolated func loadSidecars(for imageURLs: [URL], in folderURL: URL) async -> [URL: MetadataSidecar] {
         guard !imageURLs.isEmpty else { return [:] }
+        let requests = imageURLs.map { ($0, sidecarCandidateURLs(for: $0, in: folderURL)) }
         return await withTaskGroup(of: (URL, MetadataSidecar)?.self) { group in
-            for imageURL in imageURLs {
-                let candidates = sidecarCandidateURLs(for: imageURL, in: folderURL)
+            var iterator = requests.makeIterator()
+            for _ in 0..<min(Self.maxConcurrentReads, requests.count) {
+                guard let request = iterator.next() else { break }
+                let (imageURL, candidates) = request
                 group.addTask {
+                    guard !Task.isCancelled else { return nil }
                     for fileURL in candidates {
                         guard FileManager.default.fileExists(atPath: fileURL.path) else { continue }
                         if let (_, sidecar) = Self.decodeSidecar(at: fileURL, folderURL: folderURL) {
@@ -113,9 +130,22 @@ struct MetadataSidecarService: Sendable {
             }
             var result: [URL: MetadataSidecar] = [:]
             result.reserveCapacity(imageURLs.count)
-            for await item in group {
+            while let item = await group.next() {
                 if let (imageURL, sidecar) = item {
                     result[imageURL] = sidecar
+                }
+                if let request = iterator.next() {
+                    let (imageURL, candidates) = request
+                    group.addTask {
+                        guard !Task.isCancelled else { return nil }
+                        for fileURL in candidates {
+                            guard FileManager.default.fileExists(atPath: fileURL.path) else { continue }
+                            if let (_, sidecar) = Self.decodeSidecar(at: fileURL, folderURL: folderURL) {
+                                return (imageURL, sidecar)
+                            }
+                        }
+                        return nil
+                    }
                 }
             }
             return result

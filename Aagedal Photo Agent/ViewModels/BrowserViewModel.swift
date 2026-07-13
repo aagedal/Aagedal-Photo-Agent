@@ -10,6 +10,16 @@ enum SidebarTree {
 
 @Observable
 final class BrowserViewModel {
+    struct MetadataLoadingProgress: Equatable {
+        let completed: Int
+        let total: Int
+
+        var fraction: Double {
+            guard total > 0 else { return 0 }
+            return min(max(Double(completed) / Double(total), 0), 1)
+        }
+    }
+
     var images: [ImageFile] = [] {
         didSet {
             guard !suppressImagesCascade else { return }
@@ -33,6 +43,9 @@ final class BrowserViewModel {
     var isFullScreen = false
     var shouldRestoreGridFocus = false
     var iCloudDownloadNotice: String?
+    /// Non-blocking second phase after the file grid appears. Exposed so the browser can
+    /// explain why rating/label/metadata-dependent filters are still settling.
+    var metadataLoadingProgress: MetadataLoadingProgress?
 
     struct FullScreenFaceNavigationItem {
         let imageURL: URL
@@ -185,6 +198,7 @@ final class BrowserViewModel {
     }
     @ObservationIgnored private var isAutoRefreshing = false
     @ObservationIgnored private var isMetadataLoading = false
+    @ObservationIgnored private var metadataProgressID: UUID?
     @ObservationIgnored private var pendingMetadataURLs: Set<URL> = []
     @ObservationIgnored private var retinaPreCacheTask: Task<Void, Never>?
     @ObservationIgnored private var suppressImagesCascade = false
@@ -598,6 +612,8 @@ final class BrowserViewModel {
         errorMessage = nil
         folderLoadErrorMessage = nil
         iCloudDownloadNotice = nil
+        metadataLoadingProgress = nil
+        metadataProgressID = nil
         images = []
         selectedImageIDs.removeAll()
         lastClickedImageURL = nil
@@ -711,7 +727,11 @@ final class BrowserViewModel {
                 let metadataURLs = self.images
                     .filter { $0.isImageFile && !$0.isICloudDownloadPending }
                     .map(\.url)
-                await loadBasicMetadata(for: metadataURLs, cachedSidecars: allSidecars)
+                await loadBasicMetadata(
+                    for: metadataURLs,
+                    cachedSidecars: allSidecars,
+                    showsProgress: true
+                )
             } catch {
                 guard !Task.isCancelled, self.currentFolderURL == url else { return }
                 self.folderLoadErrorMessage = error.localizedDescription
@@ -971,7 +991,8 @@ final class BrowserViewModel {
     /// leaves it empty and relies on `applyPendingSidecarOverrides`'s per-file fallback.
     private func loadBasicMetadata(
         for urls: [URL],
-        cachedSidecars: [URL: MetadataSidecar] = [:]
+        cachedSidecars: [URL: MetadataSidecar] = [:],
+        showsProgress: Bool = false
     ) async {
         guard metadataReadService.isAvailable else { return }
         guard !urls.isEmpty else { return }
@@ -981,8 +1002,17 @@ final class BrowserViewModel {
         }
         isMetadataLoading = true
         let folderURL = currentFolderURL
+        let progressID: UUID? = showsProgress ? UUID() : nil
+        if let progressID {
+            metadataProgressID = progressID
+            metadataLoadingProgress = MetadataLoadingProgress(completed: 0, total: urls.count)
+        }
         defer {
             isMetadataLoading = false
+            if let progressID, metadataProgressID == progressID {
+                metadataLoadingProgress = nil
+                metadataProgressID = nil
+            }
             drainPendingMetadataIfNeeded()
         }
 
@@ -1034,6 +1064,12 @@ final class BrowserViewModel {
                 )
             } catch {
                 logger.warning("Batch metadata load failed (batch at offset \(batchStart)): \(error.localizedDescription)")
+            }
+            if let progressID, metadataProgressID == progressID {
+                metadataLoadingProgress = MetadataLoadingProgress(
+                    completed: batchEnd,
+                    total: urls.count
+                )
             }
         }
         let totalMs = totalBatchStart.elapsedMilliseconds()

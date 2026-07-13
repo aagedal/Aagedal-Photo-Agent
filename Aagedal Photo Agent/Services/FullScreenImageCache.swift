@@ -27,6 +27,12 @@ final class FullScreenImageCache: @unchecked Sendable {
     /// prefetch removes that out-of-band libxml2 consumer for the duration of editing.
     nonisolated(unsafe) private var _prefetchSuppressed = false
     private let lock = NSLock()
+    /// NSCache cannot enumerate or remove keys by URL. Track the exact variants written
+    /// to each cache so invalidating one image does not flush every edited preview.
+    nonisolated(unsafe) private var imageKeysByURL: [URL: Set<NSString>] = [:]
+    nonisolated(unsafe) private var displayPreviewKeysByURL: [URL: Set<NSString>] = [:]
+    nonisolated(unsafe) private var editedImageKeysByURL: [URL: Set<NSString>] = [:]
+    nonisolated(unsafe) private var editedDisplayPreviewKeysByURL: [URL: Set<NSString>] = [:]
 
     private struct PrefetchKey: Hashable, Sendable {
         let url: URL
@@ -75,16 +81,6 @@ final class FullScreenImageCache: @unchecked Sendable {
         return String(hash, radix: 16)
     }
 
-    nonisolated private static func removeAllOrientations(
-        for url: URL,
-        from cache: NSCache<NSString, CGImage>
-    ) {
-        cache.removeObject(forKey: Self.cacheKey(for: url, orientation: nil))
-        for orientation in 1...8 {
-            cache.removeObject(forKey: Self.cacheKey(for: url, orientation: orientation))
-        }
-    }
-
     nonisolated func cachedImage(
         for url: URL,
         orientation: Int? = nil,
@@ -103,7 +99,15 @@ final class FullScreenImageCache: @unchecked Sendable {
         isEdited: Bool = false
     ) {
         let c = isEdited ? editedCache : cache
-        c.setObject(image, forKey: Self.cacheKey(for: url, orientation: orientation, renderToken: renderToken), cost: Self.byteSize(of: image))
+        let key = Self.cacheKey(for: url, orientation: orientation, renderToken: renderToken)
+        _ = lock.withLock {
+            c.setObject(image, forKey: key, cost: Self.byteSize(of: image))
+            if isEdited {
+                editedImageKeysByURL[url, default: []].insert(key)
+            } else {
+                imageKeysByURL[url, default: []].insert(key)
+            }
+        }
     }
 
     // MARK: - Display Preview Cache (960px)
@@ -126,22 +130,44 @@ final class FullScreenImageCache: @unchecked Sendable {
         isEdited: Bool = false
     ) {
         let c = isEdited ? editedDisplayPreviewCache : displayPreviewCache
-        c.setObject(image, forKey: Self.cacheKey(for: url, orientation: orientation, renderToken: renderToken), cost: Self.byteSize(of: image))
+        let key = Self.cacheKey(for: url, orientation: orientation, renderToken: renderToken)
+        _ = lock.withLock {
+            c.setObject(image, forKey: key, cost: Self.byteSize(of: image))
+            if isEdited {
+                editedDisplayPreviewKeysByURL[url, default: []].insert(key)
+            } else {
+                displayPreviewKeysByURL[url, default: []].insert(key)
+            }
+        }
     }
 
     nonisolated func clearDisplayPreviews() {
-        displayPreviewCache.removeAllObjects()
-        editedDisplayPreviewCache.removeAllObjects()
+        lock.withLock {
+            displayPreviewCache.removeAllObjects()
+            editedDisplayPreviewCache.removeAllObjects()
+            displayPreviewKeysByURL.removeAll()
+            editedDisplayPreviewKeysByURL.removeAll()
+        }
     }
 
     nonisolated func invalidateImage(for url: URL) {
-        Self.removeAllOrientations(for: url, from: cache)
-        Self.removeAllOrientations(for: url, from: displayPreviewCache)
-        editedCache.removeAllObjects()
-        editedDisplayPreviewCache.removeAllObjects()
+        let prefetches = lock.withLock {
+            for key in imageKeysByURL.removeValue(forKey: url) ?? [] {
+                cache.removeObject(forKey: key)
+            }
+            for key in displayPreviewKeysByURL.removeValue(forKey: url) ?? [] {
+                displayPreviewCache.removeObject(forKey: key)
+            }
+            for key in editedImageKeysByURL.removeValue(forKey: url) ?? [] {
+                editedCache.removeObject(forKey: key)
+            }
+            for key in editedDisplayPreviewKeysByURL.removeValue(forKey: url) ?? [] {
+                editedDisplayPreviewCache.removeObject(forKey: key)
+            }
+            return removePrefetchTasksLocked(for: url)
+        }
         // Cancel any in-flight prefetch for this URL — otherwise after a move/delete
         // it'll resume against a missing path and log a flood of IIOImageSource errors.
-        let prefetches = lock.withLock { removePrefetchTasksLocked(for: url) }
         for prefetch in prefetches { prefetch.cancel() }
     }
 
@@ -150,25 +176,41 @@ final class FullScreenImageCache: @unchecked Sendable {
     /// slider changes only alter the render). Cancels any in-flight prefetch since it
     /// may be rendering with the old settings.
     nonisolated func invalidateEditedImage(for url: URL) {
-        editedCache.removeAllObjects()
-        editedDisplayPreviewCache.removeAllObjects()
-        let prefetches = lock.withLock { removePrefetchTasksLocked(for: url) }
+        let prefetches = lock.withLock {
+            for key in editedImageKeysByURL.removeValue(forKey: url) ?? [] {
+                editedCache.removeObject(forKey: key)
+            }
+            for key in editedDisplayPreviewKeysByURL.removeValue(forKey: url) ?? [] {
+                editedDisplayPreviewCache.removeObject(forKey: key)
+            }
+            return removePrefetchTasksLocked(for: url)
+        }
         for prefetch in prefetches { prefetch.cancel() }
     }
 
     /// Clear edited caches only (e.g. when edit parameters change globally).
     nonisolated func clearEdited() {
-        editedCache.removeAllObjects()
-        editedDisplayPreviewCache.removeAllObjects()
+        lock.withLock {
+            editedCache.removeAllObjects()
+            editedDisplayPreviewCache.removeAllObjects()
+            editedImageKeysByURL.removeAll()
+            editedDisplayPreviewKeysByURL.removeAll()
+        }
     }
 
     /// Clear all cached images and cancel in-flight tasks.
     /// Call on folder switch to avoid stale cache hits.
     nonisolated func clearAll() {
-        cache.removeAllObjects()
-        displayPreviewCache.removeAllObjects()
-        editedCache.removeAllObjects()
-        editedDisplayPreviewCache.removeAllObjects()
+        lock.withLock {
+            cache.removeAllObjects()
+            displayPreviewCache.removeAllObjects()
+            editedCache.removeAllObjects()
+            editedDisplayPreviewCache.removeAllObjects()
+            imageKeysByURL.removeAll()
+            displayPreviewKeysByURL.removeAll()
+            editedImageKeysByURL.removeAll()
+            editedDisplayPreviewKeysByURL.removeAll()
+        }
         cancelAllPrefetch()
     }
 

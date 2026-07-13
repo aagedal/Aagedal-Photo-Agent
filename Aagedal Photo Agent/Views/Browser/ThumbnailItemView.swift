@@ -32,6 +32,7 @@ struct ThumbnailCellData: Equatable {
 
 /// Layer-backed NSView that renders a single thumbnail cell.
 final class ThumbnailItemView: NSView {
+    var onAccessibilityPress: (() -> Void)?
     // MARK: - Layers
 
     private let imageLayer = CALayer()
@@ -60,6 +61,7 @@ final class ThumbnailItemView: NSView {
 
     private var currentData: ThumbnailCellData?
     private var currentScale: Double = 1.0
+    private var accessibilitySelectedState = false
     /// Height reserved below the image for the filename + rating/label row. Must match the
     /// controller's cell-height math (CollectionViewGridController.textAreaHeight).
     static let textAreaHeight: CGFloat = 44
@@ -182,6 +184,9 @@ final class ThumbnailItemView: NSView {
         wantsLayer = true
         layer?.cornerRadius = 6
         layer?.masksToBounds = true
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+        setAccessibilityHelp("Press to select this image")
 
         // Image layer
         imageLayer.contentsGravity = .resizeAspect
@@ -203,6 +208,7 @@ final class ThumbnailItemView: NSView {
         downloadStatusField.maximumNumberOfLines = 2
         downloadStatusField.lineBreakMode = .byWordWrapping
         downloadStatusField.isHidden = true
+        downloadStatusField.setAccessibilityElement(false)
         addSubview(downloadStatusField)
 
         // Badge layers — fully composited at 2x
@@ -232,6 +238,7 @@ final class ThumbnailItemView: NSView {
         filenameField.alignment = .center
         filenameField.maximumNumberOfLines = 1
         filenameField.textColor = .labelColor
+        filenameField.setAccessibilityElement(false)
         addSubview(filenameField)
 
         // Stars
@@ -240,11 +247,13 @@ final class ThumbnailItemView: NSView {
         starsField.alignment = .left
         starsField.maximumNumberOfLines = 1
         starsField.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        starsField.setAccessibilityElement(false)
 
         // Label color bar
         labelDot.wantsLayer = true
         labelDot.layer?.cornerRadius = 1.5
         labelDot.translatesAutoresizingMaskIntoConstraints = false
+        labelDot.setAccessibilityElement(false)
         NSLayoutConstraint.activate([
             labelDot.widthAnchor.constraint(equalToConstant: 41),
             labelDot.heightAnchor.constraint(equalToConstant: 11)
@@ -256,6 +265,7 @@ final class ThumbnailItemView: NSView {
         labelNameField.alignment = .right
         labelNameField.maximumNumberOfLines = 1
         labelNameField.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        labelNameField.setAccessibilityElement(false)
 
         // Rating + label row
         let starContainer = NSStackView(views: [starsField])
@@ -272,6 +282,7 @@ final class ThumbnailItemView: NSView {
         ratingLabelRow.orientation = .horizontal
         ratingLabelRow.spacing = 4
         ratingLabelRow.alignment = .centerY
+        ratingLabelRow.setAccessibilityElement(false)
         ratingLabelRow.setViews([starContainer, spacer, labelContainer], in: .leading)
         addSubview(ratingLabelRow)
     }
@@ -383,6 +394,9 @@ final class ThumbnailItemView: NSView {
 
         // Filename
         filenameField.stringValue = data.filename
+        setAccessibilityLabel(data.filename)
+        setAccessibilityIdentifier(data.url.path)
+        setAccessibilityValue(Self.accessibilitySummary(for: data))
 
         // Star rating
         if data.starRating != .none {
@@ -429,6 +443,11 @@ final class ThumbnailItemView: NSView {
         }
 
         CATransaction.commit()
+        if accessibilitySelectedState != isSelected {
+            accessibilitySelectedState = isSelected
+            setAccessibilitySelected(isSelected)
+            NSAccessibility.post(element: self, notification: .valueChanged)
+        }
     }
 
     // MARK: - Thumbnail
@@ -468,9 +487,39 @@ final class ThumbnailItemView: NSView {
 
     func reset() {
         currentData = nil
+        onAccessibilityPress = nil
         downloadStatusField.isHidden = true
         setThumbnail(nil)
         updateSelection(isSelected: false, isActive: false)
         toolTip = nil
+        setAccessibilityLabel(nil)
+        setAccessibilityValue(nil)
+        setAccessibilityIdentifier(nil)
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        guard let onAccessibilityPress else { return false }
+        onAccessibilityPress()
+        return true
+    }
+
+    private static func accessibilitySummary(for data: ThumbnailCellData) -> String {
+        var parts: [String] = []
+        if data.starRating == .none {
+            parts.append("Unrated")
+        } else {
+            let count = data.starRating.rawValue
+            parts.append("\(count) star\(count == 1 ? "" : "s")")
+        }
+        if data.colorLabel != .none {
+            parts.append("\(data.colorLabel.displayName) label")
+        }
+        if data.hasDevelopEdits { parts.append("Edited") }
+        if data.hasCropEdits { parts.append("Cropped") }
+        if data.isHDR { parts.append("HDR") }
+        if data.hasC2PA { parts.append("Content credentials") }
+        if data.hasPendingMetadataChanges { parts.append("Pending metadata changes") }
+        if data.isICloudDownloadPending { parts.append("Downloading from iCloud") }
+        return parts.joined(separator: ", ")
     }
 }

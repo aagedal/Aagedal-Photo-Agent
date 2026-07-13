@@ -1770,22 +1770,29 @@ struct ContentView: View {
             return
         }
 
-        // Fast path: ImageIO. Reads dimensions / bit depth / color profile correctly for all
-        // formats, but Apple's ImageIO does not surface EXIF for some containers (notably
-        // JPEG XL and AVIF), so camera/exposure fields come back empty for those.
-        let fast = TechnicalMetadata.fromImageIO(url: image.url, hasC2PA: image.hasC2PA)
-        technicalMetadata = fast
-
-        // Always enrich from the SwiftExif reader. It parses EXIF from formats ImageIO can't
-        // (e.g. JPEG XL), and — even when ImageIO already supplied camera/exposure data — it
-        // surfaces MakerNote-only technical fields (shutter count, camera temperature, CR3
-        // lens model) that ImageIO never reads. We keep the fast path's reliable
-        // dimensions/bit depth/color space throughout. Cache only the final (enriched) result.
         let url = image.url
+        let hasC2PA = image.hasC2PA
         let readService = browserViewModel.metadataReadService
+        // Do not leave the previous image's inspector values visible while this selection loads.
+        technicalMetadata = nil
         technicalMetadataTask = Task {
-            guard let exifMeta = try? await readService.readTechnicalMetadata(url: url),
-                  !Task.isCancelled else {
+            // ImageIO can synchronously touch file/container headers. Keep it off the main
+            // actor so selecting a large RAW or network-backed image never stalls interaction.
+            let fast = await Task.detached(priority: .userInitiated) {
+                TechnicalMetadata.fromImageIO(url: url, hasC2PA: hasC2PA)
+            }.value
+            guard !Task.isCancelled else { return }
+            if browserViewModel.selectedImages.first?.url == url {
+                technicalMetadata = fast
+            }
+
+            // Always enrich from SwiftExif for formats ImageIO cannot fully parse and for
+            // MakerNote-only fields. The fast path already read native dimensions/profile,
+            // so tell this pass not to repeat the same ImageIO header read.
+            guard let exifMeta = try? await readService.readTechnicalMetadata(
+                url: url,
+                includeNativeImageInfo: false
+            ), !Task.isCancelled else {
                 technicalMetadataCache[url] = fast
                 return
             }

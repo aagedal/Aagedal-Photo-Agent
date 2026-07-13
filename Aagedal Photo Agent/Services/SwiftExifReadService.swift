@@ -100,11 +100,11 @@ final class SwiftExifReadService {
     }
 
     /// Read camera / lens / dimension / ICC / C2PA-presence fields for the technical inspector.
-    func readTechnicalMetadata(url: URL) async throws -> TechnicalMetadata {
+    func readTechnicalMetadata(url: URL, includeNativeImageInfo: Bool = true) async throws -> TechnicalMetadata {
         guard let dict = await lockedReadDict(for: url)?.value else {
-            return TechnicalMetadata(from: [:], fileURL: url)
+            return TechnicalMetadata(from: [:], fileURL: includeNativeImageInfo ? url : nil)
         }
-        return TechnicalMetadata(from: dict, fileURL: url)
+        return TechnicalMetadata(from: dict, fileURL: includeNativeImageInfo ? url : nil)
     }
 
     /// Read detailed C2PA manifest data.

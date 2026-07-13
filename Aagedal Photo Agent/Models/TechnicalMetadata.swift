@@ -2,34 +2,34 @@ import Foundation
 import ImageIO
 import CoreGraphics
 
-struct TechnicalMetadata {
+struct TechnicalMetadata: Sendable {
     private enum ExifKey {
-        static let make = "Make"
-        static let model = "Model"
-        static let lensModel = "LensModel"
-        static let dateTimeOriginal = "DateTimeOriginal"
-        static let fileModifyDate = "FileModifyDate"
-        static let focalLength = "FocalLength"
-        static let fNumber = "FNumber"
-        static let exposureTime = "ExposureTime"
-        static let iso = "ISO"
-        static let imageWidth = "ImageWidth"
-        static let imageHeight = "ImageHeight"
-        static let fileImageWidth = "File:ImageWidth"
-        static let fileImageHeight = "File:ImageHeight"
-        static let bitsPerSample = "BitsPerSample"
-        static let profileDescription = "ProfileDescription"
-        static let colorSpace = "ColorSpace"
-        static let claimGenerator = "Claim_generator"
-        static let claimGeneratorInfoName = "Claim_Generator_InfoName"
-        static let authorName = "AuthorName"
-        static let relationship = "Relationship"
-        static let serialNumber = "SerialNumber"
-        static let software = "Software"
-        static let lensID = "LensID"
-        static let whiteBalance = "WhiteBalance"
-        static let shutterCount = "ShutterCount"
-        static let cameraTemperature = "CameraTemperature"
+        nonisolated static let make = "Make"
+        nonisolated static let model = "Model"
+        nonisolated static let lensModel = "LensModel"
+        nonisolated static let dateTimeOriginal = "DateTimeOriginal"
+        nonisolated static let fileModifyDate = "FileModifyDate"
+        nonisolated static let focalLength = "FocalLength"
+        nonisolated static let fNumber = "FNumber"
+        nonisolated static let exposureTime = "ExposureTime"
+        nonisolated static let iso = "ISO"
+        nonisolated static let imageWidth = "ImageWidth"
+        nonisolated static let imageHeight = "ImageHeight"
+        nonisolated static let fileImageWidth = "File:ImageWidth"
+        nonisolated static let fileImageHeight = "File:ImageHeight"
+        nonisolated static let bitsPerSample = "BitsPerSample"
+        nonisolated static let profileDescription = "ProfileDescription"
+        nonisolated static let colorSpace = "ColorSpace"
+        nonisolated static let claimGenerator = "Claim_generator"
+        nonisolated static let claimGeneratorInfoName = "Claim_Generator_InfoName"
+        nonisolated static let authorName = "AuthorName"
+        nonisolated static let relationship = "Relationship"
+        nonisolated static let serialNumber = "SerialNumber"
+        nonisolated static let software = "Software"
+        nonisolated static let lensID = "LensID"
+        nonisolated static let whiteBalance = "WhiteBalance"
+        nonisolated static let shutterCount = "ShutterCount"
+        nonisolated static let cameraTemperature = "CameraTemperature"
     }
 
     var camera: String?
@@ -71,7 +71,7 @@ struct TechnicalMetadata {
     }
 
     /// Check whether a metadata dict contains C2PA data.
-    static func dictHasC2PA(_ dict: [String: Any]) -> Bool {
+    nonisolated static func dictHasC2PA(_ dict: [String: Any]) -> Bool {
         dict.keys.contains { $0.hasPrefix("JUMD") || $0.hasPrefix("C2PA") || $0 == ExifKey.claimGenerator }
     }
 
@@ -79,14 +79,14 @@ struct TechnicalMetadata {
     /// `Int(_:)` traps on non-finite or out-of-range values, so a malformed EXIF
     /// field (e.g. a `0/n` exposure-time rational, or an `inf`/`nan` ISO) must be
     /// filtered here before the conversion. Returns nil for unrepresentable values.
-    private static func safeInt(_ value: Double) -> Int? {
+    nonisolated private static func safeInt(_ value: Double) -> Int? {
         guard value.isFinite,
               value >= Double(Int.min),
               value < Double(Int.max) else { return nil }
         return Int(value)
     }
 
-    init(from dict: [String: Any], fileURL: URL? = nil) {
+    nonisolated init(from dict: [String: Any], fileURL: URL? = nil) {
         // Camera: combine Make + Model, avoiding duplication
         let make = (dict[ExifKey.make] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
         let model = (dict[ExifKey.model] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -265,7 +265,7 @@ struct TechnicalMetadata {
     /// Read technical metadata directly from the image file using CGImageSource.
     /// Much faster than parsing the whole file with the metadata engine.
     /// C2PA detail fields are not populated — use SwiftExifReadService.readC2PAMetadata for those.
-    static func fromImageIO(url: URL, hasC2PA: Bool = false) -> TechnicalMetadata {
+    nonisolated static func fromImageIO(url: URL, hasC2PA: Bool = false) -> TechnicalMetadata {
         var dict: [String: Any] = [:]
 
         if let source = CGImageSourceCreateWithURL(url as CFURL, nil) {
@@ -327,7 +327,7 @@ struct TechnicalMetadata {
 
     /// Use CGImageSource to read the actual color profile and bit depth from the image file.
     /// This correctly handles CICP/NCLX (AVIF/HEIF), JXL codestream headers, and ICC profiles.
-    private static func nativeImageInfo(for url: URL) -> NativeImageInfo? {
+    nonisolated private static func nativeImageInfo(for url: URL) -> NativeImageInfo? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
         let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any]
         let profileName = props?[kCGImagePropertyProfileName as String] as? String
@@ -338,7 +338,7 @@ struct TechnicalMetadata {
 
     /// Clean up raw profile names for display.
     /// e.g. "QuickTime 'nclc' Video (9,1,9)" → "Rec. 2020" via CICP code parsing.
-    private static func cleanProfileName(_ name: String) -> String {
+    nonisolated private static func cleanProfileName(_ name: String) -> String {
         // Handle QuickTime NCLX profile strings like "QuickTime 'nclc' Video (9,1,9)"
         if name.contains("nclc") || name.contains("nclx") {
             // Extract CICP codes from parenthesized tuple
@@ -354,7 +354,7 @@ struct TechnicalMetadata {
         return name
     }
 
-    private static func colorSpaceFromCICPCodes(primaries: Int, transfer: Int) -> String {
+    nonisolated private static func colorSpaceFromCICPCodes(primaries: Int, transfer: Int) -> String {
         let isPQ = transfer == 16
         let isHLG = transfer == 18
 
