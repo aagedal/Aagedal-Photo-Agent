@@ -222,6 +222,11 @@ struct Aagedal_Photo_AgentApp: App {
                 }
                 .keyboardShortcut("j", modifiers: .command)
 
+                Button("Remove or Reset Selected Edit Layer") {
+                    NotificationCenter.default.post(name: .removeOrResetSelectedEditLayer, object: nil)
+                }
+                .keyboardShortcut("w", modifiers: .command)
+
                 Divider()
 
                 Button("Reset All Edits") {
@@ -496,6 +501,7 @@ extension Notification.Name {
     static let showRawMetadata = Notification.Name("showRawMetadata")
     static let applyTemplateShortcut = Notification.Name("applyTemplateShortcut")
     static let addNewMask = Notification.Name("addNewMask")
+    static let removeOrResetSelectedEditLayer = Notification.Name("removeOrResetSelectedEditLayer")
     static let setScopeMode = Notification.Name("setScopeMode")
     static let toggleGamutClipping = Notification.Name("toggleGamutClipping")
     static let renderAndSignSelected = Notification.Name("renderAndSignSelected")

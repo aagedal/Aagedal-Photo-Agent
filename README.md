@@ -168,12 +168,13 @@ Opt-in sync that keeps your library settings in step across Macs, configured in 
 | G | Toggle gamut clipping |
 | M | Toggle masks panel |
 | Cmd+J | Add new mask |
+| Cmd+W (Develop) | Remove selected local layer, or reset Global |
 | Cmd+D | Mute selected mask (or the Global layer) |
 | Option+V | Paste develop settings (including crop) |
 | Cmd+R / Shift+Cmd+R | Rotate right / left |
 | Cmd+S | Render selected |
 | Shift+Cmd+S | Render all |
-| Cmd+W | Write pending metadata |
+| Shift+Cmd+W | Write pending metadata |
 | Cmd+U / Shift+Cmd+U | Upload selected / all |
 | Shift+1-4 | Scope: Waveform / Parade / Vector / Chromaticity |
 | Space | Full-screen toggle |

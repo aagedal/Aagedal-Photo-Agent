@@ -28,6 +28,38 @@ nonisolated enum AnonymizerToggleBehavior {
     }
 }
 
+/// Resets only adjustments owned by the Global node. Image framing, local masks, watermarks,
+/// layer order, HDR display mode, and per-image preservation metadata deliberately survive.
+nonisolated enum GlobalLayerResetBehavior {
+    static func reset(_ settings: inout CameraRawSettings, isRaw: Bool) {
+        settings.whiteBalance = isRaw ? "As Shot" : nil
+        settings.temperature = nil
+        settings.tint = nil
+        settings.incrementalTemperature = nil
+        settings.incrementalTint = nil
+        settings.exposure2012 = nil
+        settings.contrast2012 = nil
+        settings.highlights2012 = nil
+        settings.shadows2012 = nil
+        settings.whites2012 = nil
+        settings.blacks2012 = nil
+        settings.saturation = nil
+        settings.vibrance = nil
+        settings.globalDensity = nil
+        settings.hdrMaxValue = nil
+        settings.sdrBrightness = nil
+        settings.sdrContrast = nil
+        settings.sdrClarity = nil
+        settings.sdrHighlights = nil
+        settings.sdrShadows = nil
+        settings.sdrWhites = nil
+        settings.sdrBlend = nil
+        settings.toneCurve = nil
+        settings.hslAdjustments = nil
+        settings.anonymizer = nil
+    }
+}
+
 /// Maps a pointer in preview-pane coordinates to the display-frame UV used by mask overlays.
 /// Returns nil over letterboxing/outside-image areas so callers can retain a safe fallback.
 nonisolated enum EditPreviewCoordinateMapper {
@@ -562,6 +594,10 @@ struct EditWorkspaceView: View {
         .onReceive(NotificationCenter.default.publisher(for: .addNewMask)) { _ in
             guard canEditSingleImage else { return }
             addNewMask(center: maskCenterUnderCursor())
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .removeOrResetSelectedEditLayer)) { _ in
+            guard canEditSingleImage else { return }
+            removeOrResetSelectedEditLayer()
         }
         .onReceive(NotificationCenter.default.publisher(for: .toggleHDR)) { _ in
             guard canEditSingleImage else { return }
@@ -4928,6 +4964,37 @@ struct EditWorkspaceView: View {
         commitEditAdjustments()
     }
 
+    /// Command-W treats every selected node as something that can be "closed": local nodes are
+    /// removed, while the permanent Global node has only its own adjustments reset.
+    private func removeOrResetSelectedEditLayer() {
+        switch selectedLayer {
+        case .global:
+            resetGlobalLayerAdjustments()
+        case .mask:
+            deleteSelectedMask()
+        case .watermark:
+            deleteSelectedWatermark()
+        }
+    }
+
+    private func resetGlobalLayerAdjustments() {
+        guard let current = metadataViewModel.editingMetadata.cameraRaw else {
+            showCopyPasteFeedback("Global layer is already reset")
+            return
+        }
+        var reset = current
+        GlobalLayerResetBehavior.reset(&reset, isRaw: isSelectedImageRaw)
+        guard reset != current else {
+            showCopyPasteFeedback("Global layer is already reset")
+            return
+        }
+        updateCameraRaw { cameraRaw in
+            GlobalLayerResetBehavior.reset(&cameraRaw, isRaw: isSelectedImageRaw)
+        }
+        commitEditAdjustments()
+        showCopyPasteFeedback("Global layer reset")
+    }
+
     private var isSelectedImageRaw: Bool {
         guard let url = selectedImageURL else { return false }
         return SupportedImageFormats.isRaw(url: url)
@@ -5912,6 +5979,20 @@ struct EditWorkspaceView: View {
 
         // All remaining handlers are key-down only
         guard isKeyDown else { return event }
+
+        // Cmd+W — remove the selected local layer or reset Global. Consume it throughout Develop
+        // so it never closes the app's sole window; ignore key-repeat so holding W cannot delete
+        // a run of adjacent layers. This intentionally runs before the text-field guard, matching
+        // the system-level Close Window shortcut it replaces.
+        if chars == "w", modifiers.contains(.command),
+           modifiers.isDisjoint(with: [.option, .control, .shift]) {
+            guard !event.isARepeat else { return nil }
+            if canEditSingleImage {
+                removeOrResetSelectedEditLayer()
+            }
+            return nil
+        }
+
         guard !isTextFieldActive() else { return event }
 
         // Bare 0–5 — rate the current selection without leaving Develop. This mirrors the

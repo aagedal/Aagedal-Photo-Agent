@@ -103,4 +103,42 @@ struct DevelopInteractionBehaviorTests {
 
         #expect(uv == nil)
     }
+
+    @Test("Resetting Global preserves local layers and framing")
+    func globalResetPreservesOtherLayers() {
+        let mask = MaskAdjustment(name: "Local", exposure: 1)
+        let watermark = WatermarkLayer(libraryAssetID: UUID())
+        let crop = CameraRawCrop(top: 0.1, left: 0.2, bottom: 0.9, right: 0.8, angle: 2, hasCrop: true)
+        let order: [LayerRef] = [.mask(mask.id), .global, .watermark(watermark.id)]
+        var settings = CameraRawSettings(
+            whiteBalance: "Custom",
+            temperature: 7200,
+            exposure2012: 1.25,
+            crop: crop,
+            hdrEditMode: 1,
+            sdrBrightness: 20,
+            toneCurve: ToneCurve(
+                master: [ToneCurvePoint(x: 0, y: 0.1), ToneCurvePoint(x: 1, y: 1)],
+                red: nil, green: nil, blue: nil
+            ),
+            localAdjustments: [mask],
+            watermarkLayers: [watermark],
+            anonymizer: AnonymizerSettings(amount: 30, blackOut: nil),
+            layerOrder: order
+        )
+
+        GlobalLayerResetBehavior.reset(&settings, isRaw: true)
+
+        #expect(settings.whiteBalance == "As Shot")
+        #expect(settings.temperature == nil)
+        #expect(settings.exposure2012 == nil)
+        #expect(settings.toneCurve == nil)
+        #expect(settings.anonymizer == nil)
+        #expect(settings.crop == crop)
+        #expect(settings.hdrEditMode == 1)
+        #expect(settings.sdrBrightness == nil)
+        #expect(settings.localAdjustments == [mask])
+        #expect(settings.watermarkLayers == [watermark])
+        #expect(settings.layerOrder == order)
+    }
 }
