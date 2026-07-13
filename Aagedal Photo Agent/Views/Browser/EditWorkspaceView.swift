@@ -8,6 +8,47 @@ nonisolated private let editLog = Logger(
     subsystem: "com.aagedal.photo-agent", category: "EditWorkspace"
 )
 
+/// Shared semantics for the Global and per-mask anonymizer switches. Keeping the default here
+/// prevents the two control panels from drifting apart while leaving imported strengths intact.
+nonisolated enum AnonymizerToggleBehavior {
+    static let defaultAmount = 30.0
+
+    static func isEnabled(_ settings: AnonymizerSettings?) -> Bool {
+        settings?.isEmpty == false
+    }
+
+    static func setEnabled(_ enabled: Bool, settings: inout AnonymizerSettings?) {
+        guard enabled else {
+            settings = nil
+            return
+        }
+        if settings?.isEmpty != false {
+            settings = AnonymizerSettings(amount: defaultAmount, blackOut: nil)
+        }
+    }
+}
+
+/// Maps a pointer in preview-pane coordinates to the display-frame UV used by mask overlays.
+/// Returns nil over letterboxing/outside-image areas so callers can retain a safe fallback.
+nonisolated enum EditPreviewCoordinateMapper {
+    static func displayUV(
+        forPanePoint point: CGPoint,
+        paneSize: CGSize,
+        viewportOrigin: SIMD2<Float>,
+        viewportSize: SIMD2<Float>
+    ) -> CGPoint? {
+        guard paneSize.width > 0, paneSize.height > 0,
+              viewportSize.x > 0, viewportSize.y > 0 else { return nil }
+
+        let x = Double(viewportOrigin.x)
+            + Double(point.x / paneSize.width) * Double(viewportSize.x)
+        let y = Double(viewportOrigin.y)
+            + Double(point.y / paneSize.height) * Double(viewportSize.y)
+        guard x >= 0, x < 1, y >= 0, y < 1 else { return nil }
+        return CGPoint(x: x, y: y)
+    }
+}
+
 struct EditWorkspaceView: View {
     @Bindable var metadataViewModel: MetadataViewModel
     @Bindable var browserViewModel: BrowserViewModel
@@ -520,7 +561,7 @@ struct EditWorkspaceView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .addNewMask)) { _ in
             guard canEditSingleImage else { return }
-            addNewMask()
+            addNewMask(center: maskCenterUnderCursor())
         }
         .onReceive(NotificationCenter.default.publisher(for: .toggleHDR)) { _ in
             guard canEditSingleImage else { return }
@@ -2731,6 +2772,25 @@ struct EditWorkspaceView: View {
         )
     }
 
+    private var anonymizerEnabledBinding: Binding<Bool> {
+        Binding(
+            get: {
+                AnonymizerToggleBehavior.isEnabled(
+                    metadataViewModel.editingMetadata.cameraRaw?.anonymizer
+                )
+            },
+            set: { newValue in
+                updateCameraRaw { cameraRaw in
+                    AnonymizerToggleBehavior.setEnabled(
+                        newValue,
+                        settings: &cameraRaw.anonymizer
+                    )
+                }
+                commitEditAdjustments()
+            }
+        )
+    }
+
     private var anonymizerBlackOutBinding: Binding<Bool> {
         Binding(
             get: { metadataViewModel.editingMetadata.cameraRaw?.anonymizer?.blackOut ?? false },
@@ -3190,6 +3250,10 @@ struct EditWorkspaceView: View {
                 .onTapGesture(count: 2) {
                     if hasAnonymizerAdjustments { resetAnonymizerAdjustments() }
                 }
+            Toggle("Enable anonymizer", isOn: anonymizerEnabledBinding)
+                .labelsHidden()
+                .controlSize(.mini)
+                .help("Enable anonymizer at strength 30")
             Spacer()
             Button {
                 resetAnonymizerAdjustments()
@@ -3225,10 +3289,11 @@ struct EditWorkspaceView: View {
                 anonymizerAmountBinding.wrappedValue = 0
             }
         )
-        .disabled(anonymizerBlackOutBinding.wrappedValue)
+        .disabled(!anonymizerEnabledBinding.wrappedValue || anonymizerBlackOutBinding.wrappedValue)
 
         Toggle("Black out", isOn: anonymizerBlackOutBinding)
             .toggleStyle(.checkbox)
+            .disabled(!anonymizerEnabledBinding.wrappedValue)
             .help("Fully redact this region instead of the mosaic effect")
     }
 
@@ -3790,9 +3855,9 @@ struct EditWorkspaceView: View {
                 Button {
                     toggleMaskInverted(id)
                 } label: {
-                    Image(systemName: mask.inverted ? "circle.dashed.inset.filled" : "circle.dashed")
+                    Image(systemName: "circle.dashed.inset.filled")
                         .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(mask.inverted ? Color.accentColor : Color.secondary)
                 }
                 .buttonStyle(.plain)
                 .help(mask.inverted ? "Inverted: adjustments apply outside the mask" : "Normal: adjustments apply inside the mask")
@@ -3813,16 +3878,10 @@ struct EditWorkspaceView: View {
                         metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
                     }
                 } label: {
-                    ZStack {
-                        Image(systemName: "circle.dashed")
-                        if !showsMaskOutlines {
-                            Image(systemName: "slash")
-                                .font(.system(size: 9, weight: .bold))
-                        }
-                    }
-                    .font(.system(size: 11))
-                    .foregroundStyle(showsMaskOutlines ? Color.secondary : Color.red)
-                    .frame(width: 14, height: 14)
+                    Image(systemName: "circle.dashed")
+                        .font(.system(size: 11))
+                        .foregroundStyle(showsMaskOutlines ? Color.secondary : Color.red)
+                        .frame(width: 14, height: 14)
                 }
                 .buttonStyle(.plain)
                 .help(showsMaskOutlines ? "Hide all mask outlines" : "Show mask outlines")
@@ -4059,10 +4118,17 @@ struct EditWorkspaceView: View {
                 }
             )
             // ── Anonymizer ──
-            Text("Anonymizer")
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(.secondary)
-                .padding(.top, 2)
+            HStack(spacing: 6) {
+                Text("Anonymizer")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+                Toggle("Enable anonymizer", isOn: maskAnonymizerEnabledBinding(idx))
+                    .labelsHidden()
+                    .controlSize(.mini)
+                    .help("Enable anonymizer at strength 30")
+                Spacer()
+            }
+            .padding(.top, 2)
             Divider()
 
             sliderRow(
@@ -4089,10 +4155,14 @@ struct EditWorkspaceView: View {
                     maskAnonymizerAmountBinding(idx).wrappedValue = 0
                 }
             )
-            .disabled(maskAnonymizerBlackOutBinding(idx).wrappedValue)
+            .disabled(
+                !maskAnonymizerEnabledBinding(idx).wrappedValue
+                    || maskAnonymizerBlackOutBinding(idx).wrappedValue
+            )
 
             Toggle("Black out", isOn: maskAnonymizerBlackOutBinding(idx))
                 .toggleStyle(.checkbox)
+                .disabled(!maskAnonymizerEnabledBinding(idx).wrappedValue)
                 .help("Fully redact this mask instead of the mosaic effect")
         }
     }
@@ -4499,6 +4569,30 @@ struct EditWorkspaceView: View {
         )
     }
 
+    private func maskAnonymizerEnabledBinding(_ maskIndex: Int) -> Binding<Bool> {
+        Binding(
+            get: {
+                guard let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
+                      maskIndex < masks.count else { return false }
+                return AnonymizerToggleBehavior.isEnabled(masks[maskIndex].anonymizer)
+            },
+            set: { newValue in
+                updateCameraRaw { cameraRaw in
+                    guard let masks = cameraRaw.localAdjustments, maskIndex < masks.count else { return }
+                    var anonymizer = masks[maskIndex].anonymizer
+                    AnonymizerToggleBehavior.setEnabled(newValue, settings: &anonymizer)
+                    cameraRaw.localAdjustments?[maskIndex].anonymizer = anonymizer
+                }
+                if newValue,
+                   let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
+                   maskIndex < masks.count, masks[maskIndex].brush != nil {
+                    brushFlow = 1.0
+                }
+                commitEditAdjustments()
+            }
+        )
+    }
+
     private func maskAnonymizerBlackOutBinding(_ maskIndex: Int) -> Binding<Bool> {
         Binding(
             get: {
@@ -4527,9 +4621,13 @@ struct EditWorkspaceView: View {
         )
     }
 
-    private func addNewMask() {
+    private func addNewMask(center: CGPoint? = nil) {
         let existingCount = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?.count ?? 0
         var geo = EllipseMaskGeometry()
+        if let center {
+            geo.centerX = Double(center.x)
+            geo.centerY = Double(center.y)
+        }
         // Make the mask a circle by compensating for image aspect ratio
         if let size = currentImageSize, size.height > 0 {
             geo.radiusY = geo.radiusX * size.width / size.height
@@ -5575,6 +5673,34 @@ struct EditWorkspaceView: View {
         )
     }
 
+    /// Center for a keyboard-created radial mask. This uses the same pane-to-viewport mapping
+    /// supplied to the mask overlay, so it remains correct through fitted, zoomed, panned, and
+    /// cropped previews. Crop-edit mode uses a differently framed/rotated view and keeps the old
+    /// centered fallback until that tool is dismissed.
+    private func maskCenterUnderCursor() -> CGPoint? {
+        guard isCursorOverPreview, !showCropControls else { return nil }
+        let paneSize = previewPaneFrame.size
+        let cursor = currentEditCursorFromCenter()
+        let panePoint = CGPoint(
+            x: paneSize.width / 2 + cursor.width,
+            y: paneSize.height / 2 + cursor.height
+        )
+        let viewport: (origin: SIMD2<Float>, size: SIMD2<Float>)
+        if isCropEnabled, !isShowingBefore {
+            let imageSize = metalImageSize ?? currentImageSize ?? CGSize(width: 1, height: 1)
+            let cropViewport = editCropViewport(in: paneSize, imageSize: imageSize)
+            viewport = (cropViewport.origin, cropViewport.size)
+        } else {
+            viewport = (currentViewportOrigin, currentViewportSize)
+        }
+        return EditPreviewCoordinateMapper.displayUV(
+            forPanePoint: panePoint,
+            paneSize: paneSize,
+            viewportOrigin: viewport.origin,
+            viewportSize: viewport.size
+        )
+    }
+
     private func editPanGesture(in containerSize: CGSize, imageSize: CGSize) -> some Gesture {
         DragGesture()
             .onChanged { value in
@@ -5834,7 +5960,7 @@ struct EditWorkspaceView: View {
         // Cmd+J still works too (menu item).
         if chars == "j" && modifiers.isDisjoint(with: [.command, .option, .control]) {
             guard canEditSingleImage else { return event }
-            addNewMask()
+            addNewMask(center: maskCenterUnderCursor())
             return nil
         }
 

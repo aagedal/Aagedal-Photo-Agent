@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import Testing
 @testable import Aagedal_Photo_Agent
@@ -54,5 +55,52 @@ struct DevelopInteractionBehaviorTests {
 
         #expect(BrushStrokeAxis.horizontal.constrain(point, from: start) == CGPoint(x: 70, y: 50))
         #expect(BrushStrokeAxis.vertical.constrain(point, from: start) == CGPoint(x: 40, y: 80))
+    }
+
+    @Test("Enabling anonymizer starts at a useful strength")
+    func anonymizerToggleUsesDefaultStrength() {
+        var settings: AnonymizerSettings?
+
+        AnonymizerToggleBehavior.setEnabled(true, settings: &settings)
+
+        #expect(settings?.amount == 30)
+        #expect(AnonymizerToggleBehavior.isEnabled(settings))
+
+        AnonymizerToggleBehavior.setEnabled(false, settings: &settings)
+        #expect(settings == nil)
+    }
+
+    @Test("Enabling anonymizer preserves an existing strength")
+    func anonymizerTogglePreservesExistingStrength() {
+        var settings: AnonymizerSettings? = AnonymizerSettings(amount: 72, blackOut: nil)
+
+        AnonymizerToggleBehavior.setEnabled(true, settings: &settings)
+
+        #expect(settings?.amount == 72)
+    }
+
+    @Test("Preview cursor maps through the active viewport")
+    func previewCursorMapsToDisplayUV() throws {
+        let uv = try #require(EditPreviewCoordinateMapper.displayUV(
+            forPanePoint: CGPoint(x: 100, y: 150),
+            paneSize: CGSize(width: 400, height: 200),
+            viewportOrigin: SIMD2<Float>(0.2, 0.3),
+            viewportSize: SIMD2<Float>(0.5, 0.25)
+        ))
+
+        #expect(abs(uv.x - 0.325) < 0.0001)
+        #expect(abs(uv.y - 0.4875) < 0.0001)
+    }
+
+    @Test("Preview cursor ignores letterboxing outside the image")
+    func previewCursorRejectsLetterbox() {
+        let uv = EditPreviewCoordinateMapper.displayUV(
+            forPanePoint: .zero,
+            paneSize: CGSize(width: 400, height: 200),
+            viewportOrigin: SIMD2<Float>(-0.25, 0),
+            viewportSize: SIMD2<Float>(1.5, 1)
+        )
+
+        #expect(uv == nil)
     }
 }
