@@ -2,6 +2,42 @@
 
 All notable user-visible changes are documented here. Signed, notarized DMGs are self-hosted and delivered as in-app updates via Sparkle.
 
+## 2.1.2 — 2026-07-14
+
+### Highlights
+
+- Added click-to-select AI masks for individual people and foreground objects, with Auto, Person, and Object targeting plus black-point, white-point, and blur refinement controls.
+- Added reusable Develop templates for saving and applying global edits, crops, masks, and watermarks, with optional crop inclusion and keyboard shortcut slots.
+- Expanded analytic masks from ellipses to adjustable rounded rectangles while preserving an ACR-compatible circular-gradient fallback, and condensed layer creation into one 2×2 thumbnail.
+- Improved Develop interaction with more accurate feathering and mask previews, Space-bar panning, Shift-constrained brush strokes, global reset, and Command-W layer removal.
+- Added automatic folder-change refresh and improved thumbnail, orientation, metadata, full-screen preview, and scope cache responsiveness.
+
+### AI and local masks
+
+- Added a unified AI mask tool that selects the individual person or foreground object under the click instead of returning every detected instance.
+- Added Auto, Person, and Object target modes, with Auto preferring the dedicated person model before falling back to foreground-object detection.
+- Added non-destructive black-point, white-point, and blur controls for cleaning uneven confidence mattes and softening brittle contours; refinements persist in Photo Agent's private XMP metadata without rewriting the stored PNG.
+- Added rounded-rectangle rendering to ellipse masks through a Corner Radius control. ACR continues to receive and render the standard ellipse fallback while Photo Agent restores the custom shape.
+- Reworked the new-layer control into four compact launchers—ellipse, AI mask, brush, and watermark—within the footprint of one layer thumbnail.
+- Improved analytic and brush feather profiles, red coverage overlays, monochrome mask previews, scopes, and export rendering so mask coverage stays consistent across views.
+- Added Shift-constrained horizontal and vertical brush strokes, clearer anonymizer toggles, and cursor-aware placement for newly created masks.
+
+### Develop templates and controls
+
+- Added Develop templates that can capture global adjustments, crops, local masks, layer order, and watermarks while preserving image-specific decoder and as-shot white-balance state when applied.
+- Added Develop template management in Settings, an in-editor keyboard-navigable palette, optional crop inclusion, and assignable shortcut slots.
+- Added Command-W removal for the selected mask or watermark layer and a dedicated reset for global adjustments.
+- Added Space-bar hand-tool panning, shared nearest-neighbor preview scaling, and automatic filmstrip centering on the selected image after initial layout.
+- Improved deletion focus retention and kept the selected image stable through browser and Develop workflow updates.
+
+### Browser refresh and performance
+
+- Added folder and sidecar monitoring so visible browser contents refresh automatically when files change on disk.
+- Removed speculative full-screen preview generation from browser loading and bounded concurrent orientation reads to reduce unnecessary work.
+- Improved thumbnail generation, caching, cancellation, and collection-view reuse for smoother browsing during rapid navigation.
+- Improved metadata loading and invalidation of full-screen preview and scope caches when the underlying image or edits change.
+- Refactored browser filter evaluation into a shared context to avoid repeated work across large folders.
+
 ## 2.1.1 — 2026-07-11
 
 ### Highlights

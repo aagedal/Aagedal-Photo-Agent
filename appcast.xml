@@ -34,6 +34,30 @@
         -->
 
         <item>
+            <title>Version 2.1.2</title>
+            <pubDate>Tue, 14 Jul 2026 23:42:20 +0200</pubDate>
+            <sparkle:version>421</sparkle:version>
+            <sparkle:shortVersionString>2.1.2</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <description><![CDATA[
+                <ul>
+                    <li>Added click-to-select AI masks for individual people and foreground objects, with Auto, Person, and Object targeting plus black-point, white-point, and blur refinement controls.</li>
+                    <li>Added reusable Develop templates for saving and applying global edits, crops, masks, and watermarks, with optional crop inclusion and keyboard shortcut slots.</li>
+                    <li>Expanded analytic masks from ellipses to adjustable rounded rectangles while preserving an ACR-compatible circular-gradient fallback, and condensed layer creation into one 2×2 thumbnail.</li>
+                    <li>Improved Develop interaction with more accurate feathering and mask previews, Space-bar panning, Shift-constrained brush strokes, global reset, and Command-W layer removal.</li>
+                    <li>Added automatic folder-change refresh and improved thumbnail, orientation, metadata, full-screen preview, and scope cache responsiveness.</li>
+                </ul>
+            ]]></description>
+            <enclosure
+                url="https://aagedal.me/apps/Aagedal-Photo-Agent-2.1.2.dmg"
+                sparkle:version="421"
+                sparkle:shortVersionString="2.1.2"
+                sparkle:edSignature="BGoC28z3ryYivjz1c831Hr6uZ2XtqyaSk568SCfCeVisaer/M23hMaqUQHdzmrmgrXjQP2kmXXfcHi4syQ7NBw=="
+                length="163003138"
+                type="application/octet-stream" />
+        </item>
+
+        <item>
             <title>Version 2.1.1</title>
             <pubDate>Sun, 12 Jul 2026 04:20:55 +0200</pubDate>
             <sparkle:version>420</sparkle:version>
