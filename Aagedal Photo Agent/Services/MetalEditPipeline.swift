@@ -1,6 +1,7 @@
 import Accelerate
 import CoreImage
 import Metal
+import MetalKit
 import os
 import QuartzCore
 import simd
@@ -31,6 +32,7 @@ struct MaskParams {
     var anonymizerBlackOut: Float = 0
     var temperature: Float = 0
     var tint: Float = 0
+    var cornerRadius: Float = 1 // 1 = ACR ellipse, 0 = Photo Agent rectangle
     var maskType: UInt32 = 0   // 0 = ellipse (SDF), 1 = brush (sample brushAlpha)
     var brushLayer: UInt32 = 0 // slice into the brush alpha array (maskType == 1 only)
 }
@@ -47,6 +49,19 @@ struct BrushDabParams {
     var erase: UInt32 = 0
     var layer: UInt32 = 0
     var originPx: SIMD2<UInt32> = .zero
+}
+
+/// One slice in the shared raster-alpha array. Brush strokes and AI-selected subject mattes use
+/// the same downstream sampling path; they differ only in how a slice is populated.
+nonisolated enum MaskAlphaSource: Sendable, Equatable {
+    case brush(BrushMaskGeometry)
+    case ai(AIMaskGeometry)
+}
+
+/// Parameters for scaling an AI mask PNG into one full-resolution alpha-array slice.
+struct RasterMaskBlitParams {
+    var layer: UInt32 = 0
+    var rotationSteps: UInt32 = 0
 }
 
 /// Shared CPU/cursor description of the Gaussian radial profile implemented by `stampBrush`.
@@ -103,6 +118,7 @@ struct MaskOverlayParams {
     var radii: SIMD2<Float> = .zero
     var rotation: Float = 0
     var feather: Float = 0
+    var cornerRadius: Float = 1
     var inverted: Float = 0
     var visible: UInt32 = 0
 
@@ -322,6 +338,7 @@ final class MetalEditPipeline: @unchecked Sendable {
     private let clearBrushAlphaPipelineState: MTLComputePipelineState?
     private let clearBrushRegionPipelineState: MTLComputePipelineState?
     private let compositeBrushPipelineState: MTLComputePipelineState?
+    private let blitRasterMaskPipelineState: MTLComputePipelineState?
     /// Single-slice scratch texture holding one stroke's coverage envelope during a rebuild:
     /// dabs are max-stamped here, then source-over composited into `brushAlphaTexture` so
     /// separate strokes accumulate. Lazily sized to match the alpha array.
@@ -341,7 +358,7 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// `brushAlphaTexture` was rasterized from. `updateParams` runs per slider drag, but strokes
     /// only change on paint/undo/image-load — comparing against this skips the full-res rebuild
     /// (a synchronous GPU rasterization) on every unrelated tonal edit.
-    nonisolated(unsafe) private var lastBuiltBrushMasks: [BrushMaskGeometry] = []
+    nonisolated(unsafe) private var lastBuiltMaskAlphaSources: [MaskAlphaSource] = []
     nonisolated(unsafe) private var lastBuiltBrushSize = MTLSize(width: 0, height: 0, depth: 0)
 
     // MARK: - Watermark layers
@@ -512,6 +529,11 @@ final class MetalEditPipeline: @unchecked Sendable {
             self.compositeBrushPipelineState = try? device.makeComputePipelineState(function: compositeFunc)
         } else {
             self.compositeBrushPipelineState = nil
+        }
+        if let blitFunc = library.makeFunction(name: "blitRasterMask") {
+            self.blitRasterMaskPipelineState = try? device.makeComputePipelineState(function: blitFunc)
+        } else {
+            self.blitRasterMaskPipelineState = nil
         }
 
         self.ciContext = CIContext(mtlDevice: device, options: [
@@ -822,9 +844,9 @@ final class MetalEditPipeline: @unchecked Sendable {
                 .masksTransformedForDisplay(orientation: orientation, displayAspect: size.width / size.height)
                 .watermarksTransformedForDisplay(orientation: orientation)
         }()
-        // Both ellipse and brush masks participate. Brush masks resolve their coverage from a
-        // pre-rasterized alpha array (rebuilt below), sampled by `editAdjustments` when the mask's
-        // `maskType` is 1; ellipse masks use the analytic SDF.
+        // Analytic and raster masks participate together. Brush and AI masks resolve coverage
+        // from a shared pre-rasterized alpha array (rebuilt below), sampled by `editAdjustments`
+        // when `maskType` is 1; ellipse/rounded-rectangle masks use the analytic SDF.
         let enabledMasks = displaySettings.localAdjustments?.filter { $0.enabled } ?? []
         var masks = enabledMasks
         // A muted mask normally has no GPU slot. Include the hovered matte target solely for
@@ -846,12 +868,12 @@ final class MetalEditPipeline: @unchecked Sendable {
         }
 
         // Maps each enabled mask's UUID → its slot in the mask buffer, so the layer-order
-        // build below can translate `.mask(id)` refs into GPU mask indices. Brush masks are
+        // build below can translate `.mask(id)` refs into GPU mask indices. Raster masks are
         // collected in the same iteration order so their `brushLayer` slice indices line up
-        // with the alpha array `refreshBrushAlpha` rasterizes below.
+        // with the shared alpha array rasterized below.
         var maskIndexByID: [UUID: Int] = [:]
         var enabledMaskIndexByID: [UUID: Int] = [:]
-        var brushGeometries: [BrushMaskGeometry] = []
+        var maskAlphaSources: [MaskAlphaSource] = []
         if maskCount > 0, let maskBuf = maskBuffer {
             let maskPtr = maskBuf.contents().bindMemory(to: MaskParams.self, capacity: Self.maxMasks)
             for i in 0..<maskCount {
@@ -865,10 +887,15 @@ final class MetalEditPipeline: @unchecked Sendable {
                 mp.feather = Float(mask.geometry.feather / 100.0)
                 mp.inverted = mask.inverted ? 1.0 : 0.0
                 mp.amount = Float(mask.amount)
+                mp.cornerRadius = Float(mask.geometry.normalizedCornerRadius)
                 if let brush = mask.brush {
                     mp.maskType = 1
-                    mp.brushLayer = UInt32(brushGeometries.count)
-                    brushGeometries.append(brush)
+                    mp.brushLayer = UInt32(maskAlphaSources.count)
+                    maskAlphaSources.append(.brush(brush))
+                } else if let aiMask = mask.aiMask, aiMask.isValid {
+                    mp.maskType = 1
+                    mp.brushLayer = UInt32(maskAlphaSources.count)
+                    maskAlphaSources.append(.ai(aiMask))
                 }
 
                 var maskFlags: UInt32 = 0
@@ -922,14 +949,14 @@ final class MetalEditPipeline: @unchecked Sendable {
             }
         }
 
-        // Rebuild the brush alpha array (cached — only when strokes/resolution change) so the
+        // Rebuild the raster alpha array (cached — only when geometry/resolution changes) so the
         // compositing kernel can sample it. Sized to the source texture, which the kernel
         // samples in source UV space. The offscreen (export) pipeline has no persistent source
         // texture, so `sourceTextureSize` is nil there and it rebuilds explicitly at the working
         // resolution in `renderOffscreenSerial` instead.
         if let texSize = sourceTextureSize {
-            refreshBrushAlpha(
-                brushGeometries,
+            refreshMaskAlpha(
+                maskAlphaSources,
                 size: MTLSize(width: Int(texSize.width), height: Int(texSize.height), depth: 1)
             )
         }
@@ -1087,6 +1114,7 @@ final class MetalEditPipeline: @unchecked Sendable {
             params.radii = SIMD2<Float>(Float(geo.radiusX), Float(geo.radiusY))
             params.rotation = Float(geo.rotation * .pi / 180.0)
             params.feather = Float(geo.feather / 100.0)
+            params.cornerRadius = Float(geo.normalizedCornerRadius)
             params.visible = 1
         }
         let ptr = buffer.contents().bindMemory(to: MaskOverlayParams.self, capacity: 1)
@@ -1102,6 +1130,7 @@ final class MetalEditPipeline: @unchecked Sendable {
     nonisolated var hasBrushPipeline: Bool {
         stampBrushPipelineState != nil && clearBrushAlphaPipelineState != nil
             && clearBrushRegionPipelineState != nil && compositeBrushPipelineState != nil
+            && blitRasterMaskPipelineState != nil
     }
 
     /// The pixel bounding box (originX, originY, width, height) a stroke's dabs cover, clipped to
@@ -1138,24 +1167,88 @@ final class MetalEditPipeline: @unchecked Sendable {
         return Float(radius * longEdge)
     }
 
-    /// (Re)builds the brush alpha texture array from `brushMasks`, one array slice per mask, and
-    /// stores it in `brushAlphaTexture`. Rasterizes every stroke's dabs via `stampBrush`, each
-    /// dispatch bounded to that dab's bounding box. `size` is the target resolution (source
-    /// texture dims for preview, working dims for export) so the same normalized stroke list
-    /// rebuilds correctly at any resolution. Passing no brush masks frees the texture.
-    /// Returns the populated texture, or nil when there are no brush masks / the pipeline is
-    /// unavailable. Not per-frame: called on stroke changes / resolution changes only.
+    /// Builds the compact source texture for a refined AI matte. Levels are applied before blur:
+    /// the endpoints first clean/fill Vision confidence values, then Gaussian blur softens the
+    /// resulting contour. Processing remains at the stored mask's ≤1024 px resolution, so export
+    /// only pays the existing one-sample scaling blit rather than a full-resolution blur.
+    nonisolated private func refinedAIMaskTexture(_ mask: AIMaskGeometry) -> MTLTexture? {
+        guard mask.isValid,
+              var image = CIImage(data: mask.pngData, options: [.colorSpace: NSNull()])
+        else { return nil }
+
+        let extent = image.extent.integral
+        let width = Int(extent.width)
+        let height = Int(extent.height)
+        guard width > 0, height > 0 else { return nil }
+
+        let black = mask.resolvedBlackPoint
+        let white = max(mask.resolvedWhitePoint, black + 0.01)
+        if black > 0.000001 || white < 0.999999 {
+            let scale = CGFloat(1 / (white - black))
+            let bias = CGFloat(-black) * scale
+            image = image.applyingFilter("CIColorMatrix", parameters: [
+                "inputRVector": CIVector(x: scale, y: 0, z: 0, w: 0),
+                "inputGVector": CIVector(x: 0, y: scale, z: 0, w: 0),
+                "inputBVector": CIVector(x: 0, y: 0, z: scale, w: 0),
+                "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1),
+                "inputBiasVector": CIVector(x: bias, y: bias, z: bias, w: 0),
+            ]).cropped(to: extent)
+        }
+
+        let blurPixels = CGFloat(mask.resolvedBlurRadius) * max(extent.width, extent.height)
+        if blurPixels > 0.01 {
+            image = image.applyingFilter("CIGaussianBlur", parameters: [
+                kCIInputRadiusKey: blurPixels,
+            ]).cropped(to: extent)
+        }
+
+        var bytes = [UInt8](repeating: 0, count: width * height)
+        ciContext.render(
+            image,
+            toBitmap: &bytes,
+            rowBytes: width,
+            bounds: extent,
+            format: .R8,
+            colorSpace: nil
+        )
+
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .r8Unorm,
+            width: width,
+            height: height,
+            mipmapped: false
+        )
+        descriptor.usage = .shaderRead
+        descriptor.storageMode = .shared
+        guard let texture = device.makeTexture(descriptor: descriptor) else { return nil }
+        bytes.withUnsafeBytes { raw in
+            guard let baseAddress = raw.baseAddress else { return }
+            texture.replace(
+                region: MTLRegionMake2D(0, 0, width, height),
+                mipmapLevel: 0,
+                withBytes: baseAddress,
+                bytesPerRow: width
+            )
+        }
+        return texture
+    }
+
+    /// (Re)builds the shared raster alpha texture from brush strokes and AI matte PNGs, one array
+    /// slice per raster mask. Brush dabs are stamped at the target resolution; AI masks are
+    /// linearly scaled on-GPU from their compact persisted resolution. Not per-frame: callers use
+    /// the cached wrapper below on geometry/resolution changes only.
     @discardableResult
-    nonisolated func rebuildBrushAlpha(_ brushMasks: [BrushMaskGeometry], size: MTLSize) -> MTLTexture? {
+    nonisolated func rebuildMaskAlpha(_ sources: [MaskAlphaSource], size: MTLSize) -> MTLTexture? {
         guard let stampState = stampBrushPipelineState,
               let clearState = clearBrushAlphaPipelineState,
               let clearRegionState = clearBrushRegionPipelineState,
               let compositeState = compositeBrushPipelineState,
-              !brushMasks.isEmpty, size.width > 0, size.height > 0 else {
+              let blitState = blitRasterMaskPipelineState,
+              !sources.isEmpty, size.width > 0, size.height > 0 else {
             brushAlphaTexture = nil
             return nil
         }
-        let layers = min(brushMasks.count, Self.maxMasks)
+        let layers = min(sources.count, Self.maxMasks)
 
         // Lazily (re)allocate only when the slice count or resolution changes; otherwise reuse
         // the existing texture and just re-clear + re-stamp into it.
@@ -1216,8 +1309,44 @@ final class MetalEditPipeline: @unchecked Sendable {
         // mask's slice — so separate strokes ACCUMULATE (clicking the same spot builds up) rather
         // than clamping at one stroke's flow. Bounded to each stroke's bbox to keep cost local.
         let stampTG = MTLSize(width: 16, height: 16, depth: 1)
-        for (layer, mask) in brushMasks.prefix(layers).enumerated() {
-            for stroke in mask.strokes {
+        // The command encoder retains every source texture through completion. Keeping this
+        // array alive until the synchronous wait also makes that lifetime explicit.
+        var rasterSourceTextures: [MTLTexture] = []
+        let textureLoader = MTKTextureLoader(device: device)
+        for (layer, source) in sources.prefix(layers).enumerated() {
+            switch source {
+            case .ai(let mask):
+                guard mask.isValid else { continue }
+                let sourceTexture = mask.hasRefinements
+                    ? refinedAIMaskTexture(mask)
+                    : nil
+                guard let sourceTexture = sourceTexture ?? (try? textureLoader.newTexture(
+                    data: mask.pngData,
+                    options: [
+                        .SRGB: false,
+                        .origin: MTKTextureLoader.Origin.topLeft,
+                        .textureUsage: MTLTextureUsage.shaderRead.rawValue,
+                    ]
+                )) else { continue }
+                rasterSourceTextures.append(sourceTexture)
+                encoder.setComputePipelineState(blitState)
+                encoder.setTexture(sourceTexture, index: 0)
+                encoder.setTexture(tex, index: 1)
+                var params = RasterMaskBlitParams(
+                    layer: UInt32(layer),
+                    rotationSteps: UInt32(ImageFile.rotationDelta(
+                        from: mask.sourceOrientation,
+                        to: mask.displayOrientation
+                    ))
+                )
+                encoder.setBytes(&params, length: MemoryLayout<RasterMaskBlitParams>.stride, index: 0)
+                encoder.dispatchThreads(
+                    MTLSize(width: size.width, height: size.height, depth: 1),
+                    threadsPerThreadgroup: stampTG
+                )
+
+            case .brush(let mask):
+              for stroke in mask.strokes {
                 guard let (bx, by, bw, bh) = Self.strokeBoundingBox(stroke, size: size) else { continue }
                 var origin = SIMD2<UInt32>(UInt32(bx), UInt32(by))
                 let bbox = MTLSize(width: bw, height: bh, depth: 1)
@@ -1242,6 +1371,7 @@ final class MetalEditPipeline: @unchecked Sendable {
                                               originPx: origin)
                 encoder.setBytes(&cp, length: MemoryLayout<BrushCompositeParams>.stride, index: 0)
                 encoder.dispatchThreads(bbox, threadsPerThreadgroup: stampTG)
+              }
             }
         }
 
@@ -1251,6 +1381,13 @@ final class MetalEditPipeline: @unchecked Sendable {
         brushAlphaTexture = tex
         brushEnvScratch = scratch
         return tex
+    }
+
+    /// Test/backward-compatible brush-only entry point. Production rendering uses
+    /// `rebuildMaskAlpha` so brush and AI masks preserve one shared slice order.
+    @discardableResult
+    nonisolated func rebuildBrushAlpha(_ brushMasks: [BrushMaskGeometry], size: MTLSize) -> MTLTexture? {
+        rebuildMaskAlpha(brushMasks.map(MaskAlphaSource.brush), size: size)
     }
 
     /// Encodes one stroke's dabs as `stampBrush` dispatches into `encoder` (which must already
@@ -1326,28 +1463,32 @@ final class MetalEditPipeline: @unchecked Sendable {
     nonisolated func clearBrushAlpha() {
         brushAlphaTexture = nil
         brushEnvScratch = nil
-        lastBuiltBrushMasks = []
+        lastBuiltMaskAlphaSources = []
         lastBuiltBrushSize = MTLSize(width: 0, height: 0, depth: 0)
     }
 
-    /// Cached wrapper around `rebuildBrushAlpha` for the live path: rebuilds only when the brush
-    /// masks or target resolution differ from the last build. `updateParams` calls this on every
-    /// slider drag, but a full-res rasterization (a synchronous GPU wait) should only happen when
-    /// the strokes actually change — not on unrelated tonal edits.
-    nonisolated func refreshBrushAlpha(_ brushMasks: [BrushMaskGeometry], size: MTLSize) {
-        guard !brushMasks.isEmpty else {
+    /// Cached wrapper around `rebuildMaskAlpha` for the live path: a full-resolution rebuild is
+    /// skipped on unrelated tonal slider changes.
+    nonisolated func refreshMaskAlpha(_ sources: [MaskAlphaSource], size: MTLSize) {
+        guard !sources.isEmpty else {
             if brushAlphaTexture != nil { clearBrushAlpha() }
             return
         }
         if brushAlphaTexture != nil,
-           brushMasks == lastBuiltBrushMasks,
+           sources == lastBuiltMaskAlphaSources,
            size.width == lastBuiltBrushSize.width,
            size.height == lastBuiltBrushSize.height {
             return
         }
-        rebuildBrushAlpha(brushMasks, size: size)
-        lastBuiltBrushMasks = brushMasks
+        rebuildMaskAlpha(sources, size: size)
+        lastBuiltMaskAlphaSources = sources
         lastBuiltBrushSize = size
+    }
+
+    /// Brush-only compatibility wrapper retained for focused rasterization tests and live-paint
+    /// call sites that intentionally deal only in brush geometry.
+    nonisolated func refreshBrushAlpha(_ brushMasks: [BrushMaskGeometry], size: MTLSize) {
+        refreshMaskAlpha(brushMasks.map(MaskAlphaSource.brush), size: size)
     }
 
     // MARK: - Watermark textures
@@ -2196,15 +2337,17 @@ final class MetalEditPipeline: @unchecked Sendable {
         pipeline.updateParams(settings)
 
         // The offscreen pipeline has no persistent source texture, so `updateParams` can't size
-        // the brush alpha — rebuild it explicitly at the working resolution. Brush geometries are
-        // taken in the same first-`maxMasks` enabled-mask order `updateParams` used to assign each
-        // mask's `brushLayer` slice, so the slices line up. `settings` is already display-oriented
-        // here, so the dabs rasterize in the same frame the kernel samples.
-        let brushMasksForExport = (settings.localAdjustments?.filter { $0.enabled } ?? [])
+        // raster alpha — rebuild it explicitly at the working resolution. Sources use the same
+        // enabled-mask order `updateParams` used to assign each `brushLayer` slice.
+        let alphaSourcesForExport = (settings.localAdjustments?.filter { $0.enabled } ?? [])
             .prefix(Self.maxMasks)
-            .compactMap { $0.brush }
-        pipeline.rebuildBrushAlpha(
-            brushMasksForExport,
+            .compactMap { mask -> MaskAlphaSource? in
+                if let brush = mask.brush { return .brush(brush) }
+                if let aiMask = mask.aiMask, aiMask.isValid { return .ai(aiMask) }
+                return nil
+            }
+        pipeline.rebuildMaskAlpha(
+            Array(alphaSourcesForExport),
             size: MTLSize(width: width, height: height, depth: 1)
         )
 

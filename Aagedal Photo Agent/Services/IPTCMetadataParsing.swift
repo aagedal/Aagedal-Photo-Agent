@@ -217,9 +217,10 @@ nonisolated struct ParsedMaskCorrections {
 }
 
 /// Parse Adobe Camera Raw `MaskGroupBasedCorrections`. Each correction is a dictionary with
-/// `CorrectionMasks` as a nested array of mask dictionaries. Two mask kinds are modeled:
-/// a single `Mask/CircularGradient` (ellipse) and a single additive `Mask/Aggregate` of
-/// `Mask/Paint` sub-masks (brush). Anything else — an erase-brush `MaskBrushTable` blob, an
+/// `CorrectionMasks` as a nested array of mask dictionaries. Three mask kinds are modeled:
+/// a single `Mask/CircularGradient` (ellipse), a single additive `Mask/Aggregate` of
+/// `Mask/Paint` sub-masks (brush), and Photo Agent's app-namespaced AI raster mask. Anything
+/// else — an erase-brush `MaskBrushTable` blob, an
 /// unknown mask type, a multi-mask intersection — is kept verbatim in `preserved` rather than
 /// dropped, so it survives a develop save (the next `replaceCameraRawBlock` wipe would otherwise
 /// delete it permanently). Substituting a default ellipse would silently misrender it.
@@ -234,6 +235,25 @@ nonisolated func parseMaskGroupBasedCorrections(_ value: Any?) -> ParsedMaskCorr
         let maskArray = crsMaskField(corr, "CorrectionMasks") as? [[String: Any]]
         let firstMask = maskArray?.first
         let what = firstMask.flatMap { crsMaskField($0, "What") as? String }
+
+        // Photo Agent-only AI raster matte. It deliberately has no ACR shape fallback: the
+        // correction's nested mask struct is entirely app-namespaced, so ACR can ignore it.
+        if let firstMask, maskArray?.count == 1,
+           (aaphotoMaskField(firstMask, "What") as? String) == "Mask/AISelection" {
+            let inverted = parseBoolValue(aaphotoMaskField(firstMask, "Inverted")) ?? false
+            let mask = makeMaskAdjustment(
+                corr: corr,
+                name: name,
+                active: active,
+                amount: amount,
+                inverted: inverted,
+                geometry: EllipseMaskGeometry()
+            )
+            if mask.aiMask != nil {
+                result.masks.append(mask)
+                continue
+            }
+        }
 
         // Brush: a single additive Mask/Aggregate whose sub-masks are all Mask/Paint.
         if let firstMask, maskArray?.count == 1, what == "Mask/Aggregate",
@@ -389,7 +409,7 @@ nonisolated private func parseDabs(_ records: [String], flow: Double, hardness: 
 }
 
 /// Build a `MaskAdjustment` from a correction's shared correction-level fields (the effect
-/// sliders + app-private Anonymizer) — used by both the ellipse and brush parse paths.
+/// sliders + app-private Photo Agent extensions) — used by both the ellipse and brush paths.
 nonisolated private func makeMaskAdjustment(corr: [String: Any], name: String, active: Bool,
                                             amount: Double, inverted: Bool,
                                             geometry: EllipseMaskGeometry) -> MaskAdjustment {
@@ -414,12 +434,56 @@ nonisolated private func makeMaskAdjustment(corr: [String: Any], name: String, a
         ? AnonymizerSettings(amount: anonymizerAmount, blackOut: anonymizerBlackOut)
         : nil
 
+    // ACR ignores this app-private sibling and renders the standard CircularGradient ellipse.
+    // Photo Agent uses it to turn the same oriented box into a rounded rectangle. Absence means
+    // a native ACR ellipse, preserving import fidelity and old sidecar compatibility.
+    var resolvedGeometry = geometry
+    if let cornerRadius = parseDoubleValue(aaphotoMaskField(corr, "CornerRadius")),
+       cornerRadius.isFinite {
+        resolvedGeometry.cornerRadius = min(max(cornerRadius, 0), 1)
+    }
+
+    // Vision subject mattes are a Photo Agent extension. Keep the payload deliberately bounded
+    // when reading hand-edited XMP: generated masks are at most 1024 px on their long edge and
+    // comfortably below 2 MB, so larger values are malformed rather than useful mask data.
+    let aiMask: AIMaskGeometry? = {
+        guard let encoded = aaphotoMaskField(corr, "AIMaskPNG") as? String,
+              encoded.count <= 2_800_000,
+              let data = Data(base64Encoded: encoded, options: .ignoreUnknownCharacters),
+              !data.isEmpty, data.count <= 2_000_000,
+              let width = parseIntValue(aaphotoMaskField(corr, "AIMaskWidth")),
+              let height = parseIntValue(aaphotoMaskField(corr, "AIMaskHeight")),
+              (1...4096).contains(width), (1...4096).contains(height)
+        else { return nil }
+        let orientation = min(max(parseIntValue(aaphotoMaskField(corr, "AIMaskOrientation")) ?? 1, 1), 8)
+        let target = (aaphotoMaskField(corr, "AIMaskTarget") as? String)
+            .flatMap(AIMaskTarget.init(rawValue:))
+        let blackPoint = parseDoubleValue(aaphotoMaskField(corr, "AIMaskBlackPoint"))
+            .flatMap { $0.isFinite ? min(max($0, 0), 0.99) : nil }
+        let whitePoint = parseDoubleValue(aaphotoMaskField(corr, "AIMaskWhitePoint"))
+            .flatMap { $0.isFinite ? min(max($0, 0.01), 1) : nil }
+        let blurRadius = parseDoubleValue(aaphotoMaskField(corr, "AIMaskBlurRadius"))
+            .flatMap { $0.isFinite ? min(max($0, 0), 0.02) : nil }
+        return AIMaskGeometry(
+            width: width,
+            height: height,
+            pngData: data,
+            sourceOrientation: orientation,
+            displayOrientation: orientation,
+            target: target,
+            blackPoint: blackPoint,
+            whitePoint: whitePoint,
+            blurRadius: blurRadius
+        )
+    }()
+
     return MaskAdjustment(
         name: name,
         enabled: active,
         inverted: inverted,
         amount: amount,
-        geometry: geometry,
+        geometry: resolvedGeometry,
+        aiMask: aiMask,
         exposure: exposure.flatMap { abs($0) < 0.001 ? nil : $0 },
         contrast: contrast.flatMap { $0 == 0 ? nil : $0 },
         highlights: highlights.flatMap { $0 == 0 ? nil : $0 },
@@ -475,6 +539,9 @@ nonisolated struct ACRMaskCorrection {
     /// App-private fields with no ACR equivalent (e.g. Anonymizer) — written under the
     /// `aaphoto` namespace as siblings of `correctionFields`, never `crs:`.
     var appPrivateFields: [(name: String, value: String)] = []
+    /// Photo Agent-only nested mask fields. When present, `CorrectionMasks` contains an
+    /// `aaphoto` struct rather than an ACR `crs:Mask/*` shape, so ACR has no visual fallback.
+    var customMaskFields: [(name: String, value: String)]? = nil
     /// When set, the `CorrectionMasks` array is built from these nodes (brush masks) instead of
     /// wrapping the flat `maskFields` as a single struct (ellipse masks).
     var correctionMasks: [ACRMaskNode]? = nil
@@ -486,6 +553,19 @@ nonisolated func encodeMaskGroupBasedCorrections(_ masks: [MaskAdjustment]) -> [
     masks.filter(\.enabled).enumerated().map { index, mask in
         let correctionFields = encodeCorrectionFields(mask)
         let appPrivateFields = encodeMaskAppPrivateFields(mask)
+
+        if mask.aiMask?.isValid == true {
+            return ACRMaskCorrection(
+                correctionFields: correctionFields,
+                maskFields: [],
+                appPrivateFields: appPrivateFields,
+                customMaskFields: [
+                    ("What", "Mask/AISelection"),
+                    ("Inverted", mask.inverted ? "True" : "False"),
+                    ("Version", "1"),
+                ]
+            )
+        }
 
         if let brush = mask.brush {
             return ACRMaskCorrection(
@@ -646,9 +726,31 @@ nonisolated private func encodeCorrectionFields(_ mask: MaskAdjustment) -> [(nam
     ]
 }
 
-/// App-private (aaphoto) sibling fields with no ACR equivalent (Anonymizer).
+/// App-private (aaphoto) sibling fields with no ACR equivalent. Analytic masks retain their
+/// CircularGradient fallback; AI masks use these fields with a wholly custom nested mask node.
 nonisolated private func encodeMaskAppPrivateFields(_ mask: MaskAdjustment) -> [(name: String, value: String)] {
     var appPrivateFields: [(name: String, value: String)] = []
+    if let cornerRadius = mask.geometry.cornerRadius, cornerRadius.isFinite,
+       cornerRadius < 0.999999 {
+        appPrivateFields.append(("CornerRadius", acrNum(min(max(cornerRadius, 0), 1))))
+    }
+    if let aiMask = mask.aiMask, aiMask.isValid, aiMask.pngData.count <= 2_000_000 {
+        appPrivateFields.append(("AIMaskVersion", aiMask.hasRefinements ? "2" : "1"))
+        appPrivateFields.append(("AIMaskWidth", String(aiMask.width)))
+        appPrivateFields.append(("AIMaskHeight", String(aiMask.height)))
+        appPrivateFields.append(("AIMaskOrientation", String(min(max(aiMask.sourceOrientation, 1), 8))))
+        appPrivateFields.append(("AIMaskTarget", aiMask.resolvedTarget.rawValue))
+        if aiMask.resolvedBlackPoint > 0.000001 {
+            appPrivateFields.append(("AIMaskBlackPoint", acrNum(aiMask.resolvedBlackPoint)))
+        }
+        if aiMask.resolvedWhitePoint < 0.999999 {
+            appPrivateFields.append(("AIMaskWhitePoint", acrNum(aiMask.resolvedWhitePoint)))
+        }
+        if aiMask.resolvedBlurRadius > 0.000001 {
+            appPrivateFields.append(("AIMaskBlurRadius", acrNum(aiMask.resolvedBlurRadius)))
+        }
+        appPrivateFields.append(("AIMaskPNG", aiMask.pngData.base64EncodedString()))
+    }
     if let anon = mask.anonymizer, !anon.isEmpty {
         if let amount = anon.amount, amount > 0 {
             appPrivateFields.append(("AnonymizerAmount", String(format: "%.1f", amount)))

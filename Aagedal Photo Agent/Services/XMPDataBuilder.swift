@@ -196,9 +196,15 @@ enum XMPDataBuilder {
             var fields = Dictionary(uniqueKeysWithValues: corr.correctionFields.map {
                 (XMPNamespace.crs + $0.name, XMPValue.simple($0.value))
             })
-            // Brush masks carry a nested Mask/Aggregate → Masks → Mask/Paint → Dabs node tree;
-            // ellipse masks carry a single flat Mask/CircularGradient struct.
-            if let nodes = corr.correctionMasks {
+            // AI masks carry an entirely app-namespaced nested struct (no ACR fallback); brush
+            // masks carry Mask/Aggregate → Masks → Mask/Paint; analytic masks carry one flat
+            // Mask/CircularGradient struct.
+            if let customFields = corr.customMaskFields {
+                let maskStruct = Dictionary(uniqueKeysWithValues: customFields.map {
+                    (aaphotoNamespace + $0.name, XMPValue.simple($0.value))
+                })
+                fields[XMPNamespace.crs + "CorrectionMasks"] = .structuredArray([maskStruct])
+            } else if let nodes = corr.correctionMasks {
                 fields[XMPNamespace.crs + "CorrectionMasks"] = .structuredArray(nodes.map(buildMaskNode))
             } else {
                 let maskStruct = Dictionary(uniqueKeysWithValues: corr.maskFields.map {

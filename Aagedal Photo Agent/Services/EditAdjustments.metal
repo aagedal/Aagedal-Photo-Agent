@@ -26,6 +26,7 @@ struct MaskParams {
     float anonymizerBlackOut; // 0 or 1 — full opaque redaction instead of the layered effect
     float temperature;       // -1..1, local white balance warm/cool shift
     float tint;              // -1..1, local white balance green/magenta shift
+    float cornerRadius;      // 1 = ACR ellipse, 0 = Photo Agent rectangle
     uint  maskType;          // 0 = analytic ellipse (SDF), 1 = freeform brush (sample brushAlpha)
     uint  brushLayer;        // slice index into the brush alpha array (maskType == 1 only)
 };
@@ -351,11 +352,11 @@ static half3 applyGlobal(half3 rgb,
     return rgb;
 }
 
-/// Gaussian feather for an analytic ellipse. The stored ellipse remains the editable nominal
+/// Gaussian feather for an analytic shape. The stored outline remains the editable nominal
 /// outline, but is a 10%-coverage contour whenever feathering is active rather than a hard zero
 /// boundary. The low-valued tail therefore continues outside the handles and becomes visually
 /// negligible before it underflows, avoiding a finite rim in the matte.
-static float ellipseFeatherCoverage(float dist, float feather)
+static float analyticFeatherCoverage(float dist, float feather)
 {
     float f = clamp(feather, 0.0, 1.0);
     if (f <= 0.0) return dist <= 1.0 ? 1.0 : 0.0;
@@ -365,13 +366,26 @@ static float ellipseFeatherCoverage(float dist, float feather)
     return exp2(-3.32192809489 * t * t); // 10^(-t²): 10% at the nominal outline
 }
 
-/// Analytical ellipse-mask coverage weight at `uv` (0 = outside / no effect). mask.radii
+/// Gauge-like distance for Photo Agent's rounded-rectangle extension in the analytic mask's
+/// normalized local frame. radius=1 is exactly the ACR ellipse (`length(p)`); radius=0 is a
+/// sharp rectangle (`max(abs(p).x, abs(p).y)`). Intermediate values use elliptical corners
+/// because the normalized shape is stretched by the mask's two independent semi-axes.
+static float roundedRectangleDistance(float2 p, float radius)
+{
+    float r = clamp(radius, 0.0, 1.0);
+    float2 q = abs(p) - float2(1.0 - r);
+    float signedDistance = length(max(q, float2(0.0))) + min(max(q.x, q.y), 0.0) - r;
+    return signedDistance + 1.0;
+}
+
+/// Analytical ellipse/rounded-rectangle coverage at `uv` (0 = outside / no effect). mask.radii
 /// carries ACR's SIGNED oriented-corner box half-extents (see EllipseMaskGeometry):
 /// un-rotating the aspect-corrected corner vector recovers the true semi-axes. All
 /// rotation happens in aspect-corrected (pixel) space — raw-UV rotation would shear the
-/// ellipse by the image aspect ratio. Includes inversion, but not adjustment-layer amount so
-/// the same coverage can drive a true black/white mask matte.
-static float ellipseMaskCoverage(constant MaskParams &mask, float2 uv, float2 sourceSize)
+/// shape by the image aspect ratio. Includes inversion, but not adjustment-layer amount so the
+/// same coverage can drive a true black/white mask matte. ACR ignores `cornerRadius` and sees
+/// the same oriented box as its standard CircularGradient ellipse fallback.
+static float analyticMaskCoverage(constant MaskParams &mask, float2 uv, float2 sourceSize)
 {
     float maskAspect = sourceSize.y > 0.0 ? sourceSize.x / sourceSize.y : 1.0;
     float cosR = cos(mask.rotation);
@@ -381,15 +395,15 @@ static float ellipseMaskCoverage(constant MaskParams &mask, float2 uv, float2 so
     if (ab.x <= 0.0 || ab.y <= 0.0) return 0.0;   // degenerate — ACR renders nothing
     float2 d = (uv - mask.center) * float2(maskAspect, 1.0);
     float2 local = float2(d.x * cosR + d.y * sinR, -d.x * sinR + d.y * cosR);
-    float dist = length(local / ab);
-    float weight = ellipseFeatherCoverage(dist, mask.feather);
+    float dist = roundedRectangleDistance(local / ab, mask.cornerRadius);
+    float weight = analyticFeatherCoverage(dist, mask.feather);
     if (mask.inverted > 0.5) weight = 1.0 - weight;
     return weight;
 }
 
 static float maskWeight(constant MaskParams &mask, float2 uv, float2 sourceSize)
 {
-    return ellipseMaskCoverage(mask, uv, sourceSize) * mask.amount;
+    return analyticMaskCoverage(mask, uv, sourceSize) * mask.amount;
 }
 
 /// Alpha-composites one watermark layer over the running color, "over"-blending in
@@ -820,7 +834,7 @@ kernel void editAdjustments(
             if (om.inverted > 0.5) ow = 1.0 - ow;
         } else {
             ow = params.maskOverlayMode == 1u
-                ? ellipseMaskCoverage(om, uv, params.sourceSize)
+                ? analyticMaskCoverage(om, uv, params.sourceSize)
                 : maskWeight(om, uv, params.sourceSize);
         }
         if (params.maskOverlayMode == 1u) {
@@ -871,6 +885,37 @@ kernel void clearBrushAlpha(
         return;
     }
     alpha.write(half4(0.0h), uint2(gid.x, gid.y), gid.z);
+}
+
+/// Scales a compact persisted AI matte into its full-resolution shared alpha-array slice.
+/// `rotationSteps` is the clockwise display-orientation delta since the matte was authored;
+/// sampling applies the inverse mapping from destination UV back into the stored PNG.
+struct RasterMaskBlitParams {
+    uint layer;
+    uint rotationSteps;
+};
+
+kernel void blitRasterMask(
+    texture2d<float, access::sample> source [[texture(0)]],
+    texture2d_array<half, access::write> alpha [[texture(1)]],
+    constant RasterMaskBlitParams &p [[buffer(0)]],
+    uint2 px [[thread_position_in_grid]])
+{
+    uint width = alpha.get_width();
+    uint height = alpha.get_height();
+    if (px.x >= width || px.y >= height || p.layer >= alpha.get_array_size()) return;
+
+    float2 uv = (float2(px) + 0.5) / float2(width, height);
+    float2 sourceUV;
+    switch (p.rotationSteps & 3u) {
+        case 1u: sourceUV = float2(uv.y, 1.0 - uv.x); break; // stored → display 90° CW
+        case 2u: sourceUV = 1.0 - uv; break;
+        case 3u: sourceUV = float2(1.0 - uv.y, uv.x); break; // stored → display 90° CCW
+        default: sourceUV = uv; break;
+    }
+    constexpr sampler linearSampler(coord::normalized, address::clamp_to_edge, filter::linear);
+    half coverage = half(clamp(source.sample(linearSampler, sourceUV).r, 0.0, 1.0));
+    alpha.write(half4(coverage, 0.0h, 0.0h, 0.0h), px, p.layer);
 }
 
 /// Zeros slice 0 of a scratch array over a bounding box (grid origin = originPx). Used to reset

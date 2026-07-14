@@ -205,6 +205,14 @@ struct EditWorkspaceView: View {
     @State private var brushHardness: Double = 0.5    // 0-1 dab CenterWeight
     @State private var brushFlow: Double = 1.0        // 0-1 dab flow
     @State private var brushErase = false             // subtract from the mask instead of adding
+    // AI subject/object selection owns one click over the preview. No layer is added until Vision
+    // returns a real foreground instance, so cancelling or clicking the letterbox leaves no junk.
+    @State private var isSelectingAIMask = false
+    @State private var isGeneratingAIMask = false
+    @State private var replacingAIMaskID: UUID?
+    @State private var aiMaskTarget: AIMaskTarget = .automatic
+    @State private var aiMaskTask: Task<Void, Never>?
+    @State private var aiMaskError: String?
     @FocusState private var isWorkspaceFocused: Bool
     @ObservedObject private var scaling = ImageScalingController.shared
 
@@ -589,6 +597,15 @@ struct EditWorkspaceView: View {
             // Leaving a brush layer (e.g. after deleting one) exits paint mode, so the brush
             // controls don't linger on Global or radial layers. Selecting a brush layer keeps it.
             if !selectedMaskIsBrush { isBrushPainting = false }
+            if !isGeneratingAIMask {
+                isSelectingAIMask = false
+                replacingAIMaskID = nil
+            }
+            if let id = selectedMaskID,
+               let target = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?
+                .first(where: { $0.id == id })?.aiMask?.resolvedTarget {
+                aiMaskTarget = target
+            }
             syncMaskOverlayTarget()
             metalCoordinator.requestRedraw()
         }
@@ -751,6 +768,7 @@ struct EditWorkspaceView: View {
                                    let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
                                    maskIdx < masks.count,
                                    masks[maskIdx].brush == nil,
+                                   masks[maskIdx].aiMask == nil,
                                    showsMaskOutlines,
                                    maskMattePreviewMaskID == nil,
                                    !isBrushPainting,
@@ -855,12 +873,19 @@ struct EditWorkspaceView: View {
                                 // Freeform brush paint overlay (crop-applied path).
                                 brushOverlay(viewportOrigin: cropViewport.origin, viewportSize: cropViewport.size, viewSize: geometry.size)
                                     .allowsHitTesting(!isSpaceHandToolActive)
+
+                                aiMaskSelectionOverlay(
+                                    viewportOrigin: cropViewport.origin,
+                                    viewportSize: cropViewport.size,
+                                    viewSize: geometry.size
+                                )
+                                .allowsHitTesting(!isSpaceHandToolActive)
                             }
                             .frame(width: geometry.size.width, height: geometry.size.height)
                             // The normal pan gesture yields to both brush painting and the
                             // temporary Space hand-tool surface installed above all tools.
                             .gesture(editPanGesture(in: geometry.size, imageSize: geometry.size),
-                                     including: (isBrushPainting || isSpaceHandToolActive) ? .subviews : .all)
+                                     including: (isBrushPainting || isSelectingAIMask || isSpaceHandToolActive) ? .subviews : .all)
                         }
                     } else {
                         // Normal fit: Metal viewport handles zoom/pan and letterboxing
@@ -884,6 +909,7 @@ struct EditWorkspaceView: View {
                                let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
                                maskIdx < masks.count,
                                masks[maskIdx].brush == nil,
+                               masks[maskIdx].aiMask == nil,
                                showsMaskOutlines,
                                maskMattePreviewMaskID == nil,
                                !isBrushPainting,
@@ -988,12 +1014,19 @@ struct EditWorkspaceView: View {
                             // Freeform brush paint overlay (bare "B").
                             brushOverlay(viewportOrigin: vpOrigin, viewportSize: vpSize, viewSize: geometry.size)
                                 .allowsHitTesting(!isSpaceHandToolActive)
+
+                            aiMaskSelectionOverlay(
+                                viewportOrigin: vpOrigin,
+                                viewportSize: vpSize,
+                                viewSize: geometry.size
+                            )
+                            .allowsHitTesting(!isSpaceHandToolActive)
                         }
                         .frame(width: geometry.size.width, height: geometry.size.height)
                         // The normal pan gesture yields to both brush painting and the
                         // temporary Space hand-tool surface installed above all tools.
                         .gesture(editPanGesture(in: geometry.size, imageSize: imageSize),
-                                 including: (isBrushPainting || isSpaceHandToolActive) ? .subviews : .all)
+                                 including: (isBrushPainting || isSelectingAIMask || isSpaceHandToolActive) ? .subviews : .all)
                     }
                 } else if isLoadingPreview {
                     ProgressView("Loading preview...")
@@ -1183,10 +1216,14 @@ struct EditWorkspaceView: View {
                     // ── Mask Selector ──
                     maskSelectorBar
 
-                    if isBrushPainting || selectedMaskIsBrush {
+                    if isSelectingAIMask {
+                        aiMaskToolbar(id: replacingAIMaskID)
+                    } else if isBrushPainting || selectedMaskIsBrush {
                         brushToolbar
+                    } else if selectedMaskIsAI, let id = selectedMaskID {
+                        aiMaskToolbar(id: id)
                     } else if let idx = selectedMaskIndex, let id = selectedMaskID {
-                        ellipseMaskToolbar(index: idx, id: id)
+                        analyticMaskToolbar(index: idx, id: id)
                     }
 
                     if selectedMaskIndex != nil {
@@ -1648,6 +1685,12 @@ struct EditWorkspaceView: View {
         sourceLoadedOrientation = nil
         asShotWhiteBalance = nil
         isPickingWhiteBalance = false
+        aiMaskTask?.cancel()
+        aiMaskTask = nil
+        isSelectingAIMask = false
+        isGeneratingAIMask = false
+        replacingAIMaskID = nil
+        aiMaskError = nil
         wbPickDragRect = nil
         maskMattePreviewMaskID = nil
         metalPipeline?.maskMattePreviewMaskID = nil
@@ -3120,7 +3163,8 @@ struct EditWorkspaceView: View {
         gradientColors: [Color]? = nil,
         formatter: @escaping (Double) -> String,
         settingsMutator: ((inout CameraRawSettings, Double) -> Void)? = nil,
-        onReset: (() -> Void)? = nil
+        onReset: (() -> Void)? = nil,
+        showReset: Bool? = nil
     ) -> some View {
         EditSliderRow(
             label: label,
@@ -3150,7 +3194,8 @@ struct EditWorkspaceView: View {
                     resetFn()
                     commitEditAdjustments()
                 }
-            }
+            },
+            showReset: showReset
         )
     }
 
@@ -3596,7 +3641,7 @@ struct EditWorkspaceView: View {
         let order = resolvedLayerOrder
         return VStack(alignment: .leading, spacing: 4) {
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
+                HStack(alignment: .top, spacing: 6) {
                     ForEach(order, id: \.self) { ref in
                         layerCard(ref)
                     }
@@ -3618,6 +3663,195 @@ struct EditWorkspaceView: View {
         guard let id = selectedMaskID else { return false }
         return metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?
             .first(where: { $0.id == id })?.brush != nil
+    }
+
+    /// Whether the selected mask is a persisted Vision subject/object matte.
+    private var selectedMaskIsAI: Bool {
+        guard let id = selectedMaskID else { return false }
+        return metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?
+            .first(where: { $0.id == id })?.aiMask != nil
+    }
+
+    private func aiMaskToolbar(id: UUID?) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                if let id {
+                    maskMattePreviewIcon(systemName: LayerKind.aiMask.systemImage, maskID: id)
+                } else {
+                    Image(systemName: LayerKind.aiMask.systemImage)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 20, height: 20)
+                }
+                Text("AI Mask").font(.system(size: 11, weight: .semibold))
+                Spacer()
+                Button(isSelectingAIMask ? "Cancel" : "Select Again") {
+                    if isSelectingAIMask {
+                        cancelAIMaskSelection()
+                    } else {
+                        startAIMaskSelection(replacing: id)
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+
+            Picker("Target", selection: aiMaskTargetBinding(replacing: id)) {
+                ForEach(AIMaskTarget.allCases, id: \.self) { target in
+                    Text(target.title).tag(target)
+                }
+            }
+            .pickerStyle(.segmented)
+            .disabled(isGeneratingAIMask)
+
+            if let id,
+               let index = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?
+                .firstIndex(where: { $0.id == id }),
+               let aiMask = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?[index].aiMask {
+                sliderRow(
+                    "Black point",
+                    value: aiMaskBlackPointBinding(index),
+                    range: 0...100,
+                    step: 1,
+                    formatter: { "\(Int($0.rounded()))%" },
+                    settingsMutator: { settings, value in
+                        setAIMaskBlackPoint(value, index: index, settings: &settings)
+                    },
+                    onReset: {
+                        aiMaskBlackPointBinding(index).wrappedValue = 0
+                    }
+                )
+
+                sliderRow(
+                    "White point",
+                    value: aiMaskWhitePointBinding(index),
+                    range: 0...100,
+                    step: 1,
+                    formatter: { "\(Int($0.rounded()))%" },
+                    settingsMutator: { settings, value in
+                        setAIMaskWhitePoint(value, index: index, settings: &settings)
+                    },
+                    onReset: {
+                        aiMaskWhitePointBinding(index).wrappedValue = 100
+                    },
+                    showReset: aiMask.resolvedWhitePoint < 0.999999
+                )
+
+                sliderRow(
+                    "Blur",
+                    value: aiMaskBlurBinding(index),
+                    range: 0...2,
+                    step: 0.05,
+                    formatter: { String(format: "%.2f%%", $0) },
+                    settingsMutator: { settings, value in
+                        setAIMaskBlur(value, index: index, settings: &settings)
+                    },
+                    onReset: {
+                        aiMaskBlurBinding(index).wrappedValue = 0
+                    }
+                )
+            }
+
+            Text(aiMaskTarget == .automatic
+                 ? "Auto tries the person model first, then the foreground-object model."
+                 : aiMaskTarget == .person
+                    ? "Person uses Vision's dedicated person-instance model."
+                    : "Object uses Vision's general foreground-instance model.")
+                .font(.system(size: 9))
+                .foregroundStyle(.secondary)
+        }
+        .padding(8)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// Changing the target on an existing matte immediately enters Select Again mode, because
+    /// the model choice only has meaning when Vision is given a new click to regenerate pixels.
+    private func aiMaskTargetBinding(replacing id: UUID?) -> Binding<AIMaskTarget> {
+        Binding(
+            get: { aiMaskTarget },
+            set: { target in
+                aiMaskTarget = target
+                if !isSelectingAIMask {
+                    startAIMaskSelection(replacing: id)
+                }
+            }
+        )
+    }
+
+    private func aiMaskBlackPointBinding(_ index: Int) -> Binding<Double> {
+        Binding(
+            get: {
+                guard let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
+                      masks.indices.contains(index) else { return 0 }
+                return (masks[index].aiMask?.resolvedBlackPoint ?? 0) * 100
+            },
+            set: { value in
+                updateCameraRaw { settings in
+                    setAIMaskBlackPoint(value, index: index, settings: &settings)
+                }
+            }
+        )
+    }
+
+    private func aiMaskWhitePointBinding(_ index: Int) -> Binding<Double> {
+        Binding(
+            get: {
+                guard let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
+                      masks.indices.contains(index) else { return 100 }
+                return (masks[index].aiMask?.resolvedWhitePoint ?? 1) * 100
+            },
+            set: { value in
+                updateCameraRaw { settings in
+                    setAIMaskWhitePoint(value, index: index, settings: &settings)
+                }
+            }
+        )
+    }
+
+    private func aiMaskBlurBinding(_ index: Int) -> Binding<Double> {
+        Binding(
+            get: {
+                guard let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
+                      masks.indices.contains(index) else { return 0 }
+                return (masks[index].aiMask?.resolvedBlurRadius ?? 0) * 100
+            },
+            set: { value in
+                updateCameraRaw { settings in
+                    setAIMaskBlur(value, index: index, settings: &settings)
+                }
+            }
+        )
+    }
+
+    private func setAIMaskBlackPoint(
+        _ value: Double, index: Int, settings: inout CameraRawSettings
+    ) {
+        guard let masks = settings.localAdjustments, index < masks.count,
+              var aiMask = masks[index].aiMask else { return }
+        let maximum = max(0, aiMask.resolvedWhitePoint - 0.01)
+        let normalized = min(max(value / 100, 0), maximum)
+        aiMask.blackPoint = normalized <= 0.000001 ? nil : normalized
+        settings.localAdjustments?[index].aiMask = aiMask
+    }
+
+    private func setAIMaskWhitePoint(
+        _ value: Double, index: Int, settings: inout CameraRawSettings
+    ) {
+        guard let masks = settings.localAdjustments, index < masks.count,
+              var aiMask = masks[index].aiMask else { return }
+        let minimum = min(1, aiMask.resolvedBlackPoint + 0.01)
+        let normalized = min(max(value / 100, minimum), 1)
+        aiMask.whitePoint = normalized >= 0.999999 ? nil : normalized
+        settings.localAdjustments?[index].aiMask = aiMask
+    }
+
+    private func setAIMaskBlur(
+        _ value: Double, index: Int, settings: inout CameraRawSettings
+    ) {
+        guard let masks = settings.localAdjustments, index < masks.count,
+              var aiMask = masks[index].aiMask else { return }
+        let normalized = min(max(value / 100, 0), 0.02)
+        aiMask.blurRadius = normalized <= 0.000001 ? nil : normalized
+        settings.localAdjustments?[index].aiMask = aiMask
     }
 
     /// Brush-settings toolbar, shown while the brush tool is active or a brush mask is selected.
@@ -3665,16 +3899,37 @@ struct EditWorkspaceView: View {
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
     }
 
-    /// Ellipse geometry controls occupy the same compact, top-of-panel card as brush settings.
-    /// Keeping feather here makes the two mask types scan consistently and avoids presenting an
-    /// ellipse-only property at the bottom of the shared adjustment stack.
-    private func ellipseMaskToolbar(index: Int, id: UUID) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+    /// Shared controls for the ACR-compatible ellipse and Photo Agent's rounded-rectangle
+    /// extension. At 100% corners the two renderings are identical; lowering the value keeps
+    /// the CircularGradient fallback for ACR while Photo Agent renders the extended shape.
+    private func analyticMaskToolbar(index: Int, id: UUID) -> some View {
+        let geometry = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?[index].geometry
+            ?? EllipseMaskGeometry()
+        let kind: LayerKind = geometry.isStandardEllipse ? .ellipseMask : .rectangleMask
+        let title = geometry.isStandardEllipse ? "Ellipse Mask" : "Rectangle Mask"
+
+        return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                maskMattePreviewIcon(systemName: "circle.dashed", maskID: id)
-                Text("Ellipse Mask").font(.system(size: 11, weight: .semibold))
+                maskMattePreviewIcon(systemName: kind.systemImage, maskID: id)
+                Text(title).font(.system(size: 11, weight: .semibold))
                 Spacer()
             }
+
+            sliderRow(
+                "Corner radius",
+                value: maskCornerRadiusBinding(index),
+                range: 0...100,
+                step: 1,
+                formatter: { "\(Int($0.rounded()))%" },
+                settingsMutator: { settings, value in
+                    let normalized = min(max(value / 100, 0), 1)
+                    settings.localAdjustments?[index].geometry.cornerRadius =
+                        normalized >= 0.999999 ? nil : normalized
+                },
+                onReset: {
+                    maskCornerRadiusBinding(index).wrappedValue = 100
+                }
+            )
 
             sliderRow(
                 "Feather",
@@ -3689,6 +3944,10 @@ struct EditWorkspaceView: View {
                     maskGeometryBinding(index, \.feather).wrappedValue = 50
                 }
             )
+
+            Text("100% is the ACR ellipse; lower values are a Photo Agent extension.")
+                .font(.system(size: 9))
+                .foregroundStyle(.secondary)
         }
         .padding(8)
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
@@ -3746,51 +4005,65 @@ struct EditWorkspaceView: View {
     }
 
     private var addLayerButton: some View {
-        VStack(spacing: 3) {
-            VStack(spacing: 4) {
-                addMaskMiniButton(kind: .ellipseMask, help: "Add radial mask") {
+        Grid(horizontalSpacing: 4, verticalSpacing: 4) {
+            GridRow {
+                addLayerTile(kind: .ellipseMask, help: "Add ellipse mask") {
                     addNewMask()
                 }
-                addMaskMiniButton(kind: .brushMask, help: "Add brush mask") {
+                addLayerTile(kind: .aiMask, help: "Select a person or object with AI") {
+                    startAIMaskSelection()
+                }
+            }
+            GridRow {
+                addLayerTile(kind: .brushMask, help: "Add brush mask") {
                     _ = addNewBrushMask()
                     isBrushPainting = true
                     isPickingWhiteBalance = false
                     syncMaskOverlayTarget()
                 }
-                addMaskMiniButton(kind: .watermark, help: "Add watermark layer") {
+                addLayerTile(kind: .watermark, help: "Add watermark layer") {
                     addNewWatermarkLayer()
                 }
             }
-            Text("Add")
-                .font(.system(size: 9))
-                .foregroundStyle(.secondary)
-                .frame(width: 60)
         }
+        .frame(width: 56, height: 56)
         .alert("No Watermarks in Library", isPresented: $showWatermarkLibraryEmptyAlert) {
             Button("OK") {}
         } message: {
             Text("Import a PNG watermark first, from Settings \u{2192} Watermarks.")
         }
+        .alert(
+            "AI Mask",
+            isPresented: Binding(
+                get: { aiMaskError != nil },
+                set: { if !$0 { aiMaskError = nil } }
+            )
+        ) {
+            Button("OK") { aiMaskError = nil }
+        } message: {
+            Text(aiMaskError ?? "The mask could not be generated.")
+        }
     }
 
-    /// One compact "add mask" button — the kind's icon plus a `+`. Two of these stack vertically
-    /// to fill a layer-card slot, so adding either mask kind is a single click.
-    private func addMaskMiniButton(kind: LayerKind, help: String, action: @escaping () -> Void) -> some View {
+    /// Four compact launchers together occupy one normal 56×56 layer-thumbnail slot. The dashed
+    /// cells communicate creation while the icons keep the strip from growing taller or wider.
+    private func addLayerTile(kind: LayerKind, help: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            HStack(spacing: 5) {
-                Image(systemName: kind.systemImage)
-                Image(systemName: "plus").font(.system(size: 9, weight: .bold))
-            }
-            .font(.system(size: 12))
-            .foregroundStyle(.secondary)
-            .frame(width: 56, height: 26)
-            .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [3]))
-                    .foregroundStyle(.secondary)
-            )
-            // The whole frame is the hit area, not just the (stroked) border + icon pixels.
-            .contentShape(Rectangle())
+            Image(systemName: kind.systemImage)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 26, height: 26)
+                .background(
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(.quaternary.opacity(0.18))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 3)
+                        .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [2]))
+                        .foregroundStyle(.secondary)
+                )
+                // The whole frame is the hit area, not just the (stroked) border + icon pixels.
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help(help)
@@ -4383,6 +4656,26 @@ struct EditWorkspaceView: View {
         )
     }
 
+    /// UI uses 0...100 while the persisted Photo Agent extension is normalized 0...1.
+    /// Writing the ellipse endpoint as nil avoids adding custom metadata to untouched ACR masks.
+    private func maskCornerRadiusBinding(_ maskIndex: Int) -> Binding<Double> {
+        Binding(
+            get: {
+                guard let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
+                      maskIndex < masks.count else { return 100 }
+                return masks[maskIndex].geometry.normalizedCornerRadius * 100
+            },
+            set: { newValue in
+                updateCameraRaw { cameraRaw in
+                    guard let masks = cameraRaw.localAdjustments, maskIndex < masks.count else { return }
+                    let normalized = min(max(newValue / 100, 0), 1)
+                    cameraRaw.localAdjustments?[maskIndex].geometry.cornerRadius =
+                        normalized >= 0.999999 ? nil : normalized
+                }
+            }
+        )
+    }
+
     /// Live array index of the selected mask in `localAdjustments`, or nil when Global is
     /// selected (or the selected mask was deleted). Resolved by UUID every access so it stays
     /// correct after reordering — callers index `localAdjustments` with the current value.
@@ -4676,9 +4969,10 @@ struct EditWorkspaceView: View {
         )
     }
 
-    private func addNewMask(center: CGPoint? = nil) {
+    private func addNewMask(center: CGPoint? = nil, cornerRadius: Double? = nil) {
         let existingCount = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?.count ?? 0
         var geo = EllipseMaskGeometry()
+        geo.cornerRadius = cornerRadius
         if let center {
             geo.centerX = Double(center.x)
             geo.centerY = Double(center.y)
@@ -4689,7 +4983,8 @@ struct EditWorkspaceView: View {
         }
         // The default geometry is authored in the display frame; storage is sensor-frame.
         geo = maskGeometryForSensor(geo)
-        let newMask = MaskAdjustment(name: "Mask \(existingCount + 1)", geometry: geo)
+        let baseName = geo.isStandardEllipse ? "Mask" : "Rectangle"
+        let newMask = MaskAdjustment(name: "\(baseName) \(existingCount + 1)", geometry: geo)
         updateCameraRaw { cameraRaw in
             if cameraRaw.localAdjustments == nil {
                 cameraRaw.localAdjustments = []
@@ -4703,6 +4998,127 @@ struct EditWorkspaceView: View {
         }
         selectedLayer = .mask(newMask.id)
         commitEditAdjustments()
+    }
+
+    // MARK: - AI subject/object mask
+
+    private func startAIMaskSelection(replacing maskID: UUID? = nil) {
+        guard canEditSingleImage, sourceCIImage != nil, !isGeneratingAIMask else { return }
+        clearMaskMattePreview()
+        isBrushPainting = false
+        isPickingWhiteBalance = false
+        wbPickDragRect = nil
+        if maskID == nil { aiMaskTarget = .automatic }
+        replacingAIMaskID = maskID
+        isSelectingAIMask = true
+        syncMaskOverlayTarget()
+    }
+
+    private func cancelAIMaskSelection() {
+        aiMaskTask?.cancel()
+        aiMaskTask = nil
+        isSelectingAIMask = false
+        isGeneratingAIMask = false
+        replacingAIMaskID = nil
+        NSCursor.arrow.set()
+    }
+
+    /// Reverse the crop-straighten display rotation after pane→viewport mapping. Vision analyzes
+    /// the un-straightened `sourceCIImage`, so the click must land in that same source frame.
+    private func aiSourcePoint(fromDisplayedUV point: CGPoint) -> CGPoint {
+        var marker = WatermarkGeometry()
+        marker.centerX = Double(point.x)
+        marker.centerY = Double(point.y)
+        marker = marker.rotatedInDisplay(byDegrees: displayCropAngle, aspect: maskDisplayAspect)
+        return CGPoint(
+            x: min(max(marker.centerX, 0), 1),
+            y: min(max(marker.centerY, 0), 1)
+        )
+    }
+
+    private func performAIMaskPick(
+        panePoint: CGPoint,
+        paneSize: CGSize,
+        viewportOrigin: SIMD2<Float>,
+        viewportSize: SIMD2<Float>
+    ) {
+        guard isSelectingAIMask, !isGeneratingAIMask,
+              let source = sourceCIImage,
+              let imageURL = selectedImageURL,
+              let displayedUV = EditPreviewCoordinateMapper.displayUV(
+                  forPanePoint: panePoint,
+                  paneSize: paneSize,
+                  viewportOrigin: viewportOrigin,
+                  viewportSize: viewportSize
+              )
+        else { return }
+
+        let sourcePoint = aiSourcePoint(fromDisplayedUV: displayedUV)
+        let orientation = selectedImageOrientation
+        let replacementID = replacingAIMaskID
+        let target = aiMaskTarget
+        isGeneratingAIMask = true
+        aiMaskTask?.cancel()
+        aiMaskTask = Task {
+            do {
+                let generated = try await Task.detached(priority: .userInitiated) {
+                    try AIMaskGenerator.generate(
+                        from: source,
+                        displayPoint: sourcePoint,
+                        sourceOrientation: orientation,
+                        target: target
+                    )
+                }.value
+                guard !Task.isCancelled, selectedImageURL == imageURL else { return }
+
+                let targetID: UUID
+                if let replacementID,
+                   metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?
+                    .contains(where: { $0.id == replacementID }) == true {
+                    updateCameraRaw { cameraRaw in
+                        guard let index = cameraRaw.localAdjustments?
+                            .firstIndex(where: { $0.id == replacementID }) else { return }
+                        let previousRefinements = cameraRaw.localAdjustments?[index].aiMask
+                        var replacement = generated.raster
+                        replacement.blackPoint = previousRefinements?.blackPoint
+                        replacement.whitePoint = previousRefinements?.whitePoint
+                        replacement.blurRadius = previousRefinements?.blurRadius
+                        cameraRaw.localAdjustments?[index].brush = nil
+                        cameraRaw.localAdjustments?[index].aiMask = replacement
+                    }
+                    targetID = replacementID
+                } else {
+                    let count = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?.count ?? 0
+                    let newMask = MaskAdjustment(name: "AI Mask \(count + 1)", aiMask: generated.raster)
+                    updateCameraRaw { cameraRaw in
+                        if cameraRaw.localAdjustments == nil { cameraRaw.localAdjustments = [] }
+                        cameraRaw.localAdjustments?.append(newMask)
+                        if cameraRaw.layerOrder != nil {
+                            cameraRaw.layerOrder?.append(.mask(newMask.id))
+                        }
+                    }
+                    targetID = newMask.id
+                }
+
+                isGeneratingAIMask = false
+                isSelectingAIMask = false
+                replacingAIMaskID = nil
+                selectedLayer = .mask(targetID)
+                if let pipeline = metalPipeline, pipeline.hasSourceTexture {
+                    pipeline.updateParams(settingsForPipeline(metadataViewModel.editingMetadata.cameraRaw))
+                    metalCoordinator.requestRedraw()
+                }
+                syncMaskOverlayTarget()
+                commitEditAdjustments()
+            } catch is CancellationError {
+                isGeneratingAIMask = false
+            } catch {
+                guard !Task.isCancelled, selectedImageURL == imageURL else { return }
+                isGeneratingAIMask = false
+                aiMaskError = error.localizedDescription
+            }
+            aiMaskTask = nil
+        }
     }
 
     // MARK: - Watermark layers
@@ -4827,7 +5243,7 @@ struct EditWorkspaceView: View {
         var slice = 0
         for mask in masks.filter({ $0.enabled }).prefix(8) {
             if mask.id == id { return mask.brush != nil ? slice : nil }
-            if mask.brush != nil { slice += 1 }
+            if mask.brush != nil || mask.aiMask != nil { slice += 1 }
         }
         return nil
     }
@@ -4868,7 +5284,8 @@ struct EditWorkspaceView: View {
     /// itself hides the tint once the mask has an adjustment, so this only tracks selection.
     private func syncMaskOverlayTarget() {
         guard let pipeline = metalPipeline else { return }
-        pipeline.maskOverlayMaskID = (isBrushPainting || selectedMaskIsBrush) ? selectedMaskID : nil
+        pipeline.maskOverlayMaskID = (isBrushPainting || selectedMaskIsBrush || selectedMaskIsAI)
+            ? selectedMaskID : nil
         if pipeline.hasSourceTexture {
             pipeline.updateParams(settingsForPipeline(metadataViewModel.editingMetadata.cameraRaw))
             metalCoordinator.requestRedraw()
@@ -4959,6 +5376,35 @@ struct EditWorkspaceView: View {
                 }
             )
             .frame(width: viewSize.width, height: viewSize.height)
+        }
+    }
+
+    @ViewBuilder
+    private func aiMaskSelectionOverlay(
+        viewportOrigin: SIMD2<Float>, viewportSize: SIMD2<Float>, viewSize: CGSize
+    ) -> some View {
+        if isSelectingAIMask, !isShowingBefore, canEditSingleImage {
+            AIMaskPickOverlay(isEnabled: !isGeneratingAIMask) { panePoint in
+                performAIMaskPick(
+                    panePoint: panePoint,
+                    paneSize: viewSize,
+                    viewportOrigin: viewportOrigin,
+                    viewportSize: viewportSize
+                )
+            }
+            .frame(width: viewSize.width, height: viewSize.height)
+            .overlay(alignment: .top) {
+                Label(
+                    isGeneratingAIMask ? "Finding selection…" : "Click a person or object",
+                    systemImage: isGeneratingAIMask ? "sparkles" : "viewfinder"
+                )
+                .font(.system(size: 11, weight: .medium))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(.ultraThinMaterial, in: Capsule())
+                .padding(.top, 12)
+                .allowsHitTesting(false)
+            }
         }
     }
 
@@ -5934,6 +6380,10 @@ struct EditWorkspaceView: View {
         // Escape
         if event.keyCode == 53, isKeyDown {
             guard !isTextFieldActive() else { return event }
+            if isSelectingAIMask {
+                cancelAIMaskSelection()
+                return nil
+            }
             onExit()
             return nil
         }
@@ -6281,6 +6731,28 @@ private struct WhiteBalancePickOverlay: View {
                     cursor = nil
                     readout = nil
                 }
+            }
+    }
+}
+
+/// Transparent one-click surface for Vision person/object selection. The shared cursor view
+/// wins cursor arbitration against the underlying Metal/AppKit preview.
+private struct AIMaskPickOverlay: View {
+    let isEnabled: Bool
+    let onPick: (CGPoint) -> Void
+
+    var body: some View {
+        Color.clear
+            .contentShape(Rectangle())
+            .gesture(
+                SpatialTapGesture()
+                    .onEnded { value in
+                        guard isEnabled else { return }
+                        onPick(value.location)
+                    }
+            )
+            .overlay {
+                CrosshairCursorView().allowsHitTesting(false)
             }
     }
 }

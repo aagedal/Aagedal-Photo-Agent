@@ -203,10 +203,23 @@ final class MaskOverlayNSView: NSView {
     private var screenRadiusX: CGFloat { trueScreenRadii(of: maskGeometry).x }
     private var screenRadiusY: CGFloat { trueScreenRadii(of: maskGeometry).y }
 
-    private func ellipseTransform(radiusScale: CGFloat = 1) -> CGAffineTransform {
-        CGAffineTransform(scaleX: screenRadiusX * radiusScale, y: screenRadiusY * radiusScale)
-            .concatenating(CGAffineTransform(rotationAngle: angleRadians))
+    /// Editable analytic outline. Corner radius is normalized independently along both axes:
+    /// 1 produces the exact ACR ellipse, 0 a rectangle, and intermediate values elliptical
+    /// rounded corners. Scaling produces the feather guides around the same nominal shape.
+    private func maskPath(radiusScale: CGFloat = 1) -> CGPath {
+        let radiusX = screenRadiusX * radiusScale
+        let radiusY = screenRadiusY * radiusScale
+        let corner = CGFloat(maskGeometry.normalizedCornerRadius)
+        let localPath = CGPath(
+            roundedRect: CGRect(x: -radiusX, y: -radiusY,
+                                width: radiusX * 2, height: radiusY * 2),
+            cornerWidth: radiusX * corner,
+            cornerHeight: radiusY * corner,
+            transform: nil
+        )
+        let transform = CGAffineTransform(rotationAngle: angleRadians)
             .concatenating(CGAffineTransform(translationX: center.x, y: center.y))
+        return localPath.copy(using: [transform]) ?? localPath
     }
 
     private func handlePosition(screenDx: CGFloat, screenDy: CGFloat) -> CGPoint {
@@ -223,7 +236,7 @@ final class MaskOverlayNSView: NSView {
     private var bottomHandle: CGPoint { handlePosition(screenDx: 0, screenDy: screenRadiusY) }
     private var leftHandle: CGPoint { handlePosition(screenDx: -screenRadiusX, screenDy: 0) }
 
-    /// Point's offset from the mask center, unrotated into the ellipse's local
+    /// Point's offset from the mask center, unrotated into the analytic shape's local
     /// frame, in screen points.
     private func localScreenOffset(_ point: CGPoint) -> CGPoint {
         let cosR = cos(angleRadians)
@@ -235,25 +248,22 @@ final class MaskOverlayNSView: NSView {
 
     private func isInRotationZone(_ point: CGPoint) -> Bool {
         guard screenRadiusX > 0, screenRadiusY > 0 else { return false }
-        let local = localScreenOffset(point)
-        let innerRx = screenRadiusX + 20
-        let innerRy = screenRadiusY + 20
-        let innerNorm = (local.x * local.x) / (innerRx * innerRx)
-                      + (local.y * local.y) / (innerRy * innerRy)
-        let outerRx = screenRadiusX + 84
-        let outerRy = screenRadiusY + 84
-        let outerNorm = (local.x * local.x) / (outerRx * outerRx)
-                      + (local.y * local.y) / (outerRy * outerRy)
-        return innerNorm > 1.0 && outerNorm <= 1.0
+        return shapeSignedDistance(point, expansion: 20) > 0
+            && shapeSignedDistance(point, expansion: 84) <= 0
     }
 
-    /// Normalized ellipse distance — returns < 1 for inside, > 1 for outside.
-    private func ellipseDistance(_ point: CGPoint) -> CGFloat {
-        guard screenRadiusX > 0, screenRadiusY > 0 else { return .greatestFiniteMagnitude }
+    /// Rounded-box SDF in the normalized local frame, matching the edit shader. The zero
+    /// contour is the visible mask edge; negative is inside and positive outside.
+    private func shapeSignedDistance(_ point: CGPoint, expansion: CGFloat = 0) -> CGFloat {
+        let radiusX = screenRadiusX + expansion
+        let radiusY = screenRadiusY + expansion
+        guard radiusX > 0, radiusY > 0 else { return .greatestFiniteMagnitude }
         let local = localScreenOffset(point)
-        let nx = local.x / screenRadiusX
-        let ny = local.y / screenRadiusY
-        return sqrt(nx * nx + ny * ny)
+        let corner = CGFloat(maskGeometry.normalizedCornerRadius)
+        let qx = abs(local.x / radiusX) - (1 - corner)
+        let qy = abs(local.y / radiusY) - (1 - corner)
+        let outside = hypot(max(qx, 0), max(qy, 0))
+        return outside + min(max(qx, qy), 0) - corner
     }
 
     // MARK: - Drawing
@@ -262,44 +272,34 @@ final class MaskOverlayNSView: NSView {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
         guard viewportSize.x > 0, viewportSize.y > 0 else { return }
 
-        // Editable nominal ellipse. With feathering this is the Gaussian's 10%-coverage contour,
+        // Editable nominal shape. With feathering this is the Gaussian's 10%-coverage contour,
         // not a finite cutoff; the tail continues outside it.
-        let unitCircle = CGPath(ellipseIn: CGRect(x: -1, y: -1, width: 2, height: 2), transform: nil)
-        let outerTransform = ellipseTransform()
-        if let transformedPath = unitCircle.copy(using: [outerTransform]) {
-            ctx.addPath(transformedPath)
-            ctx.setStrokeColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.8))
-            ctx.setLineWidth(1.5)
-            ctx.strokePath()
-        }
+        ctx.addPath(maskPath())
+        ctx.setStrokeColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.8))
+        ctx.setLineWidth(1.5)
+        ctx.strokePath()
 
         // Full-strength inner feather boundary (dashed).
         let featherNorm = maskGeometry.feather / 100.0
         if featherNorm > 0.01 {
             let innerScale = max(1.0 - featherNorm, 0.0)
             if innerScale > 0.05 {
-                let innerTransform = ellipseTransform(radiusScale: innerScale)
-                if let innerPath = unitCircle.copy(using: [innerTransform]) {
-                    ctx.addPath(innerPath)
-                    ctx.setStrokeColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.35))
-                    ctx.setLineWidth(0.5)
-                    ctx.setLineDash(phase: 0, lengths: [4, 4])
-                    ctx.strokePath()
-                    ctx.setLineDash(phase: 0, lengths: [])
-                }
+                ctx.addPath(maskPath(radiusScale: innerScale))
+                ctx.setStrokeColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.35))
+                ctx.setLineWidth(0.5)
+                ctx.setLineDash(phase: 0, lengths: [4, 4])
+                ctx.strokePath()
+                ctx.setLineDash(phase: 0, lengths: [])
             }
 
             // A faint 1%-coverage guide communicates that the feather extends beyond the handles.
             let tailScale = innerScale + sqrt(2.0) * featherNorm
-            let tailTransform = ellipseTransform(radiusScale: tailScale)
-            if let tailPath = unitCircle.copy(using: [tailTransform]) {
-                ctx.addPath(tailPath)
-                ctx.setStrokeColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.2))
-                ctx.setLineWidth(0.5)
-                ctx.setLineDash(phase: 0, lengths: [2, 4])
-                ctx.strokePath()
-                ctx.setLineDash(phase: 0, lengths: [])
-            }
+            ctx.addPath(maskPath(radiusScale: tailScale))
+            ctx.setStrokeColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.2))
+            ctx.setLineWidth(0.5)
+            ctx.setLineDash(phase: 0, lengths: [2, 4])
+            ctx.strokePath()
+            ctx.setLineDash(phase: 0, lengths: [])
         }
 
         // Center dot
@@ -367,8 +367,8 @@ final class MaskOverlayNSView: NSView {
             }
         }
 
-        // Check inside ellipse (move)
-        if ellipseDistance(local) <= 1.0 {
+        // Check inside analytic shape (move)
+        if shapeSignedDistance(local) <= 0 {
             return self
         }
 
@@ -432,7 +432,7 @@ final class MaskOverlayNSView: NSView {
         let location = convert(event.locationInWindow, from: nil)
         coordinator.mouseDownLocation = location
 
-        // Determine drag type by priority: handles > move (inside ellipse) > rotate
+        // Determine drag type by priority: handles > move (inside shape) > rotate
         let dragType = determineDragType(at: location)
         guard dragType != .none else {
             super.mouseDown(with: event)
@@ -470,10 +470,10 @@ final class MaskOverlayNSView: NSView {
             if newAngle > 180 { newAngle -= 360 }
             if newAngle <= -180 { newAngle += 360 }
 
-            // Canonicalize into ACR's (−45°, 45°] range, swapping the ellipse
+            // Canonicalize into ACR's (−45°, 45°] range, swapping the shape
             // axes per quarter turn — ACR's decoder renders nothing for angles
             // outside this range, and its own files always store the canonical
-            // form. The displayed ellipse is identical either way.
+            // form. The displayed analytic shape is identical either way.
             var radii = trueScreenRadii(of: startGeo)
             let quarterTurns = (newAngle / 90).rounded()
             newAngle -= quarterTurns * 90
@@ -528,8 +528,8 @@ final class MaskOverlayNSView: NSView {
             }
         }
 
-        // Check inside ellipse (move)
-        if ellipseDistance(point) <= 1.0 {
+        // Check inside analytic shape (move)
+        if shapeSignedDistance(point) <= 0 {
             return .move
         }
 

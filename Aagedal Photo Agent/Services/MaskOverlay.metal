@@ -10,6 +10,7 @@ struct MaskOverlayParams {
     float2 radii;        // image UV [0,1]
     float rotation;      // radians
     float feather;       // 0-1
+    float cornerRadius;  // 1=ellipse, 0=rectangle
     float inverted;      // 0 or 1
     uint  visible;       // 0=hidden, 1=visible
 
@@ -80,7 +81,11 @@ kernel void maskOverlay(
     if (corrRadii.x <= 0.0 || corrRadii.y <= 0.0) return;   // degenerate — nothing to draw
     float2 d = (uv - params.center) * float2(aspect, 1.0);
     float2 local = float2(d.x * cosR + d.y * sinR, -d.x * sinR + d.y * cosR);
-    float dist = length(local / corrRadii);
+    float r = clamp(params.cornerRadius, 0.0, 1.0);
+    float2 normalized = local / corrRadii;
+    float2 q = abs(normalized) - float2(1.0 - r);
+    float signedDistance = length(max(q, float2(0.0))) + min(max(q.x, q.y), 0.0) - r;
+    float dist = signedDistance + 1.0;
 
     // Accumulate overlay alpha and color
     half4 existing = destination.read(gid);

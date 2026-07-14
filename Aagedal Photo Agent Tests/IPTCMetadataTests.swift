@@ -2,8 +2,29 @@ import Testing
 import Foundation
 import Metal
 import CoreImage
+import ImageIO
+import UniformTypeIdentifiers
 @testable import Aagedal_Photo_Agent
 
+private func grayscalePNG(_ bytes: [UInt8], width: Int, height: Int) -> Data? {
+    guard bytes.count == width * height,
+          let provider = CGDataProvider(data: Data(bytes) as CFData),
+          let image = CGImage(
+              width: width, height: height,
+              bitsPerComponent: 8, bitsPerPixel: 8, bytesPerRow: width,
+              space: CGColorSpaceCreateDeviceGray(),
+              bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
+              provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent
+          )
+    else { return nil }
+    let output = NSMutableData()
+    guard let destination = CGImageDestinationCreateWithData(
+        output, UTType.png.identifier as CFString, 1, nil
+    ) else { return nil }
+    CGImageDestinationAddImage(destination, image, nil)
+    guard CGImageDestinationFinalize(destination) else { return nil }
+    return output as Data
+}
 
 
 @Suite("IPTCMetadata.toWriteFields")
@@ -1234,6 +1255,133 @@ struct EllipseMaskGeometryCornerTests {
     }
 }
 
+@Suite("Rounded rectangle mask extension")
+struct RoundedRectangleMaskTests {
+    @Test("an imported ACR circular gradient remains a standard ellipse")
+    func importedACRMaskDefaultsToEllipse() throws {
+        let corrections: [[String: Any]] = [[
+            "CorrectionActive": "true",
+            "CorrectionName": "Radial",
+            "CorrectionMasks": [[
+                "What": "Mask/CircularGradient",
+                "Top": "0.2", "Left": "0.1", "Bottom": "0.8", "Right": "0.9",
+                "Angle": "0", "Feather": "50", "Flipped": "true",
+            ]],
+        ]]
+
+        let mask = try #require(parseMaskGroupBasedCorrections(corrections)?.masks.first)
+        #expect(mask.geometry.cornerRadius == nil)
+        #expect(mask.geometry.normalizedCornerRadius == 1)
+        #expect(mask.layerKind == .ellipseMask)
+    }
+
+    @Test("custom corner radius keeps the ACR circular-gradient fallback")
+    func customShapeEncodesACRFallback() throws {
+        var geometry = EllipseMaskGeometry()
+        geometry.cornerRadius = 0.25
+        let mask = MaskAdjustment(name: "Rounded", geometry: geometry)
+
+        let correction = try #require(encodeMaskGroupBasedCorrections([mask]).first)
+        #expect(correction.maskFields.contains { $0.name == "What" && $0.value == "Mask/CircularGradient" })
+        #expect(correction.maskFields.contains { $0.name == "Roundness" && $0.value == "0" })
+        #expect(correction.appPrivateFields.contains { $0.name == "CornerRadius" && $0.value == "0.25" })
+        #expect(mask.layerKind == .rectangleMask)
+    }
+
+    @Test("corner radius round-trips through an XMP sidecar")
+    func cornerRadiusRoundTripsThroughSidecar() throws {
+        let service = XMPSidecarService()
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        var geometry = EllipseMaskGeometry()
+        geometry.cornerRadius = 0.4
+        var settings = CameraRawSettings()
+        settings.localAdjustments = [MaskAdjustment(name: "Rounded", geometry: geometry)]
+        let imageURL = directory.appendingPathComponent("rounded.jpg")
+
+        try service.saveCameraRawOnly(settings, orientation: nil, for: imageURL)
+        let reloaded = try #require(service.loadSidecar(for: imageURL)?.cameraRaw?.localAdjustments?.first)
+        #expect(reloaded.geometry.cornerRadius.map { abs($0 - 0.4) < 1e-9 } == true)
+        #expect(reloaded.layerKind == .rectangleMask)
+    }
+}
+
+@Suite("Photo Agent AI mask extension")
+struct AIMaskExtensionTests {
+    @Test("AI masks encode a custom node without an ACR ellipse fallback")
+    func encodesWithoutACRFallback() throws {
+        let png = try #require(grayscalePNG([255, 0, 255, 0], width: 2, height: 2))
+        let ai = AIMaskGeometry(
+            width: 2,
+            height: 2,
+            pngData: png,
+            sourceOrientation: 6,
+            displayOrientation: 6,
+            target: .person
+        )
+        let mask = MaskAdjustment(name: "Subject", inverted: true, aiMask: ai, exposure: 0.5)
+
+        let correction = try #require(encodeMaskGroupBasedCorrections([mask]).first)
+        let custom = try #require(correction.customMaskFields)
+        #expect(correction.maskFields.isEmpty)
+        #expect(correction.correctionMasks == nil)
+        #expect(custom.contains { $0.name == "What" && $0.value == "Mask/AISelection" })
+        #expect(custom.contains { $0.name == "Inverted" && $0.value == "True" })
+        #expect(!correction.maskFields.contains { $0.value == "Mask/CircularGradient" })
+        #expect(correction.appPrivateFields.contains { $0.name == "AIMaskPNG" })
+        #expect(correction.appPrivateFields.contains { $0.name == "AIMaskTarget" && $0.value == "person" })
+        #expect(correction.appPrivateFields.contains { $0.name == "AIMaskVersion" && $0.value == "1" })
+        #expect(!correction.appPrivateFields.contains { $0.name == "AIMaskBlackPoint" })
+        #expect(!correction.appPrivateFields.contains { $0.name == "AIMaskWhitePoint" })
+        #expect(!correction.appPrivateFields.contains { $0.name == "AIMaskBlurRadius" })
+    }
+
+    @Test("AI mask pixels and orientation round-trip through an XMP sidecar")
+    func roundTripsThroughSidecar() throws {
+        let service = XMPSidecarService()
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let imageURL = directory.appendingPathComponent("ai-mask.jpg")
+        let png = try #require(grayscalePNG([255, 0, 255, 0], width: 2, height: 2))
+        let ai = AIMaskGeometry(
+            width: 2,
+            height: 2,
+            pngData: png,
+            sourceOrientation: 8,
+            displayOrientation: 8,
+            target: .object,
+            blackPoint: 0.2,
+            whitePoint: 0.8,
+            blurRadius: 0.005
+        )
+        var settings = CameraRawSettings()
+        settings.localAdjustments = [MaskAdjustment(name: "Object", aiMask: ai, exposure: 0.75)]
+
+        try service.saveCameraRawOnly(settings, orientation: nil, for: imageURL)
+        let sidecar = imageURL.deletingPathExtension().appendingPathExtension("xmp")
+        let xml = try String(contentsOf: sidecar, encoding: .utf8)
+        #expect(xml.contains("Mask/AISelection"))
+        #expect(!xml.contains("Mask/CircularGradient"))
+
+        let reloaded = try #require(service.loadSidecar(for: imageURL)?.cameraRaw?.localAdjustments?.first)
+        let reloadedAI = try #require(reloaded.aiMask)
+        #expect(reloaded.layerKind == .aiMask)
+        #expect(reloadedAI.width == 2)
+        #expect(reloadedAI.height == 2)
+        #expect(reloadedAI.sourceOrientation == 8)
+        #expect(reloadedAI.resolvedTarget == .object)
+        #expect(abs(reloadedAI.resolvedBlackPoint - 0.2) < 1e-9)
+        #expect(abs(reloadedAI.resolvedWhitePoint - 0.8) < 1e-9)
+        #expect(abs(reloadedAI.resolvedBlurRadius - 0.005) < 1e-9)
+        #expect(reloadedAI.pngData == png)
+        #expect(reloaded.inverted == false)
+        #expect(reloaded.exposure.map { abs($0 - 0.75) < 1e-6 } == true)
+    }
+}
+
 @Suite("EllipseMaskGeometry EXIF orientation transform")
 struct EllipseMaskGeometryOrientationTests {
     private let sensorAspect = 1.5
@@ -2143,6 +2291,201 @@ struct BrushRasterizationTests {
         #expect(pipeline.brushAlphaTexture == nil)
     }
 
+    @Test("an AI matte scales into the shared raster alpha slice")
+    func aiMaskRasterizes() throws {
+        guard let pipeline = makePipeline() else { return }
+        // Left column selected, right column clear. Horizontal sampling avoids any ambiguity in
+        // bitmap row origin while still proving PNG decode + GPU scaling + slice upload.
+        let png = try #require(grayscalePNG([255, 0, 255, 0], width: 2, height: 2))
+        let ai = AIMaskGeometry(
+            width: 2,
+            height: 2,
+            pngData: png,
+            sourceOrientation: 1,
+            displayOrientation: 1
+        )
+        let tex = try #require(pipeline.rebuildMaskAlpha([.ai(ai)], size: MTLSize(width: 64, height: 64, depth: 1)))
+        let pixels = readSlice(tex, slice: 0)
+        func at(_ x: Int, _ y: Int) -> Float { pixels[y * 64 + x] }
+        #expect(at(8, 32) > 0.9)
+        #expect(at(56, 32) < 0.1)
+    }
+
+    @Test("AI matte black and white points remap confidence values")
+    func aiMaskLevelsRefineConfidence() throws {
+        guard let pipeline = makePipeline() else { return }
+        let png = try #require(grayscalePNG([0, 64, 128, 192, 255], width: 5, height: 1))
+        let ai = AIMaskGeometry(
+            width: 5,
+            height: 1,
+            pngData: png,
+            blackPoint: 0.25,
+            whitePoint: 0.75
+        )
+        let tex = try #require(pipeline.rebuildMaskAlpha(
+            [.ai(ai)],
+            size: MTLSize(width: 5, height: 1, depth: 1)
+        ))
+        let pixels = readSlice(tex, slice: 0)
+        #expect(pixels[0] < 0.01)
+        #expect(pixels[1] < 0.02)
+        #expect(pixels[2] > 0.48 && pixels[2] < 0.53)
+        #expect(pixels[3] > 0.98)
+        #expect(pixels[4] > 0.99)
+    }
+
+    @Test("AI matte blur softens both sides of a hard contour")
+    func aiMaskBlurSoftensContour() throws {
+        guard let pipeline = makePipeline() else { return }
+        let width = 101
+        let height = 101
+        let bytes = (0..<(width * height)).map { index -> UInt8 in
+            (index % width) >= 50 ? 255 : 0
+        }
+        let png = try #require(grayscalePNG(bytes, width: width, height: height))
+        let ai = AIMaskGeometry(
+            width: width,
+            height: height,
+            pngData: png,
+            blurRadius: 0.02
+        )
+        let tex = try #require(pipeline.rebuildMaskAlpha(
+            [.ai(ai)],
+            size: MTLSize(width: width, height: height, depth: 1)
+        ))
+        let pixels = readSlice(tex, slice: 0)
+        func at(_ x: Int) -> Float { pixels[50 * width + x] }
+        #expect(at(47) > 0.005 && at(47) < 0.5)
+        #expect(at(52) > 0.5 && at(52) < 0.995)
+        #expect(at(40) < 0.005)
+        #expect(at(60) > 0.995)
+    }
+
+    @Test("Core Image AI mattes retain their vertical orientation through PNG and Metal")
+    func aiMaskVerticalOrientation() throws {
+        guard let pipeline = makePipeline() else { return }
+        let black = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 1))
+            .cropped(to: CGRect(x: 0, y: 0, width: 2, height: 1))
+        let white = CIImage(color: CIColor(red: 1, green: 1, blue: 1, alpha: 1))
+            .cropped(to: CGRect(x: 0, y: 1, width: 2, height: 1))
+        let image = white.composited(over: black)
+            .cropped(to: CGRect(x: 0, y: 0, width: 2, height: 2))
+        let png = try #require(AIMaskGenerator.renderGrayscalePNG(
+            from: image,
+            width: 2,
+            height: 2,
+            bounds: image.extent
+        ))
+        let ai = AIMaskGeometry(
+            width: 2,
+            height: 2,
+            pngData: png,
+            sourceOrientation: 1,
+            displayOrientation: 1
+        )
+        let tex = try #require(pipeline.rebuildMaskAlpha(
+            [.ai(ai)],
+            size: MTLSize(width: 64, height: 64, depth: 1)
+        ))
+        let pixels = readSlice(tex, slice: 0)
+        func at(_ x: Int, _ y: Int) -> Float { pixels[y * 64 + x] }
+        #expect(at(32, 8) > 0.9)
+        #expect(at(32, 56) < 0.1)
+    }
+
+    @Test("Vision one-component float mattes retain background values through PNG and Metal")
+    func aiMaskOneComponentFloatValues() throws {
+        guard let pipeline = makePipeline() else { return }
+        var pixelBuffer: CVPixelBuffer?
+        let status = CVPixelBufferCreate(
+            kCFAllocatorDefault,
+            2,
+            2,
+            kCVPixelFormatType_OneComponent32Float,
+            nil,
+            &pixelBuffer
+        )
+        #expect(status == kCVReturnSuccess)
+        let buffer = try #require(pixelBuffer)
+        CVPixelBufferLockBaseAddress(buffer, [])
+        let rowStride = CVPixelBufferGetBytesPerRow(buffer) / MemoryLayout<Float>.size
+        let base = try #require(CVPixelBufferGetBaseAddress(buffer)?.assumingMemoryBound(to: Float.self))
+        for y in 0..<2 {
+            base[y * rowStride] = 1
+            base[y * rowStride + 1] = 0
+        }
+        CVPixelBufferUnlockBaseAddress(buffer, [])
+
+        let image = CIImage(cvPixelBuffer: buffer)
+        let png = try #require(AIMaskGenerator.renderGrayscalePNG(
+            from: image,
+            width: 2,
+            height: 2,
+            bounds: image.extent
+        ))
+        let ai = AIMaskGeometry(
+            width: 2,
+            height: 2,
+            pngData: png,
+            sourceOrientation: 1,
+            displayOrientation: 1
+        )
+        let tex = try #require(pipeline.rebuildMaskAlpha(
+            [.ai(ai)],
+            size: MTLSize(width: 64, height: 64, depth: 1)
+        ))
+        let pixels = readSlice(tex, slice: 0)
+        func at(_ x: Int, _ y: Int) -> Float { pixels[y * 64 + x] }
+        #expect(at(8, 32) > 0.9)
+        #expect(at(56, 32) < 0.1)
+    }
+
+    @Test("AI selection rejects Vision's uniform full-frame matte")
+    func aiMaskRejectsUniformFullFrame() {
+        #expect(AIMaskGenerator.isEffectivelyFullFrameMask([255, 252, 248, 240]))
+        #expect(!AIMaskGenerator.isEffectivelyFullFrameMask([255, 252, 239, 240]))
+        #expect(!AIMaskGenerator.isEffectivelyFullFrameMask([255, 0, 255, 0]))
+        #expect(!AIMaskGenerator.isEffectivelyFullFrameMask([]))
+    }
+
+    @Test("AI instance hit testing uses top-left preview coordinates")
+    func aiMaskInstanceHitTesting() throws {
+        var pixelBuffer: CVPixelBuffer?
+        let status = CVPixelBufferCreate(
+            kCFAllocatorDefault,
+            4,
+            4,
+            kCVPixelFormatType_OneComponent32Float,
+            nil,
+            &pixelBuffer
+        )
+        #expect(status == kCVReturnSuccess)
+        let buffer = try #require(pixelBuffer)
+
+        CVPixelBufferLockBaseAddress(buffer, [])
+        let stride = CVPixelBufferGetBytesPerRow(buffer) / MemoryLayout<Float>.size
+        let base = try #require(CVPixelBufferGetBaseAddress(buffer)?.assumingMemoryBound(to: Float.self))
+        for y in 0..<4 {
+            for x in 0..<4 {
+                base[y * stride + x] = x < 2 && y < 2 ? 0.75 : 0
+            }
+        }
+        CVPixelBufferUnlockBaseAddress(buffer, [])
+
+        #expect(AIMaskGenerator.maskCoverage(
+            atDisplayPoint: CGPoint(x: 0.25, y: 0.25),
+            in: buffer
+        ) == 0.75)
+        #expect(AIMaskGenerator.maskCoverage(
+            atDisplayPoint: CGPoint(x: 0.75, y: 0.25),
+            in: buffer
+        ) == 0)
+        #expect(AIMaskGenerator.maskCoverage(
+            atDisplayPoint: CGPoint(x: 0.25, y: 0.75),
+            in: buffer
+        ) == 0)
+    }
+
     @Test("an erase stroke subtracts a prior additive stroke's coverage")
     func eraseSubtracts() throws {
         guard let pipeline = makePipeline() else { return }
@@ -2308,6 +2651,29 @@ struct BrushCompositingTests {
         #expect(abs(corner - 0.4) < 0.05)       // unpainted corner ~unchanged (~0.4)
     }
 
+    @Test("an AI mask's exposure applies only inside its raster matte")
+    func aiMaskBrightensSelectedRegion() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else { return }
+        let png = try #require(grayscalePNG([255, 0, 255, 0], width: 2, height: 2))
+        var mask = MaskAdjustment()
+        mask.aiMask = AIMaskGeometry(
+            width: 2,
+            height: 2,
+            pngData: png,
+            sourceOrientation: 1,
+            displayOrientation: 1
+        )
+        mask.exposure = 1.0
+        var settings = CameraRawSettings()
+        settings.localAdjustments = [mask]
+
+        let result = try #require(MetalEditPipeline.renderOffscreen(source: solidGray(0.4), settings: settings))
+        let selected = sample(result, x: 8, y: 32)
+        let clear = sample(result, x: 56, y: 32)
+        #expect(selected > clear + 0.2)
+        #expect(abs(clear - 0.4) < 0.05)
+    }
+
     @Test("a brush anonymizer mask still receives the global exposure adjustment")
     func anonymizerReceivesGlobalAdjustment() throws {
         guard MTLCreateSystemDefaultDevice() != nil else { return }
@@ -2366,6 +2732,35 @@ struct BrushCompositingTests {
         let corner = sample(result, x: 3, y: 3)
         #expect(center > corner + 0.2)          // ellipse center brightened
         #expect(abs(corner - 0.4) < 0.05)       // outside the ellipse ~unchanged
+    }
+
+    @Test("zero corner radius includes the rectangular corners while ACR ellipse does not")
+    func rectangleMaskIncludesCorners() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else { return }
+        var ellipse = MaskAdjustment()
+        ellipse.geometry = EllipseMaskGeometry(centerX: 0.5, centerY: 0.5,
+                                               radiusX: 0.3, radiusY: 0.3,
+                                               rotation: 0, feather: 0)
+        ellipse.exposure = 1.0
+        var rectangle = ellipse
+        rectangle.geometry.cornerRadius = 0
+
+        var ellipseSettings = CameraRawSettings()
+        ellipseSettings.localAdjustments = [ellipse]
+        var rectangleSettings = CameraRawSettings()
+        rectangleSettings.localAdjustments = [rectangle]
+
+        let ellipseResult = try #require(MetalEditPipeline.renderOffscreen(
+            source: solidGray(0.4), settings: ellipseSettings
+        ))
+        let rectangleResult = try #require(MetalEditPipeline.renderOffscreen(
+            source: solidGray(0.4), settings: rectangleSettings
+        ))
+        let ellipseCorner = sample(ellipseResult, x: 47, y: 47)
+        let rectangleCorner = sample(rectangleResult, x: 47, y: 47)
+
+        #expect(abs(ellipseCorner - 0.4) < 0.05)
+        #expect(rectangleCorner > ellipseCorner + 0.2)
     }
 
     @Test("a fully feathered ellipse extends a Gaussian tail beyond its nominal outline")

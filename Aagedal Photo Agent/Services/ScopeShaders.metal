@@ -59,7 +59,13 @@ struct MaskParams {
     uint  activeFlags;      // bitmask: bit0=exposure, bit1=contrast,
                             // bit2=highlights, bit3=shadows, bit4=whites,
                             // bit5=blacks, bit6=saturation, bit7=vibrance
-    uint  _pad;
+    float anonymizerAmount;
+    float anonymizerBlackOut;
+    float temperature;
+    float tint;
+    float cornerRadius;     // 1 = ACR ellipse, 0 = Photo Agent rectangle
+    uint  maskType;
+    uint  brushLayer;
 };
 
 // ============================================================
@@ -294,9 +300,9 @@ inline float3 applyScopeGlobal(
     return rgb;
 }
 
-// Keep scope-side ellipse rendering in lockstep with EditAdjustments.metal. A feathered ellipse's
-// nominal outline is the 10% contour; its Gaussian tail continues outside instead of ending there.
-inline float ellipseFeatherCoverage(float dist, float feather) {
+// Keep scope-side analytic-mask rendering in lockstep with EditAdjustments.metal. A feathered
+// shape's nominal outline is the 10% contour; its Gaussian tail continues beyond the handles.
+inline float analyticFeatherCoverage(float dist, float feather) {
     float f = clamp(feather, 0.0, 1.0);
     if (f <= 0.0) return dist <= 1.0 ? 1.0 : 0.0;
     float inner = 1.0 - f;
@@ -305,15 +311,27 @@ inline float ellipseFeatherCoverage(float dist, float feather) {
     return exp2(-3.32192809489 * t * t);
 }
 
-// Ellipse-mask coverage weight at `uv` (0 ⇒ no effect). Mirrors the scope's prior inline
-// formula; kept separate from the color application so the kernel can sequence nodes.
-inline float applyScopeMaskWeight(constant MaskParams &mask, float2 uv) {
+inline float roundedRectangleDistance(float2 p, float radius) {
+    float r = clamp(radius, 0.0, 1.0);
+    float2 q = abs(p) - float2(1.0 - r);
+    float signedDistance = length(max(q, float2(0.0))) + min(max(q.x, q.y), 0.0) - r;
+    return signedDistance + 1.0;
+}
+
+// Analytic ellipse/rounded-rectangle coverage weight at `uv` (0 ⇒ no effect). Kept separate
+// from color application so the kernel can sequence nodes like the main edit shader.
+inline float applyScopeMaskWeight(constant MaskParams &mask, float2 uv, float2 sourceSize) {
+    float aspect = sourceSize.y > 0.0 ? sourceSize.x / sourceSize.y : 1.0;
     float cosR = cos(mask.rotation);
     float sinR = sin(mask.rotation);
-    float2 d = uv - mask.center;
+    float2 corner = mask.radii * float2(aspect, 1.0);
+    float2 ab = float2(corner.x * cosR + corner.y * sinR,
+                       -corner.x * sinR + corner.y * cosR);
+    if (ab.x <= 0.0 || ab.y <= 0.0) return 0.0;
+    float2 d = (uv - mask.center) * float2(aspect, 1.0);
     float2 local = float2(d.x * cosR + d.y * sinR, -d.x * sinR + d.y * cosR);
-    float dist = length(local / mask.radii);
-    float weight = ellipseFeatherCoverage(dist, mask.feather);
+    float dist = roundedRectangleDistance(local / ab, mask.cornerRadius);
+    float weight = analyticFeatherCoverage(dist, mask.feather);
     if (mask.inverted > 0.5) weight = 1.0 - weight;
     weight *= mask.amount;
     return weight;
@@ -429,7 +447,7 @@ inline float3 applyEdits(
     if (params.orderCount == 0) {
         rgb = applyScopeGlobal(rgb, params, toneLUT, hslParams);
         for (uint m = 0; m < params.maskCount && m < 8; m++) {
-            float weight = applyScopeMaskWeight(masks[m], uv);
+            float weight = applyScopeMaskWeight(masks[m], uv, params.sourceSize);
             if (weight < 0.001) continue;
             rgb = mix(rgb, applyScopeMaskColor(rgb, masks[m]), weight);
         }
@@ -441,7 +459,7 @@ inline float3 applyEdits(
         if (entry >= params.maskCount) {
             rgb = applyScopeGlobal(rgb, params, toneLUT, hslParams);
         } else {
-            float weight = applyScopeMaskWeight(masks[entry], uv);
+            float weight = applyScopeMaskWeight(masks[entry], uv, params.sourceSize);
             if (weight < 0.001) continue;
             rgb = mix(rgb, applyScopeMaskColor(rgb, masks[entry]), weight);
         }

@@ -169,6 +169,19 @@ nonisolated struct EllipseMaskGeometry: Codable, Sendable, Equatable {
     var radiusY: Double = 0.10
     var rotation: Double = 0
     var feather: Double = 50
+    /// Photo Agent extension layered on top of ACR's `Mask/CircularGradient` fallback.
+    /// `nil` (and 1.0) is the standard ellipse; 0 is a sharp rectangle; values between
+    /// are an elliptically-rounded rectangle. Optional keeps older Codable settings valid
+    /// and lets an untouched ACR mask round-trip without app-private shape metadata.
+    var cornerRadius: Double?
+
+    var normalizedCornerRadius: Double {
+        min(max(cornerRadius ?? 1, 0), 1)
+    }
+
+    var isStandardEllipse: Bool {
+        normalizedCornerRadius >= 0.999999
+    }
 
     /// True UV semi-axes, decoded from the oriented-corner box encoding.
     /// Components ≤ 0 mean the stored values don't describe a valid ellipse
@@ -375,6 +388,76 @@ nonisolated struct BrushMaskGeometry: Codable, Sendable, Equatable {
     }
 }
 
+/// Which specialized Vision instance model should interpret the user's click.
+nonisolated enum AIMaskTarget: String, Codable, CaseIterable, Sendable, Equatable {
+    case automatic
+    case person
+    case object
+
+    var title: String {
+        switch self {
+        case .automatic: return "Auto"
+        case .person: return "Person"
+        case .object: return "Object"
+        }
+    }
+}
+
+/// Photo Agent's persisted result from Vision instance selection. The mask PNG is a compact,
+/// resolution-independent alpha source: the render pipeline scales it to the current
+/// preview/export resolution. It is intentionally Photo Agent-only; ACR has no fallback mask for
+/// this layer and may ignore the custom correction entirely.
+///
+/// `sourceOrientation` records the display orientation in which Vision authored the pixels.
+/// `displayOrientation` is rewritten only on the transient render copy so a later in-app image
+/// rotation carries the selected subject with the photo without rewriting the stored PNG.
+nonisolated struct AIMaskGeometry: Codable, Sendable, Equatable {
+    var width: Int
+    var height: Int
+    var pngData: Data
+    var sourceOrientation: Int = 1
+    var displayOrientation: Int = 1
+    /// The Vision model used to create this matte. Optional for backward compatibility with AI
+    /// masks written before target selection was exposed; absence means Auto.
+    var target: AIMaskTarget? = nil
+    /// Non-destructive levels applied to Vision's confidence matte. Optional endpoints preserve
+    /// byte-for-byte rendering for masks written before refinement controls existed.
+    var blackPoint: Double? = nil
+    var whitePoint: Double? = nil
+    /// Gaussian radius as a fraction of the mask's long edge. This makes the apparent softness
+    /// stable between the compact stored PNG, the editor preview, and a full-resolution export.
+    var blurRadius: Double? = nil
+
+    var resolvedTarget: AIMaskTarget { target ?? .automatic }
+    var resolvedBlackPoint: Double {
+        guard let blackPoint, blackPoint.isFinite else { return 0 }
+        return min(max(blackPoint, 0), 0.99)
+    }
+    var resolvedWhitePoint: Double {
+        guard let whitePoint, whitePoint.isFinite else { return 1 }
+        return min(max(whitePoint, 0.01), 1)
+    }
+    var resolvedBlurRadius: Double {
+        guard let blurRadius, blurRadius.isFinite else { return 0 }
+        return min(max(blurRadius, 0), 0.02)
+    }
+    var hasRefinements: Bool {
+        resolvedBlackPoint > 0.000001
+            || resolvedWhitePoint < 0.999999
+            || resolvedBlurRadius > 0.000001
+    }
+
+    var isValid: Bool {
+        width > 0 && height > 0 && !pngData.isEmpty
+    }
+
+    func transformedForDisplay(orientation: Int) -> AIMaskGeometry {
+        var result = self
+        result.displayOrientation = orientation
+        return result
+    }
+}
+
 nonisolated enum WatermarkDimension: String, Codable, Sendable {
     case width, height
 }
@@ -563,6 +646,9 @@ nonisolated struct MaskAdjustment: Codable, Sendable, Equatable, Identifiable {
     /// than making the geometry a polymorphic sum type, so every `mask.geometry` call site is
     /// untouched.
     var brush: BrushMaskGeometry?
+    /// When non-nil, the correction uses a Photo Agent AI-selected raster matte and `geometry`
+    /// is unused. AI and brush are mutually exclusive for masks authored by Photo Agent.
+    var aiMask: AIMaskGeometry?
 
     var exposure: Double?
     var contrast: Int?
@@ -590,6 +676,9 @@ nonisolated struct MaskAdjustment: Codable, Sendable, Equatable, Identifiable {
         if let brush {
             result.brush = brush.transformedForDisplay(orientation: orientation)
         }
+        if let aiMask {
+            result.aiMask = aiMask.transformedForDisplay(orientation: orientation)
+        }
         return result
     }
 
@@ -602,9 +691,13 @@ nonisolated struct MaskAdjustment: Codable, Sendable, Equatable, Identifiable {
         return result
     }
 
-    /// The layer kind for icon/affordance purposes — a brush mask when `brush` is set,
-    /// otherwise an analytic ellipse.
-    var layerKind: LayerKind { brush != nil ? .brushMask : .ellipseMask }
+    /// The layer kind for icon/affordance purposes. Rounded rectangles deliberately remain
+    /// backed by ACR's circular-gradient geometry so ACR can render an ellipse fallback.
+    var layerKind: LayerKind {
+        if brush != nil { return .brushMask }
+        if aiMask != nil { return .aiMask }
+        return geometry.isStandardEllipse ? .ellipseMask : .rectangleMask
+    }
 }
 
 /// One watermark layer instance — references a named PNG in the reusable Watermark
@@ -640,16 +733,20 @@ nonisolated struct WatermarkLayer: Codable, Sendable, Equatable, Identifiable {
 nonisolated enum LayerKind: Sendable, Equatable {
     case global
     case ellipseMask
+    case rectangleMask
     case brushMask
+    case aiMask
     case watermark
 
     /// SF Symbol name representing this layer kind.
     var systemImage: String {
         switch self {
-        case .global:      return "circle.lefthalf.filled"
-        case .ellipseMask: return "circle.dashed"
-        case .brushMask:   return "paintbrush.pointed"
-        case .watermark:   return "seal"
+        case .global:        return "circle.lefthalf.filled"
+        case .ellipseMask:   return "circle.dashed"
+        case .rectangleMask: return "rectangle.dashed"
+        case .brushMask:     return "paintbrush.pointed"
+        case .aiMask:        return "viewfinder"
+        case .watermark:     return "seal"
         }
     }
 }
@@ -1000,7 +1097,7 @@ nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
     /// `CameraRawCrop.transformedForDisplay` at its consumers).
     /// `displayAspect` is the oriented pixel width/height of the render target.
     func masksTransformedForDisplay(orientation: Int, displayAspect: Double) -> CameraRawSettings {
-        guard orientation > 1, let masks = localAdjustments, !masks.isEmpty else { return self }
+        guard let masks = localAdjustments, !masks.isEmpty else { return self }
         let sensorAspect = orientation >= 5 && displayAspect > 0 ? 1 / displayAspect : displayAspect
         var result = self
         result.localAdjustments = masks.map {
