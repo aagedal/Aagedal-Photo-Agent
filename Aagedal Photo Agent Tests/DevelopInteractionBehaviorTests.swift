@@ -40,6 +40,45 @@ struct DevelopInteractionBehaviorTests {
         #expect(result == urls[3])
     }
 
+    @Test("Deleting a C2PA image immediately removes its stale visible-cache entry")
+    @MainActor
+    func deletingC2PAImageRebuildsVisibleCacheImmediately() async {
+        var signedImage = ImageFile(url: urls[1])
+        signedImage.hasC2PA = true
+        let survivingImage = ImageFile(url: urls[2])
+        let viewModel = BrowserViewModel(imageTrashHandler: TrashStub())
+        viewModel.images = [signedImage, survivingImage]
+        await Task.yield()
+        viewModel.selectedImageIDs = [signedImage.url]
+        viewModel.lastClickedImageURL = signedImage.url
+
+        viewModel.deleteSelectedImages()
+
+        #expect(viewModel.images.map(\.url) == [survivingImage.url])
+        #expect(viewModel.visibleImages.map(\.url) == [survivingImage.url])
+        #expect(viewModel.selectedImageIDs == [survivingImage.url])
+    }
+
+    @Test("Trash failures keep the C2PA image and report the filesystem error")
+    @MainActor
+    func c2paTrashFailureIsReported() async {
+        var signedImage = ImageFile(url: urls[1])
+        signedImage.hasC2PA = true
+        let viewModel = BrowserViewModel(
+            imageTrashHandler: TrashStub(failingURLs: [signedImage.url])
+        )
+        viewModel.images = [signedImage]
+        await Task.yield()
+        viewModel.selectedImageIDs = [signedImage.url]
+
+        viewModel.deleteSelectedImages()
+
+        #expect(viewModel.images.map(\.url) == [signedImage.url])
+        #expect(viewModel.selectedImageIDs == [signedImage.url])
+        #expect(viewModel.errorMessage?.contains(signedImage.filename) == true)
+        #expect(viewModel.errorMessage?.contains("Test trash failure") == true)
+    }
+
     @Test("Brush axis follows the first dominant cursor direction")
     func brushAxisInference() {
         let start = CGPoint(x: 40, y: 50)
@@ -77,6 +116,20 @@ struct DevelopInteractionBehaviorTests {
         AnonymizerToggleBehavior.setEnabled(true, settings: &settings)
 
         #expect(settings?.amount == 72)
+    }
+
+    private struct TrashStub: ImageTrashHandling {
+        var failingURLs: Set<URL> = []
+
+        func trashItem(at url: URL) throws {
+            if failingURLs.contains(url) {
+                throw NSError(
+                    domain: "DevelopInteractionBehaviorTests",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "Test trash failure"]
+                )
+            }
+        }
     }
 
     @Test("Preview cursor maps through the active viewport")

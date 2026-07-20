@@ -8,6 +8,16 @@ enum SidebarTree {
     case open
 }
 
+nonisolated protocol ImageTrashHandling: Sendable {
+    func trashItem(at url: URL) throws
+}
+
+nonisolated struct SystemImageTrashHandler: ImageTrashHandling {
+    func trashItem(at url: URL) throws {
+        try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+    }
+}
+
 @Observable
 final class BrowserViewModel {
     struct MetadataLoadingProgress: Equatable {
@@ -182,6 +192,7 @@ final class BrowserViewModel {
     private let logger = Logger(subsystem: "com.aagedal.photo-agent", category: "BrowserViewModel")
     private let perfLog = Logger(subsystem: "com.aagedal.photo-agent", category: "MetadataPerf")
     @ObservationIgnored var onImagesDeleted: ((Set<URL>) -> Void)?
+    @ObservationIgnored private let imageTrashHandler: any ImageTrashHandling
 
     @ObservationIgnored private var searchDebounceTask: Task<Void, Never>?
     @ObservationIgnored private var needsSortRebuild = false
@@ -229,9 +240,11 @@ final class BrowserViewModel {
     @ObservationIgnored private(set) var selectedImagesCache: [ImageFile] = []
 
     init(thumbnailService: ThumbnailService = ThumbnailService(),
-         fullScreenImageCache: FullScreenImageCache = FullScreenImageCache()) {
+         fullScreenImageCache: FullScreenImageCache = FullScreenImageCache(),
+         imageTrashHandler: any ImageTrashHandling = SystemImageTrashHandler()) {
         self.thumbnailService = thumbnailService
         self.fullScreenImageCache = fullScreenImageCache
+        self.imageTrashHandler = imageTrashHandler
         if let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.thumbnailSortOrder),
            let stored = SortOrder(rawValue: raw) {
             sortOrder = stored
@@ -2808,29 +2821,52 @@ final class BrowserViewModel {
         let anchorURL = lastClickedImageURL.flatMap { urlsToDelete.contains($0) ? $0 : nil }
             ?? orderedURLs.first(where: urlsToDelete.contains)
         var deletedURLs: Set<URL> = []
+        var failures: [(url: URL, message: String)] = []
 
         for url in urlsToDelete {
             do {
-                try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+                try imageTrashHandler.trashItem(at: url)
                 deletedURLs.insert(url)
             } catch {
-                // Skip files that can't be trashed
-                continue
+                failures.append((url, error.localizedDescription))
             }
         }
 
-        guard !deletedURLs.isEmpty else { return }
-        images.removeAll { deletedURLs.contains($0.url) }
-        manualOrder.removeAll { deletedURLs.contains($0) }
+        if !deletedURLs.isEmpty {
+            images.removeAll { deletedURLs.contains($0.url) }
+            manualOrder.removeAll { deletedURLs.contains($0) }
+            pendingMetadataURLs.subtract(deletedURLs)
 
-        let closestURL = Self.closestSurvivingImageURL(
-            in: orderedURLs,
-            around: anchorURL,
-            deleting: deletedURLs
-        )
-        selectedImageIDs = closestURL.map { Set([$0]) } ?? []
-        lastClickedImageURL = closestURL
-        onImagesDeleted?(deletedURLs)
+            // `loadBasicMetadata` deliberately suppresses the normal images.didSet cascade
+            // while it awaits each metadata batch. C2PA assets can make that window longer
+            // while their embedded manifests are parsed. A deletion during the window must
+            // therefore rebuild identity/sort/visible caches explicitly; otherwise the file
+            // is in the Trash but its stale thumbnail remains visible and appears undeletable.
+            urlToImageIndex = Dictionary(
+                uniqueKeysWithValues: images.enumerated().map { ($1.url, $0) }
+            )
+            rebuildSortedCache(forceSort: true)
+
+            let closestURL = Self.closestSurvivingImageURL(
+                in: orderedURLs,
+                around: anchorURL,
+                deleting: deletedURLs
+            )
+            selectedImageIDs = closestURL.map { Set([$0]) } ?? []
+            lastClickedImageURL = closestURL
+            onImagesDeleted?(deletedURLs)
+
+            for url in deletedURLs {
+                thumbnailService.invalidateThumbnail(for: url)
+                fullScreenImageCache.invalidateImage(for: url)
+                Task { await C2PASigningService.invalidateValidationCache(for: url) }
+            }
+        }
+
+        if let firstFailure = failures.first {
+            let suffix = failures.count == 1 ? "" : " and \(failures.count - 1) other file(s)"
+            errorMessage = "Couldn’t move \(firstFailure.url.lastPathComponent)\(suffix) to the Trash: \(firstFailure.message)"
+        }
     }
 
     // MARK: - Move to Subfolder
