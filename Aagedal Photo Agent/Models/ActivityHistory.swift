@@ -4,6 +4,7 @@ import Foundation
 enum ActivityKind: String, Codable, Sendable {
     case importJob
     case upload
+    case faceScan
 }
 
 /// Whether a file was confirmed intact after the operation.
@@ -42,7 +43,7 @@ struct ActivityFileRecord: Codable, Sendable, Identifiable {
     }
 }
 
-/// A single completed (or cancelled) import or upload — the Layer 1 summary row.
+/// A single completed (or cancelled) background operation — the Layer 1 summary row.
 struct ActivityEntry: Codable, Sendable, Identifiable {
     let id: UUID
     let kind: ActivityKind
@@ -92,11 +93,21 @@ struct ActivityEntry: Codable, Sendable, Identifiable {
 
     /// One-line headline for the completion banner and the Layer 1 row.
     var summary: String {
-        let noun = kind == .importJob ? "Import" : "Upload"
-        if wasCancelled {
-            return "\(noun) cancelled — \(successCount) of \(totalCount) file\(totalCount == 1 ? "" : "s")"
+        let noun = switch kind {
+        case .importJob: "Import"
+        case .upload: "Upload"
+        case .faceScan: "Face scan"
         }
-        var line = "\(noun) of \(successCount) file\(successCount == 1 ? "" : "s") completed"
+        if wasCancelled {
+            let item = kind == .faceScan ? "photo" : "file"
+            return "\(noun) cancelled — \(successCount) of \(totalCount) \(item)\(totalCount == 1 ? "" : "s")"
+        }
+        var line: String
+        if kind == .faceScan {
+            line = "Face scan of \(successCount) photo\(successCount == 1 ? "" : "s") completed"
+        } else {
+            line = "\(noun) of \(successCount) file\(successCount == 1 ? "" : "s") completed"
+        }
         if kind == .importJob && verificationEnabled && verificationFailures == 0 && failureCount == 0 {
             line += " with copy verification"
         }

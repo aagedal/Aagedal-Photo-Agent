@@ -147,7 +147,12 @@ struct ContentView: View {
         let thumbnailService = ThumbnailService()
         let fullScreenImageCache = FullScreenImageCache()
         let browser = BrowserViewModel(thumbnailService: thumbnailService, fullScreenImageCache: fullScreenImageCache)
-        let faceRecognition = FaceRecognitionViewModel(readService: browser.metadataReadService, writeEngine: browser.writeEngine)
+        let history = ActivityHistoryStore()
+        let faceRecognition = FaceRecognitionViewModel(
+            readService: browser.metadataReadService,
+            writeEngine: browser.writeEngine,
+            activityHistory: history
+        )
         // Wire face deletion onto every pane (primary now, the split pane when created).
         let configurePane: (BrowserViewModel) -> Void = { [weak faceRecognition] vm in
             vm.onImagesDeleted = { urls in faceRecognition?.deleteFaces(forImageURLs: urls) }
@@ -162,7 +167,6 @@ struct ContentView: View {
         _panes = State(initialValue: panesModel)
         _metadataViewModel = State(initialValue: MetadataViewModel(readService: browser.metadataReadService, writeEngine: browser.writeEngine))
         _faceRecognitionViewModel = State(initialValue: faceRecognition)
-        let history = ActivityHistoryStore()
         _activityHistory = State(initialValue: history)
         _importViewModel = State(initialValue: ImportViewModel(readService: browser.metadataReadService, writeEngine: browser.writeEngine, activityHistory: history))
     }
@@ -1285,10 +1289,10 @@ struct ContentView: View {
                 .padding(.vertical, 6)
             }
 
-            if !activityHistory.entries.isEmpty {
+            if faceRecognitionViewModel.isScanning || !activityHistory.entries.isEmpty {
                 Divider()
                 HStack {
-                    ActivityHistoryButton(history: activityHistory)
+                    ActivityHistoryButton(history: activityHistory, faceViewModel: faceRecognitionViewModel)
                     Spacer()
                 }
                 .padding(.horizontal, 12)

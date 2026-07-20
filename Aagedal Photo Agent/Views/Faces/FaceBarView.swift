@@ -32,6 +32,10 @@ struct FaceBarView: View {
         images.map(\.url)
     }
 
+    private var isScanningCurrentFolder: Bool {
+        viewModel.isScanning(folderURL: folderURL)
+    }
+
     private var isMultiSelecting: Bool {
         multiSelectedGroupIDs.count >= 2
     }
@@ -109,7 +113,7 @@ struct FaceBarView: View {
             // Face group thumbnails (show in-progress groups during scanning)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 2) {
-                    if viewModel.isScanning {
+                    if isScanningCurrentFolder {
                         // During scanning: show intermediate groups (non-interactive)
                         ForEach(viewModel.scanningGroups) { group in
                             FaceGroupThumbnail(
@@ -139,7 +143,7 @@ struct FaceBarView: View {
                 }
                 .padding(.horizontal, 4)
             }
-            .allowsHitTesting(!viewModel.isScanning)
+            .allowsHitTesting(!isScanningCurrentFolder)
 
             // Multi-select action bar
             if isMultiSelecting {
@@ -254,7 +258,7 @@ struct FaceBarView: View {
     @ViewBuilder
     private var scanButton: some View {
         Group {
-            if viewModel.isScanning {
+            if isScanningCurrentFolder {
                 scanningButton
             } else if !viewModel.scanComplete {
                 scanCameraButton
@@ -283,6 +287,7 @@ struct FaceBarView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(viewModel.isCancellingScan)
         .help("Click to cancel face scan")
     }
 
@@ -303,7 +308,10 @@ struct FaceBarView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help("Click to scan new images. Option+click to force full rescan.")
+        .disabled(viewModel.isScanning)
+        .help(viewModel.isScanning
+              ? "Another folder is being face-scanned. Follow or cancel it in Activity."
+              : "Click to scan new images. Option+click to force full rescan.")
         .contextMenu { rescanMenuItems }
     }
 

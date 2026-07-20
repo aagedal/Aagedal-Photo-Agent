@@ -1,33 +1,42 @@
 import SwiftUI
 
-/// A compact button + popover surfacing recent import/upload history.
+/// A compact button + popover surfacing active work and recent background-operation history.
 /// Layer 1 lists each operation (count + time); expanding a row reveals
 /// Layer 2: the per-file list with destinations and a verification column.
 struct ActivityHistoryButton: View {
     var history: ActivityHistoryStore
+    var faceViewModel: FaceRecognitionViewModel
     @State private var isShowingHistory = false
 
     var body: some View {
         Button {
             isShowingHistory = true
         } label: {
-            Label("Activity", systemImage: "clock.arrow.circlepath")
-                .font(.caption)
+            Group {
+                if faceViewModel.isScanning {
+                    Label("Face Scan \(faceViewModel.scanProgress)", systemImage: "viewfinder")
+                } else {
+                    Label("Activity", systemImage: "clock.arrow.circlepath")
+                }
+            }
+            .font(.caption)
         }
         .buttonStyle(.borderless)
         .popover(isPresented: $isShowingHistory, arrowEdge: .bottom) {
-            ActivityHistoryView(history: history)
+            ActivityHistoryView(history: history, faceViewModel: faceViewModel)
         }
     }
 }
 
 struct ActivityHistoryView: View {
     var history: ActivityHistoryStore
+    var faceViewModel: FaceRecognitionViewModel
 
     enum Filter: String, CaseIterable, Identifiable {
         case all = "All"
         case imports = "Imports"
         case uploads = "Uploads"
+        case faceScans = "Face Scans"
         var id: String { rawValue }
     }
     @State private var filter: Filter = .all
@@ -38,6 +47,7 @@ struct ActivityHistoryView: View {
         case .all: return history.entries
         case .imports: return history.entries.filter { $0.kind == .importJob }
         case .uploads: return history.entries.filter { $0.kind == .upload }
+        case .faceScans: return history.entries.filter { $0.kind == .faceScan }
         }
     }
 
@@ -57,8 +67,13 @@ struct ActivityHistoryView: View {
 
             Divider()
 
+            if faceViewModel.isScanning {
+                ActiveFaceScanRow(viewModel: faceViewModel)
+                Divider()
+            }
+
             if filteredEntries.isEmpty {
-                Text("No recent activity.")
+                Text(faceViewModel.isScanning ? "No completed activity." : "No recent activity.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .center)
@@ -103,14 +118,20 @@ private struct ActivityEntryRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             // Layer 1: summary row (click to reveal Layer 2)
-            Button(action: toggle) {
+            Button(action: { if !entry.files.isEmpty { toggle() } }) {
                 HStack(spacing: 8) {
-                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .frame(width: 10)
+                    Group {
+                        if entry.files.isEmpty {
+                            Color.clear
+                        } else {
+                            Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(width: 10)
 
-                    Image(systemName: entry.kind == .importJob ? "square.and.arrow.down" : "square.and.arrow.up")
+                    Image(systemName: iconName)
                         .foregroundStyle(.secondary)
 
                     VStack(alignment: .leading, spacing: 1) {
@@ -141,11 +162,55 @@ private struct ActivityEntryRow: View {
             .buttonStyle(.plain)
 
             // Layer 2: per-file detail
-            if isExpanded {
+            if isExpanded && !entry.files.isEmpty {
                 ActivityFileTable(files: entry.files, kind: entry.kind)
                     .padding(.leading, 28)
                     .padding(.top, 2)
             }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var iconName: String {
+        switch entry.kind {
+        case .importJob: "square.and.arrow.down"
+        case .upload: "square.and.arrow.up"
+        case .faceScan: "viewfinder"
+        }
+    }
+}
+
+private struct ActiveFaceScanRow: View {
+    @Bindable var viewModel: FaceRecognitionViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(viewModel.isCancellingScan ? "Cancelling face scan…" : "Scanning faces")
+                        .font(.caption.weight(.semibold))
+                    if let folder = viewModel.scanningFolderURL {
+                        Text(folder.lastPathComponent)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                Text(viewModel.scanProgress)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                Button("Cancel") { viewModel.cancelScan() }
+                    .font(.caption)
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.red)
+                    .disabled(viewModel.isCancellingScan)
+            }
+            ProgressView(
+                value: Double(viewModel.scanProcessedCount),
+                total: Double(max(viewModel.scanTotalCount, 1))
+            )
         }
         .padding(.vertical, 2)
     }

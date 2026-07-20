@@ -26,6 +26,17 @@ enum AddToKnownPeopleError: LocalizedError {
     }
 }
 
+/// Value returned by the off-main scan worker. The contained model values are immutable at the
+/// actor boundary and become the visible folder state only after the worker has finished.
+nonisolated private struct FaceScanWorkerResult: @unchecked Sendable {
+    let faces: [DetectedFace]
+    let groups: [FaceGroup]
+    let scannedFiles: [String: FileSignature]
+    let numbers: [NumberDetection]
+    let processedCount: Int
+    let failureCount: Int
+}
+
 @Observable
 final class FaceRecognitionViewModel {
     /// Stable ID for the synthetic "Unmatched Faces" group (singletons with no match)
@@ -48,7 +59,14 @@ final class FaceRecognitionViewModel {
         }
     }
     var isScanning = false
+    private(set) var isCancellingScan = false
     var scanProgress: String = ""
+    private(set) var scanProcessedCount = 0
+    private(set) var scanTotalCount = 0
+    /// The browser folder represented by `faceData` and the face bar.
+    private(set) var displayedFolderURL: URL?
+    /// The folder owned by the one background scan. This deliberately survives folder navigation.
+    private(set) var scanningFolderURL: URL?
     var scanComplete = false
     var errorMessage: String?
 
@@ -504,6 +522,10 @@ final class FaceRecognitionViewModel {
     }
 
     @ObservationIgnored private var activeScanTask: Task<Void, Never>?
+    @ObservationIgnored private var activeScanWorkerTask: Task<FaceScanWorkerResult, Never>?
+    /// Folders whose UI-bound Known People/Sports finishing pass was deferred because another
+    /// folder was displayed when their background scan completed.
+    @ObservationIgnored private var deferredPostprocessingFolders: Set<URL> = []
     @ObservationIgnored private var metadataWriteTask: Task<Void, Never>?
     @ObservationIgnored private var lensPrewarmTask: Task<Void, Never>?
     private let detectionService = FaceDetectionService()
@@ -518,14 +540,21 @@ final class FaceRecognitionViewModel {
     private let sidecarService = MetadataSidecarService()
     private let xmpSidecarService = XMPSidecarService()
     private let logger = Logger(subsystem: "com.aagedal.photo-agent", category: "FaceRecognitionViewModel")
+    @ObservationIgnored private let activityHistory: ActivityHistoryStore?
 
-    init(readService: SwiftExifReadService, writeEngine: any MetadataWriteEngine) {
+    init(
+        readService: SwiftExifReadService,
+        writeEngine: any MetadataWriteEngine,
+        activityHistory: ActivityHistoryStore? = nil
+    ) {
         self.readService = readService
         self.writeEngine = writeEngine
+        self.activityHistory = activityHistory
     }
 
     deinit {
         activeScanTask?.cancel()
+        activeScanWorkerTask?.cancel()
         metadataWriteTask?.cancel()
         lensPrewarmTask?.cancel()
     }
@@ -623,6 +652,8 @@ final class FaceRecognitionViewModel {
     // MARK: - Load Existing Data
 
     func loadFaceData(for folderURL: URL, cleanupPolicy: FaceCleanupPolicy) {
+        displayedFolderURL = folderURL.standardizedFileURL
+
         // Apply cleanup policy first
         try? storageService.applyCleanupIfNeeded(for: folderURL, policy: cleanupPolicy)
 
@@ -632,6 +663,13 @@ final class FaceRecognitionViewModel {
             self.faceData = data
             self.scanComplete = data.scanComplete
             loadThumbnails(for: data)
+            if deferredPostprocessingFolders.remove(folderURL.standardizedFileURL) != nil {
+                if UserDefaults.standard.bool(forKey: UserDefaultsKeys.sportsModeEnabled) {
+                    loadMatchRoster(for: folderURL)
+                    runSportsResolution()
+                }
+                applyKnownPeopleMatches()
+            }
             prewarmSecondaryLensesIfNeeded()
         } else {
             self.faceData = nil
@@ -649,6 +687,13 @@ final class FaceRecognitionViewModel {
                 thumbnailCache.setObject(image, forKey: faceID as NSUUID)
             }
         }
+    }
+
+    /// True only when the active background scan belongs to the folder represented by the face bar.
+    /// A scan in another folder remains visible in Activity without taking over this folder's UI.
+    func isScanning(folderURL: URL?) -> Bool {
+        guard isScanning, let folderURL, let scanningFolderURL else { return false }
+        return folderURL.standardizedFileURL == scanningFolderURL
     }
 
     // MARK: - Scan Folder
@@ -678,6 +723,11 @@ final class FaceRecognitionViewModel {
         }
 
         isScanning = true
+        isCancellingScan = false
+        scanningFolderURL = folderURL.standardizedFileURL
+        scanProcessedCount = 0
+        scanTotalCount = imageURLs.count
+        scanProgress = "0/\(imageURLs.count)"
         errorMessage = nil
         scanningGroups = []
 
@@ -739,16 +789,25 @@ final class FaceRecognitionViewModel {
             }
 
             await MainActor.run {
-                scanProgress = "0/\(toScan.count)"
+                self.scanTotalCount = toScan.count
+                self.scanProgress = "0/\(toScan.count)"
             }
 
             if toScan.isEmpty {
                 // Nothing new to scan
                 await MainActor.run {
                     self.isScanning = false
-                    self.scanComplete = true
+                    self.isCancellingScan = false
                     self.scanProgress = ""
-                    if let existingData {
+                    self.scanProcessedCount = 0
+                    self.scanTotalCount = 0
+                    self.scanningFolderURL = nil
+                    self.activeScanTask = nil
+                    if self.displayedFolderURL == folderURL.standardizedFileURL {
+                        self.scanComplete = true
+                    }
+                    if let existingData,
+                       self.displayedFolderURL == folderURL.standardizedFileURL {
                         self.faceData = existingData
                         self.loadThumbnails(for: existingData)
                         self.updateMergeSuggestions()
@@ -758,18 +817,38 @@ final class FaceRecognitionViewModel {
             }
 
             let scanLogger = Logger(subsystem: "com.aagedal.photo-agent", category: "FaceRecognitionViewModel")
+            let reportSaveError: @MainActor @Sendable (String) -> Void = { [weak self] message in
+                self?.errorMessage = message
+            }
+            let reportGroups: @MainActor @Sendable ([FaceGroup]) -> Void = { [weak self] groups in
+                self?.scanningGroups = groups
+            }
+            let reportProgress: @MainActor @Sendable (Int, String) -> Void = { [weak self] count, progress in
+                self?.scanProcessedCount = count
+                self?.scanProgress = progress
+            }
 
-            let (allFaces, allGroups, scannedFiles, allNumbers) = await withTaskGroup(
-                of: (URL, FaceDetectionService.DetectionResult, Bool).self
-            ) { taskGroup -> ([DetectedFace], [FaceGroup], [String: FileSignature], [NumberDetection]) in
+            // Keep detection, disk writes, and clustering off the main actor. `Task {}` inherits
+            // this view model's MainActor isolation; without this worker the increasingly costly
+            // clustering pass competes directly with folder navigation and SwiftUI updates.
+            let worker = Task.detached(priority: .utility) {
+                await withTaskGroup(
+                    of: (URL, FaceDetectionService.DetectionResult, Bool).self
+                ) { taskGroup -> FaceScanWorkerResult in
                 var allFaces = initialFaces
                 var allGroups = initialGroups
                 var scannedFiles = initialScannedFiles
                 var allNumbers = initialNumbers
                 var processed = 0
                 var detectionErrors = 0
-                var batchesSinceLastSave = 0
-                let saveInterval = 10 // Save progress every 10 batches
+                var imagesSinceLastSave = 0
+                var imagesSinceLastCluster = 0
+                var pendingFaces: [DetectedFace] = []
+                var faceIndexByID = Dictionary(uniqueKeysWithValues: allFaces.enumerated().map { ($1.id, $0) })
+                let saveInterval = 10
+                // Cluster one completion wave at a time instead of rebuilding the all-face lookup
+                // and walking every group after every image.
+                let clusteringImageBatchSize = 4
 
                 // Clustering runs incrementally per batch and matches each batch's new
                 // faces against every existing group, deserializing those members'
@@ -780,56 +859,63 @@ final class FaceRecognitionViewModel {
                 // unarchives over a scan). FeaturePrintCache is thread-safe.
                 let visionFeaturePrintCache = FaceDetectionService.FeaturePrintCache()
 
-                // Helper to process a completed batch and cluster incrementally
-                func processBatch(scannedURL: URL, detection: FaceDetectionService.DetectionResult, failed: Bool) async {
+                func flushPendingClustering() {
+                    guard !pendingFaces.isEmpty else {
+                        imagesSinceLastCluster = 0
+                        return
+                    }
+                    let pendingIDs = Set(pendingFaces.map(\.id))
+                    allGroups = detectionService.clusterFacesWithAlgorithm(
+                        pendingFaces,
+                        allFaces: allFaces,
+                        existingGroups: allGroups,
+                        config: config,
+                        cache: visionFeaturePrintCache
+                    )
+
+                    for group in allGroups {
+                        for faceID in group.faceIDs where pendingIDs.contains(faceID) {
+                            if let index = faceIndexByID[faceID] {
+                                allFaces[index].groupID = group.id
+                            }
+                        }
+                    }
+                    pendingFaces.removeAll(keepingCapacity: true)
+                    imagesSinceLastCluster = 0
+                }
+
+                // Ingest a completed image. Expensive clustering is coalesced separately.
+                func processImage(scannedURL: URL, detection: FaceDetectionService.DetectionResult, failed: Bool) async {
                     if failed { detectionErrors += 1 }
                     allNumbers.append(contentsOf: detection.standaloneNumbers)
-                    var newFaces: [DetectedFace] = []
 
                     for result in detection.faces {
+                        faceIndexByID[result.face.id] = allFaces.count
                         allFaces.append(result.face)
-                        newFaces.append(result.face)
+                        pendingFaces.append(result.face)
                         do {
                             try storageService.saveThumbnail(result.thumbnail, for: result.face.id, folderURL: folderURL)
                         } catch {
-                            logger.warning("Failed to save thumbnail for face \(result.face.id): \(error.localizedDescription)")
-                        }
-                        let image = NSImage(data: result.thumbnail)
-                        if let image {
-                            await MainActor.run {
-                                thumbnailCache.setObject(image, forKey: result.face.id as NSUUID)
-                            }
+                            scanLogger.warning("Failed to save thumbnail for face \(result.face.id): \(error.localizedDescription)")
                         }
                     }
 
-                    // Incremental clustering: cluster new faces immediately against existing groups
-                    if !newFaces.isEmpty {
-                        allGroups = detectionService.clusterFacesWithAlgorithm(newFaces, allFaces: allFaces, existingGroups: allGroups, config: config, cache: visionFeaturePrintCache)
-
-                        // Assign group IDs to the newly clustered faces
-                        let ungroupedIndex = Dictionary(
-                            allFaces.enumerated().compactMap { (i, f) in f.groupID == nil ? (f.id, i) : nil },
-                            uniquingKeysWith: { first, _ in first }
-                        )
-                        for group in allGroups {
-                            for faceID in group.faceIDs {
-                                if let index = ungroupedIndex[faceID] {
-                                    allFaces[index].groupID = group.id
-                                }
-                            }
-                        }
+                    imagesSinceLastCluster += 1
+                    if imagesSinceLastCluster >= clusteringImageBatchSize {
+                        flushPendingClustering()
                     }
 
-                    // Record file signature
-                    if let sig = getFileSignature(for: scannedURL) {
+                    // A failed image must remain eligible for the next incremental scan.
+                    if !failed, let sig = getFileSignature(for: scannedURL) {
                         scannedFiles[scannedURL.path] = sig
                     }
 
                     processed += 1
-                    batchesSinceLastSave += 1
+                    imagesSinceLastSave += 1
 
                     // Periodic save to preserve progress and update live UI
-                    if batchesSinceLastSave >= saveInterval {
+                    if imagesSinceLastSave >= saveInterval {
+                        flushPendingClustering()
                         let progressData = FolderFaceData(
                             folderURL: folderURL,
                             faces: allFaces,
@@ -843,25 +929,20 @@ final class FaceRecognitionViewModel {
                         do {
                             try storageService.saveFaceData(progressData)
                         } catch {
-                            await MainActor.run {
-                                self.errorMessage = "Failed to save face data: \(error.localizedDescription)"
-                            }
+                            await reportSaveError("Failed to save face data: \(error.localizedDescription)")
                         }
-                        batchesSinceLastSave = 0
+                        imagesSinceLastSave = 0
 
                         // Update intermediate UI state for live face bar
                         let groupsSnapshot = allGroups
-                        await MainActor.run {
-                            self.scanningGroups = groupsSnapshot
-                        }
+                        await reportGroups(groupsSnapshot)
                     }
 
                     let current = processed
                     let total = toScan.count
                     let errors = detectionErrors
-                    await MainActor.run {
-                        scanProgress = errors > 0 ? "\(current)/\(total) (\(errors) failed)" : "\(current)/\(total)"
-                    }
+                    let progress = errors > 0 ? "\(current)/\(total) (\(errors) failed)" : "\(current)/\(total)"
+                    await reportProgress(current, progress)
                 }
 
                 // Process images concurrently, capped at 4
@@ -875,7 +956,7 @@ final class FaceRecognitionViewModel {
 
                     if pending >= 4 {
                         if let (scannedURL, detection, failed) = await taskGroup.next() {
-                            await processBatch(scannedURL: scannedURL, detection: detection, failed: failed)
+                            await processImage(scannedURL: scannedURL, detection: detection, failed: failed)
                         }
                         pending -= 1
                     }
@@ -894,23 +975,40 @@ final class FaceRecognitionViewModel {
 
                 // Collect remaining
                 for await (scannedURL, detection, failed) in taskGroup {
-                    await processBatch(scannedURL: scannedURL, detection: detection, failed: failed)
+                    await processImage(scannedURL: scannedURL, detection: detection, failed: failed)
                 }
 
-                return (allFaces, allGroups, scannedFiles, allNumbers)
+                flushPendingClustering()
+                return FaceScanWorkerResult(
+                    faces: allFaces,
+                    groups: allGroups,
+                    scannedFiles: scannedFiles,
+                    numbers: allNumbers,
+                    processedCount: processed,
+                    failureCount: detectionErrors
+                )
+                }
             }
+            self.activeScanWorkerTask = worker
+            // Cancellation can land while incremental file categorisation is still running,
+            // before the worker exists. Propagate that already-set parent state immediately.
+            if Task.isCancelled {
+                worker.cancel()
+            }
+            let result = await worker.value
+            self.activeScanWorkerTask = nil
 
             let isCancelled = Task.isCancelled
 
             let folderData = FolderFaceData(
                 folderURL: folderURL,
-                faces: allFaces,
-                groups: allGroups,
+                faces: result.faces,
+                groups: result.groups,
                 lastScanDate: Date(),
                 scanComplete: !isCancelled,
-                scannedFiles: scannedFiles,
+                scannedFiles: result.scannedFiles,
                 embeddingVersion: FaceRecognitionDefaults.embeddingVersion,
-                numberDetections: allNumbers
+                numberDetections: result.numbers
             )
 
             do {
@@ -922,24 +1020,48 @@ final class FaceRecognitionViewModel {
             }
 
             await MainActor.run {
-                self.faceData = folderData
+                let isDisplayedFolder = self.displayedFolderURL == folderURL.standardizedFileURL
+                if isDisplayedFolder {
+                    self.faceData = folderData
+                    self.scanComplete = !isCancelled
+                    self.loadThumbnails(for: folderData)
+                    self.updateMergeSuggestions()
+
+                    // Sports mode: resolve detected numbers → player names (or surface
+                    // the colour-mapping confirmation if not yet confirmed).
+                    if config.sportsModeEnabled {
+                        self.loadMatchRoster(for: folderURL)
+                        self.runSportsResolution()
+                    }
+                } else {
+                    self.deferredPostprocessingFolders.insert(folderURL.standardizedFileURL)
+                }
                 self.isScanning = false
-                self.scanComplete = !isCancelled
+                self.isCancellingScan = false
                 self.scanProgress = ""
+                self.scanProcessedCount = 0
+                self.scanTotalCount = 0
+                self.scanningFolderURL = nil
                 self.scanningGroups = []
                 self.activeScanTask = nil
-                self.loadThumbnails(for: folderData)
-                self.updateMergeSuggestions()
 
-                // Sports mode: resolve detected numbers → player names (or surface
-                // the colour-mapping confirmation if not yet confirmed).
-                if config.sportsModeEnabled {
-                    self.loadMatchRoster(for: folderURL)
-                    self.runSportsResolution()
-                }
+                let succeeded = max(0, result.processedCount - result.failureCount)
+                self.activityHistory?.record(ActivityEntry(
+                    kind: .faceScan,
+                    date: Date(),
+                    title: folderURL.lastPathComponent,
+                    successCount: succeeded,
+                    totalCount: toScan.count,
+                    wasCancelled: isCancelled,
+                    files: []
+                ))
             }
 
             guard !isCancelled else { return }
+
+            // Post-scan UI services operate on `faceData`; if the user is viewing another
+            // folder, `loadFaceData` runs this finishing pass when they return.
+            guard self.displayedFolderURL == folderURL.standardizedFileURL else { return }
 
             // Known People matching is always automatic now. `applyKnownPeopleMatches`
             // no-ops when the database is empty, so this is safe to always call.
@@ -951,11 +1073,11 @@ final class FaceRecognitionViewModel {
     }
 
     func cancelScan() {
+        guard isScanning, !isCancellingScan else { return }
+        isCancellingScan = true
+        scanProgress = "Cancelling…"
         activeScanTask?.cancel()
-        activeScanTask = nil
-        isScanning = false
-        scanProgress = ""
-        scanningGroups = []
+        activeScanWorkerTask?.cancel()
     }
 
     // MARK: - Known People Matching
@@ -2915,7 +3037,10 @@ final class FaceRecognitionViewModel {
     func thumbnailImage(for faceID: UUID) -> NSImage? {
         if let cached = thumbnailCache.object(forKey: faceID as NSUUID) { return cached }
 
-        guard let folderURL = faceData?.folderURL,
+        // During a brand-new/full scan there may be no `faceData` yet. The live groups still
+        // have thumbnails on disk, scoped to the active scan folder.
+        let folderURL = faceData?.folderURL ?? (isScanning(folderURL: displayedFolderURL) ? scanningFolderURL : nil)
+        guard let folderURL,
               let data = storageService.loadThumbnail(for: faceID, folderURL: folderURL),
               let image = NSImage(data: data) else {
             return nil
