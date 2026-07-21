@@ -313,15 +313,10 @@ struct ContentView: View {
                 let suffix = count == 1 ? "image has" : "images have"
                 Text("\(count) pending \(suffix) C2PA content credentials in this folder. Writing metadata will invalidate the authenticity chain.")
             }
-            .alert("Move to Trash", isPresented: Bindable(browserViewModel).showDeleteConfirmation) {
-                Button("Cancel", role: .cancel) { }
-                Button("Move to Trash", role: .destructive) {
-                    browserViewModel.deleteSelectedImages()
-                }
-            } message: {
-                let count = browserViewModel.selectedImageIDs.count
-                Text("Are you sure you want to move \(count) \(count == 1 ? "image" : "images") to the Trash?")
-            }
+            .imageDeletionConfirmation(
+                viewModel: browserViewModel,
+                isActiveHost: !browserViewModel.isFullScreen
+            )
             .alert("Move Folder to Trash", isPresented: Bindable(browserViewModel).showTrashSubfolderConfirmation) {
                 Button("Cancel", role: .cancel) {
                     browserViewModel.pendingTrashSubfolderURL = nil

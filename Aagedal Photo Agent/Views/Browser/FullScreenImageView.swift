@@ -22,6 +22,51 @@ private extension CGFloat {
     }
 }
 
+/// Presents the shared image-deletion confirmation from the window that is actually visible.
+/// The full-screen viewer is a separate always-on-top window, so leaving this alert on the
+/// browser window makes the app appear frozen when a menu shortcut triggers deletion.
+private struct ImageDeletionConfirmationModifier: ViewModifier {
+    @Bindable var viewModel: BrowserViewModel
+    let isActiveHost: Bool
+
+    private var isPresented: Binding<Bool> {
+        Binding(
+            get: { isActiveHost && viewModel.showDeleteConfirmation },
+            set: { newValue in
+                // An inactive window must not dismiss confirmation state owned by the
+                // active window while SwiftUI updates the two presentation hosts.
+                guard isActiveHost else { return }
+                viewModel.showDeleteConfirmation = newValue
+            }
+        )
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .alert("Move to Trash", isPresented: isPresented) {
+                Button("Cancel", role: .cancel) { }
+                Button("Move to Trash", role: .destructive) {
+                    viewModel.deleteSelectedImages()
+                }
+            } message: {
+                let count = viewModel.selectedImageIDs.count
+                Text("Are you sure you want to move \(count) \(count == 1 ? "image" : "images") to the Trash?")
+            }
+    }
+}
+
+extension View {
+    func imageDeletionConfirmation(
+        viewModel: BrowserViewModel,
+        isActiveHost: Bool
+    ) -> some View {
+        modifier(ImageDeletionConfirmationModifier(
+            viewModel: viewModel,
+            isActiveHost: isActiveHost
+        ))
+    }
+}
+
 // MARK: - Zoom Controller (bridges window events to view)
 
 @Observable
@@ -723,6 +768,10 @@ struct FullScreenImageView: View {
             let image = Self.gamutClipped(original, targetGamut: scopeViewModel.targetGamut)
             currentImage = LoadedImage(cgImage: image, size: CGSize(width: original.width, height: original.height))
         }
+        .imageDeletionConfirmation(
+            viewModel: viewModel,
+            isActiveHost: viewModel.isFullScreen
+        )
     }
 
     // MARK: - Gestures
