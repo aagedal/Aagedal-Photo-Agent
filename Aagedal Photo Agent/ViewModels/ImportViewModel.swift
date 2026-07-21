@@ -210,7 +210,7 @@ final class ImportViewModel {
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
-        panel.message = "Select a folder to import photos from"
+        panel.message = "Select a memory card or folder to import photos from"
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
         configuration.sourceURL = url
@@ -269,7 +269,7 @@ final class ImportViewModel {
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
-        panel.message = "Select base folder for imports"
+        panel.message = "Select the destination root folder for imports"
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
         configuration.destinationBaseURL = url
@@ -1427,7 +1427,7 @@ final class ImportViewModel {
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
-        panel.message = "Select a secondary backup folder for this import"
+        panel.message = "Select a folder for the additional import copy"
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
         if configuration.backupDestination == nil {

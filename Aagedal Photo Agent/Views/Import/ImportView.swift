@@ -10,6 +10,7 @@ struct ImportView: View {
     var onDismiss: () -> Void
 
     @State private var showAdditionalFields = false
+    @State private var showAdvancedOptions = false
     /// Date group currently being edited in the shoot-split sheet.
     @State private var splitTarget: ImportDateGroup?
     @State private var prefetchImportThumbnails = true
@@ -44,14 +45,12 @@ struct ImportView: View {
                 Text("Import Photos")
                     .font(.title2.bold())
 
+                importNameSection
                 sourceSection
                 destinationSection
                 dateSortingSection
                 fileTypeSection
-                conflictSection
-                verificationSection
-                backupSection
-                metadataSection
+                advancedOptionsSection
 
                 if let error = viewModel.errorMessage {
                     Text(error)
@@ -66,74 +65,20 @@ struct ImportView: View {
         formFooter
     }
 
-    // MARK: - Source Section
+    // MARK: - Import Setup
 
     @ViewBuilder
-    private var sourceSection: some View {
-        GroupBox("Source") {
+    private var importNameSection: some View {
+        GroupBox("Import Name") {
             VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    if let sourceURL = viewModel.configuration.sourceURL {
-                        Image(systemName: "folder.fill")
-                            .foregroundStyle(.secondary)
-                        Text(sourceURL.path)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                            .foregroundStyle(.primary)
-                    } else {
-                        Text("No folder selected")
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button("Choose...") {
-                        viewModel.selectSource()
-                    }
-                }
-
-                if !viewModel.sourceFiles.isEmpty {
-                    Text("\(viewModel.sourceFiles.count) supported images found")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                // When not sorting into per-date folders, the date rows (and their
-                // strips) are hidden, so offer a single preview of the whole import.
-                if !viewModel.sortByDate && !viewModel.filteredSourceFiles.isEmpty {
-                    ImportThumbnailStripView(
-                        files: viewModel.filteredSourceFiles,
-                        captureTimes: [:],
-                        thumbnailService: thumbnailService,
-                        prefetchThumbnails: prefetchImportThumbnails,
-                        onPrefetchTimeout: handleSlowThumbnailPrefetch
-                    )
-                    .padding(.top, 2)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
-    // MARK: - Destination Section
-
-    @ViewBuilder
-    private var destinationSection: some View {
-        GroupBox("Destination") {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Image(systemName: "folder.fill")
-                        .foregroundStyle(.secondary)
-                    Text(viewModel.configuration.destinationBaseURL.path)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .foregroundStyle(.primary)
-                    Spacer()
-                    Button("Change...") {
-                        viewModel.selectDestinationBase()
-                    }
-                }
-
                 TextField("Import Title", text: $viewModel.configuration.importTitle)
                     .textFieldStyle(.roundedBorder)
+
+                Text(viewModel.sortByDate
+                    ? "Optional. Added to each capture-date folder name."
+                    : "Required. Used with today’s date to name the new import folder.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
                 if !viewModel.sortByDate {
                     let suggestions = viewModel.suggestedFoldersForCurrentImportDate()
@@ -168,23 +113,157 @@ struct ImportView: View {
                     }
                 }
 
-                if !viewModel.configuration.importTitle.trimmingCharacters(in: .whitespaces).isEmpty
-                    && !viewModel.sortByDate {
+                if !viewModel.configuration.importTitle.trimmingCharacters(in: .whitespaces).isEmpty {
                     HStack(spacing: 4) {
-                        Image(systemName: "folder")
+                        Image(systemName: "folder.badge.plus")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        Text(viewModel.configuration.destinationFolderName)
+                        Text(viewModel.sortByDate
+                            ? "The title will be included in each new date folder."
+                            : "New folder: \(viewModel.configuration.destinationFolderName)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
 
-                if viewModel.sortByDate
-                    && !viewModel.configuration.importTitle.trimmingCharacters(in: .whitespaces).isEmpty {
-                    Text("Appended to each per-date folder.")
+    @ViewBuilder
+    private var sourceSection: some View {
+        GroupBox("Source — Memory Card or Folder") {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    if let sourceURL = viewModel.configuration.sourceURL {
+                        Image(systemName: "folder.fill")
+                            .foregroundStyle(.secondary)
+                        Text(sourceURL.path)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .foregroundStyle(.primary)
+                    } else {
+                        Text("No memory card or folder selected")
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Choose Card or Folder…") {
+                        viewModel.selectSource()
+                    }
+                }
+
+                if !viewModel.sourceFiles.isEmpty {
+                    Text("\(viewModel.sourceFiles.count) supported images found")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+
+                // When not sorting into per-date folders, the date rows (and their
+                // strips) are hidden, so offer a single preview of the whole import.
+                if !viewModel.sortByDate && !viewModel.filteredSourceFiles.isEmpty {
+                    ImportThumbnailStripView(
+                        files: viewModel.filteredSourceFiles,
+                        captureTimes: [:],
+                        thumbnailService: thumbnailService,
+                        prefetchThumbnails: prefetchImportThumbnails,
+                        onPrefetchTimeout: handleSlowThumbnailPrefetch
+                    )
+                    .padding(.top, 2)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    // MARK: - Destination Section
+
+    @ViewBuilder
+    private var destinationSection: some View {
+        GroupBox("Destinations") {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Primary Destination Root")
+                    .font(.subheadline.weight(.medium))
+
+                HStack {
+                    Image(systemName: "folder.fill")
+                        .foregroundStyle(.secondary)
+                    Text(viewModel.configuration.destinationBaseURL.path)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    Button("Change…") {
+                        viewModel.selectDestinationBase()
+                    }
+                }
+
+                Text("This is the parent folder. New date and import folders are created inside it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Divider()
+
+                if let backup = viewModel.configuration.backupDestination {
+                    HStack {
+                        Image(systemName: "externaldrive.fill")
+                            .foregroundStyle(.secondary)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Additional Copy")
+                                .font(.subheadline.weight(.medium))
+                            Text(backup.url.path)
+                                .font(.caption)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer()
+
+                        Button("Change…") {
+                            viewModel.selectBackupDestination()
+                        }
+
+                        Button {
+                            viewModel.clearBackupDestination()
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Remove additional copy destination")
+                        .accessibilityLabel("Remove additional copy destination")
+                    }
+
+                    Toggle("Verify additional copy after writing", isOn: Binding(
+                        get: { viewModel.configuration.backupDestination?.verifyAfterWrite ?? true },
+                        set: {
+                            viewModel.configuration.backupDestination?.verifyAfterWrite = $0
+                            UserDefaults.standard.set($0, forKey: UserDefaultsKeys.importBackupVerifyAfterWrite)
+                        }
+                    ))
+                    .controlSize(.small)
+                    .disabled(viewModel.configuration.verificationMode == .off)
+                } else {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Additional Copy")
+                                .font(.subheadline.weight(.medium))
+                            Text("Optionally copy the import to a second drive or NAS.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer()
+
+                        Button {
+                            viewModel.selectBackupDestination()
+                        } label: {
+                            Image(systemName: "plus")
+                        }
+                        .help("Add an additional copy destination")
+                        .accessibilityLabel("Add an additional copy destination")
+                    }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -405,7 +484,35 @@ struct ImportView: View {
         }
     }
 
-    // MARK: - Metadata Section
+    // MARK: - Advanced Options
+
+    @ViewBuilder
+    private var advancedOptionsSection: some View {
+        GroupBox {
+            DisclosureGroup(isExpanded: $showAdvancedOptions) {
+                VStack(alignment: .leading, spacing: 16) {
+                    conflictSection
+                    verificationSection
+                    metadataSection
+                }
+                .padding(.top, 12)
+            } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Label("Advanced Options", systemImage: "slider.horizontal.3")
+                    if !showAdvancedOptions {
+                        Text(advancedOptionsSummary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+
+    private var advancedOptionsSummary: String {
+        let metadata = viewModel.configuration.applyMetadata ? "On" : "Off"
+        return "Conflicts: \(viewModel.configuration.conflictPolicy.displayName) · Verification: \(viewModel.configuration.verificationMode.displayName) · Metadata: \(metadata)"
+    }
 
     @ViewBuilder
     private var conflictSection: some View {
@@ -449,64 +556,6 @@ struct ImportView: View {
                 Text(viewModel.configuration.verificationMode.description)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
-    // MARK: - Backup Section
-
-    @ViewBuilder
-    private var backupSection: some View {
-        GroupBox("Backup Destination (Optional)") {
-            VStack(alignment: .leading, spacing: 8) {
-                if let backup = viewModel.configuration.backupDestination {
-                    HStack {
-                        Image(systemName: "externaldrive.fill")
-                            .foregroundStyle(.secondary)
-                        Text(backup.url.path)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                            .foregroundStyle(.primary)
-                        Spacer()
-                        Button("Change…") {
-                            viewModel.selectBackupDestination()
-                        }
-                        Button {
-                            viewModel.clearBackupDestination()
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundStyle(.secondary)
-                        }
-                        .buttonStyle(.plain)
-                        .help("Remove backup destination")
-                    }
-
-                    Toggle("Verify backup copies", isOn: Binding(
-                        get: { viewModel.configuration.backupDestination?.verifyAfterWrite ?? true },
-                        set: {
-                            viewModel.configuration.backupDestination?.verifyAfterWrite = $0
-                            UserDefaults.standard.set($0, forKey: UserDefaultsKeys.importBackupVerifyAfterWrite)
-                        }
-                    ))
-                    .disabled(viewModel.configuration.verificationMode == .off)
-
-                    Text("Each file will copy to both the primary and backup destinations. If the backup fails, the primary import still completes.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    HStack {
-                        Text("No backup destination configured.")
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Choose…") {
-                            viewModel.selectBackupDestination()
-                        }
-                    }
-                    Text("Optional: copy each file to a second location during import (e.g., a NAS or external drive). Backup failures don't fail the import.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }

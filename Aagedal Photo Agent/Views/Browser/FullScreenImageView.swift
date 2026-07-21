@@ -187,6 +187,16 @@ struct FullScreenImageView: View {
     let scopeViewModel: ScopeViewModel
     fileprivate var zoomController: ZoomController?
 
+    fileprivate init(
+        viewModel: BrowserViewModel,
+        scopeViewModel: ScopeViewModel,
+        zoomController: ZoomController? = nil
+    ) {
+        self.viewModel = viewModel
+        self.scopeViewModel = scopeViewModel
+        self.zoomController = zoomController
+    }
+
     @State private var currentImage: LoadedImage?
     @State private var originalCGImage: CGImage?
     @State private var isLoading = false
@@ -1967,7 +1977,7 @@ struct FullScreenPresenter: ViewModifier {
         )
         hostingView.wantsLayer = true
         if #available(macOS 26.0, *) {
-            hostingView.layer?.preferredDynamicRange = .high
+            hostingView.layer?.preferredDynamicRange = CALayer.DynamicRange.high
         } else {
             hostingView.layer?.wantsExtendedDynamicRangeContent = true
         }

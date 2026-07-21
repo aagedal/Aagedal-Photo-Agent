@@ -151,11 +151,7 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
                         _ = self.viewModel.visibleImages
                         _ = self.viewModel.showOriginalThumbnails
                     } onChange: {
-                        Task { @MainActor [weak self] in
-                            guard let self else {
-                                continuation.resume(returning: ([] as [ImageFile], false))
-                                return
-                            }
+                        Task { @MainActor [self] in
                             continuation.resume(returning: (self.viewModel.visibleImages, self.viewModel.showOriginalThumbnails))
                         }
                     }
@@ -179,11 +175,7 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
                     withObservationTracking {
                         _ = self.viewModel.thumbnailScale
                     } onChange: {
-                        Task { @MainActor [weak self] in
-                            guard let self else {
-                                continuation.resume(returning: 1.0)
-                                return
-                            }
+                        Task { @MainActor [self] in
                             continuation.resume(returning: self.viewModel.thumbnailScale)
                         }
                     }
@@ -201,11 +193,7 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
                     withObservationTracking {
                         _ = self.viewModel.shouldRestoreGridFocus
                     } onChange: {
-                        Task { @MainActor [weak self] in
-                            guard let self else {
-                                continuation.resume(returning: false)
-                                return
-                            }
+                        Task { @MainActor [self] in
                             continuation.resume(returning: self.viewModel.shouldRestoreGridFocus)
                         }
                     }

@@ -720,7 +720,9 @@ final class BrushMaskOverlayNSView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     deinit {
-        restoreMouseCursorIfNeeded()
+        if isMouseCursorDetached {
+            CGAssociateMouseAndMouseCursorPosition(1)
+        }
     }
 
     override var isFlipped: Bool { true }        // top-left origin, y-down — matches UV space

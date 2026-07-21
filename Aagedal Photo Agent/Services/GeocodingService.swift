@@ -1,5 +1,6 @@
 import Foundation
 @preconcurrency import CoreLocation
+@preconcurrency import MapKit
 import SwiftExif
 
 struct GeocodingResult: Sendable {
@@ -62,8 +63,8 @@ nonisolated enum ReverseGeocodeLanguage: Hashable, Sendable, Identifiable {
         }
     }
 
-    /// Locale handed to `CLGeocoder` — nil for `.system` means "use the device locale".
-    var preferredLocaleForCLGeocoder: Locale? {
+    /// Locale handed to Apple's online geocoder — nil for `.system` means "use the device locale".
+    var preferredLocaleForOnlineGeocoder: Locale? {
         switch self {
         case .system: return nil
         case .language(let code): return Locale(identifier: code)
@@ -83,11 +84,11 @@ nonisolated enum ReverseGeocodeLanguage: Hashable, Sendable, Identifiable {
 }
 
 /// Reverse geocodes GPS coordinates to City/Country. The engine (offline GeoNames
-/// vs. online `CLGeocoder`) and output language are driven by user settings, read
+/// vs. online MapKit) and output language are driven by user settings, read
 /// fresh from UserDefaults on each call so they stay correct regardless of which
 /// `SettingsViewModel` instance changed them.
 ///
-/// - Online: `CLGeocoder` with a `preferredLocale` localizes **both** city and country.
+/// - Online: MapKit with a `preferredLocale` localizes **both** city and country.
 /// - Offline: SwiftExif's embedded GeoNames database — instant and network-free; the
 ///   country name is localized via Foundation, but city names stay GeoNames-English.
 struct GeocodingService: Sendable {
@@ -118,7 +119,7 @@ struct GeocodingService: Sendable {
         if Self.isOfflineEnabled() {
             return try offlineLookup(latitude: latitude, longitude: longitude, locale: language.locale)
         } else {
-            return try await onlineLookup(latitude: latitude, longitude: longitude, locale: language.preferredLocaleForCLGeocoder)
+            return try await onlineLookup(latitude: latitude, longitude: longitude, locale: language.preferredLocaleForOnlineGeocoder)
         }
     }
 
@@ -134,23 +135,27 @@ struct GeocodingService: Sendable {
         return GeocodingResult(city: location.city, country: location.localizedCountry(locale))
     }
 
-    // MARK: - Online (CLGeocoder, localized)
+    // MARK: - Online (MapKit, localized)
 
     private nonisolated func onlineLookup(latitude: Double, longitude: Double, locale: Locale?) async throws -> GeocodingResult {
         let location = CLLocation(latitude: latitude, longitude: longitude)
-        let placemarks: [CLPlacemark]
+        guard let request = MKReverseGeocodingRequest(location: location) else {
+            throw GeocodingError.noResults
+        }
+        request.preferredLocale = locale
+
+        let mapItems: [MKMapItem]
         do {
-            placemarks = try await CLGeocoder().reverseGeocodeLocation(location, preferredLocale: locale)
-        } catch let error as CLError where error.code == .geocodeFoundNoResult {
+            mapItems = try await request.mapItems
+        } catch let error as MKError where error.code == .placemarkNotFound {
             throw GeocodingError.noResults
         } catch {
             throw GeocodingError.networkError(error.localizedDescription)
         }
 
-        guard let placemark = placemarks.first else {
+        guard let address = mapItems.first?.addressRepresentations else {
             throw GeocodingError.noResults
         }
-        let city = placemark.locality ?? placemark.subAdministrativeArea
-        return GeocodingResult(city: city, country: placemark.country)
+        return GeocodingResult(city: address.cityName, country: address.regionName)
     }
 }

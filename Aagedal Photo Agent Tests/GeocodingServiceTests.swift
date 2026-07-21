@@ -46,11 +46,11 @@ struct ReverseGeocodeLanguageTests {
         #expect(ReverseGeocodeLanguage.language("nb").locale == Locale(identifier: "nb"))
     }
 
-    @Test("CLGeocoder preferred locale is nil for system, concrete for a language")
-    func clGeocoderLocale() {
-        // nil tells CLGeocoder to use the device locale; a code pins the output language.
-        #expect(ReverseGeocodeLanguage.system.preferredLocaleForCLGeocoder == nil)
-        #expect(ReverseGeocodeLanguage.language("de").preferredLocaleForCLGeocoder == Locale(identifier: "de"))
+    @Test("Online geocoder locale is nil for system, concrete for a language")
+    func onlineGeocoderLocale() {
+        // nil tells MapKit to use the device locale; a code pins the output language.
+        #expect(ReverseGeocodeLanguage.system.preferredLocaleForOnlineGeocoder == nil)
+        #expect(ReverseGeocodeLanguage.language("de").preferredLocaleForOnlineGeocoder == Locale(identifier: "de"))
     }
 
     @Test("displayName is non-empty for every case and labels system")

@@ -817,15 +817,15 @@ final class FaceRecognitionViewModel {
             }
 
             let scanLogger = Logger(subsystem: "com.aagedal.photo-agent", category: "FaceRecognitionViewModel")
-            let reportSaveError: @MainActor @Sendable (String) -> Void = { [weak self] message in
-                self?.errorMessage = message
+            let reportSaveError: @MainActor @Sendable (String) -> Void = { [self] message in
+                self.errorMessage = message
             }
-            let reportGroups: @MainActor @Sendable ([FaceGroup]) -> Void = { [weak self] groups in
-                self?.scanningGroups = groups
+            let reportGroups: @MainActor @Sendable ([FaceGroup]) -> Void = { [self] groups in
+                self.scanningGroups = groups
             }
-            let reportProgress: @MainActor @Sendable (Int, String) -> Void = { [weak self] count, progress in
-                self?.scanProcessedCount = count
-                self?.scanProgress = progress
+            let reportProgress: @MainActor @Sendable (Int, String) -> Void = { [self] count, progress in
+                self.scanProcessedCount = count
+                self.scanProgress = progress
             }
 
             // Keep detection, disk writes, and clustering off the main actor. `Task {}` inherits
