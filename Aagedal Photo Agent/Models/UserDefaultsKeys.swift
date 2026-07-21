@@ -156,7 +156,6 @@ nonisolated enum UserDefaultsKeys {
     static let importGroupByYear = "importGroupByYear"
     static let importDateFolderGrouping = "importDateFolderGrouping"
     static let importSkipPreviouslyImported = "importSkipPreviouslyImported"
-    static let importedPhotoFingerprints = "importedPhotoFingerprints"
     static let importSplitShootsIntoSubfolders = "importSplitShootsIntoSubfolders"
 
     // MARK: - Quick List Bookmarks

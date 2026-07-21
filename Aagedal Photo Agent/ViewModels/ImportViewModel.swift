@@ -106,6 +106,10 @@ final class ImportViewModel {
     }
     /// Whether date scanning is in progress.
     var isScanningDates: Bool = false
+    /// Existing destination folders keyed by their `yyyy-MM-dd` prefix. Populated
+    /// asynchronously so browsing a large photo destination never blocks the sheet.
+    private(set) var previousImportFolderSuggestions: [String: [URL]] = [:]
+    var isScanningPreviousImportFolders: Bool = false
 
     private let readService: SwiftExifReadService
     private let writeEngine: any MetadataWriteEngine
@@ -116,10 +120,11 @@ final class ImportViewModel {
     private let interpolator = PresetVariableInterpolator()
     @ObservationIgnored private var scanTask: Task<Void, Never>?
     @ObservationIgnored private var dateScanTask: Task<Void, Never>?
+    @ObservationIgnored private var folderSuggestionTask: Task<Void, Never>?
+    @ObservationIgnored private var folderSuggestionRequestID = UUID()
     @ObservationIgnored private var importTask: Task<Void, Never>?
     @ObservationIgnored private let copyService = ImportCopyService()
     private let importLog = Logger(subsystem: "com.aagedal.photo-agent", category: "Import")
-    nonisolated private static let importedFingerprintLimit = 50_000
 
     init(readService: SwiftExifReadService, writeEngine: any MetadataWriteEngine, activityHistory: ActivityHistoryStore? = nil) {
         self.readService = readService
@@ -167,6 +172,7 @@ final class ImportViewModel {
     deinit {
         scanTask?.cancel()
         dateScanTask?.cancel()
+        folderSuggestionTask?.cancel()
         importTask?.cancel()
     }
 
@@ -267,6 +273,105 @@ final class ImportViewModel {
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
         configuration.destinationBaseURL = url
+        refreshPreviousImportFolderSuggestions()
+    }
+
+    // MARK: - Existing Date-Folder Suggestions
+
+    var currentImportDateFolderName: String {
+        String(configuration.destinationFolderName.prefix(10))
+    }
+
+    /// Rebuilds the lightweight list of existing same-date folders. This only
+    /// inspects the importer-supported folder levels; it does not enumerate or
+    /// checksum their files until an import actually starts.
+    func refreshPreviousImportFolderSuggestions() {
+        folderSuggestionTask?.cancel()
+        let requestID = UUID()
+        folderSuggestionRequestID = requestID
+
+        let dates: Set<String>
+        if sortByDate {
+            dates = Set(dateGroups.map { displayDate(for: $0) })
+        } else {
+            dates = [currentImportDateFolderName]
+        }
+
+        guard !dates.isEmpty else {
+            previousImportFolderSuggestions = [:]
+            isScanningPreviousImportFolders = false
+            return
+        }
+
+        let destinationBaseURL = configuration.destinationBaseURL
+        previousImportFolderSuggestions = [:]
+        isScanningPreviousImportFolders = true
+
+        folderSuggestionTask = Task.detached(priority: .utility) { [weak self] in
+            var suggestions: [String: [URL]] = [:]
+            for date in dates.sorted() {
+                guard !Task.isCancelled else { return }
+                let folders = PreviousImportDetector.matchingDateFolders(
+                    named: date,
+                    under: destinationBaseURL
+                )
+                if !folders.isEmpty {
+                    suggestions[date] = folders
+                }
+            }
+
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self, self.folderSuggestionRequestID == requestID else { return }
+                self.previousImportFolderSuggestions = suggestions
+                self.isScanningPreviousImportFolders = false
+            }
+        }
+    }
+
+    /// Standard flat-import folders directly below the current destination base.
+    /// Only app-generated `<date> – <title>` names are selectable because those
+    /// can be represented exactly by `ImportConfiguration.importTitle`.
+    func suggestedFoldersForCurrentImportDate() -> [URL] {
+        let date = currentImportDateFolderName
+        let expectedParent = configuration.destinationBaseURL.standardizedFileURL
+        return (previousImportFolderSuggestions[date] ?? []).filter { url in
+            url.deletingLastPathComponent().standardizedFileURL == expectedParent
+                && PreviousImportDetector.importTitle(
+                    from: url.lastPathComponent,
+                    matchingDate: date
+                ) != nil
+        }
+    }
+
+    /// Same-date folders at the exact grouping level currently selected for a
+    /// capture-date group, so choosing one always targets the folder being shown.
+    func suggestedFolders(for group: ImportDateGroup) -> [URL] {
+        let date = displayDate(for: group)
+        let expectedParent = Self.appendingPathComponents(
+            folderGroupingComponents(for: group, grouping: dateFolderGrouping),
+            to: configuration.destinationBaseURL
+        ).standardizedFileURL
+        return (previousImportFolderSuggestions[date] ?? []).filter {
+            $0.deletingLastPathComponent().standardizedFileURL == expectedParent
+        }
+    }
+
+    func useSuggestedFolderForCurrentImport(_ folder: URL) {
+        let date = currentImportDateFolderName
+        guard suggestedFoldersForCurrentImportDate().contains(folder),
+              let title = PreviousImportDetector.importTitle(
+                from: folder.lastPathComponent,
+                matchingDate: date
+              ) else { return }
+        configuration.importTitle = title
+    }
+
+    func useSuggestedFolder(_ folder: URL, for groupID: UUID) {
+        guard let index = dateGroups.firstIndex(where: { $0.id == groupID }),
+              suggestedFolders(for: dateGroups[index]).contains(folder) else { return }
+        dateGroups[index].folderName = folder.lastPathComponent
+        ensureUniqueFolderNames()
     }
 
     // MARK: - Template Application
@@ -359,11 +464,13 @@ final class ImportViewModel {
         var fileDateFolder: [URL: String] = [:]
         var fileDateGroupingFolders: [URL: [String]] = [:]
         var fileShootFolder: [URL: String] = [:]
+        var fileImportDate: [URL: String] = [:]
         if sortByDate {
             for group in dateGroups where group.isIncluded {
                 for file in group.files {
                     fileDateFolder[file] = group.folderName
                     fileDateGroupingFolders[file] = folderGroupingComponents(for: group, grouping: dateFolderGrouping)
+                    fileImportDate[file] = displayDate(for: group)
                     if let shoot = group.shootFolderName?.trimmingCharacters(in: .whitespaces), !shoot.isEmpty {
                         fileShootFolder[file] = shoot
                     }
@@ -375,9 +482,10 @@ final class ImportViewModel {
         // Returns: (primaryFolder, backupFolder?). Backup mirrors the primary folder structure
         // under the chosen backup root.
         var jobs: [ImportCopyService.CopyJob] = []
+        var previousImportCandidates: [PreviousImportDetector.Candidate] = []
         var allDestFolders: Set<URL> = []
         var allRevealFolders: Set<URL> = []
-        let knownFingerprints = configuration.skipPreviouslyImported ? Self.loadImportedFingerprints() : []
+        let flatImportDate = String(destURL.lastPathComponent.prefix(10))
         for file in filesToCopy {
             let baseFolder: URL
             if sortByDate {
@@ -419,20 +527,14 @@ final class ImportViewModel {
                 }
             }
 
-            let fingerprint = Self.importFingerprint(for: file, captureTime: Self.fileDateTimestamp(for: file, in: dateGroups))
-            let skipReason: ImportCopyService.SkipReason?
-            if let fingerprint, knownFingerprints.contains(fingerprint) {
-                skipReason = .previouslyImported
-            } else {
-                skipReason = nil
-            }
-
             jobs.append(ImportCopyService.CopyJob(
                 source: file,
                 desiredPrimaryDest: primaryURL,
-                desiredBackupDest: backupURL,
-                sourceFingerprint: fingerprint,
-                preflightSkipReason: skipReason
+                desiredBackupDest: backupURL
+            ))
+            previousImportCandidates.append(PreviousImportDetector.Candidate(
+                source: file,
+                dateFolderName: fileImportDate[file] ?? flatImportDate
             ))
         }
 
@@ -443,6 +545,7 @@ final class ImportViewModel {
         // expanding every imported date or shoot folder.
         NotificationCenter.default.post(name: .importStarted, object: folderToOpen)
         let verifyBackup = backupDestination?.verifyAfterWrite ?? true
+        let skipPreviouslyImported = configuration.skipPreviouslyImported
         let copyService = self.copyService
 
         importTask = Task.detached(priority: .userInitiated) { [readService, interpolator, importLog, weak self] in
@@ -450,6 +553,26 @@ final class ImportViewModel {
             _ = readService
 
             do {
+                var jobsToRun = jobs
+                if skipPreviouslyImported {
+                    await MainActor.run {
+                        self.currentFile = "Checking same-date folders for duplicates…"
+                    }
+                    let duplicateSources = try PreviousImportDetector.duplicateSources(
+                        among: previousImportCandidates,
+                        destinationBaseURL: baseURL
+                    )
+                    if !duplicateSources.isEmpty {
+                        jobsToRun = jobs.map { job in
+                            var updated = job
+                            if duplicateSources.contains(job.source) {
+                                updated.preflightSkipReason = .previouslyImported
+                            }
+                            return updated
+                        }
+                    }
+                }
+
                 let didStartAccessingBackup = backupDestination?.url.startAccessingSecurityScopedResource() ?? false
                 defer {
                     if didStartAccessingBackup {
@@ -463,7 +586,7 @@ final class ImportViewModel {
                 }
 
                 let results = try await copyService.run(
-                    jobs: jobs,
+                    jobs: jobsToRun,
                     conflictPolicy: conflictPolicy,
                     verificationMode: verificationMode,
                     verifyBackup: verifyBackup,
@@ -473,12 +596,6 @@ final class ImportViewModel {
                         }
                     }
                 )
-                let importedFingerprints = results.compactMap { result -> String? in
-                    guard result.primaryURL != nil else { return nil }
-                    return result.sourceFingerprint
-                }
-                Self.recordImportedFingerprints(importedFingerprints)
-
                 // Pull successful primary URLs (verified or verification disabled) for metadata pass.
                 let copiedURLs = results.compactMap { $0.primaryURL }
 
@@ -684,50 +801,6 @@ final class ImportViewModel {
         return URL(fileURLWithPath: NSString.path(withComponents: commonComponents))
     }
 
-    nonisolated private static func fileDateTimestamp(for file: URL, in groups: [ImportDateGroup]) -> Date? {
-        for group in groups {
-            if let timestamp = group.captureTimes[file] {
-                return timestamp
-            }
-        }
-        return nil
-    }
-
-    nonisolated private static func importFingerprint(for url: URL, captureTime: Date?) -> String? {
-        let keys: Set<URLResourceKey> = [.fileSizeKey, .contentModificationDateKey]
-        guard let values = try? url.resourceValues(forKeys: keys),
-              let size = values.fileSize else {
-            return nil
-        }
-        let timestamp = captureTime ?? values.contentModificationDate
-        let seconds = timestamp.map { Int($0.timeIntervalSince1970) } ?? 0
-        return [
-            url.lastPathComponent.lowercased(),
-            String(size),
-            String(seconds)
-        ].joined(separator: "|")
-    }
-
-    nonisolated private static func loadImportedFingerprints() -> Set<String> {
-        guard let stored = UserDefaults.standard.array(forKey: UserDefaultsKeys.importedPhotoFingerprints) as? [String] else {
-            return []
-        }
-        return Set(stored)
-    }
-
-    nonisolated private static func recordImportedFingerprints(_ fingerprints: [String]) {
-        guard !fingerprints.isEmpty else { return }
-        var existing = UserDefaults.standard.array(forKey: UserDefaultsKeys.importedPhotoFingerprints) as? [String] ?? []
-        var seen = Set(existing)
-        for fingerprint in fingerprints where seen.insert(fingerprint).inserted {
-            existing.append(fingerprint)
-        }
-        if existing.count > importedFingerprintLimit {
-            existing = Array(existing.suffix(importedFingerprintLimit))
-        }
-        UserDefaults.standard.set(existing, forKey: UserDefaultsKeys.importedPhotoFingerprints)
-    }
-
     private func buildImportSummary() -> String {
         var parts: [String] = []
         parts.append("Imported \(copiedFiles)")
@@ -912,6 +985,7 @@ final class ImportViewModel {
             await MainActor.run {
                 self.dateGroups = groups
                 self.isScanningDates = false
+                self.refreshPreviousImportFolderSuggestions()
             }
         }
     }
@@ -1341,7 +1415,9 @@ final class ImportViewModel {
         sortByDate = preservedSortByDate
         isScanningDates = false
         dateScanTask?.cancel()
+        folderSuggestionTask?.cancel()
         importTask?.cancel()
+        refreshPreviousImportFolderSuggestions()
     }
 
     // MARK: - Backup Destination

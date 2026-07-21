@@ -25,9 +25,6 @@ actor ImportCopyService {
         let desiredPrimaryDest: URL
         /// Optional secondary mirror destination. If `nil`, no backup leg runs.
         let desiredBackupDest: URL?
-        /// Optional stable source fingerprint used by card import to recognize files
-        /// that were already imported to any destination.
-        var sourceFingerprint: String? = nil
         /// When set, the job is intentionally not copied and returns a skipped result.
         var preflightSkipReason: SkipReason? = nil
     }
@@ -53,7 +50,6 @@ actor ImportCopyService {
     struct CopyResult: Sendable, Identifiable {
         let id: UUID
         let source: URL
-        let sourceFingerprint: String?
         let primary: DestinationOutcome
         let primaryVerification: VerificationOutcome
         let backup: DestinationOutcome?
@@ -110,7 +106,6 @@ actor ImportCopyService {
             return CopyResult(
                 id: job.id,
                 source: job.source,
-                sourceFingerprint: job.sourceFingerprint,
                 primary: .skipped(reason),
                 primaryVerification: .skipped,
                 backup: job.desiredBackupDest != nil ? .skipped(reason) : nil,
@@ -129,7 +124,6 @@ actor ImportCopyService {
             return CopyResult(
                 id: job.id,
                 source: job.source,
-                sourceFingerprint: job.sourceFingerprint,
                 primary: .failed(error.localizedDescription),
                 primaryVerification: .skipped,
                 backup: nil,
@@ -142,7 +136,6 @@ actor ImportCopyService {
             return CopyResult(
                 id: job.id,
                 source: job.source,
-                sourceFingerprint: job.sourceFingerprint,
                 primary: .skipped(.destinationExists),
                 primaryVerification: .skipped,
                 backup: job.desiredBackupDest != nil ? .skipped(.destinationExists) : nil,
@@ -153,7 +146,6 @@ actor ImportCopyService {
             return CopyResult(
                 id: job.id,
                 source: job.source,
-                sourceFingerprint: job.sourceFingerprint,
                 primary: .failed("Could not resolve destination."),
                 primaryVerification: .skipped,
                 backup: nil,
@@ -170,7 +162,6 @@ actor ImportCopyService {
             return CopyResult(
                 id: job.id,
                 source: job.source,
-                sourceFingerprint: job.sourceFingerprint,
                 primary: .failed("Cancelled."),
                 primaryVerification: .skipped,
                 backup: job.desiredBackupDest != nil ? .skipped(.destinationExists) : nil,
@@ -180,7 +171,6 @@ actor ImportCopyService {
             return CopyResult(
                 id: job.id,
                 source: job.source,
-                sourceFingerprint: job.sourceFingerprint,
                 primary: .failed(error.localizedDescription),
                 primaryVerification: .skipped,
                 backup: job.desiredBackupDest != nil ? .skipped(.destinationExists) : nil,
@@ -216,7 +206,6 @@ actor ImportCopyService {
                 return CopyResult(
                     id: job.id,
                     source: job.source,
-                    sourceFingerprint: job.sourceFingerprint,
                     primary: primaryVerification == .verified || primaryVerification == .skipped
                         ? .copied(primaryURL, wasRenamed: wasRenamed, hash: primaryCopyResult.hash)
                         : .failed("Verification mismatch."),
@@ -267,7 +256,6 @@ actor ImportCopyService {
         return CopyResult(
             id: job.id,
             source: job.source,
-            sourceFingerprint: job.sourceFingerprint,
             primary: finalPrimary,
             primaryVerification: primaryVerification,
             backup: backupOutcome,

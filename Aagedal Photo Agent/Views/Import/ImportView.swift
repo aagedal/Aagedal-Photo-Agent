@@ -135,6 +135,39 @@ struct ImportView: View {
                 TextField("Import Title", text: $viewModel.configuration.importTitle)
                     .textFieldStyle(.roundedBorder)
 
+                if !viewModel.sortByDate {
+                    let suggestions = viewModel.suggestedFoldersForCurrentImportDate()
+                    if !suggestions.isEmpty {
+                        HStack(spacing: 6) {
+                            Image(systemName: "clock.arrow.circlepath")
+                                .foregroundStyle(.secondary)
+                            Text("Existing folders for \(viewModel.currentImportDateFolderName):")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Menu {
+                                ForEach(suggestions, id: \.self) { folder in
+                                    Button(folder.lastPathComponent) {
+                                        viewModel.useSuggestedFolderForCurrentImport(folder)
+                                    }
+                                }
+                            } label: {
+                                Text("Choose Folder…")
+                                    .font(.caption)
+                            }
+                            .menuStyle(.borderlessButton)
+                            .fixedSize()
+                        }
+                    } else if viewModel.isScanningPreviousImportFolders {
+                        HStack(spacing: 6) {
+                            ProgressView()
+                                .controlSize(.mini)
+                            Text("Looking for existing folders with this date…")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
                 if !viewModel.configuration.importTitle.trimmingCharacters(in: .whitespaces).isEmpty
                     && !viewModel.sortByDate {
                     HStack(spacing: 4) {
@@ -223,6 +256,23 @@ struct ImportView: View {
                                         .onSubmit { viewModel.ensureUniqueFolderNames() }
                                         .disabled(!group.isIncluded)
 
+                                    let folderSuggestions = viewModel.suggestedFolders(for: group)
+                                    if !folderSuggestions.isEmpty {
+                                        Menu {
+                                            ForEach(folderSuggestions, id: \.self) { folder in
+                                                Button(folder.lastPathComponent) {
+                                                    viewModel.useSuggestedFolder(folder, for: group.id)
+                                                }
+                                            }
+                                        } label: {
+                                            Image(systemName: "clock.arrow.circlepath")
+                                        }
+                                        .menuStyle(.borderlessButton)
+                                        .fixedSize()
+                                        .help("Use an existing folder for this capture date")
+                                        .disabled(!group.isIncluded)
+                                    }
+
                                     if group.shootFolderName != nil {
                                         Text("/")
                                             .font(.callout)
@@ -297,6 +347,7 @@ struct ImportView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .onChange(of: viewModel.sortByDate) { _, newValue in
+            viewModel.refreshPreviousImportFolderSuggestions()
             if newValue && viewModel.dateGroups.isEmpty && !viewModel.sourceFiles.isEmpty {
                 viewModel.scanCaptureDates()
             }
@@ -371,8 +422,12 @@ struct ImportView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                Toggle("Skip photos imported before", isOn: $viewModel.configuration.skipPreviouslyImported)
+                Toggle("Skip duplicates from previous same-day imports", isOn: $viewModel.configuration.skipPreviouslyImported)
                     .controlSize(.small)
+
+                Text("Checks destination folders beginning with the same date, then requires a matching file name, size, and quick content checksum.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
