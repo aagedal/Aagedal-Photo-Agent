@@ -61,7 +61,7 @@ struct CleanFeedContentView: View {
         loadTask = Task {
             let edited: CIImage? = await Task.detached(priority: .userInitiated) {
                 // Base image (display-oriented as decoded by the cache loaders).
-                let base: CIImage?
+                var base: CIImage?
                 var isRawDecode = false
                 if FullScreenImageCache.isRawFile(url) {
                     let rawPreview = FullScreenImageCache.loadRAWPreview(from: url, maxPixelSize: maxPixelSize, draftMode: true)
@@ -69,8 +69,11 @@ struct CleanFeedContentView: View {
                     base = rawPreview
                         ?? FullScreenImageCache.extractEmbeddedPreview(from: url).map { CIImage(cgImage: $0) }
                 } else {
-                    base = FullScreenImageCache.loadHDRPreview(from: url, maxPixelSize: maxPixelSize)
-                        ?? FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: maxPixelSize).map { CIImage(cgImage: $0) }
+                    base = await FullScreenImageCache.loadHDRPreviewOffPool(from: url, maxPixelSize: maxPixelSize)
+                    if base == nil,
+                       let cgImage = await FullScreenImageCache.loadDownsampledOffPool(from: url, maxPixelSize: maxPixelSize) {
+                        base = CIImage(cgImage: cgImage)
+                    }
                 }
                 guard let base else { return nil }
 

@@ -479,7 +479,7 @@ final class FullScreenImageCache: @unchecked Sendable {
                     ciImage = nil
                 }
             } else {
-                ciImage = loadHDRPreview(from: url, maxPixelSize: screenMaxPx)
+                ciImage = await loadHDRPreviewOffPool(from: url, maxPixelSize: screenMaxPx)
                 guard !Task.isCancelled else { return nil }
             }
             if let ciImage {
@@ -502,7 +502,10 @@ final class FullScreenImageCache: @unchecked Sendable {
         guard !Task.isCancelled else { return nil }
         if image == nil {
             // SDR fallback (or no edits active)
-            guard let loadedResult = loadDownsampledWithOrientation(from: url, maxPixelSize: screenMaxPx) else { return nil }
+            guard let loadedResult = await loadDownsampledOffPoolWithOrientation(
+                from: url,
+                maxPixelSize: screenMaxPx
+            ) else { return nil }
             var loaded = loadedResult.image
             let loadedOrientation = loadedResult.orientation
             guard !Task.isCancelled else { return nil }
@@ -553,19 +556,39 @@ final class FullScreenImageCache: @unchecked Sendable {
         return (ciImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale)), orientation)
     }
 
-    /// Load an image downsampled to the given max pixel size.
-    /// Always uses CGImageSourceCreateThumbnailAtIndex to ensure EXIF orientation is applied.
-    /// Dedicated GCD queue for background preview decodes. ImageIO decoding is a long,
-    /// synchronous, blocking operation; running it directly in a Task occupies a thread
-    /// from the small Swift cooperative pool until it finishes. When the low-priority
-    /// background preview generation saturates that pool, higher-QoS on-screen decodes
-    /// can't get a thread — a priority inversion. Hopping the decode here keeps the
-    /// cooperative thread suspended (not blocked) for the duration.
+    /// Dedicated GCD queue for blocking Core Image and ImageIO file initialization.
+    /// Core Image can synchronously wait on its own utility-QoS workers while opening a file.
+    /// Running that call directly from a user-initiated Task both occupies a cooperative-pool
+    /// thread and triggers Thread Performance Checker's priority-inversion warning. Awaiting a
+    /// continuation from this matching utility queue suspends the caller instead.
     nonisolated private static let backgroundDecodeQueue = DispatchQueue(
         label: "com.aagedal.photo-agent.preview-decode",
         qos: .utility,
         attributes: .concurrent
     )
+
+    /// Async boundary for Core Image preview initialization. Prefer this from foreground Tasks;
+    /// the synchronous variant remains available to already-utility background work.
+    nonisolated static func loadHDRPreviewOffPool(
+        from url: URL,
+        maxPixelSize: CGFloat
+    ) async -> CIImage? {
+        await loadHDRPreviewOffPoolWithOrientation(from: url, maxPixelSize: maxPixelSize)?.image
+    }
+
+    nonisolated static func loadHDRPreviewOffPoolWithOrientation(
+        from url: URL,
+        maxPixelSize: CGFloat
+    ) async -> (image: CIImage, orientation: Int)? {
+        await withCheckedContinuation { continuation in
+            backgroundDecodeQueue.async {
+                continuation.resume(returning: loadHDRPreviewWithOrientation(
+                    from: url,
+                    maxPixelSize: maxPixelSize
+                ))
+            }
+        }
+    }
 
     /// Run `loadDownsampled` off the Swift cooperative thread pool. See `backgroundDecodeQueue`.
     nonisolated static func loadDownsampledOffPool(from url: URL, maxPixelSize: CGFloat) async -> CGImage? {
@@ -736,6 +759,21 @@ final class FullScreenImageCache: @unchecked Sendable {
         return (ciImage, orientation)
     }
 
+    /// Async boundary for the full-resolution form of `CIImage(contentsOf:)`.
+    nonisolated static func loadHDRFullResolutionOffPool(from url: URL) async -> CIImage? {
+        await loadHDRFullResolutionOffPoolWithOrientation(from: url)?.image
+    }
+
+    nonisolated static func loadHDRFullResolutionOffPoolWithOrientation(
+        from url: URL
+    ) async -> (image: CIImage, orientation: Int)? {
+        await withCheckedContinuation { continuation in
+            backgroundDecodeQueue.async {
+                continuation.resume(returning: loadHDRFullResolutionWithOrientation(from: url))
+            }
+        }
+    }
+
     /// Load an image at full source resolution, preserving color space and bit depth.
     /// Uses CGImageSourceCreateThumbnailAtIndex to ensure EXIF orientation is applied.
     nonisolated static func loadFullResolution(from url: URL) -> CGImage? {
@@ -770,6 +808,20 @@ final class FullScreenImageCache: @unchecked Sendable {
             return nil
         }
         return (image, orientation)
+    }
+
+    nonisolated static func loadFullResolutionOffPool(from url: URL) async -> CGImage? {
+        await loadFullResolutionOffPoolWithOrientation(from: url)?.image
+    }
+
+    nonisolated static func loadFullResolutionOffPoolWithOrientation(
+        from url: URL
+    ) async -> (image: CGImage, orientation: Int)? {
+        await withCheckedContinuation { continuation in
+            backgroundDecodeQueue.async {
+                continuation.resume(returning: loadFullResolutionWithOrientation(from: url))
+            }
+        }
     }
 
     /// The file's current EXIF orientation tag (1 if absent or unreadable). For decodes

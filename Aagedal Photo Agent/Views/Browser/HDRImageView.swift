@@ -6,17 +6,63 @@ struct HDRImageView: NSViewRepresentable {
     let cgImage: CGImage
     var isHDR: Bool = true
     var useNearestNeighbor: Bool = false
+    var onPanChanged: ((CGSize) -> Void)?
+    var onPanEnded: ((CGSize) -> Void)?
+
+    final class Coordinator: NSObject {
+        var onPanChanged: ((CGSize) -> Void)?
+        var onPanEnded: ((CGSize) -> Void)?
+
+        @objc func handlePan(_ recognizer: NSPanGestureRecognizer) {
+            guard let view = recognizer.view else { return }
+            // Measure in the unscaled window content view. Reading in the image view's local
+            // coordinates would divide motion by SwiftUI's zoom transform.
+            let coordinateView = view.window?.contentView ?? view
+            let translation = recognizer.translation(in: coordinateView)
+            let swiftUITranslation = CGSize(
+                width: translation.x,
+                height: coordinateView.isFlipped ? translation.y : -translation.y
+            )
+
+            switch recognizer.state {
+            case .began, .changed:
+                onPanChanged?(swiftUITranslation)
+            case .ended:
+                onPanEnded?(swiftUITranslation)
+            case .cancelled, .failed:
+                onPanEnded?(.zero)
+            default:
+                break
+            }
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
         view.wantsLayer = true
         view.layer?.contentsGravity = .resizeAspect
+        let panRecognizer = NSPanGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handlePan(_:))
+        )
+        view.addGestureRecognizer(panRecognizer)
+        updateCoordinator(context.coordinator)
         updateLayer(view)
         return view
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
+        updateCoordinator(context.coordinator)
         updateLayer(nsView)
+    }
+
+    private func updateCoordinator(_ coordinator: Coordinator) {
+        coordinator.onPanChanged = onPanChanged
+        coordinator.onPanEnded = onPanEnded
     }
 
     private func updateLayer(_ view: NSView) {

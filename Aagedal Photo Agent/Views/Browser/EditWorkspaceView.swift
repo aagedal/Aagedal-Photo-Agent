@@ -1943,7 +1943,7 @@ struct EditWorkspaceView: View {
                 let phase1Start = ContinuousClock.now
                 // Oriented to the in-memory target inside the task — see orientedToTarget.
                 let previewSource = await Task.detached(priority: .userInitiated) { () -> (image: NSImage?, ciImage: CIImage?) in
-                    if let result = FullScreenImageCache.loadHDRPreviewWithOrientation(from: selectedImageURL, maxPixelSize: previewMaxPixelSize) {
+                    if let result = await FullScreenImageCache.loadHDRPreviewOffPoolWithOrientation(from: selectedImageURL, maxPixelSize: previewMaxPixelSize) {
                         // Orient BEFORE rendering the NSImage so it comes out corrected for free.
                         let correction = ImageFile.orientationCorrection(from: result.orientation, to: targetOrientation)
                         let ci = correction != .up ? result.image.oriented(correction) : result.image
@@ -1955,7 +1955,7 @@ struct EditWorkspaceView: View {
                             return (image: nsImage, ciImage: ci)
                         }
                     }
-                    if let result = FullScreenImageCache.loadDownsampledWithOrientation(
+                    if let result = await FullScreenImageCache.loadDownsampledOffPoolWithOrientation(
                         from: selectedImageURL,
                         maxPixelSize: previewMaxPixelSize
                     ) {
@@ -2020,9 +2020,9 @@ struct EditWorkspaceView: View {
                     // Oriented to the in-memory target inside the task — see orientedToTarget.
                     let fullRes: CIImage? = await Task.detached(priority: .userInitiated) {
                         let decoded: (image: CIImage, orientation: Int)?
-                        if let result = FullScreenImageCache.loadHDRFullResolutionWithOrientation(from: selectedImageURL) {
+                        if let result = await FullScreenImageCache.loadHDRFullResolutionOffPoolWithOrientation(from: selectedImageURL) {
                             decoded = result
-                        } else if let result = FullScreenImageCache.loadFullResolutionWithOrientation(from: selectedImageURL) {
+                        } else if let result = await FullScreenImageCache.loadFullResolutionOffPoolWithOrientation(from: selectedImageURL) {
                             decoded = (CIImage(cgImage: result.image), result.orientation)
                         } else {
                             decoded = nil
@@ -2220,13 +2220,16 @@ struct EditWorkspaceView: View {
             let start = ContinuousClock.now
             let fullRes: CIImage? = await Task.detached(priority: .userInitiated) {
                 let fileOrientation = FullScreenImageCache.fileEXIFOrientation(at: url)
-                let decoded: CIImage?
+                var decoded: CIImage?
                 if isRaw {
                     // nil maxPixelSize → full sensor resolution.
                     decoded = FullScreenImageCache.loadRAWImage(from: url, draftMode: false)?.image
                 } else {
-                    decoded = FullScreenImageCache.loadHDRFullResolution(from: url)
-                        ?? FullScreenImageCache.loadFullResolution(from: url).map { CIImage(cgImage: $0) }
+                    decoded = await FullScreenImageCache.loadHDRFullResolutionOffPool(from: url)
+                    if decoded == nil,
+                       let cgImage = await FullScreenImageCache.loadFullResolutionOffPool(from: url) {
+                        decoded = CIImage(cgImage: cgImage)
+                    }
                 }
                 guard let decoded else { return nil }
                 return Self.orientedToTarget(

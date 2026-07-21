@@ -444,7 +444,17 @@ struct FullScreenImageView: View {
                 Color.black
 
                 if let currentImage {
-                    HDRImageView(cgImage: currentImage.cgImage, isHDR: isHDR, useNearestNeighbor: scaling.useNearestNeighbor)
+                    HDRImageView(
+                        cgImage: currentImage.cgImage,
+                        isHDR: isHDR,
+                        useNearestNeighbor: scaling.useNearestNeighbor,
+                        onPanChanged: { translation in
+                            updatePan(translation)
+                        },
+                        onPanEnded: { translation in
+                            endPan(translation, in: geometry.size)
+                        }
+                    )
                         .aspectRatio(
                             currentImage.size.width / currentImage.size.height,
                             contentMode: .fit
@@ -452,7 +462,6 @@ struct FullScreenImageView: View {
                         .scaleEffect(zoomScale)
                         .offset(offset)
                         .gesture(magnifyGesture)
-                        .gesture(dragGesture(in: geometry.size))
                         .onTapGesture(count: 2) {
                             let mouse = NSEvent.mouseLocation
                             let screenFrame = NSScreen.main?.frame ?? .zero
@@ -798,25 +807,26 @@ struct FullScreenImageView: View {
             }
     }
 
-    private func dragGesture(in size: CGSize) -> some Gesture {
-        DragGesture()
-            .onChanged { value in
-                // Only allow panning when zoomed beyond fit level
-                guard zoomScale > 1.0 else { return }
-                offset = CGSize(
-                    width: lastOffset.width + value.translation.width,
-                    height: lastOffset.height + value.translation.height
-                )
-            }
-            .onEnded { value in
-                guard zoomScale > 1.0 else {
-                    offset = .zero
-                    lastOffset = .zero
-                    return
-                }
-                lastOffset = offset
-                constrainOffset(in: size)
-            }
+    private func updatePan(_ translation: CGSize) {
+        guard zoomScale > 1.0 else { return }
+        offset = CGSize(
+            width: lastOffset.width + translation.width,
+            height: lastOffset.height + translation.height
+        )
+    }
+
+    private func endPan(_ translation: CGSize, in size: CGSize) {
+        guard zoomScale > 1.0 else {
+            offset = .zero
+            lastOffset = .zero
+            return
+        }
+        offset = CGSize(
+            width: lastOffset.width + translation.width,
+            height: lastOffset.height + translation.height
+        )
+        lastOffset = offset
+        constrainOffset(in: size)
     }
 
     private func constrainOffset(in size: CGSize) {
@@ -1209,7 +1219,7 @@ struct FullScreenImageView: View {
                             image = Self.applyCameraRaw(to: ciImage, settings: settings, exifOrientation: imageOrientation, fileOrientation: rawFileOrientation)
                         }
                     } else {
-                        if let result = FullScreenImageCache.loadHDRPreviewWithOrientation(from: url, maxPixelSize: screenMaxPx) {
+                        if let result = await FullScreenImageCache.loadHDRPreviewOffPoolWithOrientation(from: url, maxPixelSize: screenMaxPx) {
                             guard !Task.isCancelled else { return }
                             image = Self.applyCameraRaw(to: result.image, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: result.orientation)
                         }
@@ -1217,7 +1227,7 @@ struct FullScreenImageView: View {
                 }
                 guard !Task.isCancelled else { return }
                 if image == nil {
-                    guard let result = FullScreenImageCache.loadDownsampledWithOrientation(from: url, maxPixelSize: screenMaxPx) else {
+                    guard let result = await FullScreenImageCache.loadDownsampledOffPoolWithOrientation(from: url, maxPixelSize: screenMaxPx) else {
                         return
                     }
                     guard !Task.isCancelled else { return }
@@ -1291,7 +1301,7 @@ struct FullScreenImageView: View {
                         image = Self.applyCameraRaw(to: ciImage, settings: settings, exifOrientation: imageOrientation, fileOrientation: rawFileOrientation)
                     }
                 } else {
-                    if let result = FullScreenImageCache.loadHDRPreviewWithOrientation(from: url, maxPixelSize: screenMaxPx) {
+                    if let result = await FullScreenImageCache.loadHDRPreviewOffPoolWithOrientation(from: url, maxPixelSize: screenMaxPx) {
                         guard !Task.isCancelled else { return }
                         image = Self.applyCameraRaw(to: result.image, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: result.orientation)
                     }
@@ -1299,7 +1309,7 @@ struct FullScreenImageView: View {
             }
             guard !Task.isCancelled else { return }
             if image == nil {
-                guard let result = FullScreenImageCache.loadDownsampledWithOrientation(from: url, maxPixelSize: screenMaxPx) else {
+                guard let result = await FullScreenImageCache.loadDownsampledOffPoolWithOrientation(from: url, maxPixelSize: screenMaxPx) else {
                     imageLogger.error("\(filename): Phase 2 failed — could not decode image")
                     await MainActor.run {
                         if currentImageFile?.url == url {
@@ -1368,7 +1378,7 @@ struct FullScreenImageView: View {
             }
             // Try HDR CIImage path first; fall through to CGImage if crop/render fails
             if needsHDRLoad,
-               let result = FullScreenImageCache.loadHDRPreviewWithOrientation(from: url, maxPixelSize: 960) {
+               let result = await FullScreenImageCache.loadHDRPreviewOffPoolWithOrientation(from: url, maxPixelSize: 960) {
                 guard !Task.isCancelled else { return nil }
                 if let image = Self.applyCameraRaw(to: result.image, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: result.orientation) {
                     return image
@@ -1376,7 +1386,7 @@ struct FullScreenImageView: View {
             }
             // CGImage fallback — applyCameraRaw(to: CGImage) always returns a valid image
             guard !Task.isCancelled else { return nil }
-            guard let raw = FullScreenImageCache.loadDownsampledWithOrientation(from: url, maxPixelSize: 960) else { return nil }
+            guard let raw = await FullScreenImageCache.loadDownsampledOffPoolWithOrientation(from: url, maxPixelSize: 960) else { return nil }
             guard !Task.isCancelled else { return nil }
             return Self.applyCameraRaw(to: raw.image, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: raw.orientation)
         }
@@ -1459,12 +1469,14 @@ struct FullScreenImageView: View {
                         image = Self.applyCameraRaw(to: rawResult.image, settings: settings, exifOrientation: orientation, fileOrientation: rawFileOrientation)
                     }
                 } else {
-                    if let result = FullScreenImageCache.loadHDRFullResolutionWithOrientation(from: url), !Task.isCancelled {
+                    if let result = await FullScreenImageCache.loadHDRFullResolutionOffPoolWithOrientation(from: url), !Task.isCancelled {
                         image = Self.applyCameraRaw(to: result.image, settings: cameraRaw, exifOrientation: orientation, fileOrientation: result.orientation)
                     }
                 }
             }
-            if image == nil, !Task.isCancelled, let result = FullScreenImageCache.loadFullResolutionWithOrientation(from: url), !Task.isCancelled {
+            if image == nil, !Task.isCancelled,
+               let result = await FullScreenImageCache.loadFullResolutionOffPoolWithOrientation(from: url),
+               !Task.isCancelled {
                 image = Self.applyCameraRaw(to: result.image, settings: cameraRaw, exifOrientation: orientation, fileOrientation: result.orientation)
             }
             let elapsed = CFAbsoluteTimeGetCurrent() - fullStart
