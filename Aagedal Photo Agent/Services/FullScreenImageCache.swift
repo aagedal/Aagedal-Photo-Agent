@@ -567,6 +567,16 @@ final class FullScreenImageCache: @unchecked Sendable {
         attributes: .concurrent
     )
 
+    /// Embedded RAW preview extraction must run at the same QoS as ImageIO's own
+    /// default-QoS workers. An enforced work-item QoS prevents a foreground caller's
+    /// priority from being inferred by GCD, while the continuation lets that caller
+    /// suspend instead of synchronously waiting on ImageIO.
+    nonisolated private static let embeddedPreviewDecodeQueue = DispatchQueue(
+        label: "com.aagedal.photo-agent.embedded-preview-decode",
+        qos: .default,
+        attributes: .concurrent
+    )
+
     /// Async boundary for Core Image preview initialization. Prefer this from foreground Tasks;
     /// the synchronous variant remains available to already-utility background work.
     nonisolated static func loadHDRPreviewOffPool(
@@ -834,14 +844,28 @@ final class FullScreenImageCache: @unchecked Sendable {
         return orientation
     }
 
-    /// Extract the embedded JPEG preview from a RAW file.
-    nonisolated static func extractEmbeddedPreview(from url: URL) -> CGImage? {
-        extractEmbeddedPreviewWithOrientation(from: url)?.image
+    /// Async boundary for embedded RAW preview extraction. Keep conversion and rendering
+    /// outside this helper so the enforced default-QoS work item contains only ImageIO work.
+    nonisolated static func extractEmbeddedPreviewOffPool(
+        from url: URL
+    ) async -> CGImage? {
+        await extractEmbeddedPreviewOffPoolWithOrientation(from: url)?.image
     }
 
-    /// Variant of `extractEmbeddedPreview` that also reports the EXIF orientation baked
-    /// into the returned pixels, read from the same `CGImageSource`. See `loadHDRPreviewWithOrientation`.
-    nonisolated static func extractEmbeddedPreviewWithOrientation(
+    nonisolated static func extractEmbeddedPreviewOffPoolWithOrientation(
+        from url: URL
+    ) async -> (image: CGImage, orientation: Int)? {
+        await withCheckedContinuation { continuation in
+            let workItem = DispatchWorkItem(qos: .default, flags: .enforceQoS) {
+                continuation.resume(returning: extractEmbeddedPreviewWithOrientation(from: url))
+            }
+            embeddedPreviewDecodeQueue.async(execute: workItem)
+        }
+    }
+
+    /// Synchronous ImageIO implementation, reachable only through the default-QoS async
+    /// boundary above so foreground Tasks never perform this blocking call directly.
+    nonisolated private static func extractEmbeddedPreviewWithOrientation(
         from url: URL
     ) -> (image: CGImage, orientation: Int)? {
         let filename = url.lastPathComponent

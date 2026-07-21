@@ -1759,7 +1759,7 @@ struct EditWorkspaceView: View {
                 // Oriented to the in-memory target inside the task — see orientedToTarget.
                 let phase1Start = ContinuousClock.now
                 let quickPreview = await Task.detached(priority: .userInitiated) { () -> (image: NSImage?, ciImage: CIImage?)? in
-                    guard let result = FullScreenImageCache.extractEmbeddedPreviewWithOrientation(
+                    guard let result = await FullScreenImageCache.extractEmbeddedPreviewOffPoolWithOrientation(
                         from: selectedImageURL
                     ) else { return nil }
                     let nsImage = NSImage(

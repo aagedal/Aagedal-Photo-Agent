@@ -67,7 +67,10 @@ struct CleanFeedContentView: View {
                     let rawPreview = FullScreenImageCache.loadRAWPreview(from: url, maxPixelSize: maxPixelSize, draftMode: true)
                     isRawDecode = rawPreview != nil
                     base = rawPreview
-                        ?? FullScreenImageCache.extractEmbeddedPreview(from: url).map { CIImage(cgImage: $0) }
+                    if base == nil,
+                       let embeddedPreview = await FullScreenImageCache.extractEmbeddedPreviewOffPool(from: url) {
+                        base = CIImage(cgImage: embeddedPreview)
+                    }
                 } else {
                     base = await FullScreenImageCache.loadHDRPreviewOffPool(from: url, maxPixelSize: maxPixelSize)
                     if base == nil,

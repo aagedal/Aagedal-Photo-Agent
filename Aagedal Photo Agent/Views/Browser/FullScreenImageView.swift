@@ -1372,7 +1372,7 @@ struct FullScreenImageView: View {
                     imageLogger.info("\(filename): Phase 0.5 skipped for sidecar-rotated RAW (fileOrientation=\(fileOrientation), displayOrientation=\(imageOrientation))")
                     return nil
                 }
-                guard let raw = FullScreenImageCache.extractEmbeddedPreviewWithOrientation(from: url) else { return nil }
+                guard let raw = await FullScreenImageCache.extractEmbeddedPreviewOffPoolWithOrientation(from: url) else { return nil }
                 guard !Task.isCancelled else { return nil }
                 return Self.applyCameraRaw(to: raw.image, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: raw.orientation)
             }

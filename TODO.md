@@ -2,9 +2,9 @@
 
 ## Priority
 
-- [ ] **Avoid ImageIO QoS priority inversion during embedded RAW preview extraction.**
-  `EditWorkspaceView` currently calls synchronous `CGImageSourceCreateThumbnailAtIndex`
-  from a `.userInitiated` task, while ImageIO may wait on its own default-QoS worker.
-  Add an async cache helper that performs only the blocking ImageIO call on an explicit
-  default-QoS dispatch work item and resumes through a checked continuation; adopt it in
-  the edit preview and Clean Feed fallback, then verify with Thread Performance Checker.
+- [x] **Avoid ImageIO QoS priority inversion during embedded RAW preview extraction.**
+  (2026-07-21) `FullScreenImageCache.extractEmbeddedPreviewOffPoolWithOrientation`
+  now confines synchronous ImageIO extraction to an enforced default-QoS dispatch work
+  item and resumes foreground callers through a checked continuation. The edit preview,
+  Clean Feed fallback, and full-screen RAW preview all use the async boundary. A focused
+  `.userInitiated` regression test passes with Thread Performance Checker enabled.

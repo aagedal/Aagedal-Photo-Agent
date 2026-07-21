@@ -38,6 +38,51 @@ struct FullScreenImageCacheTests {
         return url
     }
 
+    /// Writes a two-image TIFF that ImageIO can decode through the same embedded-preview
+    /// API used for RAW files, allowing the async boundary to be tested without a fixture.
+    private func makeTempMultiImageTIFF() throws -> URL {
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        func makeImage(width: Int, height: Int, red: CGFloat) throws -> CGImage {
+            guard let context = CGContext(
+                data: nil, width: width, height: height,
+                bitsPerComponent: 8, bytesPerRow: 0, space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { throw CocoaError(.featureUnsupported) }
+            context.setFillColor(CGColor(red: red, green: 0.4, blue: 0.6, alpha: 1))
+            context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+            guard let image = context.makeImage() else { throw CocoaError(.featureUnsupported) }
+            return image
+        }
+
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fsic-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("sample.tiff")
+        guard let destination = CGImageDestinationCreateWithURL(
+            url as CFURL, UTType.tiff.identifier as CFString, 2, nil
+        ) else { throw CocoaError(.fileWriteUnknown) }
+        CGImageDestinationAddImage(destination, try makeImage(width: 64, height: 48, red: 0.2), nil)
+        CGImageDestinationAddImage(destination, try makeImage(width: 32, height: 24, red: 0.8), nil)
+        guard CGImageDestinationFinalize(destination) else { throw CocoaError(.fileWriteUnknown) }
+        return url
+    }
+
+    @Test("Async embedded preview extraction resumes with an image")
+    func asyncEmbeddedPreviewExtraction() async throws {
+        let url = try makeTempMultiImageTIFF()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        // Match the foreground callers that originally triggered Thread Performance Checker.
+        let result = await Task.detached(priority: .userInitiated) {
+            await FullScreenImageCache.extractEmbeddedPreviewOffPoolWithOrientation(from: url)
+        }.value
+
+        #expect(result != nil)
+        #expect(result?.image.width ?? 0 > 0)
+        #expect(result?.image.height ?? 0 > 0)
+        #expect(result?.orientation == 1)
+    }
+
     @Test("Returns nil when no prefetch is in flight for the URL")
     func noInFlightPrefetchReturnsNil() async {
         let cache = FullScreenImageCache()
