@@ -41,6 +41,9 @@ extension C2PAAction {
         if let v = settings.saturation, v != 0 { colorParts.append("Saturation \(v > 0 ? "+" : "")\(v)") }
         if let v = settings.vibrance, v != 0 { colorParts.append("Vibrance \(v > 0 ? "+" : "")\(v)") }
         if let v = settings.globalDensity, v != 0 { colorParts.append("Density \(v > 0 ? "+" : "")\(v)") }
+        if let v = settings.sharpness, v != 0 { colorParts.append("Sharpness +\(v)") }
+        if let v = settings.clarity2012, v != 0 { colorParts.append("Clarity \(v > 0 ? "+" : "")\(v)") }
+        if let v = settings.dehaze, v != 0 { colorParts.append("Dehaze \(v > 0 ? "+" : "")\(v)") }
 
         // White balance
         if let temp = settings.temperature ?? settings.incrementalTemperature,

@@ -161,9 +161,14 @@ struct EditParams {
     var saturation: Float = 1
     var gamutClipMode: UInt32 = 0
 
+    var sharpness: Float = 0
+    var clarity: Float = 0
+    var dehaze: Float = 0
+    var _padDetail: Float = 0
+
     var whiteBalanceMatrix: simd_float3x3 = matrix_identity_float3x3
 
-    var activeFlags: UInt32 = 0  // bit0=toneLUT, bit1=vibrance, bit2=saturation, bit3=whiteBalance, bit4=hdrMode, bit5=anonymizer, bit6=globalDensity, bit7=sourceHeadroom
+    var activeFlags: UInt32 = 0  // bit0=toneLUT, bit1=vibrance, bit2=saturation, bit3=whiteBalance, bit4=hdrMode, bit5=anonymizer, bit6=globalDensity, bit7=sourceHeadroom, bit8=sharpness, bit9=clarity, bit10=dehaze
     var maskCount: UInt32 = 0
 
     var scale: SIMD2<Float> = .zero
@@ -803,6 +808,21 @@ final class MetalEditPipeline: @unchecked Sendable {
         if let density = settings.globalDensity, density != 0 {
             params.globalDensity = Float(min(max(Double(density) / 100.0, -1.0), 1.0))
             flags |= (1 << 6)
+        }
+
+        // 3.6. Detail. Sharpness follows ACR's 0...150 amount scale; Clarity and
+        // Dehaze use the standard signed -100...100 scale.
+        if let sharpness = settings.sharpness, sharpness != 0 {
+            params.sharpness = Float(min(max(Double(sharpness) / 150.0, 0.0), 1.0))
+            flags |= (1 << 8)
+        }
+        if let clarity = settings.clarity2012, clarity != 0 {
+            params.clarity = Float(min(max(Double(clarity) / 100.0, -1.0), 1.0))
+            flags |= (1 << 9)
+        }
+        if let dehaze = settings.dehaze, dehaze != 0 {
+            params.dehaze = Float(min(max(Double(dehaze) / 100.0, -1.0), 1.0))
+            flags |= (1 << 10)
         }
 
         // 4. White balance — cached, only recomputes when temperature/tint change
@@ -2449,6 +2469,9 @@ final class MetalEditPipeline: @unchecked Sendable {
         let noVibrance = settings.vibrance == nil || settings.vibrance == 0
         let noSaturation = settings.saturation == nil || settings.saturation == 0
         let noDensity = settings.globalDensity == nil || settings.globalDensity == 0
+        let noSharpness = settings.sharpness == nil || settings.sharpness == 0
+        let noClarity = settings.clarity2012 == nil || settings.clarity2012 == 0
+        let noDehaze = settings.dehaze == nil || settings.dehaze == 0
         let noWB = settings.whiteBalance == "As Shot"
             || (settings.temperature == nil && settings.incrementalTemperature == nil
                 && settings.tint == nil && settings.incrementalTint == nil)
@@ -2456,6 +2479,8 @@ final class MetalEditPipeline: @unchecked Sendable {
         let noWatermarks = settings.watermarkLayers?.isEmpty ?? true
         let noHSL = settings.hslAdjustments?.isEmpty ?? true
         let noAnonymizer = settings.anonymizer?.isEmpty ?? true
-        return noTonal && noOutputToneMap && noVibrance && noSaturation && noDensity && noWB && noMasks && noWatermarks && noHSL && noAnonymizer
+        return noTonal && noOutputToneMap && noVibrance && noSaturation && noDensity
+            && noSharpness && noClarity && noDehaze && noWB && noMasks
+            && noWatermarks && noHSL && noAnonymizer
     }
 }

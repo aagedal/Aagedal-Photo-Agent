@@ -1339,6 +1339,9 @@ final class BrowserViewModel {
             MetadataDictKey.crsShadows2012,
             MetadataDictKey.crsWhites2012,
             MetadataDictKey.crsBlacks2012,
+            MetadataDictKey.crsSharpness,
+            MetadataDictKey.crsClarity2012,
+            MetadataDictKey.crsDehaze,
             MetadataDictKey.crsTemperature,
             MetadataDictKey.crsTint,
             MetadataDictKey.crsIncrementalTemperature,
@@ -1466,6 +1469,9 @@ final class BrowserViewModel {
             saturation: parseIntValue(dict[MetadataDictKey.crsSaturation]),
             vibrance: parseIntValue(dict[MetadataDictKey.crsVibrance]),
             globalDensity: parseIntValue(dict[MetadataDictKey.globalDensity]),
+            sharpness: parseIntValue(dict[MetadataDictKey.crsSharpness]),
+            clarity2012: parseIntValue(dict[MetadataDictKey.crsClarity2012]),
+            dehaze: parseIntValue(dict[MetadataDictKey.crsDehaze]),
             hasSettings: parseBoolValue(dict[MetadataDictKey.crsHasSettings]),
             crop: cropValue,
             hdrEditMode: parseIntValue(dict[MetadataDictKey.crsHDREditMode]),
@@ -3446,6 +3452,9 @@ final class BrowserViewModel {
             clearFields[.crsSaturation] = ""
             clearFields[.crsVibrance] = ""
             clearFields[.aaphotoGlobalDensity] = ""
+            clearFields[.crsSharpness] = ""
+            clearFields[.crsClarity2012] = ""
+            clearFields[.crsDehaze] = ""
             clearFields[.crsHasSettings] = "False"
             clearFields[.crsCropTop] = ""
             clearFields[.crsCropLeft] = ""

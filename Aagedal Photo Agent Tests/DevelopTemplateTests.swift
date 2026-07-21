@@ -8,6 +8,9 @@ struct DevelopTemplateTests {
     func stripsImageSpecificState() {
         var settings = CameraRawSettings()
         settings.exposure2012 = 1.25
+        settings.sharpness = 50
+        settings.clarity2012 = 24
+        settings.dehaze = 19
         settings.asShotNeutralTemperature = 5_400
         settings.asShotNeutralTint = 8
         settings.sourceHasHDRHeadroom = true
@@ -18,6 +21,9 @@ struct DevelopTemplateTests {
         let template = DevelopTemplate(name: "Bright", settings: settings)
 
         #expect(template.settings.exposure2012 == 1.25)
+        #expect(template.settings.sharpness == 50)
+        #expect(template.settings.clarity2012 == 24)
+        #expect(template.settings.dehaze == 19)
         #expect(template.settings.asShotNeutralTemperature == nil)
         #expect(template.settings.asShotNeutralTint == nil)
         #expect(template.settings.sourceHasHDRHeadroom == nil)

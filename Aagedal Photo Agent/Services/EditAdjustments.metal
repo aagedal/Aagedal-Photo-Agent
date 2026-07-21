@@ -63,12 +63,18 @@ struct EditParams {
     float saturation;        // 0..2 (1=identity)
     uint gamutClipMode;      // 0=off, 1=sRGB, 2=P3, 3=Rec2020
 
+    float sharpness;         // 0..1 (ACR amount 0..150)
+    float clarity;           // -1..1
+    float dehaze;            // -1..1
+    float _padDetail;
+
     float3x3 whiteBalanceMatrix; // Bradford chromatic adaptation (identity if no WB)
 
     uint activeFlags;        // bitmask: bit0=toneLUT, bit1=vibrance,
                              // bit2=saturation, bit3=whiteBalance, bit4=hdrMode,
                              // bit5=anonymizer (global), bit6=globalDensity,
-                             // bit7=source has scene-referred HDR headroom
+                             // bit7=source has scene-referred HDR headroom,
+                             // bit8=sharpness, bit9=clarity, bit10=dehaze
     uint maskCount;          // number of active masks (0-8)
 
     float2 scale;            // source→drawable scale (stretch-to-fill)
@@ -100,6 +106,11 @@ struct EditParams {
     uint useNearestNeighbor;  // shared viewer/editor display-scaling preference
     uint maskOverlayMode;     // 0 = red coverage tint, 1 = black/white matte preview
 };
+
+// ScopeShaders.metal consumes this same buffer through its ScopeEditParams mirror.
+// Keep this assertion in sync with Swift's MemoryLayout<EditParams>.stride.
+static_assert(sizeof(EditParams) == 208,
+              "EditParams layout changed; update Swift and ScopeEditParams together");
 
 // ============================================================
 // Gamut-clipping matrices (soft proof)
@@ -151,7 +162,7 @@ constant float3x3 AdobeRGBtoSRGB_edit = float3x3(
 // ============================================================
 
 /// Global adjustment block: white balance → tone LUT (+highlight desat) → per-color HSL
-/// → global density → vibrance → saturation. Each step is gated by params.activeFlags, so an inactive
+/// → global density → vibrance → saturation → dehaze. Each step is gated by params.activeFlags, so an inactive
 /// global node is a no-op. Returns the adjusted color.
 static half3 applyGlobal(half3 rgb,
                          constant EditParams &params,
@@ -349,7 +360,73 @@ static half3 applyGlobal(half3 rgb,
         rgb = mix(half3(lum), rgb, (half)params.saturation);
     }
 
+    // 6. Dehaze — invert a neutral atmospheric veil estimated from the pixel's
+    // dark channel. Negative values run the forward model to add a soft veil.
+    // This stays inside the global layer because it needs no neighbouring pixels.
+    if (params.activeFlags & (1u << 10)) {
+        float3 rgbF = max(float3(rgb), 0.0);
+        if (params.dehaze > 0.0) {
+            float darkChannel = clamp(min3(rgbF.r, rgbF.g, rgbF.b), 0.0, 1.0);
+            float transmission = clamp(1.0 - params.dehaze * 0.72 * darkChannel, 0.35, 1.0);
+            rgbF = max((rgbF - float3(1.0 - transmission)) / transmission, 0.0);
+        } else {
+            float veil = -params.dehaze * 0.35;
+            rgbF = rgbF * (1.0 - veil) + float3(veil);
+        }
+        rgb = half3(rgbF);
+    }
+
     return rgb;
+}
+
+/// Spatial detail stage for the global node. It samples only source luminance, then applies
+/// that high-frequency/local-contrast signal to the running (already color-corrected) pixel,
+/// preserving the edited chroma. The source texture always has mipmaps in both live and export
+/// paths, so Clarity can use a resolution-relative neighbourhood without a costly large kernel.
+static half3 applySpatialDetail(half3 rgb,
+                                constant EditParams &params,
+                                texture2d<half, access::sample> source,
+                                float2 uv)
+{
+    constexpr sampler detailSampler(filter::linear, mip_filter::linear, address::clamp_to_edge);
+    float3 sourceCenter = max(float3(source.sample(detailSampler, uv, level(0.0)).rgb), 0.0);
+    float sourceY = dot(sourceCenter, float3(0.2126, 0.7152, 0.0722));
+    float3 rgbF = max(float3(rgb), 0.0);
+
+    // Clarity: medium-radius local contrast, concentrated in the midtones. The mip level is
+    // derived from image size so the visual scale is stable between preview and full export.
+    if (params.activeFlags & (1u << 9)) {
+        float shortSide = max(min(params.sourceSize.x, params.sourceSize.y), 1.0);
+        float radiusPx = clamp(shortSide * 0.008, 8.0, 64.0);
+        float maxLevel = float(source.get_num_mip_levels() - 1);
+        float mipLevel = clamp(log2(radiusPx), 0.0, maxLevel);
+        float3 localAverage = max(float3(source.sample(detailSampler, uv, level(mipLevel)).rgb), 0.0);
+        float localY = dot(localAverage, float3(0.2126, 0.7152, 0.0722));
+        float currentY = dot(rgbF, float3(0.2126, 0.7152, 0.0722));
+        float midtoneWeight = smoothstep(0.02, 0.22, currentY)
+            * (1.0 - smoothstep(0.72, 1.35, currentY));
+        // Keep the -100...100 slider useful across its full range. A 0.75 gain gives
+        // typical +15...+30 edits a restrained midtone lift instead of a crunchy halo.
+        float targetY = max(currentY + (sourceY - localY) * params.clarity * 0.75 * midtoneWeight, 0.0);
+        float luminanceScale = clamp(targetY / max(currentY, 0.001), 0.0, 4.0);
+        rgbF *= luminanceScale;
+    }
+
+    // Sharpness: a compact cross-shaped unsharp mask. A small edge gate suppresses sensor
+    // noise while retaining real one-pixel transitions; the ACR amount maps linearly to 0...1.
+    if (params.activeFlags & (1u << 8)) {
+        float2 texel = 1.0 / max(params.sourceSize, float2(1.0));
+        float north = dot(float3(source.sample(detailSampler, uv + float2(0.0, -texel.y), level(0.0)).rgb), float3(0.2126, 0.7152, 0.0722));
+        float south = dot(float3(source.sample(detailSampler, uv + float2(0.0,  texel.y), level(0.0)).rgb), float3(0.2126, 0.7152, 0.0722));
+        float west  = dot(float3(source.sample(detailSampler, uv + float2(-texel.x, 0.0), level(0.0)).rgb), float3(0.2126, 0.7152, 0.0722));
+        float east  = dot(float3(source.sample(detailSampler, uv + float2( texel.x, 0.0), level(0.0)).rgb), float3(0.2126, 0.7152, 0.0722));
+        float blurredY = (sourceY * 4.0 + north + south + west + east) * 0.125;
+        float highPass = sourceY - blurredY;
+        float edgeGate = smoothstep(0.0005, 0.008, abs(highPass));
+        rgbF = max(rgbF + float3(highPass * params.sharpness * 1.8 * edgeGate), 0.0);
+    }
+
+    return half3(rgbF);
 }
 
 /// Gaussian feather for an analytic shape. The stored outline remains the editable nominal
@@ -716,6 +793,11 @@ kernel void editAdjustments(
         rgb = color.rgb;
     }
 
+    // Spatial detail samples the original source. Track any redaction or watermark that has
+    // already replaced the running pixel before the global node, so sharpening/clarity cannot
+    // reintroduce underlying detail into that protected region.
+    float spatialDetailProtection = globalAnonActive ? 1.0 : 0.0;
+
     // Layer chain: apply each node in the order given by the order buffer. The global
     // adjustment block (kGlobalOrderSentinel) is reorderable among the masks — every node
     // transforms the running color in sequence, so moving the global node before/after a
@@ -733,6 +815,10 @@ kernel void editAdjustments(
             // Global node: the order buffer uses 0xFFFFFFFF as the global sentinel
             // (MetalEditPipeline.globalOrderSentinel).
             rgb = applyGlobal(rgb, params, toneLUT, hslParams);
+            if (params.activeFlags & ((1u << 8) | (1u << 9))) {
+                half3 detailed = applySpatialDetail(rgb, params, source, uv);
+                rgb = mix(rgb, detailed, half(1.0 - clamp(spatialDetailProtection, 0.0, 1.0)));
+            }
             globalApplied = true;
         } else if (entry & 0x80000000u) {
             uint wIdx = entry & 0x7FFFFFFFu;
@@ -742,6 +828,13 @@ kernel void editAdjustments(
                     float2 cropMin = 0.5 - params.cropHalfExtent;
                     float2 cropSize = max(params.cropHalfExtent * 2.0, float2(0.000001));
                     watermarkUV = (drawableNorm - cropMin) / cropSize;
+                }
+                float2 wmLocal = (watermarkUV - watermarks[wIdx].center)
+                    / max(watermarks[wIdx].halfExtent, float2(0.000001));
+                if (abs(wmLocal.x) <= 1.0 && abs(wmLocal.y) <= 1.0) {
+                    spatialDetailProtection = max(
+                        spatialDetailProtection, clamp(watermarks[wIdx].opacity, 0.0, 1.0)
+                    );
                 }
                 rgb = applyWatermark(rgb, watermarks[wIdx], watermarkTex, watermarkUV);
             }
@@ -762,6 +855,7 @@ kernel void editAdjustments(
             if (weight < 0.001) continue;
             half3 adjusted;
             if (mask.activeFlags & (1u << 8)) {
+                spatialDetailProtection = max(spatialDetailProtection, clamp(weight, 0.0, 1.0));
                 // Anonymizer: pixelate first (it re-samples the RAW source, so detail exposure
                 // would reveal is already destroyed), THEN apply the same adjustments the rest of
                 // the image gets so the patch matches — global (if it's already run; a later

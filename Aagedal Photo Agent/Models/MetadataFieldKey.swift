@@ -49,6 +49,9 @@ enum MetadataFieldKey: String, Sendable, CaseIterable {
     case crsBlacks2012
     case crsSaturation
     case crsVibrance
+    case crsSharpness
+    case crsClarity2012
+    case crsDehaze
     case crsHasSettings
     case crsCropTop
     case crsCropLeft

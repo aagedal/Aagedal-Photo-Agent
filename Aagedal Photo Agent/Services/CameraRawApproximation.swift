@@ -163,6 +163,44 @@ enum CameraRawApproximation {
             ]) ?? output
         }
 
+        // 6. Dehaze. The Metal path uses a dark-channel atmospheric model; this fallback
+        // keeps the same signed direction with coordinated contrast, saturation, and veil lift.
+        if let dehaze = settings.dehaze, dehaze != 0 {
+            let amount = min(max(Double(dehaze) / 100.0, -1.0), 1.0)
+            output = applyFilter(named: "CIColorControls", input: output, values: [
+                kCIInputContrastKey: 1.0 + amount * 0.55,
+                kCIInputSaturationKey: 1.0 + amount * 0.20,
+                kCIInputBrightnessKey: -amount * 0.04,
+            ]) ?? output
+        }
+
+        // 7. Clarity and sharpness. Positive clarity is a large-radius unsharp mask;
+        // negative clarity softly blends toward a blurred copy. Sharpness remains fine-radius.
+        if let clarity = settings.clarity2012, clarity != 0 {
+            let amount = min(max(Double(clarity) / 100.0, -1.0), 1.0)
+            if amount > 0 {
+                let radius = min(max(min(output.extent.width, output.extent.height) * 0.008, 8), 64)
+                output = (applyFilter(named: "CIUnsharpMask", input: output, values: [
+                    kCIInputRadiusKey: radius,
+                    kCIInputIntensityKey: amount * 0.45,
+                ]) ?? output).cropped(to: output.extent)
+            } else if let blurred = applyFilter(named: "CIGaussianBlur", input: output, values: [
+                kCIInputRadiusKey: -amount * 8.0,
+            ])?.cropped(to: output.extent) {
+                output = applyFilter(named: "CIDissolveTransition", input: output, values: [
+                    "inputTargetImage": blurred,
+                    kCIInputTimeKey: -amount * 0.15,
+                ]) ?? output
+            }
+        }
+        if let sharpness = settings.sharpness, sharpness != 0 {
+            let amount = min(max(Double(sharpness) / 150.0, 0.0), 1.0)
+            output = applyFilter(named: "CISharpenLuminance", input: output, values: [
+                kCIInputSharpnessKey: amount * 1.2,
+                kCIInputRadiusKey: 1.0,
+            ]) ?? output
+        }
+
         return output
     }
 

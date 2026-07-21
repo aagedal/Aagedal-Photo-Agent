@@ -1199,6 +1199,19 @@ struct CameraRawCropACRConversionTests {
         ]
         #expect(iptcMetadataFromDict(dict).cameraRaw?.globalDensity == 35)
     }
+
+    @Test("iptcMetadataFromDict decodes ACR detail adjustments")
+    func dictParseDecodesDetailAdjustments() throws {
+        let dict: [String: Any] = [
+            MetadataDictKey.crsSharpness: "50",
+            MetadataDictKey.crsClarity2012: "+24",
+            MetadataDictKey.crsDehaze: "+19",
+        ]
+        let settings = try #require(iptcMetadataFromDict(dict).cameraRaw)
+        #expect(settings.sharpness == 50)
+        #expect(settings.clarity2012 == 24)
+        #expect(settings.dehaze == 19)
+    }
 }
 
 @Suite("EllipseMaskGeometry ACR corner encoding")

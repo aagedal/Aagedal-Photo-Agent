@@ -57,6 +57,9 @@ nonisolated enum MetadataDictKey {
     static let crsBlacks2012 = "Blacks2012"
     static let crsSaturation = "Saturation"
     static let crsVibrance = "Vibrance"
+    static let crsSharpness = "Sharpness"
+    static let crsClarity2012 = "Clarity2012"
+    static let crsDehaze = "Dehaze"
     static let crsHasSettings = "HasSettings"
     static let crsAlreadyApplied = "AlreadyApplied"
     static let crsCropTop = "CropTop"
@@ -868,6 +871,9 @@ nonisolated func iptcMetadataFromDict(_ dict: [String: Any]) -> IPTCMetadata {
         saturation: parseIntValue(dict[MetadataDictKey.crsSaturation]),
         vibrance: parseIntValue(dict[MetadataDictKey.crsVibrance]),
         globalDensity: parseIntValue(dict[MetadataDictKey.globalDensity]),
+        sharpness: parseIntValue(dict[MetadataDictKey.crsSharpness]),
+        clarity2012: parseIntValue(dict[MetadataDictKey.crsClarity2012]),
+        dehaze: parseIntValue(dict[MetadataDictKey.crsDehaze]),
         hasSettings: parseBoolValue(dict[MetadataDictKey.crsHasSettings]),
         crop: cropValue,
         hdrEditMode: parseIntValue(dict[MetadataDictKey.crsHDREditMode]),

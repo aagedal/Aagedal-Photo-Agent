@@ -167,6 +167,9 @@ struct DevelopInteractionBehaviorTests {
             whiteBalance: "Custom",
             temperature: 7200,
             exposure2012: 1.25,
+            sharpness: 50,
+            clarity2012: 24,
+            dehaze: 19,
             crop: crop,
             hdrEditMode: 1,
             sdrBrightness: 20,
@@ -185,6 +188,9 @@ struct DevelopInteractionBehaviorTests {
         #expect(settings.whiteBalance == "As Shot")
         #expect(settings.temperature == nil)
         #expect(settings.exposure2012 == nil)
+        #expect(settings.sharpness == nil)
+        #expect(settings.clarity2012 == nil)
+        #expect(settings.dehaze == nil)
         #expect(settings.toneCurve == nil)
         #expect(settings.anonymizer == nil)
         #expect(settings.crop == crop)

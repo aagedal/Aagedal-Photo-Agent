@@ -1026,6 +1026,9 @@ struct MetadataPanel: View {
             || cameraRaw.saturation != nil
             || cameraRaw.vibrance != nil
             || cameraRaw.globalDensity != nil
+            || cameraRaw.sharpness != nil
+            || cameraRaw.clarity2012 != nil
+            || cameraRaw.dehaze != nil
             || (cameraRaw.crop?.isEmpty == false)
     }
 
@@ -1265,6 +1268,14 @@ struct MetadataPanel: View {
                 sliderRow("Shadows", value: toneSliderBinding(\.shadows2012), range: -100...100, step: 1, formatter: signedIntString)
                 sliderRow("Whites", value: toneSliderBinding(\.whites2012), range: -100...100, step: 1, formatter: signedIntString)
                 sliderRow("Blacks", value: toneSliderBinding(\.blacks2012), range: -100...100, step: 1, formatter: signedIntString)
+
+                Divider()
+                Text("Detail")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                sliderRow("Sharpness", value: toneSliderBinding(\.sharpness), range: 0...150, step: 1, formatter: signedIntString)
+                sliderRow("Clarity", value: toneSliderBinding(\.clarity2012), range: -100...100, step: 1, formatter: signedIntString)
+                sliderRow("Dehaze", value: toneSliderBinding(\.dehaze), range: -100...100, step: 1, formatter: signedIntString)
 
                 Toggle("Enable Crop", isOn: cropEnabledBinding)
                     .toggleStyle(.switch)

@@ -140,6 +140,9 @@ private extension CameraRawSettings {
             || saturation != nil
             || vibrance != nil
             || globalDensity != nil
+            || sharpness != nil
+            || clarity2012 != nil
+            || dehaze != nil
             || hdrEditMode != nil
             || hdrMaxValue != nil
             || sdrBrightness != nil

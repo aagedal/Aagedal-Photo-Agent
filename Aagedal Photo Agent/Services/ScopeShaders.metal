@@ -11,9 +11,16 @@ struct ScopeEditParams {
     float saturation;
     uint gamutClipMode;      // 0=off (unused by scopes, kept for struct layout match)
 
+    float sharpness;
+    float clarity;
+    float dehaze;
+    float _padDetail;
+
     float3x3 whiteBalanceMatrix;
 
-    uint activeFlags;    // bit0=toneLUT, bit1=vibrance, bit2=saturation, bit3=whiteBalance, bit4=hdrMode, bit5=globalDensity
+    uint activeFlags;    // bit0=toneLUT, bit1=vibrance, bit2=saturation, bit3=whiteBalance,
+                         // bit4=hdrMode, bit5=anonymizer, bit6=globalDensity,
+                         // bit7=source HDR, bit8=sharpness, bit9=clarity, bit10=dehaze
     uint maskCount;
 
     float2 scale;
@@ -33,8 +40,20 @@ struct ScopeEditParams {
     float _padViewport;
     float2 cropHalfExtent;   // unused by scopes
     uint orderCount;         // entries in the layer-order buffer (0 ⇒ legacy global-then-masks)
-    uint _padOrder;
+    float anonymizerAmount;
+    float anonymizerBlackOut;
+    int maskOverlayIndex;
+    float maskOverlayOpacity;
+    uint watermarkCount;
+    uint watermarkFrame;
+    uint useNearestNeighbor;
+    uint maskOverlayMode;
 };
+
+// The scope receives MetalEditPipeline.paramsBuffer directly. A field added to EditParams
+// must be mirrored above or every later value (including the white-balance matrix) is corrupt.
+static_assert(sizeof(ScopeEditParams) == 208,
+              "ScopeEditParams must stay byte-for-byte compatible with EditParams");
 
 // ============================================================
 // MaskParams — must match Swift MaskParams and EditAdjustments.metal exactly
@@ -273,7 +292,7 @@ inline float3 applyScopeGlobal(
     }
 
     // 4. Global Density
-    if (params.activeFlags & (1u << 5)) {
+    if (params.activeFlags & (1u << 6)) {
         float Y = dot(rgb, float3(0.2126, 0.7152, 0.0722));
         float3 colorChroma = rgb - float3(Y);
         float gain = pow(2.0, -params.globalDensity);
@@ -295,6 +314,67 @@ inline float3 applyScopeGlobal(
     if (params.activeFlags & (1u << 2)) {
         float lum = dot(rgb, float3(0.2126, 0.7152, 0.0722));
         rgb = mix(float3(lum), rgb, params.saturation);
+    }
+
+    // 7. Dehaze — mirrors the main edit shader's neutral atmospheric-veil model.
+    if (params.activeFlags & (1u << 10)) {
+        rgb = max(rgb, 0.0);
+        if (params.dehaze > 0.0) {
+            float darkChannel = clamp(min3(rgb.r, rgb.g, rgb.b), 0.0, 1.0);
+            float transmission = clamp(1.0 - params.dehaze * 0.72 * darkChannel, 0.35, 1.0);
+            rgb = max((rgb - float3(1.0 - transmission)) / transmission, 0.0);
+        } else {
+            float veil = -params.dehaze * 0.35;
+            rgb = rgb * (1.0 - veil) + float3(veil);
+        }
+    }
+
+    return rgb;
+}
+
+// Neighbourhood-based detail stage. This intentionally matches applySpatialDetail in
+// EditAdjustments.metal so a live scope reacts to Sharpness and Clarity like the preview.
+inline float3 applyScopeSpatialDetail(
+    float3 rgb,
+    constant ScopeEditParams &params,
+    texture2d<half, access::sample> source,
+    float2 uv)
+{
+    constexpr sampler detailSampler(filter::linear, mip_filter::linear, address::clamp_to_edge);
+    float3 sourceCenter = max(float3(source.sample(detailSampler, uv, level(0.0)).rgb), 0.0);
+    float sourceY = dot(sourceCenter, float3(0.2126, 0.7152, 0.0722));
+    rgb = max(rgb, 0.0);
+
+    if (params.activeFlags & (1u << 9)) {
+        float shortSide = max(min(params.sourceSize.x, params.sourceSize.y), 1.0);
+        float radiusPx = clamp(shortSide * 0.008, 8.0, 64.0);
+        float maxLevel = float(source.get_num_mip_levels() - 1);
+        float mipLevel = clamp(log2(radiusPx), 0.0, maxLevel);
+        float3 localAverage = max(
+            float3(source.sample(detailSampler, uv, level(mipLevel)).rgb), 0.0
+        );
+        float localY = dot(localAverage, float3(0.2126, 0.7152, 0.0722));
+        float currentY = dot(rgb, float3(0.2126, 0.7152, 0.0722));
+        float midtoneWeight = smoothstep(0.02, 0.22, currentY)
+            * (1.0 - smoothstep(0.72, 1.35, currentY));
+        float targetY = max(
+            currentY + (sourceY - localY) * params.clarity * 0.75 * midtoneWeight,
+            0.0
+        );
+        float luminanceScale = clamp(targetY / max(currentY, 0.001), 0.0, 4.0);
+        rgb *= luminanceScale;
+    }
+
+    if (params.activeFlags & (1u << 8)) {
+        float2 texel = 1.0 / max(params.sourceSize, float2(1.0));
+        float north = dot(float3(source.sample(detailSampler, uv + float2(0.0, -texel.y), level(0.0)).rgb), float3(0.2126, 0.7152, 0.0722));
+        float south = dot(float3(source.sample(detailSampler, uv + float2(0.0,  texel.y), level(0.0)).rgb), float3(0.2126, 0.7152, 0.0722));
+        float west  = dot(float3(source.sample(detailSampler, uv + float2(-texel.x, 0.0), level(0.0)).rgb), float3(0.2126, 0.7152, 0.0722));
+        float east  = dot(float3(source.sample(detailSampler, uv + float2( texel.x, 0.0), level(0.0)).rgb), float3(0.2126, 0.7152, 0.0722));
+        float blurredY = (sourceY * 4.0 + north + south + west + east) * 0.125;
+        float highPass = sourceY - blurredY;
+        float edgeGate = smoothstep(0.0005, 0.008, abs(highPass));
+        rgb = max(rgb + float3(highPass * params.sharpness * 1.8 * edgeGate), 0.0);
     }
 
     return rgb;
@@ -439,6 +519,7 @@ inline float3 applyEdits(
     float3 rgb,
     float2 uv,
     constant ScopeEditParams &params,
+    texture2d<half, access::sample> source,
     texture1d<float, access::sample> toneLUT,
     constant MaskParams *masks,
     constant HSLParams &hslParams,
@@ -446,6 +527,9 @@ inline float3 applyEdits(
 {
     if (params.orderCount == 0) {
         rgb = applyScopeGlobal(rgb, params, toneLUT, hslParams);
+        if (params.activeFlags & ((1u << 8) | (1u << 9))) {
+            rgb = applyScopeSpatialDetail(rgb, params, source, uv);
+        }
         for (uint m = 0; m < params.maskCount && m < 8; m++) {
             float weight = applyScopeMaskWeight(masks[m], uv, params.sourceSize);
             if (weight < 0.001) continue;
@@ -458,6 +542,9 @@ inline float3 applyEdits(
         uint entry = order[k];
         if (entry >= params.maskCount) {
             rgb = applyScopeGlobal(rgb, params, toneLUT, hslParams);
+            if (params.activeFlags & ((1u << 8) | (1u << 9))) {
+                rgb = applyScopeSpatialDetail(rgb, params, source, uv);
+            }
         } else {
             float weight = applyScopeMaskWeight(masks[entry], uv, params.sourceSize);
             if (weight < 0.001) continue;
@@ -493,7 +580,7 @@ kernel void waveformAccumulate(
     constexpr sampler bilinear(filter::linear, address::clamp_to_edge);
     half4 color = source.sample(bilinear, uv);
     float3 rgb = float3(color.rgb);
-    rgb = applyEdits(rgb, uv, editParams, toneLUT, masks, hslParams, order);
+    rgb = applyEdits(rgb, uv, editParams, source, toneLUT, masks, hslParams, order);
 
     int levels = int(scopeParams.levels);
     int level;
@@ -678,7 +765,7 @@ kernel void paradeAccumulate(
     constexpr sampler bilinear(filter::linear, address::clamp_to_edge);
     half4 color = source.sample(bilinear, uv);
     float3 rgb = float3(color.rgb);
-    rgb = applyEdits(rgb, uv, editParams, toneLUT, masks, hslParams, order);
+    rgb = applyEdits(rgb, uv, editParams, source, toneLUT, masks, hslParams, order);
 
     // Convert linear → sRGB before binning (matches CPU scope path)
     float r = linearToSRGB(saturate(rgb.r));
@@ -850,7 +937,7 @@ kernel void vectorscopeAccumulate(
     constexpr sampler bilinear(filter::linear, address::clamp_to_edge);
     half4 color = source.sample(bilinear, uv);
     float3 rgb = float3(color.rgb);
-    rgb = applyEdits(rgb, uv, editParams, toneLUT, masks, hslParams, order);
+    rgb = applyEdits(rgb, uv, editParams, source, toneLUT, masks, hslParams, order);
 
     // Convert linear → sRGB before CbCr computation (matches CPU scope path)
     float r = linearToSRGB(saturate(rgb.r));
@@ -1159,7 +1246,7 @@ kernel void chromaticityAccumulate(
     constexpr sampler bilinear(filter::linear, address::clamp_to_edge);
     half4 color = source.sample(bilinear, uv);
     float3 rgb = float3(color.rgb);
-    rgb = applyEdits(rgb, uv, editParams, toneLUT, masks, hslParams, order);
+    rgb = applyEdits(rgb, uv, editParams, source, toneLUT, masks, hslParams, order);
 
     // Work in linear space for chromaticity — do NOT apply linearToSRGB
     float3 linearRGB = rgb;

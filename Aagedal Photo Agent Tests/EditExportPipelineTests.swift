@@ -76,6 +76,9 @@ struct EditExportPipelineTests {
         baked.exposure2012 = 0.5
         baked.contrast2012 = 20
         baked.globalDensity = 35
+        baked.sharpness = 50
+        baked.clarity2012 = 24
+        baked.dehaze = 19
         // HSL is part of the develop edit and must be documented in the baked crs
         // too — including the ACR `Aqua` alias for cyan and a partial channel.
         baked.hslAdjustments = HSLAdjustments(
@@ -101,6 +104,9 @@ struct EditExportPipelineTests {
         #expect(embedded.xmp?.simpleValue(namespace: crsNS, property: "Exposure2012") == "+0.50")
         #expect(embedded.xmp?.simpleValue(namespace: crsNS, property: "Contrast2012") == "+20")
         #expect(embedded.xmp?.simpleValue(namespace: appNS, property: "GlobalDensity") == "+35")
+        #expect(embedded.xmp?.simpleValue(namespace: crsNS, property: "Sharpness") == "50")
+        #expect(embedded.xmp?.simpleValue(namespace: crsNS, property: "Clarity2012") == "+24")
+        #expect(embedded.xmp?.simpleValue(namespace: crsNS, property: "Dehaze") == "+19")
         // HSL: signed ints, ACR `Aqua` for cyan, and only the authored channels.
         #expect(embedded.xmp?.simpleValue(namespace: crsNS, property: "HueAdjustmentRed") == "+10")
         #expect(embedded.xmp?.simpleValue(namespace: crsNS, property: "SaturationAdjustmentRed") == "+25")

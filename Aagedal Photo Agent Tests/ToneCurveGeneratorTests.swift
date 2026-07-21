@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import CoreImage
+import Metal
 @testable import Aagedal_Photo_Agent
 
 /// Tests for tonal adjustment LUT generation and the separate final SDR output transform.
@@ -171,6 +172,9 @@ struct RenderPipelineParityTests {
         s.blacks2012 = -12
         s.saturation = 20
         s.vibrance = 15
+        s.sharpness = 50
+        s.clarity2012 = 24
+        s.dehaze = 19
         s.temperature = 5200
         s.asShotNeutralTemperature = 5500
         s.tint = 8
@@ -261,5 +265,87 @@ struct RenderPipelineParityTests {
         }
         print(String(format: "[parity] determinism: max ΔsRGB across two identical renders = %.4f code values", maxCode))
         #expect(maxCode < 0.5)
+    }
+}
+
+@Suite("Global detail adjustments")
+struct GlobalDetailAdjustmentTests {
+    private static let cs = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
+    private static let ctx = CIContext(options: [.workingColorSpace: cs, .workingFormat: CIFormat.RGBAf])
+
+    private func verticalStep(size: Int = 64) -> CIImage {
+        var pixels = [Float](repeating: 0, count: size * size * 4)
+        for y in 0..<size {
+            for x in 0..<size {
+                let value: Float = x < size / 2 ? 0.25 : 0.75
+                let index = (y * size + x) * 4
+                pixels[index] = value
+                pixels[index + 1] = value
+                pixels[index + 2] = value
+                pixels[index + 3] = 1
+            }
+        }
+        let data = Data(bytes: pixels, count: pixels.count * MemoryLayout<Float>.size)
+        return CIImage(
+            bitmapData: data,
+            bytesPerRow: size * 4 * MemoryLayout<Float>.size,
+            size: CGSize(width: size, height: size),
+            format: .RGBAf,
+            colorSpace: Self.cs
+        )
+    }
+
+    private func sample(_ image: CIImage, x: Int, y: Int) -> Float {
+        var pixel = [Float](repeating: 0, count: 4)
+        Self.ctx.render(
+            image,
+            toBitmap: &pixel,
+            rowBytes: 4 * MemoryLayout<Float>.size,
+            bounds: CGRect(x: image.extent.minX + CGFloat(x), y: image.extent.minY + CGFloat(y), width: 1, height: 1),
+            format: .RGBAf,
+            colorSpace: Self.cs
+        )
+        return pixel[0]
+    }
+
+    @Test("Sharpness increases fine edge contrast")
+    func sharpnessIncreasesEdgeContrast() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else { return }
+        let source = verticalStep()
+        var settings = CameraRawSettings()
+        settings.sharpness = 150
+        var baselineSettings = CameraRawSettings()
+        baselineSettings.sharpness = 1
+        let result = try #require(MetalEditPipeline.renderOffscreen(source: source, settings: settings))
+        let baseline = try #require(MetalEditPipeline.renderOffscreen(source: source, settings: baselineSettings))
+        let edgeContrast = sample(result, x: 32, y: 32) - sample(result, x: 31, y: 32)
+        let baselineContrast = sample(baseline, x: 32, y: 32) - sample(baseline, x: 31, y: 32)
+        #expect(edgeContrast > baselineContrast + 0.05)
+    }
+
+    @Test("Positive clarity increases medium-scale edge contrast")
+    func clarityIncreasesLocalContrast() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else { return }
+        let source = verticalStep()
+        var settings = CameraRawSettings()
+        settings.clarity2012 = 100
+        let result = try #require(MetalEditPipeline.renderOffscreen(source: source, settings: settings))
+        let edgeContrast = sample(result, x: 34, y: 32) - sample(result, x: 29, y: 32)
+        #expect(edgeContrast > 0.5)
+    }
+
+    @Test("Dehaze removes or adds a neutral veil according to sign")
+    func dehazeDirection() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else { return }
+        let source = CIImage(color: CIColor(red: 0.55, green: 0.55, blue: 0.55, colorSpace: Self.cs)!)
+            .cropped(to: CGRect(x: 0, y: 0, width: 32, height: 32))
+        var positive = CameraRawSettings()
+        positive.dehaze = 100
+        var negative = CameraRawSettings()
+        negative.dehaze = -100
+        let clearer = try #require(MetalEditPipeline.renderOffscreen(source: source, settings: positive))
+        let hazier = try #require(MetalEditPipeline.renderOffscreen(source: source, settings: negative))
+        #expect(sample(clearer, x: 16, y: 16) < 0.45)
+        #expect(sample(hazier, x: 16, y: 16) > 0.65)
     }
 }

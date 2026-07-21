@@ -856,6 +856,9 @@ nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
     var saturation: Int?
     var vibrance: Int?
     var globalDensity: Int?
+    var sharpness: Int?
+    var clarity2012: Int?
+    var dehaze: Int?
     var hasSettings: Bool?
     var crop: CameraRawCrop?
     var hdrEditMode: Int?
@@ -919,6 +922,9 @@ nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
             && saturation == nil
             && vibrance == nil
             && globalDensity == nil
+            && sharpness == nil
+            && clarity2012 == nil
+            && dehaze == nil
             && hasSettings == nil
             && (crop?.isEmpty ?? true)
             && hdrEditMode == nil
@@ -967,6 +973,9 @@ nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
         if let value = override.saturation { result.saturation = value }
         if let value = override.vibrance { result.vibrance = value }
         if let value = override.globalDensity { result.globalDensity = value }
+        if let value = override.sharpness { result.sharpness = value }
+        if let value = override.clarity2012 { result.clarity2012 = value }
+        if let value = override.dehaze { result.dehaze = value }
         if let value = override.hasSettings { result.hasSettings = value }
         if let crop = override.crop {
             if let existing = result.crop {
@@ -1152,6 +1161,9 @@ nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
         fields[.crsSaturation] = saturation.map(signedInt) ?? ""
         fields[.crsVibrance] = vibrance.map(signedInt) ?? ""
         fields[.aaphotoGlobalDensity] = globalDensity.map(signedInt) ?? ""
+        fields[.crsSharpness] = sharpness.map(String.init) ?? ""
+        fields[.crsClarity2012] = clarity2012.map(signedInt) ?? ""
+        fields[.crsDehaze] = dehaze.map(signedInt) ?? ""
 
         let settingsPresent = hasSettings ?? !isEmpty
         fields[.crsHasSettings] = settingsPresent ? "True" : "False"

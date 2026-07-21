@@ -89,6 +89,9 @@ enum XMPDataBuilder {
         setCRS(&xmp, "Saturation", settings.saturation.map(formatSignedInt))
         setCRS(&xmp, "Vibrance", settings.vibrance.map(formatSignedInt))
         setAppPrivate(&xmp, "GlobalDensity", settings.globalDensity.map(formatSignedInt))
+        setCRS(&xmp, "Sharpness", settings.sharpness.map(String.init))
+        setCRS(&xmp, "Clarity2012", settings.clarity2012.map(formatSignedInt))
+        setCRS(&xmp, "Dehaze", settings.dehaze.map(formatSignedInt))
 
         let hasSettings = settings.hasSettings ?? !settings.isEmpty
         setCRS(&xmp, "HasSettings", formatBool(hasSettings))
@@ -134,12 +137,13 @@ enum XMPDataBuilder {
 
     /// Clear the develop block — the same fixed field list the old NSXML `removeCameraRawSettings`
     /// deleted, plus the HSL channels and the app-private GlobalLayerIndex. Scoped to the fields we
-    /// manage so unmodeled third-party crs props (Texture/Dehaze…) survive, matching prior behavior.
+    /// manage so other unmodeled third-party crs props survive, matching prior behavior.
     nonisolated static func removeCRSBlock(_ xmp: inout XMPData) {
         let fields = [
             "Version", "ProcessVersion", "WhiteBalance", "Temperature", "Tint",
             "IncrementalTemperature", "IncrementalTint", "Exposure2012", "Contrast2012",
             "Highlights2012", "Shadows2012", "Whites2012", "Blacks2012", "Saturation", "Vibrance",
+            "Sharpness", "Clarity2012", "Dehaze",
             "HasSettings", "CropTop", "CropLeft", "CropBottom", "CropRight", "CropAngle", "HasCrop",
             "CropConstrainToWarp", "CropConstrainToUnitSquare", "HDREditMode", "HDRMaxValue",
             "SDRBrightness", "SDRContrast", "SDRClarity", "SDRHighlights", "SDRShadows", "SDRWhites",
