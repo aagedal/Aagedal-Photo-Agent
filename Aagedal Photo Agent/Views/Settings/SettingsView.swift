@@ -3,7 +3,7 @@ import AppKit
 import UniformTypeIdentifiers
 
 struct SettingsView: View {
-    @State private var settingsViewModel = SettingsViewModel()
+    @State private var settingsViewModel: SettingsViewModel
     @AppStorage(UserDefaultsKeys.creatorInitials) private var creatorInitials = ""
     @State private var ftpViewModel = FTPViewModel()
     @AppStorage(UserDefaultsKeys.ftpAlwaysRenderRAW) private var ftpAlwaysRenderRAW = true
@@ -44,6 +44,10 @@ struct SettingsView: View {
     private struct ImportSource: Identifiable {
         let url: URL
         var id: String { url.path }
+    }
+
+    init(settingsViewModel: SettingsViewModel) {
+        _settingsViewModel = State(initialValue: settingsViewModel)
     }
 
     private enum TemplateKind: String, CaseIterable, Identifiable {

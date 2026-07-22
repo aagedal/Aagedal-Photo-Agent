@@ -26,6 +26,65 @@ private func grayscalePNG(_ bytes: [UInt8], width: Int, height: Int) -> Data? {
     return output as Data
 }
 
+@Suite("Chromaticity scope")
+struct ChromaticityScopeTests {
+    private let d65 = SIMD2<Float>(0.3127, 0.3290)
+
+    private func chromaticity(
+        for linearRGB: SIMD3<Float>,
+        saturation: Float
+    ) throws -> SIMD2<Float> {
+        let luminance = 0.2126729 * linearRGB.x
+            + 0.7151522 * linearRGB.y
+            + 0.0721750 * linearRGB.z
+        let saturated = SIMD3<Float>(repeating: luminance)
+            + (linearRGB - SIMD3<Float>(repeating: luminance)) * saturation
+        let X = 0.4124564 * saturated.x + 0.3575761 * saturated.y + 0.1804375 * saturated.z
+        let Y = 0.2126729 * saturated.x + 0.7151522 * saturated.y + 0.0721750 * saturated.z
+        let Z = 0.0193339 * saturated.x + 0.1191920 * saturated.y + 0.9503041 * saturated.z
+        let result = try #require(ScopeRenderService.boundedChromaticity(X: X, Y: Y, Z: Z))
+        return SIMD2<Float>(result.x, result.y)
+    }
+
+    @Test("hard saturation never folds a primary trajectory inward", arguments: [
+        SIMD3<Float>(1, 0, 0),
+        SIMD3<Float>(0, 1, 0),
+        SIMD3<Float>(0, 0, 1),
+    ])
+    func hardSaturationDoesNotFoldInward(primary: SIMD3<Float>) throws {
+        var previousDistance: Float = 0
+        for saturation: Float in [1.0, 1.25, 1.5, 2.0] {
+            let point = try chromaticity(for: primary, saturation: saturation)
+            let delta = point - d65
+            let distance = sqrt(delta.x * delta.x + delta.y * delta.y)
+            #expect(distance + 1e-5 >= previousDistance)
+            previousDistance = distance
+        }
+    }
+
+    @Test("an imaginary oversaturated sample remains visible at the locus boundary")
+    func imaginarySampleProjectsToLocus() throws {
+        let primary = SIMD3<Float>(1, 0, 0)
+        let normal = try chromaticity(for: primary, saturation: 1)
+        let oversaturated = try chromaticity(for: primary, saturation: 2)
+
+        #expect(oversaturated.x > normal.x)
+        #expect(oversaturated.x < 0.85)
+        #expect(oversaturated.y > 0)
+    }
+
+    @Test("Metal scope shaders initialize without blocking Develop")
+    func metalScopePipelineInitializesPromptly() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else { return }
+        let commandQueue = try #require(device.makeCommandQueue())
+        let started = ContinuousClock.now
+        let pipeline = MetalScopePipeline(device: device, commandQueue: commandQueue)
+        let elapsed = ContinuousClock.now - started
+
+        #expect(pipeline != nil)
+        #expect(elapsed < .seconds(3), "Metal scope pipeline initialization took \(elapsed)")
+    }
+}
 
 @Suite("IPTCMetadata.toWriteFields")
 struct ToWriteFieldsTests {

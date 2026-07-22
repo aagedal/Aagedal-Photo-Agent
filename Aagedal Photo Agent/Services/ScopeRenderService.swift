@@ -619,12 +619,9 @@ nonisolated struct ScopeRenderService: Sendable {
                 let X = dot3(xyzMatrix.r0, r, g, b)
                 let Y = dot3(xyzMatrix.r1, r, g, b)
                 let Z = dot3(xyzMatrix.r2, r, g, b)
-                guard X >= 0, Y >= 0, Z >= 0 else { continue }  // skip imaginary colors
-                let sum = X + Y + Z
-                guard sum > 0.001 else { continue }
-
-                let cx = X / sum
-                let cy = Y / sum
+                guard let chromaticity = Self.boundedChromaticity(X: X, Y: Y, Z: Z) else { continue }
+                let cx = chromaticity.x
+                let cy = chromaticity.y
 
                 // Map to output coordinates
                 let outX = Int((cx - xyMin) / xyRange * Float(outW - 1))
@@ -811,6 +808,80 @@ nonisolated struct ScopeRenderService: Sendable {
             j = i
         }
         return inside
+    }
+
+    /// Radial spectral-locus boundary around D65, sampled every half degree. The Metal
+    /// accumulation shader consumes this same table so limiting a chromaticity point is a
+    /// constant-time lookup rather than an 81-edge loop for every sampled image pixel.
+    static let spectralBoundarySampleCount = 720
+    static let spectralBoundaryRadii: [Float] = (0..<spectralBoundarySampleCount).map { index in
+        let angle = -Float.pi + Float(index) * (2 * Float.pi / Float(spectralBoundarySampleCount))
+        return exactSpectralBoundaryRadius(direction: SIMD2<Float>(cos(angle), sin(angle)))
+    }
+
+    private static func exactSpectralBoundaryRadius(direction: SIMD2<Float>) -> Float {
+        let origin = SIMD2<Float>(0.3127, 0.3290)
+
+        @inline(__always)
+        func cross(_ lhs: SIMD2<Float>, _ rhs: SIMD2<Float>) -> Float {
+            lhs.x * rhs.y - lhs.y * rhs.x
+        }
+
+        var nearestRadius = Float.greatestFiniteMagnitude
+        for index in spectralLocus.indices {
+            let next = spectralLocus.index(after: index) == spectralLocus.endIndex
+                ? spectralLocus.startIndex
+                : spectralLocus.index(after: index)
+            let a = SIMD2<Float>(spectralLocus[index].x, spectralLocus[index].y)
+            let b = SIMD2<Float>(spectralLocus[next].x, spectralLocus[next].y)
+            let edge = b - a
+            let denominator = cross(direction, edge)
+            guard abs(denominator) > 1e-8 else { continue }
+
+            let delta = a - origin
+            let rayRadius = cross(delta, edge) / denominator
+            let edgeT = cross(delta, direction) / denominator
+            if rayRadius >= 0, edgeT >= -1e-5, edgeT <= 1.00001 {
+                nearestRadius = min(nearestRadius, rayRadius)
+            }
+        }
+        return nearestRadius.isFinite ? nearestRadius : 0
+    }
+
+    private static func interpolatedSpectralBoundaryRadius(angle: Float) -> Float {
+        let position = (angle + Float.pi) / (2 * Float.pi) * Float(spectralBoundarySampleCount)
+        let lowerPosition = floor(position)
+        let lowerIndex = Int(lowerPosition) % spectralBoundarySampleCount
+        let upperIndex = (lowerIndex + 1) % spectralBoundarySampleCount
+        let fraction = position - lowerPosition
+        return spectralBoundaryRadii[lowerIndex] * (1 - fraction)
+            + spectralBoundaryRadii[upperIndex] * fraction
+    }
+
+    /// Converts XYZ into a displayable CIE xy coordinate. Hard saturation can push an
+    /// otherwise useful RGB sample beyond the physically realisable spectral locus. Dropping
+    /// that sample makes the plotted envelope appear to fold back inward as saturation rises,
+    /// so keep its hue direction and pin it to the first locus intersection instead.
+    static func boundedChromaticity(X: Float, Y: Float, Z: Float) -> (x: Float, y: Float)? {
+        let sum = X + Y + Z
+        guard sum.isFinite, sum > 0.001 else { return nil }
+
+        let x = X / sum
+        let y = Y / sum
+        guard x.isFinite, y.isFinite else { return nil }
+
+        let origin = SIMD2<Float>(0.3127, 0.3290) // D65, safely inside the locus
+        let point = SIMD2<Float>(x, y)
+        let direction = point - origin
+        let distanceSquared = direction.x * direction.x + direction.y * direction.y
+        guard distanceSquared > 1e-12 else {
+            return (origin.x, origin.y)
+        }
+
+        let maximumRadius = interpolatedSpectralBoundaryRadius(angle: atan2(direction.y, direction.x))
+        guard distanceSquared > maximumRadius * maximumRadius else { return (x, y) }
+        let bounded = origin + direction * (maximumRadius / sqrt(distanceSquared))
+        return (bounded.x, bounded.y)
     }
 
     /// In-memory cache of the CIE background image. Persisted to disk across sessions.

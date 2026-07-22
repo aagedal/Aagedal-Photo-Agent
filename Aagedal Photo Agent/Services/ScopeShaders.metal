@@ -1206,6 +1206,30 @@ inline bool isInsideLocus(float2 pt) {
     return inside;
 }
 
+// Preserve the hue direction of oversaturated samples while keeping the plotted point
+// physically meaningful. The 720-entry half-degree radius table keeps this constant-time;
+// walking all 81 locus edges per image sample stalls the shared preview/scope GPU pipeline.
+constant uint spectralBoundarySampleCount = 720; // Keep in sync with ScopeRenderService.
+inline float2 boundedChromaticity(float2 pt, constant float *boundaryRadii) {
+    const float2 origin = float2(0.3127, 0.3290); // D65, inside the locus
+    float2 direction = pt - origin;
+    float distanceSquared = dot(direction, direction);
+    if (distanceSquared <= 1e-12) return origin;
+
+    float position = (atan2(direction.y, direction.x) + M_PI_F)
+                   / (2.0 * M_PI_F) * float(spectralBoundarySampleCount);
+    float lowerPosition = floor(position);
+    uint lowerIndex = uint(lowerPosition) % spectralBoundarySampleCount;
+    uint upperIndex = (lowerIndex + 1) % spectralBoundarySampleCount;
+    float maximumRadius = mix(
+        boundaryRadii[lowerIndex],
+        boundaryRadii[upperIndex],
+        position - lowerPosition
+    );
+    if (distanceSquared <= maximumRadius * maximumRadius) return pt;
+    return origin + direction * (maximumRadius * rsqrt(distanceSquared));
+}
+
 // Point-in-triangle test (barycentric method)
 inline bool isInsideTriangle(float2 p, float2 a, float2 b, float2 c) {
     float2 v0 = c - a, v1 = b - a, v2 = p - a;
@@ -1233,6 +1257,7 @@ kernel void chromaticityAccumulate(
     constant MaskParams *masks [[buffer(3)]],
     constant HSLParams &hslParams [[buffer(4)]],
     constant uint *order [[buffer(5)]],
+    constant float *spectralBoundaryRadii [[buffer(6)]],
     uint2 gid [[thread_position_in_grid]])
 {
     if (gid.x >= scopeParams.sampleWidth || gid.y >= scopeParams.sampleHeight) return;
@@ -1272,12 +1297,14 @@ kernel void chromaticityAccumulate(
     }
 
     float3 xyz = xyzMat * linearRGB;
-    if (xyz.x < 0.0 || xyz.y < 0.0 || xyz.z < 0.0) return;  // skip imaginary colors
     float sum = xyz.x + xyz.y + xyz.z;
-    if (sum < 0.001) return;
+    if (!isfinite(sum) || sum < 0.001) return;
 
-    float cx = xyz.x / sum;
-    float cy = xyz.y / sum;
+    float2 chromaticity = xyz.xy / sum;
+    if (!all(isfinite(chromaticity))) return;
+    chromaticity = boundedChromaticity(chromaticity, spectralBoundaryRadii);
+    float cx = chromaticity.x;
+    float cy = chromaticity.y;
 
     int outW = int(scopeParams.outputWidth);
     int outH = int(scopeParams.outputHeight);

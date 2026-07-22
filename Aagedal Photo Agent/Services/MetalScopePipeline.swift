@@ -63,6 +63,8 @@ final class MetalScopePipeline: @unchecked Sendable {
     /// Fallback layer-order buffer (all global-sentinel) bound when the edit pipeline passes
     /// none, so index 5 is never unbound. Real ordering comes from the edit pipeline's buffer.
     nonisolated(unsafe) private let emptyOrderBuffer: MTLBuffer
+    /// Half-degree radial lookup for constant-time spectral-locus limiting in the Gamut scope.
+    nonisolated(unsafe) private let spectralBoundaryBuffer: MTLBuffer
 
     // Output texture (720×720, reused)
     nonisolated(unsafe) private(set) var outputTexture: MTLTexture
@@ -126,12 +128,22 @@ final class MetalScopePipeline: @unchecked Sendable {
 
         // Allocate buffers — sized for worst case (vectorscope: 720×720 × 4 sections)
         let maxBinBytes = outputSize * outputSize * 4 * MemoryLayout<UInt32>.size
+        let boundaryRadii = ScopeRenderService.spectralBoundaryRadii
+        let boundaryBuffer = boundaryRadii.withUnsafeBufferPointer { values -> MTLBuffer? in
+            guard let baseAddress = values.baseAddress else { return nil }
+            return device.makeBuffer(
+                bytes: baseAddress,
+                length: values.count * MemoryLayout<Float>.stride,
+                options: .storageModeShared
+            )
+        }
         guard let binBuf = device.makeBuffer(length: maxBinBytes, options: .storageModeShared),
               let paramsBuf = device.makeBuffer(length: MemoryLayout<ScopeParams>.stride, options: .storageModeShared),
               let maxBuf = device.makeBuffer(length: MemoryLayout<UInt32>.size, options: .storageModeShared),
               let binCountBuf = device.makeBuffer(length: MemoryLayout<UInt32>.size, options: .storageModeShared),
               let emptyHSL = device.makeBuffer(length: MemoryLayout<HSLParams>.stride, options: .storageModeShared),
-              let emptyOrder = device.makeBuffer(length: MemoryLayout<UInt32>.size * 16, options: .storageModeShared)
+              let emptyOrder = device.makeBuffer(length: MemoryLayout<UInt32>.size * 16, options: .storageModeShared),
+              let boundaryBuffer
         else {
             scopePipelineLog.error("MetalScopePipeline: buffer allocation failed")
             return nil
@@ -144,6 +156,7 @@ final class MetalScopePipeline: @unchecked Sendable {
         self.binCountBuffer = binCountBuf
         self.emptyHSLBuffer = emptyHSL
         self.emptyOrderBuffer = emptyOrder
+        self.spectralBoundaryBuffer = boundaryBuffer
 
         // Output texture
         let texDesc = MTLTextureDescriptor.texture2DDescriptor(
@@ -481,6 +494,7 @@ final class MetalScopePipeline: @unchecked Sendable {
         }
         accum.setBuffer(hslBuffer ?? emptyHSLBuffer, offset: 0, index: 4)
         accum.setBuffer(orderBuffer ?? emptyOrderBuffer, offset: 0, index: 5)
+        accum.setBuffer(spectralBoundaryBuffer, offset: 0, index: 6)
         let accumGrid = MTLSize(width: Int(params.sampleWidth), height: Int(params.sampleHeight), depth: 1)
         accum.dispatchThreads(accumGrid, threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
         accum.endEncoding()

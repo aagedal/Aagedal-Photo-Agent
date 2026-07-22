@@ -6,6 +6,7 @@ struct Aagedal_Photo_AgentApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var updater = SparkleUpdaterService.shared
     @ObservedObject private var imageScaling = ImageScalingController.shared
+    @State private var settingsViewModel = SettingsViewModel()
     private let recentFolders = RecentFoldersStore.shared
 
     init() {
@@ -62,7 +63,7 @@ struct Aagedal_Photo_AgentApp: App {
 
     var body: some Scene {
         Window("Aagedal Photo Agent", id: "main") {
-            ContentView()
+            ContentView(settingsViewModel: settingsViewModel)
         }
         .commands {
             CommandGroup(replacing: .appInfo) {
@@ -414,7 +415,7 @@ struct Aagedal_Photo_AgentApp: App {
         .defaultSize(width: 420, height: 560)
 
         Settings {
-            SettingsView()
+            SettingsView(settingsViewModel: settingsViewModel)
         }
     }
 }

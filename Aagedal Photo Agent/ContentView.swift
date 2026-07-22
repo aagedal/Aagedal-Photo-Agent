@@ -92,7 +92,7 @@ struct ContentView: View {
     @State private var templateViewModel = TemplateViewModel()
     @State private var developTemplateViewModel = DevelopTemplateViewModel()
     @State private var ftpViewModel = FTPViewModel()
-    @State private var settingsViewModel = SettingsViewModel()
+    @State private var settingsViewModel: SettingsViewModel
     @State private var importViewModel: ImportViewModel
     /// Shared, persisted log of recent imports and uploads.
     @State private var activityHistory: ActivityHistoryStore
@@ -143,7 +143,7 @@ struct ContentView: View {
     /// moment so the alert and sheet describe exactly what was flagged.
     @State private var listRecoveryAffectedNames: [String] = []
 
-    init() {
+    init(settingsViewModel: SettingsViewModel) {
         let thumbnailService = ThumbnailService()
         let fullScreenImageCache = FullScreenImageCache()
         let browser = BrowserViewModel(thumbnailService: thumbnailService, fullScreenImageCache: fullScreenImageCache)
@@ -167,6 +167,7 @@ struct ContentView: View {
         _panes = State(initialValue: panesModel)
         _metadataViewModel = State(initialValue: MetadataViewModel(readService: browser.metadataReadService, writeEngine: browser.writeEngine))
         _faceRecognitionViewModel = State(initialValue: faceRecognition)
+        _settingsViewModel = State(initialValue: settingsViewModel)
         _activityHistory = State(initialValue: history)
         _importViewModel = State(initialValue: ImportViewModel(readService: browser.metadataReadService, writeEngine: browser.writeEngine, activityHistory: history))
     }
