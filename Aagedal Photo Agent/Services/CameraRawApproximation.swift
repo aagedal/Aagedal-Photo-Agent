@@ -196,7 +196,7 @@ enum CameraRawApproximation {
         if let sharpness = settings.sharpness, sharpness != 0 {
             let amount = min(max(Double(sharpness) / 150.0, 0.0), 1.0)
             output = applyFilter(named: "CISharpenLuminance", input: output, values: [
-                kCIInputSharpnessKey: amount * 1.2,
+                kCIInputSharpnessKey: amount * 2.0,
                 kCIInputRadiusKey: 1.0,
             ]) ?? output
         }

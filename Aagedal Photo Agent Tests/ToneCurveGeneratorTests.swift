@@ -363,7 +363,7 @@ struct GlobalDetailAdjustmentTests {
         let baseline = try #require(MetalEditPipeline.renderOffscreen(source: source, settings: baselineSettings))
         let edgeContrast = sample(result, x: 32, y: 32) - sample(result, x: 31, y: 32)
         let baselineContrast = sample(baseline, x: 32, y: 32) - sample(baseline, x: 31, y: 32)
-        #expect(edgeContrast > baselineContrast + 0.001)
+        #expect(edgeContrast > baselineContrast * 1.15)
     }
 
     @Test("Positive clarity increases medium-scale edge contrast")

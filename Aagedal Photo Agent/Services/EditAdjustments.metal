@@ -427,10 +427,12 @@ static half3 applySpatialDetail(half3 rgb,
         float east  = dot(float3(source.sample(detailSampler, uv + float2( texel.x, 0.0), level(0.0)).rgb), float3(0.2126, 0.7152, 0.0722));
         float blurredY = (sourceY * 4.0 + north + south + west + east) * 0.125;
         float highPass = sourceY - blurredY;
-        // Gate only near-flat noise. The old 0.008 upper bound suppressed ordinary fine
-        // texture along with noise, especially at the commonly used 25...75 slider range.
-        float edgeGate = smoothstep(0.0003, 0.003, abs(highPass));
-        rgbF = max(rgbF + float3(highPass * params.sharpness * 1.8 * edgeGate), 0.0);
+        // Reject only nearly-flat numerical/sensor variation. ACR's 0...150 range is expected
+        // to progress from a restrained edge lift to deliberately strong sharpening; the
+        // compact cross kernel produces half the high-pass of a conventional 3x3 Gaussian,
+        // so a 6x maximum gain corresponds to roughly 300% conventional unsharp-mask amount.
+        float edgeGate = smoothstep(0.0001, 0.001, abs(highPass));
+        rgbF = max(rgbF + float3(highPass * params.sharpness * 6.0 * edgeGate), 0.0);
     }
 
     return half3(rgbF);

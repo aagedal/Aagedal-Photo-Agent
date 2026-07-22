@@ -376,8 +376,8 @@ inline float3 applyScopeSpatialDetail(
         float east  = dot(float3(source.sample(detailSampler, uv + float2( texel.x, 0.0), level(0.0)).rgb), float3(0.2126, 0.7152, 0.0722));
         float blurredY = (sourceY * 4.0 + north + south + west + east) * 0.125;
         float highPass = sourceY - blurredY;
-        float edgeGate = smoothstep(0.0003, 0.003, abs(highPass));
-        rgb = max(rgb + float3(highPass * params.sharpness * 1.8 * edgeGate), 0.0);
+        float edgeGate = smoothstep(0.0001, 0.001, abs(highPass));
+        rgb = max(rgb + float3(highPass * params.sharpness * 6.0 * edgeGate), 0.0);
     }
 
     return rgb;
