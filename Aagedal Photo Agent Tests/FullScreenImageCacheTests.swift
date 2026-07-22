@@ -1,4 +1,5 @@
 import Testing
+import AppKit
 import Foundation
 import CoreGraphics
 import ImageIO
@@ -182,6 +183,106 @@ struct FullScreenImageCacheTests {
         #expect(await cache.awaitPrefetchedImage(for: url, orientation: 3) != nil)
         #expect(cache.cachedImage(for: url, orientation: 1) != nil)
         #expect(cache.cachedImage(for: url, orientation: 3) != nil)
+    }
+
+    @Test("Cropped previews preserve the requested output resolution")
+    func croppedPreviewPreservesOutputResolution() async throws {
+        let url = try makeTempPNG(width: 1024, height: 512)
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        var settings = CameraRawSettings()
+        // This crop's longest edge is half the source's longest edge. A 256 px full-frame
+        // decode would therefore leave a 128 px crop; the crop-aware path decodes at 512 px.
+        settings.crop = CameraRawCrop(
+            top: 0,
+            left: 0.375,
+            bottom: 1,
+            right: 0.625,
+            angle: 0,
+            hasCrop: true
+        )
+
+        let image = await FullScreenImageCache.decodedEditedPreview(
+            for: url,
+            settings: settings,
+            orientation: 1,
+            screenMaxPx: 256
+        )
+
+        let result = try #require(image)
+        #expect(max(result.width, result.height) >= 250)
+    }
+
+    @Test("Thumbnail service source-decodes cropped non-RAW images")
+    func thumbnailServiceSourceDecodesCroppedNonRAW() async throws {
+        let url = try makeTempPNG(width: 1024, height: 512)
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        var settings = CameraRawSettings()
+        settings.crop = CameraRawCrop(
+            top: 0,
+            left: 0.375,
+            bottom: 1,
+            right: 0.625,
+            angle: 0,
+            hasCrop: true
+        )
+
+        let thumbnail = await ThumbnailService().renderEditedThumbnail(
+            for: url,
+            settings: settings,
+            exifOrientation: 1
+        )
+        let result = try #require(thumbnail?.cgImage(
+            forProposedRect: nil,
+            context: nil,
+            hints: nil
+        ))
+        #expect(max(result.width, result.height) >= 470)
+    }
+
+    @Test("Crop-aware decode sizing handles rotated source axes and caps at native size")
+    func cropAwareDecodeSizing() {
+        var settings = CameraRawSettings()
+        settings.crop = CameraRawCrop(
+            top: 0.25,
+            left: 0.4,
+            bottom: 0.75,
+            right: 0.6,
+            angle: 0,
+            hasCrop: true
+        )
+
+        let upright = FullScreenImageCache.cropAwareSourceMaxPixelSize(
+            outputMaxPixelSize: 480,
+            settings: settings,
+            exifOrientation: 1,
+            sourcePixelSize: CGSize(width: 6000, height: 4000)
+        )
+        let rotated = FullScreenImageCache.cropAwareSourceMaxPixelSize(
+            outputMaxPixelSize: 480,
+            settings: settings,
+            exifOrientation: 6,
+            sourcePixelSize: CGSize(width: 6000, height: 4000)
+        )
+        #expect(abs(upright - 1440) < 0.01)
+        #expect(abs(rotated - upright) < 0.01)
+
+        settings.crop = CameraRawCrop(
+            top: 0.499,
+            left: 0.499,
+            bottom: 0.501,
+            right: 0.501,
+            angle: 0,
+            hasCrop: true
+        )
+        let capped = FullScreenImageCache.cropAwareSourceMaxPixelSize(
+            outputMaxPixelSize: 480,
+            settings: settings,
+            exifOrientation: 1,
+            sourcePixelSize: CGSize(width: 6000, height: 4000)
+        )
+        #expect(capped == 6000)
     }
 
     @Test("Invalidating one URL preserves another URL's edited variants")

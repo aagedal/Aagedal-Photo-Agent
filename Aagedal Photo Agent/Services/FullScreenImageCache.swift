@@ -464,22 +464,33 @@ final class FullScreenImageCache: @unchecked Sendable {
         // left the pixels unrotated: cropped-RAW grid thumbnails rendered 180° off from
         // the edit view for sidecar-rotated files.
         let rawFileOrientation = fileEXIFOrientation(at: url)
+        let sourceMaxPx: CGFloat
+        if settings?.crop?.isEffectiveCrop == true {
+            sourceMaxPx = cropAwareSourceMaxPixelSize(
+                outputMaxPixelSize: screenMaxPx,
+                settings: settings,
+                exifOrientation: rawFileOrientation,
+                sourcePixelSize: nativePixelSize(of: url)
+            )
+        } else {
+            sourceMaxPx = screenMaxPx
+        }
 
         if settings != nil {
             let ciImage: CIImage?
             if isRAW {
                 // Use CIRAWFilter for flat/neutral decode — get as-shot WB for correct rendering
-                if let rawResult = loadRAWImage(from: url, draftMode: false, maxPixelSize: screenMaxPx) {
+                if let rawResult = loadRAWImage(from: url, draftMode: false, maxPixelSize: sourceMaxPx) {
                     guard !Task.isCancelled else { return nil }
                     settings?.asShotNeutralTemperature = Double(rawResult.neutralTemperature)
                     settings?.asShotNeutralTint = Double(rawResult.neutralTint)
                     settings?.sourceHasHDRHeadroom = true
-                    ciImage = downsample(rawResult.image, maxPixelSize: screenMaxPx)
+                    ciImage = downsample(rawResult.image, maxPixelSize: sourceMaxPx)
                 } else {
                     ciImage = nil
                 }
             } else {
-                ciImage = await loadHDRPreviewOffPool(from: url, maxPixelSize: screenMaxPx)
+                ciImage = await loadHDRPreviewOffPool(from: url, maxPixelSize: sourceMaxPx)
                 guard !Task.isCancelled else { return nil }
             }
             if let ciImage {
@@ -504,7 +515,7 @@ final class FullScreenImageCache: @unchecked Sendable {
             // SDR fallback (or no edits active)
             guard let loadedResult = await loadDownsampledOffPoolWithOrientation(
                 from: url,
-                maxPixelSize: screenMaxPx
+                maxPixelSize: sourceMaxPx
             ) else { return nil }
             var loaded = loadedResult.image
             let loadedOrientation = loadedResult.orientation
@@ -522,6 +533,44 @@ final class FullScreenImageCache: @unchecked Sendable {
             image = loaded
         }
         return image
+    }
+
+    /// Chooses the pre-crop decode size needed for a requested final preview size.
+    ///
+    /// Preview loaders normally constrain the full frame's longest edge to `outputMaxPixelSize`.
+    /// A subsequent crop then throws away part of that already-small bitmap. For example, when
+    /// the visible crop's longest edge covers one third of the source's longest edge, decoding
+    /// the source at 3x the output target leaves the cropped result at the intended resolution.
+    /// The request is capped at the native longest edge so very tight crops never ask a decoder
+    /// to upscale beyond the source.
+    nonisolated static func cropAwareSourceMaxPixelSize(
+        outputMaxPixelSize: CGFloat,
+        settings: CameraRawSettings?,
+        exifOrientation: Int,
+        sourcePixelSize: CGSize?
+    ) -> CGFloat {
+        guard outputMaxPixelSize > 0,
+              let sensorCrop = settings?.crop,
+              sensorCrop.isEffectiveCrop,
+              let sourcePixelSize,
+              sourcePixelSize.width > 0,
+              sourcePixelSize.height > 0 else { return outputMaxPixelSize }
+
+        let swapsAxes = (5...8).contains(exifOrientation)
+        let displayWidth = swapsAxes ? sourcePixelSize.height : sourcePixelSize.width
+        let displayHeight = swapsAxes ? sourcePixelSize.width : sourcePixelSize.height
+        let sourceLongestEdge = max(displayWidth, displayHeight)
+
+        let crop = sensorCrop.transformedForDisplay(orientation: exifOrientation)
+        let cropWidth = CGFloat(abs((crop.right ?? 1) - (crop.left ?? 0))) * displayWidth
+        let cropHeight = CGFloat(abs((crop.bottom ?? 1) - (crop.top ?? 0))) * displayHeight
+        let croppedLongestFraction = max(cropWidth, cropHeight) / sourceLongestEdge
+        guard croppedLongestFraction.isFinite, croppedLongestFraction > 0 else {
+            return outputMaxPixelSize
+        }
+
+        let requiredSourceSize = outputMaxPixelSize / croppedLongestFraction
+        return min(sourceLongestEdge, max(outputMaxPixelSize, requiredSourceSize))
     }
 
     // MARK: - Shared Image Loading
@@ -667,14 +716,20 @@ final class FullScreenImageCache: @unchecked Sendable {
         return ciImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
     }
 
-    /// Native longest-side pixel dimension of an image file, read from metadata
-    /// only (no decode). Pre-orientation, but the longest side is orientation-invariant.
-    nonisolated static func nativeLongestSide(of url: URL) -> CGFloat? {
+    /// Native pixel dimensions of an image file, read from metadata only (no decode).
+    nonisolated static func nativePixelSize(of url: URL) -> CGSize? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
               let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
               let pw = props[kCGImagePropertyPixelWidth] as? Int,
               let ph = props[kCGImagePropertyPixelHeight] as? Int else { return nil }
-        return CGFloat(max(pw, ph))
+        return CGSize(width: pw, height: ph)
+    }
+
+    /// Native longest-side pixel dimension. Pre-orientation, but the longest side is
+    /// orientation-invariant.
+    nonisolated static func nativeLongestSide(of url: URL) -> CGFloat? {
+        guard let size = nativePixelSize(of: url) else { return nil }
+        return max(size.width, size.height)
     }
 
     /// Load a RAW image via CIRAWFilter at a target max pixel size.

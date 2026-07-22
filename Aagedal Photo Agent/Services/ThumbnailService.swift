@@ -171,16 +171,15 @@ final class ThumbnailService {
         let task = Task<NSImage?, Never> {
             guard !Task.isCancelled, !settings.isEmpty else { return nil }
 
-            // RAW: render the edited thumbnail from a real CIRAWFilter decode — the same
-            // shared edited-decode path the loupe and prefetch use — instead of compositing
-            // edits onto QuickLook's embedded camera-JPEG preview. The QL preview is already
-            // tone-mapped and clipped, so exposure/highlight numbers calibrated against the
-            // linear HDR RAW decode (extendedDynamicRangeAmount=2.0 + sourceHasHDRHeadroom
-            // tonemap) blew out highlights — the grid looked overexposed next to the edit
-            // view. Decoding the RAW here makes the thumb match. Gated behind `decodeGate`
-            // and downscaled to thumbnail size, and only ever for edited RAWs (unedited RAWs
-            // keep the fast QL preview), so a fast scroll can't saturate the RAW engine.
-            if SupportedImageFormats.isRaw(url: url) {
+            // RAW edits must start from a real CIRAWFilter decode rather than QuickLook's
+            // already tone-mapped camera JPEG. Cropped edits of every format also need this
+            // source-decode path: cropping a fixed 480 px QuickLook thumbnail can leave only
+            // a few dozen pixels for a tight crop, which the grid then enlarges into a blur.
+            // `decodedEditedPreview` increases the pre-crop decode size just enough for the
+            // cropped result itself to retain thumbnail resolution.
+            let needsSourceDecode = SupportedImageFormats.isRaw(url: url)
+                || settings.crop?.isEffectiveCrop == true
+            if needsSourceDecode {
                 guard Self.isLocallyAvailableForThumbnail(url) else { return nil }
                 guard await decodeGate.acquire() else { return nil }
                 if Task.isCancelled {
