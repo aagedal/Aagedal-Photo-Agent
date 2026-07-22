@@ -11,7 +11,16 @@ nonisolated private let editedRendererLog = Logger(
 
 nonisolated enum EditedImageRenderer {
 
-    private static func loadAndProcess(from sourceURL: URL, cameraRaw: CameraRawSettings?) throws -> CIImage {
+    /// Fixed color target for the dedicated RAW conversion command. Keeping it independent
+    /// of general export preferences makes every converted file a consistent HDR master.
+    static let rawJXLConversionGamut: TargetColorGamut = .rec2020
+    static let rawJXLConversionColorSpace = CGColorSpace(name: CGColorSpace.itur_2100_PQ)!
+
+    private static func loadAndProcess(
+        from sourceURL: URL,
+        cameraRaw: CameraRawSettings?,
+        rawDecodeProfile: RAWDecodeProfile? = nil
+    ) throws -> CIImage {
         let input: CIImage
         var effectiveSettings = cameraRaw
 
@@ -19,7 +28,11 @@ nonisolated enum EditedImageRenderer {
         if rawExtensions.contains(sourceURL.pathExtension.lowercased()) {
             // Full-quality CIRAWFilter decode for export (no draft mode). Always decodes
             // with full EDR headroom; SDR output is rolled off by the tone pipeline.
-            if let rawResult = FullScreenImageCache.loadRAWImage(from: sourceURL, draftMode: false) {
+            if let rawResult = FullScreenImageCache.loadRAWImage(
+                from: sourceURL,
+                draftMode: false,
+                decodeProfile: rawDecodeProfile
+            ) {
                 input = rawResult.image
                 // Synthesize settings for unedited RAWs so the SDR output tonemap still
                 // applies, then propagate as-shot WB so renderOffscreen uses the correct
@@ -286,6 +299,38 @@ nonisolated enum EditedImageRenderer {
         }
     }
 
+    /// Encode a 16-bit-per-channel JPEG XL from a 16-bit PNG intermediate. Unlike the
+    /// ordinary SDR JPEG XL export path, this never quantizes the rendered pixels to 8-bit.
+    private static func encode16BitJXL(
+        _ ciImage: CIImage,
+        to destURL: URL,
+        quality: Double,
+        colorSpace: CGColorSpace
+    ) async throws {
+        let ctx = CameraRawApproximation.ciContext
+        let tempPNG = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("png")
+        defer { try? FileManager.default.removeItem(at: tempPNG) }
+
+        guard let pngData = ctx.pngRepresentation(
+            of: ciImage,
+            format: .RGBA16,
+            colorSpace: colorSpace,
+            options: [:]
+        ) else {
+            throw RenderError.encodeFailed
+        }
+        try pngData.write(to: tempPNG, options: .atomic)
+        try await FFmpegService.encodeJXL(
+            input: tempPNG.path,
+            output: destURL.path,
+            quality: quality,
+            isHDR: true,
+            force16Bit: true
+        )
+    }
+
     // MARK: - TIFF Writer
 
     private static func writeTIFF(cgImage: CGImage, to url: URL) throws {
@@ -404,6 +449,32 @@ nonisolated enum EditedImageRenderer {
         return candidate
     }
 
+    /// Resolves the destination for the fixed-format RAW conversion command. It follows
+    /// the user's normal export-location policy, but the format-subfolder name must not
+    /// depend on whichever general SDR/HDR format happens to be selected in Settings.
+    static func resolveRAWJXLConversionFolder(
+        sourceURL: URL,
+        rootFolder: URL,
+        askedFolder: URL?
+    ) -> URL {
+        switch currentLocationMode {
+        case .sameAsOriginal:
+            return sourceURL.deletingLastPathComponent()
+        case .customSubfolder:
+            let customName = UserDefaults.standard.string(
+                forKey: UserDefaultsKeys.exportCustomSubfolderName
+            ) ?? "Exports"
+            return customSubfolder(in: rootFolder, name: customName)
+        case .formatSubfolder:
+            return rootFolder.appendingPathComponent(
+                "Converted_JPEG_XL_16bit_HDR_Rec2020_PQ",
+                isDirectory: true
+            )
+        case .askOnSave:
+            return askedFolder ?? rootFolder
+        }
+    }
+
     // MARK: - Output URL
 
     static func outputURL(for sourceURL: URL, in outputFolder: URL, extension ext: String) -> URL {
@@ -411,6 +482,20 @@ nonisolated enum EditedImageRenderer {
         return outputFolder
             .appendingPathComponent(base)
             .appendingPathExtension(ext)
+    }
+
+    /// Returns a non-existing output URL by appending " 2", " 3", … when needed.
+    static func uniqueOutputURL(for sourceURL: URL, in outputFolder: URL, extension ext: String) -> URL {
+        let baseName = sourceURL.deletingPathExtension().lastPathComponent
+        var candidate = outputFolder.appendingPathComponent(baseName).appendingPathExtension(ext)
+        var counter = 2
+        while FileManager.default.fileExists(atPath: candidate.path) {
+            candidate = outputFolder
+                .appendingPathComponent("\(baseName) \(counter)")
+                .appendingPathExtension(ext)
+            counter += 1
+        }
+        return candidate
     }
 
     /// Legacy helper — returns JPEG output URL for compatibility
@@ -456,6 +541,58 @@ nonisolated enum EditedImageRenderer {
         hdrSettings.hdrEditMode = 1
         let output = try loadAndProcess(from: sourceURL, cameraRaw: hdrSettings)
         return try await renderHDRFormat(output, sourceURL: sourceURL, outputFolder: outputFolder)
+    }
+
+    /// Converts a RAW source to a Rec. 2020 PQ HDR, 16-bit-per-channel JPEG XL while
+    /// applying the current develop settings. The selected decode profile applies only
+    /// to this conversion; the general SDR/HDR gamut settings do not affect it.
+    @discardableResult
+    static func convertRAWTo16BitJXL(
+        from sourceURL: URL,
+        cameraRaw: CameraRawSettings?,
+        decodeProfile: RAWDecodeProfile,
+        destinationFolder: URL,
+        metadataCopier: MetadataCopier? = nil
+    ) async throws -> URL {
+        guard SupportedImageFormats.isRaw(url: sourceURL) else {
+            throw RenderError.rawSourceRequired
+        }
+
+        // Always bypass the SDR output tone map so the RAW decoder's scene-referred
+        // highlight headroom reaches the Rec. 2020 PQ encode.
+        var hdrSettings = cameraRaw ?? CameraRawSettings()
+        hdrSettings.hdrEditMode = 1
+        let output = try loadAndProcess(
+            from: sourceURL,
+            cameraRaw: hdrSettings,
+            rawDecodeProfile: decodeProfile
+        )
+        let quality = UserDefaults.standard.object(
+            forKey: UserDefaultsKeys.exportQualityHDR
+        ) as? Double ?? 0.92
+        let destinationURL = uniqueOutputURL(
+            for: sourceURL,
+            in: destinationFolder,
+            extension: "jxl"
+        )
+
+        try await encode16BitJXL(
+            output,
+            to: destinationURL,
+            quality: quality,
+            colorSpace: rawJXLConversionColorSpace
+        )
+
+        if let metadataCopier {
+            do {
+                try await metadataCopier(sourceURL, destinationURL)
+            } catch {
+                editedRendererLog.error(
+                    "metadataCopier failed for \(sourceURL.lastPathComponent, privacy: .public) → \(destinationURL.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
+            }
+        }
+        return destinationURL
     }
 
     enum SaveAsFormat {
@@ -528,6 +665,7 @@ nonisolated enum EditedImageRenderer {
     enum RenderError: LocalizedError {
         case unreadableImage
         case encodeFailed
+        case rawSourceRequired
 
         var errorDescription: String? {
             switch self {
@@ -535,6 +673,8 @@ nonisolated enum EditedImageRenderer {
                 return "Could not decode source image."
             case .encodeFailed:
                 return "Could not encode output image."
+            case .rawSourceRequired:
+                return "The 16-bit JPEG XL conversion requires a RAW source image."
             }
         }
     }

@@ -468,6 +468,10 @@ struct ContentView: View {
             .onReceive(NotificationCenter.default.publisher(for: .saveAsPNG)) { _ in
                 saveSelectedAs(format: .png)
             }
+            .onReceive(NotificationCenter.default.publisher(for: .convertRAWToJXL16)) { notification in
+                guard let decodeProfile = notification.object as? RAWDecodeProfile else { return }
+                convertSelectedRAWToJXL16(decodeProfile: decodeProfile)
+            }
             .onReceive(NotificationCenter.default.publisher(for: .renameSelected)) { _ in
                 browserViewModel.renameSelected()
             }
@@ -2200,6 +2204,123 @@ struct ContentView: View {
                 successCount: savedURLs.count,
                 totalCount: urls.count,
                 failedFilenames: saveFailedNames,
+                copyFailureFilenames: copyFailures,
+                overlayFailureFilenames: overlayFailures,
+                staleSidecarFilenames: staleWarnings,
+                sourceFolderURL: browserViewModel.currentFolderURL
+            )
+        }
+    }
+
+    private func convertSelectedRAWToJXL16(decodeProfile: RAWDecodeProfile) {
+        guard !isRenderingEditedFolder else { return }
+        let urls = browserViewModel.selectedImages
+            .map(\.url)
+            .filter(SupportedImageFormats.isRaw(url:))
+        guard !urls.isEmpty else { return }
+
+        let locationMode = EditedImageRenderer.currentLocationMode
+        var askedFolder: URL?
+        if locationMode == .askOnSave {
+            guard let chosen = promptForExportDestination() else { return }
+            askedFolder = chosen
+        }
+
+        isRenderingEditedFolder = true
+        renderExportCurrent = 0
+        renderExportTotal = urls.count
+
+        renderExportTask = Task {
+            defer { renderExportTask = nil }
+            let failureTracker = MetadataFailureTracker()
+            var createdFolders: Set<String> = []
+
+            var metadataByURL: [URL: IPTCMetadata]
+            do {
+                metadataByURL = try await browserViewModel.metadataReadService
+                    .readBatchFullMetadata(urls: urls)
+            } catch {
+                isRenderingEditedFolder = false
+                browserViewModel.errorMessage = "Failed to read RAW metadata: \(error.localizedDescription)"
+                return
+            }
+            EditExportPipeline.resolveCameraRaw(
+                into: &metadataByURL,
+                urls: urls,
+                inMemory: browserViewModel.currentCameraRawSettings
+            )
+
+            var convertedURLs: [URL] = []
+            var failedNames: [String] = []
+            for (index, url) in urls.enumerated() {
+                guard !Task.isCancelled else { break }
+                renderExportCurrent = index + 1
+                do {
+                    let rootFolder = browserViewModel.currentFolderURL
+                        ?? url.deletingLastPathComponent()
+                    let destinationFolder = EditedImageRenderer.resolveRAWJXLConversionFolder(
+                        sourceURL: url,
+                        rootFolder: rootFolder,
+                        askedFolder: askedFolder
+                    )
+                    if !createdFolders.contains(destinationFolder.path) {
+                        try FileManager.default.createDirectory(
+                            at: destinationFolder,
+                            withIntermediateDirectories: true
+                        )
+                        createdFolders.insert(destinationFolder.path)
+                    }
+
+                    let convertedURL = try await EditExportPipeline.renderItem(
+                        sourceURL: url,
+                        cameraRaw: metadataByURL[url]?.cameraRaw,
+                        kind: .rawJXL16(decodeProfile),
+                        outputFolder: destinationFolder,
+                        folderURL: browserViewModel.currentFolderURL,
+                        writeEngine: browserViewModel.writeEngine,
+                        failureTracker: failureTracker
+                    )
+                    convertedURLs.append(convertedURL)
+                } catch {
+                    failedNames.append(url.lastPathComponent)
+                }
+            }
+
+            isRenderingEditedFolder = false
+
+            let destinationFolders = Set(convertedURLs.map { $0.deletingLastPathComponent() })
+            if let folderURL = browserViewModel.currentFolderURL {
+                if destinationFolders.contains(folderURL) {
+                    browserViewModel.refreshCurrentFolderIfNeeded()
+                }
+                for subfolder in destinationFolders where subfolder != folderURL {
+                    browserViewModel.revealExportedSubfolder(subfolder)
+                }
+            } else {
+                for subfolder in destinationFolders {
+                    browserViewModel.revealExportedSubfolder(subfolder)
+                }
+            }
+
+            let copyFailures = await failureTracker.metadataCopyFailures
+            let overlayFailures = await failureTracker.sidecarOverlayFailures
+            let staleWarnings = await failureTracker.staleSidecarWarnings
+            let outcome: BatchOperationResult.Outcome
+            if Task.isCancelled {
+                outcome = .cancelled
+            } else if !failedNames.isEmpty || !copyFailures.isEmpty
+                        || !overlayFailures.isEmpty || !staleWarnings.isEmpty {
+                outcome = .partial
+            } else {
+                outcome = .success
+            }
+            isBatchResultExpanded = false
+            lastBatchResult = BatchOperationResult(
+                title: "RAW to HDR JPEG XL (\(decodeProfile.title))",
+                outcome: outcome,
+                successCount: convertedURLs.count,
+                totalCount: urls.count,
+                failedFilenames: failedNames,
                 copyFailureFilenames: copyFailures,
                 overlayFailureFilenames: overlayFailures,
                 staleSidecarFilenames: staleWarnings,

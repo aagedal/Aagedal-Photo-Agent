@@ -24,7 +24,7 @@ enum DefaultEditDestination: String, CaseIterable, Identifiable {
     }
 }
 
-nonisolated enum RAWDecodeProfile: String, CaseIterable, Identifiable {
+nonisolated enum RAWDecodeProfile: String, CaseIterable, Identifiable, Sendable {
     case linear
     case camera
 

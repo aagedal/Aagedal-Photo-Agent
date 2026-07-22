@@ -27,6 +27,9 @@ enum RenderKind: Sendable {
     case format
     /// "Save As" to a specific SDR format (`EditedImageRenderer.saveAs`).
     case saveAs(EditedImageRenderer.SaveAsFormat)
+    /// Dedicated RAW conversion to a 16-bit-per-channel JPEG XL. The decode profile is
+    /// scoped to this render and does not change the global RAW decoding preference.
+    case rawJXL16(RAWDecodeProfile)
     /// Fixed JPEG into a temp folder, used by the FTP publish path
     /// (`EditedImageRenderer.renderJPEG`).
     case jpeg
@@ -72,11 +75,20 @@ enum EditExportPipeline {
                            folderURL: URL?,
                            writeEngine: any MetadataWriteEngine,
                            failureTracker: MetadataFailureTracker) async throws -> URL {
-        let isHDR = (cameraRaw?.hdrEditMode == 1)
+        var bakedCameraRaw = cameraRaw
+        if case .rawJXL16 = kind {
+            // This conversion is always Rec. 2020 PQ HDR, independently of the image's
+            // current edit-mode toggle. Document that baked output state in XMP too.
+            var hdrSettings = bakedCameraRaw ?? CameraRawSettings()
+            hdrSettings.hdrEditMode = 1
+            bakedCameraRaw = hdrSettings
+        }
+        let metadataCameraRaw = bakedCameraRaw
+        let isHDR = (metadataCameraRaw?.hdrEditMode == 1)
         let copier: EditedImageRenderer.MetadataCopier = { src, dst in
             do {
                 try await writeEngine.copyMetadataToRenderedFile(
-                    from: src, to: dst, bakedCameraRaw: cameraRaw)
+                    from: src, to: dst, bakedCameraRaw: metadataCameraRaw)
             } catch {
                 await failureTracker.recordCopyFailure(src.lastPathComponent)
             }
@@ -91,6 +103,10 @@ enum EditExportPipeline {
             case .saveAs(let format):
                 return try await EditedImageRenderer.saveAs(
                     from: sourceURL, cameraRaw: cameraRaw, format: format,
+                    destinationFolder: outputFolder, metadataCopier: copier)
+            case .rawJXL16(let decodeProfile):
+                return try await EditedImageRenderer.convertRAWTo16BitJXL(
+                    from: sourceURL, cameraRaw: cameraRaw, decodeProfile: decodeProfile,
                     destinationFolder: outputFolder, metadataCopier: copier)
             case .jpeg:
                 try await EditedImageRenderer.renderJPEG(

@@ -751,7 +751,8 @@ final class FullScreenImageCache: @unchecked Sendable {
     nonisolated static func loadRAWImage(
         from url: URL,
         draftMode: Bool = false,
-        maxPixelSize: CGFloat? = nil
+        maxPixelSize: CGFloat? = nil,
+        decodeProfile: RAWDecodeProfile? = nil
     ) -> RAWDecodeResult? {
         guard let rawFilter = CIRAWFilter(imageURL: url) else {
             cacheLogger.info("CIRAWFilter unsupported for \(url.lastPathComponent), falling back")
@@ -762,8 +763,13 @@ final class FullScreenImageCache: @unchecked Sendable {
         // Camera RAW (default) leaves CIRAWFilter's own camera-matched boost/tone curve
         // in place, closer to Finder/Preview. Linear RAW disables that boost so the Metal
         // shader gets neutral scene-referred input.
-        let profileRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.rawDecodeProfile)
-        let profile = RAWDecodeProfile(storedRawValue: profileRaw ?? "") ?? .camera
+        let profile: RAWDecodeProfile
+        if let decodeProfile {
+            profile = decodeProfile
+        } else {
+            let profileRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.rawDecodeProfile)
+            profile = RAWDecodeProfile(storedRawValue: profileRaw ?? "") ?? .camera
+        }
         if profile == .linear {
             rawFilter.boostAmount = 0
             rawFilter.boostShadowAmount = 0

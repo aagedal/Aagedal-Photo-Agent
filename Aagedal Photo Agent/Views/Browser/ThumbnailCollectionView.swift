@@ -445,6 +445,39 @@ final class ThumbnailCollectionView: NSCollectionView {
         savePNGItem.target = self
         menu.addItem(savePNGItem)
 
+        let rawSelectionCount = viewModel.selectedImages.lazy
+            .map(\.url)
+            .filter(SupportedImageFormats.isRaw(url:))
+            .count
+        if rawSelectionCount > 0 {
+            let conversionMenu = NSMenu()
+
+            let cameraItem = NSMenuItem(
+                title: "Camera RAW Decode",
+                action: #selector(contextConvertRAWToJXL16(_:)),
+                keyEquivalent: ""
+            )
+            cameraItem.target = self
+            cameraItem.representedObject = RAWDecodeProfile.camera
+            conversionMenu.addItem(cameraItem)
+
+            let linearItem = NSMenuItem(
+                title: "Linear RAW Decode",
+                action: #selector(contextConvertRAWToJXL16(_:)),
+                keyEquivalent: ""
+            )
+            linearItem.target = self
+            linearItem.representedObject = RAWDecodeProfile.linear
+            conversionMenu.addItem(linearItem)
+
+            let title = rawSelectionCount == 1
+                ? "Convert RAW to 16-bit HDR JPEG XL"
+                : "Convert \(rawSelectionCount) RAW Files to 16-bit HDR JPEG XL"
+            let conversionItem = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            conversionItem.submenu = conversionMenu
+            menu.addItem(conversionItem)
+        }
+
         menu.addItem(NSMenuItem.separator())
 
         // Rename / Duplicate
@@ -525,6 +558,11 @@ final class ThumbnailCollectionView: NSCollectionView {
 
     @objc private func contextSaveAsPNG(_ sender: Any?) {
         NotificationCenter.default.post(name: .saveAsPNG, object: nil)
+    }
+
+    @objc private func contextConvertRAWToJXL16(_ sender: NSMenuItem) {
+        guard let decodeProfile = sender.representedObject as? RAWDecodeProfile else { return }
+        NotificationCenter.default.post(name: .convertRAWToJXL16, object: decodeProfile)
     }
 
     @objc private func contextRename(_ sender: Any?) {

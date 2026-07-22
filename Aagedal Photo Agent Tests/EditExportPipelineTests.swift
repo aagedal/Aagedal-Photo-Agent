@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import AppKit
+import CoreImage
 import SwiftExif
 @testable import Aagedal_Photo_Agent
 
@@ -419,5 +420,105 @@ struct CustomSubfolderTests {
         // "." resolves to rootFolder itself — exporting into the source folder could
         // overwrite originals, so it must not be used as the destination.
         #expect(sub(".").path == "/Volumes/Photos/Shoot/Exports")
+    }
+}
+
+@Suite("16-bit JPEG XL conversion helpers")
+struct RAWJXLConversionTests {
+    @Test("RAW conversion has a fixed Rec. 2020 PQ target")
+    func fixedHDRColorTarget() {
+        #expect(EditedImageRenderer.rawJXLConversionGamut == .rec2020)
+        #expect(EditedImageRenderer.rawJXLConversionColorSpace.name == CGColorSpace.itur_2100_PQ)
+    }
+
+    @Test("16-bit SDR conversion explicitly feeds libjxl rgb48le")
+    func forces16BitRGB() {
+        let args = FFmpegService.jxlArguments(
+            input: "/tmp/input.png",
+            output: "/tmp/output.jxl",
+            quality: 0.92,
+            isHDR: false,
+            force16Bit: true
+        )
+
+        let pixelFormatIndex = args.firstIndex(of: "-pix_fmt")
+        #expect(pixelFormatIndex != nil)
+        if let pixelFormatIndex {
+            #expect(args[pixelFormatIndex + 1] == "rgb48le")
+        }
+        #expect(args.contains("libjxl"))
+        #expect(args.contains("1.2"))
+    }
+
+    @Test("ordinary SDR JPEG XL keeps its existing automatic pixel format")
+    func ordinarySDRDoesNotForce16Bit() {
+        let args = FFmpegService.jxlArguments(
+            input: "/tmp/input.tiff",
+            output: "/tmp/output.jxl",
+            quality: 0.92,
+            isHDR: false
+        )
+        #expect(!args.contains("-pix_fmt"))
+    }
+
+    @Test("conversion output avoids overwriting an existing JPEG XL")
+    func uniqueDestination() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apa-jxl-destination-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let source = directory.appendingPathComponent("photo.cr3")
+        let existing = directory.appendingPathComponent("photo.jxl")
+        try Data().write(to: existing)
+
+        let destination = EditedImageRenderer.uniqueOutputURL(
+            for: source,
+            in: directory,
+            extension: "jxl"
+        )
+        #expect(destination.lastPathComponent == "photo 2.jxl")
+    }
+
+    @Test("bundled libjxl preserves the 16-bit RGB pixel format")
+    func bundledEncoderProduces16BitJXL() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apa-jxl-encode-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let input = directory.appendingPathComponent("input.png")
+        let output = directory.appendingPathComponent("output.jxl")
+        let image = CIImage(
+            color: CIColor(red: 0.125, green: 0.5, blue: 0.875, alpha: 1)
+        ).cropped(to: CGRect(x: 0, y: 0, width: 8, height: 8))
+        let context = CIContext(options: [.cacheIntermediates: false])
+        let colorSpace = EditedImageRenderer.rawJXLConversionColorSpace
+        let png = try #require(context.pngRepresentation(
+            of: image,
+            format: .RGBA16,
+            colorSpace: colorSpace,
+            options: [:]
+        ))
+        try png.write(to: input, options: .atomic)
+
+        try await FFmpegService.encodeJXL(
+            input: input.path,
+            output: output.path,
+            quality: 0.92,
+            isHDR: true,
+            force16Bit: true
+        )
+        let ffmpegPath = try #require(FFmpegService.ffmpegPath)
+        let probe = try await Process.run(
+            executableURL: URL(fileURLWithPath: ffmpegPath),
+            arguments: ["-hide_banner", "-i", output.path],
+            allowNonZeroExit: true
+        )
+
+        #expect(FileManager.default.fileExists(atPath: output.path))
+        #expect(probe.stderr.contains("rgb48le"))
+        #expect(probe.stderr.contains("bt2020"))
+        #expect(probe.stderr.contains("smpte2084"))
     }
 }

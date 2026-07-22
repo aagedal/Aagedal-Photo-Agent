@@ -79,24 +79,50 @@ nonisolated enum FFmpegService {
     ///   - output: Path to the output .jxl file
     ///   - quality: 0.0 (worst) to 1.0 (best). Maps to distance 15-0.
     ///   - isHDR: Whether to preserve HDR color metadata
-    static func encodeJXL(input: String, output: String, quality: Double, isHDR: Bool) async throws {
-        // Map quality 0.0-1.0 to distance 15-0 (lower distance = better quality)
-        let distance = (1.0 - quality) * 15.0
-
-        var args = ["-hide_banner", "-y", "-i", input]
-
-        if isHDR {
-            args += ["-pix_fmt", "rgb48le"]
-        }
-
-        args += ["-c:v", "libjxl", "-distance", String(format: "%.1f", distance)]
-        args += ["-effort", "7"]
-        args += [output]
+    ///   - force16Bit: Feed libjxl 16-bit RGB even for an SDR input.
+    static func encodeJXL(
+        input: String,
+        output: String,
+        quality: Double,
+        isHDR: Bool,
+        force16Bit: Bool = false
+    ) async throws {
+        let args = jxlArguments(
+            input: input,
+            output: output,
+            quality: quality,
+            isHDR: isHDR,
+            force16Bit: force16Bit
+        )
 
         try await run(arguments: args)
 
         guard FileManager.default.fileExists(atPath: output) else {
             throw FFmpegError.outputMissing
         }
+    }
+
+    /// Builds the libjxl invocation separately so bit-depth and quality mapping can be
+    /// verified without launching the bundled executable.
+    static func jxlArguments(
+        input: String,
+        output: String,
+        quality: Double,
+        isHDR: Bool,
+        force16Bit: Bool = false
+    ) -> [String] {
+        // Map quality 0.0-1.0 to distance 15-0 (lower distance = better quality)
+        let distance = (1.0 - quality) * 15.0
+
+        var args = ["-hide_banner", "-y", "-i", input]
+
+        if isHDR || force16Bit {
+            args += ["-pix_fmt", "rgb48le"]
+        }
+
+        args += ["-c:v", "libjxl", "-distance", String(format: "%.1f", distance)]
+        args += ["-effort", "7"]
+        args += [output]
+        return args
     }
 }
