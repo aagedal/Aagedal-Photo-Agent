@@ -317,7 +317,9 @@ nonisolated enum C2PASigningService {
             throw C2PAValidationError.malformedOutput
         }
 
-        let state = (root["validation_state"] as? String)?.lowercased()
+        let state = (root["validation_state"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
         let entries = validationEntries(in: root["validation_status"])
         let codes = entries.compactMap(\.code)
         // `signingCredential.untrusted` is a trust warning, not proof that the
@@ -325,10 +327,11 @@ nonisolated enum C2PASigningService {
         let hasFailures = entries.contains {
             $0.success == false && !($0.code?.lowercased().contains("signingcredential.untrusted") ?? false)
         }
-            || state?.contains("invalid") == true
-            || state?.contains("fail") == true
-        let isTrusted = codes.contains { $0.lowercased().contains("signingcredential.trusted") }
-        let isUntrusted = codes.contains { $0.lowercased().contains("signingcredential.untrusted") }
+            || state == "invalid"
+            || state == "failed"
+            || state == "failure"
+        let isTrusted = codes.contains { $0.caseInsensitiveCompare("signingCredential.trusted") == .orderedSame }
+        let isUntrusted = codes.contains { $0.caseInsensitiveCompare("signingCredential.untrusted") == .orderedSame }
         let signer = stringValue(in: root, keys: ["signer", "signer_name", "signerName", "subject"])
         let issuer = stringValue(in: root, keys: ["issuer", "issuer_name", "issuerName"])
         let explanation = entries.compactMap(\.explanation).first
@@ -336,16 +339,24 @@ nonisolated enum C2PASigningService {
         if state == nil && entries.isEmpty {
             throw C2PAValidationError.malformedOutput
         }
-        if state?.contains("not present") == true || state?.contains("no manifest") == true {
+        if state == "not present" || state == "no manifest" {
             return C2PAValidationResult(status: .notPresent, signer: signer, issuer: issuer, message: "No Content Credentials were found.", rawValidationCodes: codes)
         }
         if hasFailures {
             return C2PAValidationResult(status: .invalid, signer: signer, issuer: issuer, message: explanation ?? "The Content Credentials signature did not validate.", rawValidationCodes: codes)
         }
-        if state?.contains("trusted") == true || isTrusted {
+        // An explicit untrusted credential always wins over a generic state string.
+        // Never use substring matching here: "untrusted" itself contains "trusted".
+        if isUntrusted || state == "untrusted" || state == "not trusted" || state == "not_trusted" {
+            let message = explanation.map {
+                "The signature is valid, but signer trust could not be established. \($0)"
+            } ?? "The signature is valid, but signer trust could not be established."
+            return C2PAValidationResult(status: .untrusted, signer: signer, issuer: issuer, message: message, rawValidationCodes: codes)
+        }
+        if state == "trusted" || isTrusted {
             return C2PAValidationResult(status: .trusted, signer: signer, issuer: issuer, message: explanation ?? "The signature is valid and the signer is trusted.", rawValidationCodes: codes)
         }
-        if state?.contains("valid") == true || isUntrusted {
+        if state == "valid" {
             return C2PAValidationResult(status: .untrusted, signer: signer, issuer: issuer, message: explanation ?? "The signature is valid, but signer trust could not be established.", rawValidationCodes: codes)
         }
         return C2PAValidationResult(status: .unsupported, signer: signer, issuer: issuer, message: explanation ?? "This c2patool validation format is not supported.", rawValidationCodes: codes)
@@ -786,5 +797,24 @@ nonisolated enum C2PASigningService {
 
     private static func signingEnvironment(_ privateKeyPEM: String) -> [String: String]? {
         privateKeyPEM.isEmpty ? nil : ["C2PA_PRIVATE_KEY": privateKeyPEM]
+    }
+}
+
+/// Immutable credentials captured before an FTP upload. Rendered derivatives are
+/// created after the upload sheet closes, so the view model carries this value into
+/// the render pipeline and signs the actual files that will be transferred.
+nonisolated struct C2PAUploadSigningConfiguration: Sendable {
+    let certificatePath: String
+    let privateKeyPEM: String
+    let author: String?
+    let usesTestCertificate: Bool
+
+    func sign(_ imageURL: URL) async throws {
+        try await C2PASigningService.sign(
+            imageURL: imageURL,
+            certificatePath: usesTestCertificate ? "" : certificatePath,
+            privateKeyPEM: privateKeyPEM,
+            author: author?.isEmpty == true ? nil : author
+        )
     }
 }

@@ -2421,10 +2421,20 @@ final class BrowserViewModel {
     func renamePendingSubfolder() {
         guard let oldURL = pendingRenameSubfolderURL else { return }
         pendingRenameSubfolderURL = nil
-        let trimmed = renameSubfolderNewName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed != oldURL.lastPathComponent else { return }
+        let trimmed: String
+        do {
+            trimmed = try SafePathComponent.validate(renameSubfolderNewName)
+        } catch {
+            errorMessage = error.localizedDescription
+            return
+        }
+        guard trimmed != oldURL.lastPathComponent else { return }
 
         let newURL = oldURL.deletingLastPathComponent().appendingPathComponent(trimmed, isDirectory: true)
+        guard SafePathComponent.isContained(newURL, in: oldURL.deletingLastPathComponent()) else {
+            errorMessage = "Folder name resolves outside its current parent."
+            return
+        }
         do {
             try FileManager.default.moveItem(at: oldURL, to: newURL)
         } catch {
@@ -2480,13 +2490,11 @@ final class BrowserViewModel {
     func createPendingSubfolder() {
         guard let parentURL = pendingNewSubfolderParentURL else { return }
         pendingNewSubfolderParentURL = nil
-        let trimmed = newSubfolderName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            errorMessage = "Subfolder name can't be empty."
-            return
-        }
-        if trimmed.rangeOfCharacter(from: CharacterSet(charactersIn: "/:")) != nil {
-            errorMessage = "Subfolder name can't contain / or : characters."
+        let trimmed: String
+        do {
+            trimmed = try SafePathComponent.validate(newSubfolderName, label: "Subfolder name")
+        } catch {
+            errorMessage = error.localizedDescription
             return
         }
 

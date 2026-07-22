@@ -32,6 +32,22 @@ struct C2PAValidationTests {
         #expect(result.message.contains("valid"))
     }
 
+    @Test("untrusted validation state never matches the trusted branch")
+    func explicitUntrustedState() throws {
+        let result = try parse("{\"validation_state\":\"Untrusted\"}")
+        #expect(result.status == .untrusted)
+    }
+
+    @Test("an untrusted credential code overrides a generic trusted state")
+    func untrustedCodeWins() throws {
+        let result = try parse("""
+        {"validation_state":"Trusted","validation_status":[
+          {"code":"signingCredential.untrusted","explanation":"No trusted chain"}
+        ]}
+        """)
+        #expect(result.status == .untrusted)
+    }
+
     @Test("failed validation status maps to invalid")
     func invalid() throws {
         let result = try parse("""
@@ -62,6 +78,7 @@ struct C2PAValidationTests {
         let pem = Data("""
         -----BEGIN CERTIFICATE-----
         MIIBqTCCAU+gAwIBAgIUXg8yA0QmBkyZgY8X3I5y02SAr9AwCgYIKoZIzj0EAwIw
+        BQAwEjEQMA4GA1UEAwwHVGVzdCBDQTAeFw0yNjAxMDEwMDAwMDBaFw0yNzAxMDEw
         -----END CERTIFICATE-----
         """.utf8)
         #expect(C2PATrustListService.isValidTrustAnchorPEM(pem))

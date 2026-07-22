@@ -57,10 +57,7 @@ struct ActivityHistoryTests {
         #expect(!viewModel.isScanning(folderURL: displayedFolder))
         #expect(viewModel.displayedFolderURL == displayedFolder.standardizedFileURL)
 
-        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
-        while viewModel.isScanning, ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(20))
-        }
+        await viewModel.waitForCurrentScan()
 
         #expect(!viewModel.isScanning)
         #expect(viewModel.displayedFolderURL == displayedFolder.standardizedFileURL)

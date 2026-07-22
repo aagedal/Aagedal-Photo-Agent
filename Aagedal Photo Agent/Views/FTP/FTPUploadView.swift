@@ -621,35 +621,75 @@ struct FTPUploadView: View {
             variablesProcessProgress = ""
         }
 
+        var signingConfiguration: C2PAUploadSigningConfiguration?
         if signWithC2PABeforeUpload {
-            await signFilesWithC2PA(activeFiles)
+            guard let configuration = makeC2PAUploadSigningConfiguration() else { return }
+            signingConfiguration = configuration
+            // Originals can be signed now. Rendered JPEGs do not exist yet and must
+            // be signed by the render pipeline after it creates the actual upload files.
+            let asIsFiles = activeFiles.filter { !renderURLs.contains($0) }
+            if !asIsFiles.isEmpty {
+                guard await signFilesWithC2PA(asIsFiles, configuration: configuration) else { return }
+            }
         }
 
-        beginUpload(files: activeFiles, connection: connection, renderURLs: renderURLs)
+        guard !Task.isCancelled else { return }
+        beginUpload(
+            files: activeFiles,
+            connection: connection,
+            renderURLs: renderURLs,
+            signingConfiguration: signingConfiguration
+        )
     }
 
-    private func signFilesWithC2PA(_ files: [URL]) async {
+    private func makeC2PAUploadSigningConfiguration() -> C2PAUploadSigningConfiguration? {
         let certPath = UserDefaults.standard.string(forKey: UserDefaultsKeys.c2paCertificatePath) ?? ""
         let author = UserDefaults.standard.string(forKey: UserDefaultsKeys.c2paDefaultAuthor)
         let usesTestCertificate = UserDefaults.standard.bool(forKey: UserDefaultsKeys.c2paUseTestCertificate)
-        let privateKeyPEM = usesTestCertificate ? "" : KeychainService.load(forKey: "c2pa_private_key")
-        guard (usesTestCertificate || !certPath.isEmpty),
-              let privateKeyPEM,
-              C2PASigningService.isAvailable else { return }
+        guard C2PASigningService.isAvailable else {
+            preprocessErrors.append("C2PA signing is unavailable; no files were uploaded.")
+            return nil
+        }
+        guard usesTestCertificate || !certPath.isEmpty else {
+            preprocessErrors.append("No C2PA certificate is configured; no files were uploaded.")
+            return nil
+        }
+        let privateKeyPEM: String
+        if usesTestCertificate {
+            privateKeyPEM = ""
+        } else if let storedKey = KeychainService.load(forKey: "c2pa_private_key"), !storedKey.isEmpty {
+            privateKeyPEM = storedKey
+        } else {
+            preprocessErrors.append("The C2PA private key is unavailable; no files were uploaded.")
+            return nil
+        }
 
+        return C2PAUploadSigningConfiguration(
+            certificatePath: certPath,
+            privateKeyPEM: privateKeyPEM,
+            author: author,
+            usesTestCertificate: usesTestCertificate
+        )
+    }
+
+    private func signFilesWithC2PA(
+        _ files: [URL],
+        configuration: C2PAUploadSigningConfiguration
+    ) async -> Bool {
         isSigningC2PA = true
         c2paSignProgress = "0/\(files.count)"
         var signed = 0
+        var allSucceeded = true
 
         for url in files {
+            guard !Task.isCancelled else {
+                allSucceeded = false
+                break
+            }
             do {
-                try await C2PASigningService.sign(
-                    imageURL: url,
-                    certificatePath: usesTestCertificate ? "" : certPath,
-                    privateKeyPEM: privateKeyPEM,
-                    author: author?.isEmpty == true ? nil : author
-                )
+                try await configuration.sign(url)
             } catch {
+                allSucceeded = false
                 preprocessErrors.append("C2PA signing failed for \(url.lastPathComponent): \(error.localizedDescription)")
             }
             signed += 1
@@ -658,12 +698,29 @@ struct FTPUploadView: View {
 
         isSigningC2PA = false
         c2paSignProgress = ""
+        if !allSucceeded {
+            preprocessErrors.append("Upload stopped because every selected file must be signed successfully.")
+        }
+        return allSucceeded
     }
 
-    private func beginUpload(files: [URL], connection: FTPConnection, renderURLs: Set<URL>) {
+    private func beginUpload(
+        files: [URL],
+        connection: FTPConnection,
+        renderURLs: Set<URL>,
+        signingConfiguration: C2PAUploadSigningConfiguration?
+    ) {
         // The view model renders only the files in renderURLs and uploads the rest as-is
         // (and short-circuits to the plain upload path when nothing needs rendering).
-        viewModel.uploadFiles(files, renderURLs: renderURLs, to: connection, readService: readService, writeEngine: writeEngine, inMemoryCameraRaw: inMemoryCameraRaw)
+        viewModel.uploadFiles(
+            files,
+            renderURLs: renderURLs,
+            to: connection,
+            readService: readService,
+            writeEngine: writeEngine,
+            inMemoryCameraRaw: inMemoryCameraRaw,
+            signingConfiguration: signingConfiguration
+        )
         onStartUpload?()
     }
 

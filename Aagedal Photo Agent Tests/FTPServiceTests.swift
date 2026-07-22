@@ -74,6 +74,45 @@ struct FTPCurlArgumentsTests {
         #expect(tIndex != nil)
         if let tIndex { #expect(args[args.index(after: tIndex)] == "/tmp/photo.jpg") }
     }
+
+    @Test("connection test has both connect and overall deadlines")
+    func connectionTestHasOverallDeadline() {
+        let args = FTPService.testConnectionArguments(
+            remoteURL: "ftp://example.com:21/incoming/",
+            netrcPath: "/tmp/abc.netrc",
+            connection: FTPConnection(host: "example.com")
+        )
+        #expect(args.contains("--connect-timeout"))
+        #expect(args.contains("--max-time"))
+    }
+}
+
+@Suite("FTPService cancellation")
+struct FTPServiceCancellationTests {
+    @Test("a pre-cancelled upload exits without launching or crashing Process")
+    func preCancelledUpload() async throws {
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FTPCancel-\(UUID().uuidString).jpg")
+        try Data("test".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+
+        let task = Task {
+            try await FTPService().uploadFile(
+                localURL: file,
+                connection: FTPConnection(host: "127.0.0.1", port: 1, username: "user"),
+                password: "password",
+                progressHandler: { _ in }
+            )
+        }
+        task.cancel()
+
+        do {
+            try await task.value
+            Issue.record("A pre-cancelled upload unexpectedly completed")
+        } catch is CancellationError {
+            // Expected.
+        }
+    }
 }
 
 @Suite("FTPService.remoteUploadURL")

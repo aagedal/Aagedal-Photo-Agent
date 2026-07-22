@@ -116,20 +116,23 @@ final class ICloudSyncCoordinator {
                     bump()
                     return
                 }
-                let (current, release) = AppPaths.templatesDirectory()
+                let (current, release) = AppPaths.localTemplatesDirectory()
                 defer { release() }
                 try mergeCopy(from: current, to: cloud)
                 UserDefaults.standard.set(true, forKey: UserDefaultsKeys.templatesICloudEnabled)
             } else {
-                let (current, release) = AppPaths.templatesDirectory()
+                guard let cloud = AppPaths.iCloudTemplatesURL else {
+                    lastError = Self.unavailableMessage
+                    bump()
+                    return
+                }
+                let (dest, release) = AppPaths.localTemplatesDirectory()
+                defer { release() }
+                try mergeCopy(from: cloud, to: dest)
                 UserDefaults.standard.set(false, forKey: UserDefaultsKeys.templatesICloudEnabled)
-                let (dest, release2) = AppPaths.templatesDirectory()
-                try? mergeCopy(from: current, to: dest)
-                release()
-                release2()
             }
         } catch {
-            lastError = "Could not move templates into iCloud Drive: \(error.localizedDescription)"
+            lastError = "Could not reconcile templates with iCloud Drive: \(error.localizedDescription)"
         }
         bump()
     }
@@ -153,14 +156,17 @@ final class ICloudSyncCoordinator {
                 try mergeCopy(from: KnownPeopleService.localKnownPeopleDirectory, to: cloud)
                 UserDefaults.standard.set(true, forKey: UserDefaultsKeys.knownPeopleICloudEnabled)
             } else {
-                if let cloud = AppPaths.iCloudKnownPeopleURL {
-                    try? mergeCopy(from: cloud, to: KnownPeopleService.localKnownPeopleDirectory)
+                guard let cloud = AppPaths.iCloudKnownPeopleURL else {
+                    lastError = Self.unavailableMessage
+                    bump()
+                    return
                 }
+                try mergeCopy(from: cloud, to: KnownPeopleService.localKnownPeopleDirectory)
                 UserDefaults.standard.set(false, forKey: UserDefaultsKeys.knownPeopleICloudEnabled)
             }
             KnownPeopleService.shared.reloadAfterStorageChange()
         } catch {
-            lastError = "Could not move the Known People database into iCloud Drive: \(error.localizedDescription)"
+            lastError = "Could not reconcile the Known People database with iCloud Drive: \(error.localizedDescription)"
         }
         // Start/stop the remote-change watcher to match the new toggle state.
         KnownPeopleCloudCoordinator.shared.refresh()
@@ -186,14 +192,17 @@ final class ICloudSyncCoordinator {
                 try mergeCopy(from: RosterStore.localTeamsDirectory, to: cloud)
                 UserDefaults.standard.set(true, forKey: UserDefaultsKeys.teamsICloudEnabled)
             } else {
-                if let cloud = AppPaths.iCloudTeamsURL {
-                    try? mergeCopy(from: cloud, to: RosterStore.localTeamsDirectory)
+                guard let cloud = AppPaths.iCloudTeamsURL else {
+                    lastError = Self.unavailableMessage
+                    bump()
+                    return
                 }
+                try mergeCopy(from: cloud, to: RosterStore.localTeamsDirectory)
                 UserDefaults.standard.set(false, forKey: UserDefaultsKeys.teamsICloudEnabled)
             }
             RosterStore.shared.reloadAfterStorageChange()
         } catch {
-            lastError = "Could not move the Teams library into iCloud Drive: \(error.localizedDescription)"
+            lastError = "Could not reconcile the Teams library with iCloud Drive: \(error.localizedDescription)"
         }
         RosterCloudCoordinator.shared.refresh()
         bump()
@@ -218,14 +227,17 @@ final class ICloudSyncCoordinator {
                 try mergeCopy(from: WatermarkStore.localWatermarksDirectory, to: cloud)
                 UserDefaults.standard.set(true, forKey: UserDefaultsKeys.watermarksICloudEnabled)
             } else {
-                if let cloud = AppPaths.iCloudWatermarksURL {
-                    try? mergeCopy(from: cloud, to: WatermarkStore.localWatermarksDirectory)
+                guard let cloud = AppPaths.iCloudWatermarksURL else {
+                    lastError = Self.unavailableMessage
+                    bump()
+                    return
                 }
+                try mergeCopy(from: cloud, to: WatermarkStore.localWatermarksDirectory)
                 UserDefaults.standard.set(false, forKey: UserDefaultsKeys.watermarksICloudEnabled)
             }
             WatermarkStore.shared.reloadAfterStorageChange()
         } catch {
-            lastError = "Could not move the Watermark library into iCloud Drive: \(error.localizedDescription)"
+            lastError = "Could not reconcile the Watermark library with iCloud Drive: \(error.localizedDescription)"
         }
         WatermarkCloudCoordinator.shared.refresh()
         bump()
@@ -265,6 +277,6 @@ final class ICloudSyncCoordinator {
     /// are treated as empty (nothing to copy). Coordinated via `NSFileCoordinator`
     /// so moving data into the ubiquity container doesn't fork conflict folders.
     private func mergeCopy(from src: URL, to dst: URL) throws {
-        try CloudCoordinatedIO.mergeCopy(from: src, to: dst)
+        try CloudCoordinatedIO.mergeCopyPreservingNewer(from: src, to: dst)
     }
 }

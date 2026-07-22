@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import os
 
 private nonisolated let copyLog = Logger(subsystem: "com.aagedal.photo-agent", category: "ImportCopyService")
@@ -82,7 +83,7 @@ actor ImportCopyService {
 
         for job in jobs {
             try Task.checkCancellation()
-            let result = await processJob(
+            let result = try await processJob(
                 job,
                 conflictPolicy: conflictPolicy,
                 verificationMode: verificationMode,
@@ -101,7 +102,7 @@ actor ImportCopyService {
         conflictPolicy: ImportConflictPolicy,
         verificationMode: CopyVerificationMode,
         verifyBackup: Bool
-    ) async -> CopyResult {
+    ) async throws -> CopyResult {
         if let reason = job.preflightSkipReason {
             return CopyResult(
                 id: job.id,
@@ -153,44 +154,13 @@ actor ImportCopyService {
             )
         }
 
-        // Stream-copy primary.
-        let primaryCopyResult: CopyAndHashResult
-        do {
-            primaryCopyResult = try await streamCopy(source: job.source, dest: primaryURL)
-        } catch is CancellationError {
-            // Caller catches; re-throw via parent run loop is handled by progress break.
-            return CopyResult(
-                id: job.id,
-                source: job.source,
-                primary: .failed("Cancelled."),
-                primaryVerification: .skipped,
-                backup: job.desiredBackupDest != nil ? .skipped(.destinationExists) : nil,
-                backupVerification: job.desiredBackupDest != nil ? .skipped : nil
-            )
-        } catch {
-            return CopyResult(
-                id: job.id,
-                source: job.source,
-                primary: .failed(error.localizedDescription),
-                primaryVerification: .skipped,
-                backup: job.desiredBackupDest != nil ? .skipped(.destinationExists) : nil,
-                backupVerification: job.desiredBackupDest != nil ? .skipped : nil
-            )
-        }
-
-        // Verify primary.
-        let primaryVerification: VerificationOutcome
-        switch verificationMode {
-        case .off:
-            primaryVerification = .skipped
-        case .on:
-            primaryVerification = await verify(url: primaryURL, expected: primaryCopyResult.hash)
-        }
-
-        // If verification failed, remove the partial-promoted file so it doesn't pose as good data.
-        if case .mismatch = primaryVerification {
-            try? FileManager.default.removeItem(at: primaryURL)
-        }
+        let (primaryOutcome, primaryVerification) = try await copyLeg(
+            source: job.source,
+            destination: primaryURL,
+            wasRenamed: wasRenamed,
+            shouldVerify: verificationMode == .on,
+            allowOverwrite: conflictPolicy == .overwrite
+        )
 
         // Backup leg (best-effort, isolated from primary success).
         var backupOutcome: DestinationOutcome?
@@ -207,8 +177,8 @@ actor ImportCopyService {
                     id: job.id,
                     source: job.source,
                     primary: primaryVerification == .verified || primaryVerification == .skipped
-                        ? .copied(primaryURL, wasRenamed: wasRenamed, hash: primaryCopyResult.hash)
-                        : .failed("Verification mismatch."),
+                        ? primaryOutcome
+                        : .failed("Verification failed."),
                     primaryVerification: primaryVerification,
                     backup: backupOutcome,
                     backupVerification: backupVerification
@@ -221,21 +191,15 @@ actor ImportCopyService {
                 backupVerification = .skipped
             case .resolved(let backupURL, let backupWasRenamed):
                 do {
-                    let backupCopy = try await streamCopy(source: job.source, dest: backupURL)
-                    backupOutcome = .copied(backupURL, wasRenamed: backupWasRenamed, hash: backupCopy.hash)
-
-                    if verificationMode == .on && verifyBackup {
-                        let v = await verify(url: backupURL, expected: backupCopy.hash)
-                        backupVerification = v
-                        if case .mismatch = v {
-                            try? FileManager.default.removeItem(at: backupURL)
-                        }
-                    } else {
-                        backupVerification = .skipped
-                    }
+                    (backupOutcome, backupVerification) = try await copyLeg(
+                        source: job.source,
+                        destination: backupURL,
+                        wasRenamed: backupWasRenamed,
+                        shouldVerify: verificationMode == .on && verifyBackup,
+                        allowOverwrite: conflictPolicy == .overwrite
+                    )
                 } catch is CancellationError {
-                    backupOutcome = .failed("Cancelled.")
-                    backupVerification = .skipped
+                    throw CancellationError()
                 } catch {
                     copyLog.warning("Backup copy failed for \(job.source.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
                     backupOutcome = .failed(error.localizedDescription)
@@ -244,19 +208,10 @@ actor ImportCopyService {
             }
         }
 
-        // Build final primary outcome.
-        let finalPrimary: DestinationOutcome
-        switch primaryVerification {
-        case .mismatch:
-            finalPrimary = .failed("Verification mismatch — destination differs from source.")
-        default:
-            finalPrimary = .copied(primaryURL, wasRenamed: wasRenamed, hash: primaryCopyResult.hash)
-        }
-
         return CopyResult(
             id: job.id,
             source: job.source,
-            primary: finalPrimary,
+            primary: primaryOutcome,
             primaryVerification: primaryVerification,
             backup: backupOutcome,
             backupVerification: backupVerification
@@ -265,24 +220,79 @@ actor ImportCopyService {
 
     // MARK: - Streaming Copy
 
-    private struct CopyAndHashResult {
+    private struct StagedCopy {
         let hash: Data
+        let temporaryURL: URL
     }
 
-    /// Copy `source` → `dest` one chunk at a time, hashing as bytes flow.
-    /// Writes to `dest.partial` and atomically renames on success.
-    /// Removes any partial on failure.
-    private func streamCopy(source: URL, dest: URL) async throws -> CopyAndHashResult {
-        let fm = FileManager.default
-        let partialURL = dest.appendingPathExtension("partial")
-
-        // Clean up any pre-existing partial from a previous crashed run.
-        if fm.fileExists(atPath: partialURL.path) {
-            try? fm.removeItem(at: partialURL)
+    /// Copies one leg into a unique same-directory staging file, verifies that staging
+    /// file, and only then promotes it to the live destination. Cancellation always
+    /// propagates to `run`; it is never represented as a successful skipped verification.
+    private func copyLeg(
+        source: URL,
+        destination: URL,
+        wasRenamed: Bool,
+        shouldVerify: Bool,
+        allowOverwrite: Bool
+    ) async throws -> (DestinationOutcome, VerificationOutcome) {
+        if Self.filesReferToSameItem(source, destination) {
+            return (
+                .failed("Source and destination refer to the same file."),
+                .skipped
+            )
         }
 
+        let staged: StagedCopy
+        do {
+            staged = try await stageCopy(source: source, destination: destination)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return (.failed(error.localizedDescription), .skipped)
+        }
+
+        let verification: VerificationOutcome
+        do {
+            verification = shouldVerify
+                ? try await verify(url: staged.temporaryURL, expected: staged.hash)
+                : .skipped
+        } catch {
+            try? FileManager.default.removeItem(at: staged.temporaryURL)
+            throw error
+        }
+
+        switch verification {
+        case .mismatch:
+            try? FileManager.default.removeItem(at: staged.temporaryURL)
+            return (.failed("Verification mismatch — staged copy differs from source."), verification)
+        case .failed(let detail):
+            try? FileManager.default.removeItem(at: staged.temporaryURL)
+            return (.failed("Verification failed: \(detail)"), verification)
+        case .verified, .skipped:
+            do {
+                try Self.promote(
+                    staged.temporaryURL,
+                    to: destination,
+                    allowOverwrite: allowOverwrite
+                )
+                return (.copied(destination, wasRenamed: wasRenamed, hash: staged.hash), verification)
+            } catch {
+                try? FileManager.default.removeItem(at: staged.temporaryURL)
+                return (.failed(error.localizedDescription), verification)
+            }
+        }
+    }
+
+    /// Copy `source` into a unique hidden sibling of `destination`, hashing as bytes flow.
+    /// The caller owns promotion and cleanup after this method succeeds.
+    private func stageCopy(source: URL, destination: URL) async throws -> StagedCopy {
+        let fm = FileManager.default
+        let partialURL = destination.deletingLastPathComponent().appendingPathComponent(
+            ".\(destination.lastPathComponent).\(UUID().uuidString).partial"
+        )
+
         // Ensure parent directory exists (defensive — caller should have created it).
-        let parent = dest.deletingLastPathComponent()
+        let parent = destination.deletingLastPathComponent()
         if !fm.fileExists(atPath: parent.path) {
             try fm.createDirectory(at: parent, withIntermediateDirectories: true)
         }
@@ -340,35 +350,21 @@ actor ImportCopyService {
             throw error
         }
 
-        let hash = hasher.finalize()
-
-        // Atomic rename of .partial → final.
-        if fm.fileExists(atPath: dest.path) {
-            try? fm.removeItem(at: dest)
-        }
-        do {
-            try fm.moveItem(at: partialURL, to: dest)
-        } catch {
-            try? fm.removeItem(at: partialURL)
-            throw error
-        }
-
-        return CopyAndHashResult(hash: hash)
+        return StagedCopy(hash: hasher.finalize(), temporaryURL: partialURL)
     }
 
     // MARK: - Verification
 
-    private func verify(url: URL, expected: Data) async -> VerificationOutcome {
+    private func verify(url: URL, expected: Data) async throws -> VerificationOutcome {
         do {
-            try Task.checkCancellation()
-            let actual = try HashStream.hashFile(at: url)
+            let actual = try await HashStream.hashFile(at: url)
             if actual == expected {
                 return .verified
             }
             copyLog.error("Verification mismatch for \(url.lastPathComponent, privacy: .public): expected \(expected.shortHex, privacy: .public), got \(actual.shortHex, privacy: .public)")
             return .mismatch(expected: expected, got: actual)
         } catch is CancellationError {
-            return .skipped
+            throw CancellationError()
         } catch {
             return .failed(error.localizedDescription)
         }
@@ -393,7 +389,6 @@ actor ImportCopyService {
         case .skipExisting:
             return .skip
         case .overwrite:
-            try fm.removeItem(at: desired)
             return .resolved(desired, wasRenamed: false)
         case .renameWithSuffix:
             let directory = desired.deletingLastPathComponent()
@@ -410,6 +405,52 @@ actor ImportCopyService {
                 }
             }
             throw CopyError.renameSuffixExhausted(desired)
+        }
+    }
+
+    nonisolated private static func filesReferToSameItem(_ lhs: URL, _ rhs: URL) -> Bool {
+        let left = lhs.standardizedFileURL
+        let right = rhs.standardizedFileURL
+        if left == right { return true }
+        guard FileManager.default.fileExists(atPath: right.path) else { return false }
+        let keys: Set<URLResourceKey> = [.fileResourceIdentifierKey]
+        let leftID = try? left.resourceValues(forKeys: keys).fileResourceIdentifier
+        let rightID = try? right.resourceValues(forKeys: keys).fileResourceIdentifier
+        guard let leftID, let rightID else { return false }
+        return String(describing: leftID) == String(describing: rightID)
+    }
+
+    /// POSIX rename is atomic within a directory and replaces an existing file without
+    /// first unlinking it. If rename fails, the previous destination remains in place.
+    nonisolated private static func promote(
+        _ staged: URL,
+        to destination: URL,
+        allowOverwrite: Bool
+    ) throws {
+        if !allowOverwrite {
+            try FileManager.default.moveItem(at: staged, to: destination)
+            return
+        }
+
+        var failureCode: Int32 = 0
+        let status: Int32 = staged.withUnsafeFileSystemRepresentation { stagedPath -> Int32 in
+            destination.withUnsafeFileSystemRepresentation { destinationPath -> Int32 in
+                guard let stagedPath, let destinationPath else {
+                    failureCode = EINVAL
+                    return -1
+                }
+                let result = Darwin.rename(stagedPath, destinationPath)
+                if result != 0 { failureCode = errno }
+                return result
+            }
+        }
+        guard status == 0 else {
+            let code = failureCode == 0 ? EIO : failureCode
+            throw NSError(
+                domain: NSPOSIXErrorDomain,
+                code: Int(code),
+                userInfo: [NSLocalizedDescriptionKey: "Could not atomically replace \(destination.lastPathComponent): \(String(cString: strerror(code)))"]
+            )
         }
     }
 }

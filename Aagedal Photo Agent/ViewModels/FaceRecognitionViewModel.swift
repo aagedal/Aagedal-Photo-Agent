@@ -731,7 +731,7 @@ final class FaceRecognitionViewModel {
         errorMessage = nil
         scanningGroups = []
 
-        activeScanTask = Task(priority: .utility) {
+        activeScanTask = Task(priority: .userInitiated) {
             // Load existing data for incremental scan
             // Discard stale data if embedding version is outdated (pre-alignment feature prints)
             let loadedData = forceFullScan ? nil : storageService.loadFaceData(for: folderURL)
@@ -1070,6 +1070,14 @@ final class FaceRecognitionViewModel {
             // Face results are live; compute the secondary lenses in the background.
             self.prewarmSecondaryLensesIfNeeded()
         }
+    }
+
+    /// Suspends until the scan that was active when this method was called finishes.
+    /// Useful to coordinate navigation and deterministic tests without guessing a
+    /// wall-clock duration for Vision work under system load.
+    func waitForCurrentScan() async {
+        let task = activeScanTask
+        await task?.value
     }
 
     func cancelScan() {

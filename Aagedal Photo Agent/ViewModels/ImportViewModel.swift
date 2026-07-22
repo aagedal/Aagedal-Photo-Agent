@@ -415,6 +415,28 @@ final class ImportViewModel {
             ensureUniqueFolderNames()
         }
 
+        let baseURL = configuration.destinationBaseURL.standardizedFileURL
+        let destURL: URL
+        do {
+            destURL = try SafePathComponent.appending(
+                configuration.destinationFolderName,
+                label: "Import folder name",
+                to: baseURL
+            )
+            if sortByDate {
+                for group in dateGroups where group.isIncluded {
+                    _ = try SafePathComponent.validate(group.folderName, label: "Date folder name")
+                    if let shoot = group.shootFolderName,
+                       !shoot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        _ = try SafePathComponent.validate(shoot, label: "Shoot folder name")
+                    }
+                }
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+            return
+        }
+
         importPhase = .copying
         copiedFiles = 0
         totalFiles = filesToCopy.count
@@ -450,9 +472,6 @@ final class ImportViewModel {
         let sortByDate = self.sortByDate
         let dateFolderGrouping = self.dateFolderGrouping
         let dateGroups = self.dateGroups
-        let destURL = configuration.destinationFolderURL
-        let baseURL = configuration.destinationBaseURL
-
         // Sync import title as metadata title before capturing.
         let trimmedTitle = configuration.importTitle.trimmingCharacters(in: .whitespaces)
         if !trimmedTitle.isEmpty {
@@ -516,6 +535,11 @@ final class ImportViewModel {
             allDestFolders.insert(primaryFolder)
 
             let primaryURL = primaryFolder.appendingPathComponent(file.lastPathComponent)
+            guard SafePathComponent.isContained(primaryURL, in: baseURL) else {
+                importPhase = .failed("An import destination escaped the selected folder.")
+                errorMessage = "An import folder name resolves outside the selected destination."
+                return
+            }
 
             // Mirror the relative path (under destinationBaseURL) into the backup destination.
             var backupURL: URL?

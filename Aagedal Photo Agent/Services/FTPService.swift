@@ -13,9 +13,15 @@ struct FTPService: Sendable {
     private final class LockedBuffer: @unchecked Sendable {
         nonisolated(unsafe) private var buffer = ""
         private let lock = NSLock()
+        private let characterLimit = 64 * 1024
 
         nonisolated func append(_ string: String) {
-            lock.withLock { buffer += string }
+            lock.withLock {
+                buffer += string
+                if buffer.count > characterLimit {
+                    buffer = String(buffer.suffix(characterLimit))
+                }
+            }
         }
 
         nonisolated var value: String {
@@ -28,6 +34,7 @@ struct FTPService: Sendable {
     private final class CancellationState: @unchecked Sendable {
         nonisolated(unsafe) private var _resumed = false
         nonisolated(unsafe) private var _cancelled = false
+        nonisolated(unsafe) private var _launched = false
         private let lock = NSLock()
 
         nonisolated var isCancelled: Bool {
@@ -36,6 +43,17 @@ struct FTPService: Sendable {
 
         nonisolated func markCancelled() {
             lock.withLock { _cancelled = true }
+        }
+
+        nonisolated func markLaunched() -> Bool {
+            lock.withLock {
+                _launched = true
+                return _cancelled
+            }
+        }
+
+        nonisolated var isLaunched: Bool {
+            lock.withLock { _launched }
         }
 
         nonisolated func claimResume() -> Bool {
@@ -54,6 +72,7 @@ struct FTPService: Sendable {
         password: String,
         progressHandler: @Sendable @escaping (FTPUploadProgress) -> Void
     ) async throws {
+        try Task.checkCancellation()
         // Reject credentials containing characters that would break netrc parsing
         // (whitespace / newlines split tokens, so e.g. a password "my pass" would
         // authenticate as "my", and a newline could inject extra machine entries).
@@ -141,16 +160,21 @@ struct FTPService: Sendable {
                 }
                 do {
                     try process.run()
+                    if state.markLaunched() {
+                        process.terminate()
+                    }
                 } catch {
                     stderrPipe.fileHandleForReading.readabilityHandler = nil
                     if state.claimResume() {
-                        continuation.resume(throwing: error)
+                        continuation.resume(throwing: state.isCancelled ? CancellationError() : error)
                     }
                 }
             }
         } onCancel: {
             state.markCancelled()
-            process.terminate()
+            if state.isLaunched {
+                process.terminate()
+            }
         }
 
         let finalProgress = FTPUploadProgress(
@@ -169,6 +193,7 @@ struct FTPService: Sendable {
     /// upload would do. Fails fast (`--connect-timeout`, no `--retry`) — a probe should
     /// surface an unreachable server immediately rather than retrying for several seconds.
     nonisolated func testConnection(connection: FTPConnection, password: String) async throws {
+        try Task.checkCancellation()
         try Self.validateNetrcField(connection.host, name: "host")
         try Self.validateNetrcField(connection.username, name: "username")
         try Self.validateNetrcField(password, name: "password")
@@ -206,20 +231,36 @@ struct FTPService: Sendable {
             stderrBuffer.append(str)
         }
 
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
-            process.terminationHandler = { proc in
-                stderrPipe.fileHandleForReading.readabilityHandler = nil
-                if proc.terminationStatus == 0 {
-                    continuation.resume()
-                } else {
-                    continuation.resume(throwing: FTPError.uploadFailed(proc.terminationStatus, stderrBuffer.value))
+        let state = CancellationState()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                process.terminationHandler = { proc in
+                    stderrPipe.fileHandleForReading.readabilityHandler = nil
+                    guard state.claimResume() else { return }
+                    if state.isCancelled {
+                        continuation.resume(throwing: CancellationError())
+                    } else if proc.terminationStatus == 0 {
+                        continuation.resume()
+                    } else {
+                        continuation.resume(throwing: FTPError.uploadFailed(proc.terminationStatus, stderrBuffer.value))
+                    }
+                }
+                do {
+                    try process.run()
+                    if state.markLaunched() {
+                        process.terminate()
+                    }
+                } catch {
+                    stderrPipe.fileHandleForReading.readabilityHandler = nil
+                    if state.claimResume() {
+                        continuation.resume(throwing: state.isCancelled ? CancellationError() : error)
+                    }
                 }
             }
-            do {
-                try process.run()
-            } catch {
-                stderrPipe.fileHandleForReading.readabilityHandler = nil
-                continuation.resume(throwing: error)
+        } onCancel: {
+            state.markCancelled()
+            if state.isLaunched {
+                process.terminate()
             }
         }
     }
@@ -275,6 +316,7 @@ struct FTPService: Sendable {
         var arguments = [
             "--netrc-file", netrcPath,
             "--connect-timeout", "10",
+            "--max-time", "20",
             "--globoff",
             "--list-only",
             remoteURL,

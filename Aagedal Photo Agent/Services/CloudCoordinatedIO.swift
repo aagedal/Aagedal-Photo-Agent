@@ -118,6 +118,36 @@ nonisolated enum CloudCoordinatedIO {
         }
     }
 
+    /// Recursively merges `src` into `dst` without replacing a same-named file
+    /// that is at least as new as the source. This is used when changing the active
+    /// iCloud store so a stale device cannot overwrite a newer peer copy merely by
+    /// toggling sync. Neither source tree is deleted during the migration.
+    static func mergeCopyPreservingNewer(from src: URL, to dst: URL) throws {
+        try ensureDirectory(dst)
+        guard FileManager.default.fileExists(atPath: src.path) else { return }
+        let items = try contentsOfDirectory(at: src)
+        for item in items {
+            let values = try? item.resourceValues(forKeys: [.isDirectoryKey, .contentModificationDateKey])
+            let target = dst.appendingPathComponent(item.lastPathComponent)
+            if values?.isDirectory == true {
+                try mergeCopyPreservingNewer(from: item, to: target)
+                continue
+            }
+
+            if FileManager.default.fileExists(atPath: target.path) {
+                let targetDate = try? target.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+                guard let sourceDate = values?.contentModificationDate,
+                      let targetDate,
+                      sourceDate > targetDate else {
+                    continue
+                }
+            }
+
+            let data = try readData(at: item)
+            try writeData(data, to: target)
+        }
+    }
+
     // MARK: - Internals
 
     private static func kickDownloadIfNeeded(_ url: URL) {

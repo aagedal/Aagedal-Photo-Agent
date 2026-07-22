@@ -22,22 +22,16 @@ nonisolated struct HashStream: Sendable {
     }
 
     /// Hash an entire file by streaming 1 MB chunks from disk.
-    static func hashFile(at url: URL, chunkSize: Int = 1 << 20) throws -> Data {
+    static func hashFile(at url: URL, chunkSize: Int = 1 << 20) async throws -> Data {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
 
         var hasher = SHA256()
-        while autoreleasepool(invoking: { () -> Bool in
-            do {
-                guard let chunk = try handle.read(upToCount: chunkSize), !chunk.isEmpty else {
-                    return false
-                }
-                hasher.update(data: chunk)
-                return true
-            } catch {
-                return false
-            }
-        }) {}
+        while true {
+            try Task.checkCancellation()
+            guard let chunk = try handle.read(upToCount: chunkSize), !chunk.isEmpty else { break }
+            hasher.update(data: chunk)
+        }
         return Data(hasher.finalize())
     }
 

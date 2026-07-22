@@ -78,6 +78,12 @@ nonisolated enum AppPaths {
             try? CloudCoordinatedIO.ensureDirectory(cloud)
             return (cloud, {})
         }
+        return localTemplatesDirectory()
+    }
+
+    /// Resolves the non-iCloud templates location even while iCloud sync is enabled.
+    /// Migration code uses this to copy first and flip the preference only after success.
+    static func localTemplatesDirectory() -> (url: URL, release: () -> Void) {
         if let data = UserDefaults.standard.data(forKey: UserDefaultsKeys.templatesFolderBookmark) {
             var stale = false
             if let url = try? URL(

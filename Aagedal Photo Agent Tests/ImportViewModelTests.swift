@@ -162,3 +162,132 @@ struct ImportViewModelTests {
         #expect(ImportViewModel.commonAncestor(of: monthFolders)?.path == "/Volumes/Photos/2026")
     }
 }
+
+@Suite("Safe import paths")
+struct SafeImportPathTests {
+    @Test("folder components reject separators and traversal")
+    func rejectsUnsafeComponents() throws {
+        #expect(throws: SafePathComponent.ValidationError.self) {
+            try SafePathComponent.validate("../Outside")
+        }
+        #expect(throws: SafePathComponent.ValidationError.self) {
+            try SafePathComponent.validate("nested/folder")
+        }
+        #expect(throws: SafePathComponent.ValidationError.self) {
+            try SafePathComponent.validate("..")
+        }
+        #expect(try SafePathComponent.validate(" Cup Final ") == "Cup Final")
+    }
+
+    @Test("containment compares standardized path components")
+    func containmentUsesCanonicalComponents() {
+        let root = URL(fileURLWithPath: "/tmp/import-root", isDirectory: true)
+        #expect(SafePathComponent.isContained(root.appendingPathComponent("day/photo.jpg"), in: root))
+        #expect(!SafePathComponent.isContained(root.appendingPathComponent("../outside.jpg"), in: root))
+    }
+
+    @Test("containment rejects an existing symlink that escapes the root")
+    func containmentResolvesSymlinks() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SafePathTests-\(UUID().uuidString)", isDirectory: true)
+        let destination = root.appendingPathComponent("destination", isDirectory: true)
+        let outside = root.appendingPathComponent("outside", isDirectory: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let link = destination.appendingPathComponent("linked", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
+        #expect(!SafePathComponent.isContained(link.appendingPathComponent("photo.jpg"), in: destination))
+    }
+}
+
+@Suite("Import copy transaction", .serialized)
+struct ImportCopyServiceTests {
+    @Test("overwrite keeps the existing destination when the source cannot be opened")
+    func overwritePreservesExistingFileOnSourceFailure() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ImportCopyTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let missingSource = root.appendingPathComponent("missing.jpg")
+        let destination = root.appendingPathComponent("existing.jpg")
+        let original = Data("existing-good-copy".utf8)
+        try original.write(to: destination)
+
+        let service = ImportCopyService()
+        let results = try await service.run(
+            jobs: [.init(source: missingSource, desiredPrimaryDest: destination, desiredBackupDest: nil)],
+            conflictPolicy: .overwrite,
+            verificationMode: .on,
+            verifyBackup: true,
+            progress: { _ in }
+        )
+
+        #expect(results.count == 1)
+        #expect(try Data(contentsOf: destination) == original)
+        if case .failed = results[0].primary {
+            // Expected.
+        } else {
+            Issue.record("A missing source must fail without replacing the destination")
+        }
+    }
+
+    @Test("verified overwrite atomically promotes the replacement and leaves no staging file")
+    func verifiedOverwritePromotesReplacement() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ImportCopyTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let source = root.appendingPathComponent("source.jpg")
+        let destination = root.appendingPathComponent("destination.jpg")
+        let replacement = Data(repeating: 0xA5, count: 2 * 1024 * 1024)
+        try replacement.write(to: source)
+        try Data("old".utf8).write(to: destination)
+
+        let service = ImportCopyService()
+        let results = try await service.run(
+            jobs: [.init(source: source, desiredPrimaryDest: destination, desiredBackupDest: nil)],
+            conflictPolicy: .overwrite,
+            verificationMode: .on,
+            verifyBackup: true,
+            progress: { _ in }
+        )
+
+        #expect(results.first?.primaryVerification == .verified)
+        #expect(try Data(contentsOf: destination) == replacement)
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: root.path)
+            .filter { $0.hasSuffix(".partial") }
+        #expect(leftovers.isEmpty)
+    }
+
+    @Test("source and destination identity is rejected without touching the file")
+    func sameSourceAndDestinationIsRejected() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ImportCopyTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let file = root.appendingPathComponent("photo.jpg")
+        let contents = Data("only-copy".utf8)
+        try contents.write(to: file)
+
+        let service = ImportCopyService()
+        let results = try await service.run(
+            jobs: [.init(source: file, desiredPrimaryDest: file, desiredBackupDest: nil)],
+            conflictPolicy: .overwrite,
+            verificationMode: .on,
+            verifyBackup: true,
+            progress: { _ in }
+        )
+
+        #expect(try Data(contentsOf: file) == contents)
+        if case .failed = results[0].primary {
+            // Expected.
+        } else {
+            Issue.record("Copying a file onto itself must be rejected")
+        }
+    }
+}
