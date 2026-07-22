@@ -1245,6 +1245,14 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
+                Toggle("Teams", isOn: Binding(
+                    get: { coordinator.teamsEnabled },
+                    set: { coordinator.setTeamsEnabled($0) }
+                ))
+                Text("Team names, kit colours, and player rosters used by Sports mode.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
                 Toggle("Watermarks", isOn: Binding(
                     get: { coordinator.watermarksEnabled },
                     set: { coordinator.setWatermarksEnabled($0) }

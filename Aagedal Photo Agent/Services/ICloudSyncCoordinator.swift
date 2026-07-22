@@ -3,18 +3,32 @@ import os
 
 private let cloudSyncLog = Logger(subsystem: "com.aagedal.photo-agent", category: "ICloudSyncCoordinator")
 
+/// Every user-facing data category controlled by the master iCloud switch.
+/// Keeping the master implementation driven by `allCases` prevents newly-added
+/// categories from being omitted from either its displayed state or its action.
+nonisolated enum ICloudSyncCategory: CaseIterable, Sendable {
+    case preferences
+    case keywordLists
+    case templates
+    case knownPeople
+    case teams
+    case watermarks
+}
+
 /// Single entry point the Sync settings UI binds to. Owns the per-category
 /// iCloud opt-in toggles and the data movement they imply:
 ///
 /// - **Preferences** → delegates to `PreferencesSyncService` (key-value store).
 /// - **Keyword lists** → delegates to `KeywordListsStore` (already file-backed).
-/// - **Templates** / **Known People** → flips a flag and copies the backing
-///   directory between the local Application Support folder and the iCloud
-///   ubiquity container.
+/// - **Templates** / **Known People** / **Teams** / **Watermarks** → flips a
+///   flag and copies the backing directory between the local Application
+///   Support folder and the iCloud ubiquity container.
 @MainActor
 @Observable
 final class ICloudSyncCoordinator {
     static let shared = ICloudSyncCoordinator()
+
+    nonisolated static let masterCategories = ICloudSyncCategory.allCases
 
     /// Bumped after any toggle so SwiftUI re-reads the derived `*Enabled` values.
     private(set) var version = 0
@@ -34,17 +48,21 @@ final class ICloudSyncCoordinator {
     /// brings everything up.
     var allEnabled: Bool {
         _ = version
-        return preferencesEnabled && keywordListsEnabled && templatesEnabled && knownPeopleEnabled
+        return Self.masterCategories.allSatisfy { isEnabled($0) }
     }
 
     /// Enables or disables every category at once. Each per-category setter still
-    /// runs its own data movement and availability check, so the last failure (if
-    /// any) is surfaced in `lastError`.
+    /// runs its own data movement and availability check, and any failure remains
+    /// surfaced in `lastError` after all categories have been attempted.
     func setAllEnabled(_ on: Bool) {
-        setPreferencesEnabled(on)
-        setKeywordListsEnabled(on)
-        setTemplatesEnabled(on)
-        setKnownPeopleEnabled(on)
+        var firstError: String?
+        for category in Self.masterCategories {
+            setEnabled(on, for: category)
+            if firstError == nil { firstError = lastError }
+        }
+        // Each category setter clears its predecessor's error. Preserve the
+        // first failure so a partially-applied master toggle remains visible.
+        lastError = firstError
     }
 
     // MARK: - Preferences (key-value store)
@@ -214,6 +232,28 @@ final class ICloudSyncCoordinator {
     }
 
     // MARK: - Helpers
+
+    private func isEnabled(_ category: ICloudSyncCategory) -> Bool {
+        switch category {
+        case .preferences: return preferencesEnabled
+        case .keywordLists: return keywordListsEnabled
+        case .templates: return templatesEnabled
+        case .knownPeople: return knownPeopleEnabled
+        case .teams: return teamsEnabled
+        case .watermarks: return watermarksEnabled
+        }
+    }
+
+    private func setEnabled(_ on: Bool, for category: ICloudSyncCategory) {
+        switch category {
+        case .preferences: setPreferencesEnabled(on)
+        case .keywordLists: setKeywordListsEnabled(on)
+        case .templates: setTemplatesEnabled(on)
+        case .knownPeople: setKnownPeopleEnabled(on)
+        case .teams: setTeamsEnabled(on)
+        case .watermarks: setWatermarksEnabled(on)
+        }
+    }
 
     private static let unavailableMessage =
         "iCloud Drive is not available. Sign in to iCloud in System Settings and enable iCloud Drive for this app."
