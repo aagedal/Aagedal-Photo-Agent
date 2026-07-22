@@ -273,11 +273,17 @@ struct GlobalDetailAdjustmentTests {
     private static let cs = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
     private static let ctx = CIContext(options: [.workingColorSpace: cs, .workingFormat: CIFormat.RGBAf])
 
-    private func verticalStep(size: Int = 64) -> CIImage {
+    private func verticalStep(
+        size: Int = 64,
+        splitX: Int? = nil,
+        low: Float = 0.25,
+        high: Float = 0.75
+    ) -> CIImage {
+        let edge = splitX ?? size / 2
         var pixels = [Float](repeating: 0, count: size * size * 4)
         for y in 0..<size {
             for x in 0..<size {
-                let value: Float = x < size / 2 ? 0.25 : 0.75
+                let value = x < edge ? low : high
                 let index = (y * size + x) * 4
                 pixels[index] = value
                 pixels[index + 1] = value
@@ -321,6 +327,43 @@ struct GlobalDetailAdjustmentTests {
         let edgeContrast = sample(result, x: 32, y: 32) - sample(result, x: 31, y: 32)
         let baselineContrast = sample(baseline, x: 32, y: 32) - sample(baseline, x: 31, y: 32)
         #expect(edgeContrast > baselineContrast + 0.05)
+    }
+
+    @Test("Sharpness remains visible when a high-resolution image is fitted to the preview")
+    func sharpnessUsesPreviewPixelFootprint() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else { return }
+        // Put the edge between two preview samples. A fixed one-source-pixel kernel cannot
+        // reach it from either sample after this 8:1 reduction, so its effect disappears.
+        let source = verticalStep(size: 512, splitX: 260)
+        var settings = CameraRawSettings()
+        settings.sharpness = 150
+        var baselineSettings = CameraRawSettings()
+        baselineSettings.sharpness = 1
+        let previewSize = CGSize(width: 64, height: 64)
+        let result = try #require(MetalEditPipeline.renderOffscreen(
+            source: source, settings: settings, outputSize: previewSize
+        ))
+        let baseline = try #require(MetalEditPipeline.renderOffscreen(
+            source: source, settings: baselineSettings, outputSize: previewSize
+        ))
+        let edgeContrast = sample(result, x: 33, y: 32) - sample(result, x: 32, y: 32)
+        let baselineContrast = sample(baseline, x: 33, y: 32) - sample(baseline, x: 32, y: 32)
+        #expect(edgeContrast > baselineContrast + 0.05)
+    }
+
+    @Test("Sharpness enhances subtle texture at a typical slider value")
+    func sharpnessEnhancesSubtleTexture() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else { return }
+        let source = verticalStep(low: 0.48, high: 0.52)
+        var settings = CameraRawSettings()
+        settings.sharpness = 50
+        var baselineSettings = CameraRawSettings()
+        baselineSettings.sharpness = 1
+        let result = try #require(MetalEditPipeline.renderOffscreen(source: source, settings: settings))
+        let baseline = try #require(MetalEditPipeline.renderOffscreen(source: source, settings: baselineSettings))
+        let edgeContrast = sample(result, x: 32, y: 32) - sample(result, x: 31, y: 32)
+        let baselineContrast = sample(baseline, x: 32, y: 32) - sample(baseline, x: 31, y: 32)
+        #expect(edgeContrast > baselineContrast + 0.001)
     }
 
     @Test("Positive clarity increases medium-scale edge contrast")

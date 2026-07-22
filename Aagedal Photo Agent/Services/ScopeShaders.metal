@@ -366,14 +366,17 @@ inline float3 applyScopeSpatialDetail(
     }
 
     if (params.activeFlags & (1u << 8)) {
-        float2 texel = 1.0 / max(params.sourceSize, float2(1.0));
+        float2 sourcePixelsPerDrawable = params.viewportSize * params.sourceSize
+            / max(params.drawableSize, float2(1.0));
+        float2 texel = max(sourcePixelsPerDrawable, float2(1.0))
+            / max(params.sourceSize, float2(1.0));
         float north = dot(float3(source.sample(detailSampler, uv + float2(0.0, -texel.y), level(0.0)).rgb), float3(0.2126, 0.7152, 0.0722));
         float south = dot(float3(source.sample(detailSampler, uv + float2(0.0,  texel.y), level(0.0)).rgb), float3(0.2126, 0.7152, 0.0722));
         float west  = dot(float3(source.sample(detailSampler, uv + float2(-texel.x, 0.0), level(0.0)).rgb), float3(0.2126, 0.7152, 0.0722));
         float east  = dot(float3(source.sample(detailSampler, uv + float2( texel.x, 0.0), level(0.0)).rgb), float3(0.2126, 0.7152, 0.0722));
         float blurredY = (sourceY * 4.0 + north + south + west + east) * 0.125;
         float highPass = sourceY - blurredY;
-        float edgeGate = smoothstep(0.0005, 0.008, abs(highPass));
+        float edgeGate = smoothstep(0.0003, 0.003, abs(highPass));
         rgb = max(rgb + float3(highPass * params.sharpness * 1.8 * edgeGate), 0.0);
     }
 

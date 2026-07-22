@@ -2137,17 +2137,25 @@ final class MetalEditPipeline: @unchecked Sendable {
 
     // MARK: - Offscreen Rendering
 
-    /// Renders tonal adjustments via the Metal compute shader and returns the result as CIImage.
+    /// Renders adjustments via the Metal compute shader and returns the result as CIImage.
+    /// `outputSize` is primarily useful for exercising the live preview's downsampled footprint;
+    /// nil preserves the source dimensions used by normal offscreen/export callers.
     /// Synchronous entry: serializes on `offscreenRenderQueue` and **blocks** the caller until
     /// the render completes. Safe, but from an async context prefer `renderOffscreenAsync` so the
     /// caller suspends rather than tying up a cooperative-pool thread across the GPU wait.
     nonisolated static func renderOffscreen(
         source: CIImage,
         settings: CameraRawSettings?,
-        exifOrientation: Int = 1
+        exifOrientation: Int = 1,
+        outputSize: CGSize? = nil
     ) -> CIImage? {
         offscreenRenderQueue.sync {
-            renderOffscreenSerial(source: source, settings: settings, exifOrientation: exifOrientation)
+            renderOffscreenSerial(
+                source: source,
+                settings: settings,
+                exifOrientation: exifOrientation,
+                outputSize: outputSize
+            )
         }
     }
 
@@ -2239,7 +2247,8 @@ final class MetalEditPipeline: @unchecked Sendable {
         source: CIImage?,
         settings: CameraRawSettings?,
         exifOrientation: Int = 1,
-        cropToOutput: Bool = false
+        cropToOutput: Bool = false,
+        outputSize: CGSize? = nil
     ) -> CIImage? {
         guard let source else { return nil }
         guard var settings, !isIdentitySettings(settings) else { return nil }
@@ -2299,6 +2308,11 @@ final class MetalEditPipeline: @unchecked Sendable {
             let bottom = max(crop.top ?? 0, crop.bottom ?? 1)
             outputWidth = max(1, Int((Double(width) * max(right - left, 0.0001)).rounded()))
             outputHeight = max(1, Int((Double(height) * max(bottom - top, 0.0001)).rounded()))
+        } else if let outputSize,
+                  outputSize.width.isFinite, outputSize.height.isFinite,
+                  outputSize.width > 0, outputSize.height > 0 {
+            outputWidth = max(1, Int(min(outputSize.width.rounded(), CGFloat(maxTextureDimension))))
+            outputHeight = max(1, Int(min(outputSize.height.rounded(), CGFloat(maxTextureDimension))))
         } else {
             outputWidth = width
             outputHeight = height
@@ -2397,7 +2411,10 @@ final class MetalEditPipeline: @unchecked Sendable {
               let encoder = computeCmdBuf.makeComputeCommandEncoder() else { return nil }
 
         let ptr = paramsBuffer.contents().bindMemory(to: EditParams.self, capacity: 1)
-        ptr.pointee.scale = SIMD2<Float>(1.0, 1.0)
+        ptr.pointee.scale = SIMD2<Float>(
+            Float(outputWidth) / Float(width),
+            Float(outputHeight) / Float(height)
+        )
         ptr.pointee.sourceSize = SIMD2<Float>(Float(width), Float(height))
         ptr.pointee.drawableSize = SIMD2<Float>(Float(outputWidth), Float(outputHeight))
         if let crop = outputCrop {
