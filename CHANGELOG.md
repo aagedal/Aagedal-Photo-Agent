@@ -2,6 +2,41 @@
 
 All notable user-visible changes are documented here. Signed, notarized DMGs are self-hosted and delivered as in-app updates via Sparkle.
 
+## 2.1.3 — 2026-07-22
+
+### Highlights
+
+- Added global Sharpness, Clarity, and Dehaze controls, with consistent Develop preview, scopes, export, XMP, template, and copy/paste support.
+- Reworked Import around a clearer import name, primary destination, and optional additional copy, with advanced settings collapsed into a concise summary.
+- Added existing same-date folder suggestions and stronger duplicate detection that checks destination files by name, size, and a quick content checksum.
+- Face scans now continue in the background while navigating between folders, with live progress, cancellation, and completed-scan history in Activity.
+- Improved cropped-image sharpness, full-screen and RAW loading responsiveness, deletion feedback, and CIE chromaticity scope accuracy.
+
+### Develop, previews, and scopes
+
+- Added a Detail section with Sharpness, Clarity, and Dehaze controls to both Develop and the metadata panel, including per-section mute and reset behavior.
+- Persisted detail adjustments as Camera Raw-compatible XMP fields and carried them through Develop templates, edit copy/paste, preview rendering, scopes, and exported images.
+- Made sharpening responsive to the preview pixel footprint so it remains visible at fit-to-view while retaining full-resolution behavior at 100% and on export.
+- Preserved target resolution for tightly cropped thumbnails and full-screen previews by decoding enough source pixels before applying the crop.
+- Moved blocking full-screen, Develop, clean-feed, and embedded RAW preview decoding onto dedicated queues to reduce navigation and preview stalls.
+- Kept highly saturated samples inside the physical spectral locus in the CIE chromaticity scope instead of dropping them or folding the plotted envelope inward.
+- Shared live Settings state with the main window so output-gamut and original-thumbnail changes take effect immediately, and improved panning in zoomed full-screen HDR images.
+
+### Import and geocoding
+
+- Reorganized Import into clearer Import Name, Source, and Destinations sections, with primary and additional-copy destinations shown together and conflict, verification, and metadata controls moved under Advanced Options.
+- Added menus for reusing existing folders that match the import date, including per-capture-date folder selection when sorting an import by date.
+- Replaced remembered import fingerprints with on-disk duplicate checks across matching same-date destination folders, requiring matching file name, size, and a quick content checksum before a photo is skipped.
+- Switched online reverse geocoding to MapKit while retaining localized city and country results and the existing offline GeoNames option.
+
+### Faces, deletion, and reliability
+
+- Decoupled face detection and clustering from the active browser folder and main UI, so an in-progress scan no longer blocks folder navigation or takes over the face bar after switching folders.
+- Added active face-scan progress and cancellation to Activity, plus completed and cancelled scan history with processed and failed-photo counts.
+- Kept failed face-detection images eligible for a later incremental scan instead of incorrectly marking them as completed.
+- Presented image deletion confirmation in the active window, including the full-screen viewer, so keyboard-initiated deletion no longer appears to freeze behind another window.
+- Reported Trash failures instead of silently ignoring them, retained files that could not be trashed, and refreshed thumbnail, full-screen, and C2PA validation caches immediately after successful deletion.
+
 ## 2.1.2 — 2026-07-14
 
 ### Highlights
