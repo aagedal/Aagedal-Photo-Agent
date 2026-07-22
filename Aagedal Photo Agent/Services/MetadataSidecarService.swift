@@ -315,4 +315,66 @@ struct MetadataSidecarService: Sendable {
             }
         }
     }
+
+    /// Moves a sidecar while allowing the image filename to change. The JSON's
+    /// `sourceFile` value must follow the destination filename or bulk sidecar
+    /// loading will continue to associate it with the old image URL.
+    nonisolated func relocateSidecar(
+        for sourceImageURL: URL,
+        to destinationImageURL: URL,
+        from sourceFolderURL: URL,
+        to destinationFolderURL: URL
+    ) throws {
+        let fm = FileManager.default
+        let sourceURLs = sidecarCandidateURLs(for: sourceImageURL, in: sourceFolderURL).filter {
+            fm.fileExists(atPath: $0.path)
+        }
+        guard let sourceURL = sourceURLs.first else { return }
+
+        let sourceData = try Data(contentsOf: sourceURL)
+        let destinationData = Self.updatingSourceFile(
+            in: sourceData,
+            to: destinationImageURL.lastPathComponent,
+            sourceURL: sourceURL
+        )
+        let destinationDirectory = sidecarDirectory(for: destinationFolderURL)
+        try fm.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
+        let destinationURL = sidecarFileURL(for: destinationImageURL, in: destinationFolderURL)
+        guard !fm.fileExists(atPath: destinationURL.path) else {
+            throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: destinationURL.path])
+        }
+        try destinationData.write(to: destinationURL, options: .atomic)
+
+        // The destination is safely on disk before any source artifact is removed.
+        // A legacy duplicate may coexist with the current sidecar, so clean up both.
+        for oldURL in sourceURLs {
+            do {
+                try fm.removeItem(at: oldURL)
+            } catch {
+                sidecarLogger.warning("Failed to remove relocated sidecar \(oldURL.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    private nonisolated static func updatingSourceFile(
+        in data: Data,
+        to filename: String,
+        sourceURL: URL
+    ) -> Data {
+        guard var object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            // Preserve an unreadable sidecar with the rejected image. Normal loading
+            // will quarantine it as corrupt, while the original bytes remain recoverable.
+            sidecarLogger.warning("Relocating unreadable sidecar \(sourceURL.lastPathComponent, privacy: .public) without rewriting sourceFile")
+            return data
+        }
+        object["sourceFile"] = filename
+        guard let updated = try? JSONSerialization.data(
+            withJSONObject: object,
+            options: [.prettyPrinted, .sortedKeys]
+        ) else {
+            sidecarLogger.warning("Could not rewrite sourceFile in \(sourceURL.lastPathComponent, privacy: .public); preserving original data")
+            return data
+        }
+        return updated
+    }
 }
