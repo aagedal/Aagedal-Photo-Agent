@@ -3,9 +3,14 @@ import AppKit
 import ImageIO
 import os
 
-enum SidebarTree {
-    case favorites
+enum SidebarTree: Hashable {
+    case favorites(rootID: UUID)
     case open
+}
+
+struct FavoriteFolderExpansion: Hashable {
+    let rootID: UUID
+    let url: URL
 }
 
 nonisolated protocol ImageTrashHandling: Sendable {
@@ -95,7 +100,7 @@ final class BrowserViewModel {
     var favoriteFolders: [FavoriteFolder] = []
     var openFolders: [URL] = []
     var subfoldersByOpenFolder: [URL: [URL]] = [:]
-    var expandedFavoriteFolders: Set<URL> = []
+    var expandedFavoriteFolders: Set<FavoriteFolderExpansion> = []
     var expandedOpenFolders: Set<URL> = []
     var manualOrder: [URL] = [] {
         didSet {
@@ -2184,7 +2189,10 @@ final class BrowserViewModel {
 
     func isExpanded(_ url: URL, in tree: SidebarTree) -> Bool {
         switch tree {
-        case .favorites: return expandedFavoriteFolders.contains(url)
+        case .favorites(let rootID):
+            return expandedFavoriteFolders.contains(
+                FavoriteFolderExpansion(rootID: rootID, url: url)
+            )
         case .open: return expandedOpenFolders.contains(url)
         }
     }
@@ -2192,11 +2200,12 @@ final class BrowserViewModel {
     /// Toggles expansion of a folder in the sidebar, triggering lazy load on first expand.
     func toggleFolderExpansion(_ url: URL, in tree: SidebarTree) {
         switch tree {
-        case .favorites:
-            if expandedFavoriteFolders.contains(url) {
-                expandedFavoriteFolders.remove(url)
+        case .favorites(let rootID):
+            let expansion = FavoriteFolderExpansion(rootID: rootID, url: url)
+            if expandedFavoriteFolders.contains(expansion) {
+                expandedFavoriteFolders.remove(expansion)
             } else {
-                expandedFavoriteFolders.insert(url)
+                expandedFavoriteFolders.insert(expansion)
                 ensureSubfoldersLoaded(for: url)
             }
         case .open:
@@ -2207,6 +2216,26 @@ final class BrowserViewModel {
                 ensureSubfoldersLoaded(for: url)
             }
         }
+    }
+
+    /// Expands every rendered occurrence of `url` in Favorites. A folder can be
+    /// both a favorite root and a descendant of another favorite, so each
+    /// occurrence is keyed by its favorite root rather than by URL alone.
+    private func expandFavoriteOccurrences(of url: URL) {
+        let path = url.standardizedFileURL.path(percentEncoded: false)
+        for favorite in favoriteFolders {
+            let rootPath = favorite.url.standardizedFileURL.path(percentEncoded: false)
+            if path == rootPath || path.hasPrefix(rootPath + "/") {
+                expandedFavoriteFolders.insert(
+                    FavoriteFolderExpansion(rootID: favorite.id, url: url)
+                )
+            }
+        }
+    }
+
+    private func expandFolderInAllSidebarTrees(_ url: URL) {
+        expandFavoriteOccurrences(of: url)
+        expandedOpenFolders.insert(url)
     }
 
     /// After an export writes files into a sub-folder, re-scan that sub-folder's
@@ -2224,10 +2253,7 @@ final class BrowserViewModel {
                 self.subfoldersByOpenFolder[parentURL] = discovered
                 self.prefetchGrandchildren(of: parentURL)
                 // Expand the parent so the freshly created sub-folder is on screen.
-                // Each set is only consulted for folders actually rendered in that
-                // tree, so inserting a URL absent from one tree is harmless.
-                self.expandedOpenFolders.insert(parentURL)
-                self.expandedFavoriteFolders.insert(parentURL)
+                self.expandFolderInAllSidebarTrees(parentURL)
             }
         }
     }
@@ -2277,7 +2303,7 @@ final class BrowserViewModel {
     /// favorite roots (always shown) and any expanded folder already in the cache.
     func refreshExpandedSubfolders() {
         var toScan: Set<URL> = Set(favoriteFolders.map(\.url))
-        toScan.formUnion(expandedFavoriteFolders)
+        toScan.formUnion(expandedFavoriteFolders.map(\.url))
         toScan.formUnion(expandedOpenFolders)
         let urls = toScan.filter { subfoldersByOpenFolder[$0] != nil }
         rescanSubfolders(Set(urls), force: false)
@@ -2291,7 +2317,8 @@ final class BrowserViewModel {
         func collectExpanded(_ parent: URL) {
             guard let children = subfoldersByOpenFolder[parent] else { return }
             for child in children
-            where expandedFavoriteFolders.contains(child) || expandedOpenFolders.contains(child) {
+            where expandedFavoriteFolders.contains(where: { $0.url == child })
+                || expandedOpenFolders.contains(child) {
                 toScan.insert(child)
                 collectExpanded(child)
             }
@@ -2303,7 +2330,9 @@ final class BrowserViewModel {
     /// Recursively removes all cached subfolder entries rooted at a URL.
     private func removeSubfolderCacheRecursively(for url: URL) {
         guard let children = subfoldersByOpenFolder.removeValue(forKey: url) else { return }
-        expandedFavoriteFolders.remove(url)
+        expandedFavoriteFolders = Set(
+            expandedFavoriteFolders.filter { $0.url != url }
+        )
         expandedOpenFolders.remove(url)
         for child in children {
             removeSubfolderCacheRecursively(for: child)
@@ -2327,6 +2356,9 @@ final class BrowserViewModel {
 
     func removeFavorite(_ favorite: FavoriteFolder) {
         favoriteFolders.removeAll { $0.id == favorite.id }
+        expandedFavoriteFolders = Set(
+            expandedFavoriteFolders.filter { $0.rootID != favorite.id }
+        )
         saveFavorites()
         let url = favorite.url
         if !openFolders.contains(url) {
@@ -2452,19 +2484,24 @@ final class BrowserViewModel {
             }
         }
 
+        let favoriteExpansionRoots = expandedFavoriteFolders.compactMap {
+            $0.url == oldURL ? $0.rootID : nil
+        }
+        let wasExpandedInOpenFolders = expandedOpenFolders.contains(oldURL)
+
         // Remove all cached descendants of the old path (they have stale URLs)
         removeSubfolderCacheRecursively(for: oldURL)
 
         // Update expansion state and re-discover children of renamed folder
-        var migrated = false
-        if expandedFavoriteFolders.remove(oldURL) != nil {
-            expandedFavoriteFolders.insert(newURL)
-            migrated = true
+        for rootID in favoriteExpansionRoots {
+            expandedFavoriteFolders.insert(
+                FavoriteFolderExpansion(rootID: rootID, url: newURL)
+            )
         }
-        if expandedOpenFolders.remove(oldURL) != nil {
+        if wasExpandedInOpenFolders {
             expandedOpenFolders.insert(newURL)
-            migrated = true
         }
+        let migrated = !favoriteExpansionRoots.isEmpty || wasExpandedInOpenFolders
         if migrated {
             ensureSubfoldersLoaded(for: newURL)
         }
@@ -2518,8 +2555,7 @@ final class BrowserViewModel {
         } else {
             ensureSubfoldersLoaded(for: parentURL)
         }
-        expandedFavoriteFolders.insert(parentURL)
-        expandedOpenFolders.insert(parentURL)
+        expandFolderInAllSidebarTrees(parentURL)
     }
 
     // MARK: - Move Folder
@@ -2582,8 +2618,7 @@ final class BrowserViewModel {
 
         // Purge stale descendant caches
         removeSubfolderCacheRecursively(for: sourceURL)
-        expandedFavoriteFolders.insert(destinationURL)
-        expandedOpenFolders.insert(destinationURL)
+        expandFolderInAllSidebarTrees(destinationURL)
 
         // Update favorites if the moved folder was a favorite root
         if let favIndex = favoriteFolders.firstIndex(where: { $0.url == sourceURL }) {
@@ -2990,8 +3025,7 @@ final class BrowserViewModel {
             subfolders.sort { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
             subfoldersByOpenFolder[folderURL] = subfolders
         }
-        expandedFavoriteFolders.insert(folderURL)
-        expandedOpenFolders.insert(folderURL)
+        expandFolderInAllSidebarTrees(folderURL)
     }
 
     func promptMoveSelectedImagesToFolder() {

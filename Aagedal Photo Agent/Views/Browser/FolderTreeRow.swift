@@ -8,10 +8,21 @@ enum SidebarFolderSection {
     case openChild
 }
 
+/// Stable SwiftUI identity for a folder row within one rendered sidebar tree.
+/// The URL alone is insufficient when overlapping favorites render the same
+/// folder (and therefore the same children) in multiple expanded subtrees.
+struct SidebarFolderRowIdentity: Hashable {
+    let tree: SidebarTree
+    let url: URL
+}
+
 struct FolderTreeRow: View {
     let url: URL
     let depth: Int
     let section: SidebarFolderSection
+    /// Identifies this rendered tree occurrence. Favorite roots can overlap, so
+    /// the same URL may legitimately appear in more than one favorite subtree.
+    let tree: SidebarTree
     let isRootOfSection: Bool
     /// Owns the folder-tree state (favorites, opens, expansion, subfolders). In split
     /// view this is always the primary pane, so the sidebar stays stable regardless of
@@ -45,10 +56,6 @@ struct FolderTreeRow: View {
         section == .favoriteRoot || section == .favoriteChild
     }
 
-    private var tree: SidebarTree {
-        isFavoriteSection ? .favorites : .open
-    }
-
     private var childSection: SidebarFolderSection {
         switch section {
         case .favoriteRoot, .favoriteChild: .favoriteChild
@@ -64,11 +71,15 @@ struct FolderTreeRow: View {
 
         if isExpanded {
             if let children = viewModel.subfoldersByOpenFolder[url], !children.isEmpty {
-                ForEach(children, id: \.self) { childURL in
+                let childRows = children.map {
+                    SidebarFolderRowIdentity(tree: tree, url: $0)
+                }
+                ForEach(childRows, id: \.self) { childRow in
                     FolderTreeRow(
-                        url: childURL,
+                        url: childRow.url,
                         depth: depth + 1,
                         section: childSection,
+                        tree: tree,
                         isRootOfSection: false,
                         viewModel: viewModel,
                         currentFolderURL: currentFolderURL,
