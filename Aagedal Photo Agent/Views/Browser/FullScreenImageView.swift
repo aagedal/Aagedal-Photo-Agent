@@ -1996,6 +1996,7 @@ struct FullScreenImageView: View {
 struct FullScreenPresenter: ViewModifier {
     @Bindable var viewModel: BrowserViewModel
     let scopeViewModel: ScopeViewModel
+    let onDismissed: () -> Void
     @State private var fullScreenWindow: FullScreenWindow?
     @State private var zoomController: ZoomController?
     @State private var resignObserver: Any?
@@ -2096,12 +2097,23 @@ struct FullScreenPresenter: ViewModifier {
         fullScreenWindow = nil
         zoomController = nil
         viewModel.fullScreenFaceContext = nil
+        onDismissed()
     }
 }
 
 extension View {
-    func fullScreenImagePresenter(viewModel: BrowserViewModel, scopeViewModel: ScopeViewModel) -> some View {
-        modifier(FullScreenPresenter(viewModel: viewModel, scopeViewModel: scopeViewModel))
+    func fullScreenImagePresenter(
+        viewModel: BrowserViewModel,
+        scopeViewModel: ScopeViewModel,
+        onDismissed: @escaping () -> Void = {}
+    ) -> some View {
+        modifier(
+            FullScreenPresenter(
+                viewModel: viewModel,
+                scopeViewModel: scopeViewModel,
+                onDismissed: onDismissed
+            )
+        )
     }
 }
 

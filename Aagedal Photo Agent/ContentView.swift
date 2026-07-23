@@ -120,6 +120,10 @@ struct ContentView: View {
     @AppStorage(UserDefaultsKeys.metadataPanelWidth) private var metadataPanelWidth: Double = 320
     @State private var mainViewMode: MainViewMode = .browser
     @State private var lastNonPeopleViewMode: MainViewMode = .browser
+    /// Defers the Develop transition until the separate full-screen window has
+    /// actually been ordered out. Building the editor underneath that key,
+    /// always-on-top window can leave AppKit focus handling wedged.
+    @State private var opensEditWorkspaceAfterFullScreenDismissal = false
     @State private var faceSelectionState = FaceSelectionState()
     @State private var technicalMetadata: TechnicalMetadata?
     @State private var technicalMetadataCache: [URL: TechnicalMetadata] = [:]
@@ -619,7 +623,15 @@ struct ContentView: View {
                     onNavigateToFace: nil
                 )
             }
-            .fullScreenImagePresenter(viewModel: browserViewModel, scopeViewModel: scopeViewModel)
+            .fullScreenImagePresenter(
+                viewModel: browserViewModel,
+                scopeViewModel: scopeViewModel,
+                onDismissed: {
+                    guard opensEditWorkspaceAfterFullScreenDismissal else { return }
+                    opensEditWorkspaceAfterFullScreenDismissal = false
+                    openEditWorkspace()
+                }
+            )
             .cleanFeedPresenter(controller: CleanFeedController.shared, browserViewModel: browserViewModel)
             .onAppear {
                 sidebarViewModel.loadFavorites()
@@ -778,6 +790,16 @@ struct ContentView: View {
               SupportedImageFormats.isSupported(url: selectedURL) else {
             return
         }
+
+        // Full screen is a separate key, always-on-top NSWindow. Tear it down before
+        // constructing Develop so the editor cannot activate behind it and contend for
+        // focus/event monitors. FullScreenPresenter calls us back after orderOut.
+        if browserViewModel.isFullScreen {
+            opensEditWorkspaceAfterFullScreenDismissal = true
+            browserViewModel.isFullScreen = false
+            return
+        }
+
         mainViewMode = .editing
     }
 
