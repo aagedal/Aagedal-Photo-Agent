@@ -43,6 +43,7 @@
 		AB3100000000000000000002 /* ImportViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3100000000000000000001 /* ImportViewModelTests.swift */; };
 		AB3200000000000000000002 /* PresetVariableInterpolatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3200000000000000000001 /* PresetVariableInterpolatorTests.swift */; };
 		AB3300000000000000000002 /* RejectMoveServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3300000000000000000001 /* RejectMoveServiceTests.swift */; };
+		AB3400000000000000000002 /* RecentFoldersStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3400000000000000000001 /* RecentFoldersStoreTests.swift */; };
 		B71AFE10A1B0E2510C12C200 /* ApprovedListServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A71AFE10A1B0E2510C12C100 /* ApprovedListServiceTests.swift */; };
 		D1C0023217A1B0E2510C12C2 /* MetadataIOCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */; };
 		E957DC81E4AA200C4CD87043 /* MetadataSidecarServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CB424FD4CEB2C23AEFF5DB0 /* MetadataSidecarServiceTests.swift */; };
@@ -99,6 +100,7 @@
 		AB3100000000000000000001 /* ImportViewModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ImportViewModelTests.swift; sourceTree = "<group>"; };
 		AB3200000000000000000001 /* PresetVariableInterpolatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PresetVariableInterpolatorTests.swift; sourceTree = "<group>"; };
 		AB3300000000000000000001 /* RejectMoveServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RejectMoveServiceTests.swift; sourceTree = "<group>"; };
+		AB3400000000000000000001 /* RecentFoldersStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RecentFoldersStoreTests.swift; sourceTree = "<group>"; };
 		D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataIOCoordinatorTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -183,6 +185,7 @@
 				AB3100000000000000000001 /* ImportViewModelTests.swift */,
 				AB3200000000000000000001 /* PresetVariableInterpolatorTests.swift */,
 				AB3300000000000000000001 /* RejectMoveServiceTests.swift */,
+				AB3400000000000000000001 /* RecentFoldersStoreTests.swift */,
 			);
 			path = "Aagedal Photo Agent Tests";
 			sourceTree = "<group>";
@@ -368,6 +371,7 @@
 				AB3100000000000000000002 /* ImportViewModelTests.swift in Sources */,
 				AB3200000000000000000002 /* PresetVariableInterpolatorTests.swift in Sources */,
 				AB3300000000000000000002 /* RejectMoveServiceTests.swift in Sources */,
+				AB3400000000000000000002 /* RecentFoldersStoreTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
