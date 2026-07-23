@@ -116,6 +116,10 @@ struct Aagedal_Photo_AgentApp: App {
                 }
                 .keyboardShortcut("s", modifiers: .command)
 
+                Button("Advanced Export Selected...") {
+                    NotificationCenter.default.post(name: .advancedExportSelected, object: nil)
+                }
+
                 Button("Render All") {
                     NotificationCenter.default.post(name: .renderAll, object: nil)
                 }
@@ -486,6 +490,7 @@ extension Notification.Name {
     static let rotateCounterclockwise = Notification.Name("rotateCounterclockwise")
     static let writeAllPendingMetadata = Notification.Name("writeAllPendingMetadata")
     static let renderSelected = Notification.Name("renderSelected")
+    static let advancedExportSelected = Notification.Name("advancedExportSelected")
     static let renderAll = Notification.Name("renderAll")
     static let saveAsJPEG = Notification.Name("saveAsJPEG")
     static let saveAsPNG = Notification.Name("saveAsPNG")

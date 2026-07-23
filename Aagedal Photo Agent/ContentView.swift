@@ -92,6 +92,8 @@ struct ContentView: View {
     @State private var templateViewModel = TemplateViewModel()
     @State private var developTemplateViewModel = DevelopTemplateViewModel()
     @State private var ftpViewModel = FTPViewModel()
+    @State private var advancedExportSession: AdvancedExportSession?
+    @State private var pendingAdvancedExportURLs: [URL]?
     @State private var settingsViewModel: SettingsViewModel
     @State private var importViewModel: ImportViewModel
     /// Shared, persisted log of recent imports and uploads.
@@ -273,6 +275,20 @@ struct ContentView: View {
                     thumbnailService: browserViewModel.thumbnailService,
                     onStartUpload: { ftpUploadItem = nil }
                 )
+            }
+            .sheet(item: $advancedExportSession, onDismiss: {
+                guard let urls = pendingAdvancedExportURLs else { return }
+                pendingAdvancedExportURLs = nil
+                renderAndSaveEditedFolder(urls: urls)
+            }) { session in
+                AdvancedExportView(
+                    session: session,
+                    initialConfiguration: advancedExportConfiguration
+                ) { configuration in
+                    applyAdvancedExportConfiguration(configuration)
+                    pendingAdvancedExportURLs = session.items.map(\.sourceURL)
+                    advancedExportSession = nil
+                }
             }
             .sheet(isPresented: $isShowingImport) { importSheet }
             .sheet(item: $backupEditedFolderItem) { item in
@@ -458,6 +474,9 @@ struct ContentView: View {
             .onReceive(NotificationCenter.default.publisher(for: .renderSelected)) { _ in
                 let urls = browserViewModel.selectedImages.map(\.url)
                 renderAndSaveEditedFolder(urls: urls)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .advancedExportSelected)) { _ in
+                showAdvancedExportSelected()
             }
             .onReceive(NotificationCenter.default.publisher(for: .renderAll)) { _ in
                 renderAndSaveEditedFolder()
@@ -1547,6 +1566,69 @@ struct ContentView: View {
     }
 
     // MARK: - Render and Sign
+
+    private var advancedExportConfiguration: AdvancedExportConfiguration {
+        AdvancedExportConfiguration(
+            sdrFormat: settingsViewModel.exportFormatSDR,
+            sdrQuality: settingsViewModel.exportQualitySDR,
+            sdrGamut: settingsViewModel.exportColorGamutSDR,
+            hdrFormat: settingsViewModel.exportFormatHDR,
+            hdrQuality: settingsViewModel.exportQualityHDR,
+            hdrGamut: settingsViewModel.exportColorGamutHDR,
+            tiffCompression: settingsViewModel.exportTIFFCompression,
+            locationMode: settingsViewModel.exportLocationMode,
+            customSubfolderName: settingsViewModel.exportCustomSubfolderName
+        )
+    }
+
+    private func showAdvancedExportSelected() {
+        guard !isRenderingEditedFolder else { return }
+
+        // A Set backs selection, so derive the queue from visibleImages to preserve
+        // the exact order the user sees in the browser.
+        let selectedIDs = browserViewModel.selectedImageIDs
+        let orderedImages = AdvancedExportQueueBuilder.orderedSelection(
+            from: browserViewModel.visibleImages,
+            selectedIDs: selectedIDs
+        )
+        guard !orderedImages.isEmpty else {
+            browserViewModel.errorMessage = "No images selected"
+            return
+        }
+
+        let xmp = XMPSidecarService()
+        let items = orderedImages.map { image in
+            let liveSettings = browserViewModel.currentCameraRawSettings(for: image.url)
+            let sidecarSettings: CameraRawSettings?
+            if liveSettings == nil, SupportedImageFormats.isRaw(url: image.url) {
+                sidecarSettings = xmp.loadSidecar(for: image.url)?.cameraRaw
+            } else {
+                sidecarSettings = nil
+            }
+            let cameraRaw = liveSettings ?? sidecarSettings
+            return AdvancedExportItem(
+                sourceURL: image.url,
+                filename: image.filename,
+                cameraRaw: cameraRaw,
+                isHDR: cameraRaw?.hdrEditMode == 1
+            )
+        }
+        advancedExportSession = AdvancedExportSession(items: items)
+    }
+
+    private func applyAdvancedExportConfiguration(
+        _ configuration: AdvancedExportConfiguration
+    ) {
+        settingsViewModel.exportFormatSDR = configuration.sdrFormat
+        settingsViewModel.exportQualitySDR = configuration.sdrQuality
+        settingsViewModel.exportColorGamutSDR = configuration.sdrGamut
+        settingsViewModel.exportFormatHDR = configuration.hdrFormat
+        settingsViewModel.exportQualityHDR = configuration.hdrQuality
+        settingsViewModel.exportColorGamutHDR = configuration.hdrGamut
+        settingsViewModel.exportTIFFCompression = configuration.tiffCompression
+        settingsViewModel.exportLocationMode = configuration.locationMode
+        settingsViewModel.exportCustomSubfolderName = configuration.customSubfolderName
+    }
 
     /// Prompts the user to pick a destination folder for `.askOnSave` exports.
     /// Returns nil if the user cancels.

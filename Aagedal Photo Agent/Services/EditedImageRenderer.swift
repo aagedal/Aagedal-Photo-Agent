@@ -9,6 +9,13 @@ nonisolated private let editedRendererLog = Logger(
     category: "EditedImageRenderer"
 )
 
+nonisolated struct AdvancedExportRenderedArtifact: @unchecked Sendable {
+    let referenceImage: CGImage
+    let outputURL: URL
+    let pixelWidth: Int
+    let pixelHeight: Int
+}
+
 nonisolated enum EditedImageRenderer {
 
     /// Fixed color target for the dedicated RAW conversion command. Keeping it independent
@@ -105,12 +112,103 @@ nonisolated enum EditedImageRenderer {
         return destURL
     }
 
+    /// Produces the two inputs needed by Advanced Export without touching the user's
+    /// destination: an uncompressed, developed reference and a real encoded artifact.
+    /// The artifact is full resolution so its file size and compression behavior match
+    /// the final export; only the in-memory reference is reduced for display.
+    static func renderAdvancedPreview(
+        from sourceURL: URL,
+        cameraRaw: CameraRawSettings?,
+        isHDR: Bool,
+        configuration: AdvancedExportConfiguration,
+        outputFolder: URL,
+        maxReferencePixelSize: CGFloat
+    ) async throws -> AdvancedExportRenderedArtifact {
+        let output = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw)
+        let reference = try makeReferencePreview(
+            from: output,
+            isHDR: isHDR,
+            configuration: configuration,
+            maxPixelSize: maxReferencePixelSize
+        )
+
+        let outputURL: URL
+        if isHDR {
+            outputURL = try await renderHDRFormat(
+                output,
+                sourceURL: sourceURL,
+                outputFolder: outputFolder,
+                configuration: configuration
+            )
+        } else {
+            outputURL = try await renderSDRFormat(
+                output,
+                sourceURL: sourceURL,
+                outputFolder: outputFolder,
+                configuration: configuration
+            )
+        }
+        return AdvancedExportRenderedArtifact(
+            referenceImage: reference,
+            outputURL: outputURL,
+            pixelWidth: Int(output.extent.width.rounded()),
+            pixelHeight: Int(output.extent.height.rounded())
+        )
+    }
+
+    private static func makeReferencePreview(
+        from image: CIImage,
+        isHDR: Bool,
+        configuration: AdvancedExportConfiguration,
+        maxPixelSize: CGFloat
+    ) throws -> CGImage {
+        let extent = image.extent
+        guard extent.width > 0, extent.height > 0,
+              extent.width.isFinite, extent.height.isFinite else {
+            throw RenderError.encodeFailed
+        }
+
+        let normalized = image.transformed(
+            by: CGAffineTransform(translationX: -extent.minX, y: -extent.minY)
+        )
+        let longestEdge = max(extent.width, extent.height)
+        let scale = min(1, maxPixelSize / longestEdge)
+        let preview = scale < 1
+            ? normalized.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+            : normalized
+        let colorSpace = isHDR
+            ? configuration.hdrGamut.hdrLinearColorSpace
+            : configuration.sdrGamut.sdrColorSpace
+        let format: CIFormat = isHDR ? .RGBAh : .RGBA8
+
+        guard let cgImage = CameraRawApproximation.ciContext.createCGImage(
+            preview,
+            from: preview.extent,
+            format: format,
+            colorSpace: colorSpace
+        ) else {
+            throw RenderError.encodeFailed
+        }
+        return cgImage
+    }
+
     // MARK: - SDR Encoding
 
-    private static func renderSDRFormat(_ ciImage: CIImage, sourceURL: URL, outputFolder: URL) async throws -> URL {
-        let format = ExportFormatSDR(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportFormatSDR) ?? "") ?? .jpeg
-        let quality = UserDefaults.standard.object(forKey: UserDefaultsKeys.exportQualitySDR) as? Double ?? 0.92
-        let gamut = TargetColorGamut(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportColorGamutSDR) ?? "") ?? .sRGB
+    private static func renderSDRFormat(
+        _ ciImage: CIImage,
+        sourceURL: URL,
+        outputFolder: URL,
+        configuration: AdvancedExportConfiguration? = nil
+    ) async throws -> URL {
+        let format = configuration?.sdrFormat
+            ?? ExportFormatSDR(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportFormatSDR) ?? "")
+            ?? .jpeg
+        let quality = configuration?.sdrQuality
+            ?? (UserDefaults.standard.object(forKey: UserDefaultsKeys.exportQualitySDR) as? Double)
+            ?? 0.92
+        let gamut = configuration?.sdrGamut
+            ?? TargetColorGamut(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportColorGamutSDR) ?? "")
+            ?? .sRGB
 
         let destURL = outputURL(for: sourceURL, in: outputFolder, extension: format.fileExtension)
         let colorSpace = gamut.sdrColorSpace
@@ -137,7 +235,11 @@ nonisolated enum EditedImageRenderer {
             guard let cgImage = ctx.createCGImage(ciImage, from: ciImage.extent, format: .RGBA8, colorSpace: colorSpace) else {
                 throw RenderError.encodeFailed
             }
-            try writeTIFF(cgImage: cgImage, to: destURL)
+            try writeTIFF(
+                cgImage: cgImage,
+                to: destURL,
+                compression: configuration?.tiffCompression
+            )
 
         case .heic:
             guard let data = ctx.heifRepresentation(of: ciImage, format: .RGBA8, colorSpace: colorSpace, options: [
@@ -211,10 +313,21 @@ nonisolated enum EditedImageRenderer {
 
     // MARK: - HDR Encoding
 
-    private static func renderHDRFormat(_ ciImage: CIImage, sourceURL: URL, outputFolder: URL) async throws -> URL {
-        let format = ExportFormatHDR(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportFormatHDR) ?? "") ?? .jxl
-        let quality = UserDefaults.standard.object(forKey: UserDefaultsKeys.exportQualityHDR) as? Double ?? 0.92
-        let gamut = TargetColorGamut(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportColorGamutHDR) ?? "") ?? .displayP3
+    private static func renderHDRFormat(
+        _ ciImage: CIImage,
+        sourceURL: URL,
+        outputFolder: URL,
+        configuration: AdvancedExportConfiguration? = nil
+    ) async throws -> URL {
+        let format = configuration?.hdrFormat
+            ?? ExportFormatHDR(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportFormatHDR) ?? "")
+            ?? .jxl
+        let quality = configuration?.hdrQuality
+            ?? (UserDefaults.standard.object(forKey: UserDefaultsKeys.exportQualityHDR) as? Double)
+            ?? 0.92
+        let gamut = configuration?.hdrGamut
+            ?? TargetColorGamut(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportColorGamutHDR) ?? "")
+            ?? .displayP3
 
         let destURL = outputURL(for: sourceURL, in: outputFolder, extension: format.fileExtension)
         let hdrColorSpace = gamut.hdrHLGColorSpace
@@ -248,7 +361,11 @@ nonisolated enum EditedImageRenderer {
             guard let cgImage = ctx.createCGImage(ciImage, from: ciImage.extent, format: .RGBAh, colorSpace: linearP3) else {
                 throw RenderError.encodeFailed
             }
-            try writeTIFF(cgImage: cgImage, to: destURL)
+            try writeTIFF(
+                cgImage: cgImage,
+                to: destURL,
+                compression: configuration?.tiffCompression
+            )
 
         case .png16bit:
             // PNG is integer-only; use HLG for best-effort HDR (viewer support varies)
@@ -408,9 +525,20 @@ nonisolated enum EditedImageRenderer {
 
     // MARK: - TIFF Writer
 
-    private static func writeTIFF(cgImage: CGImage, to url: URL) throws {
-        let compressionRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.exportTIFFCompression) ?? "lzw"
-        let compression = TIFFCompression(rawValue: compressionRaw) ?? .lzw
+    private static func writeTIFF(
+        cgImage: CGImage,
+        to url: URL,
+        compression requestedCompression: TIFFCompression? = nil
+    ) throws {
+        let compression: TIFFCompression
+        if let requestedCompression {
+            compression = requestedCompression
+        } else {
+            let compressionRaw = UserDefaults.standard.string(
+                forKey: UserDefaultsKeys.exportTIFFCompression
+            ) ?? "lzw"
+            compression = TIFFCompression(rawValue: compressionRaw) ?? .lzw
+        }
 
         guard let dest = CGImageDestinationCreateWithURL(url as CFURL, UTType.tiff.identifier as CFString, 1, nil) else {
             throw RenderError.encodeFailed

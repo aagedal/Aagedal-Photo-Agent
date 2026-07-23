@@ -2,7 +2,7 @@ import Foundation
 import CoreGraphics
 
 /// Default output format for SDR images
-nonisolated enum ExportFormatSDR: String, CaseIterable, Identifiable {
+nonisolated enum ExportFormatSDR: String, CaseIterable, Identifiable, Sendable {
     case jpeg = "jpeg"
     case png = "png"
     case tiff = "tiff"
@@ -54,7 +54,7 @@ nonisolated enum ExportFormatSDR: String, CaseIterable, Identifiable {
 }
 
 /// Default output format for HDR images
-nonisolated enum ExportFormatHDR: String, CaseIterable, Identifiable {
+nonisolated enum ExportFormatHDR: String, CaseIterable, Identifiable, Sendable {
     case jpegGainMap = "jpegGainMap"
     case heic10bit = "heic10bit"
     case avif10bit = "avif10bit"
@@ -178,7 +178,7 @@ nonisolated enum TargetColorGamut: String, CaseIterable, Identifiable, Sendable 
 }
 
 /// TIFF compression method
-nonisolated enum TIFFCompression: String, CaseIterable, Identifiable {
+nonisolated enum TIFFCompression: String, CaseIterable, Identifiable, Sendable {
     case none = "none"
     case lzw = "lzw"
     case zip = "zip"

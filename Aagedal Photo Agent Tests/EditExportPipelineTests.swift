@@ -596,3 +596,123 @@ struct AdaptiveHDRJPEGTests {
         #expect(expanded.contentHeadroom > 1)
     }
 }
+
+@Suite("Advanced export")
+struct AdvancedExportTests {
+    private var configuration: AdvancedExportConfiguration {
+        AdvancedExportConfiguration(
+            sdrFormat: .jpeg,
+            sdrQuality: 0.61,
+            sdrGamut: .sRGB,
+            hdrFormat: .jpegGainMap,
+            hdrQuality: 0.74,
+            hdrGamut: .displayP3,
+            tiffCompression: .lzw,
+            locationMode: .formatSubfolder,
+            customSubfolderName: "Exports"
+        )
+    }
+
+    private func makeSourceJPEG(in directory: URL) throws -> URL {
+        let source = directory.appendingPathComponent("preview-source.jpg")
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 64,
+            pixelsHigh: 32,
+            bitsPerSample: 8,
+            samplesPerPixel: 3,
+            hasAlpha: false,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+
+        for y in 0..<32 {
+            for x in 0..<64 {
+                rep.setColor(
+                    NSColor(
+                        calibratedRed: CGFloat(x) / 63,
+                        green: CGFloat(y) / 31,
+                        blue: CGFloat((x + y) % 16) / 15,
+                        alpha: 1
+                    ),
+                    atX: x,
+                    y: y
+                )
+            }
+        }
+        guard let data = rep.representation(
+            using: .jpeg,
+            properties: [.compressionFactor: 0.95]
+        ) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        try data.write(to: source)
+        return source
+    }
+
+    @Test("selected queue follows visible browser order")
+    func queueUsesVisibleOrder() {
+        let root = URL(fileURLWithPath: "/tmp/advanced-export-order")
+        let first = ImageFile(url: root.appendingPathComponent("first.jpg"))
+        let second = ImageFile(url: root.appendingPathComponent("second.jpg"))
+        let third = ImageFile(url: root.appendingPathComponent("third.jpg"))
+
+        let result = AdvancedExportQueueBuilder.orderedSelection(
+            from: [third, first, second],
+            selectedIDs: [first.url, third.url]
+        )
+
+        #expect(result.map(\.url) == [third.url, first.url])
+    }
+
+    @Test("preview signatures only change for pixel-affecting settings")
+    func previewSignatureScoping() {
+        var changedLocation = configuration
+        changedLocation.locationMode = .sameAsOriginal
+        #expect(
+            changedLocation.previewSignature(isHDR: false)
+                == configuration.previewSignature(isHDR: false)
+        )
+
+        var changedQuality = configuration
+        changedQuality.sdrQuality = 0.9
+        #expect(
+            changedQuality.previewSignature(isHDR: false)
+                != configuration.previewSignature(isHDR: false)
+        )
+        #expect(
+            changedQuality.previewSignature(isHDR: true)
+                == configuration.previewSignature(isHDR: true)
+        )
+    }
+
+    @Test("preview encoder honors explicit SDR configuration")
+    func previewUsesExplicitConfiguration() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apa-advanced-preview-test-\(UUID().uuidString)", isDirectory: true)
+        let output = directory.appendingPathComponent("output", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let source = try makeSourceJPEG(in: directory)
+        let artifact = try await EditedImageRenderer.renderAdvancedPreview(
+            from: source,
+            cameraRaw: nil,
+            isHDR: false,
+            configuration: configuration,
+            outputFolder: output,
+            maxReferencePixelSize: 32
+        )
+
+        #expect(artifact.outputURL.pathExtension == "jpg")
+        #expect(FileManager.default.fileExists(atPath: artifact.outputURL.path))
+        #expect(artifact.pixelWidth == 64)
+        #expect(artifact.pixelHeight == 32)
+        #expect(max(artifact.referenceImage.width, artifact.referenceImage.height) == 32)
+        #expect(CGImageSourceCreateWithURL(artifact.outputURL as CFURL, nil) != nil)
+    }
+}

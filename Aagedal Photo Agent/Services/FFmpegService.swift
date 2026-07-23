@@ -125,4 +125,22 @@ nonisolated enum FFmpegService {
         args += [output]
         return args
     }
+
+    /// Decodes one still image to a display-sized PNG. This is the fallback used by
+    /// Advanced Export when ImageIO/Core Image cannot decode formats such as AVIF or
+    /// JPEG XL on the current macOS release.
+    static func decodePreview(input: String, output: String, maxPixelSize: Int) async throws {
+        let args = [
+            "-hide_banner",
+            "-y",
+            "-i", input,
+            "-frames:v", "1",
+            "-vf", "scale=\(maxPixelSize):\(maxPixelSize):force_original_aspect_ratio=decrease",
+            output
+        ]
+        try await run(arguments: args)
+        guard FileManager.default.fileExists(atPath: output) else {
+            throw FFmpegError.outputMissing
+        }
+    }
 }
