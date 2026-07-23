@@ -363,12 +363,12 @@ final class SettingsViewModel {
         didSet { UserDefaults.standard.set(exportFormatHDR.rawValue, forKey: UserDefaultsKeys.exportFormatHDR) }
     }
 
-    /// SDR export quality (0.0 - 1.0). Default: 0.92
+    /// SDR export quality (0.10 - 1.0). Default: 0.92
     var exportQualitySDR: Double {
         didSet { UserDefaults.standard.set(exportQualitySDR, forKey: UserDefaultsKeys.exportQualitySDR) }
     }
 
-    /// HDR export quality (0.0 - 1.0). Default: 0.92
+    /// HDR export quality (0.10 - 1.0). Default: 0.92
     var exportQualityHDR: Double {
         didSet { UserDefaults.standard.set(exportQualityHDR, forKey: UserDefaultsKeys.exportQualityHDR) }
     }
@@ -386,6 +386,16 @@ final class SettingsViewModel {
     /// HDR export color gamut. Default: Display P3
     var exportColorGamutHDR: TargetColorGamut {
         didSet { UserDefaults.standard.set(exportColorGamutHDR.rawValue, forKey: UserDefaultsKeys.exportColorGamutHDR) }
+    }
+
+    /// Maximum exported long edge. Default: original resolution.
+    var exportResolutionLimit: ExportResolutionLimit {
+        didSet {
+            UserDefaults.standard.set(
+                exportResolutionLimit.rawValue,
+                forKey: UserDefaultsKeys.exportResolutionLimit
+            )
+        }
     }
 
     /// Where exported files are written. Default: sub-folder named after the export format
@@ -660,10 +670,16 @@ final class SettingsViewModel {
         self.exportFormatHDR = ExportFormatHDR(rawValue: storedFormatHDR) ?? .jxl
 
         let storedQualitySDR = UserDefaults.standard.object(forKey: UserDefaultsKeys.exportQualitySDR) as? Double
-        self.exportQualitySDR = storedQualitySDR ?? 0.92
+        self.exportQualitySDR = min(
+            1,
+            max(AdvancedExportConfiguration.minimumQuality, storedQualitySDR ?? 0.92)
+        )
 
         let storedQualityHDR = UserDefaults.standard.object(forKey: UserDefaultsKeys.exportQualityHDR) as? Double
-        self.exportQualityHDR = storedQualityHDR ?? 0.92
+        self.exportQualityHDR = min(
+            1,
+            max(AdvancedExportConfiguration.minimumQuality, storedQualityHDR ?? 0.92)
+        )
 
         let storedTIFFCompression = UserDefaults.standard.string(forKey: UserDefaultsKeys.exportTIFFCompression) ?? TIFFCompression.lzw.rawValue
         self.exportTIFFCompression = TIFFCompression(rawValue: storedTIFFCompression) ?? .lzw
@@ -673,6 +689,11 @@ final class SettingsViewModel {
 
         let storedColorGamutHDR = UserDefaults.standard.string(forKey: UserDefaultsKeys.exportColorGamutHDR) ?? TargetColorGamut.displayP3.rawValue
         self.exportColorGamutHDR = TargetColorGamut(rawValue: storedColorGamutHDR) ?? .displayP3
+
+        let storedResolutionLimit = UserDefaults.standard.string(
+            forKey: UserDefaultsKeys.exportResolutionLimit
+        ) ?? ExportResolutionLimit.original.rawValue
+        self.exportResolutionLimit = ExportResolutionLimit(rawValue: storedResolutionLimit) ?? .original
 
         let storedLocationMode = UserDefaults.standard.string(forKey: UserDefaultsKeys.exportLocationMode) ?? ExportLocationMode.formatSubfolder.rawValue
         self.exportLocationMode = ExportLocationMode(rawValue: storedLocationMode) ?? .formatSubfolder

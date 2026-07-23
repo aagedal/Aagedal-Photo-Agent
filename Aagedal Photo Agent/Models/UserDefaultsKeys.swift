@@ -114,6 +114,7 @@ nonisolated enum UserDefaultsKeys {
     static let exportTIFFCompression = "exportTIFFCompression"
     static let exportColorGamutSDR = "exportColorGamutSDR"
     static let exportColorGamutHDR = "exportColorGamutHDR"
+    static let exportResolutionLimit = "exportResolutionLimit"
 
     // MARK: - Export Location
     static let exportLocationMode = "exportLocationMode"

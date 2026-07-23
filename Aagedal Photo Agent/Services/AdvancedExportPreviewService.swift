@@ -2,12 +2,36 @@ import CoreGraphics
 import CoreImage
 import Foundation
 
+nonisolated final class AdvancedExportPreviewStorage: @unchecked Sendable {
+    let folderURL: URL
+    let outputURL: URL
+
+    init(folderURL: URL, outputURL: URL) {
+        self.folderURL = folderURL
+        self.outputURL = outputURL
+    }
+
+    deinit {
+        try? FileManager.default.removeItem(at: folderURL)
+    }
+}
+
 nonisolated struct AdvancedExportPreview: @unchecked Sendable {
     let referenceImage: CGImage
     let exportImage: CGImage
     let encodedFileSize: Int64
     let pixelWidth: Int
     let pixelHeight: Int
+    let storage: AdvancedExportPreviewStorage
+}
+
+nonisolated enum AdvancedExportPreviewPane: Equatable, Sendable {
+    case reference
+    case export
+}
+
+nonisolated struct AdvancedExportLoupe: @unchecked Sendable {
+    let image: CGImage
 }
 
 /// Creates real, full-resolution export artifacts in a private temporary folder,
@@ -31,15 +55,24 @@ actor AdvancedExportPreviewService {
             at: previewFolder,
             withIntermediateDirectories: true
         )
-        defer { try? FileManager.default.removeItem(at: previewFolder) }
 
-        let artifact = try await EditedImageRenderer.renderAdvancedPreview(
-            from: item.sourceURL,
-            cameraRaw: item.cameraRaw,
-            isHDR: item.isHDR,
-            configuration: configuration,
-            outputFolder: previewFolder,
-            maxReferencePixelSize: maxDisplayPixelSize
+        let artifact: AdvancedExportRenderedArtifact
+        do {
+            artifact = try await EditedImageRenderer.renderAdvancedPreview(
+                from: item.sourceURL,
+                cameraRaw: item.cameraRaw,
+                isHDR: item.isHDR,
+                configuration: configuration,
+                outputFolder: previewFolder,
+                maxReferencePixelSize: maxDisplayPixelSize
+            )
+        } catch {
+            try? FileManager.default.removeItem(at: previewFolder)
+            throw error
+        }
+        let storage = AdvancedExportPreviewStorage(
+            folderURL: previewFolder,
+            outputURL: artifact.outputURL
         )
         try Task.checkCancellation()
 
@@ -57,8 +90,56 @@ actor AdvancedExportPreviewService {
             exportImage: exportImage,
             encodedFileSize: fileSize,
             pixelWidth: artifact.pixelWidth,
-            pixelHeight: artifact.pixelHeight
+            pixelHeight: artifact.pixelHeight,
+            storage: storage
         )
+    }
+
+    func makeLoupe(
+        pane: AdvancedExportPreviewPane,
+        item: AdvancedExportItem,
+        configuration: AdvancedExportConfiguration,
+        preview: AdvancedExportPreview,
+        normalizedPoint: CGPoint,
+        pixelSize: Int
+    ) async throws -> AdvancedExportLoupe {
+        await acquireRenderSlot()
+        defer { releaseRenderSlot() }
+        try Task.checkCancellation()
+
+        switch pane {
+        case .reference:
+            let image = try await Task.detached(priority: .userInitiated) {
+                try EditedImageRenderer.makeAdvancedReferenceLoupe(
+                    from: item.sourceURL,
+                    cameraRaw: item.cameraRaw,
+                    isHDR: item.isHDR,
+                    configuration: configuration,
+                    normalizedPoint: normalizedPoint,
+                    pixelSize: pixelSize
+                )
+            }.value
+            return AdvancedExportLoupe(image: image)
+
+        case .export:
+            let outputURL = preview.storage.outputURL
+            let image = try await Task.detached(priority: .userInitiated) {
+                let options: [CIImageOption: Any] = item.isHDR
+                    ? [.expandToHDR: true, .toneMapHDRtoSDR: false, .applyOrientationProperty: true]
+                    : [.applyOrientationProperty: true]
+                guard let encoded = CIImage(contentsOf: outputURL, options: options) else {
+                    throw EditedImageRenderer.RenderError.unreadableImage
+                }
+                return try EditedImageRenderer.makeLoupeCrop(
+                    from: encoded,
+                    isHDR: item.isHDR,
+                    configuration: configuration,
+                    normalizedPoint: normalizedPoint,
+                    pixelSize: pixelSize
+                )
+            }.value
+            return AdvancedExportLoupe(image: image)
+        }
     }
 
     /// Full-resolution RAW processing and FFmpeg encoding are deliberately serialized.

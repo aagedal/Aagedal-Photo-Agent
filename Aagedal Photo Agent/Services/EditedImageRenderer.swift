@@ -92,7 +92,11 @@ nonisolated enum EditedImageRenderer {
     /// `metadataCopier` is required to populate IPTC/XMP/EXIF on the rendered file.
     @discardableResult
     static func render(from sourceURL: URL, cameraRaw: CameraRawSettings?, isHDR: Bool, outputFolder: URL, metadataCopier: MetadataCopier? = nil) async throws -> URL {
-        let output = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw)
+        let processed = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw)
+        let output = limitedForExport(
+            processed,
+            maximumPixelSize: currentResolutionLimit.maximumPixelSize
+        )
 
         let destURL: URL
         if isHDR {
@@ -124,7 +128,11 @@ nonisolated enum EditedImageRenderer {
         outputFolder: URL,
         maxReferencePixelSize: CGFloat
     ) async throws -> AdvancedExportRenderedArtifact {
-        let output = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw)
+        let processed = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw)
+        let output = limitedForExport(
+            processed,
+            maximumPixelSize: configuration.resolutionLimit.maximumPixelSize
+        )
         let reference = try makeReferencePreview(
             from: output,
             isHDR: isHDR,
@@ -154,6 +162,110 @@ nonisolated enum EditedImageRenderer {
             pixelWidth: Int(output.extent.width.rounded()),
             pixelHeight: Int(output.extent.height.rounded())
         )
+    }
+
+    /// Returns a source-accurate crop for the Advanced Export loupe. The crop is
+    /// rendered at one source pixel per output pixel after applying the resolution cap.
+    static func makeAdvancedReferenceLoupe(
+        from sourceURL: URL,
+        cameraRaw: CameraRawSettings?,
+        isHDR: Bool,
+        configuration: AdvancedExportConfiguration,
+        normalizedPoint: CGPoint,
+        pixelSize: Int
+    ) throws -> CGImage {
+        let processed = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw)
+        let output = limitedForExport(
+            processed,
+            maximumPixelSize: configuration.resolutionLimit.maximumPixelSize
+        )
+        return try makeLoupeCrop(
+            from: output,
+            isHDR: isHDR,
+            configuration: configuration,
+            normalizedPoint: normalizedPoint,
+            pixelSize: pixelSize
+        )
+    }
+
+    static func makeLoupeCrop(
+        from image: CIImage,
+        isHDR: Bool,
+        configuration: AdvancedExportConfiguration,
+        normalizedPoint: CGPoint,
+        pixelSize: Int
+    ) throws -> CGImage {
+        let extent = image.extent
+        guard extent.width > 0, extent.height > 0,
+              extent.width.isFinite, extent.height.isFinite else {
+            throw RenderError.encodeFailed
+        }
+
+        let cropWidth = min(CGFloat(pixelSize), extent.width)
+        let cropHeight = min(CGFloat(pixelSize), extent.height)
+        let unitX = min(1, max(0, normalizedPoint.x))
+        let unitY = min(1, max(0, normalizedPoint.y))
+        let centerX = extent.minX + unitX * extent.width
+        // SwiftUI reports hover locations from the top; Core Image's origin is bottom-left.
+        let centerY = extent.minY + (1 - unitY) * extent.height
+        let originX = min(
+            extent.maxX - cropWidth,
+            max(extent.minX, centerX - cropWidth / 2)
+        )
+        let originY = min(
+            extent.maxY - cropHeight,
+            max(extent.minY, centerY - cropHeight / 2)
+        )
+        let cropRect = CGRect(
+            x: originX,
+            y: originY,
+            width: cropWidth,
+            height: cropHeight
+        ).integral
+        let colorSpace = isHDR
+            ? configuration.hdrGamut.hdrLinearColorSpace
+            : configuration.sdrGamut.sdrColorSpace
+        let format: CIFormat = isHDR ? .RGBAh : .RGBA8
+
+        guard let crop = CameraRawApproximation.ciContext.createCGImage(
+            image,
+            from: cropRect,
+            format: format,
+            colorSpace: colorSpace
+        ) else {
+            throw RenderError.encodeFailed
+        }
+        return crop
+    }
+
+    private static var currentResolutionLimit: ExportResolutionLimit {
+        let stored = UserDefaults.standard.string(forKey: UserDefaultsKeys.exportResolutionLimit)
+        return ExportResolutionLimit(rawValue: stored ?? "") ?? .original
+    }
+
+    static func limitedForExport(
+        _ image: CIImage,
+        maximumPixelSize: Int?
+    ) -> CIImage {
+        guard let maximumPixelSize else { return image }
+        let extent = image.extent
+        let longestEdge = max(extent.width, extent.height)
+        guard longestEdge > CGFloat(maximumPixelSize),
+              longestEdge.isFinite,
+              extent.width > 0,
+              extent.height > 0 else {
+            return image
+        }
+
+        let normalized = image.transformed(
+            by: CGAffineTransform(translationX: -extent.minX, y: -extent.minY)
+        )
+        let scale = CGFloat(maximumPixelSize) / longestEdge
+        let width = max(1, (extent.width * scale).rounded())
+        let height = max(1, (extent.height * scale).rounded())
+        return normalized
+            .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+            .cropped(to: CGRect(x: 0, y: 0, width: width, height: height))
     }
 
     private static func makeReferencePreview(

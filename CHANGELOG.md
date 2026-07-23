@@ -18,6 +18,7 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 - Added Advanced Export for reviewing a queue before export, with per-image HDR / SDR status, an encoded preview, output dimensions, estimated file size, and an export-settings summary.
 - Added separate SDR and HDR format, quality, and target-gamut controls, plus TIFF compression and same-folder, standard export-folder, or custom subfolder destinations.
+- Added long-edge resolution limits, quality settings down to 10%, and pointer-targeted 100% reference and encoded-export loupes to Advanced Export.
 - Added Adaptive HDR JPEG output with an SDR-compatible base image and ISO HDR gain map, and expanded HDR detection to recognize gain-map JPEG and HEIF images without decoding their pixels.
 - Added a contextual RAW conversion command for producing 16-bit-per-channel Rec. 2020 PQ JPEG XL masters with either Camera RAW or Linear RAW decoding.
 

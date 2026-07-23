@@ -608,6 +608,7 @@ struct AdvancedExportTests {
             hdrQuality: 0.74,
             hdrGamut: .displayP3,
             tiffCompression: .lzw,
+            resolutionLimit: .original,
             locationMode: .formatSubfolder,
             customSubfolderName: "Exports"
         )
@@ -688,6 +689,17 @@ struct AdvancedExportTests {
             changedQuality.previewSignature(isHDR: true)
                 == configuration.previewSignature(isHDR: true)
         )
+
+        var changedResolution = configuration
+        changedResolution.resolutionLimit = .pixels2048
+        #expect(
+            changedResolution.previewSignature(isHDR: false)
+                != configuration.previewSignature(isHDR: false)
+        )
+        #expect(
+            changedResolution.previewSignature(isHDR: true)
+                != configuration.previewSignature(isHDR: true)
+        )
     }
 
     @Test("preview encoder honors explicit SDR configuration")
@@ -714,5 +726,31 @@ struct AdvancedExportTests {
         #expect(artifact.pixelHeight == 32)
         #expect(max(artifact.referenceImage.width, artifact.referenceImage.height) == 32)
         #expect(CGImageSourceCreateWithURL(artifact.outputURL as CFURL, nil) != nil)
+    }
+
+    @Test("resolution limit caps the long edge without upscaling")
+    func resolutionLimitCapsLongEdge() {
+        let large = CIImage(color: .white)
+            .cropped(to: CGRect(x: 0, y: 0, width: 4_000, height: 2_000))
+        let limited = EditedImageRenderer.limitedForExport(
+            large,
+            maximumPixelSize: ExportResolutionLimit.pixels1600.maximumPixelSize
+        )
+        #expect(limited.extent.width == 1_600)
+        #expect(limited.extent.height == 800)
+
+        let small = CIImage(color: .white)
+            .cropped(to: CGRect(x: 0, y: 0, width: 800, height: 400))
+        let unchanged = EditedImageRenderer.limitedForExport(
+            small,
+            maximumPixelSize: ExportResolutionLimit.pixels1600.maximumPixelSize
+        )
+        #expect(unchanged.extent == small.extent)
+    }
+
+    @Test("lossy quality floor is ten percent")
+    func lossyQualityMinimum() {
+        #expect(AdvancedExportConfiguration.minimumQuality == 0.10)
+        #expect(AdvancedExportConfiguration.minimumQuality < 0.5)
     }
 }

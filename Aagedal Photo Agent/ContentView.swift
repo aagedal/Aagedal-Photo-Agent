@@ -1598,6 +1598,7 @@ struct ContentView: View {
             hdrQuality: settingsViewModel.exportQualityHDR,
             hdrGamut: settingsViewModel.exportColorGamutHDR,
             tiffCompression: settingsViewModel.exportTIFFCompression,
+            resolutionLimit: settingsViewModel.exportResolutionLimit,
             locationMode: settingsViewModel.exportLocationMode,
             customSubfolderName: settingsViewModel.exportCustomSubfolderName
         )
@@ -1648,6 +1649,7 @@ struct ContentView: View {
         settingsViewModel.exportQualityHDR = configuration.hdrQuality
         settingsViewModel.exportColorGamutHDR = configuration.hdrGamut
         settingsViewModel.exportTIFFCompression = configuration.tiffCompression
+        settingsViewModel.exportResolutionLimit = configuration.resolutionLimit
         settingsViewModel.exportLocationMode = configuration.locationMode
         settingsViewModel.exportCustomSubfolderName = configuration.customSubfolderName
     }

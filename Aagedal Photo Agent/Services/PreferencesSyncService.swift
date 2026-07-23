@@ -55,6 +55,7 @@ final class PreferencesSyncService {
         UserDefaultsKeys.exportFormatHDR,
         UserDefaultsKeys.exportQualitySDR,
         UserDefaultsKeys.exportQualityHDR,
+        UserDefaultsKeys.exportResolutionLimit,
         UserDefaultsKeys.exportTIFFCompression,
         UserDefaultsKeys.exportColorGamutSDR,
         UserDefaultsKeys.exportColorGamutHDR,

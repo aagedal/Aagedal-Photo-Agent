@@ -536,7 +536,11 @@ struct SettingsView: View {
                                 .foregroundStyle(.secondary)
                                 .monospacedDigit()
                         }
-                        Slider(value: $settingsViewModel.exportQualitySDR, in: 0.5...1.0, step: 0.01)
+                        Slider(
+                            value: $settingsViewModel.exportQualitySDR,
+                            in: AdvancedExportConfiguration.minimumQuality...1,
+                            step: 0.01
+                        )
                         HStack {
                             Text("Smaller file")
                                 .font(.caption)
@@ -584,7 +588,11 @@ struct SettingsView: View {
                                 .foregroundStyle(.secondary)
                                 .monospacedDigit()
                         }
-                        Slider(value: $settingsViewModel.exportQualityHDR, in: 0.5...1.0, step: 0.01)
+                        Slider(
+                            value: $settingsViewModel.exportQualityHDR,
+                            in: AdvancedExportConfiguration.minimumQuality...1,
+                            step: 0.01
+                        )
                         HStack {
                             Text("Smaller file")
                                 .font(.caption)
@@ -604,6 +612,18 @@ struct SettingsView: View {
                 }
 
                 Text(settingsViewModel.exportColorGamutHDR.description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Output Resolution") {
+                Picker("Maximum Long Edge", selection: $settingsViewModel.exportResolutionLimit) {
+                    ForEach(ExportResolutionLimit.allCases) { limit in
+                        Text(limit.displayName).tag(limit)
+                    }
+                }
+
+                Text("The aspect ratio is preserved, and smaller images are never enlarged.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

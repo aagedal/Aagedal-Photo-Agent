@@ -85,6 +85,7 @@ struct AdvancedExportView: View {
                     if hasHDRItems {
                         hdrSettings
                     }
+                    resolutionSettings
                     if configuration.sdrFormat == .tiff
                         || configuration.hdrFormat == .tiff16bit {
                         tiffSettings
@@ -203,6 +204,27 @@ struct AdvancedExportView: View {
         }
     }
 
+    private var resolutionSettings: some View {
+        GroupBox("Resolution") {
+            VStack(alignment: .leading, spacing: 8) {
+                LabeledContent("Long edge") {
+                    Picker("Long edge", selection: $configuration.resolutionLimit) {
+                        ForEach(ExportResolutionLimit.allCases) { limit in
+                            Text(limit.displayName).tag(limit)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 145)
+                }
+
+                Text("Smaller images are never enlarged.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.vertical, 4)
+        }
+    }
+
     private var destinationSettings: some View {
         GroupBox("Destination") {
             VStack(alignment: .leading, spacing: 10) {
@@ -242,7 +264,11 @@ struct AdvancedExportView: View {
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
             }
-            Slider(value: value, in: 0.5...1, step: 0.01)
+            Slider(
+                value: value,
+                in: AdvancedExportConfiguration.minimumQuality...1,
+                step: 0.01
+            )
         }
     }
 }
@@ -284,13 +310,25 @@ private struct AdvancedExportComparisonRow: View {
             }
 
             HStack(spacing: 12) {
-                imagePane(
+                AdvancedExportImagePane(
                     title: "Developed reference",
-                    image: preview?.referenceImage
+                    image: preview?.referenceImage,
+                    isLoading: isLoading,
+                    pane: .reference,
+                    item: item,
+                    configuration: configuration,
+                    preview: preview,
+                    previewService: previewService
                 )
-                imagePane(
+                AdvancedExportImagePane(
                     title: exportPaneTitle,
-                    image: preview?.exportImage
+                    image: preview?.exportImage,
+                    isLoading: isLoading,
+                    pane: .export,
+                    item: item,
+                    configuration: configuration,
+                    preview: preview,
+                    previewService: previewService
                 )
             }
 
@@ -342,31 +380,105 @@ private struct AdvancedExportComparisonRow: View {
         )
         return "\(preview.pixelWidth) × \(preview.pixelHeight) · \(size)"
     }
+}
 
-    private func imagePane(title: String, image: CGImage?) -> some View {
+private struct AdvancedExportImagePane: View {
+    let title: String
+    let image: CGImage?
+    let isLoading: Bool
+    let pane: AdvancedExportPreviewPane
+    let item: AdvancedExportItem
+    let configuration: AdvancedExportConfiguration
+    let preview: AdvancedExportPreview?
+    let previewService: AdvancedExportPreviewService
+
+    @State private var isHovered = false
+    @State private var hoverPoint = CGPoint(x: 0.5, y: 0.5)
+    @State private var hoverLocation = CGPoint.zero
+    @State private var loupePoint = CGPoint(x: 0.5, y: 0.5)
+    @State private var isShowingLoupe = false
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title)
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
 
-            ZStack {
-                Color.black.opacity(0.92)
+            GeometryReader { geometry in
+                ZStack(alignment: .topTrailing) {
+                    Color.black.opacity(0.92)
 
-                if let image {
-                    Image(
-                        nsImage: NSImage(
-                            cgImage: image,
-                            size: NSSize(width: image.width, height: image.height)
+                    if let image {
+                        Image(
+                            nsImage: NSImage(
+                                cgImage: image,
+                                size: NSSize(width: image.width, height: image.height)
+                            )
                         )
-                    )
-                    .resizable()
-                    .interpolation(.high)
-                    .scaledToFit()
-                    .padding(8)
-                } else if isLoading {
-                    ProgressView()
-                        .controlSize(.small)
-                        .tint(.white)
+                        .resizable()
+                        .interpolation(.high)
+                        .scaledToFit()
+                        .padding(8)
+                    } else if isLoading {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(.white)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+
+                    if image != nil, preview != nil, isHovered {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 30, height: 30)
+                            .background(.black.opacity(0.72), in: Circle())
+                            .position(loupeIndicatorPosition(in: geometry.size))
+                            .allowsHitTesting(false)
+                    }
+                }
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    guard isHovered else { return }
+                    loupePoint = hoverPoint
+                    isShowingLoupe = true
+                }
+                .onContinuousHover(coordinateSpace: .local) { phase in
+                    switch phase {
+                    case .active(let location):
+                        if let image,
+                           let point = normalizedImagePoint(
+                               location: location,
+                               containerSize: geometry.size,
+                               imageSize: CGSize(width: image.width, height: image.height)
+                           ) {
+                            isHovered = true
+                            hoverPoint = point
+                            hoverLocation = location
+                        } else {
+                            isHovered = false
+                        }
+                    case .ended:
+                        isHovered = false
+                    }
+                }
+                .accessibilityLabel("Inspect \(title) at 100%")
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction {
+                    loupePoint = hoverPoint
+                    isShowingLoupe = true
+                }
+                .help(isHovered ? "Click to inspect this area at 100%" : "")
+                .popover(isPresented: $isShowingLoupe, arrowEdge: .trailing) {
+                    if let preview {
+                        AdvancedExportLoupeView(
+                            pane: pane,
+                            item: item,
+                            configuration: configuration,
+                            preview: preview,
+                            previewService: previewService,
+                            normalizedPoint: loupePoint
+                        )
+                    }
                 }
             }
             .frame(maxWidth: .infinity)
@@ -374,5 +486,129 @@ private struct AdvancedExportComparisonRow: View {
             .clipShape(RoundedRectangle(cornerRadius: 8))
         }
         .frame(maxWidth: .infinity)
+    }
+
+    private func normalizedImagePoint(
+        location: CGPoint,
+        containerSize: CGSize,
+        imageSize: CGSize
+    ) -> CGPoint? {
+        let availableWidth = max(0, containerSize.width - 16)
+        let availableHeight = max(0, containerSize.height - 16)
+        guard availableWidth > 0, availableHeight > 0,
+              imageSize.width > 0, imageSize.height > 0 else {
+            return nil
+        }
+
+        let scale = min(
+            availableWidth / imageSize.width,
+            availableHeight / imageSize.height
+        )
+        let displayedSize = CGSize(
+            width: imageSize.width * scale,
+            height: imageSize.height * scale
+        )
+        let origin = CGPoint(
+            x: (containerSize.width - displayedSize.width) / 2,
+            y: (containerSize.height - displayedSize.height) / 2
+        )
+        let imageRect = CGRect(origin: origin, size: displayedSize)
+        guard imageRect.contains(location) else { return nil }
+        return CGPoint(
+            x: (location.x - origin.x) / displayedSize.width,
+            y: (location.y - origin.y) / displayedSize.height
+        )
+    }
+
+    private func loupeIndicatorPosition(in containerSize: CGSize) -> CGPoint {
+        CGPoint(
+            x: min(containerSize.width - 18, max(18, hoverLocation.x + 22)),
+            y: min(containerSize.height - 18, max(18, hoverLocation.y - 22))
+        )
+    }
+}
+
+private struct AdvancedExportLoupeView: View {
+    let pane: AdvancedExportPreviewPane
+    let item: AdvancedExportItem
+    let configuration: AdvancedExportConfiguration
+    let preview: AdvancedExportPreview
+    let previewService: AdvancedExportPreviewService
+    let normalizedPoint: CGPoint
+
+    @State private var loupe: AdvancedExportLoupe?
+    @State private var errorMessage: String?
+
+    private let displaySize: CGFloat = 300
+
+    private var backingScale: CGFloat {
+        NSScreen.main?.backingScaleFactor ?? 2
+    }
+
+    private var pixelSize: Int {
+        Int((displaySize * backingScale).rounded())
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(pane == .reference ? "Developed reference" : "Encoded export")
+                    .font(.headline)
+                Spacer()
+                Text("100%")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+
+            ZStack {
+                Color.black.opacity(0.94)
+
+                if let loupe {
+                    Image(decorative: loupe.image, scale: backingScale, orientation: .up)
+                        .interpolation(.none)
+                } else if let errorMessage {
+                    Label(errorMessage, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .multilineTextAlignment(.center)
+                        .padding()
+                } else {
+                    ProgressView("Rendering 100% crop…")
+                        .controlSize(.small)
+                        .tint(.white)
+                        .foregroundStyle(.white)
+                }
+            }
+            .frame(width: displaySize, height: displaySize)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            Text(loupeDescription)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(14)
+        .task {
+            do {
+                loupe = try await previewService.makeLoupe(
+                    pane: pane,
+                    item: item,
+                    configuration: configuration,
+                    preview: preview,
+                    normalizedPoint: normalizedPoint,
+                    pixelSize: pixelSize
+                )
+            } catch is CancellationError {
+                return
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private var loupeDescription: String {
+        guard let loupe else {
+            return "True pixel crop · no display interpolation"
+        }
+        return "\(loupe.image.width) × \(loupe.image.height) pixel crop · no display interpolation"
     }
 }
