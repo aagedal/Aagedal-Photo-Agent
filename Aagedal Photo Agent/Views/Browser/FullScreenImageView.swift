@@ -103,6 +103,43 @@ fileprivate class ZoomController {
     }
 }
 
+// MARK: - Full-screen keyboard shortcuts
+
+enum FullScreenNumberShortcut: Equatable, Sendable {
+    case rating(Int)
+    case colorLabel(Int)
+
+    private static let numberByKeyCode: [Int: Int] = [
+        29: 0,
+        18: 1,
+        19: 2,
+        20: 3,
+        21: 4,
+        23: 5,
+        22: 6,
+        26: 7,
+        28: 8,
+        25: 9,
+    ]
+
+    static func resolve(keyCode: Int, command: Bool, option: Bool) -> Self? {
+        guard let number = numberByKeyCode[keyCode] else { return nil }
+
+        if command && option {
+            return number <= 8 ? .colorLabel(number) : nil
+        }
+        if command {
+            return number <= 5 ? .rating(number) : nil
+        }
+        guard !option else { return nil }
+
+        if number <= 5 {
+            return .rating(number)
+        }
+        return .colorLabel(number - 5)
+    }
+}
+
 // MARK: - Custom NSWindow that intercepts Escape and Space
 
 private class FullScreenWindow: NSWindow {
@@ -168,33 +205,23 @@ private class FullScreenWindow: NSWindow {
             return
         }
 
-        let numberKeyCodes: [Int: Int] = [29: 0, 18: 1, 19: 2, 20: 3, 21: 4, 23: 5, 22: 6, 26: 7, 28: 8]
-
-        if hasCmd && hasOption {
-            // CMD+Option+0 through CMD+Option+8 → set color label
-            if let index = numberKeyCodes[keyCode], index <= 8 {
-                onSetLabel?(index)
-                return
-            }
-        } else if hasCmd {
-            // CMD+0 through CMD+5 → set rating
-            if let rating = numberKeyCodes[keyCode], rating <= 5 {
+        // Menu-equivalent modified shortcuts plus bare Photo Mechanic-style
+        // culling: 0–5 rate, while 6–9 apply color-label slots 1–4.
+        if let shortcut = FullScreenNumberShortcut.resolve(
+            keyCode: keyCode,
+            command: hasCmd,
+            option: hasOption
+        ) {
+            switch shortcut {
+            case .rating(let rating):
                 onSetRating?(rating)
-                return
+            case .colorLabel(let index):
+                onSetLabel?(index)
             }
-        } else if !hasOption {
-            // Bare-digit shortcuts (PhotoMechanic muscle memory).
-            // 0-5 → rating, 6-9 → color label slot 1-4.
-            if let n = numberKeyCodes[keyCode] {
-                if n <= 5 {
-                    onSetRating?(n)
-                    return
-                }
-                if (6...9).contains(n) {
-                    onSetLabel?(n - 5)
-                    return
-                }
-            }
+            return
+        }
+
+        if !hasCmd && !hasOption {
             // X (keyCode 7) → trash label, S (keyCode 1) → red/select.
             if keyCode == 7 && !event.isARepeat {
                 onSetLabel?(8) // ColorLabel.trash → shortcutIndex 8
