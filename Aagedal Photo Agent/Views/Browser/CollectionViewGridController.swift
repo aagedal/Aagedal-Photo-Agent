@@ -15,6 +15,10 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
     private var observationTasks: [Task<Void, Never>] = []
     private var lastSnapshotURLs: [URL] = []
     private var lastImageStates: [URL: ImageFile] = [:]
+    /// A grid rebuilt after leaving Develop inherits the active selection, but observation
+    /// only reports future changes. Keep this pending until the first laid-out snapshot can
+    /// scroll that already-selected image back into view.
+    private var needsInitialSelectionRestore = true
     /// In-flight speculative prefetch tasks, keyed by URL so `cancelPrefetchingForItemsAt` can
     /// actually stop work for items the user scrolled past before their decode started.
     private var prefetchTasks: [URL: Task<Void, Never>] = [:]
@@ -88,6 +92,10 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
         super.viewDidAppear()
         // Make collection view first responder for keyboard events
         view.window?.makeFirstResponder(collectionView)
+        if viewModel.shouldRestoreGridFocus {
+            viewModel.shouldRestoreGridFocus = false
+        }
+        restoreInitialSelectionIfPossible()
     }
 
     // MARK: - Data Source
@@ -252,13 +260,36 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
         // Only animate when items are added/removed, not when just reordered (sort change).
         // Animating reorder of hundreds of items causes layout thrashing and constraint conflicts.
         let itemsAddedOrRemoved = isStructuralChange && Set(newURLs) != Set(lastSnapshotURLs)
-        dataSource.apply(snapshot, animatingDifferences: itemsAddedOrRemoved)
+        dataSource.apply(snapshot, animatingDifferences: itemsAddedOrRemoved) { [weak self] in
+            guard let self else { return }
+            self.view.layoutSubtreeIfNeeded()
+            self.restoreInitialSelectionIfPossible()
+        }
 
         lastSnapshotURLs = newURLs
         lastImageStates = newStates
     }
 
     // MARK: - Selection Updates
+
+    private func restoreInitialSelectionIfPossible() {
+        guard needsInitialSelectionRestore,
+              view.window != nil,
+              let scrollView = collectionView.enclosingScrollView,
+              scrollView.contentView.bounds.size != .zero,
+              let activeURL = viewModel.lastClickedImageURL ?? viewModel.selectedImageIDs.first,
+              let index = viewModel.urlToVisibleIndex[activeURL] else {
+            return
+        }
+
+        let indexPath = IndexPath(item: index, section: 0)
+        guard collectionView.collectionViewLayout?.layoutAttributesForItem(at: indexPath) != nil else {
+            return
+        }
+
+        collectionView.scrollToItemIfNeeded(at: indexPath)
+        needsInitialSelectionRestore = false
+    }
 
     private func updateVisibleSelections(selectedIDs: Set<URL>, lastClicked: URL?) {
         for item in collectionView.visibleItems() {

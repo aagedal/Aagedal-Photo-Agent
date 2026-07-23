@@ -2,15 +2,24 @@
 
 All notable user-visible changes are documented here. Signed, notarized DMGs are self-hosted and delivered as in-app updates via Sparkle.
 
-## 2.1.3 — 2026-07-22
+## 2.2.0 — 2026-07-23
 
 ### Highlights
 
+- Added an Advanced Export workflow with full-resolution encoded previews and independent SDR and HDR format, quality, gamut, TIFF compression, and destination controls.
+- Added Adaptive HDR JPEG gain-map export and a dedicated 16-bit Rec. 2020 PQ JPEG XL conversion workflow for RAW files.
 - Added global Sharpness, Clarity, and Dehaze controls, with consistent Develop preview, scopes, export, XMP, template, and copy/paste support.
 - Reworked Import around a clearer import name, primary destination, and optional additional copy, with advanced settings collapsed into a concise summary.
 - Added existing same-date folder suggestions and stronger duplicate detection that checks destination files by name, size, and a quick content checksum.
 - Face scans now continue in the background while navigating between folders, with live progress, cancellation, and completed-scan history in Activity.
-- Improved cropped-image sharpness, full-screen and RAW loading responsiveness, deletion feedback, and CIE chromaticity scope accuracy.
+- Improved cropped-image sharpness, full-screen and RAW loading responsiveness, file-operation safety, deletion feedback, and CIE chromaticity scope accuracy.
+
+### Export and HDR
+
+- Added Advanced Export for reviewing a queue before export, with per-image HDR / SDR status, an encoded preview, output dimensions, estimated file size, and an export-settings summary.
+- Added separate SDR and HDR format, quality, and target-gamut controls, plus TIFF compression and same-folder, standard export-folder, or custom subfolder destinations.
+- Added Adaptive HDR JPEG output with an SDR-compatible base image and ISO HDR gain map, and expanded HDR detection to recognize gain-map JPEG and HEIF images without decoding their pixels.
+- Added a contextual RAW conversion command for producing 16-bit-per-channel Rec. 2020 PQ JPEG XL masters with either Camera RAW or Linear RAW decoding.
 
 ### Develop, previews, and scopes
 
@@ -20,6 +29,7 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 - Preserved target resolution for tightly cropped thumbnails and full-screen previews by decoding enough source pixels before applying the crop.
 - Moved blocking full-screen, Develop, clean-feed, and embedded RAW preview decoding onto dedicated queues to reduce navigation and preview stalls.
 - Kept highly saturated samples inside the physical spectral locus in the CIE chromaticity scope instead of dropping them or folding the plotted envelope inward.
+- Kept Metal scopes responsive after their render loop becomes idle, including on-demand redraws when scope settings or source images change.
 - Shared live Settings state with the main window so output-gamut and original-thumbnail changes take effect immediately, and improved panning in zoomed full-screen HDR images.
 
 ### Import and geocoding
@@ -27,15 +37,23 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 - Reorganized Import into clearer Import Name, Source, and Destinations sections, with primary and additional-copy destinations shown together and conflict, verification, and metadata controls moved under Advanced Options.
 - Added menus for reusing existing folders that match the import date, including per-capture-date folder selection when sorting an import by date.
 - Replaced remembered import fingerprints with on-disk duplicate checks across matching same-date destination folders, requiring matching file name, size, and a quick content checksum before a photo is skipped.
+- Staged imported files beside their destination before atomically promoting them, so cancellation, verification failures, and overwrite errors do not leave partial files or destroy an existing destination.
+- Hardened import and folder-name validation against invalid or escaping paths, and made FTP cancellation, timeouts, and C2PA upload-signing failures stop cleanly instead of continuing with an incomplete batch.
 - Switched online reverse geocoding to MapKit while retaining localized city and country results and the existing offline GeoNames option.
 
-### Faces, deletion, and reliability
+### Browser, files, sync, and reliability
 
 - Decoupled face detection and clustering from the active browser folder and main UI, so an in-progress scan no longer blocks folder navigation or takes over the face bar after switching folders.
 - Added active face-scan progress and cancellation to Activity, plus completed and cancelled scan history with processed and failed-photo counts.
 - Kept failed face-detection images eligible for a later incremental scan instead of incorrectly marking them as completed.
+- Moved Photo Agent metadata and XMP sidecars together with rejected images, including collision-safe renaming and rollback if any part of the move fails.
 - Presented image deletion confirmation in the active window, including the full-screen viewer, so keyboard-initiated deletion no longer appears to freeze behind another window.
 - Reported Trash failures instead of silently ignoring them, retained files that could not be trashed, and refreshed thumbnail, full-screen, and C2PA validation caches immediately after successful deletion.
+- Preserved recent folders across path spelling and normalization differences, and kept expansion state independent for overlapping favorite-folder trees.
+- Kept full-screen culling moving to the nearest surviving image when a rating or label change removes the current image from the active filter.
+- Dismissed the full-screen window before opening Develop so focus and keyboard input transfer reliably to the editor.
+- Added Teams and Watermarks to the master iCloud sync switch and exposed Teams as its own sync category.
+- Moved the primary Sparkle update feed to GitHub and added a separately hosted fallback feed for more reliable in-app update checks.
 
 ## 2.1.2 — 2026-07-14
 
