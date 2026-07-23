@@ -98,6 +98,7 @@ struct ScopeDisplayView: View {
                     showClippedGamut: scopeViewModel.showClippedGamut,
                     targetGamut: scopeViewModel.targetGamut.shaderIndex,
                     displayGamut: scopeViewModel.displayGamut.shaderIndex,
+                    isContinuouslyRendering: scopeViewModel.isDragMode,
                     coordinator: scopeViewModel.metalScopeCoordinator
                 )
             } else if let image = scopeViewModel.scopeImage {

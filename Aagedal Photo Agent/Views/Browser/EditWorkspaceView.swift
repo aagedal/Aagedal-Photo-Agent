@@ -2439,6 +2439,7 @@ struct EditWorkspaceView: View {
             syncViewportToMetal()
             // Metal overlay is only used during active drags — SwiftUI handles static display
             pipeline.updateOverlayParams(geometry: nil, visible: false)
+            scopeViewModel.metalScopeCoordinator?.requestRedraw()
         }
         if lockedCropImageRect != nil {
             editLog.debug("renderPreview: crop interaction path (full-res Metal, skip CGImage)")

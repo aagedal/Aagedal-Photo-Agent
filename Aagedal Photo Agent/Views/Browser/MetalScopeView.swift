@@ -9,9 +9,6 @@ nonisolated private let metalScopeLog = Logger(
 /// Renders scope (waveform/parade/vectorscope) via Metal compute shaders,
 /// displayed in an MTKView. Runs at display refresh rate during slider drag
 /// for real-time feedback without CPU-based scope rendering.
-///
-/// This view only exists while `isMetalScopeActive` is true (i.e. during drag),
-/// so it starts in continuous rendering mode immediately.
 struct MetalScopeView: NSViewRepresentable {
     let scopePipeline: MetalScopePipeline
     let editPipeline: MetalEditPipeline
@@ -20,6 +17,7 @@ struct MetalScopeView: NSViewRepresentable {
     var showClippedGamut: Bool = false
     var targetGamut: UInt32 = 0
     var displayGamut: UInt32 = 0
+    var isContinuouslyRendering = false
     var coordinator: Coordinator?
 
     func makeCoordinator() -> Coordinator {
@@ -36,13 +34,8 @@ struct MetalScopeView: NSViewRepresentable {
         context.coordinator.mtkView = mtkView
         context.coordinator.editPipeline = editPipeline
 
-        // This view only appears during drag — start continuous rendering immediately
-        mtkView.preferredFramesPerSecond = NSScreen.main?.maximumFramesPerSecond ?? 60
-        mtkView.isPaused = false
-        mtkView.enableSetNeedsDisplay = false
-        context.coordinator.drawCount = 0
-        context.coordinator.drawLogStart = .now
-        metalScopeLog.info("Scope Metal view created — continuous rendering started")
+        // Idle scopes render on demand; active adjustments switch to display-rate rendering.
+        context.coordinator.setContinuousRendering(isContinuouslyRendering)
 
         return mtkView
     }
@@ -54,6 +47,7 @@ struct MetalScopeView: NSViewRepresentable {
         context.coordinator.clipMode = showClippedGamut
         context.coordinator.targetGamut = targetGamut
         context.coordinator.displayGamut = displayGamut
+        context.coordinator.setContinuousRendering(isContinuouslyRendering)
         if let metalLayer = mtkView.layer as? CAMetalLayer {
             let backingScale = mtkView.window?.backingScaleFactor ?? 2.0
             metalLayer.contentsScale = backingScale
@@ -66,6 +60,15 @@ struct MetalScopeView: NSViewRepresentable {
                 mtkView.drawableSize = targetSize
             }
         }
+        if !isContinuouslyRendering {
+            context.coordinator.requestRedraw()
+        }
+    }
+
+    static func dismantleNSView(_ mtkView: MTKView, coordinator: Coordinator) {
+        coordinator.stopContinuousRendering()
+        mtkView.delegate = nil
+        coordinator.mtkView = nil
     }
 
     class Coordinator: NSObject, MTKViewDelegate {
@@ -84,19 +87,53 @@ struct MetalScopeView: NSViewRepresentable {
 
         var drawCount: Int = 0
         var drawLogStart: ContinuousClock.Instant = .now
+        private var isRenderingContinuously = false
 
         init(scopePipeline: MetalScopePipeline) {
             self.scopePipeline = scopePipeline
         }
 
+        /// Direct redraw while the view is in its idle, on-demand rendering mode.
+        func requestRedraw() {
+            guard let mtkView else { return }
+            mtkView.setNeedsDisplay(mtkView.bounds)
+        }
+
+        func setContinuousRendering(_ enabled: Bool) {
+            if enabled {
+                startContinuousRendering()
+            } else {
+                stopContinuousRendering()
+            }
+        }
+
+        private func startContinuousRendering() {
+            guard let mtkView, !isRenderingContinuously else { return }
+            isRenderingContinuously = true
+            drawCount = 0
+            drawLogStart = .now
+            mtkView.preferredFramesPerSecond = NSScreen.main?.maximumFramesPerSecond ?? 60
+            mtkView.enableSetNeedsDisplay = false
+            mtkView.isPaused = false
+            metalScopeLog.info("Scope continuous rendering started")
+        }
+
         /// Stop continuous rendering (called when drag ends / view disappears).
         func stopContinuousRendering() {
             guard let mtkView else { return }
-            let totalMs = (ContinuousClock.now - drawLogStart).components.attoseconds / 1_000_000_000_000_000
-            let rate = drawCount > 0 && totalMs > 0 ? Double(drawCount) / (Double(totalMs) / 1000.0) : 0
-            metalScopeLog.info("Scope continuous rendering stopped: \(self.drawCount) draws = \(rate, format: .fixed(precision: 1)) FPS")
+            if isRenderingContinuously {
+                let elapsed = ContinuousClock.now - drawLogStart
+                let totalSeconds = Double(elapsed.components.seconds)
+                    + Double(elapsed.components.attoseconds) / 1e18
+                let rate = drawCount > 0 && totalSeconds > 0
+                    ? Double(drawCount) / totalSeconds
+                    : 0
+                metalScopeLog.info("Scope continuous rendering stopped: \(self.drawCount) draws = \(rate, format: .fixed(precision: 1)) FPS")
+            }
+            isRenderingContinuously = false
             mtkView.isPaused = true
             mtkView.enableSetNeedsDisplay = true
+            requestRedraw()
         }
 
         nonisolated func draw(in view: MTKView) {

@@ -61,16 +61,7 @@ final class ScopeViewModel {
     var scopeImage: NSImage?
     var isComputing = false
 
-    var isDragMode = false {
-        didSet {
-            guard isDragMode != oldValue else { return }
-            if !isDragMode, metalScopePipeline != nil {
-                // Drag ended — keep the Metal scope visible until the CPU scope
-                // image is ready, so there's no flash or blank frame.
-                holdingMetalScope = true
-            }
-        }
-    }
+    var isDragMode = false
 
     // MARK: - Metal Scope
 
@@ -79,17 +70,15 @@ final class ScopeViewModel {
     @ObservationIgnored var metalEditPipeline: MetalEditPipeline?
     @ObservationIgnored var metalScopeCoordinator: MetalScopeView.Coordinator?
 
-    /// True while we keep the Metal scope visible after drag ends,
-    /// waiting for the CPU scope to finish rendering.
-    var holdingMetalScope = false
-
+    /// Keep the live Metal renderer as the scope presentation throughout edit mode.
+    /// `MetalScopeView` pauses itself between adjustments and redraws only when needed,
+    /// so the idle presentation matches the adjusting presentation without continuously
+    /// consuming GPU time.
     var isMetalScopeActive: Bool {
-        let dragging = isDragMode && metalScopePipeline != nil && metalEditPipeline?.hasSourceTexture == true
-        return dragging || holdingMetalScope
+        metalScopePipeline != nil && metalEditPipeline?.hasSourceTexture == true
     }
 
     func clearMetal() {
-        holdingMetalScope = false
         metalScopePipeline = nil
         metalEditPipeline = nil
         metalScopeCoordinator = nil
@@ -112,7 +101,6 @@ final class ScopeViewModel {
             computeTask?.cancel()
             scopeImage = nil
             isComputing = false
-            holdingMetalScope = false
             return
         }
 
@@ -161,8 +149,6 @@ final class ScopeViewModel {
                 scopeImage = nil
             }
             isComputing = false
-            // CPU scope is ready — release the Metal scope hold
-            holdingMetalScope = false
         }
     }
 }
