@@ -79,6 +79,80 @@ struct DevelopInteractionBehaviorTests {
         #expect(viewModel.errorMessage?.contains("Test trash failure") == true)
     }
 
+    @Test("Rating an image out of the active filter advances full screen to the next image")
+    @MainActor
+    func ratingOutOfFilterAdvancesFullScreen() async {
+        var images = urls.prefix(3).map { ImageFile(url: $0) }
+        for index in images.indices {
+            images[index].starRating = .five
+        }
+        let viewModel = BrowserViewModel()
+        viewModel.sortOrder = .name
+        viewModel.sortReversed = false
+        viewModel.images = images
+        viewModel.minimumStarRating = .three
+        await Task.yield()
+
+        viewModel.selectedImageIDs = [urls[1]]
+        viewModel.lastClickedImageURL = urls[1]
+        viewModel.isFullScreen = true
+
+        viewModel.setRating(.two)
+
+        #expect(viewModel.visibleImages.map(\.url) == [urls[0], urls[2]])
+        #expect(viewModel.selectedImageIDs == [urls[2]])
+        #expect(viewModel.lastClickedImageURL == urls[2])
+        #expect(viewModel.isFullScreen)
+    }
+
+    @Test("Labeling the final image out of the active filter selects its previous neighbor")
+    @MainActor
+    func labelOutOfFilterSelectsPreviousFullScreenImage() async {
+        var images = urls.prefix(3).map { ImageFile(url: $0) }
+        for index in images.indices {
+            images[index].colorLabel = .red
+        }
+        let viewModel = BrowserViewModel()
+        viewModel.sortOrder = .name
+        viewModel.sortReversed = false
+        viewModel.images = images
+        viewModel.selectedColorLabels = [.red]
+        await Task.yield()
+
+        viewModel.selectedImageIDs = [urls[2]]
+        viewModel.lastClickedImageURL = urls[2]
+        viewModel.isFullScreen = true
+
+        viewModel.setLabel(.blue)
+
+        #expect(viewModel.visibleImages.map(\.url) == [urls[0], urls[1]])
+        #expect(viewModel.selectedImageIDs == [urls[1]])
+        #expect(viewModel.lastClickedImageURL == urls[1])
+        #expect(viewModel.isFullScreen)
+    }
+
+    @Test("Filtering the last full-screen image out closes full screen")
+    @MainActor
+    func filteringLastFullScreenImageOutClosesFullScreen() async {
+        var image = ImageFile(url: urls[0])
+        image.starRating = .five
+        let viewModel = BrowserViewModel()
+        viewModel.images = [image]
+        viewModel.minimumStarRating = .three
+        await Task.yield()
+
+        viewModel.selectedImageIDs = [image.url]
+        viewModel.lastClickedImageURL = image.url
+        viewModel.isFullScreen = true
+
+        viewModel.setRating(.two)
+
+        #expect(viewModel.visibleImages.isEmpty)
+        #expect(viewModel.selectedImageIDs.isEmpty)
+        #expect(viewModel.lastClickedImageURL == nil)
+        #expect(!viewModel.isFullScreen)
+    }
+
     @Test("Brush axis follows the first dominant cursor direction")
     func brushAxisInference() {
         let start = CGPoint(x: 40, y: 50)

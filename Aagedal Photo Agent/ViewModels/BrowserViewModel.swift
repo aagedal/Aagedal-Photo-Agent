@@ -392,11 +392,42 @@ final class BrowserViewModel {
     }
 
     private func rebuildVisibleCache() {
+        let previousVisibleURLs = visibleImages.map(\.url)
+        let fullScreenAnchor = isFullScreen
+            ? (lastClickedImageURL ?? selectedImageIDs.first)
+            : nil
         let filtered = applyFilters(to: sortedImages)
         visibleImages = filtered
         urlToVisibleIndex = Dictionary(uniqueKeysWithValues: filtered.enumerated().map { ($1.url, $0) })
 
         let visibleSet = Set(filtered.map(\.url))
+        if let fullScreenAnchor,
+           previousVisibleURLs.contains(fullScreenAnchor),
+           !visibleSet.contains(fullScreenAnchor) {
+            // Rating/label changes can make the image being viewed fail the active
+            // filter. Keep full screen anchored in the old filmstrip by moving to the
+            // nearest surviving image (next wins ties), rather than allowing selection
+            // reconciliation to clear the viewer to a black screen.
+            let removedURLs = Set(previousVisibleURLs).subtracting(visibleSet)
+            let replacementURL = Self.closestSurvivingImageURL(
+                in: previousVisibleURLs,
+                around: fullScreenAnchor,
+                deleting: removedURLs
+            ) ?? filtered.first?.url
+
+            if let replacementURL {
+                lastClickedImageURL = replacementURL
+                selectedImageIDs = [replacementURL]
+            } else {
+                // No images satisfy the filter anymore, so there is nothing valid for
+                // the full-screen window to display.
+                selectedImageIDs = []
+                lastClickedImageURL = nil
+                isFullScreen = false
+            }
+            return
+        }
+
         if !selectedImageIDs.isEmpty {
             let intersection = selectedImageIDs.intersection(visibleSet)
             if intersection != selectedImageIDs {
