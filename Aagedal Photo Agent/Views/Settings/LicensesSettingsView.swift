@@ -19,7 +19,7 @@ struct LicensesSettingsView: View {
             detail: "Version \(appVersion) — © Truls Aagedal",
             licenseName: "GPL-3.0",
             licenseResource: "License-GPL-3.0",
-            url: URL(string: "https://codeberg.org/taagedal/Aagedal-Photo-Agent")
+            url: URL(string: "https://github.com/aagedal/Aagedal-Photo-Agent")
         ),
         Component(
             name: "FFmpeg",
@@ -47,7 +47,7 @@ struct LicensesSettingsView: View {
             detail: "EXIF / IPTC metadata engine (libexif, libiptcdata)",
             licenseName: "GPL-3.0",
             licenseResource: "License-GPL-3.0",
-            url: URL(string: "https://codeberg.org/taagedal/SwiftExif")
+            url: URL(string: "https://github.com/aagedal/SwiftExif")
         ),
         Component(
             name: "AuraFace-v1",

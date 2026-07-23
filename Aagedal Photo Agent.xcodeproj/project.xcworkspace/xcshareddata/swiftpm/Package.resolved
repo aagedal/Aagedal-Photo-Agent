@@ -1,5 +1,5 @@
 {
-  "originHash" : "076607b90f215916aba8268da1fa7752259703b462b95ac33c42062a0e0e3fd4",
+  "originHash" : "4a257307ae906621a41965c902984f953e8ec7dbfcf1f9155a551ba239a41d53",
   "pins" : [
     {
       "identity" : "sparkle",
@@ -13,9 +13,9 @@
     {
       "identity" : "swiftexif",
       "kind" : "remoteSourceControl",
-      "location" : "https://codeberg.org/taagedal/SwiftExif.git",
+      "location" : "https://github.com/aagedal/SwiftExif.git",
       "state" : {
-        "revision" : "752d185170237bb26522f6e9b9d7945c41a37b59",
+        "revision" : "47249c72b613ebab8e4514f4adf05bb8000a1908",
         "version" : "1.9.10"
       }
     }

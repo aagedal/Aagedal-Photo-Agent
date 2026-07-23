@@ -207,7 +207,7 @@ When iCloud Sync is enabled, the Templates, KnownPeople, Teams, and Lists folder
 
 ## Releasing
 
-The app uses [Sparkle](https://sparkle-project.org) for in-app auto-updates. Releases are signed with an EdDSA key and advertised through an `appcast.xml` hosted on Codeberg.
+The app uses [Sparkle](https://sparkle-project.org) for in-app auto-updates. Releases are signed with an EdDSA key and advertised through the canonical `appcast.xml` on GitHub. Codeberg keeps a synchronized legacy copy for older installed builds whose feed URL still points there.
 
 ### One-time setup
 
@@ -231,9 +231,9 @@ The app uses [Sparkle](https://sparkle-project.org) for in-app auto-updates. Rel
    "$(find ~/Library/Developer/Xcode/DerivedData -name sign_update -path '*/Sparkle*' | head -n 1)" \
      "Aagedal-Photo-Agent-X.Y.Z.dmg"
    ```
-5. Add a new `<item>` entry to `appcast.xml` with the version, build number, pubDate, enclosure URL on Codeberg, signed length, signature, and release notes. Sparkle's docs cover the schema: <https://sparkle-project.org/documentation/publishing/>.
-6. Create a new Codeberg release with the DMG; re-upload `appcast.xml` to the persistent `appcast` release tag so `SUFeedURL` stays stable.
-7. Bump the cask in the `aagedal/homebrew-casks` repo.
+5. Add a new `<item>` entry to `appcast.xml` with the version, build number, pubDate, enclosure URL on `aagedal.me`, signed length, signature, and release notes. Sparkle's docs cover the schema: <https://sparkle-project.org/documentation/publishing/>.
+6. Commit and push `appcast.xml` to GitHub, then synchronize the legacy Codeberg copy for older installed builds.
+7. Bump the cask in the `aagedal/homebrew-tap` repo.
 
 ## License
 
@@ -248,7 +248,7 @@ License texts ship with the app (Settings → Licenses) and live under `Aagedal 
 | [FFmpeg](https://ffmpeg.org) | AVIF / JPEG XL encoding | GPL-3.0 |
 | [c2patool](https://github.com/contentauth/c2pa-rs) | C2PA content credentials | MIT |
 | [Sparkle](https://sparkle-project.org) | Software updates | MIT |
-| [SwiftExif](https://codeberg.org/taagedal/SwiftExif) | EXIF / IPTC metadata | GPL-3.0 |
+| [SwiftExif](https://github.com/aagedal/SwiftExif) | EXIF / IPTC metadata | GPL-3.0 |
 | [AuraFace-v1](https://huggingface.co/fal/AuraFace-v1) | Face recognition model | Apache-2.0 |
 
 ### Source for bundled GPL components (GPLv3 §6)
@@ -256,6 +256,6 @@ License texts ship with the app (Settings → Licenses) and live under `Aagedal 
 The app bundles a GPL-licensed **FFmpeg** binary. In accordance with the GPL, the corresponding source is available:
 
 - **FFmpeg 8.1.1**, built with `--enable-gpl --enable-version3` (image-only, network and device features disabled). Upstream source: <https://ffmpeg.org/releases/> (`ffmpeg-8.1.1.tar.xz`). The exact `configure` flags are embedded in the binary (`ffmpeg -version`).
-- The build script used to produce it is published at <https://codeberg.org/taagedal/ffmpeg-apple-silicon>.
+- The build script used to produce it is published at <https://github.com/aagedal/ffmpeg-apple-silicon>.
 
-The application's own source (GPL-3.0) and the **SwiftExif** source (GPL-3.0) are published on Codeberg.
+The application's own source (GPL-3.0) and the **SwiftExif** source (GPL-3.0) are published on GitHub.

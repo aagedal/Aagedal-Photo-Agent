@@ -4,7 +4,7 @@ import AppKit
 /// Source Code links in the credits area. Wired to the App-menu "About" item.
 enum AboutPanel {
     private static let homepage = URL(string: "https://photoagent.aagedal.me")!
-    private static let repository = URL(string: "https://codeberg.org/taagedal/Aagedal-Photo-Agent")!
+    private static let repository = URL(string: "https://github.com/aagedal/Aagedal-Photo-Agent")!
 
     static func show() {
         NSApplication.shared.orderFrontStandardAboutPanel(options: [.credits: credits])

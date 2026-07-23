@@ -4,8 +4,8 @@
 # Aagedal Photo Agent, then write the matching <item> into appcast.xml.
 #
 # It does NOT publish anything: the final step prints a checklist for uploading
-# the DMG + appcast to Codeberg, because that needs your account and is the one
-# truly irreversible step.
+# the DMG and synchronizing the GitHub and legacy Codeberg appcasts, because
+# those steps need your accounts and are safer to keep explicit.
 #
 # No private or account-specific data is baked in. Anything machine-specific is
 # either auto-detected from the project / keychain, or prompted for at runtime
@@ -27,8 +27,8 @@ CHANGELOG="${CHANGELOG:-CHANGELOG.md}"
 OUTPUT_DIR="${OUTPUT_DIR:-build/release}"
 # Base URL the published DMG will live under. The enclosure URL becomes
 # "$RELEASE_URL_BASE/<stem>-<version>.dmg" — must match where you actually
-# upload the DMG. The DMG is too large for Codeberg release assets, so it is
-# self-hosted at this flat path (no per-version subfolder).
+# upload the DMG. It is self-hosted at this flat path (no per-version
+# subfolder).
 RELEASE_URL_BASE="${RELEASE_URL_BASE:-https://aagedal.me/apps}"
 
 # Move to repo root (this script lives in scripts/).

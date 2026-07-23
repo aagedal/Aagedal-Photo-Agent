@@ -4,7 +4,7 @@
      xmlns:dc="http://purl.org/dc/elements/1.1/">
     <channel>
         <title>Aagedal Photo Agent</title>
-        <link>https://codeberg.org/taagedal/Aagedal-Photo-Agent/releases/download/appcast/appcast.xml</link>
+        <link>https://github.com/aagedal/Aagedal-Photo-Agent</link>
         <description>Updates for Aagedal Photo Agent</description>
         <language>en</language>
 
@@ -24,7 +24,7 @@
                 </ul>
             ]]></description>
             <enclosure
-                url="https://codeberg.org/taagedal/Aagedal-Photo-Agent/releases/download/X.Y.Z/Aagedal-Photo-Agent-X.Y.Z.dmg"
+                url="https://aagedal.me/apps/Aagedal-Photo-Agent-X.Y.Z.dmg"
                 sparkle:version="BUILD_NUMBER"
                 sparkle:shortVersionString="X.Y.Z"
                 sparkle:edSignature="ED_SIGNATURE_FROM_SIGN_UPDATE"

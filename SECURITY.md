@@ -14,7 +14,7 @@ Security fixes are provided for the latest 2.0 release. Older releases (1.x and
 
 Report security issues through the project's Codeberg issue tracker:
 
-**<https://codeberg.org/taagedal/Aagedal-Photo-Agent/issues/new>**
+**<https://github.com/aagedal/Aagedal-Photo-Agent/issues/new>**
 
 Start the issue title with **`[security]`** so it can be triaged and labelled
 quickly. Aagedal Photo Agent is a local, single-user desktop app — it runs no
