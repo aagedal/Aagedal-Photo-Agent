@@ -594,6 +594,10 @@ final class FullScreenImageCache: @unchecked Sendable {
         let orientation = fileEXIFOrientation(at: url)
         guard let ciImage = CIImage(contentsOf: url, options: [
             .applyOrientationProperty: true,
+            // Adaptive HDR JPEG/HEIF defaults to its backward-compatible SDR base.
+            // Explicitly combine that base with its ISO/Apple gain map so the shared
+            // float pipeline receives the full HDR rendition.
+            .expandToHDR: true,
             .toneMapHDRtoSDR: false
         ]) else { return nil }
 
@@ -825,6 +829,7 @@ final class FullScreenImageCache: @unchecked Sendable {
         let orientation = fileEXIFOrientation(at: url)
         guard let ciImage = CIImage(contentsOf: url, options: [
             .applyOrientationProperty: true,
+            .expandToHDR: true,
             .toneMapHDRtoSDR: false
         ]) else { return nil }
         return (ciImage, orientation)

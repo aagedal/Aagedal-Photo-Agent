@@ -32,13 +32,16 @@ enum CameraRawApproximation {
             image, from: rect, format: .RGBAh, colorSpace: workingColorSpace
         ) else { return nil }
         guard #available(macOS 15.0, *) else { return cg }
-        let peak = peakChannelValue(of: image, extent: rect)
+        let peak = contentHeadroom(of: image, extent: rect)
         guard peak > 1.0 else { return cg }
         return CGImageCreateCopyWithContentHeadroom(peak, cg) ?? cg
     }
 
     /// Peak (max) R/G/B channel value over `extent`, via a 1×1 CIAreaMaximum reduction.
-    nonisolated private static func peakChannelValue(of image: CIImage, extent: CGRect) -> Float {
+    /// This is also used when authoring an Adaptive HDR gain map because ImageIO needs
+    /// the edited image's content headroom after the Metal render has discarded the
+    /// source CIImage's original headroom property.
+    nonisolated static func contentHeadroom(of image: CIImage, extent: CGRect) -> Float {
         guard let maxFilter = CIFilter(name: "CIAreaMaximum", parameters: [
             kCIInputImageKey: image,
             kCIInputExtentKey: CIVector(cgRect: extent)

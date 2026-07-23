@@ -111,7 +111,7 @@ Rebuilt for 2.0 around a bundled on-device AuraFace (ArcFace) model, with eye-al
 Render edited images with the same pixel-perfect Metal pipeline used for preview:
 
 - **SDR formats:** JPEG, PNG, TIFF, HEIC, AVIF, JPEG XL
-- **HDR formats:** 10-bit HEIC, 10-bit AVIF, JPEG XL, 16-bit TIFF, 16-bit PNG
+- **HDR formats:** Adaptive HDR JPEG (ISO gain map), 10-bit HEIC, 10-bit AVIF, JPEG XL, 16-bit TIFF, 16-bit PNG
 - **Color gamuts:** sRGB, Display P3, Rec. 2020, Adobe RGB
 - TIFF compression options: None, LZW, ZIP
 - Quality slider for lossy formats

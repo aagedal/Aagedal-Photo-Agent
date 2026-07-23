@@ -55,6 +55,7 @@ nonisolated enum ExportFormatSDR: String, CaseIterable, Identifiable {
 
 /// Default output format for HDR images
 nonisolated enum ExportFormatHDR: String, CaseIterable, Identifiable {
+    case jpegGainMap = "jpegGainMap"
     case heic10bit = "heic10bit"
     case avif10bit = "avif10bit"
     case jxl = "jxl"
@@ -65,6 +66,7 @@ nonisolated enum ExportFormatHDR: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
+        case .jpegGainMap: return "JPEG (HDR Gain Map)"
         case .heic10bit: return "HEIC (10-bit)"
         case .avif10bit: return "AVIF (10-bit)"
         case .jxl: return "JPEG XL"
@@ -75,6 +77,7 @@ nonisolated enum ExportFormatHDR: String, CaseIterable, Identifiable {
 
     var fileExtension: String {
         switch self {
+        case .jpegGainMap: return "jpg"
         case .heic10bit: return "heic"
         case .avif10bit: return "avif"
         case .jxl: return "jxl"
@@ -85,13 +88,14 @@ nonisolated enum ExportFormatHDR: String, CaseIterable, Identifiable {
 
     var supportsQuality: Bool {
         switch self {
-        case .heic10bit, .avif10bit, .jxl: return true
+        case .jpegGainMap, .heic10bit, .avif10bit, .jxl: return true
         case .tiff16bit, .png16bit: return false
         }
     }
 
     var description: String {
         switch self {
+        case .jpegGainMap: return "Adaptive HDR JPEG with an SDR-compatible base image and an ISO HDR gain map. Best compatibility with JPEG workflows."
         case .heic10bit: return "10-bit HEIC preserves HDR data with good compression. Best Apple ecosystem compatibility."
         case .avif10bit: return "10-bit AVIF with HDR support. Excellent compression, limited software support."
         case .jxl: return "JPEG XL supports HDR natively with excellent quality. Very limited software support."
@@ -161,9 +165,8 @@ nonisolated enum TargetColorGamut: String, CaseIterable, Identifiable, Sendable 
         return CGColorSpace(name: name) ?? CGColorSpace(name: CGColorSpace.displayP3)!
     }
 
-    /// Extended-linear (half-float) HDR color space for the TIFF 16-bit path, which stores
-    /// values >1.0 without applying an OETF. Adobe RGB has no extended-linear variant, so it
-    /// falls back to extended-linear Display P3.
+    /// Extended-linear (half-float) HDR color space for gain-map JPEG and TIFF 16-bit output.
+    /// Adobe RGB has no extended-linear variant, so it falls back to extended-linear Display P3.
     var hdrLinearColorSpace: CGColorSpace {
         let name: CFString = switch self {
         case .sRGB: CGColorSpace.extendedLinearSRGB

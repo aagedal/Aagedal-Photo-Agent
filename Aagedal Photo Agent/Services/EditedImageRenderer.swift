@@ -46,6 +46,7 @@ nonisolated enum EditedImageRenderer {
                 // Fallback to generic CIImage for unsupported RAW formats
                 guard let ciImage = CIImage(contentsOf: sourceURL, options: [
                     .applyOrientationProperty: true,
+                    .expandToHDR: true,
                     .toneMapHDRtoSDR: false
                 ]) else {
                     throw RenderError.unreadableImage
@@ -55,6 +56,7 @@ nonisolated enum EditedImageRenderer {
         } else {
             guard let ciImage = CIImage(contentsOf: sourceURL, options: [
                 .applyOrientationProperty: true,
+                .expandToHDR: true,
                 .toneMapHDRtoSDR: false
             ]) else {
                 throw RenderError.unreadableImage
@@ -219,6 +221,15 @@ nonisolated enum EditedImageRenderer {
         let ctx = CameraRawApproximation.ciContext
 
         switch format {
+        case .jpegGainMap:
+            try writeHDRGainMapJPEG(
+                hdrImage: ciImage,
+                destURL: destURL,
+                colorSpace: gamut.hdrLinearColorSpace,
+                quality: quality,
+                ctx: ctx
+            )
+
         case .heic10bit:
             let data = try ctx.heif10Representation(of: ciImage, colorSpace: hdrColorSpace, options: [
                 CIImageRepresentationOption(rawValue: kCGImageDestinationLossyCompressionQuality as String): quality
@@ -248,6 +259,70 @@ nonisolated enum EditedImageRenderer {
         }
 
         return destURL
+    }
+
+    /// Author a standards-based Adaptive HDR JPEG.
+    ///
+    /// ImageIO derives a backward-compatible SDR base and an ISO gain map from the
+    /// rendered HDR image. The normal post-render metadata merge then adds the source's
+    /// EXIF/IPTC/XMP while preserving the JPEG's gain-map segments.
+    static func writeHDRGainMapJPEG(
+        hdrImage: CIImage,
+        destURL: URL,
+        colorSpace: CGColorSpace,
+        quality: Double,
+        ctx: CIContext
+    ) throws {
+        let extent = hdrImage.extent
+        guard extent.width > 0, extent.height > 0 else {
+            throw RenderError.encodeFailed
+        }
+
+        let measuredHeadroom = max(
+            1,
+            CameraRawApproximation.contentHeadroom(of: hdrImage, extent: extent)
+        )
+        // Images returned by the Metal edit pipeline contain extended-range pixels but
+        // have no source headroom metadata. Materialize a half-float, extended-linear
+        // CGImage and stamp its measured headroom before asking ImageIO to generate the
+        // SDR base and ISO gain map.
+        guard let renderedHDR = ctx.createCGImage(
+            hdrImage,
+            from: extent,
+            format: .RGBAh,
+            colorSpace: colorSpace
+        ) else {
+            throw RenderError.encodeFailed
+        }
+        let headroomTaggedCG = CGImageCreateCopyWithContentHeadroom(
+            measuredHeadroom,
+            renderedHDR
+        ) ?? renderedHDR
+        guard let destination = CGImageDestinationCreateWithURL(
+            destURL as CFURL,
+            UTType.jpeg.identifier as CFString,
+            1,
+            nil
+        ) else {
+            throw RenderError.encodeFailed
+        }
+
+        let properties: [CFString: Any] = [
+            kCGImageDestinationLossyCompressionQuality: quality,
+            kCGImagePropertyOrientation: 1,
+            kCGImageDestinationEncodeRequest: kCGImageDestinationEncodeToISOGainmap,
+            kCGImageDestinationEncodeRequestOptions: [
+                kCGImageDestinationEncodeBaseIsSDR: false
+            ]
+        ]
+        CGImageDestinationAddImage(
+            destination,
+            headroomTaggedCG,
+            properties as CFDictionary
+        )
+        guard CGImageDestinationFinalize(destination) else {
+            throw RenderError.encodeFailed
+        }
     }
 
     // MARK: - FFmpeg Encoding
@@ -369,6 +444,7 @@ nonisolated enum EditedImageRenderer {
         if isHDR {
             let format = ExportFormatHDR(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportFormatHDR) ?? "") ?? .jxl
             formatName = switch format {
+            case .jpegGainMap: "JPEG_HDR_Gain_Map"
             case .heic10bit: "HEIC_10bit"
             case .avif10bit: "AVIF_10bit"
             case .jxl: "JPEG_XL"

@@ -2,6 +2,7 @@ import Testing
 import Foundation
 import AppKit
 import CoreImage
+import ImageIO
 import SwiftExif
 @testable import Aagedal_Photo_Agent
 
@@ -520,5 +521,78 @@ struct RAWJXLConversionTests {
         #expect(probe.stderr.contains("rgb48le"))
         #expect(probe.stderr.contains("bt2020"))
         #expect(probe.stderr.contains("smpte2084"))
+    }
+}
+
+@Suite("Adaptive HDR JPEG")
+struct AdaptiveHDRJPEGTests {
+    private func makeSourceJPEG(in directory: URL) throws -> URL {
+        let source = directory.appendingPathComponent("source.jpg")
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 32,
+            pixelsHigh: 32,
+            bitsPerSample: 8,
+            samplesPerPixel: 3,
+            hasAlpha: false,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ), let data = rep.representation(
+            using: .jpeg,
+            properties: [.compressionFactor: 0.9]
+        ) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        try data.write(to: source)
+        return source
+    }
+
+    @Test("writer embeds an ISO gain map that survives metadata copying and expands to HDR")
+    func writesAndReadsGainMapJPEG() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apa-hdr-gainmap-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let source = try makeSourceJPEG(in: directory)
+        #expect(!SupportedImageFormats.isHDR(url: source))
+        let destination = directory.appendingPathComponent("adaptive-hdr.jpg")
+        let extent = CGRect(x: 0, y: 0, width: 32, height: 32)
+        let hdr = CIImage(
+            color: CIColor(red: 3.0, green: 1.25, blue: 0.45, alpha: 1)
+        ).cropped(to: extent)
+
+        try EditedImageRenderer.writeHDRGainMapJPEG(
+            hdrImage: hdr,
+            destURL: destination,
+            colorSpace: CameraRawApproximation.workingColorSpace,
+            quality: 0.9,
+            ctx: CameraRawApproximation.ciContext
+        )
+
+        let engine = SwiftExifWriteEngine()
+        try await engine.copyMetadataToRenderedFile(
+            from: source,
+            to: destination,
+            bakedCameraRaw: nil
+        )
+
+        let imageSource = try #require(
+            CGImageSourceCreateWithURL(destination as CFURL, nil)
+        )
+        #expect(CGImageSourceCopyAuxiliaryDataInfoAtIndex(
+            imageSource,
+            0,
+            kCGImageAuxiliaryDataTypeISOGainMap
+        ) != nil)
+        #expect(SupportedImageFormats.isHDR(url: destination))
+
+        let expanded = try #require(CIImage(contentsOf: destination, options: [
+            .expandToHDR: true,
+            .toneMapHDRtoSDR: false
+        ]))
+        #expect(expanded.contentHeadroom > 1)
     }
 }
