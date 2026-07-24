@@ -362,10 +362,23 @@ nonisolated enum EditedImageRenderer {
             try data.write(to: destURL, options: .atomic)
 
         case .avif:
-            try await encodeViaFFmpeg(ciImage, to: destURL, quality: quality, isHDR: false, encoder: .avif, gamut: gamut)
+            try writeAVIF(
+                ciImage: ciImage,
+                destURL: destURL,
+                colorSpace: colorSpace,
+                quality: quality,
+                isHDR: false,
+                ctx: ctx
+            )
 
         case .jxl:
-            try await encodeViaFFmpeg(ciImage, to: destURL, quality: quality, isHDR: false, encoder: .jxl, gamut: gamut)
+            try await encodeJXLViaFFmpeg(
+                ciImage,
+                to: destURL,
+                quality: quality,
+                isHDR: false,
+                gamut: gamut
+            )
         }
 
         return destURL
@@ -462,10 +475,23 @@ nonisolated enum EditedImageRenderer {
             try data.write(to: destURL, options: .atomic)
 
         case .avif10bit:
-            try await encodeViaFFmpeg(ciImage, to: destURL, quality: quality, isHDR: true, encoder: .avif, gamut: gamut)
+            try writeAVIF(
+                ciImage: ciImage,
+                destURL: destURL,
+                colorSpace: hdrColorSpace,
+                quality: quality,
+                isHDR: true,
+                ctx: ctx
+            )
 
         case .jxl:
-            try await encodeViaFFmpeg(ciImage, to: destURL, quality: quality, isHDR: true, encoder: .jxl, gamut: gamut)
+            try await encodeJXLViaFFmpeg(
+                ciImage,
+                to: destURL,
+                quality: quality,
+                isHDR: true,
+                gamut: gamut
+            )
 
         case .tiff16bit:
             // Half-float linear preserves HDR values >1.0 without needing OETF application
@@ -554,17 +580,61 @@ nonisolated enum EditedImageRenderer {
         }
     }
 
-    // MARK: - FFmpeg Encoding
+    // MARK: - AVIF Encoding
 
-    private enum FFmpegEncoder {
-        case avif
-        case jxl
+    /// Encode AVIF directly through macOS Image I/O.
+    ///
+    /// An 8-bit CGImage produces an SDR AVIF with the requested ICC profile. A half-float
+    /// CGImage in an HLG color space makes Image I/O select a 10-bit AV1 payload and retain
+    /// the HDR transfer function, color primaries, and content headroom.
+    static func writeAVIF(
+        ciImage: CIImage,
+        destURL: URL,
+        colorSpace: CGColorSpace,
+        quality: Double,
+        isHDR: Bool,
+        ctx: CIContext
+    ) throws {
+        let extent = ciImage.extent
+        guard extent.width > 0, extent.height > 0,
+              extent.width.isFinite, extent.height.isFinite,
+              let cgImage = ctx.createCGImage(
+                  ciImage,
+                  from: extent,
+                  format: isHDR ? .RGBAh : .RGBA8,
+                  colorSpace: colorSpace
+              ),
+              let destination = CGImageDestinationCreateWithURL(
+                  destURL as CFURL,
+                  "public.avif" as CFString,
+                  1,
+                  nil
+              ) else {
+            throw RenderError.encodeFailed
+        }
+
+        let properties: [CFString: Any] = [
+            kCGImageDestinationLossyCompressionQuality: min(1, max(0, quality)),
+            // The render pipeline has already applied the source orientation.
+            kCGImagePropertyOrientation: 1
+        ]
+        CGImageDestinationAddImage(destination, cgImage, properties as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else {
+            throw RenderError.encodeFailed
+        }
     }
 
-    /// Encode via FFmpeg: render to a temporary intermediate, then transcode to the target format.
-    /// HDR uses a HEIC intermediate (heif10Representation correctly applies HLG OETF).
-    /// SDR uses a TIFF intermediate.
-    private static func encodeViaFFmpeg(_ ciImage: CIImage, to destURL: URL, quality: Double, isHDR: Bool, encoder: FFmpegEncoder, gamut: TargetColorGamut) async throws {
+    // MARK: - JPEG XL Encoding
+
+    /// Render to a temporary intermediate, then transcode to JPEG XL with FFmpeg.
+    /// HDR uses a 16-bit HLG PNG; SDR uses an 8-bit TIFF.
+    private static func encodeJXLViaFFmpeg(
+        _ ciImage: CIImage,
+        to destURL: URL,
+        quality: Double,
+        isHDR: Bool,
+        gamut: TargetColorGamut
+    ) async throws {
         let ctx = CameraRawApproximation.ciContext
         let tempDir = FileManager.default.temporaryDirectory
 
@@ -577,13 +647,12 @@ nonisolated enum EditedImageRenderer {
                 throw RenderError.encodeFailed
             }
             try pngData.write(to: tempPNG, options: .atomic)
-
-            switch encoder {
-            case .avif:
-                try await FFmpegService.encodeAVIF(input: tempPNG.path, output: destURL.path, quality: quality, isHDR: true)
-            case .jxl:
-                try await FFmpegService.encodeJXL(input: tempPNG.path, output: destURL.path, quality: quality, isHDR: true)
-            }
+            try await FFmpegService.encodeJXL(
+                input: tempPNG.path,
+                output: destURL.path,
+                quality: quality,
+                isHDR: true
+            )
         } else {
             let tempTIFF = tempDir.appendingPathComponent(UUID().uuidString).appendingPathExtension("tiff")
             defer { try? FileManager.default.removeItem(at: tempTIFF) }
@@ -593,13 +662,12 @@ nonisolated enum EditedImageRenderer {
                 throw RenderError.encodeFailed
             }
             try writeTIFF(cgImage: cgImage, to: tempTIFF)
-
-            switch encoder {
-            case .avif:
-                try await FFmpegService.encodeAVIF(input: tempTIFF.path, output: destURL.path, quality: quality, isHDR: false)
-            case .jxl:
-                try await FFmpegService.encodeJXL(input: tempTIFF.path, output: destURL.path, quality: quality, isHDR: false)
-            }
+            try await FFmpegService.encodeJXL(
+                input: tempTIFF.path,
+                output: destURL.path,
+                quality: quality,
+                isHDR: false
+            )
         }
     }
 

@@ -597,6 +597,116 @@ struct AdaptiveHDRJPEGTests {
     }
 }
 
+@Suite("Native AVIF encoding")
+struct NativeAVIFEncodingTests {
+    private let context = CIContext(options: [.cacheIntermediates: false])
+
+    private func makeSourceJPEG(in directory: URL) throws -> URL {
+        let source = directory.appendingPathComponent("source.jpg")
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 32,
+            pixelsHigh: 24,
+            bitsPerSample: 8,
+            samplesPerPixel: 3,
+            hasAlpha: false,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ), let data = rep.representation(
+            using: .jpeg,
+            properties: [.compressionFactor: 0.9]
+        ) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        try data.write(to: source)
+        return source
+    }
+
+    private func properties(at url: URL) throws -> [CFString: Any] {
+        let source = try #require(CGImageSourceCreateWithURL(url as CFURL, nil))
+        return try #require(
+            CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        )
+    }
+
+    @Test("SDR writer produces an 8-bit AVIF with the selected ICC profile")
+    func writesSDRAVIF() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apa-native-sdr-avif-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let destination = directory.appendingPathComponent("sdr.avif")
+        let extent = CGRect(x: 0, y: 0, width: 48, height: 32)
+        let image = CIImage(
+            color: CIColor(red: 0.72, green: 0.31, blue: 0.08, alpha: 1)
+        ).cropped(to: extent)
+
+        try EditedImageRenderer.writeAVIF(
+            ciImage: image,
+            destURL: destination,
+            colorSpace: CGColorSpace(name: CGColorSpace.displayP3)!,
+            quality: 0.82,
+            isHDR: false,
+            ctx: context
+        )
+
+        let source = try #require(
+            CGImageSourceCreateWithURL(destination as CFURL, nil)
+        )
+        #expect(CGImageSourceGetType(source) as String? == "public.avif")
+        let props = try properties(at: destination)
+        #expect((props[kCGImagePropertyDepth] as? NSNumber)?.intValue == 8)
+        #expect((props[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue == 48)
+        #expect((props[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue == 32)
+        #expect(props[kCGImagePropertyProfileName] as? String == "Display P3")
+        #expect(CGImageSourceCreateImageAtIndex(source, 0, nil) != nil)
+    }
+
+    @Test("HDR writer produces 10-bit HLG AVIF and metadata rewriting preserves HDR")
+    func writesHDRAVIF() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apa-native-hdr-avif-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let sourceJPEG = try makeSourceJPEG(in: directory)
+        let destination = directory.appendingPathComponent("hdr.avif")
+        let extent = CGRect(x: 0, y: 0, width: 48, height: 32)
+        let image = CIImage(
+            color: CIColor(red: 3.0, green: 1.25, blue: 0.45, alpha: 1)
+        ).cropped(to: extent)
+
+        try EditedImageRenderer.writeAVIF(
+            ciImage: image,
+            destURL: destination,
+            colorSpace: CGColorSpace(name: CGColorSpace.itur_2100_HLG)!,
+            quality: 0.82,
+            isHDR: true,
+            ctx: context
+        )
+        try await SwiftExifWriteEngine().copyMetadataToRenderedFile(
+            from: sourceJPEG,
+            to: destination,
+            bakedCameraRaw: nil
+        )
+
+        let props = try properties(at: destination)
+        #expect((props[kCGImagePropertyDepth] as? NSNumber)?.intValue == 10)
+        #expect((props[kCGImagePropertyProfileName] as? String)?.contains("2100 HLG") == true)
+        #expect((props[kCGImagePropertyOrientation] as? NSNumber)?.intValue == 1)
+        #expect(SupportedImageFormats.isHDR(url: destination))
+
+        let expanded = try #require(CIImage(contentsOf: destination, options: [
+            .expandToHDR: true,
+            .toneMapHDRtoSDR: false
+        ]))
+        #expect(expanded.contentHeadroom > 1)
+    }
+}
+
 @Suite("Advanced export")
 struct AdvancedExportTests {
     private var configuration: AdvancedExportConfiguration {
@@ -815,6 +925,42 @@ struct AdvancedExportTests {
             )
         )
         #expect(pixelData(lowPreview.exportImage) == pixelData(decodedLowArtifact))
+    }
+
+    @Test("preview displays native AVIF compression at the selected quality")
+    func previewDisplaysSelectedAVIFCompression() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apa-avif-compression-preview-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let source = try makeCompressionSourceJPEG(in: directory)
+        let item = AdvancedExportItem(
+            sourceURL: source,
+            filename: source.lastPathComponent,
+            cameraRaw: nil,
+            isHDR: false
+        )
+        var lowConfiguration = configuration
+        lowConfiguration.sdrFormat = .avif
+        lowConfiguration.sdrQuality = AdvancedExportConfiguration.minimumQuality
+        var highConfiguration = lowConfiguration
+        highConfiguration.sdrQuality = 0.95
+
+        let service = AdvancedExportPreviewService()
+        let lowPreview = try await service.makePreview(
+            item: item,
+            configuration: lowConfiguration
+        )
+        let highPreview = try await service.makePreview(
+            item: item,
+            configuration: highConfiguration
+        )
+
+        #expect(lowPreview.storage.outputURL.pathExtension == "avif")
+        #expect(highPreview.storage.outputURL.pathExtension == "avif")
+        #expect(lowPreview.encodedFileSize < highPreview.encodedFileSize)
+        #expect(pixelData(lowPreview.exportImage) != pixelData(highPreview.exportImage))
     }
 
     @Test("resolution limit caps the long edge without upscaling")

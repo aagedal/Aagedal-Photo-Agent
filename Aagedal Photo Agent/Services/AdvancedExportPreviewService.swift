@@ -134,7 +134,7 @@ actor AdvancedExportPreviewService {
         }.value
     }
 
-    /// Full-resolution RAW processing and FFmpeg encoding are deliberately serialized.
+    /// Full-resolution RAW processing and image encoding are deliberately serialized.
     /// Lazy rows may overlap while scrolling, and running several of these jobs at once
     /// can multiply Metal textures and temporary 16-bit intermediates.
     private func acquireRenderSlot() async {

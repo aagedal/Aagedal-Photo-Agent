@@ -23,7 +23,7 @@ struct LicensesSettingsView: View {
         ),
         Component(
             name: "FFmpeg",
-            detail: "Bundled encoder for AVIF and JPEG XL export",
+            detail: "Bundled encoder for JPEG XL export",
             licenseName: "GPL-3.0",
             licenseResource: "License-GPL-3.0",
             url: URL(string: "https://ffmpeg.org")

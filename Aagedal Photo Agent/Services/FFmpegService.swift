@@ -48,31 +48,6 @@ nonisolated enum FFmpegService {
 
     // MARK: - Image Encoding
 
-    /// Encode an image to AVIF using ffmpeg.
-    /// - Parameters:
-    ///   - input: Path to the input image (TIFF 16-bit recommended for HDR)
-    ///   - output: Path to the output .avif file
-    ///   - quality: 0.0 (worst) to 1.0 (best). Maps to CRF 63-0.
-    ///   - isHDR: Whether to preserve HDR color metadata
-    static func encodeAVIF(input: String, output: String, quality: Double, isHDR: Bool) async throws {
-        // Map quality 0.0-1.0 to CRF 63-0 (lower CRF = better quality)
-        let crf = Int((1.0 - quality) * 63.0)
-
-        var args = ["-hide_banner", "-y", "-i", input]
-
-        args += ["-pix_fmt", isHDR ? "yuv420p10le" : "yuv420p"]
-        args += ["-c:v", "libaom-av1", "-crf", "\(crf)", "-b:v", "0"]
-        args += ["-cpu-used", "6"]  // faster encoding (0=slowest, 8=fastest)
-        args += ["-still-picture", "1"]
-        args += [output]
-
-        try await run(arguments: args)
-
-        guard FileManager.default.fileExists(atPath: output) else {
-            throw FFmpegError.outputMissing
-        }
-    }
-
     /// Encode an image to JPEG XL using ffmpeg.
     /// - Parameters:
     ///   - input: Path to the input image (TIFF 16-bit recommended for HDR)
