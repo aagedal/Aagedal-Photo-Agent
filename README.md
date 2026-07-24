@@ -117,8 +117,8 @@ Render edited images with the same pixel-perfect Metal pipeline used for preview
 - Quality slider for lossy formats
 - Batch render selected or all images
 
-AVIF encoding uses native macOS Image I/O. JPEG XL encoding is powered by bundled
-FFmpeg (arm64, `libjxl`).
+AVIF can be encoded with native macOS Image I/O or bundled FFmpeg
+(arm64, `libaom-av1`). JPEG XL encoding uses bundled FFmpeg (`libjxl`).
 
 ### Content Authenticity (C2PA)
 
@@ -190,7 +190,7 @@ MVVM with a services layer, built primarily on Apple frameworks plus a small set
 - **Metal GPU pipeline** for real-time image editing, scope rendering, and export
 - **SwiftExif** (SPM, pure Swift) for metadata read/write
 - **Image I/O** for native 8-bit and 10-bit AVIF encoding
-- **FFmpeg** (bundled, arm64) for JPEG XL encoding
+- **FFmpeg** (bundled, arm64) for alternative AVIF and JPEG XL encoding
 - **c2patool** (bundled) for C2PA signing
 - **Apple Vision** for face detection; bundled **AuraFace (ArcFace) CoreML** model for face embeddings and recognition
 
@@ -247,7 +247,7 @@ License texts ship with the app (Settings → Licenses) and live under `Aagedal 
 
 | Component | Purpose | License |
 |---|---|---|
-| [FFmpeg](https://ffmpeg.org) | JPEG XL encoding | GPL-3.0 |
+| [FFmpeg](https://ffmpeg.org) | AVIF / JPEG XL encoding | GPL-3.0 |
 | [c2patool](https://github.com/contentauth/c2pa-rs) | C2PA content credentials | MIT |
 | [Sparkle](https://sparkle-project.org) | Software updates | MIT |
 | [SwiftExif](https://github.com/aagedal/SwiftExif) | EXIF / IPTC metadata | GPL-3.0 |

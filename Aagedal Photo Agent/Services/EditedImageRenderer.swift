@@ -404,6 +404,15 @@ nonisolated enum EditedImageRenderer {
                 ctx: ctx
             )
 
+        case .avifFFmpeg:
+            try await encodeAVIFViaFFmpeg(
+                ciImage,
+                to: destURL,
+                quality: quality,
+                isHDR: false,
+                gamut: gamut
+            )
+
         case .jxl:
             try await encodeJXLViaFFmpeg(
                 ciImage,
@@ -521,6 +530,15 @@ nonisolated enum EditedImageRenderer {
                 quality: quality,
                 isHDR: true,
                 ctx: ctx
+            )
+
+        case .avifFFmpeg10bit:
+            try await encodeAVIFViaFFmpeg(
+                ciImage,
+                to: destURL,
+                quality: quality,
+                isHDR: true,
+                gamut: gamut
             )
 
         case .jxl:
@@ -660,6 +678,65 @@ nonisolated enum EditedImageRenderer {
         CGImageDestinationAddImage(destination, cgImage, properties as CFDictionary)
         guard CGImageDestinationFinalize(destination) else {
             throw RenderError.encodeFailed
+        }
+    }
+
+    /// Render to a lossless intermediate, then encode AVIF with FFmpeg/libaom.
+    /// HDR uses a 16-bit HLG PNG; SDR uses an 8-bit TIFF.
+    private static func encodeAVIFViaFFmpeg(
+        _ ciImage: CIImage,
+        to destURL: URL,
+        quality: Double,
+        isHDR: Bool,
+        gamut: TargetColorGamut
+    ) async throws {
+        let ctx = CameraRawApproximation.ciContext
+        let tempDir = FileManager.default.temporaryDirectory
+
+        if isHDR {
+            let tempPNG = tempDir
+                .appendingPathComponent(UUID().uuidString)
+                .appendingPathExtension("png")
+            defer { try? FileManager.default.removeItem(at: tempPNG) }
+
+            guard let pngData = ctx.pngRepresentation(
+                of: ciImage,
+                format: .RGBA16,
+                colorSpace: gamut.hdrHLGColorSpace,
+                options: [:]
+            ) else {
+                throw RenderError.encodeFailed
+            }
+            try pngData.write(to: tempPNG, options: .atomic)
+            try await FFmpegService.encodeAVIF(
+                input: tempPNG.path,
+                output: destURL.path,
+                quality: quality,
+                isHDR: true,
+                gamut: gamut
+            )
+        } else {
+            let tempTIFF = tempDir
+                .appendingPathComponent(UUID().uuidString)
+                .appendingPathExtension("tiff")
+            defer { try? FileManager.default.removeItem(at: tempTIFF) }
+
+            guard let cgImage = ctx.createCGImage(
+                ciImage,
+                from: ciImage.extent,
+                format: .RGBA8,
+                colorSpace: gamut.sdrColorSpace
+            ) else {
+                throw RenderError.encodeFailed
+            }
+            try writeTIFF(cgImage: cgImage, to: tempTIFF)
+            try await FFmpegService.encodeAVIF(
+                input: tempTIFF.path,
+                output: destURL.path,
+                quality: quality,
+                isHDR: false,
+                gamut: gamut
+            )
         }
     }
 
@@ -804,6 +881,7 @@ nonisolated enum EditedImageRenderer {
             case .jpegGainMap: "JPEG_HDR_Gain_Map"
             case .heic10bit: "HEIC_10bit"
             case .avif10bit: "AVIF_10bit"
+            case .avifFFmpeg10bit: "AVIF_FFmpeg_10bit"
             case .jxl: "JPEG_XL"
             case .tiff16bit: "TIFF_16bit"
             case .png16bit: "PNG_16bit"
@@ -822,6 +900,7 @@ nonisolated enum EditedImageRenderer {
             case .tiff: "TIFF"
             case .heic: "HEIC"
             case .avif: "AVIF"
+            case .avifFFmpeg: "AVIF_FFmpeg"
             case .jxl: "JPEG_XL"
             }
         }

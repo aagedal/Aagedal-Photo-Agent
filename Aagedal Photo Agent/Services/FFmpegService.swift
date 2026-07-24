@@ -48,6 +48,89 @@ nonisolated enum FFmpegService {
 
     // MARK: - Image Encoding
 
+    /// Encode an image to AVIF using FFmpeg's libaom AV1 encoder.
+    static func encodeAVIF(
+        input: String,
+        output: String,
+        quality: Double,
+        isHDR: Bool,
+        gamut: TargetColorGamut
+    ) async throws {
+        try await run(arguments: avifArguments(
+            input: input,
+            output: output,
+            quality: quality,
+            isHDR: isHDR,
+            gamut: gamut
+        ))
+
+        guard FileManager.default.fileExists(atPath: output) else {
+            throw FFmpegError.outputMissing
+        }
+    }
+
+    /// Builds the libaom invocation separately so quality mapping, bit depth, and
+    /// HDR signaling can be covered without launching the bundled executable.
+    static func avifArguments(
+        input: String,
+        output: String,
+        quality: Double,
+        isHDR: Bool,
+        gamut: TargetColorGamut
+    ) -> [String] {
+        let clampedQuality = min(1, max(0, quality))
+        let crf = Int((1 - clampedQuality) * 63)
+        var arguments = ["-hide_banner", "-y", "-i", input]
+
+        arguments += ["-pix_fmt", isHDR ? "yuv420p10le" : "yuv420p"]
+        arguments += avifColorArguments(isHDR: isHDR, gamut: gamut)
+        arguments += [
+            "-c:v", "libaom-av1",
+            "-crf", "\(crf)",
+            "-b:v", "0",
+            "-cpu-used", "6",
+            "-still-picture", "1",
+            output
+        ]
+        return arguments
+    }
+
+    private static func avifColorArguments(
+        isHDR: Bool,
+        gamut: TargetColorGamut
+    ) -> [String] {
+        if isHDR {
+            // TargetColorGamut falls back to Display P3 HLG when the selected gamut
+            // has no native HLG color space.
+            let primaries = gamut == .rec2020 ? "bt2020" : "smpte432"
+            return [
+                "-color_range", "pc",
+                "-color_primaries", primaries,
+                "-color_trc", "arib-std-b67",
+                "-colorspace", "bt2020nc"
+            ]
+        }
+
+        let values: (primaries: String, transfer: String, matrix: String) = switch gamut {
+        case .sRGB:
+            ("bt709", "iec61966-2-1", "bt709")
+        case .displayP3:
+            ("smpte432", "iec61966-2-1", "bt709")
+        case .rec2020:
+            ("bt2020", "bt2020-10", "bt2020nc")
+        case .adobeRGB:
+            // AV1 CICP has no Adobe RGB primaries identifier. These values describe
+            // the closest broadly supported wide-gamut interpretation.
+            ("smpte432", "gamma22", "bt709")
+        }
+        return [
+            "-color_range", "pc",
+            "-color_primaries", values.primaries,
+            "-color_trc", values.transfer,
+            "-colorspace", values.matrix
+        ]
+    }
+
     /// Encode an image to JPEG XL using ffmpeg.
     /// - Parameters:
     ///   - input: Path to the input image (TIFF 16-bit recommended for HDR)

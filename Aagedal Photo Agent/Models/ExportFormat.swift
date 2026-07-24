@@ -8,6 +8,7 @@ nonisolated enum ExportFormatSDR: String, CaseIterable, Identifiable, Sendable {
     case tiff = "tiff"
     case heic = "heic"
     case avif = "avif"
+    case avifFFmpeg = "avifFFmpeg"
     case jxl = "jxl"
 
     var id: String { rawValue }
@@ -18,7 +19,8 @@ nonisolated enum ExportFormatSDR: String, CaseIterable, Identifiable, Sendable {
         case .png: return "PNG"
         case .tiff: return "TIFF"
         case .heic: return "HEIC"
-        case .avif: return "AVIF"
+        case .avif: return "AVIF (macOS)"
+        case .avifFFmpeg: return "AVIF (FFmpeg)"
         case .jxl: return "JPEG XL"
         }
     }
@@ -29,14 +31,14 @@ nonisolated enum ExportFormatSDR: String, CaseIterable, Identifiable, Sendable {
         case .png: return "png"
         case .tiff: return "tiff"
         case .heic: return "heic"
-        case .avif: return "avif"
+        case .avif, .avifFFmpeg: return "avif"
         case .jxl: return "jxl"
         }
     }
 
     var supportsQuality: Bool {
         switch self {
-        case .jpeg, .heic, .avif, .jxl: return true
+        case .jpeg, .heic, .avif, .avifFFmpeg, .jxl: return true
         case .png, .tiff: return false
         }
     }
@@ -47,7 +49,8 @@ nonisolated enum ExportFormatSDR: String, CaseIterable, Identifiable, Sendable {
         case .png: return "Lossless compression. Larger files, best for graphics or when quality is critical."
         case .tiff: return "Uncompressed or lossless. Very large files, used in print workflows."
         case .heic: return "Modern Apple format with excellent compression. May not be compatible with all software."
-        case .avif: return "Next-gen format based on AV1. Excellent compression, limited software support."
+        case .avif: return "Native macOS AVIF encoding with embedded color-profile support."
+        case .avifFFmpeg: return "AVIF encoded with FFmpeg and libaom for improved compression efficiency."
         case .jxl: return "JPEG XL — excellent quality and compression. Very limited software support currently."
         }
     }
@@ -58,6 +61,7 @@ nonisolated enum ExportFormatHDR: String, CaseIterable, Identifiable, Sendable {
     case jpegGainMap = "jpegGainMap"
     case heic10bit = "heic10bit"
     case avif10bit = "avif10bit"
+    case avifFFmpeg10bit = "avifFFmpeg10bit"
     case jxl = "jxl"
     case tiff16bit = "tiff16bit"
     case png16bit = "png16bit"
@@ -68,7 +72,8 @@ nonisolated enum ExportFormatHDR: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .jpegGainMap: return "JPEG (HDR Gain Map)"
         case .heic10bit: return "HEIC (10-bit)"
-        case .avif10bit: return "AVIF (10-bit)"
+        case .avif10bit: return "AVIF (macOS, 10-bit)"
+        case .avifFFmpeg10bit: return "AVIF (FFmpeg, 10-bit)"
         case .jxl: return "JPEG XL"
         case .tiff16bit: return "TIFF (16-bit)"
         case .png16bit: return "PNG (16-bit)"
@@ -79,7 +84,7 @@ nonisolated enum ExportFormatHDR: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .jpegGainMap: return "jpg"
         case .heic10bit: return "heic"
-        case .avif10bit: return "avif"
+        case .avif10bit, .avifFFmpeg10bit: return "avif"
         case .jxl: return "jxl"
         case .tiff16bit: return "tiff"
         case .png16bit: return "png"
@@ -88,7 +93,7 @@ nonisolated enum ExportFormatHDR: String, CaseIterable, Identifiable, Sendable {
 
     var supportsQuality: Bool {
         switch self {
-        case .jpegGainMap, .heic10bit, .avif10bit, .jxl: return true
+        case .jpegGainMap, .heic10bit, .avif10bit, .avifFFmpeg10bit, .jxl: return true
         case .tiff16bit, .png16bit: return false
         }
     }
@@ -97,7 +102,8 @@ nonisolated enum ExportFormatHDR: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .jpegGainMap: return "Adaptive HDR JPEG with an SDR-compatible base image and an ISO HDR gain map. Best compatibility with JPEG workflows."
         case .heic10bit: return "10-bit HEIC preserves HDR data with good compression. Best Apple ecosystem compatibility."
-        case .avif10bit: return "10-bit AVIF with HDR support. Excellent compression, limited software support."
+        case .avif10bit: return "Native macOS 10-bit AVIF with embedded HDR color information."
+        case .avifFFmpeg10bit: return "10-bit HLG AVIF encoded with FFmpeg and libaom."
         case .jxl: return "JPEG XL supports HDR natively with excellent quality. Very limited software support."
         case .tiff16bit: return "16-bit TIFF preserves full dynamic range. Very large files, best for archival."
         case .png16bit: return "16-bit PNG preserves full dynamic range. Large files, lossless."

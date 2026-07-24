@@ -524,6 +524,129 @@ struct RAWJXLConversionTests {
     }
 }
 
+@Suite("FFmpeg AVIF encoding")
+struct FFmpegAVIFEncodingTests {
+    @Test("quality maps to libaom CRF and SDR color signaling")
+    func sdrArguments() {
+        let arguments = FFmpegService.avifArguments(
+            input: "/tmp/input.tiff",
+            output: "/tmp/output.avif",
+            quality: 0.92,
+            isHDR: false,
+            gamut: .sRGB
+        )
+
+        #expect(arguments.contains("libaom-av1"))
+        #expect(arguments.contains("yuv420p"))
+        #expect(arguments.contains("5"))
+        #expect(arguments.contains("iec61966-2-1"))
+        #expect(arguments.contains("bt709"))
+        #expect(arguments.contains("-still-picture"))
+    }
+
+    @Test("HDR uses 10-bit HLG signaling for the selected gamut")
+    func hdrArguments() {
+        let arguments = FFmpegService.avifArguments(
+            input: "/tmp/input.png",
+            output: "/tmp/output.avif",
+            quality: 0.8,
+            isHDR: true,
+            gamut: .rec2020
+        )
+
+        #expect(arguments.contains("yuv420p10le"))
+        #expect(arguments.contains("bt2020"))
+        #expect(arguments.contains("arib-std-b67"))
+        #expect(arguments.contains("bt2020nc"))
+        #expect(arguments.contains("12"))
+    }
+
+    @Test("bundled libaom produces a decodable AVIF")
+    func bundledEncoderProducesAVIF() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apa-ffmpeg-avif-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let input = directory.appendingPathComponent("input.png")
+        let output = directory.appendingPathComponent("output.avif")
+        let image = CIImage(
+            color: CIColor(red: 0.2, green: 0.55, blue: 0.85, alpha: 1)
+        ).cropped(to: CGRect(x: 0, y: 0, width: 64, height: 48))
+        let context = CIContext(options: [.cacheIntermediates: false])
+        let png = try #require(context.pngRepresentation(
+            of: image,
+            format: .RGBA8,
+            colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!,
+            options: [:]
+        ))
+        try png.write(to: input, options: .atomic)
+
+        try await FFmpegService.encodeAVIF(
+            input: input.path,
+            output: output.path,
+            quality: 0.8,
+            isHDR: false,
+            gamut: .sRGB
+        )
+
+        let source = try #require(CGImageSourceCreateWithURL(output as CFURL, nil))
+        #expect(CGImageSourceGetType(source) as String? == "public.avif")
+        #expect(CGImageSourceCreateImageAtIndex(source, 0, nil) != nil)
+    }
+
+    @Test("bundled libaom produces 10-bit HLG AVIF")
+    func bundledEncoderProducesHDRAVIF() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apa-ffmpeg-hdr-avif-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let input = directory.appendingPathComponent("input.png")
+        let output = directory.appendingPathComponent("output.avif")
+        let image = CIImage(
+            color: CIColor(red: 2.0, green: 0.8, blue: 0.3, alpha: 1)
+        ).cropped(to: CGRect(x: 0, y: 0, width: 64, height: 48))
+        let context = CIContext(options: [.cacheIntermediates: false])
+        let png = try #require(context.pngRepresentation(
+            of: image,
+            format: .RGBA16,
+            colorSpace: CGColorSpace(name: CGColorSpace.itur_2100_HLG)!,
+            options: [:]
+        ))
+        try png.write(to: input, options: .atomic)
+
+        try await FFmpegService.encodeAVIF(
+            input: input.path,
+            output: output.path,
+            quality: 0.8,
+            isHDR: true,
+            gamut: .rec2020
+        )
+
+        let ffmpegPath = try #require(FFmpegService.ffmpegPath)
+        let probe = try await Process.run(
+            executableURL: URL(fileURLWithPath: ffmpegPath),
+            arguments: ["-hide_banner", "-i", output.path],
+            allowNonZeroExit: true
+        )
+        #expect(probe.stderr.contains("yuv420p10le"))
+        #expect(probe.stderr.contains("bt2020"))
+        #expect(probe.stderr.contains("arib-std-b67"))
+        #expect(SupportedImageFormats.isHDR(url: output))
+    }
+
+    @Test("native and FFmpeg AVIF remain distinct persisted choices")
+    func formatChoicesAreDistinct() {
+        #expect(ExportFormatSDR.avif.rawValue == "avif")
+        #expect(ExportFormatSDR.avifFFmpeg.rawValue == "avifFFmpeg")
+        #expect(ExportFormatSDR.avif.fileExtension == "avif")
+        #expect(ExportFormatSDR.avifFFmpeg.fileExtension == "avif")
+        #expect(ExportFormatHDR.avif10bit.rawValue == "avif10bit")
+        #expect(ExportFormatHDR.avifFFmpeg10bit.rawValue == "avifFFmpeg10bit")
+    }
+}
+
 @Suite("Adaptive HDR JPEG")
 struct AdaptiveHDRJPEGTests {
     private func makeSourceJPEG(in directory: URL) throws -> URL {
@@ -940,6 +1063,15 @@ struct AdvancedExportTests {
                 configuration: secondaryConfiguration
             ) == "Edited_Secondary_PNG"
         )
+
+        secondaryConfiguration.sdrFormat = .avifFFmpeg
+        #expect(
+            EditedImageRenderer.formatFolderName(
+                prefix: "Edited_Secondary",
+                isHDR: false,
+                configuration: secondaryConfiguration
+            ) == "Edited_Secondary_AVIF_FFmpeg"
+        )
     }
 
     @Test("preview displays the artifact encoded at the selected JPEG quality")
@@ -1035,6 +1167,34 @@ struct AdvancedExportTests {
         #expect(highPreview.storage.outputURL.pathExtension == "avif")
         #expect(lowPreview.encodedFileSize < highPreview.encodedFileSize)
         #expect(pixelData(lowPreview.exportImage) != pixelData(highPreview.exportImage))
+    }
+
+    @Test("preview renders the FFmpeg AVIF alternative")
+    func previewRendersFFmpegAVIF() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apa-ffmpeg-avif-preview-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let source = try makeCompressionSourceJPEG(in: directory)
+        let item = AdvancedExportItem(
+            sourceURL: source,
+            filename: source.lastPathComponent,
+            cameraRaw: nil,
+            isHDR: false
+        )
+        var ffmpegConfiguration = configuration
+        ffmpegConfiguration.sdrFormat = .avifFFmpeg
+        ffmpegConfiguration.sdrQuality = 0.8
+
+        let preview = try await AdvancedExportPreviewService().makePreview(
+            item: item,
+            configuration: ffmpegConfiguration
+        )
+
+        #expect(preview.storage.outputURL.pathExtension == "avif")
+        #expect(preview.configuration.sdrFormat == .avifFFmpeg)
+        #expect(CGImageSourceCreateWithURL(preview.storage.outputURL as CFURL, nil) != nil)
     }
 
     @Test("resolution limit caps the long edge without upscaling")
