@@ -901,6 +901,47 @@ struct AdvancedExportTests {
         #expect(CGImageSourceCreateWithURL(artifact.outputURL as CFURL, nil) != nil)
     }
 
+    @Test("secondary export uses its explicit settings and a distinct filename")
+    func secondaryExportUsesExplicitConfiguration() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apa-secondary-export-test-\(UUID().uuidString)", isDirectory: true)
+        let output = directory.appendingPathComponent("output", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let source = try makeSourceJPEG(in: directory)
+        var secondaryConfiguration = configuration
+        secondaryConfiguration.sdrFormat = .png
+        secondaryConfiguration.resolutionLimit = .pixels1600
+
+        let destination = try await EditedImageRenderer.render(
+            from: source,
+            cameraRaw: nil,
+            isHDR: false,
+            outputFolder: output,
+            configuration: secondaryConfiguration,
+            outputFilenameSuffix: " Secondary"
+        )
+
+        #expect(destination.lastPathComponent == "preview-source Secondary.png")
+        #expect(FileManager.default.fileExists(atPath: destination.path))
+        #expect(CGImageSourceCreateWithURL(destination as CFURL, nil) != nil)
+    }
+
+    @Test("format subfolder naming uses the selected export configuration")
+    func formatSubfolderUsesExplicitConfiguration() {
+        var secondaryConfiguration = configuration
+        secondaryConfiguration.sdrFormat = .png
+
+        #expect(
+            EditedImageRenderer.formatFolderName(
+                prefix: "Edited_Secondary",
+                isHDR: false,
+                configuration: secondaryConfiguration
+            ) == "Edited_Secondary_PNG"
+        )
+    }
+
     @Test("preview displays the artifact encoded at the selected JPEG quality")
     func previewDisplaysSelectedJPEGCompression() async throws {
         let directory = FileManager.default.temporaryDirectory

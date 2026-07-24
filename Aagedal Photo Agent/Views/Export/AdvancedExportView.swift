@@ -3,20 +3,21 @@ import SwiftUI
 
 struct AdvancedExportView: View {
     let session: AdvancedExportSession
-    let onExport: (AdvancedExportConfiguration) -> Void
+    let onExport: ([AdvancedExportConfiguration]) -> Void
 
     @Environment(\.dismiss) private var dismiss
-    @State private var configuration: AdvancedExportConfiguration
+    @State private var configurations: [AdvancedExportConfiguration]
+    @State private var selectedConfigurationIndex = 0
     @State private var previewService = AdvancedExportPreviewService()
 
     init(
         session: AdvancedExportSession,
         initialConfiguration: AdvancedExportConfiguration,
-        onExport: @escaping (AdvancedExportConfiguration) -> Void
+        onExport: @escaping ([AdvancedExportConfiguration]) -> Void
     ) {
         self.session = session
         self.onExport = onExport
-        _configuration = State(initialValue: initialConfiguration)
+        _configurations = State(initialValue: [initialConfiguration])
     }
 
     private var hasSDRItems: Bool {
@@ -27,13 +28,33 @@ struct AdvancedExportView: View {
         session.items.contains { $0.isHDR }
     }
 
+    private var configuration: Binding<AdvancedExportConfiguration> {
+        Binding(
+            get: {
+                configurations[
+                    min(selectedConfigurationIndex, configurations.count - 1)
+                ]
+            },
+            set: { value in
+                configurations[
+                    min(selectedConfigurationIndex, configurations.count - 1)
+                ] = value
+            }
+        )
+    }
+
+    private var sheetHeight: CGFloat {
+        (NSScreen.main?.visibleFrame.height ?? 900) * 0.9
+    }
+
     var body: some View {
         HStack(spacing: 0) {
             comparisonList
             Divider()
             settingsInspector
         }
-        .frame(minWidth: 1_180, idealWidth: 1_320, minHeight: 720, idealHeight: 820)
+        .frame(minWidth: 1_180, idealWidth: 1_320)
+        .frame(height: sheetHeight)
     }
 
     private var comparisonList: some View {
@@ -47,13 +68,22 @@ struct AdvancedExportView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Text("Reference")
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 14)
+
+            Divider()
+
+            HStack(spacing: 12) {
+                Text("Source")
                     .frame(maxWidth: .infinity)
                 Text("Export Preview")
                     .frame(maxWidth: .infinity)
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 14)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 34)
+            .padding(.vertical, 9)
 
             Divider()
 
@@ -62,7 +92,7 @@ struct AdvancedExportView: View {
                     ForEach(session.items) { item in
                         AdvancedExportComparisonRow(
                             item: item,
-                            configuration: configuration,
+                            configurations: configurations,
                             previewService: previewService
                         )
                     }
@@ -74,8 +104,39 @@ struct AdvancedExportView: View {
 
     private var settingsInspector: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Export Settings")
-                .font(.headline)
+            HStack {
+                Text(configurations.count == 1 ? "Export Settings" : "\(selectedConfigurationName) Settings")
+                    .font(.headline)
+                Spacer()
+                if configurations.count > 1 {
+                    Button {
+                        configurations.removeLast()
+                        selectedConfigurationIndex = 0
+                    } label: {
+                        Image(systemName: "minus.circle")
+                    }
+                    .buttonStyle(.plain)
+                    .help("Remove secondary export")
+                    .accessibilityLabel("Remove secondary export")
+                }
+            }
+
+            if configurations.count > 1 {
+                Picker("Export", selection: $selectedConfigurationIndex) {
+                    Text("Primary").tag(0)
+                    Text("Secondary").tag(1)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            } else {
+                Button {
+                    configurations.append(configurations[0])
+                    selectedConfigurationIndex = 1
+                } label: {
+                    Label("Add Secondary Export", systemImage: "plus")
+                        .frame(maxWidth: .infinity)
+                }
+            }
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
@@ -86,8 +147,8 @@ struct AdvancedExportView: View {
                         hdrSettings
                     }
                     resolutionSettings
-                    if configuration.sdrFormat == .tiff
-                        || configuration.hdrFormat == .tiff16bit {
+                    if configuration.wrappedValue.sdrFormat == .tiff
+                        || configuration.wrappedValue.hdrFormat == .tiff16bit {
                         tiffSettings
                     }
                     destinationSettings
@@ -109,8 +170,8 @@ struct AdvancedExportView: View {
 
                 Spacer()
 
-                Button("Export \(session.items.count)") {
-                    onExport(configuration)
+                Button(exportButtonTitle) {
+                    onExport(configurations)
                     dismiss()
                 }
                 .buttonStyle(.borderedProminent)
@@ -121,11 +182,22 @@ struct AdvancedExportView: View {
         .frame(width: 300)
     }
 
+    private var selectedConfigurationName: String {
+        selectedConfigurationIndex == 0 ? "Primary Export" : "Secondary Export"
+    }
+
+    private var exportButtonTitle: String {
+        if configurations.count == 1 {
+            return "Export \(session.items.count)"
+        }
+        return "Export \(session.items.count * configurations.count) Files"
+    }
+
     private var sdrSettings: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 10) {
                 LabeledContent("Format") {
-                    Picker("Format", selection: $configuration.sdrFormat) {
+                    Picker("Format", selection: configuration.sdrFormat) {
                         ForEach(ExportFormatSDR.allCases) { format in
                             Text(format.displayName).tag(format)
                         }
@@ -134,15 +206,15 @@ struct AdvancedExportView: View {
                     .frame(width: 145)
                 }
 
-                if configuration.sdrFormat.supportsQuality {
+                if configuration.wrappedValue.sdrFormat.supportsQuality {
                     qualityControl(
                         title: "Quality",
-                        value: $configuration.sdrQuality
+                        value: configuration.sdrQuality
                     )
                 }
 
                 LabeledContent("Gamut") {
-                    Picker("Gamut", selection: $configuration.sdrGamut) {
+                    Picker("Gamut", selection: configuration.sdrGamut) {
                         ForEach(TargetColorGamut.allCases) { gamut in
                             Text(gamut.displayName).tag(gamut)
                         }
@@ -161,7 +233,7 @@ struct AdvancedExportView: View {
         GroupBox {
             VStack(alignment: .leading, spacing: 10) {
                 LabeledContent("Format") {
-                    Picker("Format", selection: $configuration.hdrFormat) {
+                    Picker("Format", selection: configuration.hdrFormat) {
                         ForEach(ExportFormatHDR.allCases) { format in
                             Text(format.displayName).tag(format)
                         }
@@ -170,15 +242,15 @@ struct AdvancedExportView: View {
                     .frame(width: 145)
                 }
 
-                if configuration.hdrFormat.supportsQuality {
+                if configuration.wrappedValue.hdrFormat.supportsQuality {
                     qualityControl(
                         title: "Quality",
-                        value: $configuration.hdrQuality
+                        value: configuration.hdrQuality
                     )
                 }
 
                 LabeledContent("Gamut") {
-                    Picker("Gamut", selection: $configuration.hdrGamut) {
+                    Picker("Gamut", selection: configuration.hdrGamut) {
                         ForEach(TargetColorGamut.allCases) { gamut in
                             Text(gamut.displayName).tag(gamut)
                         }
@@ -196,7 +268,7 @@ struct AdvancedExportView: View {
     private var tiffSettings: some View {
         GroupBox("TIFF") {
             LabeledContent("Compression") {
-                Picker("Compression", selection: $configuration.tiffCompression) {
+                Picker("Compression", selection: configuration.tiffCompression) {
                     ForEach(TIFFCompression.allCases) { compression in
                         Text(compression.displayName).tag(compression)
                     }
@@ -212,7 +284,7 @@ struct AdvancedExportView: View {
         GroupBox("Resolution") {
             VStack(alignment: .leading, spacing: 8) {
                 LabeledContent("Long edge") {
-                    Picker("Long edge", selection: $configuration.resolutionLimit) {
+                    Picker("Long edge", selection: configuration.resolutionLimit) {
                         ForEach(ExportResolutionLimit.allCases) { limit in
                             Text(limit.displayName).tag(limit)
                         }
@@ -232,7 +304,7 @@ struct AdvancedExportView: View {
     private var destinationSettings: some View {
         GroupBox("Destination") {
             VStack(alignment: .leading, spacing: 10) {
-                Picker("Save exported files", selection: $configuration.locationMode) {
+                Picker("Save exported files", selection: configuration.locationMode) {
                     ForEach(ExportLocationMode.allCases) { mode in
                         Text(mode.displayName).tag(mode)
                     }
@@ -240,14 +312,14 @@ struct AdvancedExportView: View {
                 .labelsHidden()
                 .frame(maxWidth: .infinity)
 
-                if configuration.locationMode == .customSubfolder {
+                if configuration.wrappedValue.locationMode == .customSubfolder {
                     TextField(
                         "Sub-folder name",
-                        text: $configuration.customSubfolderName
+                        text: configuration.customSubfolderName
                     )
                 }
 
-                Text(configuration.locationMode.description)
+                Text(configuration.wrappedValue.locationMode.description)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -279,7 +351,47 @@ struct AdvancedExportView: View {
 
 private struct AdvancedExportComparisonRow: View {
     let item: AdvancedExportItem
+    let configurations: [AdvancedExportConfiguration]
+    let previewService: AdvancedExportPreviewService
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Text(item.filename)
+                    .font(.headline)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                AdvancedExportRangeBadge(isHDR: item.isHDR)
+
+                Spacer()
+            }
+
+            ForEach(configurations.indices, id: \.self) { index in
+                if index > 0 {
+                    Divider()
+                        .padding(.vertical, 2)
+                }
+
+                AdvancedExportPreviewRow(
+                    item: item,
+                    configuration: configurations[index],
+                    exportName: index == 0 ? "Primary Export" : "Secondary Export",
+                    showsExportName: configurations.count > 1,
+                    previewService: previewService
+                )
+            }
+        }
+        .padding(14)
+        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+private struct AdvancedExportPreviewRow: View {
+    let item: AdvancedExportItem
     let configuration: AdvancedExportConfiguration
+    let exportName: String
+    let showsExportName: Bool
     let previewService: AdvancedExportPreviewService
 
     @State private var preview: AdvancedExportPreview?
@@ -292,15 +404,9 @@ private struct AdvancedExportComparisonRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Text(item.filename)
-                    .font(.headline)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-
-                AdvancedExportRangeBadge(isHDR: item.isHDR)
-
-                Spacer()
+            if showsExportName {
+                Text(exportName)
+                    .font(.subheadline.weight(.semibold))
             }
 
             Text(comparisonSummary)
@@ -336,8 +442,6 @@ private struct AdvancedExportComparisonRow: View {
                     .foregroundStyle(.orange)
             }
         }
-        .padding(14)
-        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 12))
         .task(id: taskID) {
             errorMessage = nil
             isLoading = true

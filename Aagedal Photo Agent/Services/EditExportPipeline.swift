@@ -74,7 +74,9 @@ enum EditExportPipeline {
                            outputFolder: URL,
                            folderURL: URL?,
                            writeEngine: any MetadataWriteEngine,
-                           failureTracker: MetadataFailureTracker) async throws -> URL {
+                           failureTracker: MetadataFailureTracker,
+                           configuration: AdvancedExportConfiguration? = nil,
+                           outputFilenameSuffix: String = "") async throws -> URL {
         var bakedCameraRaw = cameraRaw
         if case .rawJXL16 = kind {
             // This conversion is always Rec. 2020 PQ HDR, independently of the image's
@@ -99,7 +101,10 @@ enum EditExportPipeline {
             case .format:
                 return try await EditedImageRenderer.render(
                     from: sourceURL, cameraRaw: cameraRaw, isHDR: isHDR,
-                    outputFolder: outputFolder, metadataCopier: copier)
+                    outputFolder: outputFolder,
+                    configuration: configuration,
+                    outputFilenameSuffix: outputFilenameSuffix,
+                    metadataCopier: copier)
             case .saveAs(let format):
                 return try await EditedImageRenderer.saveAs(
                     from: sourceURL, cameraRaw: cameraRaw, format: format,

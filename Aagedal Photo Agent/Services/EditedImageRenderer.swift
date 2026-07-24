@@ -91,18 +91,39 @@ nonisolated enum EditedImageRenderer {
     /// Renders the image to the configured format. Returns the output URL.
     /// `metadataCopier` is required to populate IPTC/XMP/EXIF on the rendered file.
     @discardableResult
-    static func render(from sourceURL: URL, cameraRaw: CameraRawSettings?, isHDR: Bool, outputFolder: URL, metadataCopier: MetadataCopier? = nil) async throws -> URL {
+    static func render(
+        from sourceURL: URL,
+        cameraRaw: CameraRawSettings?,
+        isHDR: Bool,
+        outputFolder: URL,
+        configuration: AdvancedExportConfiguration? = nil,
+        outputFilenameSuffix: String = "",
+        metadataCopier: MetadataCopier? = nil
+    ) async throws -> URL {
         let processed = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw)
         let output = limitedForExport(
             processed,
-            maximumPixelSize: currentResolutionLimit.maximumPixelSize
+            maximumPixelSize: (configuration?.resolutionLimit ?? currentResolutionLimit)
+                .maximumPixelSize
         )
 
         let destURL: URL
         if isHDR {
-            destURL = try await renderHDRFormat(output, sourceURL: sourceURL, outputFolder: outputFolder)
+            destURL = try await renderHDRFormat(
+                output,
+                sourceURL: sourceURL,
+                outputFolder: outputFolder,
+                configuration: configuration,
+                outputFilenameSuffix: outputFilenameSuffix
+            )
         } else {
-            destURL = try await renderSDRFormat(output, sourceURL: sourceURL, outputFolder: outputFolder)
+            destURL = try await renderSDRFormat(
+                output,
+                sourceURL: sourceURL,
+                outputFolder: outputFolder,
+                configuration: configuration,
+                outputFilenameSuffix: outputFilenameSuffix
+            )
         }
         if let metadataCopier {
             do {
@@ -316,7 +337,8 @@ nonisolated enum EditedImageRenderer {
         _ ciImage: CIImage,
         sourceURL: URL,
         outputFolder: URL,
-        configuration: AdvancedExportConfiguration? = nil
+        configuration: AdvancedExportConfiguration? = nil,
+        outputFilenameSuffix: String = ""
     ) async throws -> URL {
         let format = configuration?.sdrFormat
             ?? ExportFormatSDR(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportFormatSDR) ?? "")
@@ -328,7 +350,12 @@ nonisolated enum EditedImageRenderer {
             ?? TargetColorGamut(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportColorGamutSDR) ?? "")
             ?? .sRGB
 
-        let destURL = outputURL(for: sourceURL, in: outputFolder, extension: format.fileExtension)
+        let destURL = outputURL(
+            for: sourceURL,
+            in: outputFolder,
+            extension: format.fileExtension,
+            filenameSuffix: outputFilenameSuffix
+        )
         let colorSpace = gamut.sdrColorSpace
         let ctx = CameraRawApproximation.ciContext
 
@@ -448,7 +475,8 @@ nonisolated enum EditedImageRenderer {
         _ ciImage: CIImage,
         sourceURL: URL,
         outputFolder: URL,
-        configuration: AdvancedExportConfiguration? = nil
+        configuration: AdvancedExportConfiguration? = nil,
+        outputFilenameSuffix: String = ""
     ) async throws -> URL {
         let format = configuration?.hdrFormat
             ?? ExportFormatHDR(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportFormatHDR) ?? "")
@@ -460,7 +488,12 @@ nonisolated enum EditedImageRenderer {
             ?? TargetColorGamut(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportColorGamutHDR) ?? "")
             ?? .displayP3
 
-        let destURL = outputURL(for: sourceURL, in: outputFolder, extension: format.fileExtension)
+        let destURL = outputURL(
+            for: sourceURL,
+            in: outputFolder,
+            extension: format.fileExtension,
+            filenameSuffix: outputFilenameSuffix
+        )
         let hdrColorSpace = gamut.hdrHLGColorSpace
         let ctx = CameraRawApproximation.ciContext
 
@@ -753,10 +786,20 @@ nonisolated enum EditedImageRenderer {
     // MARK: - Output Folder Naming
 
     /// Returns a format-aware subfolder name like "Signed_JPEG" or "Edited_HEIC_10bit".
-    static func formatFolderName(prefix: String, isHDR: Bool) -> String {
+    static func formatFolderName(
+        prefix: String,
+        isHDR: Bool,
+        configuration: AdvancedExportConfiguration? = nil
+    ) -> String {
         let formatName: String
         if isHDR {
-            let format = ExportFormatHDR(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportFormatHDR) ?? "") ?? .jxl
+            let format = configuration?.hdrFormat
+                ?? ExportFormatHDR(
+                    rawValue: UserDefaults.standard.string(
+                        forKey: UserDefaultsKeys.exportFormatHDR
+                    ) ?? ""
+                )
+                ?? .jxl
             formatName = switch format {
             case .jpegGainMap: "JPEG_HDR_Gain_Map"
             case .heic10bit: "HEIC_10bit"
@@ -766,7 +809,13 @@ nonisolated enum EditedImageRenderer {
             case .png16bit: "PNG_16bit"
             }
         } else {
-            let format = ExportFormatSDR(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportFormatSDR) ?? "") ?? .jpeg
+            let format = configuration?.sdrFormat
+                ?? ExportFormatSDR(
+                    rawValue: UserDefaults.standard.string(
+                        forKey: UserDefaultsKeys.exportFormatSDR
+                    ) ?? ""
+                )
+                ?? .jpeg
             formatName = switch format {
             case .jpeg: "JPEG"
             case .png: "PNG"
@@ -797,16 +846,28 @@ nonisolated enum EditedImageRenderer {
         rootFolder: URL,
         isHDR: Bool,
         formatPrefix: String,
-        askedFolder: URL?
+        askedFolder: URL?,
+        configuration: AdvancedExportConfiguration? = nil
     ) -> URL {
-        switch currentLocationMode {
+        switch configuration?.locationMode ?? currentLocationMode {
         case .sameAsOriginal:
             return sourceURL.deletingLastPathComponent()
         case .customSubfolder:
-            let customName = UserDefaults.standard.string(forKey: UserDefaultsKeys.exportCustomSubfolderName) ?? "Exports"
+            let customName = configuration?.customSubfolderName
+                ?? UserDefaults.standard.string(
+                    forKey: UserDefaultsKeys.exportCustomSubfolderName
+                )
+                ?? "Exports"
             return customSubfolder(in: rootFolder, name: customName)
         case .formatSubfolder:
-            return rootFolder.appendingPathComponent(formatFolderName(prefix: formatPrefix, isHDR: isHDR), isDirectory: true)
+            return rootFolder.appendingPathComponent(
+                formatFolderName(
+                    prefix: formatPrefix,
+                    isHDR: isHDR,
+                    configuration: configuration
+                ),
+                isDirectory: true
+            )
         case .askOnSave:
             return askedFolder ?? rootFolder
         }
@@ -867,8 +928,13 @@ nonisolated enum EditedImageRenderer {
 
     // MARK: - Output URL
 
-    static func outputURL(for sourceURL: URL, in outputFolder: URL, extension ext: String) -> URL {
-        let base = sourceURL.deletingPathExtension().lastPathComponent
+    static func outputURL(
+        for sourceURL: URL,
+        in outputFolder: URL,
+        extension ext: String,
+        filenameSuffix: String = ""
+    ) -> URL {
+        let base = sourceURL.deletingPathExtension().lastPathComponent + filenameSuffix
         return outputFolder
             .appendingPathComponent(base)
             .appendingPathExtension(ext)

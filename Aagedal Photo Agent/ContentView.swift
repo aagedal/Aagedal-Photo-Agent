@@ -71,6 +71,11 @@ private struct SafetyAndCullingHandlers: ViewModifier {
     }
 }
 
+private struct AdvancedExportRequest {
+    let urls: [URL]
+    let configurations: [AdvancedExportConfiguration]
+}
+
 struct ContentView: View {
     @State private var panes: BrowserPanesModel
     /// The pane every single consumer follows — sidebar folder loads, metadata panel,
@@ -93,7 +98,7 @@ struct ContentView: View {
     @State private var developTemplateViewModel = DevelopTemplateViewModel()
     @State private var ftpViewModel = FTPViewModel()
     @State private var advancedExportSession: AdvancedExportSession?
-    @State private var pendingAdvancedExportURLs: [URL]?
+    @State private var pendingAdvancedExportRequest: AdvancedExportRequest?
     @State private var settingsViewModel: SettingsViewModel
     @State private var importViewModel: ImportViewModel
     /// Shared, persisted log of recent imports and uploads.
@@ -281,16 +286,24 @@ struct ContentView: View {
                 )
             }
             .sheet(item: $advancedExportSession, onDismiss: {
-                guard let urls = pendingAdvancedExportURLs else { return }
-                pendingAdvancedExportURLs = nil
-                renderAndSaveEditedFolder(urls: urls)
+                guard let request = pendingAdvancedExportRequest else { return }
+                pendingAdvancedExportRequest = nil
+                renderAndSaveEditedFolder(
+                    urls: request.urls,
+                    configurations: request.configurations
+                )
             }) { session in
                 AdvancedExportView(
                     session: session,
                     initialConfiguration: advancedExportConfiguration
-                ) { configuration in
-                    applyAdvancedExportConfiguration(configuration)
-                    pendingAdvancedExportURLs = session.items.map(\.sourceURL)
+                ) { configurations in
+                    if let primaryConfiguration = configurations.first {
+                        applyAdvancedExportConfiguration(primaryConfiguration)
+                    }
+                    pendingAdvancedExportRequest = AdvancedExportRequest(
+                        urls: session.items.map(\.sourceURL),
+                        configurations: configurations
+                    )
                     advancedExportSession = nil
                 }
             }
@@ -1675,14 +1688,16 @@ struct ContentView: View {
     /// Prompts the user to pick a destination folder for `.askOnSave` exports.
     /// Returns nil if the user cancels.
     @MainActor
-    private func promptForExportDestination() -> URL? {
+    private func promptForExportDestination(
+        message: String = "Choose a destination folder for exported files"
+    ) -> URL? {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
         panel.prompt = "Choose"
-        panel.message = "Choose a destination folder for exported files"
+        panel.message = message
         panel.directoryURL = browserViewModel.currentFolderURL
         return panel.runModal() == .OK ? panel.url : nil
     }
@@ -2455,22 +2470,35 @@ struct ContentView: View {
         }
     }
 
-    private func renderAndSaveEditedFolder(urls: [URL]? = nil) {
+    private func renderAndSaveEditedFolder(
+        urls: [URL]? = nil,
+        configurations: [AdvancedExportConfiguration]? = nil
+    ) {
         guard !isRenderingEditedFolder,
               let folderURL = browserViewModel.currentFolderURL else { return }
         let urls = urls ?? browserViewModel.images.map(\.url)
         guard !urls.isEmpty else { return }
 
-        let locationMode = EditedImageRenderer.currentLocationMode
-        var askedFolder: URL?
-        if locationMode == .askOnSave {
-            guard let chosen = promptForExportDestination() else { return }
-            askedFolder = chosen
+        let exportConfigurations: [AdvancedExportConfiguration?]
+        if let configurations, !configurations.isEmpty {
+            exportConfigurations = configurations.map(Optional.some)
+        } else {
+            exportConfigurations = [nil]
+        }
+
+        var askedFolders: [Int: URL] = [:]
+        for (index, configuration) in exportConfigurations.enumerated()
+        where (configuration?.locationMode ?? EditedImageRenderer.currentLocationMode) == .askOnSave {
+            let exportName = index == 0 ? "primary" : "secondary"
+            guard let chosen = promptForExportDestination(
+                message: "Choose a destination folder for the \(exportName) export"
+            ) else { return }
+            askedFolders[index] = chosen
         }
 
         isRenderingEditedFolder = true
         renderExportCurrent = 0
-        renderExportTotal = urls.count
+        renderExportTotal = urls.count * exportConfigurations.count
         renderEditedFolderSuccessCount = 0
         renderEditedFolderFailureCount = 0
         renderedOutputFolderURL = nil
@@ -2496,39 +2524,66 @@ struct ContentView: View {
             var createdFolders: Set<String> = []
             var lastOutputFolder: URL?
 
-            for (index, url) in urls.enumerated() {
+            for (urlIndex, url) in urls.enumerated() {
                 guard !Task.isCancelled else { break }
-                renderExportCurrent = index + 1
                 let cameraRaw = metadataByURL[url]?.cameraRaw
                 let isHDR = cameraRaw?.hdrEditMode == 1
 
-                // Resolve output folder per the configured export location mode
-                let outputFolder = EditedImageRenderer.resolveOutputFolder(
-                    sourceURL: url, rootFolder: folderURL,
-                    isHDR: isHDR, formatPrefix: "Edited", askedFolder: askedFolder)
+                for (configurationIndex, configuration) in exportConfigurations.enumerated() {
+                    guard !Task.isCancelled else { break }
+                    renderExportCurrent =
+                        urlIndex * exportConfigurations.count + configurationIndex + 1
+                    let isSecondary = configurationIndex > 0
+                    let outputFolder = EditedImageRenderer.resolveOutputFolder(
+                        sourceURL: url,
+                        rootFolder: folderURL,
+                        isHDR: isHDR,
+                        formatPrefix: isSecondary ? "Edited_Secondary" : "Edited",
+                        askedFolder: askedFolders[configurationIndex],
+                        configuration: configuration
+                    )
 
-                if !createdFolders.contains(outputFolder.path) {
-                    do {
-                        try FileManager.default.createDirectory(at: outputFolder, withIntermediateDirectories: true)
-                        createdFolders.insert(outputFolder.path)
-                        lastOutputFolder = outputFolder
-                    } catch {
-                        browserViewModel.errorMessage = "Failed to create \(outputFolder.lastPathComponent) folder: \(error.localizedDescription)"
-                        failureCount += 1
-                        renderFailedNames.append(url.lastPathComponent)
-                        continue
+                    if !createdFolders.contains(outputFolder.path) {
+                        do {
+                            try FileManager.default.createDirectory(
+                                at: outputFolder,
+                                withIntermediateDirectories: true
+                            )
+                            createdFolders.insert(outputFolder.path)
+                            lastOutputFolder = outputFolder
+                        } catch {
+                            browserViewModel.errorMessage = "Failed to create \(outputFolder.lastPathComponent) folder: \(error.localizedDescription)"
+                            failureCount += 1
+                            renderFailedNames.append(
+                                isSecondary
+                                    ? "\(url.lastPathComponent) (Secondary)"
+                                    : url.lastPathComponent
+                            )
+                            continue
+                        }
                     }
-                }
 
-                do {
-                    _ = try await EditExportPipeline.renderItem(
-                        sourceURL: url, cameraRaw: cameraRaw, kind: .format,
-                        outputFolder: outputFolder, folderURL: folderURL,
-                        writeEngine: browserViewModel.writeEngine, failureTracker: failureTracker)
-                    successCount += 1
-                } catch {
-                    failureCount += 1
-                    renderFailedNames.append(url.lastPathComponent)
+                    do {
+                        _ = try await EditExportPipeline.renderItem(
+                            sourceURL: url,
+                            cameraRaw: cameraRaw,
+                            kind: .format,
+                            outputFolder: outputFolder,
+                            folderURL: folderURL,
+                            writeEngine: browserViewModel.writeEngine,
+                            failureTracker: failureTracker,
+                            configuration: configuration,
+                            outputFilenameSuffix: isSecondary ? " Secondary" : ""
+                        )
+                        successCount += 1
+                    } catch {
+                        failureCount += 1
+                        renderFailedNames.append(
+                            isSecondary
+                                ? "\(url.lastPathComponent) (Secondary)"
+                                : url.lastPathComponent
+                        )
+                    }
                 }
             }
 
@@ -2538,7 +2593,10 @@ struct ContentView: View {
             isRenderingEditedFolder = false
 
             // Files written next to the originals land in the current folder — refresh to show them.
-            if locationMode == .sameAsOriginal {
+            let exportedBesideOriginals = exportConfigurations.contains {
+                ($0?.locationMode ?? EditedImageRenderer.currentLocationMode) == .sameAsOriginal
+            }
+            if exportedBesideOriginals {
                 browserViewModel.refreshCurrentFolderIfNeeded()
             } else if let outputFolder = lastOutputFolder, outputFolder != folderURL {
                 // Files went into a sub-folder — surface it in the sidebar tree.
@@ -2561,7 +2619,7 @@ struct ContentView: View {
                 title: "Export",
                 outcome: outcome,
                 successCount: successCount,
-                totalCount: urls.count,
+                totalCount: urls.count * exportConfigurations.count,
                 failedFilenames: renderFailedNames,
                 copyFailureFilenames: copyFailures,
                 overlayFailureFilenames: overlayFailures,
