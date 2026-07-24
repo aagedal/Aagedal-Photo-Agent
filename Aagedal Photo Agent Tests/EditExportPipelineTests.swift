@@ -655,6 +655,54 @@ struct AdvancedExportTests {
         return source
     }
 
+    private func makeCompressionSourceJPEG(in directory: URL) throws -> URL {
+        let source = directory.appendingPathComponent("compression-source.jpg")
+        let width = 256
+        let height = 256
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: width,
+            pixelsHigh: height,
+            bitsPerSample: 8,
+            samplesPerPixel: 3,
+            hasAlpha: false,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+
+        // Deterministic high-frequency detail makes the difference between JPEG
+        // quantization levels large and stable enough for a regression assertion.
+        for y in 0..<height {
+            for x in 0..<width {
+                let red = CGFloat((x * 73 ^ y * 151) & 0xff) / 255
+                let green = CGFloat((x * 29 ^ y * 199 ^ x * y) & 0xff) / 255
+                let blue = CGFloat((x * 181 ^ y * 47 ^ (x + y) * 13) & 0xff) / 255
+                rep.setColor(
+                    NSColor(calibratedRed: red, green: green, blue: blue, alpha: 1),
+                    atX: x,
+                    y: y
+                )
+            }
+        }
+
+        guard let data = rep.representation(
+            using: .jpeg,
+            properties: [.compressionFactor: 1]
+        ) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        try data.write(to: source)
+        return source
+    }
+
+    private func pixelData(_ image: CGImage) -> Data? {
+        image.dataProvider?.data as Data?
+    }
+
     @Test("selected queue follows visible browser order")
     func queueUsesVisibleOrder() {
         let root = URL(fileURLWithPath: "/tmp/advanced-export-order")
@@ -726,6 +774,47 @@ struct AdvancedExportTests {
         #expect(artifact.pixelHeight == 32)
         #expect(max(artifact.referenceImage.width, artifact.referenceImage.height) == 32)
         #expect(CGImageSourceCreateWithURL(artifact.outputURL as CFURL, nil) != nil)
+    }
+
+    @Test("preview displays the artifact encoded at the selected JPEG quality")
+    func previewDisplaysSelectedJPEGCompression() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apa-compression-preview-test-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let source = try makeCompressionSourceJPEG(in: directory)
+        let item = AdvancedExportItem(
+            sourceURL: source,
+            filename: source.lastPathComponent,
+            cameraRaw: nil,
+            isHDR: false
+        )
+        var lowConfiguration = configuration
+        lowConfiguration.sdrQuality = AdvancedExportConfiguration.minimumQuality
+        var highConfiguration = configuration
+        highConfiguration.sdrQuality = 0.95
+
+        let service = AdvancedExportPreviewService()
+        let lowPreview = try await service.makePreview(
+            item: item,
+            configuration: lowConfiguration
+        )
+        let highPreview = try await service.makePreview(
+            item: item,
+            configuration: highConfiguration
+        )
+
+        #expect(lowPreview.encodedFileSize < highPreview.encodedFileSize)
+        #expect(pixelData(lowPreview.exportImage) != pixelData(highPreview.exportImage))
+
+        let decodedLowArtifact = try #require(
+            FullScreenImageCache.loadDownsampled(
+                from: lowPreview.storage.outputURL,
+                maxPixelSize: 1_600
+            )
+        )
+        #expect(pixelData(lowPreview.exportImage) == pixelData(decodedLowArtifact))
     }
 
     @Test("resolution limit caps the long edge without upscaling")

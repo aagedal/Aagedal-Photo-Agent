@@ -302,19 +302,19 @@ private struct AdvancedExportComparisonRow: View {
                     .clipShape(Capsule())
 
                 Spacer()
-
-                Text(exportSummary)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
             }
+
+            Text(comparisonSummary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+                .lineLimit(1)
 
             HStack(spacing: 12) {
                 AdvancedExportImagePane(
                     title: "Developed reference",
                     image: preview?.referenceImage,
                     isLoading: isLoading,
-                    pane: .reference,
                     item: item,
                     configuration: configuration,
                     preview: preview,
@@ -324,7 +324,6 @@ private struct AdvancedExportComparisonRow: View {
                     title: exportPaneTitle,
                     image: preview?.exportImage,
                     isLoading: isLoading,
-                    pane: .export,
                     item: item,
                     configuration: configuration,
                     preview: preview,
@@ -370,15 +369,45 @@ private struct AdvancedExportComparisonRow: View {
         return components.joined(separator: " · ")
     }
 
-    private var exportSummary: String {
-        guard let preview else {
-            return isLoading ? "Generating preview…" : exportPaneTitle
-        }
-        let size = ByteCountFormatter.string(
-            fromByteCount: preview.encodedFileSize,
-            countStyle: .file
+    private var comparisonSummary: String {
+        let source = summary(
+            label: "Source",
+            pixelWidth: item.sourcePixelWidth,
+            pixelHeight: item.sourcePixelHeight,
+            fileSize: item.sourceFileSize
         )
-        return "\(preview.pixelWidth) × \(preview.pixelHeight) · \(size)"
+        guard let preview else {
+            let output = isLoading ? "Output generating…" : "Output \(exportPaneTitle)"
+            return "\(source)  →  \(output)"
+        }
+        let output = summary(
+            label: "Output",
+            pixelWidth: preview.pixelWidth,
+            pixelHeight: preview.pixelHeight,
+            fileSize: preview.encodedFileSize
+        )
+        return "\(source)  →  \(output)"
+    }
+
+    private func summary(
+        label: String,
+        pixelWidth: Int?,
+        pixelHeight: Int?,
+        fileSize: Int64?
+    ) -> String {
+        var components: [String] = []
+        if let pixelWidth, let pixelHeight {
+            components.append("\(pixelWidth) × \(pixelHeight)")
+        }
+        if let fileSize {
+            components.append(ByteCountFormatter.string(
+                fromByteCount: fileSize,
+                countStyle: .file
+            ))
+        }
+        return components.isEmpty
+            ? "\(label) unavailable"
+            : "\(label) \(components.joined(separator: " · "))"
     }
 }
 
@@ -386,7 +415,6 @@ private struct AdvancedExportImagePane: View {
     let title: String
     let image: CGImage?
     let isLoading: Bool
-    let pane: AdvancedExportPreviewPane
     let item: AdvancedExportItem
     let configuration: AdvancedExportConfiguration
     let preview: AdvancedExportPreview?
@@ -471,7 +499,6 @@ private struct AdvancedExportImagePane: View {
                 .popover(isPresented: $isShowingLoupe, arrowEdge: .trailing) {
                     if let preview {
                         AdvancedExportLoupeView(
-                            pane: pane,
                             item: item,
                             configuration: configuration,
                             preview: preview,
@@ -529,7 +556,6 @@ private struct AdvancedExportImagePane: View {
 }
 
 private struct AdvancedExportLoupeView: View {
-    let pane: AdvancedExportPreviewPane
     let item: AdvancedExportItem
     let configuration: AdvancedExportConfiguration
     let preview: AdvancedExportPreview
@@ -539,7 +565,7 @@ private struct AdvancedExportLoupeView: View {
     @State private var loupe: AdvancedExportLoupe?
     @State private var errorMessage: String?
 
-    private let displaySize: CGFloat = 300
+    private let displaySize: CGFloat = 280
 
     private var backingScale: CGFloat {
         NSScreen.main?.backingScaleFactor ?? 2
@@ -552,45 +578,39 @@ private struct AdvancedExportLoupeView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text(pane == .reference ? "Developed reference" : "Encoded export")
+                Text("100% Comparison")
                     .font(.headline)
                 Spacer()
-                Text("100%")
+                Text("Same image area")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
 
-            ZStack {
-                Color.black.opacity(0.94)
-
-                if let loupe {
-                    Image(decorative: loupe.image, scale: backingScale, orientation: .up)
-                        .interpolation(.none)
-                } else if let errorMessage {
-                    Label(errorMessage, systemImage: "exclamationmark.triangle")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                        .multilineTextAlignment(.center)
-                        .padding()
-                } else {
-                    ProgressView("Rendering 100% crop…")
-                        .controlSize(.small)
-                        .tint(.white)
-                        .foregroundStyle(.white)
-                }
+            HStack(alignment: .top, spacing: 10) {
+                loupePane(
+                    title: "Developed reference",
+                    image: loupe?.referenceImage
+                )
+                loupePane(
+                    title: encodedExportTitle,
+                    image: loupe?.exportImage
+                )
             }
-            .frame(width: displaySize, height: displaySize)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
 
-            Text(loupeDescription)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            if let errorMessage {
+                Label(errorMessage, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            } else {
+                Text(loupeDescription)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(14)
         .task {
             do {
                 loupe = try await previewService.makeLoupe(
-                    pane: pane,
                     item: item,
                     configuration: configuration,
                     preview: preview,
@@ -605,10 +625,41 @@ private struct AdvancedExportLoupeView: View {
         }
     }
 
+    private func loupePane(title: String, image: CGImage?) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+
+            ZStack {
+                Color.black.opacity(0.94)
+
+                if let image {
+                    Image(decorative: image, scale: backingScale, orientation: .up)
+                        .interpolation(.none)
+                } else if errorMessage == nil {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(.white)
+                }
+            }
+            .frame(width: displaySize, height: displaySize)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+    }
+
     private var loupeDescription: String {
         guard let loupe else {
-            return "True pixel crop · no display interpolation"
+            return "Rendering matching true-pixel crops…"
         }
-        return "\(loupe.image.width) × \(loupe.image.height) pixel crop · no display interpolation"
+        return "\(loupe.referenceImage.width) × \(loupe.referenceImage.height) pixel crops · no display interpolation"
+    }
+
+    private var encodedExportTitle: String {
+        var components = ["Encoded export", configuration.formatName(isHDR: item.isHDR)]
+        if let quality = configuration.quality(isHDR: item.isHDR) {
+            components.append("\(Int(quality * 100))%")
+        }
+        return components.joined(separator: " · ")
     }
 }

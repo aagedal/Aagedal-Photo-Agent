@@ -25,13 +25,9 @@ nonisolated struct AdvancedExportPreview: @unchecked Sendable {
     let storage: AdvancedExportPreviewStorage
 }
 
-nonisolated enum AdvancedExportPreviewPane: Equatable, Sendable {
-    case reference
-    case export
-}
-
 nonisolated struct AdvancedExportLoupe: @unchecked Sendable {
-    let image: CGImage
+    let referenceImage: CGImage
+    let exportImage: CGImage
 }
 
 /// Creates real, full-resolution export artifacts in a private temporary folder,
@@ -96,7 +92,6 @@ actor AdvancedExportPreviewService {
     }
 
     func makeLoupe(
-        pane: AdvancedExportPreviewPane,
         item: AdvancedExportItem,
         configuration: AdvancedExportConfiguration,
         preview: AdvancedExportPreview,
@@ -107,39 +102,36 @@ actor AdvancedExportPreviewService {
         defer { releaseRenderSlot() }
         try Task.checkCancellation()
 
-        switch pane {
-        case .reference:
-            let image = try await Task.detached(priority: .userInitiated) {
-                try EditedImageRenderer.makeAdvancedReferenceLoupe(
-                    from: item.sourceURL,
-                    cameraRaw: item.cameraRaw,
-                    isHDR: item.isHDR,
-                    configuration: configuration,
-                    normalizedPoint: normalizedPoint,
-                    pixelSize: pixelSize
-                )
-            }.value
-            return AdvancedExportLoupe(image: image)
+        let outputURL = preview.storage.outputURL
+        return try await Task.detached(priority: .userInitiated) {
+            let referenceImage = try EditedImageRenderer.makeAdvancedReferenceLoupe(
+                from: item.sourceURL,
+                cameraRaw: item.cameraRaw,
+                isHDR: item.isHDR,
+                configuration: configuration,
+                normalizedPoint: normalizedPoint,
+                pixelSize: pixelSize
+            )
+            try Task.checkCancellation()
 
-        case .export:
-            let outputURL = preview.storage.outputURL
-            let image = try await Task.detached(priority: .userInitiated) {
-                let options: [CIImageOption: Any] = item.isHDR
-                    ? [.expandToHDR: true, .toneMapHDRtoSDR: false, .applyOrientationProperty: true]
-                    : [.applyOrientationProperty: true]
-                guard let encoded = CIImage(contentsOf: outputURL, options: options) else {
-                    throw EditedImageRenderer.RenderError.unreadableImage
-                }
-                return try EditedImageRenderer.makeLoupeCrop(
-                    from: encoded,
-                    isHDR: item.isHDR,
-                    configuration: configuration,
-                    normalizedPoint: normalizedPoint,
-                    pixelSize: pixelSize
-                )
-            }.value
-            return AdvancedExportLoupe(image: image)
-        }
+            let options: [CIImageOption: Any] = item.isHDR
+                ? [.expandToHDR: true, .toneMapHDRtoSDR: false, .applyOrientationProperty: true]
+                : [.applyOrientationProperty: true]
+            guard let encoded = CIImage(contentsOf: outputURL, options: options) else {
+                throw EditedImageRenderer.RenderError.unreadableImage
+            }
+            let exportImage = try EditedImageRenderer.makeLoupeCrop(
+                from: encoded,
+                isHDR: item.isHDR,
+                configuration: configuration,
+                normalizedPoint: normalizedPoint,
+                pixelSize: pixelSize
+            )
+            return AdvancedExportLoupe(
+                referenceImage: referenceImage,
+                exportImage: exportImage
+            )
+        }.value
     }
 
     /// Full-resolution RAW processing and FFmpeg encoding are deliberately serialized.

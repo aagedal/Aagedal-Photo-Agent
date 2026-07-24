@@ -1629,11 +1629,29 @@ struct ContentView: View {
                 sidecarSettings = nil
             }
             let cameraRaw = liveSettings ?? sidecarSettings
+            let nativeSize = image.isICloudDownloadPending
+                ? nil
+                : FullScreenImageCache.nativePixelSize(of: image.url)
+            let sourceDimensions: (width: Int?, height: Int?)
+            if let nativeSize {
+                let width = Int(nativeSize.width.rounded())
+                let height = Int(nativeSize.height.rounded())
+                if (5...8).contains(image.exifOrientation) {
+                    sourceDimensions = (height, width)
+                } else {
+                    sourceDimensions = (width, height)
+                }
+            } else {
+                sourceDimensions = (nil, nil)
+            }
             return AdvancedExportItem(
                 sourceURL: image.url,
                 filename: image.filename,
                 cameraRaw: cameraRaw,
-                isHDR: cameraRaw?.hdrEditMode == 1
+                isHDR: cameraRaw?.hdrEditMode == 1,
+                sourceFileSize: image.fileSize > 0 ? image.fileSize : nil,
+                sourcePixelWidth: sourceDimensions.width,
+                sourcePixelHeight: sourceDimensions.height
             )
         }
         advancedExportSession = AdvancedExportSession(items: items)

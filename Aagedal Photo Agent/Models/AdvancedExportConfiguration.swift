@@ -86,6 +86,27 @@ nonisolated struct AdvancedExportItem: Identifiable, Sendable {
     let filename: String
     let cameraRaw: CameraRawSettings?
     let isHDR: Bool
+    let sourceFileSize: Int64?
+    let sourcePixelWidth: Int?
+    let sourcePixelHeight: Int?
+
+    init(
+        sourceURL: URL,
+        filename: String,
+        cameraRaw: CameraRawSettings?,
+        isHDR: Bool,
+        sourceFileSize: Int64? = nil,
+        sourcePixelWidth: Int? = nil,
+        sourcePixelHeight: Int? = nil
+    ) {
+        self.sourceURL = sourceURL
+        self.filename = filename
+        self.cameraRaw = cameraRaw
+        self.isHDR = isHDR
+        self.sourceFileSize = sourceFileSize
+        self.sourcePixelWidth = sourcePixelWidth
+        self.sourcePixelHeight = sourcePixelHeight
+    }
 }
 
 nonisolated struct AdvancedExportSession: Identifiable, Sendable {
