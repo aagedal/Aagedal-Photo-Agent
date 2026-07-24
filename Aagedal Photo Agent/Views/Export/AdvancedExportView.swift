@@ -75,10 +75,11 @@ struct AdvancedExportView: View {
             Divider()
 
             HStack(spacing: 12) {
-                Text("Source")
-                    .frame(maxWidth: .infinity)
-                Text("Export Preview")
-                    .frame(maxWidth: .infinity)
+                comparisonHeading("Original")
+                comparisonHeading("Export 1")
+                if configurations.count > 1 {
+                    comparisonHeading("Export 2")
+                }
             }
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(.secondary)
@@ -105,7 +106,7 @@ struct AdvancedExportView: View {
     private var settingsInspector: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text(configurations.count == 1 ? "Export Settings" : "\(selectedConfigurationName) Settings")
+                Text(configurations.count == 1 ? "Export 1 Settings" : "\(selectedConfigurationName) Settings")
                     .font(.headline)
                 Spacer()
                 if configurations.count > 1 {
@@ -116,15 +117,15 @@ struct AdvancedExportView: View {
                         Image(systemName: "minus.circle")
                     }
                     .buttonStyle(.plain)
-                    .help("Remove secondary export")
-                    .accessibilityLabel("Remove secondary export")
+                    .help("Remove Export 2")
+                    .accessibilityLabel("Remove Export 2")
                 }
             }
 
             if configurations.count > 1 {
                 Picker("Export", selection: $selectedConfigurationIndex) {
-                    Text("Primary").tag(0)
-                    Text("Secondary").tag(1)
+                    Text("Export 1").tag(0)
+                    Text("Export 2").tag(1)
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
@@ -133,7 +134,7 @@ struct AdvancedExportView: View {
                     configurations.append(configurations[0])
                     selectedConfigurationIndex = 1
                 } label: {
-                    Label("Add Secondary Export", systemImage: "plus")
+                    Label("Add Export 2", systemImage: "plus")
                         .frame(maxWidth: .infinity)
                 }
             }
@@ -183,7 +184,7 @@ struct AdvancedExportView: View {
     }
 
     private var selectedConfigurationName: String {
-        selectedConfigurationIndex == 0 ? "Primary Export" : "Secondary Export"
+        selectedConfigurationIndex == 0 ? "Export 1" : "Export 2"
     }
 
     private var exportButtonTitle: String {
@@ -347,6 +348,11 @@ struct AdvancedExportView: View {
             )
         }
     }
+
+    private func comparisonHeading(_ title: String) -> some View {
+        Text(title)
+            .frame(maxWidth: .infinity)
+    }
 }
 
 private struct AdvancedExportComparisonRow: View {
@@ -354,8 +360,18 @@ private struct AdvancedExportComparisonRow: View {
     let configurations: [AdvancedExportConfiguration]
     let previewService: AdvancedExportPreviewService
 
+    @State private var previews: [Int: AdvancedExportPreview] = [:]
+    @State private var errorMessages: [Int: String] = [:]
+    @State private var loadingIndexes: Set<Int> = []
+
+    private var taskID: String {
+        configurations
+            .map { $0.previewSignature(isHDR: item.isHDR) }
+            .joined(separator: "||")
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Text(item.filename)
                     .font(.headline)
@@ -367,103 +383,71 @@ private struct AdvancedExportComparisonRow: View {
                 Spacer()
             }
 
-            ForEach(configurations.indices, id: \.self) { index in
-                if index > 0 {
-                    Divider()
-                        .padding(.vertical, 2)
-                }
-
-                AdvancedExportPreviewRow(
+            HStack(alignment: .top, spacing: 12) {
+                AdvancedExportImagePane(
+                    title: "Developed reference",
+                    detail: sourceSummary,
+                    image: referencePreview?.referenceImage,
+                    isLoading: isReferenceLoading,
+                    showsLoadingOverlay: isReferenceLoading,
                     item: item,
-                    configuration: configurations[index],
-                    exportName: index == 0 ? "Primary Export" : "Secondary Export",
-                    showsExportName: configurations.count > 1,
+                    preview: referencePreview,
+                    comparisonConfigurations: configurations,
+                    comparisonPreviews: comparisonPreviews,
+                    comparisonLoadingIndexes: comparisonLoadingIndexes,
                     previewService: previewService
                 )
+
+                ForEach(configurations.indices, id: \.self) { index in
+                    let preview = previews[index]
+                    AdvancedExportImagePane(
+                        title: exportPaneTitle(at: index),
+                        detail: outputSummary(at: index),
+                        image: preview?.exportImage,
+                        isLoading: isPreviewLoading(at: index),
+                        showsLoadingOverlay: true,
+                        item: item,
+                        preview: preview,
+                        comparisonConfigurations: configurations,
+                        comparisonPreviews: comparisonPreviews,
+                        comparisonLoadingIndexes: comparisonLoadingIndexes,
+                        previewService: previewService
+                    )
+                }
+            }
+
+            ForEach(errorMessages.keys.sorted(), id: \.self) { index in
+                if let errorMessage = errorMessages[index] {
+                    Label(
+                        "Export \(index + 1): \(errorMessage)",
+                        systemImage: "exclamationmark.triangle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                }
             }
         }
         .padding(14)
         .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 12))
-    }
-}
-
-private struct AdvancedExportPreviewRow: View {
-    let item: AdvancedExportItem
-    let configuration: AdvancedExportConfiguration
-    let exportName: String
-    let showsExportName: Bool
-    let previewService: AdvancedExportPreviewService
-
-    @State private var preview: AdvancedExportPreview?
-    @State private var errorMessage: String?
-    @State private var isLoading = true
-
-    private var taskID: String {
-        configuration.previewSignature(isHDR: item.isHDR)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if showsExportName {
-                Text(exportName)
-                    .font(.subheadline.weight(.semibold))
-            }
-
-            Text(comparisonSummary)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .monospacedDigit()
-                .lineLimit(1)
-
-            HStack(spacing: 12) {
-                AdvancedExportImagePane(
-                    title: "Developed reference",
-                    image: preview?.referenceImage,
-                    isLoading: isLoading,
-                    showsLoadingOverlay: isReferenceLoading,
-                    item: item,
-                    preview: preview,
-                    previewService: previewService
-                )
-                AdvancedExportImagePane(
-                    title: exportPaneTitle,
-                    image: preview?.exportImage,
-                    isLoading: isLoading,
-                    showsLoadingOverlay: true,
-                    item: item,
-                    preview: preview,
-                    previewService: previewService
-                )
-            }
-
-            if let errorMessage {
-                Label(errorMessage, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            }
-        }
         .task(id: taskID) {
-            errorMessage = nil
-            isLoading = true
-
-            do {
-                try await Task.sleep(for: .milliseconds(250))
-                try Task.checkCancellation()
-                preview = try await previewService.makePreview(
-                    item: item,
-                    configuration: configuration
-                )
-                isLoading = false
-            } catch is CancellationError {
-                return
-            } catch {
-                errorMessage = error.localizedDescription
-                isLoading = false
-            }
+            await refreshPreviews()
         }
     }
 
-    private var exportPaneTitle: String {
+    private var referencePreview: AdvancedExportPreview? {
+        previews[0] ?? previews.values.first
+    }
+
+    private var comparisonPreviews: [AdvancedExportPreview?] {
+        configurations.indices.map { previews[$0] }
+    }
+
+    private var comparisonLoadingIndexes: Set<Int> {
+        Set(configurations.indices.filter { isPreviewLoading(at: $0) })
+    }
+
+    private func exportPaneTitle(at index: Int) -> String {
+        let configuration = configurations[index]
         var components = [configuration.formatName(isHDR: item.isHDR)]
         if let quality = configuration.quality(isHDR: item.isHDR) {
             components.append("\(Int(quality * 100))%")
@@ -472,34 +456,38 @@ private struct AdvancedExportPreviewRow: View {
     }
 
     private var isReferenceLoading: Bool {
-        guard isLoading else { return false }
-        guard let preview else { return true }
-        return preview.configuration.referenceSignature(isHDR: item.isHDR)
-            != configuration.referenceSignature(isHDR: item.isHDR)
+        guard let primaryConfiguration = configurations.first else { return false }
+        guard let referencePreview else { return true }
+        return isPreviewLoading(at: 0)
+            && referencePreview.configuration.referenceSignature(isHDR: item.isHDR)
+                != primaryConfiguration.referenceSignature(isHDR: item.isHDR)
     }
 
-    private var comparisonSummary: String {
-        let source = summary(
-            label: "Source",
+    private var sourceSummary: String {
+        summary(
             pixelWidth: item.sourcePixelWidth,
             pixelHeight: item.sourcePixelHeight,
             fileSize: item.sourceFileSize
         )
-        guard let preview else {
-            let output = isLoading ? "Output generating…" : "Output \(exportPaneTitle)"
-            return "\(source)  →  \(output)"
+    }
+
+    private func outputSummary(at index: Int) -> String {
+        guard let preview = previews[index] else {
+            return isPreviewLoading(at: index) ? "Generating…" : "Unavailable"
         }
-        let output = summary(
-            label: "Output",
+        return summary(
             pixelWidth: preview.pixelWidth,
             pixelHeight: preview.pixelHeight,
             fileSize: preview.encodedFileSize
         )
-        return "\(source)  →  \(output)"
+    }
+
+    private func isPreviewLoading(at index: Int) -> Bool {
+        loadingIndexes.contains(index)
+            || (previews[index] == nil && errorMessages[index] == nil)
     }
 
     private func summary(
-        label: String,
         pixelWidth: Int?,
         pixelHeight: Int?,
         fileSize: Int64?
@@ -514,9 +502,50 @@ private struct AdvancedExportPreviewRow: View {
                 countStyle: .file
             ))
         }
-        return components.isEmpty
-            ? "\(label) unavailable"
-            : "\(label) \(components.joined(separator: " · "))"
+        return components.isEmpty ? "Unavailable" : components.joined(separator: " · ")
+    }
+
+    @MainActor
+    private func refreshPreviews() async {
+        let validIndexes = Set(configurations.indices)
+        previews = previews.filter { validIndexes.contains($0.key) }
+        errorMessages = errorMessages.filter { validIndexes.contains($0.key) }
+        loadingIndexes = loadingIndexes.intersection(validIndexes)
+
+        let pending = configurations.indices.filter { index in
+            previews[index]?.configuration.previewSignature(isHDR: item.isHDR)
+                != configurations[index].previewSignature(isHDR: item.isHDR)
+        }
+        guard !pending.isEmpty else { return }
+
+        for index in pending {
+            loadingIndexes.insert(index)
+            errorMessages[index] = nil
+        }
+
+        do {
+            try await Task.sleep(for: .milliseconds(250))
+        } catch {
+            return
+        }
+
+        for index in pending {
+            do {
+                try Task.checkCancellation()
+                let preview = try await previewService.makePreview(
+                    item: item,
+                    configuration: configurations[index]
+                )
+                try Task.checkCancellation()
+                previews[index] = preview
+                loadingIndexes.remove(index)
+            } catch is CancellationError {
+                return
+            } catch {
+                errorMessages[index] = error.localizedDescription
+                loadingIndexes.remove(index)
+            }
+        }
     }
 }
 
@@ -537,11 +566,15 @@ private struct AdvancedExportRangeBadge: View {
 
 private struct AdvancedExportImagePane: View {
     let title: String
+    let detail: String
     let image: CGImage?
     let isLoading: Bool
     let showsLoadingOverlay: Bool
     let item: AdvancedExportItem
     let preview: AdvancedExportPreview?
+    let comparisonConfigurations: [AdvancedExportConfiguration]
+    let comparisonPreviews: [AdvancedExportPreview?]
+    let comparisonLoadingIndexes: Set<Int>
     let previewService: AdvancedExportPreviewService
 
     @State private var isHovered = false
@@ -555,6 +588,12 @@ private struct AdvancedExportImagePane: View {
             Text(title)
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
+
+            Text(detail)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .monospacedDigit()
+                .lineLimit(1)
 
             GeometryReader { geometry in
                 ZStack {
@@ -639,13 +678,14 @@ private struct AdvancedExportImagePane: View {
                 }
                 .help(isHovered ? "Click to compare this area at 100% and 300%" : "")
                 .popover(isPresented: $isShowingLoupe, arrowEdge: .trailing) {
-                    if let preview {
+                    if preview != nil {
                         AdvancedExportLoupeView(
                             item: item,
-                            preview: preview,
+                            configurations: comparisonConfigurations,
+                            previews: comparisonPreviews,
                             previewService: previewService,
                             normalizedPoint: loupePoint,
-                            isPreviewLoading: isLoading
+                            previewLoadingIndexes: comparisonLoadingIndexes
                         )
                     }
                 }
@@ -699,16 +739,20 @@ private struct AdvancedExportImagePane: View {
 
 private struct AdvancedExportLoupeView: View {
     let item: AdvancedExportItem
-    let preview: AdvancedExportPreview
+    let configurations: [AdvancedExportConfiguration]
+    let previews: [AdvancedExportPreview?]
     let previewService: AdvancedExportPreviewService
     let normalizedPoint: CGPoint
-    let isPreviewLoading: Bool
+    let previewLoadingIndexes: Set<Int>
 
-    @State private var loupe: AdvancedExportLoupe?
-    @State private var errorMessage: String?
-    @State private var isLoupeLoading = true
+    @State private var loupes: [Int: AdvancedExportLoupe] = [:]
+    @State private var loadedOutputURLs: [Int: URL] = [:]
+    @State private var errorMessages: [Int: String] = [:]
+    @State private var loadingIndexes: Set<Int> = []
 
-    private let displaySize: CGFloat = 280
+    private var displaySize: CGFloat {
+        configurations.count > 1 ? 230 : 280
+    }
 
     private var backingScale: CGFloat {
         NSScreen.main?.backingScaleFactor ?? 2
@@ -716,6 +760,15 @@ private struct AdvancedExportLoupeView: View {
 
     private var pixelSize: Int {
         Int((displaySize * backingScale).rounded())
+    }
+
+    private var taskID: String {
+        configurations.indices.map { index in
+            let signature = configurations[index].previewSignature(isHDR: item.isHDR)
+            let outputURL = preview(at: index)?.storage.outputURL.path ?? "pending"
+            return "\(signature)|\(outputURL)"
+        }
+        .joined(separator: "||")
     }
 
     var body: some View {
@@ -733,55 +786,84 @@ private struct AdvancedExportLoupeView: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
 
-            HStack(alignment: .top, spacing: 10) {
-                loupePane(
-                    title: "Developed reference",
-                    image: loupe?.referenceImage,
-                    magnification: 1,
-                    showsLoading: false
-                )
-                loupePane(
-                    title: encodedExportTitle,
-                    image: loupe?.exportImage,
-                    magnification: 1,
-                    showsLoading: isPreviewLoading || isLoupeLoading
-                )
-            }
+            comparisonRow(magnification: 1)
 
             Text("300%")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .padding(.top, 2)
 
-            HStack(alignment: .top, spacing: 10) {
-                loupePane(
-                    title: "Developed reference",
-                    image: loupe?.referenceImage,
-                    magnification: 3,
-                    showsLoading: false
-                )
-                loupePane(
-                    title: encodedExportTitle,
-                    image: loupe?.exportImage,
-                    magnification: 3,
-                    showsLoading: isPreviewLoading || isLoupeLoading
-                )
-            }
+            comparisonRow(magnification: 3)
 
-            if let errorMessage {
-                Label(errorMessage, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            } else {
+            if errorMessages.isEmpty {
                 Text(loupeDescription)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            } else {
+                ForEach(errorMessages.keys.sorted(), id: \.self) { index in
+                    if let errorMessage = errorMessages[index] {
+                        Label(
+                            "Export \(index + 1): \(errorMessage)",
+                            systemImage: "exclamationmark.triangle"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                    }
+                }
             }
         }
         .padding(14)
-        .task(id: preview.storage.outputURL) {
-            errorMessage = nil
-            isLoupeLoading = true
+        .task(id: taskID) {
+            await refreshLoupes()
+        }
+    }
+
+    private func comparisonRow(magnification: CGFloat) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            loupePane(
+                title: "Original",
+                image: referenceLoupe?.referenceImage,
+                magnification: magnification,
+                showsLoading: isReferenceLoading,
+                showsError: referenceLoupe == nil && !errorMessages.isEmpty
+            )
+
+            ForEach(configurations.indices, id: \.self) { index in
+                loupePane(
+                    title: exportTitle(at: index),
+                    image: loupes[index]?.exportImage,
+                    magnification: magnification,
+                    showsLoading: isLoading(at: index),
+                    showsError: errorMessages[index] != nil
+                )
+            }
+        }
+    }
+
+    @MainActor
+    private func refreshLoupes() async {
+        let validIndexes = Set(configurations.indices)
+        loupes = loupes.filter { validIndexes.contains($0.key) }
+        loadedOutputURLs = loadedOutputURLs.filter { validIndexes.contains($0.key) }
+        errorMessages = errorMessages.filter { validIndexes.contains($0.key) }
+        loadingIndexes = loadingIndexes.intersection(validIndexes)
+
+        let pending = configurations.indices.filter { index in
+            guard let preview = preview(at: index),
+                  preview.configuration.previewSignature(isHDR: item.isHDR)
+                    == configurations[index].previewSignature(isHDR: item.isHDR) else {
+                return false
+            }
+            return loadedOutputURLs[index] != preview.storage.outputURL
+        }
+
+        for index in pending {
+            loadingIndexes.insert(index)
+            errorMessages[index] = nil
+        }
+
+        for index in pending {
+            guard let preview = preview(at: index) else { continue }
             do {
                 let nextLoupe = try await previewService.makeLoupe(
                     item: item,
@@ -791,13 +873,14 @@ private struct AdvancedExportLoupeView: View {
                     pixelSize: pixelSize
                 )
                 try Task.checkCancellation()
-                loupe = nextLoupe
-                isLoupeLoading = false
+                loupes[index] = nextLoupe
+                loadedOutputURLs[index] = preview.storage.outputURL
+                loadingIndexes.remove(index)
             } catch is CancellationError {
                 return
             } catch {
-                errorMessage = error.localizedDescription
-                isLoupeLoading = false
+                errorMessages[index] = error.localizedDescription
+                loadingIndexes.remove(index)
             }
         }
     }
@@ -806,7 +889,8 @@ private struct AdvancedExportLoupeView: View {
         title: String,
         image: CGImage?,
         magnification: CGFloat,
-        showsLoading: Bool
+        showsLoading: Bool,
+        showsError: Bool
     ) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(title)
@@ -820,7 +904,10 @@ private struct AdvancedExportLoupeView: View {
                     Image(decorative: image, scale: backingScale, orientation: .up)
                         .interpolation(.none)
                         .scaleEffect(magnification)
-                } else if errorMessage == nil {
+                } else if showsError {
+                    Image(systemName: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                } else {
                     ProgressView()
                         .controlSize(.small)
                         .tint(.white)
@@ -840,21 +927,44 @@ private struct AdvancedExportLoupeView: View {
     }
 
     private var loupeDescription: String {
-        guard let loupe else {
+        guard let referenceLoupe else {
             return "Rendering matching true-pixel crops…"
         }
-        return "\(loupe.referenceImage.width) × \(loupe.referenceImage.height) pixel crops · no display interpolation"
+        return "\(referenceLoupe.referenceImage.width) × \(referenceLoupe.referenceImage.height) pixel crops · no display interpolation"
     }
 
-    private var encodedExportTitle: String {
-        let displayedConfiguration = loupe?.configuration ?? preview.configuration
+    private var referenceLoupe: AdvancedExportLoupe? {
+        loupes[0] ?? loupes.values.first
+    }
+
+    private var isReferenceLoading: Bool {
+        guard let referenceLoupe else { return true }
+        guard let primaryConfiguration = configurations.first else { return false }
+        return (previewLoadingIndexes.contains(0) || loadingIndexes.contains(0))
+            && referenceLoupe.configuration.referenceSignature(isHDR: item.isHDR)
+                != primaryConfiguration.referenceSignature(isHDR: item.isHDR)
+    }
+
+    private func isLoading(at index: Int) -> Bool {
+        previewLoadingIndexes.contains(index)
+            || loadingIndexes.contains(index)
+            || (loupes[index] == nil && errorMessages[index] == nil)
+    }
+
+    private func exportTitle(at index: Int) -> String {
+        let configuration = configurations[index]
         var components = [
-            "Encoded export",
-            displayedConfiguration.formatName(isHDR: item.isHDR)
+            "Export \(index + 1)",
+            configuration.formatName(isHDR: item.isHDR)
         ]
-        if let quality = displayedConfiguration.quality(isHDR: item.isHDR) {
+        if let quality = configuration.quality(isHDR: item.isHDR) {
             components.append("\(Int(quality * 100))%")
         }
         return components.joined(separator: " · ")
+    }
+
+    private func preview(at index: Int) -> AdvancedExportPreview? {
+        guard previews.indices.contains(index) else { return nil }
+        return previews[index]
     }
 }
