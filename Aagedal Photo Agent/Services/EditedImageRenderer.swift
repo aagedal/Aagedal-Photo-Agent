@@ -126,19 +126,25 @@ nonisolated enum EditedImageRenderer {
         isHDR: Bool,
         configuration: AdvancedExportConfiguration,
         outputFolder: URL,
-        maxReferencePixelSize: CGFloat
+        maxReferencePixelSize: CGFloat,
+        cachedReferenceImage: CGImage? = nil
     ) async throws -> AdvancedExportRenderedArtifact {
         let processed = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw)
         let output = limitedForExport(
             processed,
             maximumPixelSize: configuration.resolutionLimit.maximumPixelSize
         )
-        let reference = try makeReferencePreview(
-            from: output,
-            isHDR: isHDR,
-            configuration: configuration,
-            maxPixelSize: maxReferencePixelSize
-        )
+        let reference: CGImage
+        if let cachedReferenceImage {
+            reference = cachedReferenceImage
+        } else {
+            reference = try makeReferencePreview(
+                from: output,
+                isHDR: isHDR,
+                configuration: configuration,
+                maxPixelSize: maxReferencePixelSize
+            )
+        }
 
         let outputURL: URL
         if isHDR {

@@ -122,7 +122,7 @@ struct AdvancedExportView: View {
     }
 
     private var sdrSettings: some View {
-        GroupBox("SDR") {
+        GroupBox {
             VStack(alignment: .leading, spacing: 10) {
                 LabeledContent("Format") {
                     Picker("Format", selection: $configuration.sdrFormat) {
@@ -152,11 +152,13 @@ struct AdvancedExportView: View {
                 }
             }
             .padding(.vertical, 4)
+        } label: {
+            AdvancedExportRangeBadge(isHDR: false)
         }
     }
 
     private var hdrSettings: some View {
-        GroupBox("HDR") {
+        GroupBox {
             VStack(alignment: .leading, spacing: 10) {
                 LabeledContent("Format") {
                     Picker("Format", selection: $configuration.hdrFormat) {
@@ -186,6 +188,8 @@ struct AdvancedExportView: View {
                 }
             }
             .padding(.vertical, 4)
+        } label: {
+            AdvancedExportRangeBadge(isHDR: true)
         }
     }
 
@@ -294,12 +298,7 @@ private struct AdvancedExportComparisonRow: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
 
-                Text(item.isHDR ? "HDR" : "SDR")
-                    .font(.caption2.weight(.semibold))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(item.isHDR ? Color.orange.opacity(0.18) : Color.blue.opacity(0.16))
-                    .clipShape(Capsule())
+                AdvancedExportRangeBadge(isHDR: item.isHDR)
 
                 Spacer()
             }
@@ -315,8 +314,8 @@ private struct AdvancedExportComparisonRow: View {
                     title: "Developed reference",
                     image: preview?.referenceImage,
                     isLoading: isLoading,
+                    showsLoadingOverlay: isReferenceLoading,
                     item: item,
-                    configuration: configuration,
                     preview: preview,
                     previewService: previewService
                 )
@@ -324,8 +323,8 @@ private struct AdvancedExportComparisonRow: View {
                     title: exportPaneTitle,
                     image: preview?.exportImage,
                     isLoading: isLoading,
+                    showsLoadingOverlay: true,
                     item: item,
-                    configuration: configuration,
                     preview: preview,
                     previewService: previewService
                 )
@@ -340,7 +339,6 @@ private struct AdvancedExportComparisonRow: View {
         .padding(14)
         .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 12))
         .task(id: taskID) {
-            preview = nil
             errorMessage = nil
             isLoading = true
 
@@ -367,6 +365,13 @@ private struct AdvancedExportComparisonRow: View {
             components.append("\(Int(quality * 100))%")
         }
         return components.joined(separator: " · ")
+    }
+
+    private var isReferenceLoading: Bool {
+        guard isLoading else { return false }
+        guard let preview else { return true }
+        return preview.configuration.referenceSignature(isHDR: item.isHDR)
+            != configuration.referenceSignature(isHDR: item.isHDR)
     }
 
     private var comparisonSummary: String {
@@ -411,12 +416,27 @@ private struct AdvancedExportComparisonRow: View {
     }
 }
 
+private struct AdvancedExportRangeBadge: View {
+    let isHDR: Bool
+
+    var body: some View {
+        Text(isHDR ? "HDR" : "SDR")
+            .font(.caption2.weight(.semibold))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(
+                isHDR ? Color.orange.opacity(0.18) : Color.blue.opacity(0.16),
+                in: Capsule()
+            )
+    }
+}
+
 private struct AdvancedExportImagePane: View {
     let title: String
     let image: CGImage?
     let isLoading: Bool
+    let showsLoadingOverlay: Bool
     let item: AdvancedExportItem
-    let configuration: AdvancedExportConfiguration
     let preview: AdvancedExportPreview?
     let previewService: AdvancedExportPreviewService
 
@@ -433,8 +453,8 @@ private struct AdvancedExportImagePane: View {
                 .foregroundStyle(.secondary)
 
             GeometryReader { geometry in
-                ZStack(alignment: .topTrailing) {
-                    Color.black.opacity(0.92)
+                ZStack {
+                    Color.gray.opacity(0.22)
 
                     if let image {
                         Image(
@@ -446,12 +466,30 @@ private struct AdvancedExportImagePane: View {
                         .resizable()
                         .interpolation(.high)
                         .scaledToFit()
+                        .overlay {
+                            Rectangle()
+                                .strokeBorder(.primary.opacity(0.22), lineWidth: 1)
+                        }
                         .padding(8)
                     } else if isLoading {
                         ProgressView()
                             .controlSize(.small)
                             .tint(.white)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+
+                    if image != nil, isLoading, showsLoadingOverlay {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(.white)
+                            .padding(9)
+                            .background(.black.opacity(0.72), in: Circle())
+                            .padding(10)
+                            .frame(
+                                maxWidth: .infinity,
+                                maxHeight: .infinity,
+                                alignment: .topTrailing
+                            )
                     }
 
                     if image != nil, preview != nil, isHovered {
@@ -489,21 +527,21 @@ private struct AdvancedExportImagePane: View {
                         isHovered = false
                     }
                 }
-                .accessibilityLabel("Inspect \(title) at 100%")
+                .accessibilityLabel("Inspect \(title) pixels")
                 .accessibilityAddTraits(.isButton)
                 .accessibilityAction {
                     loupePoint = hoverPoint
                     isShowingLoupe = true
                 }
-                .help(isHovered ? "Click to inspect this area at 100%" : "")
+                .help(isHovered ? "Click to compare this area at 100% and 300%" : "")
                 .popover(isPresented: $isShowingLoupe, arrowEdge: .trailing) {
                     if let preview {
                         AdvancedExportLoupeView(
                             item: item,
-                            configuration: configuration,
                             preview: preview,
                             previewService: previewService,
-                            normalizedPoint: loupePoint
+                            normalizedPoint: loupePoint,
+                            isPreviewLoading: isLoading
                         )
                     }
                 }
@@ -557,13 +595,14 @@ private struct AdvancedExportImagePane: View {
 
 private struct AdvancedExportLoupeView: View {
     let item: AdvancedExportItem
-    let configuration: AdvancedExportConfiguration
     let preview: AdvancedExportPreview
     let previewService: AdvancedExportPreviewService
     let normalizedPoint: CGPoint
+    let isPreviewLoading: Bool
 
     @State private var loupe: AdvancedExportLoupe?
     @State private var errorMessage: String?
+    @State private var isLoupeLoading = true
 
     private let displaySize: CGFloat = 280
 
@@ -578,7 +617,7 @@ private struct AdvancedExportLoupeView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("100% Comparison")
+                Text("Pixel Comparison")
                     .font(.headline)
                 Spacer()
                 Text("Same image area")
@@ -586,14 +625,42 @@ private struct AdvancedExportLoupeView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Text("100%")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
             HStack(alignment: .top, spacing: 10) {
                 loupePane(
                     title: "Developed reference",
-                    image: loupe?.referenceImage
+                    image: loupe?.referenceImage,
+                    magnification: 1,
+                    showsLoading: false
                 )
                 loupePane(
                     title: encodedExportTitle,
-                    image: loupe?.exportImage
+                    image: loupe?.exportImage,
+                    magnification: 1,
+                    showsLoading: isPreviewLoading || isLoupeLoading
+                )
+            }
+
+            Text("300%")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.top, 2)
+
+            HStack(alignment: .top, spacing: 10) {
+                loupePane(
+                    title: "Developed reference",
+                    image: loupe?.referenceImage,
+                    magnification: 3,
+                    showsLoading: false
+                )
+                loupePane(
+                    title: encodedExportTitle,
+                    image: loupe?.exportImage,
+                    magnification: 3,
+                    showsLoading: isPreviewLoading || isLoupeLoading
                 )
             }
 
@@ -608,24 +675,35 @@ private struct AdvancedExportLoupeView: View {
             }
         }
         .padding(14)
-        .task {
+        .task(id: preview.storage.outputURL) {
+            errorMessage = nil
+            isLoupeLoading = true
             do {
-                loupe = try await previewService.makeLoupe(
+                let nextLoupe = try await previewService.makeLoupe(
                     item: item,
-                    configuration: configuration,
+                    configuration: preview.configuration,
                     preview: preview,
                     normalizedPoint: normalizedPoint,
                     pixelSize: pixelSize
                 )
+                try Task.checkCancellation()
+                loupe = nextLoupe
+                isLoupeLoading = false
             } catch is CancellationError {
                 return
             } catch {
                 errorMessage = error.localizedDescription
+                isLoupeLoading = false
             }
         }
     }
 
-    private func loupePane(title: String, image: CGImage?) -> some View {
+    private func loupePane(
+        title: String,
+        image: CGImage?,
+        magnification: CGFloat,
+        showsLoading: Bool
+    ) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(title)
                 .font(.caption.weight(.medium))
@@ -637,10 +715,19 @@ private struct AdvancedExportLoupeView: View {
                 if let image {
                     Image(decorative: image, scale: backingScale, orientation: .up)
                         .interpolation(.none)
+                        .scaleEffect(magnification)
                 } else if errorMessage == nil {
                     ProgressView()
                         .controlSize(.small)
                         .tint(.white)
+                }
+
+                if image != nil, showsLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(.white)
+                        .padding(9)
+                        .background(.black.opacity(0.72), in: Circle())
                 }
             }
             .frame(width: displaySize, height: displaySize)
@@ -656,8 +743,12 @@ private struct AdvancedExportLoupeView: View {
     }
 
     private var encodedExportTitle: String {
-        var components = ["Encoded export", configuration.formatName(isHDR: item.isHDR)]
-        if let quality = configuration.quality(isHDR: item.isHDR) {
+        let displayedConfiguration = loupe?.configuration ?? preview.configuration
+        var components = [
+            "Encoded export",
+            displayedConfiguration.formatName(isHDR: item.isHDR)
+        ]
+        if let quality = displayedConfiguration.quality(isHDR: item.isHDR) {
             components.append("\(Int(quality * 100))%")
         }
         return components.joined(separator: " · ")

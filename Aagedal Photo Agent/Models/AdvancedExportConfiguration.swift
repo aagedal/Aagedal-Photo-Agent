@@ -46,6 +46,17 @@ nonisolated struct AdvancedExportConfiguration: Equatable, Sendable {
     var locationMode: ExportLocationMode
     var customSubfolderName: String
 
+    /// Settings that affect the developed reference shown beside the encoded export.
+    /// Encoding format, compression, and quality deliberately do not participate so
+    /// changing them can reuse the already-rendered reference image and loupe crop.
+    func referenceSignature(isHDR: Bool) -> String {
+        [
+            isHDR ? "hdr-reference" : "sdr-reference",
+            isHDR ? hdrGamut.rawValue : sdrGamut.rawValue,
+            resolutionLimit.rawValue
+        ].joined(separator: "|")
+    }
+
     func previewSignature(isHDR: Bool) -> String {
         if isHDR {
             return [

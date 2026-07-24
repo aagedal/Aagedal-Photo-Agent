@@ -847,6 +847,17 @@ struct AdvancedExportTests {
             changedQuality.previewSignature(isHDR: true)
                 == configuration.previewSignature(isHDR: true)
         )
+        #expect(
+            changedQuality.referenceSignature(isHDR: false)
+                == configuration.referenceSignature(isHDR: false)
+        )
+
+        var changedFormat = configuration
+        changedFormat.sdrFormat = .avif
+        #expect(
+            changedFormat.referenceSignature(isHDR: false)
+                == configuration.referenceSignature(isHDR: false)
+        )
 
         var changedResolution = configuration
         changedResolution.resolutionLimit = .pixels2048
@@ -857,6 +868,10 @@ struct AdvancedExportTests {
         #expect(
             changedResolution.previewSignature(isHDR: true)
                 != configuration.previewSignature(isHDR: true)
+        )
+        #expect(
+            changedResolution.referenceSignature(isHDR: false)
+                != configuration.referenceSignature(isHDR: false)
         )
     }
 
@@ -917,6 +932,24 @@ struct AdvancedExportTests {
 
         #expect(lowPreview.encodedFileSize < highPreview.encodedFileSize)
         #expect(pixelData(lowPreview.exportImage) != pixelData(highPreview.exportImage))
+        #expect(lowPreview.referenceImage === highPreview.referenceImage)
+
+        let lowLoupe = try await service.makeLoupe(
+            item: item,
+            configuration: lowConfiguration,
+            preview: lowPreview,
+            normalizedPoint: CGPoint(x: 0.5, y: 0.5),
+            pixelSize: 64
+        )
+        let highLoupe = try await service.makeLoupe(
+            item: item,
+            configuration: highConfiguration,
+            preview: highPreview,
+            normalizedPoint: CGPoint(x: 0.5, y: 0.5),
+            pixelSize: 64
+        )
+        #expect(lowLoupe.referenceImage === highLoupe.referenceImage)
+        #expect(pixelData(lowLoupe.exportImage) != pixelData(highLoupe.exportImage))
 
         let decodedLowArtifact = try #require(
             FullScreenImageCache.loadDownsampled(

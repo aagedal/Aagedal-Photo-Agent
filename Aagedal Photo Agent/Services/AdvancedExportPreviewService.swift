@@ -22,20 +22,36 @@ nonisolated struct AdvancedExportPreview: @unchecked Sendable {
     let encodedFileSize: Int64
     let pixelWidth: Int
     let pixelHeight: Int
+    let configuration: AdvancedExportConfiguration
     let storage: AdvancedExportPreviewStorage
 }
 
 nonisolated struct AdvancedExportLoupe: @unchecked Sendable {
     let referenceImage: CGImage
     let exportImage: CGImage
+    let configuration: AdvancedExportConfiguration
 }
 
 /// Creates real, full-resolution export artifacts in a private temporary folder,
 /// then decodes display-sized versions for side-by-side inspection.
 actor AdvancedExportPreviewService {
+    private struct ReferenceCacheKey: Hashable {
+        let sourceURL: URL
+        let signature: String
+    }
+
+    private struct ReferenceLoupeCacheKey: Hashable {
+        let reference: ReferenceCacheKey
+        let normalizedX: Double
+        let normalizedY: Double
+        let pixelSize: Int
+    }
+
     private let maxDisplayPixelSize: CGFloat = 1_600
     private var isRendering = false
     private var renderWaiters: [CheckedContinuation<Void, Never>] = []
+    private var referenceImages: [ReferenceCacheKey: CGImage] = [:]
+    private var referenceLoupeImages: [ReferenceLoupeCacheKey: CGImage] = [:]
 
     func makePreview(
         item: AdvancedExportItem,
@@ -51,6 +67,10 @@ actor AdvancedExportPreviewService {
             at: previewFolder,
             withIntermediateDirectories: true
         )
+        let referenceKey = ReferenceCacheKey(
+            sourceURL: item.sourceURL,
+            signature: configuration.referenceSignature(isHDR: item.isHDR)
+        )
 
         let artifact: AdvancedExportRenderedArtifact
         do {
@@ -60,12 +80,14 @@ actor AdvancedExportPreviewService {
                 isHDR: item.isHDR,
                 configuration: configuration,
                 outputFolder: previewFolder,
-                maxReferencePixelSize: maxDisplayPixelSize
+                maxReferencePixelSize: maxDisplayPixelSize,
+                cachedReferenceImage: referenceImages[referenceKey]
             )
         } catch {
             try? FileManager.default.removeItem(at: previewFolder)
             throw error
         }
+        referenceImages[referenceKey] = artifact.referenceImage
         let storage = AdvancedExportPreviewStorage(
             folderURL: previewFolder,
             outputURL: artifact.outputURL
@@ -87,6 +109,7 @@ actor AdvancedExportPreviewService {
             encodedFileSize: fileSize,
             pixelWidth: artifact.pixelWidth,
             pixelHeight: artifact.pixelHeight,
+            configuration: configuration,
             storage: storage
         )
     }
@@ -103,15 +126,31 @@ actor AdvancedExportPreviewService {
         try Task.checkCancellation()
 
         let outputURL = preview.storage.outputURL
-        return try await Task.detached(priority: .userInitiated) {
-            let referenceImage = try EditedImageRenderer.makeAdvancedReferenceLoupe(
-                from: item.sourceURL,
-                cameraRaw: item.cameraRaw,
-                isHDR: item.isHDR,
-                configuration: configuration,
-                normalizedPoint: normalizedPoint,
-                pixelSize: pixelSize
-            )
+        let referenceKey = ReferenceCacheKey(
+            sourceURL: item.sourceURL,
+            signature: configuration.referenceSignature(isHDR: item.isHDR)
+        )
+        let loupeKey = ReferenceLoupeCacheKey(
+            reference: referenceKey,
+            normalizedX: normalizedPoint.x,
+            normalizedY: normalizedPoint.y,
+            pixelSize: pixelSize
+        )
+        let cachedReferenceImage = referenceLoupeImages[loupeKey]
+        let result = try await Task.detached(priority: .userInitiated) {
+            let referenceImage: CGImage
+            if let cachedReferenceImage {
+                referenceImage = cachedReferenceImage
+            } else {
+                referenceImage = try EditedImageRenderer.makeAdvancedReferenceLoupe(
+                    from: item.sourceURL,
+                    cameraRaw: item.cameraRaw,
+                    isHDR: item.isHDR,
+                    configuration: configuration,
+                    normalizedPoint: normalizedPoint,
+                    pixelSize: pixelSize
+                )
+            }
             try Task.checkCancellation()
 
             let options: [CIImageOption: Any] = item.isHDR
@@ -129,9 +168,12 @@ actor AdvancedExportPreviewService {
             )
             return AdvancedExportLoupe(
                 referenceImage: referenceImage,
-                exportImage: exportImage
+                exportImage: exportImage,
+                configuration: configuration
             )
         }.value
+        referenceLoupeImages[loupeKey] = result.referenceImage
+        return result
     }
 
     /// Full-resolution RAW processing and image encoding are deliberately serialized.
