@@ -436,6 +436,29 @@ nonisolated private func makeMaskAdjustment(corr: [String: Any], name: String, a
     let anonymizer: AnonymizerSettings? = (anonymizerAmount ?? 0) > 0 || anonymizerBlackOut == true
         ? AnonymizerSettings(amount: anonymizerAmount, blackOut: anonymizerBlackOut)
         : nil
+    let fullFrame = parseBoolValue(aaphotoMaskField(corr, "FullFrame")) == true
+    let colorTransform: ColorTransformSettings? = {
+        guard let rawMode = aaphotoMaskField(corr, "ColorTransformMode") as? String,
+              let mode = ColorTransformMode(rawValue: rawMode)
+        else { return nil }
+        var transform = ColorTransformSettings(mode: mode)
+        transform.lutName = aaphotoMaskField(corr, "LUTName") as? String
+        if let encoded = aaphotoMaskField(corr, "LUTData") as? String,
+           encoded.count <= 12_000_000,
+           let data = Data(base64Encoded: encoded, options: .ignoreUnknownCharacters),
+           !data.isEmpty, data.count <= 8_000_000 {
+            transform.lutData = data
+        }
+        if let raw = aaphotoMaskField(corr, "CSTInput") as? String,
+           let space = ColorTransformSpace(rawValue: raw) {
+            transform.inputSpace = space
+        }
+        if let raw = aaphotoMaskField(corr, "CSTOutput") as? String,
+           let space = ColorTransformSpace(rawValue: raw) {
+            transform.outputSpace = space
+        }
+        return transform
+    }()
 
     // ACR ignores this app-private sibling and renders the standard CircularGradient ellipse.
     // Photo Agent uses it to turn the same oriented box into a rounded rectangle. Absence means
@@ -486,6 +509,8 @@ nonisolated private func makeMaskAdjustment(corr: [String: Any], name: String, a
         inverted: inverted,
         amount: amount,
         geometry: resolvedGeometry,
+        fullFrame: fullFrame ? true : nil,
+        colorTransform: colorTransform,
         aiMask: aiMask,
         exposure: exposure.flatMap { abs($0) < 0.001 ? nil : $0 },
         contrast: contrast.flatMap { $0 == 0 ? nil : $0 },
@@ -733,6 +758,20 @@ nonisolated private func encodeCorrectionFields(_ mask: MaskAdjustment) -> [(nam
 /// CircularGradient fallback; AI masks use these fields with a wholly custom nested mask node.
 nonisolated private func encodeMaskAppPrivateFields(_ mask: MaskAdjustment) -> [(name: String, value: String)] {
     var appPrivateFields: [(name: String, value: String)] = []
+    if mask.isFullFrame {
+        appPrivateFields.append(("FullFrame", "True"))
+    }
+    if let transform = mask.colorTransform {
+        appPrivateFields.append(("ColorTransformMode", transform.mode.rawValue))
+        if let name = transform.lutName, !name.isEmpty {
+            appPrivateFields.append(("LUTName", name))
+        }
+        if let data = transform.lutData, !data.isEmpty, data.count <= 8_000_000 {
+            appPrivateFields.append(("LUTData", data.base64EncodedString()))
+        }
+        appPrivateFields.append(("CSTInput", transform.inputSpace.rawValue))
+        appPrivateFields.append(("CSTOutput", transform.outputSpace.rawValue))
+    }
     if let cornerRadius = mask.geometry.cornerRadius, cornerRadius.isFinite,
        cornerRadius < 0.999999 {
         appPrivateFields.append(("CornerRadius", acrNum(min(max(cornerRadius, 0), 1))))

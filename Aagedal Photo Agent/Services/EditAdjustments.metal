@@ -27,7 +27,7 @@ struct MaskParams {
     float temperature;       // -1..1, local white balance warm/cool shift
     float tint;              // -1..1, local white balance green/magenta shift
     float cornerRadius;      // 1 = ACR ellipse, 0 = Photo Agent rectangle
-    uint  maskType;          // 0 = analytic ellipse (SDF), 1 = freeform brush (sample brushAlpha)
+    uint  maskType;          // 0 = analytic ellipse, 1 = raster alpha, 2 = full-frame adjustment
     uint  brushLayer;        // slice index into the brush alpha array (maskType == 1 only)
 };
 
@@ -158,6 +158,55 @@ constant float3x3 AdobeRGBtoSRGB_edit = float3x3(
     float3(-0.3982659,  1.0001061, -0.0429013),
     float3( 0.0000000,  0.0000000,  1.0427550)
 );
+
+inline float3 colorTransformToSRGB(float3 rgb, uint space) {
+    switch (space) {
+        case 1u: return P3toSRGB_edit * rgb;
+        case 2u: return Rec2020toSRGB_edit * rgb;
+        case 3u: return AdobeRGBtoSRGB_edit * rgb;
+        default: return rgb;
+    }
+}
+
+inline float3 colorTransformFromSRGB(float3 rgb, uint space) {
+    switch (space) {
+        case 1u: return sRGBtoP3_edit * rgb;
+        case 2u: return sRGBtoRec2020_edit * rgb;
+        case 3u: return sRGBtoAdobeRGB_edit * rgb;
+        default: return rgb;
+    }
+}
+
+inline half3 applyColorTransform(
+    half3 input,
+    constant MaskParams &node,
+    texture2d_array<half, access::sample> colorLUTs
+) {
+    // activeFlags is repurposed by maskType 3: 1=LUT, 2=CST.
+    if (node.activeFlags == 2u) {
+        uint inputSpace = uint(max(node.temperature, 0.0));
+        uint outputSpace = uint(max(node.tint, 0.0));
+        float3 linearSRGB = colorTransformToSRGB(float3(input), inputSpace);
+        return half3(colorTransformFromSRGB(linearSRGB, outputSpace));
+    }
+
+    float3 domainMin = float3(node.center, node.rotation);
+    float3 domainMax = float3(node.radii, node.feather);
+    float3 coord = clamp(
+        (float3(input) - domainMin) / max(domainMax - domainMin, float3(0.000001)),
+        0.0, 1.0
+    );
+    constexpr float cubeSize = 33.0;
+    float2 sampleXY = (coord.rg * (cubeSize - 1.0) + 0.5) / cubeSize;
+    float blue = coord.b * (cubeSize - 1.0);
+    uint b0 = uint(floor(blue));
+    uint b1 = min(b0 + 1u, 32u);
+    float bt = blue - float(b0);
+    constexpr sampler cubeSampler(filter::linear, address::clamp_to_edge);
+    half3 low = colorLUTs.sample(cubeSampler, sampleXY, node.brushLayer + b0).rgb;
+    half3 high = colorLUTs.sample(cubeSampler, sampleXY, node.brushLayer + b1).rgb;
+    return mix(low, high, half(bt));
+}
 
 // ============================================================
 // Layer nodes — global adjustments and per-mask adjustments are
@@ -739,6 +788,7 @@ kernel void editAdjustments(
     texture1d<float, access::sample> toneLUT [[texture(2)]],
     texture2d_array<half, access::sample> brushAlpha [[texture(3)]],
     texture2d_array<half, access::sample> watermarkTex [[texture(4)]],
+    texture2d_array<half, access::sample> colorLUTs [[texture(5)]],
     constant EditParams &params [[buffer(0)]],
     constant MaskParams *masks [[buffer(1)]],
     constant HSLParams &hslParams [[buffer(2)]],
@@ -867,11 +917,18 @@ kernel void editAdjustments(
             }
         } else {
             constant MaskParams &mask = masks[entry];
+            if (mask.maskType == 3u) {
+                half3 transformed = applyColorTransform(rgb, mask, colorLUTs);
+                rgb = mix(rgb, transformed, half(clamp(mask.amount, 0.0, 1.0)));
+                continue;
+            }
             // Brush masks resolve their coverage from the pre-rasterized alpha array (sampled
             // in source UV space); ellipse masks use the analytic SDF. `applyMaskColor` below
             // is identical for both — it only ever sees a resolved weight + rgb.
             float weight;
-            if (mask.maskType == 1u) {
+            if (mask.maskType == 2u) {
+                weight = mask.amount;
+            } else if (mask.maskType == 1u) {
                 constexpr sampler brushSampler(filter::linear, address::clamp_to_edge);
                 weight = float(brushAlpha.sample(brushSampler, uv, mask.brushLayer).r);
                 if (mask.inverted > 0.5) weight = 1.0 - weight;
@@ -947,7 +1004,9 @@ kernel void editAdjustments(
         if (params.maskOverlayIndex >= 0 && uint(params.maskOverlayIndex) < params.maskCount) {
             constant MaskParams &om = masks[params.maskOverlayIndex];
             float ow;
-            if (om.maskType == 1u) {
+            if (om.maskType == 2u || om.maskType == 3u) {
+                ow = 1.0;
+            } else if (om.maskType == 1u) {
                 constexpr sampler brushSampler(filter::linear, address::clamp_to_edge);
                 ow = float(brushAlpha.sample(brushSampler, uv, om.brushLayer).r);
                 if (om.inverted > 0.5) ow = 1.0 - ow;

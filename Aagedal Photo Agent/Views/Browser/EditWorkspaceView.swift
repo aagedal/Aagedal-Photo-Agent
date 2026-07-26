@@ -171,6 +171,8 @@ struct EditWorkspaceView: View {
     /// The layer card currently being dragged for reorder, and the card it's hovering over.
     @State private var draggingLayer: LayerRef?
     @State private var dropTargetLayer: LayerRef?
+    @State private var hoveredLayer: LayerRef?
+    @State private var hoveredAddLayerKind: LayerKind?
     @State private var isDraggingMask = false
     @State private var dragMaskGeometry: EllipseMaskGeometry?
     @State private var dragWatermarkGeometry: WatermarkGeometry?
@@ -183,6 +185,9 @@ struct EditWorkspaceView: View {
     /// Shown when "Add Watermark" is tapped but the Watermark library (Settings ▸ Watermarks)
     /// has no PNGs imported yet.
     @State private var showWatermarkLibraryEmptyAlert = false
+    @State private var isShowingLUTImporter = false
+    @State private var importingLUTForLayerID: UUID?
+    @State private var colorTransformError: String?
     @State private var scopeThrottleTask: Task<Void, Never>?
     @State private var lastScopeUpdateTime: ContinuousClock.Instant = .now
     @State private var editZoomScale: CGFloat = 1.0
@@ -774,6 +779,7 @@ struct EditWorkspaceView: View {
                                 if let maskIdx = selectedMaskIndex,
                                    let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
                                    maskIdx < masks.count,
+                                   !masks[maskIdx].isFullFrame,
                                    masks[maskIdx].brush == nil,
                                    masks[maskIdx].aiMask == nil,
                                    showsMaskOutlines,
@@ -915,6 +921,7 @@ struct EditWorkspaceView: View {
                             if let maskIdx = selectedMaskIndex,
                                let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
                                maskIdx < masks.count,
+                               !masks[maskIdx].isFullFrame,
                                masks[maskIdx].brush == nil,
                                masks[maskIdx].aiMask == nil,
                                showsMaskOutlines,
@@ -1229,11 +1236,14 @@ struct EditWorkspaceView: View {
                         brushToolbar
                     } else if selectedMaskIsAI, let id = selectedMaskID {
                         aiMaskToolbar(id: id)
-                    } else if let idx = selectedMaskIndex, let id = selectedMaskID {
+                    } else if !selectedMaskIsFullFrame,
+                              let idx = selectedMaskIndex, let id = selectedMaskID {
                         analyticMaskToolbar(index: idx, id: id)
                     }
 
-                    if selectedMaskIndex != nil {
+                    if selectedColorTransformIndex != nil {
+                        colorTransformLayerControls
+                    } else if selectedMaskIndex != nil {
                         maskAdjustmentSliders
                     } else if selectedWatermarkIndex != nil {
                         watermarkLayerControls
@@ -3706,6 +3716,14 @@ struct EditWorkspaceView: View {
             .first(where: { $0.id == id })?.aiMask != nil
     }
 
+    /// Secondary Global layers share the adjustment payload with masks, but cover the complete
+    /// frame and therefore have no geometry toolbar, outline, invert, or matte affordance.
+    private var selectedMaskIsFullFrame: Bool {
+        guard let id = selectedMaskID else { return false }
+        return metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?
+            .first(where: { $0.id == id })?.isFullFrame == true
+    }
+
     private func aiMaskToolbar(id: UUID?) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
@@ -4044,6 +4062,7 @@ struct EditWorkspaceView: View {
                 addLayerTile(kind: .ellipseMask, help: "Add ellipse mask") {
                     addNewMask()
                 }
+                addGlobalLayerTile()
                 addLayerTile(kind: .aiMask, help: "Select a person or object with AI") {
                     startAIMaskSelection()
                 }
@@ -4055,12 +4074,15 @@ struct EditWorkspaceView: View {
                     isPickingWhiteBalance = false
                     syncMaskOverlayTarget()
                 }
+                addLayerTile(kind: .colorTransform, help: "Add LUT or CST layer") {
+                    addNewColorTransformLayer()
+                }
                 addLayerTile(kind: .watermark, help: "Add watermark layer") {
                     addNewWatermarkLayer()
                 }
             }
         }
-        .frame(width: 56, height: 56)
+        .frame(width: 86, height: 56)
         .alert("No Watermarks in Library", isPresented: $showWatermarkLibraryEmptyAlert) {
             Button("OK") {}
         } message: {
@@ -4077,10 +4099,28 @@ struct EditWorkspaceView: View {
         } message: {
             Text(aiMaskError ?? "The mask could not be generated.")
         }
+        .alert(
+            "Color Transform",
+            isPresented: Binding(
+                get: { colorTransformError != nil },
+                set: { if !$0 { colorTransformError = nil } }
+            )
+        ) {
+            Button("OK") { colorTransformError = nil }
+        } message: {
+            Text(colorTransformError ?? "The color transform could not be loaded.")
+        }
+        .fileImporter(
+            isPresented: $isShowingLUTImporter,
+            allowedContentTypes: [UTType(filenameExtension: "cube") ?? .data],
+            allowsMultipleSelection: false
+        ) { result in
+            importColorLUT(result)
+        }
     }
 
-    /// Four compact launchers together occupy one normal 56×56 layer-thumbnail slot. The dashed
-    /// cells communicate creation while the icons keep the strip from growing taller or wider.
+    /// Six launchers occupy a compact 3×2 slot. Global retains the circular affordance while the
+    /// other dashed cells use the common layer-type icon treatment.
     private func addLayerTile(kind: LayerKind, help: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: kind.systemImage)
@@ -4089,7 +4129,7 @@ struct EditWorkspaceView: View {
                 .frame(width: 26, height: 26)
                 .background(
                     RoundedRectangle(cornerRadius: 3)
-                        .fill(.quaternary.opacity(0.18))
+                        .fill(.quaternary.opacity(hoveredAddLayerKind == kind ? 0.9 : 0.18))
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 3)
@@ -4100,7 +4140,34 @@ struct EditWorkspaceView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .onHover { hoveredAddLayerKind = $0 ? kind : nil }
         .help(help)
+    }
+
+    private func addGlobalLayerTile() -> some View {
+        Button {
+            addNewGlobalLayer()
+        } label: {
+            Image(systemName: LayerKind.secondaryGlobal.systemImage)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 26, height: 26)
+                .background(
+                    Circle()
+                        .fill(.quaternary.opacity(
+                            hoveredAddLayerKind == .secondaryGlobal ? 0.95 : 0.45
+                        ))
+                )
+                .overlay(
+                    Circle()
+                        .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [2]))
+                        .foregroundStyle(.secondary)
+                )
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hoveredAddLayerKind = $0 ? .secondaryGlobal : nil }
+        .help("Add Global adjustment layer")
     }
 
     @ViewBuilder
@@ -4125,7 +4192,7 @@ struct EditWorkspaceView: View {
                 .frame(width: 56, height: 56)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
                 .saturation(0)
-                .brightness(-0.05)
+                .brightness(hoveredLayer == ref ? 0.18 : -0.05)
                 .opacity(muted ? 0.3 : 0.6)
 
                 Image(systemName: kind.systemImage)
@@ -4169,6 +4236,7 @@ struct EditWorkspaceView: View {
         }
         .contentShape(Rectangle())
         .opacity(draggingLayer == ref ? 0.4 : 1)
+        .onHover { hoveredLayer = $0 ? ref : nil }
         .onTapGesture { selectedLayer = ref }
         .onDrag {
             draggingLayer = ref
@@ -4189,8 +4257,10 @@ struct EditWorkspaceView: View {
         .contextMenu {
             if let mask {
                 Button(mask.enabled ? "Mute" : "Enable") { toggleMaskEnabled(mask.id) }
-                Button(mask.inverted ? "Normal (inside mask)" : "Invert (outside mask)") {
-                    toggleMaskInverted(mask.id)
+                if !mask.isFullFrame {
+                    Button(mask.inverted ? "Normal (inside mask)" : "Invert (outside mask)") {
+                        toggleMaskInverted(mask.id)
+                    }
                 }
                 Divider()
                 Button("Delete", role: .destructive) {
@@ -4214,15 +4284,17 @@ struct EditWorkspaceView: View {
     private func maskActionRow(_ id: UUID) -> some View {
         if let mask = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?.first(where: { $0.id == id }) {
             HStack(spacing: 10) {
-                Button {
-                    toggleMaskInverted(id)
-                } label: {
-                    Image(systemName: "circle.dashed.inset.filled")
-                        .font(.system(size: 11))
-                        .foregroundStyle(mask.inverted ? Color.accentColor : Color.secondary)
+                if !mask.isFullFrame {
+                    Button {
+                        toggleMaskInverted(id)
+                    } label: {
+                        Image(systemName: "circle.dashed.inset.filled")
+                            .font(.system(size: 11))
+                            .foregroundStyle(mask.inverted ? Color.accentColor : Color.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help(mask.inverted ? "Inverted: adjustments apply outside the mask" : "Normal: adjustments apply inside the mask")
                 }
-                .buttonStyle(.plain)
-                .help(mask.inverted ? "Inverted: adjustments apply outside the mask" : "Normal: adjustments apply inside the mask")
 
                 Button {
                     toggleMaskEnabled(id)
@@ -4234,19 +4306,21 @@ struct EditWorkspaceView: View {
                 .buttonStyle(.plain)
                 .help(mask.enabled ? "Mute mask effect" : "Enable mask effect")
 
-                Button {
-                    showsMaskOutlines.toggle()
-                    if !showsMaskOutlines {
-                        metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
+                if !mask.isFullFrame {
+                    Button {
+                        showsMaskOutlines.toggle()
+                        if !showsMaskOutlines {
+                            metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
+                        }
+                    } label: {
+                        Image(systemName: "circle.dashed")
+                            .font(.system(size: 11))
+                            .foregroundStyle(showsMaskOutlines ? Color.secondary : Color.red)
+                            .frame(width: 14, height: 14)
                     }
-                } label: {
-                    Image(systemName: "circle.dashed")
-                        .font(.system(size: 11))
-                        .foregroundStyle(showsMaskOutlines ? Color.secondary : Color.red)
-                        .frame(width: 14, height: 14)
+                    .buttonStyle(.plain)
+                    .help(showsMaskOutlines ? "Hide all mask outlines" : "Show mask outlines")
                 }
-                .buttonStyle(.plain)
-                .help(showsMaskOutlines ? "Hide all mask outlines" : "Show mask outlines")
 
                 Spacer()
 
@@ -4318,12 +4392,132 @@ struct EditWorkspaceView: View {
     }
 
     @ViewBuilder
+    private var colorTransformLayerControls: some View {
+        if let idx = selectedColorTransformIndex,
+           let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
+           masks.indices.contains(idx),
+           let transform = masks[idx].colorTransform {
+            Text("Color Transform")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.secondary)
+            Divider()
+
+            Picker("Mode", selection: colorTransformModeBinding(idx)) {
+                ForEach(ColorTransformMode.allCases, id: \.self) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            if transform.mode == .lut {
+                HStack(spacing: 8) {
+                    Image(systemName: "cube.transparent")
+                        .foregroundStyle(transform.hasLUT ? Color.accentColor : Color.secondary)
+                    Text(transform.lutName ?? "No LUT selected")
+                        .font(.system(size: 10))
+                        .foregroundStyle(transform.hasLUT ? Color.primary : Color.secondary)
+                        .lineLimit(1)
+                    Spacer()
+                    Button(transform.hasLUT ? "Replace…" : "Choose…") {
+                        importingLUTForLayerID = masks[idx].id
+                        isShowingLUTImporter = true
+                    }
+                    .controlSize(.small)
+                }
+                Text("IRIDAS/Resolve 3D .cube files from 2³ through 65³ are supported.")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+            } else {
+                Picker("Input", selection: colorTransformSpaceBinding(idx, \.inputSpace)) {
+                    ForEach(ColorTransformSpace.allCases, id: \.self) { space in
+                        Text(space.title).tag(space)
+                    }
+                }
+                Picker("Output", selection: colorTransformSpaceBinding(idx, \.outputSpace)) {
+                    ForEach(ColorTransformSpace.allCases, id: \.self) { space in
+                        Text(space.title).tag(space)
+                    }
+                }
+                HStack {
+                    Spacer()
+                    Button {
+                        updateCameraRaw { cameraRaw in
+                            guard let transform = cameraRaw.localAdjustments?[idx].colorTransform
+                            else { return }
+                            cameraRaw.localAdjustments?[idx].colorTransform?.inputSpace =
+                                transform.outputSpace
+                            cameraRaw.localAdjustments?[idx].colorTransform?.outputSpace =
+                                transform.inputSpace
+                        }
+                        commitEditAdjustments()
+                    } label: {
+                        Label("Swap", systemImage: "arrow.up.arrow.down")
+                    }
+                    .controlSize(.small)
+                }
+                Text("CST currently operates between linear RGB primaries inside the editor’s linear pipeline.")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+            }
+
+            sliderRow(
+                "Opacity",
+                value: maskAmountBinding(idx),
+                range: 0...100,
+                step: 1,
+                formatter: { "\(Int($0.rounded()))%" },
+                settingsMutator: { settings, value in
+                    settings.localAdjustments?[idx].amount = min(max(value / 100, 0), 1)
+                },
+                onReset: { maskAmountBinding(idx).wrappedValue = 100 }
+            )
+        }
+    }
+
+    private func colorTransformModeBinding(_ index: Int) -> Binding<ColorTransformMode> {
+        Binding(
+            get: {
+                metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?[index]
+                    .colorTransform?.mode ?? .lut
+            },
+            set: { mode in
+                updateCameraRaw { cameraRaw in
+                    cameraRaw.localAdjustments?[index].colorTransform?.mode = mode
+                }
+                commitEditAdjustments()
+            }
+        )
+    }
+
+    private func colorTransformSpaceBinding(
+        _ index: Int,
+        _ keyPath: WritableKeyPath<ColorTransformSettings, ColorTransformSpace>
+    ) -> Binding<ColorTransformSpace> {
+        Binding(
+            get: {
+                guard let transform = metadataViewModel.editingMetadata.cameraRaw?
+                    .localAdjustments?[index].colorTransform else { return .linearSRGB }
+                return transform[keyPath: keyPath]
+            },
+            set: { space in
+                updateCameraRaw { cameraRaw in
+                    guard var transform = cameraRaw.localAdjustments?[index].colorTransform
+                    else { return }
+                    transform[keyPath: keyPath] = space
+                    cameraRaw.localAdjustments?[index].colorTransform = transform
+                }
+                commitEditAdjustments()
+            }
+        )
+    }
+
+    @ViewBuilder
     private var maskAdjustmentSliders: some View {
         if let idx = selectedMaskIndex,
            let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments,
            idx < masks.count {
 
-            Text("Mask Adjustments")
+            Text(masks[idx].isFullFrame ? "Global Adjustments" : "Mask Adjustments")
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(.secondary)
             Divider()
@@ -4718,6 +4912,13 @@ struct EditWorkspaceView: View {
         return metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?.firstIndex { $0.id == id }
     }
 
+    private var selectedColorTransformIndex: Int? {
+        guard let index = selectedMaskIndex,
+              metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?[index]
+                .colorTransform != nil else { return nil }
+        return index
+    }
+
     /// Live array index of the selected watermark layer in `watermarkLayers`, mirroring
     /// `selectedMaskIndex`.
     private var selectedWatermarkIndex: Int? {
@@ -5032,6 +5233,93 @@ struct EditWorkspaceView: View {
         }
         selectedLayer = .mask(newMask.id)
         commitEditAdjustments()
+    }
+
+    /// Adds a reorderable full-frame adjustment node while leaving the permanent primary Global
+    /// node untouched. The oversized zero-feather ellipse is an Adobe Camera Raw fallback;
+    /// Photo Agent uses `fullFrame` for exact edge-to-edge coverage independent of aspect ratio.
+    private func addNewGlobalLayer() {
+        let existingCount = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?
+            .filter(\.isFullFrame).count ?? 0
+        var fallbackGeometry = EllipseMaskGeometry()
+        fallbackGeometry.centerX = 0.5
+        fallbackGeometry.centerY = 0.5
+        fallbackGeometry.radiusX = 2
+        fallbackGeometry.radiusY = 2
+        fallbackGeometry.feather = 0
+        let newLayer = MaskAdjustment(
+            name: "Global \(existingCount + 2)",
+            geometry: fallbackGeometry,
+            fullFrame: true
+        )
+        updateCameraRaw { cameraRaw in
+            if cameraRaw.localAdjustments == nil {
+                cameraRaw.localAdjustments = []
+            }
+            cameraRaw.localAdjustments?.append(newLayer)
+            if cameraRaw.layerOrder != nil {
+                cameraRaw.layerOrder?.append(.mask(newLayer.id))
+            }
+        }
+        selectedLayer = .mask(newLayer.id)
+        commitEditAdjustments()
+    }
+
+    private func addNewColorTransformLayer() {
+        let existingCount = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?
+            .filter { $0.colorTransform != nil }.count ?? 0
+        var fallbackGeometry = EllipseMaskGeometry()
+        fallbackGeometry.centerX = 0.5
+        fallbackGeometry.centerY = 0.5
+        fallbackGeometry.radiusX = 2
+        fallbackGeometry.radiusY = 2
+        fallbackGeometry.feather = 0
+        let newLayer = MaskAdjustment(
+            name: "Color Transform \(existingCount + 1)",
+            geometry: fallbackGeometry,
+            fullFrame: true,
+            colorTransform: ColorTransformSettings()
+        )
+        updateCameraRaw { cameraRaw in
+            if cameraRaw.localAdjustments == nil {
+                cameraRaw.localAdjustments = []
+            }
+            cameraRaw.localAdjustments?.append(newLayer)
+            if cameraRaw.layerOrder != nil {
+                cameraRaw.layerOrder?.append(.mask(newLayer.id))
+            }
+        }
+        selectedLayer = .mask(newLayer.id)
+        commitEditAdjustments()
+    }
+
+    private func importColorLUT(_ result: Result<[URL], any Error>) {
+        guard let layerID = importingLUTForLayerID else { return }
+        defer { importingLUTForLayerID = nil }
+        do {
+            let url = try result.get().first
+            guard let url else { return }
+            let accessed = url.startAccessingSecurityScopedResource()
+            defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+            let data = try Data(contentsOf: url, options: .mappedIfSafe)
+            let parsed = try CubeLUTParser.parse(data)
+            let displayName = parsed.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = displayName.flatMap { $0.isEmpty ? nil : $0 }
+                ?? url.deletingPathExtension().lastPathComponent
+            updateCameraRaw { cameraRaw in
+                guard let index = cameraRaw.localAdjustments?
+                    .firstIndex(where: { $0.id == layerID }),
+                      var transform = cameraRaw.localAdjustments?[index].colorTransform
+                else { return }
+                transform.mode = .lut
+                transform.lutName = name
+                transform.lutData = data
+                cameraRaw.localAdjustments?[index].colorTransform = transform
+            }
+            commitEditAdjustments()
+        } catch {
+            colorTransformError = error.localizedDescription
+        }
     }
 
     // MARK: - AI subject/object mask

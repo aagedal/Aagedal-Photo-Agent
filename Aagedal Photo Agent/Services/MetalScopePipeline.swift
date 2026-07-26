@@ -182,6 +182,7 @@ final class MetalScopePipeline: @unchecked Sendable {
         sourceTexture: MTLTexture,
         editParamsBuffer: MTLBuffer,
         lutTexture: MTLTexture,
+        colorLUTTexture: MTLTexture,
         maskBuffer: MTLBuffer?,
         hslBuffer: MTLBuffer?,
         orderBuffer: MTLBuffer?,
@@ -226,7 +227,8 @@ final class MetalScopePipeline: @unchecked Sendable {
             params.sampleHeight = UInt32(max(Float(dataWidth) * srcAspect, 1))
             return encodeWaveform(commandBuffer: commandBuffer, params: params,
                                  sourceTexture: sourceTexture, editParamsBuffer: editParamsBuffer,
-                                 lutTexture: lutTexture, maskBuffer: maskBuffer,
+                                 lutTexture: lutTexture, colorLUTTexture: colorLUTTexture,
+                                 maskBuffer: maskBuffer,
                                  hslBuffer: hslBuffer, orderBuffer: orderBuffer,
                                  drawable: drawable, drawableSize: drawableSize)
 
@@ -243,7 +245,8 @@ final class MetalScopePipeline: @unchecked Sendable {
             params.sampleHeight = UInt32(max(Float(channelW) * srcAspect, 1))
             return encodeParade(commandBuffer: commandBuffer, params: params,
                                sourceTexture: sourceTexture, editParamsBuffer: editParamsBuffer,
-                               lutTexture: lutTexture, maskBuffer: maskBuffer,
+                               lutTexture: lutTexture, colorLUTTexture: colorLUTTexture,
+                               maskBuffer: maskBuffer,
                                hslBuffer: hslBuffer, orderBuffer: orderBuffer,
                                drawable: drawable, drawableSize: drawableSize)
 
@@ -253,7 +256,8 @@ final class MetalScopePipeline: @unchecked Sendable {
             params.sampleHeight = UInt32(max(Float(workSize) * srcAspect, 1))
             return encodeVectorscope(commandBuffer: commandBuffer, params: params,
                                     sourceTexture: sourceTexture, editParamsBuffer: editParamsBuffer,
-                                    lutTexture: lutTexture, maskBuffer: maskBuffer,
+                                    lutTexture: lutTexture, colorLUTTexture: colorLUTTexture,
+                                    maskBuffer: maskBuffer,
                                     hslBuffer: hslBuffer, orderBuffer: orderBuffer,
                                     drawable: drawable, drawableSize: drawableSize)
 
@@ -266,7 +270,8 @@ final class MetalScopePipeline: @unchecked Sendable {
             params.displayGamut = displayGamut
             return encodeChromaticity(commandBuffer: commandBuffer, params: params,
                                      sourceTexture: sourceTexture, editParamsBuffer: editParamsBuffer,
-                                     lutTexture: lutTexture, maskBuffer: maskBuffer,
+                                     lutTexture: lutTexture, colorLUTTexture: colorLUTTexture,
+                                     maskBuffer: maskBuffer,
                                      hslBuffer: hslBuffer, orderBuffer: orderBuffer,
                                      drawable: drawable, drawableSize: drawableSize)
         }
@@ -280,6 +285,7 @@ final class MetalScopePipeline: @unchecked Sendable {
         sourceTexture: MTLTexture,
         editParamsBuffer: MTLBuffer,
         lutTexture: MTLTexture,
+        colorLUTTexture: MTLTexture,
         maskBuffer: MTLBuffer?,
         hslBuffer: MTLBuffer?,
         orderBuffer: MTLBuffer?,
@@ -304,6 +310,7 @@ final class MetalScopePipeline: @unchecked Sendable {
         accum.setComputePipelineState(waveformAccumulateState)
         accum.setTexture(sourceTexture, index: 0)
         accum.setTexture(lutTexture, index: 1)
+        accum.setTexture(colorLUTTexture, index: 2)
         accum.setBuffer(binBuffer, offset: 0, index: 0)
         accum.setBuffer(editParamsBuffer, offset: 0, index: 1)
         accum.setBuffer(scopeParamsBuffer, offset: 0, index: 2)
@@ -343,6 +350,7 @@ final class MetalScopePipeline: @unchecked Sendable {
         sourceTexture: MTLTexture,
         editParamsBuffer: MTLBuffer,
         lutTexture: MTLTexture,
+        colorLUTTexture: MTLTexture,
         maskBuffer: MTLBuffer?,
         hslBuffer: MTLBuffer?,
         orderBuffer: MTLBuffer?,
@@ -366,6 +374,7 @@ final class MetalScopePipeline: @unchecked Sendable {
         accum.setComputePipelineState(paradeAccumulateState)
         accum.setTexture(sourceTexture, index: 0)
         accum.setTexture(lutTexture, index: 1)
+        accum.setTexture(colorLUTTexture, index: 2)
         accum.setBuffer(binBuffer, offset: 0, index: 0)
         accum.setBuffer(editParamsBuffer, offset: 0, index: 1)
         accum.setBuffer(scopeParamsBuffer, offset: 0, index: 2)
@@ -403,6 +412,7 @@ final class MetalScopePipeline: @unchecked Sendable {
         sourceTexture: MTLTexture,
         editParamsBuffer: MTLBuffer,
         lutTexture: MTLTexture,
+        colorLUTTexture: MTLTexture,
         maskBuffer: MTLBuffer?,
         hslBuffer: MTLBuffer?,
         orderBuffer: MTLBuffer?,
@@ -426,6 +436,7 @@ final class MetalScopePipeline: @unchecked Sendable {
         accum.setComputePipelineState(vectorscopeAccumulateState)
         accum.setTexture(sourceTexture, index: 0)
         accum.setTexture(lutTexture, index: 1)
+        accum.setTexture(colorLUTTexture, index: 2)
         accum.setBuffer(binBuffer, offset: 0, index: 0)
         accum.setBuffer(editParamsBuffer, offset: 0, index: 1)
         accum.setBuffer(scopeParamsBuffer, offset: 0, index: 2)
@@ -463,6 +474,7 @@ final class MetalScopePipeline: @unchecked Sendable {
         sourceTexture: MTLTexture,
         editParamsBuffer: MTLBuffer,
         lutTexture: MTLTexture,
+        colorLUTTexture: MTLTexture,
         maskBuffer: MTLBuffer?,
         hslBuffer: MTLBuffer?,
         orderBuffer: MTLBuffer?,
@@ -486,6 +498,7 @@ final class MetalScopePipeline: @unchecked Sendable {
         accum.setComputePipelineState(chromaticityAccumulateState)
         accum.setTexture(sourceTexture, index: 0)
         accum.setTexture(lutTexture, index: 1)
+        accum.setTexture(colorLUTTexture, index: 2)
         accum.setBuffer(binBuffer, offset: 0, index: 0)
         accum.setBuffer(editParamsBuffer, offset: 0, index: 1)
         accum.setBuffer(scopeParamsBuffer, offset: 0, index: 2)

@@ -1380,6 +1380,244 @@ struct RoundedRectangleMaskTests {
     }
 }
 
+@Suite("Secondary Global layer")
+struct SecondaryGlobalLayerTests {
+    @Test("full-frame marker keeps an ACR circular-gradient fallback")
+    func encodesFullFrameMarkerAndFallback() throws {
+        var geometry = EllipseMaskGeometry()
+        geometry.centerX = 0.5
+        geometry.centerY = 0.5
+        geometry.radiusX = 2
+        geometry.radiusY = 2
+        geometry.feather = 0
+        let layer = MaskAdjustment(
+            name: "Global 2",
+            geometry: geometry,
+            fullFrame: true,
+            exposure: 0.5
+        )
+
+        let correction = try #require(encodeMaskGroupBasedCorrections([layer]).first)
+        #expect(correction.maskFields.contains {
+            $0.name == "What" && $0.value == "Mask/CircularGradient"
+        })
+        #expect(correction.appPrivateFields.contains {
+            $0.name == "FullFrame" && $0.value == "True"
+        })
+        #expect(layer.layerKind == .secondaryGlobal)
+    }
+
+    @Test("full-frame marker round-trips through an XMP sidecar")
+    func roundTripsThroughSidecar() throws {
+        let service = XMPSidecarService()
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        var layer = MaskAdjustment(name: "Global 2", fullFrame: true, exposure: 0.75)
+        layer.geometry.radiusX = 2
+        layer.geometry.radiusY = 2
+        layer.geometry.feather = 0
+        var settings = CameraRawSettings()
+        settings.localAdjustments = [layer]
+        settings.layerOrder = [.global, .mask(layer.id)]
+        let imageURL = directory.appendingPathComponent("secondary-global.jpg")
+
+        try service.saveCameraRawOnly(settings, orientation: nil, for: imageURL)
+        let reloaded = try #require(
+            service.loadSidecar(for: imageURL)?.cameraRaw?.localAdjustments?.first
+        )
+        #expect(reloaded.isFullFrame)
+        #expect(reloaded.layerKind == .secondaryGlobal)
+        #expect(reloaded.name == "Global 2")
+        #expect(reloaded.exposure.map { abs($0 - 0.75) < 0.001 } == true)
+    }
+}
+
+@Suite("Color Transform layer")
+struct ColorTransformLayerTests {
+    private var space: CGColorSpace { CGColorSpace(name: CGColorSpace.extendedLinearSRGB)! }
+
+    private var constantRedCube: Data {
+        Data("""
+        TITLE "News Red"
+        LUT_3D_SIZE 2
+        DOMAIN_MIN 0 0 0
+        DOMAIN_MAX 1 1 1
+        0.8 0.1 0.2
+        0.8 0.1 0.2
+        0.8 0.1 0.2
+        0.8 0.1 0.2
+        0.8 0.1 0.2
+        0.8 0.1 0.2
+        0.8 0.1 0.2
+        0.8 0.1 0.2
+        """.utf8)
+    }
+
+    private func solid(_ rgb: SIMD3<Float>, size: CGFloat = 32) -> CIImage {
+        CIImage(color: CIColor(
+            red: CGFloat(rgb.x), green: CGFloat(rgb.y), blue: CGFloat(rgb.z),
+            alpha: 1, colorSpace: space
+        )!).cropped(to: CGRect(x: 0, y: 0, width: size, height: size))
+    }
+
+    private func sampleRGB(_ image: CIImage, x: Int = 16, y: Int = 16) -> SIMD3<Float> {
+        let context = CIContext(options: [.workingColorSpace: space])
+        var buffer = [Float](repeating: 0, count: 4)
+        context.render(
+            image,
+            toBitmap: &buffer,
+            rowBytes: 4 * MemoryLayout<Float>.size,
+            bounds: CGRect(
+                x: image.extent.origin.x + CGFloat(x),
+                y: image.extent.origin.y + CGFloat(y),
+                width: 1,
+                height: 1
+            ),
+            format: .RGBAf,
+            colorSpace: space
+        )
+        return SIMD3<Float>(buffer[0], buffer[1], buffer[2])
+    }
+
+    @Test(".cube parser reads title, domain, and red-fastest row order")
+    func parsesCube() throws {
+        let data = Data("""
+        TITLE "Identity"
+        LUT_3D_SIZE 2
+        0 0 0
+        1 0 0
+        0 1 0
+        1 1 0
+        0 0 1
+        1 0 1
+        0 1 1
+        1 1 1
+        """.utf8)
+        let cube = try CubeLUTParser.parse(data)
+        #expect(cube.title == "Identity")
+        #expect(cube.size == 2)
+        #expect(cube.value(red: 1, green: 0, blue: 0) == SIMD3<Float>(1, 0, 0))
+        #expect(cube.value(red: 0, green: 1, blue: 1) == SIMD3<Float>(0, 1, 1))
+    }
+
+    @Test(".cube parser rejects incomplete color tables")
+    func rejectsIncompleteCube() {
+        let data = Data("LUT_3D_SIZE 2\n0 0 0\n".utf8)
+        #expect(throws: CubeLUTParser.ParseError.self) {
+            try CubeLUTParser.parse(data)
+        }
+    }
+
+    @Test("LUT settings round-trip losslessly through XMP")
+    func lutRoundTripsThroughSidecar() throws {
+        let service = XMPSidecarService()
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        var layer = MaskAdjustment(name: "Transform", amount: 0.65, fullFrame: true)
+        layer.colorTransform = ColorTransformSettings(
+            mode: .lut,
+            lutName: "News Red",
+            lutData: constantRedCube
+        )
+        var settings = CameraRawSettings()
+        settings.localAdjustments = [layer]
+        settings.layerOrder = [.mask(layer.id), .global]
+        let imageURL = directory.appendingPathComponent("transform.jpg")
+
+        try service.saveCameraRawOnly(settings, orientation: nil, for: imageURL)
+        let reloaded = try #require(
+            service.loadSidecar(for: imageURL)?.cameraRaw?.localAdjustments?.first
+        )
+        #expect(reloaded.layerKind == .colorTransform)
+        #expect(reloaded.amount == 0.65)
+        #expect(reloaded.colorTransform?.mode == .lut)
+        #expect(reloaded.colorTransform?.lutName == "News Red")
+        #expect(reloaded.colorTransform?.lutData == constantRedCube)
+    }
+
+    @Test("CST settings round-trip through XMP")
+    func cstRoundTripsThroughSidecar() throws {
+        let service = XMPSidecarService()
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        var layer = MaskAdjustment(name: "CST", fullFrame: true)
+        layer.colorTransform = ColorTransformSettings(
+            mode: .cst,
+            inputSpace: .linearRec2020,
+            outputSpace: .linearDisplayP3
+        )
+        var settings = CameraRawSettings()
+        settings.localAdjustments = [layer]
+        let imageURL = directory.appendingPathComponent("cst.jpg")
+
+        try service.saveCameraRawOnly(settings, orientation: nil, for: imageURL)
+        let transform = try #require(
+            service.loadSidecar(for: imageURL)?
+                .cameraRaw?.localAdjustments?.first?.colorTransform
+        )
+        #expect(transform.mode == .cst)
+        #expect(transform.inputSpace == .linearRec2020)
+        #expect(transform.outputSpace == .linearDisplayP3)
+    }
+
+    @Test("LUT mode transforms the complete frame")
+    func lutRenders() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else { return }
+        var layer = MaskAdjustment(name: "Transform", fullFrame: true)
+        layer.colorTransform = ColorTransformSettings(
+            mode: .lut,
+            lutName: "News Red",
+            lutData: constantRedCube
+        )
+        var settings = CameraRawSettings()
+        settings.localAdjustments = [layer]
+
+        let result = try #require(MetalEditPipeline.renderOffscreen(
+            source: solid(SIMD3<Float>(repeating: 0.4)),
+            settings: settings
+        ))
+        let center = sampleRGB(result)
+        let corner = sampleRGB(result, x: 1, y: 1)
+        #expect(abs(center.x - 0.8) < 0.04)
+        #expect(abs(center.y - 0.1) < 0.04)
+        #expect(abs(center.z - 0.2) < 0.04)
+        #expect(abs(center.x - corner.x) < 0.02)
+        #expect(abs(center.y - corner.y) < 0.02)
+        #expect(abs(center.z - corner.z) < 0.02)
+    }
+
+    @Test("CST mode converts linear sRGB primaries to linear Display P3")
+    func cstRenders() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else { return }
+        var layer = MaskAdjustment(name: "CST", fullFrame: true)
+        layer.colorTransform = ColorTransformSettings(
+            mode: .cst,
+            inputSpace: .linearSRGB,
+            outputSpace: .linearDisplayP3
+        )
+        var settings = CameraRawSettings()
+        settings.localAdjustments = [layer]
+
+        let result = try #require(MetalEditPipeline.renderOffscreen(
+            source: solid(SIMD3<Float>(1, 0, 0)),
+            settings: settings
+        ))
+        let rgb = sampleRGB(result)
+        #expect(abs(rgb.x - 0.8226) < 0.04)
+        #expect(abs(rgb.y - 0.0332) < 0.03)
+        #expect(abs(rgb.z - 0.0171) < 0.03)
+    }
+}
+
 @Suite("Photo Agent AI mask extension")
 struct AIMaskExtensionTests {
     @Test("AI masks encode a custom node without an ACR ellipse fallback")
@@ -2804,6 +3042,25 @@ struct BrushCompositingTests {
         let corner = sample(result, x: 3, y: 3)
         #expect(center > corner + 0.2)          // ellipse center brightened
         #expect(abs(corner - 0.4) < 0.05)       // outside the ellipse ~unchanged
+    }
+
+    @Test("a Secondary Global layer applies uniformly to the complete frame")
+    func secondaryGlobalCoversCompleteFrame() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else { return }
+        var layer = MaskAdjustment(fullFrame: true)
+        // Deliberately leave the ordinary mask geometry at its small default. Exact full-frame
+        // coverage must come from maskType=2, not from the persisted ACR fallback ellipse.
+        layer.exposure = 1.0
+        var settings = CameraRawSettings()
+        settings.localAdjustments = [layer]
+
+        let result = try #require(
+            MetalEditPipeline.renderOffscreen(source: solidGray(0.4), settings: settings)
+        )
+        let center = sample(result, x: 32, y: 32)
+        let corner = sample(result, x: 1, y: 1)
+        #expect(center > 0.7)
+        #expect(abs(center - corner) < 0.03)
     }
 
     @Test("zero corner radius includes the rectangular corners while ACR ellipse does not")

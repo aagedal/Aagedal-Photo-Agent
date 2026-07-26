@@ -159,6 +159,7 @@ struct MetalScopeView: NSViewRepresentable {
                 sourceTexture: sourceTexture,
                 editParamsBuffer: paramsBuffer,
                 lutTexture: editPipeline.lutTexture,
+                colorLUTTexture: editPipeline.colorLUTTexture,
                 maskBuffer: editPipeline.maskBuffer,
                 hslBuffer: editPipeline.hslBuffer,
                 orderBuffer: editPipeline.orderBuffer,

@@ -634,6 +634,62 @@ nonisolated struct PreservedMaskCorrection: Codable, Sendable, Equatable {
     var fields: [String: PreservedXMPNode]
 }
 
+/// One reorderable full-frame color-transform node can either evaluate an imported 3D LUT or
+/// perform a linear RGB color-space transform. The node type is shared because both operations
+/// have identical ordering, opacity, persistence, and GPU-resource semantics.
+nonisolated enum ColorTransformMode: String, Codable, CaseIterable, Sendable, Equatable, Hashable {
+    case lut
+    case cst
+
+    var title: String {
+        switch self {
+        case .lut: return "LUT"
+        case .cst: return "CST"
+        }
+    }
+}
+
+/// Linear RGB spaces supported by the first CST implementation. The editor pipeline's working
+/// space is extended-linear sRGB, so keeping transfer functions linear avoids silently applying
+/// an extra display gamma in the middle of the layer chain.
+nonisolated enum ColorTransformSpace: String, Codable, CaseIterable, Sendable, Equatable, Hashable {
+    case linearSRGB
+    case linearDisplayP3
+    case linearRec2020
+    case linearAdobeRGB
+
+    var title: String {
+        switch self {
+        case .linearSRGB: return "Linear sRGB"
+        case .linearDisplayP3: return "Linear Display P3"
+        case .linearRec2020: return "Linear Rec. 2020"
+        case .linearAdobeRGB: return "Linear Adobe RGB"
+        }
+    }
+
+    /// Compact value mirrored into the GPU mask slot for CST evaluation.
+    var gpuIndex: UInt32 {
+        switch self {
+        case .linearSRGB: return 0
+        case .linearDisplayP3: return 1
+        case .linearRec2020: return 2
+        case .linearAdobeRGB: return 3
+        }
+    }
+}
+
+nonisolated struct ColorTransformSettings: Codable, Sendable, Equatable {
+    var mode: ColorTransformMode = .lut
+    var lutName: String?
+    /// Original UTF-8 `.cube` file. Keeping the source payload makes XMP/JSON persistence
+    /// lossless and lets the GPU upload resample once to its fixed working cube size.
+    var lutData: Data?
+    var inputSpace: ColorTransformSpace = .linearSRGB
+    var outputSpace: ColorTransformSpace = .linearDisplayP3
+
+    var hasLUT: Bool { lutData?.isEmpty == false }
+}
+
 nonisolated struct MaskAdjustment: Codable, Sendable, Equatable, Identifiable {
     var id: UUID = UUID()
     var name: String = "Mask 1"
@@ -641,6 +697,16 @@ nonisolated struct MaskAdjustment: Codable, Sendable, Equatable, Identifiable {
     var inverted: Bool = false
     var amount: Double = 1.0
     var geometry: EllipseMaskGeometry = EllipseMaskGeometry()
+    /// App-private full-frame adjustment marker. Secondary Global layers deliberately reuse the
+    /// local-adjustment payload and layer-order machinery, but bypass mask geometry in Photo
+    /// Agent's renderer. Optional preserves synthesized-Codable compatibility with older JSON.
+    /// XMP also carries this as `aaphoto:FullFrame`; the oversized ellipse remains an ACR
+    /// fallback if another editor strips the app-private field.
+    var fullFrame: Bool?
+    /// Specialized full-frame color-transform payload. It shares this adjustment container so
+    /// existing UUID ordering, enable/opacity behavior, templates, and ACR fallback persistence
+    /// all continue to work without a parallel layer-chain implementation.
+    var colorTransform: ColorTransformSettings?
     /// When non-nil, this is a freeform paint mask and `geometry` (ellipse) is unused;
     /// nil means an analytic ellipse mask. Kept as a sibling field (like `anonymizer`) rather
     /// than making the geometry a polymorphic sum type, so every `mask.geometry` call site is
@@ -667,8 +733,11 @@ nonisolated struct MaskAdjustment: Codable, Sendable, Equatable, Identifiable {
             || shadows != nil || whites != nil || blacks != nil
             || saturation != nil || vibrance != nil
             || temperature != nil || tint != nil
+            || colorTransform != nil
             || (anonymizer?.isEmpty == false)
     }
+
+    var isFullFrame: Bool { fullFrame == true || colorTransform != nil }
 
     func transformedForDisplay(orientation: Int, sensorAspect: Double) -> MaskAdjustment {
         var result = self
@@ -694,6 +763,8 @@ nonisolated struct MaskAdjustment: Codable, Sendable, Equatable, Identifiable {
     /// The layer kind for icon/affordance purposes. Rounded rectangles deliberately remain
     /// backed by ACR's circular-gradient geometry so ACR can render an ellipse fallback.
     var layerKind: LayerKind {
+        if colorTransform != nil { return .colorTransform }
+        if isFullFrame { return .secondaryGlobal }
         if brush != nil { return .brushMask }
         if aiMask != nil { return .aiMask }
         return geometry.isStandardEllipse ? .ellipseMask : .rectangleMask
@@ -730,8 +801,10 @@ nonisolated struct WatermarkLayer: Codable, Sendable, Equatable, Identifiable {
 /// Visual classification of an editing layer, used to pick an icon in the layer strip.
 /// Extend with new cases as mask geometry types are added — keep it the single source
 /// of truth for layer→icon mapping so new kinds don't require touching the UI call sites.
-nonisolated enum LayerKind: Sendable, Equatable {
+nonisolated enum LayerKind: Sendable, Equatable, Hashable {
     case global
+    case secondaryGlobal
+    case colorTransform
     case ellipseMask
     case rectangleMask
     case brushMask
@@ -742,6 +815,8 @@ nonisolated enum LayerKind: Sendable, Equatable {
     var systemImage: String {
         switch self {
         case .global:        return "circle.lefthalf.filled"
+        case .secondaryGlobal: return "circle.fill"
+        case .colorTransform: return "cube.transparent"
         case .ellipseMask:   return "circle.dashed"
         case .rectangleMask: return "rectangle.dashed"
         case .brushMask:     return "paintbrush.pointed"

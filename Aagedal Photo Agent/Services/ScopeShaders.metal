@@ -518,6 +518,88 @@ inline float3 applyScopeMaskColor(float3 rgb, constant MaskParams &mask) {
     return adjusted;
 }
 
+// Color Transform nodes share MaskParams with the main edit shader. maskType 3 repurposes
+// activeFlags as the transform mode (1=LUT, 2=CST), temperature/tint as CST space indices,
+// center/rotation and radii/feather as LUT domain min/max, and brushLayer as the first slice
+// of this node's 33-slice LUT allocation.
+constant float3x3 scopeSRGBtoP3 = float3x3(
+    float3( 0.8225929,  0.0331995,  0.0170854),
+    float3( 0.1775339,  0.9667835,  0.0723957),
+    float3( 0.0000000,  0.0000000,  0.9103014)
+);
+constant float3x3 scopeP3toSRGB = float3x3(
+    float3( 1.2247452, -0.0420579, -0.0196423),
+    float3(-0.2249043,  1.0420810, -0.0786548),
+    float3( 0.0000000,  0.0000000,  1.0985373)
+);
+constant float3x3 scopeSRGBtoRec2020 = float3x3(
+    float3( 0.6275037,  0.0691084,  0.0163940),
+    float3( 0.3292755,  0.9195192,  0.0880112),
+    float3( 0.0433027,  0.0113596,  0.8953803)
+);
+constant float3x3 scopeRec2020toSRGB = float3x3(
+    float3( 1.6602270, -0.1245536, -0.0181550),
+    float3(-0.5875478,  1.1329261, -0.1006030),
+    float3(-0.0728383, -0.0083496,  1.1189982)
+);
+constant float3x3 scopeSRGBtoAdobeRGB = float3x3(
+    float3( 0.7151522,  0.0000000,  0.0000000),
+    float3( 0.2848478,  0.9998940,  0.0411493),
+    float3( 0.0000000,  0.0000000,  0.9587507)
+);
+constant float3x3 scopeAdobeRGBtoSRGB = float3x3(
+    float3( 1.3982403,  0.0000000,  0.0000000),
+    float3(-0.3982659,  1.0001061, -0.0429013),
+    float3( 0.0000000,  0.0000000,  1.0427550)
+);
+
+inline float3 scopeTransformToSRGB(float3 rgb, uint space) {
+    switch (space) {
+        case 1u: return scopeP3toSRGB * rgb;
+        case 2u: return scopeRec2020toSRGB * rgb;
+        case 3u: return scopeAdobeRGBtoSRGB * rgb;
+        default: return rgb;
+    }
+}
+
+inline float3 scopeTransformFromSRGB(float3 rgb, uint space) {
+    switch (space) {
+        case 1u: return scopeSRGBtoP3 * rgb;
+        case 2u: return scopeSRGBtoRec2020 * rgb;
+        case 3u: return scopeSRGBtoAdobeRGB * rgb;
+        default: return rgb;
+    }
+}
+
+inline float3 applyScopeColorTransform(
+    float3 input,
+    constant MaskParams &node,
+    texture2d_array<half, access::sample> colorLUTs
+) {
+    if (node.activeFlags == 2u) {
+        uint inputSpace = uint(max(node.temperature, 0.0));
+        uint outputSpace = uint(max(node.tint, 0.0));
+        return scopeTransformFromSRGB(scopeTransformToSRGB(input, inputSpace), outputSpace);
+    }
+
+    float3 domainMin = float3(node.center, node.rotation);
+    float3 domainMax = float3(node.radii, node.feather);
+    float3 coord = clamp(
+        (input - domainMin) / max(domainMax - domainMin, float3(0.000001)),
+        0.0, 1.0
+    );
+    constexpr float cubeSize = 33.0;
+    float2 sampleXY = (coord.rg * (cubeSize - 1.0) + 0.5) / cubeSize;
+    float blue = coord.b * (cubeSize - 1.0);
+    uint b0 = uint(floor(blue));
+    uint b1 = min(b0 + 1u, 32u);
+    float bt = blue - float(b0);
+    constexpr sampler cubeSampler(filter::linear, address::clamp_to_edge);
+    float3 low = float3(colorLUTs.sample(cubeSampler, sampleXY, node.brushLayer + b0).rgb);
+    float3 high = float3(colorLUTs.sample(cubeSampler, sampleXY, node.brushLayer + b1).rgb);
+    return mix(low, high, bt);
+}
+
 // Full edit applied to one sampled pixel, honoring the reorderable layer chain so the
 // scope matches the preview after Global is moved among the masks. The order buffer holds
 // `orderCount` entries: each is a mask index, or ≥ maskCount for the global node.
@@ -528,6 +610,7 @@ inline float3 applyEdits(
     constant ScopeEditParams &params,
     texture2d<half, access::sample> source,
     texture1d<float, access::sample> toneLUT,
+    texture2d_array<half, access::sample> colorLUTs,
     constant MaskParams *masks,
     constant HSLParams &hslParams,
     constant uint *order)
@@ -538,6 +621,16 @@ inline float3 applyEdits(
             rgb = applyScopeSpatialDetail(rgb, params, source, uv);
         }
         for (uint m = 0; m < params.maskCount && m < 8; m++) {
+            if (masks[m].maskType == 3u) {
+                float3 transformed = applyScopeColorTransform(rgb, masks[m], colorLUTs);
+                rgb = mix(rgb, transformed, clamp(masks[m].amount, 0.0, 1.0));
+                continue;
+            }
+            if (masks[m].maskType == 2u) {
+                rgb = mix(rgb, applyScopeMaskColor(rgb, masks[m]),
+                          clamp(masks[m].amount, 0.0, 1.0));
+                continue;
+            }
             float weight = applyScopeMaskWeight(masks[m], uv, params.sourceSize);
             if (weight < 0.001) continue;
             rgb = mix(rgb, applyScopeMaskColor(rgb, masks[m]), weight);
@@ -546,13 +639,27 @@ inline float3 applyEdits(
     }
 
     for (uint k = 0; k < params.orderCount; k++) {
-        uint entry = order[k];
-        if (entry >= params.maskCount) {
+        uint entry = order[params.orderOffset + k];
+        if (entry == 0xFFFFFFFFu) {
             rgb = applyScopeGlobal(rgb, params, toneLUT, hslParams);
             if (params.activeFlags & ((1u << 8) | (1u << 9))) {
                 rgb = applyScopeSpatialDetail(rgb, params, source, uv);
             }
-        } else {
+        } else if (entry & 0x80000000u) {
+            // Scope rendering does not receive watermark textures. Preserve the upstream
+            // color here instead of accidentally treating a watermark entry as Global.
+            continue;
+        } else if (entry < params.maskCount) {
+            if (masks[entry].maskType == 3u) {
+                float3 transformed = applyScopeColorTransform(rgb, masks[entry], colorLUTs);
+                rgb = mix(rgb, transformed, clamp(masks[entry].amount, 0.0, 1.0));
+                continue;
+            }
+            if (masks[entry].maskType == 2u) {
+                rgb = mix(rgb, applyScopeMaskColor(rgb, masks[entry]),
+                          clamp(masks[entry].amount, 0.0, 1.0));
+                continue;
+            }
             float weight = applyScopeMaskWeight(masks[entry], uv, params.sourceSize);
             if (weight < 0.001) continue;
             rgb = mix(rgb, applyScopeMaskColor(rgb, masks[entry]), weight);
@@ -568,6 +675,7 @@ inline float3 applyEdits(
 kernel void waveformAccumulate(
     texture2d<half, access::sample> source [[texture(0)]],
     texture1d<float, access::sample> toneLUT [[texture(1)]],
+    texture2d_array<half, access::sample> colorLUTs [[texture(2)]],
     device atomic_uint *bins [[buffer(0)]],
     constant ScopeEditParams &editParams [[buffer(1)]],
     constant ScopeParams &scopeParams [[buffer(2)]],
@@ -587,7 +695,7 @@ kernel void waveformAccumulate(
     constexpr sampler bilinear(filter::linear, address::clamp_to_edge);
     half4 color = source.sample(bilinear, uv);
     float3 rgb = float3(color.rgb);
-    rgb = applyEdits(rgb, uv, editParams, source, toneLUT, masks, hslParams, order);
+    rgb = applyEdits(rgb, uv, editParams, source, toneLUT, colorLUTs, masks, hslParams, order);
 
     int levels = int(scopeParams.levels);
     int level;
@@ -751,6 +859,7 @@ kernel void waveformRender(
 kernel void paradeAccumulate(
     texture2d<half, access::sample> source [[texture(0)]],
     texture1d<float, access::sample> toneLUT [[texture(1)]],
+    texture2d_array<half, access::sample> colorLUTs [[texture(2)]],
     device atomic_uint *bins [[buffer(0)]],
     constant ScopeEditParams &editParams [[buffer(1)]],
     constant ScopeParams &scopeParams [[buffer(2)]],
@@ -772,7 +881,7 @@ kernel void paradeAccumulate(
     constexpr sampler bilinear(filter::linear, address::clamp_to_edge);
     half4 color = source.sample(bilinear, uv);
     float3 rgb = float3(color.rgb);
-    rgb = applyEdits(rgb, uv, editParams, source, toneLUT, masks, hslParams, order);
+    rgb = applyEdits(rgb, uv, editParams, source, toneLUT, colorLUTs, masks, hslParams, order);
 
     // Convert linear → sRGB before binning (matches CPU scope path)
     float r = linearToSRGB(saturate(rgb.r));
@@ -925,6 +1034,7 @@ kernel void paradeRender(
 kernel void vectorscopeAccumulate(
     texture2d<half, access::sample> source [[texture(0)]],
     texture1d<float, access::sample> toneLUT [[texture(1)]],
+    texture2d_array<half, access::sample> colorLUTs [[texture(2)]],
     device atomic_uint *bins [[buffer(0)]],
     constant ScopeEditParams &editParams [[buffer(1)]],
     constant ScopeParams &scopeParams [[buffer(2)]],
@@ -944,7 +1054,7 @@ kernel void vectorscopeAccumulate(
     constexpr sampler bilinear(filter::linear, address::clamp_to_edge);
     half4 color = source.sample(bilinear, uv);
     float3 rgb = float3(color.rgb);
-    rgb = applyEdits(rgb, uv, editParams, source, toneLUT, masks, hslParams, order);
+    rgb = applyEdits(rgb, uv, editParams, source, toneLUT, colorLUTs, masks, hslParams, order);
 
     // Convert linear → sRGB before CbCr computation (matches CPU scope path)
     float r = linearToSRGB(saturate(rgb.r));
@@ -1258,6 +1368,7 @@ inline bool isInsideTriangle(float2 p, float2 a, float2 b, float2 c) {
 kernel void chromaticityAccumulate(
     texture2d<half, access::sample> source [[texture(0)]],
     texture1d<float, access::sample> toneLUT [[texture(1)]],
+    texture2d_array<half, access::sample> colorLUTs [[texture(2)]],
     device atomic_uint *bins [[buffer(0)]],
     constant ScopeEditParams &editParams [[buffer(1)]],
     constant ScopeParams &scopeParams [[buffer(2)]],
@@ -1278,7 +1389,7 @@ kernel void chromaticityAccumulate(
     constexpr sampler bilinear(filter::linear, address::clamp_to_edge);
     half4 color = source.sample(bilinear, uv);
     float3 rgb = float3(color.rgb);
-    rgb = applyEdits(rgb, uv, editParams, source, toneLUT, masks, hslParams, order);
+    rgb = applyEdits(rgb, uv, editParams, source, toneLUT, colorLUTs, masks, hslParams, order);
 
     // Work in linear space for chromaticity — do NOT apply linearToSRGB
     float3 linearRGB = rgb;

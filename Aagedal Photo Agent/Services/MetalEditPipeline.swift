@@ -33,7 +33,7 @@ struct MaskParams {
     var temperature: Float = 0
     var tint: Float = 0
     var cornerRadius: Float = 1 // 1 = ACR ellipse, 0 = Photo Agent rectangle
-    var maskType: UInt32 = 0   // 0 = ellipse (SDF), 1 = brush (sample brushAlpha)
+    var maskType: UInt32 = 0   // 0 = ellipse, 1 = raster alpha, 2 = full-frame
     var brushLayer: UInt32 = 0 // slice into the brush alpha array (maskType == 1 only)
 }
 
@@ -56,6 +56,156 @@ struct BrushDabParams {
 nonisolated enum MaskAlphaSource: Sendable, Equatable {
     case brush(BrushMaskGeometry)
     case ai(AIMaskGeometry)
+}
+
+nonisolated struct ParsedCubeLUT: Sendable, Equatable {
+    var title: String?
+    var size: Int
+    var domainMin: SIMD3<Float>
+    var domainMax: SIMD3<Float>
+    /// IRIDAS/Resolve `.cube` ordering: red changes fastest, then green, then blue.
+    var values: [SIMD3<Float>]
+
+    func value(red: Int, green: Int, blue: Int) -> SIMD3<Float> {
+        values[red + green * size + blue * size * size]
+    }
+
+    /// Resamples arbitrary supported cube dimensions into the pipeline's fixed-size texture.
+    /// Each returned item is one blue-axis slice containing RGBA floats in row-major red/green.
+    func resampledSlices(size outputSize: Int) -> [[Float]] {
+        let sourceMax = Float(size - 1)
+        let outputMax = Float(max(outputSize - 1, 1))
+        var slices: [[Float]] = []
+        slices.reserveCapacity(outputSize)
+        for blue in 0..<outputSize {
+            var slice = [Float](repeating: 0, count: outputSize * outputSize * 4)
+            let bz = Float(blue) / outputMax * sourceMax
+            let b0 = min(Int(floor(bz)), size - 1)
+            let b1 = min(b0 + 1, size - 1)
+            let bt = bz - Float(b0)
+            for green in 0..<outputSize {
+                let gy = Float(green) / outputMax * sourceMax
+                let g0 = min(Int(floor(gy)), size - 1)
+                let g1 = min(g0 + 1, size - 1)
+                let gt = gy - Float(g0)
+                for red in 0..<outputSize {
+                    let rx = Float(red) / outputMax * sourceMax
+                    let r0 = min(Int(floor(rx)), size - 1)
+                    let r1 = min(r0 + 1, size - 1)
+                    let rt = rx - Float(r0)
+                    func mix(_ a: SIMD3<Float>, _ b: SIMD3<Float>, _ t: Float) -> SIMD3<Float> {
+                        a + (b - a) * t
+                    }
+                    let c00 = mix(value(red: r0, green: g0, blue: b0),
+                                  value(red: r1, green: g0, blue: b0), rt)
+                    let c10 = mix(value(red: r0, green: g1, blue: b0),
+                                  value(red: r1, green: g1, blue: b0), rt)
+                    let c01 = mix(value(red: r0, green: g0, blue: b1),
+                                  value(red: r1, green: g0, blue: b1), rt)
+                    let c11 = mix(value(red: r0, green: g1, blue: b1),
+                                  value(red: r1, green: g1, blue: b1), rt)
+                    let result = mix(mix(c00, c10, gt), mix(c01, c11, gt), bt)
+                    let offset = (green * outputSize + red) * 4
+                    slice[offset] = result.x
+                    slice[offset + 1] = result.y
+                    slice[offset + 2] = result.z
+                    slice[offset + 3] = 1
+                }
+            }
+            slices.append(slice)
+        }
+        return slices
+    }
+}
+
+nonisolated enum CubeLUTParser {
+    enum ParseError: LocalizedError {
+        case notUTF8
+        case missingSize
+        case unsupportedSize(Int)
+        case malformedDirective(String)
+        case wrongEntryCount(expected: Int, actual: Int)
+
+        var errorDescription: String? {
+            switch self {
+            case .notUTF8: return "The LUT is not a UTF-8 .cube file."
+            case .missingSize: return "The LUT has no LUT_3D_SIZE directive."
+            case .unsupportedSize(let size): return "The LUT size \(size) is unsupported (2…65 expected)."
+            case .malformedDirective(let line): return "Malformed LUT directive: \(line)"
+            case .wrongEntryCount(let expected, let actual):
+                return "The LUT contains \(actual) color rows; \(expected) were expected."
+            }
+        }
+    }
+
+    static func parse(_ data: Data) throws -> ParsedCubeLUT {
+        guard data.count <= 8_000_000, let text = String(data: data, encoding: .utf8) else {
+            throw ParseError.notUTF8
+        }
+        var title: String?
+        var size: Int?
+        var domainMin = SIMD3<Float>(repeating: 0)
+        var domainMax = SIMD3<Float>(repeating: 1)
+        var values: [SIMD3<Float>] = []
+
+        for rawLine in text.split(whereSeparator: \.isNewline) {
+            let withoutComment = rawLine.split(separator: "#", maxSplits: 1).first ?? rawLine[...]
+            let line = withoutComment.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { continue }
+            let parts = line.split(whereSeparator: \.isWhitespace)
+            guard let first = parts.first else { continue }
+            switch first.uppercased() {
+            case "TITLE":
+                if let firstQuote = line.firstIndex(of: "\""),
+                   let lastQuote = line.lastIndex(of: "\""), firstQuote < lastQuote {
+                    title = String(line[line.index(after: firstQuote)..<lastQuote])
+                }
+            case "LUT_3D_SIZE":
+                guard parts.count == 2, let parsed = Int(parts[1]) else {
+                    throw ParseError.malformedDirective(line)
+                }
+                guard (2...65).contains(parsed) else { throw ParseError.unsupportedSize(parsed) }
+                size = parsed
+                values.reserveCapacity(parsed * parsed * parsed)
+            case "DOMAIN_MIN", "DOMAIN_MAX":
+                guard parts.count == 4,
+                      let x = Float(parts[1]), let y = Float(parts[2]), let z = Float(parts[3]),
+                      x.isFinite, y.isFinite, z.isFinite else {
+                    throw ParseError.malformedDirective(line)
+                }
+                if first.uppercased() == "DOMAIN_MIN" {
+                    domainMin = SIMD3<Float>(x, y, z)
+                } else {
+                    domainMax = SIMD3<Float>(x, y, z)
+                }
+            default:
+                guard parts.count == 3,
+                      let r = Float(parts[0]), let g = Float(parts[1]), let b = Float(parts[2]),
+                      r.isFinite, g.isFinite, b.isFinite else {
+                    // Ignore metadata directives this first implementation doesn't consume.
+                    if first.first?.isLetter == true { continue }
+                    throw ParseError.malformedDirective(line)
+                }
+                values.append(SIMD3<Float>(r, g, b))
+            }
+        }
+
+        guard let size else { throw ParseError.missingSize }
+        let expected = size * size * size
+        guard values.count == expected else {
+            throw ParseError.wrongEntryCount(expected: expected, actual: values.count)
+        }
+        guard all(domainMax .> domainMin) else {
+            throw ParseError.malformedDirective("DOMAIN_MAX must be greater than DOMAIN_MIN")
+        }
+        return ParsedCubeLUT(
+            title: title,
+            size: size,
+            domainMin: domainMin,
+            domainMax: domainMax,
+            values: values
+        )
+    }
 }
 
 /// Parameters for scaling an AI mask PNG into one full-resolution alpha-array slice.
@@ -393,6 +543,10 @@ final class MetalEditPipeline: @unchecked Sendable {
     nonisolated(unsafe) private var lutInterleaveBuffer = [Float](repeating: 0, count: ToneCurveGenerator.lutSize * 4)
 
     nonisolated private static let maxMasks = 8
+    /// Every imported cube is CPU-resampled to this dimension, then packed into 33 consecutive
+    /// slices of one 2D-array texture. This supports several independently ordered LUT nodes
+    /// without declaring a variable number of Metal texture arguments.
+    nonisolated static let colorLUTSize = 33
     /// Max simultaneous watermark layers (and, since each references one library asset,
     /// also the texture array's slice cap — fewer if several layers share one asset).
     nonisolated private static let maxWatermarks = 4
@@ -471,6 +625,18 @@ final class MetalEditPipeline: @unchecked Sendable {
     nonisolated(unsafe) private var activeDisplayWatermarkLayers: [WatermarkLayer] = []
     nonisolated(unsafe) private var cachedWatermarkFrame: UInt32 = 0
     nonisolated(unsafe) private var cachedWatermarkImageSize = MTLSize(width: 0, height: 0, depth: 0)
+
+    // MARK: - Color Transform layers
+
+    /// Fixed 33³ LUT slots packed as `[mask slot × 33 blue slices]`. Identity data occupies
+    /// slots without a valid imported cube, so malformed/missing LUTs safely no-op.
+    nonisolated(unsafe) private(set) var colorLUTTexture: MTLTexture
+    /// Cache of source cube payloads by mask-buffer slot. Avoids parsing and uploading ~2 MB
+    /// while unrelated sliders are dragged.
+    nonisolated(unsafe) private var lastBuiltColorLUTData: [Data?] =
+        Array(repeating: nil, count: maxMasks)
+    nonisolated(unsafe) private var parsedColorLUTs: [ParsedCubeLUT?] =
+        Array(repeating: nil, count: maxMasks)
 
     nonisolated private static let colorSpace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!
 
@@ -712,6 +878,20 @@ final class MetalEditPipeline: @unchecked Sendable {
         lutDesc.storageMode = .shared
         guard let preallocLUT = device.makeTexture(descriptor: lutDesc) else { return nil }
         self.lutTexture = preallocLUT
+
+        let colorDesc = MTLTextureDescriptor()
+        colorDesc.textureType = .type2DArray
+        colorDesc.pixelFormat = .rgba16Float
+        colorDesc.width = Self.colorLUTSize
+        colorDesc.height = Self.colorLUTSize
+        colorDesc.arrayLength = Self.maxMasks * Self.colorLUTSize
+        colorDesc.usage = .shaderRead
+        colorDesc.storageMode = .shared
+        guard let colorTexture = device.makeTexture(descriptor: colorDesc) else { return nil }
+        self.colorLUTTexture = colorTexture
+        for slot in 0..<Self.maxMasks {
+            uploadIdentityColorLUT(slot: slot)
+        }
     }
 
     // MARK: - Source Texture Upload
@@ -791,6 +971,70 @@ final class MetalEditPipeline: @unchecked Sendable {
     }
 
     // MARK: - LUT Upload
+
+    nonisolated private func uploadIdentityColorLUT(slot: Int) {
+        let size = Self.colorLUTSize
+        let maximum = Float(size - 1)
+        for blue in 0..<size {
+            var floats = [Float](repeating: 0, count: size * size * 4)
+            for green in 0..<size {
+                for red in 0..<size {
+                    let offset = (green * size + red) * 4
+                    floats[offset] = Float(red) / maximum
+                    floats[offset + 1] = Float(green) / maximum
+                    floats[offset + 2] = Float(blue) / maximum
+                    floats[offset + 3] = 1
+                }
+            }
+            var halfs = Self.floatsToHalfs(floats)
+            colorLUTTexture.replace(
+                region: MTLRegionMake2D(0, 0, size, size),
+                mipmapLevel: 0,
+                slice: slot * size + blue,
+                withBytes: &halfs,
+                bytesPerRow: size * 4 * MemoryLayout<UInt16>.size,
+                bytesPerImage: size * size * 4 * MemoryLayout<UInt16>.size
+            )
+        }
+    }
+
+    /// Parses/resamples only changed `.cube` payloads and uploads them into the mask slot used
+    /// by the layer-order buffer. Invalid data becomes identity; the UI reports validation errors
+    /// before committing imports, but this defensive fallback also protects hand-edited XMP.
+    nonisolated private func refreshColorLUTs(_ masks: [MaskAdjustment]) {
+        for slot in 0..<Self.maxMasks {
+            let data: Data? = masks.indices.contains(slot)
+                && masks[slot].colorTransform?.mode == .lut
+                ? masks[slot].colorTransform?.lutData
+                : nil
+            guard data != lastBuiltColorLUTData[slot] else { continue }
+            lastBuiltColorLUTData[slot] = data
+            parsedColorLUTs[slot] = nil
+            guard let data else {
+                uploadIdentityColorLUT(slot: slot)
+                continue
+            }
+            do {
+                let parsed = try CubeLUTParser.parse(data)
+                parsedColorLUTs[slot] = parsed
+                for (blue, floats) in parsed.resampledSlices(size: Self.colorLUTSize).enumerated() {
+                    var halfs = Self.floatsToHalfs(floats)
+                    colorLUTTexture.replace(
+                        region: MTLRegionMake2D(0, 0, Self.colorLUTSize, Self.colorLUTSize),
+                        mipmapLevel: 0,
+                        slice: slot * Self.colorLUTSize + blue,
+                        withBytes: &halfs,
+                        bytesPerRow: Self.colorLUTSize * 4 * MemoryLayout<UInt16>.size,
+                        bytesPerImage: Self.colorLUTSize * Self.colorLUTSize * 4
+                            * MemoryLayout<UInt16>.size
+                    )
+                }
+            } catch {
+                metalPipelineLog.error("Invalid color LUT in slot \(slot): \(error.localizedDescription)")
+                uploadIdentityColorLUT(slot: slot)
+            }
+        }
+    }
 
     /// Updates the pre-allocated 4096-entry RGBA LUT texture in-place (~32KB, no allocation).
     /// R/G/B channels carry independent per-channel tone curves.
@@ -949,9 +1193,10 @@ final class MetalEditPipeline: @unchecked Sendable {
                 .masksTransformedForDisplay(orientation: orientation, displayAspect: size.width / size.height)
                 .watermarksTransformedForDisplay(orientation: orientation)
         }()
-        // Analytic and raster masks participate together. Brush and AI masks resolve coverage
-        // from a shared pre-rasterized alpha array (rebuilt below), sampled by `editAdjustments`
-        // when `maskType` is 1; ellipse/rounded-rectangle masks use the analytic SDF.
+        // Analytic, raster, and full-frame adjustments participate together. Brush and AI masks
+        // resolve coverage from a shared pre-rasterized alpha array (maskType 1);
+        // ellipse/rounded-rectangle masks use the analytic SDF (0), and Secondary Globals use
+        // exact full-frame coverage (2).
         let enabledMasks = displaySettings.localAdjustments?.filter { $0.enabled } ?? []
         var masks = enabledMasks
         // A muted mask normally has no GPU slot. Include the hovered matte target solely for
@@ -964,6 +1209,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         }
         let maskCount = min(masks.count, Self.maxMasks)
         params.maskCount = UInt32(maskCount)
+        refreshColorLUTs(Array(masks.prefix(maskCount)))
 
         if maskCount > 0 {
             metalPipelineLog.debug("updateParams: \(maskCount) mask(s) active")
@@ -994,7 +1240,28 @@ final class MetalEditPipeline: @unchecked Sendable {
                 mp.inverted = mask.inverted ? 1.0 : 0.0
                 mp.amount = Float(mask.amount)
                 mp.cornerRadius = Float(mask.geometry.normalizedCornerRadius)
-                if let brush = mask.brush {
+                if let transform = mask.colorTransform {
+                    mp.maskType = 3
+                    mp.brushLayer = UInt32(i * Self.colorLUTSize)
+                    mp.activeFlags = transform.mode == .lut ? 1 : 2
+                    mp.temperature = Float(transform.inputSpace.gpuIndex)
+                    mp.tint = Float(transform.outputSpace.gpuIndex)
+                    if let cube = parsedColorLUTs[i] {
+                        mp.center = SIMD2<Float>(cube.domainMin.x, cube.domainMin.y)
+                        mp.rotation = cube.domainMin.z
+                        mp.radii = SIMD2<Float>(cube.domainMax.x, cube.domainMax.y)
+                        mp.feather = cube.domainMax.z
+                    } else {
+                        mp.center = .zero
+                        mp.rotation = 0
+                        mp.radii = SIMD2<Float>(repeating: 1)
+                        mp.feather = 1
+                    }
+                    maskPtr[i] = mp
+                    continue
+                } else if mask.isFullFrame {
+                    mp.maskType = 2
+                } else if let brush = mask.brush {
                     mp.maskType = 1
                     mp.brushLayer = UInt32(maskAlphaSources.count)
                     maskAlphaSources.append(.brush(brush))
@@ -1790,6 +2057,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         encoder.setTexture(lutTexture, index: 2)
         encoder.setTexture(brushAlphaTexture ?? emptyBrushAlpha, index: 3)
         encoder.setTexture(watermarkTexture ?? emptyWatermarkTexture, index: 4)
+        encoder.setTexture(colorLUTTexture, index: 5)
         encoder.setBytes(&passParams, length: MemoryLayout<EditParams>.stride, index: 0)
         if let maskBuffer {
             encoder.setBuffer(maskBuffer, offset: 0, index: 1)
