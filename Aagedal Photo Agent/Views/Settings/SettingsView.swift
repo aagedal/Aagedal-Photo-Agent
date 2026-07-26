@@ -62,6 +62,7 @@ struct SettingsView: View {
     enum SettingsSection: String, CaseIterable, Identifiable {
         case general
         case rawDecoding
+        case developControls
         case metadata
         case keywordLists
         case quickLists
@@ -85,6 +86,7 @@ struct SettingsView: View {
             switch self {
             case .general: return "General"
             case .rawDecoding: return "RAW Decoding"
+            case .developControls: return "Develop Sliders"
             case .metadata: return "Metadata"
             case .keywordLists: return "Keywords"
             case .quickLists: return "Quick Lists"
@@ -108,6 +110,7 @@ struct SettingsView: View {
             switch self {
             case .general: return "gear"
             case .rawDecoding: return "camera.aperture"
+            case .developControls: return "slider.horizontal.3"
             case .metadata: return "tag"
             case .keywordLists: return "list.bullet.rectangle"
             case .quickLists: return "bolt"
@@ -136,6 +139,7 @@ struct SettingsView: View {
                 Section("General") {
                     row(.general)
                     row(.rawDecoding)
+                    row(.developControls)
                 }
                 Section("Library & Metadata") {
                     row(.metadata)
@@ -213,6 +217,7 @@ struct SettingsView: View {
         switch section {
         case .general: generalTab
         case .rawDecoding: rawDecodingTab
+        case .developControls: developControlsTab
         case .metadata: metadataTab
         case .keywordLists: keywordsTab
         case .quickLists: quickListsTab
@@ -289,7 +294,16 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+        }
+        .formStyle(.grouped)
+        .padding()
+    }
 
+    // MARK: - Develop Sliders Tab
+
+    @ViewBuilder
+    private var developControlsTab: some View {
+        Form {
             Section("Develop Controls") {
                 Text("Arrange the Global Develop sections and choose which optional controls they contain. Expand a section to edit individual controls. Exposure, white balance, and Crop always remain available.")
                     .font(.caption)
