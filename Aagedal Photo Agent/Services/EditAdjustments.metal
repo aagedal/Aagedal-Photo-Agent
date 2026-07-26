@@ -117,7 +117,7 @@ struct EditParams {
     float filmBloom;         // 0..1
     float filmVignette;      // 0..1
     float filmEdgeBlur;      // 0..1
-    float _padFilm0;
+    float filmGrainCoarseness; // 0..1, particle size
     float _padFilm1;
     float _padFilm2;
 };
@@ -888,8 +888,8 @@ static half3 applyFilmEmulation(
         float2 centered = (inputUV - 0.5) * 2.0;
         float radial = length(centered) * 0.70710678;
         float absVal = abs(params.filmVignette);
-        float vignette = smoothstep(mix(0.86, 0.20, absVal), 1.0, radial);
-        float amount = (0.60 * absVal + 0.40 * absVal * absVal);
+        float vignette = smoothstep(mix(0.92, 0.05, absVal), 1.0, radial);
+        float amount = (0.80 * absVal + 0.60 * absVal * absVal);
         if (params.filmVignette > 0.0) {
             rgb *= 1.0 + vignette * amount;
         } else {
@@ -898,11 +898,11 @@ static half3 applyFilmEmulation(
     }
 
     if (params.filmGrain > 0.0) {
-        // Film density varies in softly clustered, monochrome grains. A single independent
-        // random value per output pixel looked like sensor noise and changed apparent size with
-        // preview resolution, so combine two fine emulsions with a weaker broad clump instead.
+        // Film density varies in softly clustered grains built from two fine emulsion layers
+        // plus a weaker broad clump. `filmGrainCoarseness` sets particle size independently of
+        // Grain amount, matching Camera Raw's separate Amount/Size controls.
         float2 pixel = inputUV * max(sourceSize, float2(1.0));
-        float grainScale = mix(1.9, 1.25, params.filmGrain);
+        float grainScale = mix(0.9, 3.4, params.filmGrainCoarseness);
         float fineA = anonymizerVNoise(
             pixel.x / grainScale, pixel.y / grainScale, 0xA341316Cu, 0u
         ) * 2.0 - 1.0;
@@ -910,13 +910,26 @@ static half3 applyFilmEmulation(
             pixel.x / grainScale + 19.7, pixel.y / grainScale - 7.3, 0xC8013EA4u, 1u
         ) * 2.0 - 1.0;
         float clump = anonymizerVNoise(
-            pixel.x / 4.8, pixel.y / 4.8, 0xAD90777Du, 2u
+            pixel.x / (grainScale * 2.5), pixel.y / (grainScale * 2.5), 0xAD90777Du, 2u
         ) * 2.0 - 1.0;
-        float noise = fineA * 0.42 + fineB * 0.42 + clump * 0.22;
+        float lumaNoise = fineA * 0.42 + fineB * 0.42 + clump * 0.22;
+
+        // Colour negative grain isn't perfectly monochrome: each dye layer develops its own
+        // pattern. Blending in a little decorrelated per-channel noise reads as color-film
+        // speckle instead of a flat grey digital overlay.
+        float3 chroma = float3(
+            anonymizerVNoise(pixel.x / grainScale + 3.1, pixel.y / grainScale + 8.2, 0xE1B3A57Fu, 3u),
+            anonymizerVNoise(pixel.x / grainScale - 5.4, pixel.y / grainScale + 2.7, 0x7C5F9E21u, 4u),
+            anonymizerVNoise(pixel.x / grainScale + 11.0, pixel.y / grainScale - 9.3, 0x2A9D3B6Eu, 5u)
+        ) * 2.0 - 1.0;
+        float3 noise = mix(float3(lumaNoise), chroma, 0.22);
+
         float luma = max(dot(rgb, float3(0.2126, 0.7152, 0.0722)), 0.0);
-        float midtone = 1.0 - abs(clamp(luma, 0.0, 1.0) * 2.0 - 1.0);
-        float response = mix(0.32, 1.0, midtone);
-        rgb *= exp2(noise * response * (0.65 * params.filmGrain));
+        // Grain reads densest in shadows and midtones and thins through the highlights, the
+        // way silver-halide grain behaves in a print, rather than peaking symmetrically at
+        // mid-gray and vanishing equally toward both black and white.
+        float response = mix(1.0, 0.18, smoothstep(0.05, 0.95, clamp(luma, 0.0, 1.0)));
+        rgb *= exp2(noise * response * (0.85 * params.filmGrain));
     }
 
     return half3(max(rgb, 0.0));

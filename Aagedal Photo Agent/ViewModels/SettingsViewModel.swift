@@ -236,7 +236,7 @@ nonisolated enum DevelopPanelSection: String, CaseIterable, Identifiable, Sendab
         case .anonymizer:
             return [.anonymizer]
         case .filmEmulation:
-            return [.filmGrain, .halation, .bloom, .vignette, .edgeBlur]
+            return [.filmGrain, .filmGrainCoarseness, .halation, .bloom, .vignette, .edgeBlur]
         }
     }
 
@@ -287,6 +287,7 @@ nonisolated enum DevelopSlider: String, CaseIterable, Identifiable, Sendable {
     case clarity
     case dehaze
     case filmGrain
+    case filmGrainCoarseness
     case halation
     case bloom
     case vignette
@@ -311,6 +312,7 @@ nonisolated enum DevelopSlider: String, CaseIterable, Identifiable, Sendable {
         case .clarity: return "Clarity"
         case .dehaze: return "Dehaze"
         case .filmGrain: return "Film Grain"
+        case .filmGrainCoarseness: return "Grain Size"
         case .halation: return "Halation"
         case .bloom: return "Bloom"
         case .vignette: return "Vignette"
@@ -324,7 +326,7 @@ nonisolated enum DevelopSlider: String, CaseIterable, Identifiable, Sendable {
         case .saturation, .vibrance, .density, .hsl: return .color
         case .contrast, .highlights, .shadows, .whites, .blacks, .toneCurve: return .tone
         case .sharpness, .clarity, .dehaze: return .detail
-        case .filmGrain, .halation, .bloom, .vignette, .edgeBlur: return .film
+        case .filmGrain, .filmGrainCoarseness, .halation, .bloom, .vignette, .edgeBlur: return .film
         case .anonymizer: return .privacy
         }
     }

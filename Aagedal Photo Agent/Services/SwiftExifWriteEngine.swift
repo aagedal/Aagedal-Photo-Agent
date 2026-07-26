@@ -321,6 +321,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
             metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: "AnonymizerBlackOut")
             metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: "GlobalDensity")
             metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: "FilmGrain")
+            metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: "FilmGrainCoarseness")
             metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: "FilmHalation")
             metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: "FilmBloom")
             metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: "FilmVignette")
@@ -632,6 +633,9 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
             )
         case .aaphotoFilmGrain:
             setXMPField(&metadata, namespace: aaphotoNamespace, property: "FilmGrain",
+                        value: isEmpty ? nil : .simple(value))
+        case .aaphotoFilmGrainCoarseness:
+            setXMPField(&metadata, namespace: aaphotoNamespace, property: "FilmGrainCoarseness",
                         value: isEmpty ? nil : .simple(value))
         case .aaphotoFilmHalation:
             setXMPField(&metadata, namespace: aaphotoNamespace, property: "FilmHalation",

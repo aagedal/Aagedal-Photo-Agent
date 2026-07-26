@@ -3049,6 +3049,31 @@ struct EditWorkspaceView: View {
         settings.filmEmulation = film.isEmpty ? nil : film
     }
 
+    /// Grain particle size. Kept separate from `filmSliderBinding` because it only has an
+    /// effect while Grain amount is non-zero, so it defaults to a fine emulsion rather than 0
+    /// and never zeroes itself out to nil (that would silently reset it to the default size).
+    private var filmGrainCoarsenessBinding: Binding<Double> {
+        Binding(
+            get: {
+                metadataViewModel.editingMetadata.cameraRaw?.filmEmulation?.resolvedGrainCoarseness
+                    ?? FilmEmulationSettings().resolvedGrainCoarseness
+            },
+            set: { newValue in
+                updateCameraRaw { cameraRaw in
+                    var film = cameraRaw.filmEmulation ?? FilmEmulationSettings()
+                    film.grainCoarseness = min(max(newValue.rounded(), 0), 100)
+                    cameraRaw.filmEmulation = film
+                }
+            }
+        )
+    }
+
+    private func setFilmGrainCoarseness(_ settings: inout CameraRawSettings, value: Double) {
+        var film = settings.filmEmulation ?? FilmEmulationSettings()
+        film.grainCoarseness = min(max(value.rounded(), 0), 100)
+        settings.filmEmulation = film
+    }
+
     private var toneCurveBinding: Binding<ToneCurve?> {
         Binding(
             get: { metadataViewModel.editingMetadata.cameraRaw?.toneCurve },
@@ -3685,6 +3710,18 @@ struct EditWorkspaceView: View {
                 onReset: { filmSliderBinding(\.grain).wrappedValue = 0 }
             )
             sliderRow(
+                "Grain Size",
+                value: filmGrainCoarsenessBinding,
+                range: 0...100,
+                step: 1,
+                formatter: { "\(Int($0.rounded()))" },
+                visibility: .filmGrainCoarseness,
+                settingsMutator: { setFilmGrainCoarseness(&$0, value: $1) },
+                onReset: { filmGrainCoarsenessBinding.wrappedValue = 35 },
+                showReset: (metadataViewModel.editingMetadata.cameraRaw?.filmEmulation?.grainCoarseness).map { $0 != 35 } ?? false
+            )
+            .disabled((metadataViewModel.editingMetadata.cameraRaw?.filmEmulation?.grain ?? 0) <= 0)
+            sliderRow(
                 "Halation",
                 value: filmSliderBinding(\.halation),
                 range: 0...100,
@@ -4094,7 +4131,7 @@ struct EditWorkspaceView: View {
             }
 
             Picker("Target", selection: aiMaskTargetBinding(replacing: id)) {
-                ForEach(AIMaskTarget.allCases, id: \.self) { target in
+                ForEach(AIMaskTarget.selectableCases, id: \.self) { target in
                     Text(target.title).tag(target)
                 }
             }

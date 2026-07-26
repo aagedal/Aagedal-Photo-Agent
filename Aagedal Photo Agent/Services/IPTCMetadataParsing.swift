@@ -102,6 +102,7 @@ nonisolated enum MetadataDictKey {
     /// App-private (aaphoto namespace): global density render adjustment.
     static let globalDensity = "GlobalDensity"
     static let filmGrain = "FilmGrain"
+    static let filmGrainCoarseness = "FilmGrainCoarseness"
     static let filmHalation = "FilmHalation"
     static let filmBloom = "FilmBloom"
     static let filmVignette = "FilmVignette"
@@ -966,6 +967,7 @@ nonisolated func iptcMetadataFromDict(_ dict: [String: Any]) -> IPTCMetadata {
     }
     let film = FilmEmulationSettings(
         grain: parseDoubleValue(dict[MetadataDictKey.filmGrain]),
+        grainCoarseness: parseDoubleValue(dict[MetadataDictKey.filmGrainCoarseness]),
         halation: parseDoubleValue(dict[MetadataDictKey.filmHalation]),
         bloom: parseDoubleValue(dict[MetadataDictKey.filmBloom]),
         vignette: parseDoubleValue(dict[MetadataDictKey.filmVignette]),

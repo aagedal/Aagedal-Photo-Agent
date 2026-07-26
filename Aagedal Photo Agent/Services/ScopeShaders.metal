@@ -57,7 +57,7 @@ struct ScopeEditParams {
     float filmBloom;
     float filmVignette;
     float filmEdgeBlur;
-    float _padFilm0;
+    float filmGrainCoarseness;
     float _padFilm1;
     float _padFilm2;
 };
@@ -712,8 +712,8 @@ inline float3 applyScopeFilm(
     if (params.filmVignette != 0.0) {
         float radial = length((uv - 0.5) * 2.0) * 0.70710678;
         float absVal = abs(params.filmVignette);
-        float vignette = smoothstep(mix(0.86, 0.20, absVal), 1.0, radial);
-        float amount = (0.60 * absVal + 0.40 * absVal * absVal);
+        float vignette = smoothstep(mix(0.92, 0.05, absVal), 1.0, radial);
+        float amount = (0.80 * absVal + 0.60 * absVal * absVal);
         if (params.filmVignette > 0.0) {
             rgb *= 1.0 + vignette * amount;
         } else {
@@ -722,7 +722,7 @@ inline float3 applyScopeFilm(
     }
     if (params.filmGrain > 0.0) {
         float2 pixel = uv * float2(source.get_width(), source.get_height());
-        float grainScale = mix(1.9, 1.25, params.filmGrain);
+        float grainScale = mix(0.9, 3.4, params.filmGrainCoarseness);
         float fineA = scopeFilmValueNoise(
             pixel / grainScale, 0xA341316Cu, 0u
         ) * 2.0 - 1.0;
@@ -730,13 +730,18 @@ inline float3 applyScopeFilm(
             pixel / grainScale + float2(19.7, -7.3), 0xC8013EA4u, 1u
         ) * 2.0 - 1.0;
         float clump = scopeFilmValueNoise(
-            pixel / 4.8, 0xAD90777Du, 2u
+            pixel / (grainScale * 2.5), 0xAD90777Du, 2u
         ) * 2.0 - 1.0;
-        float noise = fineA * 0.42 + fineB * 0.42 + clump * 0.22;
+        float lumaNoise = fineA * 0.42 + fineB * 0.42 + clump * 0.22;
+        float3 chroma = float3(
+            scopeFilmValueNoise(pixel / grainScale + float2(3.1, 8.2), 0xE1B3A57Fu, 3u),
+            scopeFilmValueNoise(pixel / grainScale + float2(-5.4, 2.7), 0x7C5F9E21u, 4u),
+            scopeFilmValueNoise(pixel / grainScale + float2(11.0, -9.3), 0x2A9D3B6Eu, 5u)
+        ) * 2.0 - 1.0;
+        float3 noise = mix(float3(lumaNoise), chroma, 0.22);
         float luma = max(dot(rgb, float3(0.2126, 0.7152, 0.0722)), 0.0);
-        float midtone = 1.0 - abs(clamp(luma, 0.0, 1.0) * 2.0 - 1.0);
-        float response = mix(0.32, 1.0, midtone);
-        rgb *= exp2(noise * response * (0.65 * params.filmGrain));
+        float response = mix(1.0, 0.18, smoothstep(0.05, 0.95, clamp(luma, 0.0, 1.0)));
+        rgb *= exp2(noise * response * (0.85 * params.filmGrain));
     }
     return max(rgb, 0.0);
 }

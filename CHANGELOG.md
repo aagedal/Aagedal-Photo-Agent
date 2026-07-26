@@ -2,10 +2,13 @@
 
 All notable user-visible changes are documented here. Signed, notarized DMGs are self-hosted and delivered as in-app updates via Sparkle.
 
-## 2.2.0 — 2026-07-23
+## 2.2.0 — 2026-07-26
 
 ### Highlights
 
+- Added a Film Emulation section with Grain, Halation, Bloom, Vignette, and Edge Blur, rendered on the GPU and carried through scopes, templates, and export.
+- Made the Develop inspector configurable: hide individual sliders, reorder whole sections, and manage it all from a dedicated Develop Sliders settings tab.
+- Made the metadata editor's IPTC field list configurable and added Sublocation, Province/State, Instructions, and Source.
 - Added an Advanced Export workflow with full-resolution encoded previews and independent SDR and HDR format, quality, gamut, TIFF compression, and destination controls.
 - Added Adaptive HDR JPEG gain-map export and a dedicated 16-bit Rec. 2020 PQ JPEG XL conversion workflow for RAW files.
 - Added global Sharpness, Clarity, and Dehaze controls, with consistent Develop preview, scopes, export, XMP, template, and copy/paste support.
@@ -26,8 +29,23 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 - Added Adaptive HDR JPEG output with an SDR-compatible base image and ISO HDR gain map, and expanded HDR detection to recognize gain-map JPEG and HEIF images without decoding their pixels.
 - Added a contextual RAW conversion command for producing 16-bit-per-channel Rec. 2020 PQ JPEG XL masters with either Camera RAW or Linear RAW decoding.
 
+### Film emulation
+
+- Added a Film Emulation section with Grain, Halation, Bloom, Vignette, and Edge Blur on a shared 0–100 amount scale, rendered in the Metal edit pipeline and mirrored in the scopes shader.
+- Made Vignette bidirectional to match Camera Raw, from -100 (darken) to +100 (brighten), and fixed slider clamping that silently zeroed negative values.
+- Strengthened the grain response so its texture is visible at moderate amounts.
+- Persisted film settings in Photo Agent's private XMP namespace and carried them through Develop templates, copy/paste, preview rendering, scopes, and exported images.
+
 ### Develop, previews, and scopes
 
+- Added per-slider visibility controls for the optional Develop adjustments, grouped by section, so the inspector can be trimmed to the controls actually in use.
+- Added reordering of the major Develop sections (Color, Exposure, Detail, Tone Curve, HSL, Anonymizer, Film Emulation), with unknown or newly added sections placed safely on upgrade.
+- Unified slider hiding and section reordering into one interface and moved it into its own Develop Sliders settings tab.
+- Added multi-pass rendering so stacked anonymizer layers redact in their configured layer order.
+- Added layer renaming and grouped the new-layer launchers more clearly.
+- Fixed rounded-rectangle mask feathering and made the Corner Radius control update the mask preview live.
+- Removed the crop-handle padding once a crop is confirmed, so cropped images use the full preview pane, and ordered the crop aspect-ratio menu from widest landscape to tallest portrait.
+- Raised the maximum Develop preview zoom to 4000%.
 - Added a Detail section with Sharpness, Clarity, and Dehaze controls to both Develop and the metadata panel, including per-section mute and reset behavior.
 - Persisted detail adjustments as Camera Raw-compatible XMP fields and carried them through Develop templates, edit copy/paste, preview rendering, scopes, and exported images.
 - Made sharpening responsive to the preview pixel footprint so it remains visible at fit-to-view while retaining full-resolution behavior at 100% and on export.
@@ -36,6 +54,13 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 - Kept highly saturated samples inside the physical spectral locus in the CIE chromaticity scope instead of dropping them or folding the plotted envelope inward.
 - Kept Metal scopes responsive after their render loop becomes idle, including on-demand redraws when scope settings or source images change.
 - Shared live Settings state with the main window so output-gamut and original-thumbnail changes take effect immediately, and improved panning in zoomed full-screen HDR images.
+
+### Metadata and location
+
+- Added Sublocation, Province/State, Instructions, and Source to the IPTC model, parsing, sidecars, XMP, templates, preset variables, Import, FTP upload, and the metadata panel.
+- Made the metadata editor's visible IPTC fields configurable from Settings.
+- Added a "Use current location" button to the GPS section for stamping coordinates from the Mac's current location.
+- Fixed metadata overlays being refused on rendered TIFFs whose retained camera Make tag made the write engine misclassify them as RAW.
 
 ### Import and geocoding
 
@@ -54,6 +79,8 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 - Moved Photo Agent metadata and XMP sidecars together with rejected images, including collision-safe renaming and rollback if any part of the move fails.
 - Presented image deletion confirmation in the active window, including the full-screen viewer, so keyboard-initiated deletion no longer appears to freeze behind another window.
 - Reported Trash failures instead of silently ignoring them, retained files that could not be trashed, and refreshed thumbnail, full-screen, and C2PA validation caches immediately after successful deletion.
+- Stored security-scoped bookmarks with recent and favorite folders and kept one balanced access claim per root, so remembered folders keep working across launches without repeated permission prompts.
+- Limited gain-map HDR expansion to the JPEG and HEIF containers that actually carry one, so direct PQ/HLG files load without it.
 - Preserved recent folders across path spelling and normalization differences, and kept expansion state independent for overlapping favorite-folder trees.
 - Kept full-screen culling moving to the nearest surviving image when a rating or label change removes the current image from the active filter.
 - Dismissed the full-screen window before opening Develop so focus and keyboard input transfer reliably to the editor.
