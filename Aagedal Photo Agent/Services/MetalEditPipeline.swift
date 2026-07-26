@@ -368,6 +368,15 @@ struct EditParams {
     var executionFlags: UInt32 = 0
     var _padExecution0: UInt32 = 0
     var _padExecution1: UInt32 = 0
+
+    var filmGrain: Float = 0
+    var filmHalation: Float = 0
+    var filmBloom: Float = 0
+    var filmVignette: Float = 0
+    var filmEdgeBlur: Float = 0
+    var _padFilm0: Float = 0
+    var _padFilm1: Float = 0
+    var _padFilm2: Float = 0
 }
 
 /// One compute segment in the compiled edit graph. Adjacent pointwise layers share a segment;
@@ -387,14 +396,14 @@ nonisolated enum EditRenderPassPlanner {
 
     static func makePlan(
         orderEntries: [UInt32],
-        globalAnonymizerActive: Bool,
+        globalSpatialEffectsActive: Bool,
         anonymizerMaskIndices: Set<Int>
     ) -> [EditRenderPass] {
         guard !orderEntries.isEmpty else { return [] }
 
         func isSpatial(_ entry: UInt32) -> Bool {
             if entry == globalOrderSentinel {
-                return globalAnonymizerActive
+                return globalSpatialEffectsActive
             }
             guard entry & watermarkOrderFlag == 0 else { return false }
             return anonymizerMaskIndices.contains(Int(entry))
@@ -1095,7 +1104,7 @@ final class MetalEditPipeline: @unchecked Sendable {
             params.orderCount = UInt32(orderEntries.count)
             renderPassPlan = EditRenderPassPlanner.makePlan(
                 orderEntries: orderEntries,
-                globalAnonymizerActive: false,
+                globalSpatialEffectsActive: false,
                 anonymizerMaskIndices: []
             )
             let ptr = buffer.contents().bindMemory(to: EditParams.self, capacity: 1)
@@ -1177,6 +1186,14 @@ final class MetalEditPipeline: @unchecked Sendable {
             params.anonymizerAmount = Float(min(max((anon.amount ?? 0) / 100.0, 0.0), 1.0))
             params.anonymizerBlackOut = (anon.blackOut == true) ? 1.0 : 0.0
             flags |= (1 << 5)
+        }
+
+        if let film = settings.filmEmulation, !film.isEmpty {
+            params.filmGrain = Float(min(max((film.grain ?? 0) / 100.0, 0.0), 1.0))
+            params.filmHalation = Float(min(max((film.halation ?? 0) / 100.0, 0.0), 1.0))
+            params.filmBloom = Float(min(max((film.bloom ?? 0) / 100.0, 0.0), 1.0))
+            params.filmVignette = Float(min(max((film.vignette ?? 0) / 100.0, 0.0), 1.0))
+            params.filmEdgeBlur = Float(min(max((film.edgeBlur ?? 0) / 100.0, 0.0), 1.0))
         }
 
         params.activeFlags = flags
@@ -1425,6 +1442,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         )
         params.orderCount = UInt32(orderEntries.count)
         let globalAnonymizerActive = flags & (1 << 5) != 0
+        let globalFilmSpatialActive = settings.filmEmulation?.hasSpatialEffects ?? false
         if globalAnonymizerActive,
            params.anonymizerBlackOut > 0.5,
            let globalIndex = orderEntries.firstIndex(of: EditRenderPassPlanner.globalOrderSentinel) {
@@ -1438,7 +1456,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         } else {
             renderPassPlan = EditRenderPassPlanner.makePlan(
                 orderEntries: orderEntries,
-                globalAnonymizerActive: globalAnonymizerActive,
+                globalSpatialEffectsActive: globalAnonymizerActive || globalFilmSpatialActive,
                 anonymizerMaskIndices: anonymizerMaskIndices
             )
         }
@@ -3006,8 +3024,9 @@ final class MetalEditPipeline: @unchecked Sendable {
         let noWatermarks = settings.watermarkLayers?.isEmpty ?? true
         let noHSL = settings.hslAdjustments?.isEmpty ?? true
         let noAnonymizer = settings.anonymizer?.isEmpty ?? true
+        let noFilmEmulation = settings.filmEmulation?.isEmpty ?? true
         return noTonal && noOutputToneMap && noVibrance && noSaturation && noDensity
             && noSharpness && noClarity && noDehaze && noWB && noMasks
-            && noWatermarks && noHSL && noAnonymizer
+            && noWatermarks && noHSL && noAnonymizer && noFilmEmulation
     }
 }

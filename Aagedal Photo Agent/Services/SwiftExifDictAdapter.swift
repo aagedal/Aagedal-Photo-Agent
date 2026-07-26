@@ -192,6 +192,17 @@ extension ImageMetadata {
                                        property: MetadataDictKey.globalDensity) {
                 dict[MetadataDictKey.globalDensity] = v
             }
+            for property in [
+                MetadataDictKey.filmGrain,
+                MetadataDictKey.filmHalation,
+                MetadataDictKey.filmBloom,
+                MetadataDictKey.filmVignette,
+                MetadataDictKey.filmEdgeBlur
+            ] {
+                if let value = xmp.simpleValue(namespace: aaphotoNamespaceURI, property: property) {
+                    dict[property] = value
+                }
+            }
         }
 
         // MARK: EXIF

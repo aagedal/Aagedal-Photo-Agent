@@ -145,6 +145,86 @@ enum QuickListType: String, CaseIterable, Identifiable {
     }
 }
 
+nonisolated enum DevelopSliderGroup: String, CaseIterable, Identifiable, Sendable {
+    case color
+    case tone
+    case detail
+    case film
+    case privacy
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .color: return "Color"
+        case .tone: return "Tone"
+        case .detail: return "Detail"
+        case .film: return "Film Emulation"
+        case .privacy: return "Privacy"
+        }
+    }
+}
+
+/// Optional Develop controls that users may hide. Exposure, white balance, and Crop are
+/// intentionally absent, making it impossible for persisted preferences or UI code to hide them.
+nonisolated enum DevelopSlider: String, CaseIterable, Identifiable, Sendable {
+    case saturation
+    case vibrance
+    case density
+    case contrast
+    case highlights
+    case shadows
+    case whites
+    case blacks
+    case sharpness
+    case clarity
+    case dehaze
+    case filmGrain
+    case halation
+    case bloom
+    case vignette
+    case edgeBlur
+    case anonymizer
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .saturation: return "Saturation"
+        case .vibrance: return "Vibrance"
+        case .density: return "Density"
+        case .contrast: return "Contrast"
+        case .highlights: return "Highlights"
+        case .shadows: return "Shadows"
+        case .whites: return "Whites"
+        case .blacks: return "Blacks"
+        case .sharpness: return "Sharpness"
+        case .clarity: return "Clarity"
+        case .dehaze: return "Dehaze"
+        case .filmGrain: return "Film Grain"
+        case .halation: return "Halation"
+        case .bloom: return "Bloom"
+        case .vignette: return "Vignette"
+        case .edgeBlur: return "Edge Blur"
+        case .anonymizer: return "Anonymizer"
+        }
+    }
+
+    var group: DevelopSliderGroup {
+        switch self {
+        case .saturation, .vibrance, .density: return .color
+        case .contrast, .highlights, .shadows, .whites, .blacks: return .tone
+        case .sharpness, .clarity, .dehaze: return .detail
+        case .filmGrain, .halation, .bloom, .vignette, .edgeBlur: return .film
+        case .anonymizer: return .privacy
+        }
+    }
+
+    static func decodeHidden(_ rawValues: [String]) -> Set<DevelopSlider> {
+        Set(rawValues.compactMap(DevelopSlider.init(rawValue:)))
+    }
+}
+
 
 @Observable
 final class SettingsViewModel {
@@ -171,6 +251,27 @@ final class SettingsViewModel {
 
     var showOriginalThumbnails: Bool {
         didSet { UserDefaults.standard.set(showOriginalThumbnails, forKey: UserDefaultsKeys.showOriginalThumbnails) }
+    }
+
+    var hiddenDevelopSliders: Set<DevelopSlider> {
+        didSet {
+            UserDefaults.standard.set(
+                hiddenDevelopSliders.map(\.rawValue).sorted(),
+                forKey: UserDefaultsKeys.hiddenDevelopSliders
+            )
+        }
+    }
+
+    func isDevelopSliderVisible(_ slider: DevelopSlider) -> Bool {
+        !hiddenDevelopSliders.contains(slider)
+    }
+
+    func setDevelopSlider(_ slider: DevelopSlider, visible: Bool) {
+        if visible {
+            hiddenDevelopSliders.remove(slider)
+        } else {
+            hiddenDevelopSliders.insert(slider)
+        }
     }
 
     var defaultExternalEditor: String {
@@ -652,6 +753,9 @@ final class SettingsViewModel {
         self.showAllFiles = UserDefaults.standard.bool(forKey: UserDefaultsKeys.showAllFiles)
 
         self.showOriginalThumbnails = UserDefaults.standard.bool(forKey: UserDefaultsKeys.showOriginalThumbnails)
+        self.hiddenDevelopSliders = DevelopSlider.decodeHidden(
+            UserDefaults.standard.stringArray(forKey: UserDefaultsKeys.hiddenDevelopSliders) ?? []
+        )
 
         self.defaultExternalEditor = UserDefaults.standard.string(forKey: UserDefaultsKeys.defaultExternalEditor) ?? ""
         let editDestinationRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.defaultEditDestination)

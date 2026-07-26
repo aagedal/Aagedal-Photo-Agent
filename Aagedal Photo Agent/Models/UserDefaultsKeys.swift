@@ -96,6 +96,8 @@ nonisolated enum UserDefaultsKeys {
     /// True → full-screen viewer uses nearest-neighbor (pixel) magnification;
     /// false (default) → linear/bilinear smoothing.
     static let imageScalingNearestNeighbor = "imageScalingNearestNeighbor"
+    /// Raw values of optional Develop sliders hidden from the adjustment panel.
+    static let hiddenDevelopSliders = "hiddenDevelopSliders"
 
     // MARK: - Clean Feed (secondary-display output)
     /// CGDirectDisplayID of the screen the clean-feed window should occupy.

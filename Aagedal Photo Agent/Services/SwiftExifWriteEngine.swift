@@ -320,6 +320,11 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
             metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: "AnonymizerAmount")
             metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: "AnonymizerBlackOut")
             metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: "GlobalDensity")
+            metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: "FilmGrain")
+            metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: "FilmHalation")
+            metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: "FilmBloom")
+            metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: "FilmVignette")
+            metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: "FilmEdgeBlur")
         }
 
         // GPS coordinates are paired: SwiftExif's setGPS takes both at once and
@@ -593,6 +598,21 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
                 property: "GlobalDensity",
                 value: isEmpty ? nil : .simple(value)
             )
+        case .aaphotoFilmGrain:
+            setXMPField(&metadata, namespace: aaphotoNamespace, property: "FilmGrain",
+                        value: isEmpty ? nil : .simple(value))
+        case .aaphotoFilmHalation:
+            setXMPField(&metadata, namespace: aaphotoNamespace, property: "FilmHalation",
+                        value: isEmpty ? nil : .simple(value))
+        case .aaphotoFilmBloom:
+            setXMPField(&metadata, namespace: aaphotoNamespace, property: "FilmBloom",
+                        value: isEmpty ? nil : .simple(value))
+        case .aaphotoFilmVignette:
+            setXMPField(&metadata, namespace: aaphotoNamespace, property: "FilmVignette",
+                        value: isEmpty ? nil : .simple(value))
+        case .aaphotoFilmEdgeBlur:
+            setXMPField(&metadata, namespace: aaphotoNamespace, property: "FilmEdgeBlur",
+                        value: isEmpty ? nil : .simple(value))
         }
     }
 

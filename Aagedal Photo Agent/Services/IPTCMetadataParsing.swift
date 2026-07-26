@@ -94,6 +94,11 @@ nonisolated enum MetadataDictKey {
     static let anonymizerBlackOut = "AnonymizerBlackOut"
     /// App-private (aaphoto namespace): global density render adjustment.
     static let globalDensity = "GlobalDensity"
+    static let filmGrain = "FilmGrain"
+    static let filmHalation = "FilmHalation"
+    static let filmBloom = "FilmBloom"
+    static let filmVignette = "FilmVignette"
+    static let filmEdgeBlur = "FilmEdgeBlur"
 }
 
 nonisolated func parseStringOrArray(_ value: Any?) -> [String] {
@@ -951,6 +956,16 @@ nonisolated func iptcMetadataFromDict(_ dict: [String: Any]) -> IPTCMetadata {
     let anonymizerBlackOut = parseBoolValue(dict[MetadataDictKey.anonymizerBlackOut])
     if (anonymizerAmount ?? 0) > 0 || anonymizerBlackOut == true {
         cameraRaw.anonymizer = AnonymizerSettings(amount: anonymizerAmount, blackOut: anonymizerBlackOut)
+    }
+    let film = FilmEmulationSettings(
+        grain: parseDoubleValue(dict[MetadataDictKey.filmGrain]),
+        halation: parseDoubleValue(dict[MetadataDictKey.filmHalation]),
+        bloom: parseDoubleValue(dict[MetadataDictKey.filmBloom]),
+        vignette: parseDoubleValue(dict[MetadataDictKey.filmVignette]),
+        edgeBlur: parseDoubleValue(dict[MetadataDictKey.filmEdgeBlur])
+    )
+    if !film.isEmpty {
+        cameraRaw.filmEmulation = film
     }
 
     return IPTCMetadata(

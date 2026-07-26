@@ -155,5 +155,6 @@ private extension CameraRawSettings {
             || toneCurve != nil
             || !(hslAdjustments?.isEmpty ?? true)
             || (anonymizer?.isEmpty == false)
+            || (filmEmulation?.isEmpty == false)
     }
 }

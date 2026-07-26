@@ -2276,6 +2276,36 @@ struct AnonymizerSettingsTests {
         #expect(svc.loadSidecar(for: imageURL)?.cameraRaw == nil)
     }
 
+    @Test("film emulation round-trips through an XMP sidecar save/load cycle")
+    func filmEmulationRoundTripsThroughSidecar() throws {
+        let svc = XMPSidecarService()
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let imageURL = tmp.appendingPathComponent("film.jpg")
+
+        var settings = CameraRawSettings()
+        settings.filmEmulation = FilmEmulationSettings(
+            grain: 18,
+            halation: 27,
+            bloom: 36,
+            vignette: 45,
+            edgeBlur: 54
+        )
+        try svc.saveCameraRawOnly(settings, orientation: nil, for: imageURL)
+
+        let film = try #require(svc.loadSidecar(for: imageURL)?.cameraRaw?.filmEmulation)
+        #expect(film.grain == 18)
+        #expect(film.halation == 27)
+        #expect(film.bloom == 36)
+        #expect(film.vignette == 45)
+        #expect(film.edgeBlur == 54)
+        #expect(film.hasSpatialEffects)
+
+        try svc.saveCameraRawOnly(nil, orientation: nil, for: imageURL)
+        #expect(svc.loadSidecar(for: imageURL)?.cameraRaw == nil)
+    }
+
     @Test("per-mask anonymizer round-trips through an XMP sidecar save/load cycle")
     func perMaskAnonymizerRoundTripsThroughSidecar() throws {
         let svc = XMPSidecarService()

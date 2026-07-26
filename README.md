@@ -59,6 +59,8 @@ Non-destructive RAW development with real-time Metal GPU preview:
 - White balance (temperature and tint), with a click/drag-to-neutral eyedropper that samples the pre-WB source like Adobe Camera Raw
 - Vibrance and saturation
 - Per-color HSL — Hue / Saturation / Density adjustments matched to the vectorscope channels
+- Film emulation controls for grain, halation, bloom, vignette, and edge blur
+- Customizable Develop panel with per-slider visibility preferences
 - Tone curves (Adobe Camera Raw compatible)
 - Crop, straighten, and rotation
 - Reorderable develop layer chain — a horizontal strip of cards (Global node plus local masks) that you can drag to reorder

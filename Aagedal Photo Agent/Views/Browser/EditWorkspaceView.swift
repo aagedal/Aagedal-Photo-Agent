@@ -71,6 +71,7 @@ nonisolated enum GlobalLayerResetBehavior {
         settings.toneCurve = nil
         settings.hslAdjustments = nil
         settings.anonymizer = nil
+        settings.filmEmulation = nil
     }
 }
 
@@ -176,6 +177,7 @@ struct EditWorkspaceView: View {
     @State private var isMutingDetail = false
     @State private var isMutingToneCurve = false
     @State private var isMutingHSL = false
+    @State private var isMutingFilm = false
     @State private var mutedMaskIndex: Int?
     @State private var showCropControls = false
     @State private var lockedCropImageRect: CGRect?
@@ -369,6 +371,7 @@ struct EditWorkspaceView: View {
             || cameraRaw.clarity2012 != nil
             || cameraRaw.dehaze != nil
             || cameraRaw.toneCurve != nil
+            || !(cameraRaw.filmEmulation?.isEmpty ?? true)
             || !(cameraRaw.localAdjustments?.isEmpty ?? true)
             || !(cameraRaw.watermarkLayers?.isEmpty ?? true)
     }
@@ -2368,6 +2371,9 @@ struct EditWorkspaceView: View {
         if isMutingDevelop || isMutingHSL {
             s.hslAdjustments = nil
         }
+        if isMutingDevelop || isMutingFilm {
+            s.filmEmulation = nil
+        }
         if isMutingDevelop {
             s.localAdjustments = nil
         }
@@ -2863,6 +2869,7 @@ struct EditWorkspaceView: View {
             || !(cameraRaw.watermarkLayers?.isEmpty ?? true)
             || !(cameraRaw.hslAdjustments?.isEmpty ?? true)
             || (cameraRaw.anonymizer?.isEmpty == false)
+            || (cameraRaw.filmEmulation?.isEmpty == false)
             // Unknown ACR corrections are image-bound and must survive a
             // template application even when the template resets every edit
             // this app can model.
@@ -2892,6 +2899,35 @@ struct EditWorkspaceView: View {
                 }
             }
         )
+    }
+
+    private func filmSliderBinding(
+        _ keyPath: WritableKeyPath<FilmEmulationSettings, Double?>
+    ) -> Binding<Double> {
+        Binding(
+            get: {
+                metadataViewModel.editingMetadata.cameraRaw?.filmEmulation?[keyPath: keyPath] ?? 0
+            },
+            set: { newValue in
+                updateCameraRaw { cameraRaw in
+                    var film = cameraRaw.filmEmulation ?? FilmEmulationSettings()
+                    let rounded = min(max(newValue.rounded(), 0), 100)
+                    film[keyPath: keyPath] = rounded == 0 ? nil : rounded
+                    cameraRaw.filmEmulation = film.isEmpty ? nil : film
+                }
+            }
+        )
+    }
+
+    private func setFilmValue(
+        _ settings: inout CameraRawSettings,
+        keyPath: WritableKeyPath<FilmEmulationSettings, Double?>,
+        value: Double
+    ) {
+        var film = settings.filmEmulation ?? FilmEmulationSettings()
+        let rounded = min(max(value.rounded(), 0), 100)
+        film[keyPath: keyPath] = rounded == 0 ? nil : rounded
+        settings.filmEmulation = film.isEmpty ? nil : film
     }
 
     private var toneCurveBinding: Binding<ToneCurve?> {
@@ -3222,6 +3258,7 @@ struct EditWorkspaceView: View {
     /// - Parameter settingsMutator: Applies the raw drag value to a CameraRawSettings copy
     ///   for direct Metal rendering without triggering SwiftUI observation.
     ///   When nil, the slider falls back to updating the binding directly during drag.
+    @ViewBuilder
     private func sliderRow(
         _ label: String,
         value: Binding<Double>,
@@ -3229,43 +3266,46 @@ struct EditWorkspaceView: View {
         step: Double,
         gradientColors: [Color]? = nil,
         formatter: @escaping (Double) -> String,
+        visibility: DevelopSlider? = nil,
         settingsMutator: ((inout CameraRawSettings, Double) -> Void)? = nil,
         onSliderEditingChanged: ((Bool) -> Void)? = nil,
         onReset: (() -> Void)? = nil,
         showReset: Bool? = nil
     ) -> some View {
-        EditSliderRow(
-            label: label,
-            value: value,
-            range: range,
-            step: step,
-            gradientColors: gradientColors,
-            formatter: formatter,
-            onEditingChanged: { editing in
-                isDraggingEditSlider = editing
-                onSliderEditingChanged?(editing)
-                if !editing {
-                    commitEditAdjustments()
-                }
-            },
-            onDragValueChanged: settingsMutator.map { mutator in
-                { dragValue in
-                    var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
-                    mutator(&settings, dragValue)
-                    if let pipeline = metalPipeline, pipeline.hasSourceTexture {
-                        pipeline.updateParams(settingsForPipeline(settings))
-                        metalCoordinator.requestRedraw()
+        if visibility.map(settingsViewModel.isDevelopSliderVisible) ?? true {
+            EditSliderRow(
+                label: label,
+                value: value,
+                range: range,
+                step: step,
+                gradientColors: gradientColors,
+                formatter: formatter,
+                onEditingChanged: { editing in
+                    isDraggingEditSlider = editing
+                    onSliderEditingChanged?(editing)
+                    if !editing {
+                        commitEditAdjustments()
                     }
-                }
-            },
-            onReset: onReset.map { resetFn in
-                {
-                    resetFn()
-                    commitEditAdjustments()
-                }
-            },
-            showReset: showReset
-        )
+                },
+                onDragValueChanged: settingsMutator.map { mutator in
+                    { dragValue in
+                        var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
+                        mutator(&settings, dragValue)
+                        if let pipeline = metalPipeline, pipeline.hasSourceTexture {
+                            pipeline.updateParams(settingsForPipeline(settings))
+                            metalCoordinator.requestRedraw()
+                        }
+                    }
+                },
+                onReset: onReset.map { resetFn in
+                    {
+                        resetFn()
+                        commitEditAdjustments()
+                    }
+                },
+                showReset: showReset
+            )
+        }
     }
 
     // MARK: - Global Adjustment Sliders
@@ -3322,13 +3362,13 @@ struct EditWorkspaceView: View {
             }
         )
 
-        sliderRow("Saturation", value: toneSliderBinding(\.saturation), range: -100...100, step: 1, gradientColors: [.gray, .red], formatter: signedIntString, settingsMutator: { $0.saturation = Int($1.rounded()) }, onReset: {
+        sliderRow("Saturation", value: toneSliderBinding(\.saturation), range: -100...100, step: 1, gradientColors: [.gray, .red], formatter: signedIntString, visibility: .saturation, settingsMutator: { $0.saturation = Int($1.rounded()) }, onReset: {
             toneSliderBinding(\.saturation).wrappedValue = 0
         })
-        sliderRow("Vibrance", value: toneSliderBinding(\.vibrance), range: -100...100, step: 1, gradientColors: [.gray, .orange], formatter: signedIntString, settingsMutator: { $0.vibrance = Int($1.rounded()) }, onReset: {
+        sliderRow("Vibrance", value: toneSliderBinding(\.vibrance), range: -100...100, step: 1, gradientColors: [.gray, .orange], formatter: signedIntString, visibility: .vibrance, settingsMutator: { $0.vibrance = Int($1.rounded()) }, onReset: {
             toneSliderBinding(\.vibrance).wrappedValue = 0
         })
-        sliderRow("Density", value: toneSliderBinding(\.globalDensity), range: -100...100, step: 1, gradientColors: [.white, .black], formatter: signedIntString, settingsMutator: { $0.globalDensity = Int($1.rounded()) }, onReset: {
+        sliderRow("Density", value: toneSliderBinding(\.globalDensity), range: -100...100, step: 1, gradientColors: [.white, .black], formatter: signedIntString, visibility: .density, settingsMutator: { $0.globalDensity = Int($1.rounded()) }, onReset: {
             toneSliderBinding(\.globalDensity).wrappedValue = 0
         })
 
@@ -3348,19 +3388,19 @@ struct EditWorkspaceView: View {
             }
         )
 
-        sliderRow("Contrast", value: toneSliderBinding(\.contrast2012), range: -100...100, step: 1, formatter: signedIntString, settingsMutator: { $0.contrast2012 = Int($1.rounded()) }, onReset: {
+        sliderRow("Contrast", value: toneSliderBinding(\.contrast2012), range: -100...100, step: 1, formatter: signedIntString, visibility: .contrast, settingsMutator: { $0.contrast2012 = Int($1.rounded()) }, onReset: {
             toneSliderBinding(\.contrast2012).wrappedValue = 0
         })
-        sliderRow("Highlights", value: toneSliderBinding(\.highlights2012), range: -100...100, step: 1, formatter: signedIntString, settingsMutator: { $0.highlights2012 = Int($1.rounded()) }, onReset: {
+        sliderRow("Highlights", value: toneSliderBinding(\.highlights2012), range: -100...100, step: 1, formatter: signedIntString, visibility: .highlights, settingsMutator: { $0.highlights2012 = Int($1.rounded()) }, onReset: {
             toneSliderBinding(\.highlights2012).wrappedValue = 0
         })
-        sliderRow("Shadows", value: toneSliderBinding(\.shadows2012), range: -100...100, step: 1, formatter: signedIntString, settingsMutator: { $0.shadows2012 = Int($1.rounded()) }, onReset: {
+        sliderRow("Shadows", value: toneSliderBinding(\.shadows2012), range: -100...100, step: 1, formatter: signedIntString, visibility: .shadows, settingsMutator: { $0.shadows2012 = Int($1.rounded()) }, onReset: {
             toneSliderBinding(\.shadows2012).wrappedValue = 0
         })
-        sliderRow("Whites", value: toneSliderBinding(\.whites2012), range: -100...100, step: 1, formatter: signedIntString, settingsMutator: { $0.whites2012 = Int($1.rounded()) }, onReset: {
+        sliderRow("Whites", value: toneSliderBinding(\.whites2012), range: -100...100, step: 1, formatter: signedIntString, visibility: .whites, settingsMutator: { $0.whites2012 = Int($1.rounded()) }, onReset: {
             toneSliderBinding(\.whites2012).wrappedValue = 0
         })
-        sliderRow("Blacks", value: toneSliderBinding(\.blacks2012), range: -100...100, step: 1, formatter: signedIntString, settingsMutator: { $0.blacks2012 = Int($1.rounded()) }, onReset: {
+        sliderRow("Blacks", value: toneSliderBinding(\.blacks2012), range: -100...100, step: 1, formatter: signedIntString, visibility: .blacks, settingsMutator: { $0.blacks2012 = Int($1.rounded()) }, onReset: {
             toneSliderBinding(\.blacks2012).wrappedValue = 0
         })
 
@@ -3369,13 +3409,13 @@ struct EditWorkspaceView: View {
             .padding(.top, 2)
         Divider()
 
-        sliderRow("Sharpness", value: toneSliderBinding(\.sharpness), range: 0...150, step: 1, formatter: signedIntString, settingsMutator: { $0.sharpness = Int($1.rounded()) }, onReset: {
+        sliderRow("Sharpness", value: toneSliderBinding(\.sharpness), range: 0...150, step: 1, formatter: signedIntString, visibility: .sharpness, settingsMutator: { $0.sharpness = Int($1.rounded()) }, onReset: {
             toneSliderBinding(\.sharpness).wrappedValue = 0
         })
-        sliderRow("Clarity", value: toneSliderBinding(\.clarity2012), range: -100...100, step: 1, formatter: signedIntString, settingsMutator: { $0.clarity2012 = Int($1.rounded()) }, onReset: {
+        sliderRow("Clarity", value: toneSliderBinding(\.clarity2012), range: -100...100, step: 1, formatter: signedIntString, visibility: .clarity, settingsMutator: { $0.clarity2012 = Int($1.rounded()) }, onReset: {
             toneSliderBinding(\.clarity2012).wrappedValue = 0
         })
-        sliderRow("Dehaze", value: toneSliderBinding(\.dehaze), range: -100...100, step: 1, formatter: signedIntString, settingsMutator: { $0.dehaze = Int($1.rounded()) }, onReset: {
+        sliderRow("Dehaze", value: toneSliderBinding(\.dehaze), range: -100...100, step: 1, formatter: signedIntString, visibility: .dehaze, settingsMutator: { $0.dehaze = Int($1.rounded()) }, onReset: {
             toneSliderBinding(\.dehaze).wrappedValue = 0
         })
 
@@ -3426,6 +3466,67 @@ struct EditWorkspaceView: View {
             }
         )
 
+        // ── Film Emulation ──
+        sectionHeader(
+            "Film Emulation",
+            isMuted: $isMutingFilm,
+            hasAdjustments: hasFilmAdjustments,
+            onReset: resetFilmAdjustments
+        )
+        .padding(.top, 2)
+        Divider()
+
+        sliderRow(
+            "Film Grain",
+            value: filmSliderBinding(\.grain),
+            range: 0...100,
+            step: 1,
+            formatter: { "\(Int($0.rounded()))" },
+            visibility: .filmGrain,
+            settingsMutator: { setFilmValue(&$0, keyPath: \.grain, value: $1) },
+            onReset: { filmSliderBinding(\.grain).wrappedValue = 0 }
+        )
+        sliderRow(
+            "Halation",
+            value: filmSliderBinding(\.halation),
+            range: 0...100,
+            step: 1,
+            formatter: { "\(Int($0.rounded()))" },
+            visibility: .halation,
+            settingsMutator: { setFilmValue(&$0, keyPath: \.halation, value: $1) },
+            onReset: { filmSliderBinding(\.halation).wrappedValue = 0 }
+        )
+        sliderRow(
+            "Bloom",
+            value: filmSliderBinding(\.bloom),
+            range: 0...100,
+            step: 1,
+            formatter: { "\(Int($0.rounded()))" },
+            visibility: .bloom,
+            settingsMutator: { setFilmValue(&$0, keyPath: \.bloom, value: $1) },
+            onReset: { filmSliderBinding(\.bloom).wrappedValue = 0 }
+        )
+        sliderRow(
+            "Vignette",
+            value: filmSliderBinding(\.vignette),
+            range: 0...100,
+            step: 1,
+            formatter: { "\(Int($0.rounded()))" },
+            visibility: .vignette,
+            settingsMutator: { setFilmValue(&$0, keyPath: \.vignette, value: $1) },
+            onReset: { filmSliderBinding(\.vignette).wrappedValue = 0 }
+        )
+        sliderRow(
+            "Edge Blur",
+            value: filmSliderBinding(\.edgeBlur),
+            range: 0...100,
+            step: 1,
+            formatter: { "\(Int($0.rounded()))" },
+            visibility: .edgeBlur,
+            settingsMutator: { setFilmValue(&$0, keyPath: \.edgeBlur, value: $1) },
+            onReset: { filmSliderBinding(\.edgeBlur).wrappedValue = 0 }
+        )
+
         // ── Anonymizer ──
         HStack(spacing: 6) {
             Text("Anonymizer")
@@ -3459,6 +3560,7 @@ struct EditWorkspaceView: View {
             range: 0...100,
             step: 1,
             formatter: { "\(Int($0.rounded()))" },
+            visibility: .anonymizer,
             settingsMutator: { settings, value in
                 let clamped = min(max(value.rounded(), 0), 100)
                 if clamped <= 0 {
@@ -4705,6 +4807,7 @@ struct EditWorkspaceView: View {
                 range: -100...100,
                 step: 1,
                 formatter: signedIntString,
+                visibility: .contrast,
                 settingsMutator: { settings, value in
                     settings.localAdjustments?[idx].contrast = Int(value.rounded()) == 0 ? nil : Int(value.rounded())
                 },
@@ -4718,6 +4821,7 @@ struct EditWorkspaceView: View {
                 range: -100...100,
                 step: 1,
                 formatter: signedIntString,
+                visibility: .highlights,
                 settingsMutator: { settings, value in
                     settings.localAdjustments?[idx].highlights = Int(value.rounded()) == 0 ? nil : Int(value.rounded())
                 },
@@ -4731,6 +4835,7 @@ struct EditWorkspaceView: View {
                 range: -100...100,
                 step: 1,
                 formatter: signedIntString,
+                visibility: .shadows,
                 settingsMutator: { settings, value in
                     settings.localAdjustments?[idx].shadows = Int(value.rounded()) == 0 ? nil : Int(value.rounded())
                 },
@@ -4744,6 +4849,7 @@ struct EditWorkspaceView: View {
                 range: -100...100,
                 step: 1,
                 formatter: signedIntString,
+                visibility: .whites,
                 settingsMutator: { settings, value in
                     settings.localAdjustments?[idx].whites = Int(value.rounded()) == 0 ? nil : Int(value.rounded())
                 },
@@ -4757,6 +4863,7 @@ struct EditWorkspaceView: View {
                 range: -100...100,
                 step: 1,
                 formatter: signedIntString,
+                visibility: .blacks,
                 settingsMutator: { settings, value in
                     settings.localAdjustments?[idx].blacks = Int(value.rounded()) == 0 ? nil : Int(value.rounded())
                 },
@@ -4771,6 +4878,7 @@ struct EditWorkspaceView: View {
                 step: 1,
                 gradientColors: [.gray, .red],
                 formatter: signedIntString,
+                visibility: .saturation,
                 settingsMutator: { settings, value in
                     settings.localAdjustments?[idx].saturation = Int(value.rounded()) == 0 ? nil : Int(value.rounded())
                 },
@@ -4785,6 +4893,7 @@ struct EditWorkspaceView: View {
                 step: 1,
                 gradientColors: [.gray, .orange],
                 formatter: signedIntString,
+                visibility: .vibrance,
                 settingsMutator: { settings, value in
                     settings.localAdjustments?[idx].vibrance = Int(value.rounded()) == 0 ? nil : Int(value.rounded())
                 },
@@ -4812,6 +4921,7 @@ struct EditWorkspaceView: View {
                 range: 0...100,
                 step: 1,
                 formatter: { "\(Int($0.rounded()))" },
+                visibility: .anonymizer,
                 settingsMutator: { settings, value in
                     let clamped = min(max(value.rounded(), 0), 100)
                     if clamped <= 0 {
@@ -5942,6 +6052,10 @@ struct EditWorkspaceView: View {
         !(metadataViewModel.editingMetadata.cameraRaw?.anonymizer?.isEmpty ?? true)
     }
 
+    private var hasFilmAdjustments: Bool {
+        !(metadataViewModel.editingMetadata.cameraRaw?.filmEmulation?.isEmpty ?? true)
+    }
+
     private func resetColorAdjustments() {
         updateCameraRaw { cameraRaw in
             cameraRaw.whiteBalance = isSelectedImageRaw ? "As Shot" : nil
@@ -5991,6 +6105,13 @@ struct EditWorkspaceView: View {
         commitEditAdjustments()
     }
 
+    private func resetFilmAdjustments() {
+        updateCameraRaw { cameraRaw in
+            cameraRaw.filmEmulation = nil
+        }
+        commitEditAdjustments()
+    }
+
     private func resetDevelopAdjustments() {
         resetCropZoom()
         selectedLayer = .global
@@ -6014,6 +6135,7 @@ struct EditWorkspaceView: View {
             cameraRaw.dehaze = nil
             cameraRaw.localAdjustments = nil
             cameraRaw.anonymizer = nil
+            cameraRaw.filmEmulation = nil
             cameraRaw.crop = CameraRawCrop(
                 top: 0,
                 left: 0,
@@ -6048,6 +6170,7 @@ struct EditWorkspaceView: View {
             cameraRaw.toneCurve = nil
             cameraRaw.localAdjustments = nil
             cameraRaw.anonymizer = nil
+            cameraRaw.filmEmulation = nil
         }
         selectedLayer = .global
         commitDevelopReset()
@@ -6188,6 +6311,7 @@ struct EditWorkspaceView: View {
             cameraRaw.dehaze = source.dehaze
             cameraRaw.toneCurve = source.toneCurve
             cameraRaw.hslAdjustments = source.hslAdjustments
+            cameraRaw.filmEmulation = source.filmEmulation
             // Paste masks only when the source carries some — pasting from a
             // mask-less image shouldn't strip the target's masks. Fresh IDs so
             // the pasted masks are independent of the source's.

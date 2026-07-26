@@ -89,6 +89,11 @@ enum XMPDataBuilder {
         setCRS(&xmp, "Saturation", settings.saturation.map(formatSignedInt))
         setCRS(&xmp, "Vibrance", settings.vibrance.map(formatSignedInt))
         setAppPrivate(&xmp, "GlobalDensity", settings.globalDensity.map(formatSignedInt))
+        setAppPrivate(&xmp, "FilmGrain", settings.filmEmulation?.grain.map { String(format: "%.1f", $0) })
+        setAppPrivate(&xmp, "FilmHalation", settings.filmEmulation?.halation.map { String(format: "%.1f", $0) })
+        setAppPrivate(&xmp, "FilmBloom", settings.filmEmulation?.bloom.map { String(format: "%.1f", $0) })
+        setAppPrivate(&xmp, "FilmVignette", settings.filmEmulation?.vignette.map { String(format: "%.1f", $0) })
+        setAppPrivate(&xmp, "FilmEdgeBlur", settings.filmEmulation?.edgeBlur.map { String(format: "%.1f", $0) })
         setCRS(&xmp, "Sharpness", settings.sharpness.map(String.init))
         setCRS(&xmp, "Clarity2012", settings.clarity2012.map(formatSignedInt))
         setCRS(&xmp, "Dehaze", settings.dehaze.map(formatSignedInt))
@@ -160,6 +165,11 @@ enum XMPDataBuilder {
         xmp.removeValue(namespace: aaphotoNamespace, property: "AnonymizerAmount")
         xmp.removeValue(namespace: aaphotoNamespace, property: "AnonymizerBlackOut")
         xmp.removeValue(namespace: aaphotoNamespace, property: "GlobalDensity")
+        xmp.removeValue(namespace: aaphotoNamespace, property: "FilmGrain")
+        xmp.removeValue(namespace: aaphotoNamespace, property: "FilmHalation")
+        xmp.removeValue(namespace: aaphotoNamespace, property: "FilmBloom")
+        xmp.removeValue(namespace: aaphotoNamespace, property: "FilmVignette")
+        xmp.removeValue(namespace: aaphotoNamespace, property: "FilmEdgeBlur")
     }
 
     // MARK: - Shared develop encoders (also used by the embedded SwiftExifWriteEngine)

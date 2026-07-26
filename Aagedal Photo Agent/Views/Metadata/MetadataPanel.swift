@@ -1029,6 +1029,7 @@ struct MetadataPanel: View {
             || cameraRaw.sharpness != nil
             || cameraRaw.clarity2012 != nil
             || cameraRaw.dehaze != nil
+            || !(cameraRaw.filmEmulation?.isEmpty ?? true)
             || (cameraRaw.crop?.isEmpty == false)
     }
 

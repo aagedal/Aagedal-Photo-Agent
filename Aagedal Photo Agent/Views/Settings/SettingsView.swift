@@ -183,6 +183,13 @@ struct SettingsView: View {
             .tag(section)
     }
 
+    private func developSliderVisibilityBinding(_ slider: DevelopSlider) -> Binding<Bool> {
+        Binding(
+            get: { settingsViewModel.isDevelopSliderVisible(slider) },
+            set: { settingsViewModel.setDevelopSlider(slider, visible: $0) }
+        )
+    }
+
     @ViewBuilder
     private func detailView(for section: SettingsSection) -> some View {
         switch section {
@@ -263,6 +270,32 @@ struct SettingsView: View {
                 Text("When enabled, browser thumbnails always show the original image without develop edits. Edited thumbnails are still rendered in the background for quick toggling.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            Section("Develop Sliders") {
+                Text("Choose which optional sliders appear in Develop. Exposure, white balance, and Crop always remain available.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                ForEach(DevelopSliderGroup.allCases) { group in
+                    DisclosureGroup(group.title) {
+                        ForEach(DevelopSlider.allCases.filter { $0.group == group }) { slider in
+                            Toggle(
+                                slider.displayName,
+                                isOn: developSliderVisibilityBinding(slider)
+                            )
+                            .toggleStyle(.checkbox)
+                        }
+                    }
+                }
+
+                HStack {
+                    Spacer()
+                    Button("Show All") {
+                        settingsViewModel.hiddenDevelopSliders.removeAll()
+                    }
+                    .disabled(settingsViewModel.hiddenDevelopSliders.isEmpty)
+                }
             }
         }
         .formStyle(.grouped)

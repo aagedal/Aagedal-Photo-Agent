@@ -72,9 +72,14 @@ enum MetadataFieldKey: String, Sendable, CaseIterable {
     case crsSDRBlend
     case crsToneCurveName2012
     case aaphotoGlobalDensity
+    case aaphotoFilmGrain
+    case aaphotoFilmHalation
+    case aaphotoFilmBloom
+    case aaphotoFilmVignette
+    case aaphotoFilmEdgeBlur
 
     /// True for develop-settings keys managed with the Camera Raw block.
     nonisolated var isCameraRawField: Bool {
-        rawValue.hasPrefix("crs") || self == .aaphotoGlobalDensity
+        rawValue.hasPrefix("crs") || rawValue.hasPrefix("aaphoto")
     }
 }

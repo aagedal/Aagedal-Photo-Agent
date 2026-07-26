@@ -192,6 +192,33 @@ struct DevelopInteractionBehaviorTests {
         #expect(settings?.amount == 72)
     }
 
+    @Test("Develop slider preferences ignore protected and unknown controls")
+    func developSliderPreferencesProtectCoreControls() {
+        let hidden = DevelopSlider.decodeHidden([
+            "contrast",
+            "filmGrain",
+            "exposure",
+            "temperature",
+            "tint",
+            "crop",
+            "futureControl",
+        ])
+
+        #expect(hidden == [.contrast, .filmGrain])
+        #expect(!DevelopSlider.allCases.contains { $0.rawValue == "exposure" })
+        #expect(!DevelopSlider.allCases.contains { $0.rawValue == "temperature" })
+        #expect(!DevelopSlider.allCases.contains { $0.rawValue == "tint" })
+        #expect(!DevelopSlider.allCases.contains { $0.rawValue == "crop" })
+    }
+
+    @Test("Every optional Develop slider belongs to one settings group")
+    func developSliderGroupsCoverInventory() {
+        let grouped = Set(DevelopSliderGroup.allCases.flatMap { group in
+            DevelopSlider.allCases.filter { $0.group == group }
+        })
+        #expect(grouped == Set(DevelopSlider.allCases))
+    }
+
     private struct TrashStub: ImageTrashHandling {
         var failingURLs: Set<URL> = []
 

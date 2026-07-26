@@ -45,13 +45,20 @@
 - [x] When a crop is applied, only leave space around the image for adjustment handles
   while the crop tool is active. Confirmed crops now use the full Develop preview pane.
   (2026-07-26)
-- [ ] Add film emulation creative effect sliders:
-  - [ ] Film grain
-  - [ ] Halation
-  - [ ] Bloom
-  - [ ] Vignette
-  - [ ] Edge blur
-- [ ] Add an app setting to hide specific sliders.
+- [x] Add film emulation creative effect sliders:
+  - [x] Film grain
+  - [x] Halation
+  - [x] Bloom
+  - [x] Vignette
+  - [x] Edge blur
+  (2026-07-26) The primary Global layer now includes persisted 0–100 film controls.
+  Spatial effects use the ordered multi-pass Metal graph, and preview, Clean Feed,
+  scopes, copied settings, templates, sidecars, embedded XMP, and exports share the
+  same settings and rendering behavior.
+- [x] Add an app setting to hide specific sliders. Exposure, white balance, and the
+  crop tool cannot be hidden. Optional global and matching local-mask sliders are
+  organized by category in Settings → General, default to visible, persist across
+  launches, and participate in portable preference sync. (2026-07-26)
 - [ ] Add an app setting to add/remove IPTC metadata fields.
 - [ ] Add support for more IPTC metadata fields.
 - [ ] Improve AI-masks to support Face, not just person.

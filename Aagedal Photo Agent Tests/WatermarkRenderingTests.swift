@@ -346,7 +346,7 @@ struct AnonymizerMultiPassRenderingTests {
         let watermark = EditRenderPassPlanner.watermarkOrderFlag
         let plan = EditRenderPassPlanner.makePlan(
             orderEntries: [0, global, 1, watermark, 2],
-            globalAnonymizerActive: false,
+            globalSpatialEffectsActive: false,
             anonymizerMaskIndices: [1]
         )
 
@@ -362,7 +362,7 @@ struct AnonymizerMultiPassRenderingTests {
         let global = EditRenderPassPlanner.globalOrderSentinel
         let plan = EditRenderPassPlanner.makePlan(
             orderEntries: [0, global, 1],
-            globalAnonymizerActive: true,
+            globalSpatialEffectsActive: true,
             anonymizerMaskIndices: [0, 1]
         )
 
@@ -371,6 +371,56 @@ struct AnonymizerMultiPassRenderingTests {
             EditRenderPass(orderOffset: 1, orderCount: 1, requiresMipmappedInput: true),
             EditRenderPass(orderOffset: 2, orderCount: 1, requiresMipmappedInput: true),
         ])
+    }
+
+    @Test("film blur effects isolate Global while pointwise film effects stay batched")
+    func renderPlanHandlesFilmSpatialEffects() {
+        let global = EditRenderPassPlanner.globalOrderSentinel
+        let pointwise = EditRenderPassPlanner.makePlan(
+            orderEntries: [0, global, 1],
+            globalSpatialEffectsActive: false,
+            anonymizerMaskIndices: []
+        )
+        #expect(pointwise == [
+            EditRenderPass(orderOffset: 0, orderCount: 3, requiresMipmappedInput: false)
+        ])
+
+        let spatial = EditRenderPassPlanner.makePlan(
+            orderEntries: [0, global, 1],
+            globalSpatialEffectsActive: true,
+            anonymizerMaskIndices: []
+        )
+        #expect(spatial == [
+            EditRenderPass(orderOffset: 0, orderCount: 1, requiresMipmappedInput: false),
+            EditRenderPass(orderOffset: 1, orderCount: 1, requiresMipmappedInput: true),
+            EditRenderPass(orderOffset: 2, orderCount: 1, requiresMipmappedInput: false),
+        ])
+    }
+
+    @Test("each film-emulation control changes offscreen render pixels")
+    func filmEmulationControlsRenderOffscreen() throws {
+        let source = try checkerboard()
+        let baseline = source
+        let effects: [(String, FilmEmulationSettings)] = [
+            ("grain", FilmEmulationSettings(grain: 80)),
+            ("halation", FilmEmulationSettings(halation: 80)),
+            ("bloom", FilmEmulationSettings(bloom: 80)),
+            ("vignette", FilmEmulationSettings(vignette: 80)),
+            ("edge blur", FilmEmulationSettings(edgeBlur: 80)),
+        ]
+
+        for (name, film) in effects {
+            var settings = CameraRawSettings()
+            settings.filmEmulation = film
+            let rendered = try #require(MetalEditPipeline.renderOffscreen(
+                source: source, settings: settings
+            ))
+            let difference = try meanDifference(baseline, rendered)
+            #expect(
+                difference > 0.0005,
+                "Expected \(name) to change rendered pixels; mean difference was \(difference)"
+            )
+        }
     }
 
     /// A high-frequency source makes the order of a nonlinear global tone operation and the

@@ -111,11 +111,20 @@ struct EditParams {
                               // bit2=identity/full-source working frame
     uint _padExecution0;
     uint _padExecution1;
+
+    float filmGrain;         // 0..1
+    float filmHalation;      // 0..1
+    float filmBloom;         // 0..1
+    float filmVignette;      // 0..1
+    float filmEdgeBlur;      // 0..1
+    float _padFilm0;
+    float _padFilm1;
+    float _padFilm2;
 };
 
 // ScopeShaders.metal consumes this same buffer through its ScopeEditParams mirror.
 // Keep this assertion in sync with Swift's MemoryLayout<EditParams>.stride.
-static_assert(sizeof(EditParams) == 224,
+static_assert(sizeof(EditParams) == 256,
               "EditParams layout changed; update Swift and ScopeEditParams together");
 
 // ============================================================
@@ -798,6 +807,63 @@ static half3 sampleAnonymized(texture2d<half, access::sample> source,
     return source.sample(mipSampler, sampleUV, level(mipLevel)).rgb;
 }
 
+/// Film-emulation finishing pass. Spatial effects sample the mipmapped texture containing
+/// the complete upstream layer composite; the render-plan compiler isolates Global whenever
+/// Halation, Bloom, or Edge Blur is active. Grain and vignette remain pointwise.
+static half3 applyFilmEmulation(
+    half3 input,
+    texture2d<half, access::sample> source,
+    float2 inputUV,
+    float2 sourceSize,
+    constant EditParams &params
+) {
+    float3 rgb = float3(input);
+    constexpr sampler mipSampler(filter::linear, mip_filter::linear, address::clamp_to_edge);
+    float maxLevel = float(source.get_num_mip_levels() - 1);
+
+    if (params.filmEdgeBlur > 0.0) {
+        float mipLevel = clamp(mix(2.0, 6.5, params.filmEdgeBlur), 0.0, maxLevel);
+        float3 blurred = float3(source.sample(mipSampler, inputUV, level(mipLevel)).rgb);
+        float2 edgeCoord = abs(inputUV - 0.5) * 2.0;
+        float edge = smoothstep(mix(0.88, 0.50, params.filmEdgeBlur), 1.0,
+                                max(edgeCoord.x, edgeCoord.y));
+        rgb = mix(rgb, blurred, edge * params.filmEdgeBlur);
+    }
+
+    if (params.filmBloom > 0.0) {
+        float mipLevel = clamp(mix(3.5, 7.0, params.filmBloom), 0.0, maxLevel);
+        float3 blurred = float3(source.sample(mipSampler, inputUV, level(mipLevel)).rgb);
+        float3 glow = max(blurred - 0.35, 0.0);
+        rgb += glow * (0.28 * params.filmBloom);
+    }
+
+    if (params.filmHalation > 0.0) {
+        float mipLevel = clamp(mix(3.0, 6.0, params.filmHalation), 0.0, maxLevel);
+        float3 blurred = float3(source.sample(mipSampler, inputUV, level(mipLevel)).rgb);
+        float blurredLuma = dot(blurred, float3(0.2126, 0.7152, 0.0722));
+        float currentLuma = dot(rgb, float3(0.2126, 0.7152, 0.0722));
+        float halo = max(blurredLuma - currentLuma * 0.55 - 0.12, 0.0);
+        rgb += float3(1.0, 0.20, 0.035) * halo * (0.55 * params.filmHalation);
+    }
+
+    if (params.filmVignette > 0.0) {
+        float2 centered = (inputUV - 0.5) * 2.0;
+        float radial = length(centered) * 0.70710678;
+        float vignette = smoothstep(mix(0.82, 0.42, params.filmVignette), 1.0, radial);
+        rgb *= 1.0 - vignette * (0.72 * params.filmVignette);
+    }
+
+    if (params.filmGrain > 0.0) {
+        float2 pixel = floor(inputUV * max(sourceSize, float2(1.0)));
+        float noise = anonymizerRand01(int(pixel.x), int(pixel.y), 0xA341316Cu, 0u) * 2.0 - 1.0;
+        float luma = max(dot(rgb, float3(0.2126, 0.7152, 0.0722)), 0.0);
+        float response = mix(1.0, 0.35, smoothstep(0.0, 1.0, luma));
+        rgb += noise * response * (0.075 * params.filmGrain);
+    }
+
+    return half3(max(rgb, 0.0));
+}
+
 kernel void editAdjustments(
     texture2d<half, access::sample> source [[texture(0)]],
     texture2d<half, access::write> destination [[texture(1)]],
@@ -913,6 +979,7 @@ kernel void editAdjustments(
                 half3 detailed = applySpatialDetail(rgb, params, source, inputUV);
                 rgb = mix(rgb, detailed, half(1.0 - clamp(spatialDetailProtection, 0.0, 1.0)));
             }
+            rgb = applyFilmEmulation(rgb, source, inputUV, inputTextureSize, params);
         } else if (entry & 0x80000000u) {
             uint wIdx = entry & 0x7FFFFFFFu;
             if (wIdx < params.watermarkCount) {

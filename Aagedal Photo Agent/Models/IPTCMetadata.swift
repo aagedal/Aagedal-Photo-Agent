@@ -914,6 +914,29 @@ nonisolated struct AnonymizerSettings: Codable, Sendable, Equatable {
     }
 }
 
+/// App-native creative film effects. Values use a consistent 0...100 amount scale;
+/// nil/zero is neutral. These have no Adobe Camera Raw equivalent and are persisted in
+/// the app-private XMP namespace while remaining part of the primary Global layer.
+nonisolated struct FilmEmulationSettings: Codable, Sendable, Equatable {
+    var grain: Double?
+    var halation: Double?
+    var bloom: Double?
+    var vignette: Double?
+    var edgeBlur: Double?
+
+    nonisolated var isEmpty: Bool {
+        (grain ?? 0) <= 0
+            && (halation ?? 0) <= 0
+            && (bloom ?? 0) <= 0
+            && (vignette ?? 0) <= 0
+            && (edgeBlur ?? 0) <= 0
+    }
+
+    nonisolated var hasSpatialEffects: Bool {
+        (halation ?? 0) > 0 || (bloom ?? 0) > 0 || (edgeBlur ?? 0) > 0
+    }
+}
+
 nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
     var version: String?
     var processVersion: String?
@@ -952,6 +975,7 @@ nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
     var watermarkLayers: [WatermarkLayer]?
     var hslAdjustments: HSLAdjustments?
     var anonymizer: AnonymizerSettings?
+    var filmEmulation: FilmEmulationSettings?
 
     /// Camera Raw mask corrections this app can't model (ACR erase-brush `MaskBrushTable`
     /// blobs, future Adobe mask types). Kept verbatim and re-emitted on write so a develop
@@ -1016,6 +1040,7 @@ nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
             && (watermarkLayers?.isEmpty ?? true)
             && (hslAdjustments?.isEmpty ?? true)
             && (anonymizer?.isEmpty ?? true)
+            && (filmEmulation?.isEmpty ?? true)
             && (unparsedMaskCorrections?.isEmpty ?? true)
     }
 
@@ -1073,6 +1098,7 @@ nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
         if let value = override.watermarkLayers { result.watermarkLayers = value }
         if let value = override.hslAdjustments { result.hslAdjustments = value }
         if let value = override.anonymizer { result.anonymizer = value }
+        if let value = override.filmEmulation { result.filmEmulation = value }
         if let value = override.layerOrder { result.layerOrder = value }
         // Per-image, but merged() combines records for the SAME image (embedded + sidecar),
         // so prefer the override's copy rather than dropping it.
@@ -1236,6 +1262,11 @@ nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
         fields[.crsSaturation] = saturation.map(signedInt) ?? ""
         fields[.crsVibrance] = vibrance.map(signedInt) ?? ""
         fields[.aaphotoGlobalDensity] = globalDensity.map(signedInt) ?? ""
+        fields[.aaphotoFilmGrain] = filmEmulation?.grain.map { signedDouble($0, precision: 1) } ?? ""
+        fields[.aaphotoFilmHalation] = filmEmulation?.halation.map { signedDouble($0, precision: 1) } ?? ""
+        fields[.aaphotoFilmBloom] = filmEmulation?.bloom.map { signedDouble($0, precision: 1) } ?? ""
+        fields[.aaphotoFilmVignette] = filmEmulation?.vignette.map { signedDouble($0, precision: 1) } ?? ""
+        fields[.aaphotoFilmEdgeBlur] = filmEmulation?.edgeBlur.map { signedDouble($0, precision: 1) } ?? ""
         fields[.crsSharpness] = sharpness.map(String.init) ?? ""
         fields[.crsClarity2012] = clarity2012.map(signedInt) ?? ""
         fields[.crsDehaze] = dehaze.map(signedInt) ?? ""

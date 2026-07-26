@@ -52,11 +52,19 @@ struct ScopeEditParams {
     uint executionFlags;      // unused by scopes
     uint _padExecution0;
     uint _padExecution1;
+    float filmGrain;
+    float filmHalation;
+    float filmBloom;
+    float filmVignette;
+    float filmEdgeBlur;
+    float _padFilm0;
+    float _padFilm1;
+    float _padFilm2;
 };
 
 // The scope receives MetalEditPipeline.paramsBuffer directly. A field added to EditParams
 // must be mirrored above or every later value (including the white-balance matrix) is corrupt.
-static_assert(sizeof(ScopeEditParams) == 224,
+static_assert(sizeof(ScopeEditParams) == 256,
               "ScopeEditParams must stay byte-for-byte compatible with EditParams");
 
 // ============================================================
@@ -614,6 +622,60 @@ inline float3 applyScopeColorTransform(
 // scope matches the preview after Global is moved among the masks. The order buffer holds
 // `orderCount` entries: each is a mask index, or ≥ maskCount for the global node.
 // orderCount == 0 ⇒ legacy fixed order (global first, then masks) for safety.
+inline uint scopeFilmHash(uint x) {
+    x ^= x >> 16;
+    x *= 0x7feb352du;
+    x ^= x >> 15;
+    x *= 0x846ca68bu;
+    x ^= x >> 16;
+    return x;
+}
+
+inline float3 applyScopeFilm(
+    float3 input,
+    float2 uv,
+    constant ScopeEditParams &params,
+    texture2d<half, access::sample> source
+) {
+    float3 rgb = input;
+    constexpr sampler mipSampler(filter::linear, mip_filter::linear, address::clamp_to_edge);
+    float maxLevel = float(source.get_num_mip_levels() - 1);
+    if (params.filmEdgeBlur > 0.0) {
+        float mipLevel = clamp(mix(2.0, 6.5, params.filmEdgeBlur), 0.0, maxLevel);
+        float3 blurred = float3(source.sample(mipSampler, uv, level(mipLevel)).rgb);
+        float2 edgeCoord = abs(uv - 0.5) * 2.0;
+        float edge = smoothstep(mix(0.88, 0.50, params.filmEdgeBlur), 1.0,
+                                max(edgeCoord.x, edgeCoord.y));
+        rgb = mix(rgb, blurred, edge * params.filmEdgeBlur);
+    }
+    if (params.filmBloom > 0.0) {
+        float mipLevel = clamp(mix(3.5, 7.0, params.filmBloom), 0.0, maxLevel);
+        float3 blurred = float3(source.sample(mipSampler, uv, level(mipLevel)).rgb);
+        rgb += max(blurred - 0.35, 0.0) * (0.28 * params.filmBloom);
+    }
+    if (params.filmHalation > 0.0) {
+        float mipLevel = clamp(mix(3.0, 6.0, params.filmHalation), 0.0, maxLevel);
+        float3 blurred = float3(source.sample(mipSampler, uv, level(mipLevel)).rgb);
+        float halo = max(dot(blurred, float3(0.2126, 0.7152, 0.0722))
+                         - dot(rgb, float3(0.2126, 0.7152, 0.0722)) * 0.55 - 0.12, 0.0);
+        rgb += float3(1.0, 0.20, 0.035) * halo * (0.55 * params.filmHalation);
+    }
+    if (params.filmVignette > 0.0) {
+        float radial = length((uv - 0.5) * 2.0) * 0.70710678;
+        float vignette = smoothstep(mix(0.82, 0.42, params.filmVignette), 1.0, radial);
+        rgb *= 1.0 - vignette * (0.72 * params.filmVignette);
+    }
+    if (params.filmGrain > 0.0) {
+        uint2 pixel = uint2(uv * float2(source.get_width(), source.get_height()));
+        uint hash = scopeFilmHash(pixel.x * 0x9E3779B1u ^ pixel.y * 0x85EBCA77u);
+        float noise = float(hash) * (1.0 / 4294967295.0) * 2.0 - 1.0;
+        float luma = max(dot(rgb, float3(0.2126, 0.7152, 0.0722)), 0.0);
+        rgb += noise * mix(1.0, 0.35, smoothstep(0.0, 1.0, luma))
+            * (0.075 * params.filmGrain);
+    }
+    return max(rgb, 0.0);
+}
+
 inline float3 applyEdits(
     float3 rgb,
     float2 uv,
@@ -630,6 +692,7 @@ inline float3 applyEdits(
         if (params.activeFlags & ((1u << 8) | (1u << 9))) {
             rgb = applyScopeSpatialDetail(rgb, params, source, uv);
         }
+        rgb = applyScopeFilm(rgb, uv, params, source);
         for (uint m = 0; m < params.maskCount && m < 8; m++) {
             if (masks[m].maskType == 3u) {
                 float3 transformed = applyScopeColorTransform(rgb, masks[m], colorLUTs);
@@ -655,6 +718,7 @@ inline float3 applyEdits(
             if (params.activeFlags & ((1u << 8) | (1u << 9))) {
                 rgb = applyScopeSpatialDetail(rgb, params, source, uv);
             }
+            rgb = applyScopeFilm(rgb, uv, params, source);
         } else if (entry & 0x80000000u) {
             // Scope rendering does not receive watermark textures. Preserve the upstream
             // color here instead of accidentally treating a watermark entry as Global.
