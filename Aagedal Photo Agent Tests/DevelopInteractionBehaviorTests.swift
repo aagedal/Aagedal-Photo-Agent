@@ -231,6 +231,14 @@ struct DevelopInteractionBehaviorTests {
         #expect(uv == nil)
     }
 
+    @Test("Develop preview zoom supports 4000 percent across input paths")
+    func developPreviewZoomLimit() {
+        #expect(EditZoomBehavior.maximumScale == 40)
+        #expect(EditZoomBehavior.clampedScale(10) == 10)
+        #expect(EditZoomBehavior.clampedScale(80) == 40)
+        #expect(EditZoomBehavior.clampedScale(0.5) == 1)
+    }
+
     @Test("Resetting Global preserves local layers and framing")
     func globalResetPreservesOtherLayers() {
         let mask = MaskAdjustment(name: "Local", exposure: 1)

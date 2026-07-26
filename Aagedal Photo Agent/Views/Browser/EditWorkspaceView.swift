@@ -95,6 +95,20 @@ nonisolated enum EditPreviewCoordinateMapper {
     }
 }
 
+/// Shared zoom bounds for every normal Develop-preview input path. Crop-tool zoom remains
+/// intentionally separate because it controls framing for the crop handles rather than
+/// pixel-level image inspection.
+nonisolated enum EditZoomBehavior {
+    static let scaleRange: ClosedRange<CGFloat> = 1.0...40.0
+    static let maximumScale = scaleRange.upperBound
+
+    static func clampedScale(_ scale: CGFloat) -> CGFloat {
+        if scale < scaleRange.lowerBound { return scaleRange.lowerBound }
+        if scale > scaleRange.upperBound { return scaleRange.upperBound }
+        return scale
+    }
+}
+
 struct EditWorkspaceView: View {
     @Bindable var metadataViewModel: MetadataViewModel
     @Bindable var browserViewModel: BrowserViewModel
@@ -1132,7 +1146,7 @@ struct EditWorkspaceView: View {
                         if showCropControls {
                             cropZoomScale = (lastCropZoomScale * dampened).clamped(to: 0.25...3.0)
                         } else {
-                            editZoomScale = (lastEditZoomScale * dampened).clamped(to: 1.0...10.0)
+                            editZoomScale = EditZoomBehavior.clampedScale(lastEditZoomScale * dampened)
                             syncViewportToMetal()
                         }
                     }
@@ -6306,7 +6320,6 @@ struct EditWorkspaceView: View {
 
     // MARK: - Edit Zoom / Pan
 
-    private let maxEditZoom: CGFloat = 10.0
     private let appliedCropPreviewPadding: CGFloat = 48
 
     private struct EditCropViewport {
@@ -6475,7 +6488,7 @@ struct EditWorkspaceView: View {
     private func handleEditScrollZoom(delta: CGFloat, event: NSEvent) {
         let zoomFactor = 1.0 + (delta * 0.01)
         let oldScale = editZoomScale
-        let newScale = (oldScale * zoomFactor).clamped(to: 1.0...maxEditZoom)
+        let newScale = EditZoomBehavior.clampedScale(oldScale * zoomFactor)
         guard newScale != oldScale else { return }
 
         applyEditZoom(
@@ -6769,7 +6782,7 @@ struct EditWorkspaceView: View {
             // Zoom to 100% (clamped to max), preserving the point beneath the cursor.
             applyEditZoom(
                 oldScale: editZoomScale,
-                newScale: min(zoom100, maxEditZoom),
+                newScale: min(zoom100, EditZoomBehavior.maximumScale),
                 cursorFromCenter: isCursorOverPreview ? currentEditCursorFromCenter() : .zero
             )
         }

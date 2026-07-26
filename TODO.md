@@ -32,7 +32,9 @@
   checkmarks are shown only while the thumbnail browser is active.
 
 ## Other improvements
-- [ ] Zooming in the edit view can't zoom as far as the full screen view (1000% vs. 4000%). Increase edit view zoom to support 4000% zoom.
+- [x] **Increase Develop preview zoom to 4000%.** (2026-07-26)
+  Magnify gestures, scroll-wheel zoom, and the cursor-anchored 100% toggle now share
+  the same 4000% upper bound as the full-screen viewer.
 - [ ] Adjusting the corner radius of an ellipse mask to be a square can cause an X-like render pattern where the corners of the rectangle mask seems to expand further/stronger than the edges.
 - [ ] Adjusting the corner radius of an ellipse mask, the mask itself changes instantly, but the mask outline preview only changes after letting go of the slider.
 - [ ] In the GPS/map area, make a button to quickly select the users current location as the image location.
@@ -44,3 +46,14 @@
 - [ ] Add an app setting to hide specific sliders.
 - [ ] Add an app setting to add/remove IPTC metadata fields.
 - [ ] Add support for more IPTC metadata fields.
+
+
+## Future version 2.3
+- [ ] Image analysis layout mode
+  - [ ] Bigger scopes, on hover detail zoom
+  - [ ] Scope to more easily view compression
+- [ ] Comparison view, letting the user select two images to view next to each other
+  - [ ] Zoom and pan lock, to make it easy to compare details. (should be possible to unlock/offset)
+  - [ ] Accessible both in the develop view, the full screen, and clean feed view.
+
+
