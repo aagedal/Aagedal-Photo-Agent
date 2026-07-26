@@ -921,11 +921,6 @@ struct ContentView: View {
     private var paneLayoutMenu: some View {
         Menu {
             Button {
-                mainViewMode = .browser
-            } label: {
-                Label("Thumbnail Browser", systemImage: mainViewMode == .browser ? "checkmark" : "square.grid.3x3")
-            }
-            Button {
                 mainViewMode = .metadataReview
             } label: {
                 Label("Metadata Review", systemImage: mainViewMode == .metadataReview ? "checkmark" : "list.bullet.rectangle")
@@ -943,9 +938,18 @@ struct ContentView: View {
 
     private func paneLayoutButton(_ layout: BrowserPaneLayout, _ title: String, _ icon: String) -> some View {
         Button {
+            // Pane layouts are all Thumbnail Browser variants. Selecting any of them
+            // also exits Metadata Review; "Single" is therefore the intuitive return
+            // to the ordinary one-pane browser without a redundant browser command.
+            mainViewMode = .browser
             panes.setLayout(layout)
         } label: {
-            Label(title, systemImage: panes.layout == layout ? "checkmark" : icon)
+            Label(
+                title,
+                systemImage: mainViewMode == .browser && panes.layout == layout
+                    ? "checkmark"
+                    : icon
+            )
         }
     }
 

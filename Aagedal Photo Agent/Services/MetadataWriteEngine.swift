@@ -39,7 +39,7 @@ struct StructuredWriteData: Sendable {
             && (unparsedMaskCorrections?.isEmpty ?? true)
     }
 
-    static let empty = StructuredWriteData()
+    nonisolated static let empty = StructuredWriteData()
 }
 
 /// Abstraction over metadata write backends.
@@ -50,6 +50,17 @@ protocol MetadataWriteEngine: AnyObject, Sendable {
         _ fields: [MetadataFieldKey: String],
         to urls: [URL],
         structuredData: StructuredWriteData
+    ) async throws
+
+    /// Write fields to files created by the render pipeline.
+    ///
+    /// Rendered TIFFs can legitimately retain a Sony camera Make tag. SwiftExif's
+    /// conservative RAW guard then classifies the TIFF bytes as ARW even though the
+    /// pipeline created a normal raster TIFF. Implementations may use this explicit
+    /// trust boundary to permit that otherwise-refused metadata rewrite.
+    func writeFieldsToRenderedFiles(
+        _ fields: [MetadataFieldKey: String],
+        to urls: [URL]
     ) async throws
 
     /// Add and/or remove individual list values (keywords, persons) with deduplication.
@@ -94,6 +105,13 @@ extension MetadataWriteEngine {
 extension MetadataWriteEngine {
     func writeFields(_ fields: [MetadataFieldKey: String], to urls: [URL]) async throws {
         try await writeFields(fields, to: urls, structuredData: .empty)
+    }
+
+    func writeFieldsToRenderedFiles(
+        _ fields: [MetadataFieldKey: String],
+        to urls: [URL]
+    ) async throws {
+        try await writeFields(fields, to: urls)
     }
 }
 

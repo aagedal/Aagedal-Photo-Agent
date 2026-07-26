@@ -84,6 +84,20 @@ struct FullScreenImageCacheTests {
         #expect(result?.orientation == 1)
     }
 
+    @Test("Adaptive HDR expansion is limited to gain-map-capable containers")
+    func adaptiveHDRExpansionRouting() {
+        for ext in ["jpg", "jpeg", "heic", "heif"] {
+            #expect(FullScreenImageCache.usesAdaptiveHDRExpansion(
+                for: URL(fileURLWithPath: "/tmp/image.\(ext)")
+            ))
+        }
+        for ext in ["tif", "tiff", "jxl", "png", "avif"] {
+            #expect(!FullScreenImageCache.usesAdaptiveHDRExpansion(
+                for: URL(fileURLWithPath: "/tmp/image.\(ext)")
+            ))
+        }
+    }
+
     @Test("Returns nil when no prefetch is in flight for the URL")
     func noInFlightPrefetchReturnsNil() async {
         let cache = FullScreenImageCache()

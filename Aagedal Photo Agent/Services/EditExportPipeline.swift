@@ -242,7 +242,7 @@ enum SidecarIPTCOverlay {
             }
             guard !fields.isEmpty else { return .noPendingEdits }
             do {
-                try await writeEngine.writeFields(fields, to: [renderedURL])
+                try await writeEngine.writeFieldsToRenderedFiles(fields, to: [renderedURL])
                 return .applied
             } catch {
                 exportPipelineLog.error(
@@ -272,7 +272,7 @@ enum SidecarIPTCOverlay {
         guard !fields.isEmpty else { return .noPendingEdits }
 
         do {
-            try await writeEngine.writeFields(fields, to: [renderedURL])
+            try await writeEngine.writeFieldsToRenderedFiles(fields, to: [renderedURL])
             return .applied
         } catch {
             exportPipelineLog.error(

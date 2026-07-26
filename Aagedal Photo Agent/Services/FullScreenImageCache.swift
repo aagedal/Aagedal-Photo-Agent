@@ -592,14 +592,19 @@ final class FullScreenImageCache: @unchecked Sendable {
     ) -> (image: CIImage, orientation: Int)? {
         // Read the tag first so it reflects the same bytes the decode below bakes in.
         let orientation = fileEXIFOrientation(at: url)
-        guard let ciImage = CIImage(contentsOf: url, options: [
+        var options: [CIImageOption: Any] = [
             .applyOrientationProperty: true,
-            // Adaptive HDR JPEG/HEIF defaults to its backward-compatible SDR base.
-            // Explicitly combine that base with its ISO/Apple gain map so the shared
-            // float pipeline receives the full HDR rendition.
-            .expandToHDR: true,
             .toneMapHDRtoSDR: false
-        ]) else { return nil }
+        ]
+        // Only adaptive JPEG/HEIF containers need an auxiliary gain-map expansion.
+        // Asking Core Image to expand direct-HDR TIFF/JXL/PNG files makes ImageIO probe
+        // an auxiliary channel those formats do not carry. On large archive TIFFs that
+        // unnecessary probe delayed the edited retina render and emitted
+        // CGImageSourceCopyAuxiliaryDataInfoAtIndexWithOptionsEx errors.
+        if usesAdaptiveHDRExpansion(for: url) {
+            options[.expandToHDR] = true
+        }
+        guard let ciImage = CIImage(contentsOf: url, options: options) else { return nil }
 
         let extent = ciImage.extent
         let longestSide = max(extent.width, extent.height)
@@ -827,12 +832,26 @@ final class FullScreenImageCache: @unchecked Sendable {
         from url: URL
     ) -> (image: CIImage, orientation: Int)? {
         let orientation = fileEXIFOrientation(at: url)
-        guard let ciImage = CIImage(contentsOf: url, options: [
+        var options: [CIImageOption: Any] = [
             .applyOrientationProperty: true,
-            .expandToHDR: true,
             .toneMapHDRtoSDR: false
-        ]) else { return nil }
+        ]
+        if usesAdaptiveHDRExpansion(for: url) {
+            options[.expandToHDR] = true
+        }
+        guard let ciImage = CIImage(contentsOf: url, options: options) else { return nil }
         return (ciImage, orientation)
+    }
+
+    /// Gain maps are currently supported by the app only in JPEG and HEIF containers.
+    /// Direct-HDR formats already expose their PQ/HLG pixels without `.expandToHDR`.
+    nonisolated static func usesAdaptiveHDRExpansion(for url: URL) -> Bool {
+        switch url.pathExtension.lowercased() {
+        case "jpg", "jpeg", "heic", "heif":
+            true
+        default:
+            false
+        }
     }
 
     /// Async boundary for the full-resolution form of `CIImage(contentsOf:)`.

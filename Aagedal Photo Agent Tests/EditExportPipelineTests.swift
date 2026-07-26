@@ -34,6 +34,39 @@ struct EditExportPipelineTests {
         return (dir, source)
     }
 
+    /// Creates a raster TIFF carrying a Sony Make tag. SwiftExif deliberately treats
+    /// any TIFF with that tag as a possible ARW, matching the archive failure this
+    /// suite guards against.
+    private func makeSonyTIFFWorkspace() throws -> (dir: URL, source: URL) {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apa-export-sony-tiff-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let source = dir.appendingPathComponent("archive.tiff")
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: 16, pixelsHigh: 16,
+            bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false,
+            isPlanar: false, colorSpaceName: .deviceRGB,
+            bytesPerRow: 0, bitsPerPixel: 0
+        ), let data = rep.representation(using: .tiff, properties: [:]) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        try data.write(to: source)
+
+        var metadata = try SwiftExif.readMetadata(from: source)
+        let make = Data("SONY\0".utf8)
+        metadata.exif = metadata.exif ?? ExifData(byteOrder: .littleEndian)
+        metadata.exif?.ifd0 = IFD(entries: [
+            IFDEntry(
+                tag: ExifTag.make,
+                type: .ascii,
+                count: UInt32(make.count),
+                valueData: make
+            )
+        ])
+        try metadata.write(to: source)
+        return (dir, source)
+    }
+
     /// The core guarantee behind the FTP fix: pending edits that live only in a sidecar
     /// (not in the source file's own metadata) must land on the rendered output.
     @Test("renderItem overlays pending XMP sidecar keywords and title onto the rendered file")
@@ -63,6 +96,42 @@ struct EditExportPipelineTests {
         let meta = try await SwiftExifReadService().readFullMetadata(url: rendered)
         #expect(Set(meta.keywords) == Set(["aurora", "fjord"]))
         #expect(meta.title == "Aurora over the fjord")
+    }
+
+    @Test("rendered Sony TIFF accepts sidecar IPTC without weakening ordinary RAW writes")
+    func renderedSonyTIFFAcceptsSidecarIPTC() async throws {
+        let (dir, source) = try makeSonyTIFFWorkspace()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let engine = SwiftExifWriteEngine()
+        await #expect(throws: (any Error).self) {
+            try await engine.writeFields([.headline: "Blocked by RAW guard"], to: [source])
+        }
+
+        let rawSource = dir.appendingPathComponent("original.ARW")
+        try Data([0]).write(to: rawSource)
+        try XMPSidecarService().saveSidecar(
+            metadata: IPTCMetadata(
+                title: "Archive headline",
+                description: "Archive caption"
+            ),
+            for: rawSource
+        )
+        let outcome = await SidecarIPTCOverlay.apply(
+            sourceURL: rawSource,
+            renderedURL: source,
+            folderURL: dir,
+            writeEngine: engine
+        )
+        guard case .applied = outcome else {
+            Issue.record("Expected the RAW sidecar to be embedded into the rendered TIFF")
+            return
+        }
+
+        let metadata = try await SwiftExifReadService().readFullMetadata(url: source)
+        #expect(metadata.title == "Archive headline")
+        #expect(metadata.description == "Archive caption")
+        #expect(SupportedImageFormats.isRaw(url: source) == false)
     }
 
     /// On export the develop settings that were baked into the pixels are re-emitted as a

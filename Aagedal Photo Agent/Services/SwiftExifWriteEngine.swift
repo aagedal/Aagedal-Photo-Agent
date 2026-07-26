@@ -54,6 +54,31 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         }
     }
 
+    func writeFieldsToRenderedFiles(
+        _ fields: [MetadataFieldKey: String],
+        to urls: [URL]
+    ) async throws {
+        // Keep the ordinary RAW-extension guard even at this explicit render boundary.
+        // The opt-in below exists only for normal raster outputs whose copied camera Make
+        // tag can make SwiftExif's byte heuristic mistake a generated TIFF for an ARW.
+        let urls = embeddableURLs(urls)
+        guard !urls.isEmpty, !fields.isEmpty else { return }
+
+        for url in urls {
+            try Task.checkCancellation()
+            try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: url)) {
+                let creationDates = captureCreationDates(for: [url])
+                defer { restoreCreationDates(creationDates) }
+                try self.writeFieldsToFile(
+                    fields,
+                    structuredData: .empty,
+                    url: url,
+                    allowRenderedTIFFRewrite: true
+                )
+            }
+        }
+    }
+
     func addRemoveListValues(
         add: [MetadataFieldKey: [String]],
         remove: [MetadataFieldKey: [String]],
@@ -266,7 +291,8 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
     private func writeFieldsToFile(
         _ fields: [MetadataFieldKey: String],
         structuredData: StructuredWriteData,
-        url: URL
+        url: URL,
+        allowRenderedTIFFRewrite: Bool = false
     ) throws {
         var metadata = try readMetadata(from: url)
 
@@ -357,7 +383,15 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
         // Sync IPTC → XMP to ensure both sides are consistent.
         metadata.syncIPTCToXMP()
 
-        try metadata.write(to: url)
+        if allowRenderedTIFFRewrite,
+           ["tif", "tiff"].contains(url.pathExtension.lowercased()) {
+            try metadata.write(
+                to: url,
+                options: .init(allowUnsafeRawEmbed: true)
+            )
+        } else {
+            try metadata.write(to: url)
+        }
     }
 
     /// Re-applies an EXIF hemisphere ref onto a coordinate magnitude. Callers split a
