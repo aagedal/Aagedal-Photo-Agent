@@ -738,6 +738,14 @@ struct ImportView: View {
     @ViewBuilder
     private var formFooter: some View {
         HStack {
+            if let reason = viewModel.importBlockingReason {
+                Label(reason, systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .accessibilityLabel("Import unavailable. \(reason)")
+            }
+
             Spacer()
 
             Button("Cancel") {
@@ -751,7 +759,7 @@ struct ImportView: View {
             }
             .buttonStyle(.borderedProminent)
             .keyboardShortcut(.defaultAction)
-            .disabled(viewModel.selectedSourceFiles.isEmpty || (!viewModel.sortByDate && viewModel.configuration.importTitle.trimmingCharacters(in: .whitespaces).isEmpty) || (viewModel.sortByDate && viewModel.dateGroups.isEmpty))
+            .disabled(viewModel.importBlockingReason != nil)
         }
         .padding()
     }

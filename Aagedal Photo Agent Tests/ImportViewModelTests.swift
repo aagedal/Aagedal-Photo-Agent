@@ -5,6 +5,77 @@ import Testing
 @Suite("ImportViewModel", .serialized)
 @MainActor
 struct ImportViewModelTests {
+    @Test("Import readiness explains each blocked setup state")
+    func importReadinessExplainsBlockedStates() {
+        let defaults = UserDefaults.standard
+        let keys = [
+            UserDefaultsKeys.importFileTypeFilter,
+            UserDefaultsKeys.importSortByDate,
+        ]
+        var originals: [String: Any] = [:]
+        for key in keys {
+            originals[key] = defaults.object(forKey: key)
+        }
+        defer {
+            for key in keys {
+                if let original = originals[key] {
+                    defaults.set(original, forKey: key)
+                } else {
+                    defaults.removeObject(forKey: key)
+                }
+            }
+        }
+
+        let viewModel = ImportViewModel(
+            readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine()
+        )
+        viewModel.configuration.fileTypeFilter = .both
+        viewModel.sortByDate = false
+
+        #expect(viewModel.importBlockingReason == "Choose a memory card or folder to import from.")
+
+        let source = URL(fileURLWithPath: "/Volumes/Card", isDirectory: true)
+        let image = source.appendingPathComponent("photo.jpg")
+        viewModel.configuration.sourceURL = source
+        viewModel.importPhase = .scanning
+        #expect(viewModel.importBlockingReason == "Scanning the source folder…")
+
+        viewModel.importPhase = .idle
+        #expect(viewModel.importBlockingReason == "No supported images were found in the source folder.")
+
+        viewModel.sourceFiles = [image]
+        #expect(viewModel.importBlockingReason == "Enter an import title.")
+
+        viewModel.configuration.importTitle = "Cup Final"
+        #expect(viewModel.importBlockingReason == nil)
+
+        viewModel.configuration.fileTypeFilter = .rawOnly
+        #expect(viewModel.importBlockingReason == "No images match the RAW Only filter.")
+
+        viewModel.configuration.fileTypeFilter = .both
+        viewModel.sortByDate = true
+        viewModel.isScanningDates = true
+        #expect(viewModel.importBlockingReason == "Scanning capture dates…")
+
+        viewModel.isScanningDates = false
+        #expect(viewModel.importBlockingReason == "Scan capture dates before importing.")
+
+        viewModel.dateGroups = [
+            ImportDateGroup(
+                dateString: "2026:07:26",
+                folderName: "2026-07-26 – Cup Final",
+                shootFolderName: nil,
+                yearFolder: "2026",
+                files: [image]
+            )
+        ]
+        #expect(viewModel.importBlockingReason == nil)
+
+        viewModel.dateGroups[0].isIncluded = false
+        #expect(viewModel.importBlockingReason == "Select at least one date folder to import.")
+    }
+
     @Test("Import behavior settings restore from defaults and survive reset")
     func importBehaviorSettingsRestoreFromDefaultsAndSurviveReset() {
         let defaults = UserDefaults.standard

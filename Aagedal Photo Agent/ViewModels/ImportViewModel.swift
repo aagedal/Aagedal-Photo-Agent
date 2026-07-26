@@ -203,6 +203,41 @@ final class ImportViewModel {
         return filtered.filter { includedFiles.contains($0) }
     }
 
+    /// Explains why the import cannot start, in the same priority order the
+    /// user encounters the setup steps. Keeping this validation in the view
+    /// model ensures the button state, its explanation, and `startImport()`
+    /// cannot drift apart.
+    var importBlockingReason: String? {
+        if importPhase == .scanning {
+            return "Scanning the source folder…"
+        }
+        if configuration.sourceURL == nil {
+            return "Choose a memory card or folder to import from."
+        }
+        if sourceFiles.isEmpty {
+            return "No supported images were found in the source folder."
+        }
+        if filteredSourceFiles.isEmpty {
+            return "No images match the \(configuration.fileTypeFilter.rawValue) filter."
+        }
+
+        if sortByDate {
+            if isScanningDates {
+                return "Scanning capture dates…"
+            }
+            if dateGroups.isEmpty {
+                return "Scan capture dates before importing."
+            }
+            if selectedSourceFiles.isEmpty {
+                return "Select at least one date folder to import."
+            }
+        } else if configuration.importTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "Enter an import title."
+        }
+
+        return nil
+    }
+
     // MARK: - Source Selection
 
     func selectSource() {
@@ -403,11 +438,12 @@ final class ImportViewModel {
     // MARK: - Import Execution
 
     func startImport() {
-        let filesToCopy = selectedSourceFiles
-        guard !filesToCopy.isEmpty else {
-            errorMessage = sortByDate ? "No selected files to import." : "No files to import."
+        if let importBlockingReason {
+            errorMessage = importBlockingReason
             return
         }
+
+        let filesToCopy = selectedSourceFiles
 
         // Guard against two date groups (e.g. split sub-shoots, or a manual rename)
         // resolving to the same destination folder, which would silently merge them.
