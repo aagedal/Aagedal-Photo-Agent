@@ -18,10 +18,10 @@ nonisolated struct AdvancedExportRenderedArtifact: @unchecked Sendable {
 
 nonisolated enum EditedImageRenderer {
 
-    /// Fixed color target for the dedicated RAW conversion command. Keeping it independent
-    /// of general export preferences makes every converted file a consistent HDR master.
-    static let rawJXLConversionGamut: TargetColorGamut = .rec2020
-    static let rawJXLConversionColorSpace = CGColorSpace(name: CGColorSpace.itur_2100_PQ)!
+    /// Fixed color target for rendered RAW archives. Keeping it independent of general
+    /// export preferences makes JPEG XL and TIFF archives consistent HDR masters.
+    static let rawArchiveConversionGamut: TargetColorGamut = .rec2020
+    static let rawArchiveConversionColorSpace = CGColorSpace(name: CGColorSpace.itur_2100_PQ)!
 
     private static func loadAndProcess(
         from sourceURL: URL,
@@ -979,32 +979,6 @@ nonisolated enum EditedImageRenderer {
         return candidate
     }
 
-    /// Resolves the destination for the fixed-format RAW conversion command. It follows
-    /// the user's normal export-location policy, but the format-subfolder name must not
-    /// depend on whichever general SDR/HDR format happens to be selected in Settings.
-    static func resolveRAWJXLConversionFolder(
-        sourceURL: URL,
-        rootFolder: URL,
-        askedFolder: URL?
-    ) -> URL {
-        switch currentLocationMode {
-        case .sameAsOriginal:
-            return sourceURL.deletingLastPathComponent()
-        case .customSubfolder:
-            let customName = UserDefaults.standard.string(
-                forKey: UserDefaultsKeys.exportCustomSubfolderName
-            ) ?? "Exports"
-            return customSubfolder(in: rootFolder, name: customName)
-        case .formatSubfolder:
-            return rootFolder.appendingPathComponent(
-                "Converted_JPEG_XL_16bit_HDR_Rec2020_PQ",
-                isDirectory: true
-            )
-        case .askOnSave:
-            return askedFolder ?? rootFolder
-        }
-    }
-
     // MARK: - Output URL
 
     static func outputURL(
@@ -1078,13 +1052,12 @@ nonisolated enum EditedImageRenderer {
         return try await renderHDRFormat(output, sourceURL: sourceURL, outputFolder: outputFolder)
     }
 
-    /// Converts a RAW source to a Rec. 2020 PQ HDR, 16-bit-per-channel JPEG XL while
-    /// applying the current develop settings. The selected decode profile applies only
-    /// to this conversion; the general SDR/HDR gamut settings do not affect it.
+    /// Converts a RAW source to an unedited Rec. 2020 PQ HDR, 16-bit-per-channel JPEG XL.
+    /// Only the selected RAW decode profile is applied; current develop settings and the
+    /// general SDR/HDR gamut settings do not affect the archive.
     @discardableResult
     static func convertRAWTo16BitJXL(
         from sourceURL: URL,
-        cameraRaw: CameraRawSettings?,
         decodeProfile: RAWDecodeProfile,
         destinationFolder: URL,
         metadataCopier: MetadataCopier? = nil
@@ -1095,17 +1068,17 @@ nonisolated enum EditedImageRenderer {
 
         // Always bypass the SDR output tone map so the RAW decoder's scene-referred
         // highlight headroom reaches the Rec. 2020 PQ encode.
-        var hdrSettings = cameraRaw ?? CameraRawSettings()
-        hdrSettings.hdrEditMode = 1
+        var archiveSettings = CameraRawSettings()
+        archiveSettings.hdrEditMode = 1
         let output = try loadAndProcess(
             from: sourceURL,
-            cameraRaw: hdrSettings,
+            cameraRaw: archiveSettings,
             rawDecodeProfile: decodeProfile
         )
         let quality = UserDefaults.standard.object(
             forKey: UserDefaultsKeys.exportQualityHDR
         ) as? Double ?? 0.92
-        let destinationURL = uniqueOutputURL(
+        let destinationURL = RAWArchiveService.uniqueDestinationURL(
             for: sourceURL,
             in: destinationFolder,
             extension: "jxl"
@@ -1115,8 +1088,56 @@ nonisolated enum EditedImageRenderer {
             output,
             to: destinationURL,
             quality: quality,
-            colorSpace: rawJXLConversionColorSpace
+            colorSpace: rawArchiveConversionColorSpace
         )
+
+        if let metadataCopier {
+            do {
+                try await metadataCopier(sourceURL, destinationURL)
+            } catch {
+                editedRendererLog.error(
+                    "metadataCopier failed for \(sourceURL.lastPathComponent, privacy: .public) → \(destinationURL.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
+            }
+        }
+        return destinationURL
+    }
+
+    /// Converts a RAW source to a losslessly compressed, unedited 16-bit Rec. 2020 PQ
+    /// TIFF. Only the requested RAW decode profile is applied.
+    @discardableResult
+    static func convertRAWTo16BitTIFF(
+        from sourceURL: URL,
+        decodeProfile: RAWDecodeProfile,
+        destinationFolder: URL,
+        metadataCopier: MetadataCopier? = nil
+    ) async throws -> URL {
+        guard SupportedImageFormats.isRaw(url: sourceURL) else {
+            throw RenderError.rawSourceRequired
+        }
+
+        var archiveSettings = CameraRawSettings()
+        archiveSettings.hdrEditMode = 1
+        let output = try loadAndProcess(
+            from: sourceURL,
+            cameraRaw: archiveSettings,
+            rawDecodeProfile: decodeProfile
+        )
+        let destinationURL = RAWArchiveService.uniqueDestinationURL(
+            for: sourceURL,
+            in: destinationFolder,
+            extension: "tiff"
+        )
+        let context = CameraRawApproximation.ciContext
+        guard let cgImage = context.createCGImage(
+            output,
+            from: output.extent,
+            format: .RGBA16,
+            colorSpace: rawArchiveConversionColorSpace
+        ) else {
+            throw RenderError.encodeFailed
+        }
+        try writeTIFF(cgImage: cgImage, to: destinationURL, compression: .lzw)
 
         if let metadataCopier {
             do {

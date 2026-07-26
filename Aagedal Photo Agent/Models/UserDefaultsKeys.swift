@@ -119,6 +119,9 @@ nonisolated enum UserDefaultsKeys {
     // MARK: - Export Location
     static let exportLocationMode = "exportLocationMode"
     static let exportCustomSubfolderName = "exportCustomSubfolderName"
+    static let rawArchiveLocationMode = "rawArchiveLocationMode"
+    static let rawArchiveSourceRootBookmark = "rawArchiveSourceRootBookmark"
+    static let rawArchiveRootBookmark = "rawArchiveRootBookmark"
 
     // MARK: - C2PA Signing
     static let c2paCertificatePath = "c2paCertificatePath"
@@ -147,6 +150,7 @@ nonisolated enum UserDefaultsKeys {
 
     // MARK: - Import Verification & Backup
     static let importVerificationMode = "importVerificationMode"
+    static let importDestinationBookmark = "importDestinationBookmark"
     static let importBackupBookmark = "importBackupBookmark"
     static let importBackupVerifyAfterWrite = "importBackupVerifyAfterWrite"
     static let editedFolderBackupBookmark = "editedFolderBackupBookmark"

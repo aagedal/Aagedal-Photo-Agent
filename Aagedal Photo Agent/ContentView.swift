@@ -504,9 +504,9 @@ struct ContentView: View {
             .onReceive(NotificationCenter.default.publisher(for: .saveAsPNG)) { _ in
                 saveSelectedAs(format: .png)
             }
-            .onReceive(NotificationCenter.default.publisher(for: .convertRAWToJXL16)) { notification in
-                guard let decodeProfile = notification.object as? RAWDecodeProfile else { return }
-                convertSelectedRAWToJXL16(decodeProfile: decodeProfile)
+            .onReceive(NotificationCenter.default.publisher(for: .archiveRAW)) { notification in
+                guard let format = notification.object as? RAWArchiveFormat else { return }
+                archiveSelectedRAW(as: format)
             }
             .onReceive(NotificationCenter.default.publisher(for: .renameSelected)) { _ in
                 browserViewModel.renameSelected()
@@ -2353,18 +2353,74 @@ struct ContentView: View {
         }
     }
 
-    private func convertSelectedRAWToJXL16(decodeProfile: RAWDecodeProfile) {
+    private func archiveSelectedRAW(as format: RAWArchiveFormat) {
         guard !isRenderingEditedFolder else { return }
-        let urls = browserViewModel.selectedImages
-            .map(\.url)
-            .filter(SupportedImageFormats.isRaw(url:))
+        let selectedRAW = browserViewModel.selectedImages
+            .filter { SupportedImageFormats.isRaw(url: $0.url) }
+        let urls = selectedRAW.map(\.url)
         guard !urls.isEmpty else { return }
 
-        let locationMode = EditedImageRenderer.currentLocationMode
+        let c2paRAWURLs = Set(
+            selectedRAW.lazy
+                .filter(\.hasC2PA)
+                .map(\.url)
+        )
+        let archiveSigningConfiguration: C2PAArchiveSigningConfiguration?
+        if c2paRAWURLs.isEmpty {
+            archiveSigningConfiguration = nil
+        } else {
+            archiveSigningConfiguration = makeC2PAArchiveSigningConfiguration()
+            if archiveSigningConfiguration == nil,
+               !confirmUnsignedC2PAArchive(count: c2paRAWURLs.count) {
+                return
+            }
+        }
+
+        let dngConverterURL: URL?
+        if format.requiresAdobeDNGConverter {
+            guard let installedURL = AdobeDNGConverterService.installedExecutableURL else {
+                browserViewModel.errorMessage = """
+                Adobe DNG Converter is required for DNG archiving. Install the free converter from Adobe, then try again.
+                """
+                return
+            }
+            dngConverterURL = installedURL
+        } else {
+            dngConverterURL = nil
+        }
+
+        let locationMode = RAWArchiveService.currentLocationMode
         var askedFolder: URL?
-        if locationMode == .askOnSave {
-            guard let chosen = promptForExportDestination() else { return }
+        if locationMode == .askEveryTime {
+            guard let chosen = promptForExportDestination(
+                message: "Choose a destination folder for this RAW archive batch"
+            ) else { return }
             askedFolder = chosen
+        }
+
+        let configuredIngestRoot: URL?
+        let configuredArchiveRoot: URL?
+        if locationMode == .mirroredArchiveRoot {
+            configuredIngestRoot = RAWArchiveService.ingestRootURL
+            configuredArchiveRoot = RAWArchiveService.archiveRootURL
+        } else {
+            configuredIngestRoot = nil
+            configuredArchiveRoot = nil
+        }
+
+        do {
+            for url in urls {
+                _ = try RAWArchiveService.destinationFolder(
+                    for: url,
+                    manualDestination: askedFolder,
+                    mode: locationMode,
+                    ingestRoot: configuredIngestRoot,
+                    archiveRoot: configuredArchiveRoot
+                )
+            }
+        } catch {
+            browserViewModel.errorMessage = error.localizedDescription
+            return
         }
 
         isRenderingEditedFolder = true
@@ -2373,23 +2429,20 @@ struct ContentView: View {
 
         renderExportTask = Task {
             defer { renderExportTask = nil }
+            let didAccessIngestRoot =
+                configuredIngestRoot?.startAccessingSecurityScopedResource() ?? false
+            let didAccessArchiveRoot =
+                configuredArchiveRoot?.startAccessingSecurityScopedResource() ?? false
+            defer {
+                if didAccessIngestRoot {
+                    configuredIngestRoot?.stopAccessingSecurityScopedResource()
+                }
+                if didAccessArchiveRoot {
+                    configuredArchiveRoot?.stopAccessingSecurityScopedResource()
+                }
+            }
             let failureTracker = MetadataFailureTracker()
             var createdFolders: Set<String> = []
-
-            var metadataByURL: [URL: IPTCMetadata]
-            do {
-                metadataByURL = try await browserViewModel.metadataReadService
-                    .readBatchFullMetadata(urls: urls)
-            } catch {
-                isRenderingEditedFolder = false
-                browserViewModel.errorMessage = "Failed to read RAW metadata: \(error.localizedDescription)"
-                return
-            }
-            EditExportPipeline.resolveCameraRaw(
-                into: &metadataByURL,
-                urls: urls,
-                inMemory: browserViewModel.currentCameraRawSettings
-            )
 
             var convertedURLs: [URL] = []
             var failedNames: [String] = []
@@ -2397,12 +2450,12 @@ struct ContentView: View {
                 guard !Task.isCancelled else { break }
                 renderExportCurrent = index + 1
                 do {
-                    let rootFolder = browserViewModel.currentFolderURL
-                        ?? url.deletingLastPathComponent()
-                    let destinationFolder = EditedImageRenderer.resolveRAWJXLConversionFolder(
-                        sourceURL: url,
-                        rootFolder: rootFolder,
-                        askedFolder: askedFolder
+                    let destinationFolder = try RAWArchiveService.destinationFolder(
+                        for: url,
+                        manualDestination: askedFolder,
+                        mode: locationMode,
+                        ingestRoot: configuredIngestRoot,
+                        archiveRoot: configuredArchiveRoot
                     )
                     if !createdFolders.contains(destinationFolder.path) {
                         try FileManager.default.createDirectory(
@@ -2412,15 +2465,67 @@ struct ContentView: View {
                         createdFolders.insert(destinationFolder.path)
                     }
 
+                    let renderKind: RenderKind
+                    switch format {
+                    case .jpegXLLinear:
+                        renderKind = .rawJXL16(.linear)
+                    case .jpegXLCamera:
+                        renderKind = .rawJXL16(.camera)
+                    case .tiffLinear:
+                        renderKind = .rawTIFF16(.linear)
+                    case .tiffCamera:
+                        renderKind = .rawTIFF16(.camera)
+                    case .dngLossless:
+                        guard let dngConverterURL else {
+                            throw AdobeDNGConverterError.notInstalled
+                        }
+                        renderKind = .rawDNG(
+                            .lossless,
+                            executableURL: dngConverterURL
+                        )
+                    case .dngLossy:
+                        guard let dngConverterURL else {
+                            throw AdobeDNGConverterError.notInstalled
+                        }
+                        renderKind = .rawDNG(
+                            .lossy,
+                            executableURL: dngConverterURL
+                        )
+                    }
+
                     let convertedURL = try await EditExportPipeline.renderItem(
                         sourceURL: url,
-                        cameraRaw: metadataByURL[url]?.cameraRaw,
-                        kind: .rawJXL16(decodeProfile),
+                        cameraRaw: nil,
+                        kind: renderKind,
                         outputFolder: destinationFolder,
                         folderURL: browserViewModel.currentFolderURL,
                         writeEngine: browserViewModel.writeEngine,
                         failureTracker: failureTracker
                     )
+
+                    if c2paRAWURLs.contains(url),
+                       let archiveSigningConfiguration {
+                        do {
+                            try await archiveSigningConfiguration.sign(
+                                archiveURL: convertedURL,
+                                parentURL: url,
+                                format: format
+                            )
+                        } catch {
+                            // A configured signing workflow must never leave an unsigned
+                            // archive that looks successful. Both files were created by
+                            // this batch and the unique-name preflight protected prior data.
+                            try? FileManager.default.removeItem(at: convertedURL)
+                            let sidecars = XMPSidecarService()
+                            let sourceSidecar = sidecars.sidecarURL(for: url)
+                            let archiveSidecar = sidecars.sidecarURL(for: convertedURL)
+                            if archiveSidecar.standardizedFileURL
+                                != sourceSidecar.standardizedFileURL {
+                                try? FileManager.default.removeItem(at: archiveSidecar)
+                            }
+                            throw error
+                        }
+                    }
                     convertedURLs.append(convertedURL)
                 } catch {
                     failedNames.append(url.lastPathComponent)
@@ -2457,7 +2562,7 @@ struct ContentView: View {
             }
             isBatchResultExpanded = false
             lastBatchResult = BatchOperationResult(
-                title: "RAW to HDR JPEG XL (\(decodeProfile.title))",
+                title: format.batchTitle,
                 outcome: outcome,
                 successCount: convertedURLs.count,
                 totalCount: urls.count,
@@ -2468,6 +2573,53 @@ struct ContentView: View {
                 sourceFolderURL: browserViewModel.currentFolderURL
             )
         }
+    }
+
+    private func makeC2PAArchiveSigningConfiguration()
+        -> C2PAArchiveSigningConfiguration? {
+        guard C2PASigningService.isAvailable,
+              settingsViewModel.c2paHasCertificate
+        else {
+            return nil
+        }
+
+        let usesTestCertificate = settingsViewModel.c2paUseTestCertificate
+        let privateKeyPEM: String
+        if usesTestCertificate {
+            privateKeyPEM = ""
+        } else {
+            guard let storedKey = KeychainService.load(
+                forKey: "c2pa_private_key"
+            ), !storedKey.isEmpty else {
+                return nil
+            }
+            privateKeyPEM = storedKey
+        }
+
+        return C2PAArchiveSigningConfiguration(
+            certificatePath: settingsViewModel.c2paCertificatePath,
+            privateKeyPEM: privateKeyPEM,
+            author: settingsViewModel.c2paDefaultAuthor,
+            usesTestCertificate: usesTestCertificate
+        )
+    }
+
+    @MainActor
+    private func confirmUnsignedC2PAArchive(count: Int) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Archive Files Will Be Unsigned"
+        let noun = count == 1 ? "RAW file contains" : "RAW files contain"
+        alert.informativeText = """
+        \(count) selected \(noun) C2PA Content Credentials. Creating an archive produces a new file, so the original signature cannot simply be copied.
+
+        No usable signing identity is configured. The archive file will be unsigned and will not carry the original provenance chain. The source RAW remains unchanged.
+
+        Configure a certificate or test signature in Settings → Signing to sign archives and link each source as its parent ingredient.
+        """
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Archive Unsigned")
+        return alert.runModal() == .alertSecondButtonReturn
     }
 
     private func renderAndSaveEditedFolder(

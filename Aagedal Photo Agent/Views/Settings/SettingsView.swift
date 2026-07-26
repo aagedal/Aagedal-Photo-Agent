@@ -506,9 +506,111 @@ struct SettingsView: View {
                         .textFieldStyle(.roundedBorder)
                 }
             }
+
+            Section("RAW Archive Location") {
+                Picker(
+                    "Save RAW Archives",
+                    selection: $settingsViewModel.rawArchiveLocationMode
+                ) {
+                    ForEach(RAWArchiveLocationMode.allCases) { mode in
+                        Text(mode.displayName).tag(mode)
+                    }
+                }
+
+                Text(settingsViewModel.rawArchiveLocationMode.description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Text("Matching XMP sidecars are copied unchanged. Develop edits are not baked into archive pixels.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Text("For C2PA-protected RAW files, a configured identity in Signing adds a new archive signature and retains the source credential as a parent ingredient. Otherwise, you will be warned before creating unsigned archives.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if settingsViewModel.rawArchiveLocationMode == .mirroredArchiveRoot {
+                    LabeledContent("Main Ingest Folder") {
+                        HStack {
+                            Text(settingsViewModel.rawArchiveSourceRootPath)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .foregroundStyle(.secondary)
+                            Button("Choose…") {
+                                chooseRAWArchiveSourceRoot()
+                            }
+                            if settingsViewModel.rawArchiveUsesSourceRootOverride {
+                                Button("Use Import Folder") {
+                                    settingsViewModel.resetRAWArchiveSourceRoot()
+                                }
+                            }
+                        }
+                    }
+
+                    LabeledContent("Separate Archive Root") {
+                        HStack {
+                            Text(
+                                settingsViewModel.rawArchiveRootPath.isEmpty
+                                    ? "Not Selected"
+                                    : settingsViewModel.rawArchiveRootPath
+                            )
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .foregroundStyle(
+                                settingsViewModel.rawArchiveRootPath.isEmpty
+                                    ? .red
+                                    : .secondary
+                            )
+                            Button("Choose…") {
+                                chooseRAWArchiveRoot()
+                            }
+                            if !settingsViewModel.rawArchiveRootPath.isEmpty {
+                                Button("Clear") {
+                                    settingsViewModel.clearRAWArchiveRoot()
+                                }
+                            }
+                        }
+                    }
+
+                    Text("For example, Photos/2026/07/Shoot/RAW becomes Archive/2026/07/Shoot/RAW.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Text("The main ingest folder follows the Import destination unless you choose an override here.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
         .formStyle(.grouped)
         .padding()
+        .onAppear {
+            settingsViewModel.refreshRAWArchivePaths()
+        }
+    }
+
+    private func chooseRAWArchiveSourceRoot() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose the main ingest folder whose structure should be mirrored."
+        panel.prompt = "Choose"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        settingsViewModel.setRAWArchiveSourceRootURL(url)
+    }
+
+    private func chooseRAWArchiveRoot() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose the separate root folder for RAW archives."
+        panel.prompt = "Choose"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        settingsViewModel.setRAWArchiveRootURL(url)
     }
 
     // MARK: - Format Tab

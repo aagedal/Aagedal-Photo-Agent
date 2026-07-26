@@ -450,32 +450,54 @@ final class ThumbnailCollectionView: NSCollectionView {
             .filter(SupportedImageFormats.isRaw(url:))
             .count
         if rawSelectionCount > 0 {
-            let conversionMenu = NSMenu()
+            let archiveMenu = NSMenu()
+            let dngConverterInstalled =
+                AdobeDNGConverterService.installedExecutableURL != nil
 
-            let cameraItem = NSMenuItem(
-                title: "Camera RAW Decode",
-                action: #selector(contextConvertRAWToJXL16(_:)),
+            for format in RAWArchiveFormat.allCases {
+                if format == .dngLossless {
+                    archiveMenu.addItem(.separator())
+                }
+                let unavailableDNG = format.requiresAdobeDNGConverter
+                    && !dngConverterInstalled
+                let title = unavailableDNG
+                    ? "\(format.displayName) — Requires Adobe DNG Converter"
+                    : format.displayName
+                let item = NSMenuItem(
+                    title: title,
+                    action: #selector(contextArchiveRAW(_:)),
+                    keyEquivalent: ""
+                )
+                item.target = self
+                item.representedObject = format
+                item.isEnabled = !unavailableDNG
+                if unavailableDNG {
+                    item.toolTip = "Install the free Adobe DNG Converter to enable DNG archiving."
+                }
+                archiveMenu.addItem(item)
+            }
+
+            if !dngConverterInstalled {
+                archiveMenu.addItem(.separator())
+                let installItem = NSMenuItem(
+                    title: "How to Enable DNG Archiving…",
+                    action: #selector(contextShowDNGConverterInstructions(_:)),
+                    keyEquivalent: ""
+                )
+                installItem.target = self
+                archiveMenu.addItem(installItem)
+            }
+
+            let archiveTitle = rawSelectionCount == 1
+                ? "Archive RAW as…"
+                : "Archive \(rawSelectionCount) RAW Files as…"
+            let archiveItem = NSMenuItem(
+                title: archiveTitle,
+                action: nil,
                 keyEquivalent: ""
             )
-            cameraItem.target = self
-            cameraItem.representedObject = RAWDecodeProfile.camera
-            conversionMenu.addItem(cameraItem)
-
-            let linearItem = NSMenuItem(
-                title: "Linear RAW Decode",
-                action: #selector(contextConvertRAWToJXL16(_:)),
-                keyEquivalent: ""
-            )
-            linearItem.target = self
-            linearItem.representedObject = RAWDecodeProfile.linear
-            conversionMenu.addItem(linearItem)
-
-            let title = rawSelectionCount == 1
-                ? "Convert RAW to 16-bit HDR JPEG XL"
-                : "Convert \(rawSelectionCount) RAW Files to 16-bit HDR JPEG XL"
-            let conversionItem = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-            conversionItem.submenu = conversionMenu
-            menu.addItem(conversionItem)
+            archiveItem.submenu = archiveMenu
+            menu.addItem(archiveItem)
         }
 
         menu.addItem(NSMenuItem.separator())
@@ -560,9 +582,25 @@ final class ThumbnailCollectionView: NSCollectionView {
         NotificationCenter.default.post(name: .saveAsPNG, object: nil)
     }
 
-    @objc private func contextConvertRAWToJXL16(_ sender: NSMenuItem) {
-        guard let decodeProfile = sender.representedObject as? RAWDecodeProfile else { return }
-        NotificationCenter.default.post(name: .convertRAWToJXL16, object: decodeProfile)
+    @objc private func contextArchiveRAW(_ sender: NSMenuItem) {
+        guard let format = sender.representedObject as? RAWArchiveFormat else { return }
+        NotificationCenter.default.post(name: .archiveRAW, object: format)
+    }
+
+    @objc private func contextShowDNGConverterInstructions(_ sender: Any?) {
+        let alert = NSAlert()
+        alert.messageText = "Enable DNG Archiving"
+        alert.informativeText = """
+        Lossless and lossy DNG archiving requires the free Adobe DNG Converter.
+
+        Download it from Adobe, run the installer, then reopen this menu. Photoshop and a Creative Cloud subscription are not required.
+        """
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Open Adobe Download Page")
+        alert.addButton(withTitle: "Cancel")
+        if alert.runModal() == .alertFirstButtonReturn {
+            NSWorkspace.shared.open(AdobeDNGConverterService.downloadURL)
+        }
     }
 
     @objc private func contextRename(_ sender: Any?) {

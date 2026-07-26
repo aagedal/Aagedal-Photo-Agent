@@ -147,6 +147,11 @@ final class ImportViewModel {
         if UserDefaults.standard.object(forKey: UserDefaultsKeys.importCreateSubFolders) != nil {
             self.configuration.createSubFolders = UserDefaults.standard.bool(forKey: UserDefaultsKeys.importCreateSubFolders)
         }
+        if let destinationURL = Self.resolveBookmark(
+            key: UserDefaultsKeys.importDestinationBookmark
+        ) {
+            self.configuration.destinationBaseURL = destinationURL
+        }
 
         // Restore last-used date-folder grouping. Fall back to the legacy year
         // toggle so existing installs keep their previous behavior.
@@ -308,6 +313,10 @@ final class ImportViewModel {
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
         configuration.destinationBaseURL = url
+        Self.saveBookmark(
+            for: url,
+            key: UserDefaultsKeys.importDestinationBookmark
+        )
         refreshPreviousImportFolderSuggestions()
     }
 
@@ -611,6 +620,13 @@ final class ImportViewModel {
         importTask = Task.detached(priority: .userInitiated) { [readService, interpolator, importLog, weak self] in
             guard let self else { return }
             _ = readService
+            let didStartAccessingDestination =
+                baseURL.startAccessingSecurityScopedResource()
+            defer {
+                if didStartAccessingDestination {
+                    baseURL.stopAccessingSecurityScopedResource()
+                }
+            }
 
             do {
                 var jobsToRun = jobs

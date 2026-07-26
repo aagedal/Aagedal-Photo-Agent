@@ -49,6 +49,7 @@ xcodebuild -project "Aagedal Photo Agent.xcodeproj" \
 
 - **Standard:** JPEG, PNG, TIFF, HEIC, HEIF, BMP, GIF, WebP, AVIF, JPEG XL
 - **RAW:** CR2, CR3, NEF, NRW, ARW, RAF, DNG, RW2, ORF, PEF, SRW
+- **RAW archiving:** Create unedited 16-bit JPEG XL or TIFF decodes with Linear RAW or Camera RAW processing, or lossless/lossy DNG files when the free [Adobe DNG Converter](https://helpx.adobe.com/camera-raw/using/adobe-dng-converter.html) is installed. Develop edits are never baked into archive pixels; the matching XMP sidecar is copied unchanged. Archives can go into each work folder’s `Archive` sub-folder, a separate root that mirrors the main ingest structure, or a folder chosen for each batch. C2PA-protected RAW archives are signed with the source credential as a parent ingredient when a signing identity is configured; otherwise the app warns before creating unsigned files.
 
 ### Camera RAW Editing
 

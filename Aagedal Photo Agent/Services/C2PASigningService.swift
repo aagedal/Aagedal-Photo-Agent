@@ -818,3 +818,33 @@ nonisolated struct C2PAUploadSigningConfiguration: Sendable {
         )
     }
 }
+
+/// Immutable credentials captured before archiving a C2PA-protected RAW.
+/// The archive receives a new signature and links the source credential as its
+/// parent ingredient, preserving provenance without copying an invalid signature.
+nonisolated struct C2PAArchiveSigningConfiguration: Sendable {
+    let certificatePath: String
+    let privateKeyPEM: String
+    let author: String?
+    let usesTestCertificate: Bool
+
+    func sign(
+        archiveURL: URL,
+        parentURL: URL,
+        format: RAWArchiveFormat
+    ) async throws {
+        try await C2PASigningService.signWithParentIngredient(
+            imageURL: archiveURL,
+            parentURL: parentURL,
+            certificatePath: usesTestCertificate ? "" : certificatePath,
+            privateKeyPEM: privateKeyPEM,
+            author: author?.isEmpty == true ? nil : author,
+            actions: [
+                C2PAAction(
+                    action: format.c2paActionName,
+                    description: format.c2paActionDescription
+                )
+            ]
+        )
+    }
+}

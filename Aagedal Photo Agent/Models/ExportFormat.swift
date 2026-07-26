@@ -1,6 +1,72 @@
 import Foundation
 import CoreGraphics
 
+/// Fixed archival outputs offered for selected camera RAW files.
+///
+/// JPEG XL and TIFF are unedited 16-bit Rec. 2020 PQ decodes. DNG options convert
+/// through Adobe DNG Converter without applying the live develop stack.
+nonisolated enum RAWArchiveFormat: String, CaseIterable, Sendable {
+    case jpegXLLinear
+    case jpegXLCamera
+    case tiffLinear
+    case tiffCamera
+    case dngLossless
+    case dngLossy
+
+    var displayName: String {
+        switch self {
+        case .jpegXLLinear: return "JPEG XL (Linear RAW Decode)"
+        case .jpegXLCamera: return "JPEG XL (Camera RAW Decode)"
+        case .tiffLinear: return "TIFF (Linear RAW Decode)"
+        case .tiffCamera: return "TIFF (Camera RAW Decode)"
+        case .dngLossless: return "Lossless DNG"
+        case .dngLossy: return "Lossy DNG"
+        }
+    }
+
+    var decodeProfile: RAWDecodeProfile? {
+        switch self {
+        case .jpegXLLinear, .tiffLinear: return .linear
+        case .jpegXLCamera, .tiffCamera: return .camera
+        case .dngLossless, .dngLossy: return nil
+        }
+    }
+
+    var requiresAdobeDNGConverter: Bool {
+        switch self {
+        case .dngLossless, .dngLossy: return true
+        case .jpegXLLinear, .jpegXLCamera, .tiffLinear, .tiffCamera: return false
+        }
+    }
+
+    var batchTitle: String {
+        switch self {
+        case .jpegXLLinear: return "Archive RAW as JPEG XL (Linear RAW Decode)"
+        case .jpegXLCamera: return "Archive RAW as JPEG XL (Camera RAW Decode)"
+        case .tiffLinear: return "Archive RAW as TIFF (Linear RAW Decode)"
+        case .tiffCamera: return "Archive RAW as TIFF (Camera RAW Decode)"
+        case .dngLossless: return "Archive RAW as Lossless DNG"
+        case .dngLossy: return "Archive RAW as Lossy DNG"
+        }
+    }
+
+    /// C2PA action used when an archive retains a signed RAW as its parent ingredient.
+    /// These are non-editorial transformations: the live develop stack is not applied.
+    var c2paActionName: String {
+        switch self {
+        case .dngLossless:
+            return "c2pa.repackaged"
+        case .jpegXLLinear, .jpegXLCamera, .tiffLinear, .tiffCamera, .dngLossy:
+            return "c2pa.transcoded"
+        }
+    }
+
+    var c2paActionDescription: String {
+        "Archived as \(displayName) without applying develop edits"
+    }
+
+}
+
 /// Default output format for SDR images
 nonisolated enum ExportFormatSDR: String, CaseIterable, Identifiable, Sendable {
     case jpeg = "jpeg"

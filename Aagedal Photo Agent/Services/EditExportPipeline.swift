@@ -27,9 +27,13 @@ enum RenderKind: Sendable {
     case format
     /// "Save As" to a specific SDR format (`EditedImageRenderer.saveAs`).
     case saveAs(EditedImageRenderer.SaveAsFormat)
-    /// Dedicated RAW conversion to a 16-bit-per-channel JPEG XL. The decode profile is
-    /// scoped to this render and does not change the global RAW decoding preference.
+    /// Dedicated unedited RAW decodes. The decode profile is scoped to this archive,
+    /// and the current develop stack and global RAW decoding preference are ignored.
     case rawJXL16(RAWDecodeProfile)
+    case rawTIFF16(RAWDecodeProfile)
+    /// DNG conversion through the separately installed Adobe converter. The app's
+    /// current develop settings are not applied to the converted image data.
+    case rawDNG(AdobeDNGCompression, executableURL: URL)
     /// Fixed JPEG into a temp folder, used by the FTP publish path
     /// (`EditedImageRenderer.renderJPEG`).
     case jpeg
@@ -77,13 +81,29 @@ enum EditExportPipeline {
                            failureTracker: MetadataFailureTracker,
                            configuration: AdvancedExportConfiguration? = nil,
                            outputFilenameSuffix: String = "") async throws -> URL {
-        var bakedCameraRaw = cameraRaw
-        if case .rawJXL16 = kind {
-            // This conversion is always Rec. 2020 PQ HDR, independently of the image's
-            // current edit-mode toggle. Document that baked output state in XMP too.
-            var hdrSettings = bakedCameraRaw ?? CameraRawSettings()
-            hdrSettings.hdrEditMode = 1
-            bakedCameraRaw = hdrSettings
+        if case .rawDNG(let compression, let executableURL) = kind {
+            // A DNG is still a camera RAW, not a rendered output. Do not run the
+            // rendered-metadata copier or sidecar overlay; the converter preserves
+            // camera metadata and the DNG service carries the source XMP sidecar.
+            return try await Task.detached(priority: .userInitiated) {
+                try await AdobeDNGConverterService.convert(
+                    sourceURL: sourceURL,
+                    destinationFolder: outputFolder,
+                    compression: compression,
+                    executableURL: executableURL
+                )
+            }.value
+        }
+
+        let bakedCameraRaw: CameraRawSettings?
+        switch kind {
+        case .rawJXL16, .rawTIFF16:
+            // RAW archives intentionally ignore the live develop stack. The renderer
+            // performs only the selected decode, so do not document any Camera Raw
+            // settings as baked into the output metadata.
+            bakedCameraRaw = nil
+        case .format, .saveAs, .jpeg, .rawDNG:
+            bakedCameraRaw = cameraRaw
         }
         let metadataCameraRaw = bakedCameraRaw
         let isHDR = (metadataCameraRaw?.hdrEditMode == 1)
@@ -111,8 +131,15 @@ enum EditExportPipeline {
                     destinationFolder: outputFolder, metadataCopier: copier)
             case .rawJXL16(let decodeProfile):
                 return try await EditedImageRenderer.convertRAWTo16BitJXL(
-                    from: sourceURL, cameraRaw: cameraRaw, decodeProfile: decodeProfile,
+                    from: sourceURL, decodeProfile: decodeProfile,
                     destinationFolder: outputFolder, metadataCopier: copier)
+            case .rawTIFF16(let decodeProfile):
+                return try await EditedImageRenderer.convertRAWTo16BitTIFF(
+                    from: sourceURL, decodeProfile: decodeProfile,
+                    destinationFolder: outputFolder, metadataCopier: copier)
+            case .rawDNG:
+                // Handled before constructing the rendered metadata copier above.
+                preconditionFailure("RAW DNG archives must use the converter path")
             case .jpeg:
                 try await EditedImageRenderer.renderJPEG(
                     from: sourceURL, cameraRaw: cameraRaw,
@@ -129,6 +156,25 @@ enum EditExportPipeline {
         case .staleSidecarSkipped:
             await failureTracker.recordStaleSidecar(sourceURL.lastPathComponent)
         case .applied, .noPendingEdits:
+            break
+        }
+
+        switch kind {
+        case .rawJXL16, .rawTIFF16:
+            do {
+                try RAWArchiveService.copySidecarIfPresent(
+                    from: sourceURL,
+                    to: renderedURL
+                )
+            } catch {
+                // The pixels were written without edits, but the archive contract also
+                // carries the authoritative edit sidecar. Remove this newly created,
+                // incomplete rendered file and report the archive as failed. Do not
+                // remove a destination sidecar here: a concurrent writer may own it.
+                try? FileManager.default.removeItem(at: renderedURL)
+                throw error
+            }
+        case .format, .saveAs, .rawDNG, .jpeg:
             break
         }
         return renderedURL

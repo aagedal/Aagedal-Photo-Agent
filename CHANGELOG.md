@@ -16,6 +16,10 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Export and HDR
 
+- Replaced the standalone RAW-to-JPEG-XL command with an “Archive RAW as…” menu for unedited 16-bit JPEG XL or TIFF decodes using either Linear RAW or Camera RAW, plus lossless and lossy DNG conversion when the free Adobe DNG Converter is installed.
+- Added clear disabled-state guidance and an official Adobe download link when DNG archiving is unavailable. No RAW archive format bakes the live develop stack, and every format copies the matching XMP sidecar unchanged so edit information remains external.
+- Added independent RAW archive location settings: an `Archive` sub-folder beside each source, a separate archive root mirroring the main ingest folder structure, or a destination chosen for each batch. The selected import destination is now retained as the default source root for mirrored archives.
+- C2PA-protected RAW archives now warn before producing unsigned files when no signing identity is configured. With an identity in Settings → Signing, archives receive a new non-editorial signature and retain the signed RAW as their parent ingredient.
 - Added Advanced Export for reviewing a queue before export, with per-image HDR / SDR status, an encoded preview, output dimensions, estimated file size, and an export-settings summary.
 - Added separate SDR and HDR format, quality, and target-gamut controls, plus TIFF compression and same-folder, standard export-folder, or custom subfolder destinations.
 - Added long-edge resolution limits, quality settings down to 10%, source-to-output dimension and file-size comparisons, and a pointer-targeted 100% side-by-side reference and encoded-export loupe to Advanced Export.

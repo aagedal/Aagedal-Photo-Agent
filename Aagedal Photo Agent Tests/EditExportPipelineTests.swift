@@ -424,12 +424,42 @@ struct CustomSubfolderTests {
     }
 }
 
-@Suite("16-bit JPEG XL conversion helpers")
-struct RAWJXLConversionTests {
-    @Test("RAW conversion has a fixed Rec. 2020 PQ target")
+@Suite("RAW archive helpers")
+struct RAWArchiveTests {
+    @Test("rendered RAW archives have a fixed Rec. 2020 PQ target")
     func fixedHDRColorTarget() {
-        #expect(EditedImageRenderer.rawJXLConversionGamut == .rec2020)
-        #expect(EditedImageRenderer.rawJXLConversionColorSpace.name == CGColorSpace.itur_2100_PQ)
+        #expect(EditedImageRenderer.rawArchiveConversionGamut == .rec2020)
+        #expect(EditedImageRenderer.rawArchiveConversionColorSpace.name == CGColorSpace.itur_2100_PQ)
+    }
+
+    @Test("archive menu order and decode profiles are fixed")
+    func archiveOptions() {
+        #expect(RAWArchiveFormat.allCases == [
+            .jpegXLLinear,
+            .jpegXLCamera,
+            .tiffLinear,
+            .tiffCamera,
+            .dngLossless,
+            .dngLossy
+        ])
+        #expect(RAWArchiveFormat.jpegXLLinear.decodeProfile == .linear)
+        #expect(RAWArchiveFormat.jpegXLCamera.decodeProfile == .camera)
+        #expect(RAWArchiveFormat.tiffLinear.decodeProfile == .linear)
+        #expect(RAWArchiveFormat.tiffCamera.decodeProfile == .camera)
+        #expect(RAWArchiveFormat.dngLossless.decodeProfile == nil)
+        #expect(RAWArchiveFormat.dngLossy.decodeProfile == nil)
+        #expect(RAWArchiveFormat.dngLossless.requiresAdobeDNGConverter)
+        #expect(RAWArchiveFormat.dngLossy.requiresAdobeDNGConverter)
+        #expect(RAWArchiveFormat.jpegXLLinear.c2paActionName == "c2pa.transcoded")
+        #expect(RAWArchiveFormat.jpegXLCamera.c2paActionName == "c2pa.transcoded")
+        #expect(RAWArchiveFormat.tiffLinear.c2paActionName == "c2pa.transcoded")
+        #expect(RAWArchiveFormat.tiffCamera.c2paActionName == "c2pa.transcoded")
+        #expect(RAWArchiveFormat.dngLossless.c2paActionName == "c2pa.repackaged")
+        #expect(RAWArchiveFormat.dngLossy.c2paActionName == "c2pa.transcoded")
+        #expect(
+            RAWArchiveFormat.dngLossless.c2paActionDescription
+                .contains("without applying develop edits")
+        )
     }
 
     @Test("16-bit SDR conversion explicitly feeds libjxl rgb48le")
@@ -494,7 +524,7 @@ struct RAWJXLConversionTests {
             color: CIColor(red: 0.125, green: 0.5, blue: 0.875, alpha: 1)
         ).cropped(to: CGRect(x: 0, y: 0, width: 8, height: 8))
         let context = CIContext(options: [.cacheIntermediates: false])
-        let colorSpace = EditedImageRenderer.rawJXLConversionColorSpace
+        let colorSpace = EditedImageRenderer.rawArchiveConversionColorSpace
         let png = try #require(context.pngRepresentation(
             of: image,
             format: .RGBA16,
@@ -521,6 +551,152 @@ struct RAWJXLConversionTests {
         #expect(probe.stderr.contains("rgb48le"))
         #expect(probe.stderr.contains("bt2020"))
         #expect(probe.stderr.contains("smpte2084"))
+    }
+
+    @Test("DNG arguments select compression, destination, and output name")
+    func dngArguments() {
+        let source = URL(fileURLWithPath: "/Volumes/Card/DCIM/PHOTO.CR3")
+        let destination = URL(fileURLWithPath: "/Volumes/Archive/DNG/PHOTO 2.dng")
+
+        let lossless = AdobeDNGConverterService.conversionArguments(
+            sourceURL: source,
+            destinationURL: destination,
+            compression: .lossless
+        )
+        #expect(lossless == [
+            "-c",
+            "-d", "/Volumes/Archive/DNG",
+            "-o", "PHOTO 2.dng",
+            "/Volumes/Card/DCIM/PHOTO.CR3"
+        ])
+
+        let lossy = AdobeDNGConverterService.conversionArguments(
+            sourceURL: source,
+            destinationURL: destination,
+            compression: .lossy
+        )
+        #expect(lossy.first == "-lossy")
+    }
+
+    @Test("DNG executable resolves inside the Adobe application bundle")
+    func dngExecutableResolution() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apa-dng-app-\(UUID().uuidString)", isDirectory: true)
+        let applicationURL = directory.appendingPathComponent(
+            "Adobe DNG Converter.app",
+            isDirectory: true
+        )
+        let executable = applicationURL
+            .appendingPathComponent("Contents/MacOS/Adobe DNG Converter")
+        try FileManager.default.createDirectory(
+            at: executable.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data().write(to: executable)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: executable.path
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        #expect(
+            AdobeDNGConverterService.executableURL(in: applicationURL)
+                == executable
+        )
+    }
+
+    @Test("DNG destination protects both image and sidecar names")
+    func dngDestinationProtectsSidecar() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apa-dng-destination-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let source = directory.appendingPathComponent("photo.cr3")
+        try Data().write(to: directory.appendingPathComponent("photo.xmp"))
+        try Data().write(to: directory.appendingPathComponent("photo 2.dng"))
+
+        let destination = RAWArchiveService.uniqueDestinationURL(
+            for: source,
+            in: directory,
+            extension: "dng"
+        )
+        #expect(destination.lastPathComponent == "photo 3.dng")
+    }
+
+    @Test("work-folder mode uses an Archive sub-folder")
+    func workFolderArchiveDestination() throws {
+        let source = URL(fileURLWithPath: "/Volumes/Photos/Shoot/RAW/photo.cr3")
+        let destination = try RAWArchiveService.destinationFolder(
+            for: source,
+            mode: .workFolderArchive
+        )
+        #expect(destination.path == "/Volumes/Photos/Shoot/RAW/Archive")
+    }
+
+    @Test("separate archive root mirrors the ingest-relative structure")
+    func mirroredArchiveDestination() throws {
+        let source = URL(
+            fileURLWithPath: "/Volumes/Photos/2026/07/2026-07-21 – Morning/RAW/photo.cr3"
+        )
+        let destination = try RAWArchiveService.destinationFolder(
+            for: source,
+            mode: .mirroredArchiveRoot,
+            ingestRoot: URL(fileURLWithPath: "/Volumes/Photos", isDirectory: true),
+            archiveRoot: URL(fileURLWithPath: "/Volumes/Archive", isDirectory: true)
+        )
+        #expect(
+            destination.path
+                == "/Volumes/Archive/2026/07/2026-07-21 – Morning/RAW"
+        )
+    }
+
+    @Test("mirrored archive rejects sources outside the ingest root")
+    func mirroredArchiveRejectsOutsideSource() {
+        #expect(throws: RAWArchiveLocationError.self) {
+            try RAWArchiveService.destinationFolder(
+                for: URL(fileURLWithPath: "/Volumes/Other/photo.cr3"),
+                mode: .mirroredArchiveRoot,
+                ingestRoot: URL(fileURLWithPath: "/Volumes/Photos", isDirectory: true),
+                archiveRoot: URL(fileURLWithPath: "/Volumes/Archive", isDirectory: true)
+            )
+        }
+    }
+
+    @Test("manual archive mode uses the chosen folder")
+    func manualArchiveDestination() throws {
+        let selected = URL(fileURLWithPath: "/Volumes/Selected", isDirectory: true)
+        let destination = try RAWArchiveService.destinationFolder(
+            for: URL(fileURLWithPath: "/Volumes/Photos/photo.cr3"),
+            manualDestination: selected,
+            mode: .askEveryTime
+        )
+        #expect(destination == selected)
+    }
+
+    @Test("archive copies the source XMP packet unchanged")
+    func copiesArchiveSidecar() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apa-archive-xmp-\(UUID().uuidString)", isDirectory: true)
+        let archive = directory.appendingPathComponent("Archive", isDirectory: true)
+        try FileManager.default.createDirectory(at: archive, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let source = directory.appendingPathComponent("photo.cr3")
+        let sourceSidecar = directory.appendingPathComponent("photo.xmp")
+        let destination = archive.appendingPathComponent("photo.jxl")
+        let xmp = Data("<x:xmpmeta>unedited pixels, external edits</x:xmpmeta>".utf8)
+        try xmp.write(to: sourceSidecar)
+
+        try RAWArchiveService.copySidecarIfPresent(
+            from: source,
+            to: destination
+        )
+
+        let copied = try Data(
+            contentsOf: archive.appendingPathComponent("photo.xmp")
+        )
+        #expect(copied == xmp)
     }
 }
 

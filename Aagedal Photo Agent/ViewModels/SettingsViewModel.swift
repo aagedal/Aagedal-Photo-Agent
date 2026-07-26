@@ -408,6 +408,58 @@ final class SettingsViewModel {
         didSet { UserDefaults.standard.set(exportCustomSubfolderName, forKey: UserDefaultsKeys.exportCustomSubfolderName) }
     }
 
+    /// Where “Archive RAW as…” writes files. Independent of normal export settings.
+    var rawArchiveLocationMode: RAWArchiveLocationMode {
+        didSet {
+            UserDefaults.standard.set(
+                rawArchiveLocationMode.rawValue,
+                forKey: UserDefaultsKeys.rawArchiveLocationMode
+            )
+        }
+    }
+
+    private(set) var rawArchiveSourceRootPath: String = ""
+    private(set) var rawArchiveRootPath: String = ""
+
+    var rawArchiveUsesSourceRootOverride: Bool {
+        RAWArchiveService.usesSourceRootOverride
+    }
+
+    func setRAWArchiveSourceRootURL(_ url: URL) {
+        RAWArchiveService.saveBookmark(
+            for: url,
+            key: UserDefaultsKeys.rawArchiveSourceRootBookmark
+        )
+        rawArchiveSourceRootPath = url.path
+    }
+
+    func resetRAWArchiveSourceRoot() {
+        UserDefaults.standard.removeObject(
+            forKey: UserDefaultsKeys.rawArchiveSourceRootBookmark
+        )
+        rawArchiveSourceRootPath = RAWArchiveService.ingestRootURL.path
+    }
+
+    func setRAWArchiveRootURL(_ url: URL) {
+        RAWArchiveService.saveBookmark(
+            for: url,
+            key: UserDefaultsKeys.rawArchiveRootBookmark
+        )
+        rawArchiveRootPath = url.path
+    }
+
+    func clearRAWArchiveRoot() {
+        UserDefaults.standard.removeObject(
+            forKey: UserDefaultsKeys.rawArchiveRootBookmark
+        )
+        rawArchiveRootPath = ""
+    }
+
+    func refreshRAWArchivePaths() {
+        rawArchiveSourceRootPath = RAWArchiveService.ingestRootURL.path
+        rawArchiveRootPath = RAWArchiveService.archiveRootURL?.path ?? ""
+    }
+
     /// Minimum confidence required for auto-matching known people. Default: 0.60
     var knownPeopleMinConfidence: Double {
         didSet {
@@ -699,6 +751,15 @@ final class SettingsViewModel {
         self.exportLocationMode = ExportLocationMode(rawValue: storedLocationMode) ?? .formatSubfolder
 
         self.exportCustomSubfolderName = UserDefaults.standard.string(forKey: UserDefaultsKeys.exportCustomSubfolderName) ?? "Exports"
+
+        let rawArchiveMode = UserDefaults.standard.string(
+            forKey: UserDefaultsKeys.rawArchiveLocationMode
+        ) ?? RAWArchiveLocationMode.workFolderArchive.rawValue
+        self.rawArchiveLocationMode =
+            RAWArchiveLocationMode(rawValue: rawArchiveMode)
+            ?? .workFolderArchive
+        self.rawArchiveSourceRootPath = RAWArchiveService.ingestRootURL.path
+        self.rawArchiveRootPath = RAWArchiveService.archiveRootURL?.path ?? ""
 
         self.detectedEditors = Self.detectEditors()
 

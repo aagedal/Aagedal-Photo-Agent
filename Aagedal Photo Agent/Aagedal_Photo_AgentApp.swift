@@ -494,7 +494,7 @@ extension Notification.Name {
     static let renderAll = Notification.Name("renderAll")
     static let saveAsJPEG = Notification.Name("saveAsJPEG")
     static let saveAsPNG = Notification.Name("saveAsPNG")
-    static let convertRAWToJXL16 = Notification.Name("convertRAWToJXL16")
+    static let archiveRAW = Notification.Name("archiveRAW")
     static let renameSelected = Notification.Name("renameSelected")
     static let duplicateSelected = Notification.Name("duplicateSelected")
     static let resetAllEdits = Notification.Name("resetAllEdits")
