@@ -109,6 +109,16 @@ nonisolated enum EditZoomBehavior {
     }
 }
 
+/// Crop handles need breathing room around the image while the crop tool is open. Once the
+/// crop is confirmed, the result should use the entire preview pane like any other image.
+nonisolated enum EditCropPreviewFraming {
+    static let cropToolHandlePadding: CGFloat = 48
+
+    static func handlePadding(isCropToolActive: Bool) -> CGFloat {
+        isCropToolActive ? cropToolHandlePadding : 0
+    }
+}
+
 struct EditWorkspaceView: View {
     @Bindable var metadataViewModel: MetadataViewModel
     @Bindable var browserViewModel: BrowserViewModel
@@ -501,8 +511,9 @@ struct EditWorkspaceView: View {
 
     private func watermarkCropContentRect(in containerSize: CGSize, imageSize: CGSize) -> CGRect {
         let cropSize = watermarkCropImageSize(from: imageSize)
-        let availW = max(containerSize.width - appliedCropPreviewPadding * 2, 1)
-        let availH = max(containerSize.height - appliedCropPreviewPadding * 2, 1)
+        let handlePadding = EditCropPreviewFraming.handlePadding(isCropToolActive: false)
+        let availW = max(containerSize.width - handlePadding * 2, 1)
+        let availH = max(containerSize.height - handlePadding * 2, 1)
         let fitScale = min(availW / cropSize.width, availH / cropSize.height) * max(editZoomScale, 0.0001)
         let width = cropSize.width * fitScale
         let height = cropSize.height * fitScale
@@ -708,7 +719,10 @@ struct EditWorkspaceView: View {
                             imageSize: imageSize,
                             crop: displayCrop,
                             angleDegrees: displayCropAngle,
-                            zoom: zoom
+                            zoom: zoom,
+                            handlePadding: EditCropPreviewFraming.handlePadding(
+                                isCropToolActive: showCropControls
+                            )
                         )
                         // Lock image rect during crop interaction to prevent
                         // image rescaling while the overlay stays stable
@@ -2678,14 +2692,21 @@ struct EditWorkspaceView: View {
         return CGRect(x: x, y: y, width: width, height: height)
     }
 
-    /// Scales and positions the image so the crop region fills the view (with padding for handles).
+    /// Scales and positions the image so the crop region fills the view.
+    /// `handlePadding` is non-zero only while the crop controls are visible.
     /// The image may extend beyond the view bounds. The crop rectangle will be centered in the view.
-    private func cropFittedImageRect(in containerSize: CGSize, imageSize: CGSize, crop: NormalizedCropRegion, angleDegrees: Double, zoom: CGFloat = 1.0) -> CGRect {
+    private func cropFittedImageRect(
+        in containerSize: CGSize,
+        imageSize: CGSize,
+        crop: NormalizedCropRegion,
+        angleDegrees: Double,
+        zoom: CGFloat = 1.0,
+        handlePadding: CGFloat = 0
+    ) -> CGRect {
         guard containerSize.width > 0, containerSize.height > 0, imageSize.width > 0, imageSize.height > 0 else {
             return .zero
         }
 
-        let handlePadding: Double = 48
         let availW = max(containerSize.width - handlePadding * 2, 1)
         let availH = max(containerSize.height - handlePadding * 2, 1)
 
@@ -6333,8 +6354,6 @@ struct EditWorkspaceView: View {
 
     // MARK: - Edit Zoom / Pan
 
-    private let appliedCropPreviewPadding: CGFloat = 48
-
     private struct EditCropViewport {
         var origin: SIMD2<Float>
         var size: SIMD2<Float>
@@ -6411,8 +6430,9 @@ struct EditWorkspaceView: View {
         let centerX = crop.centerX
         let centerY = crop.centerY
 
-        let availW = max(Double(containerSize.width - appliedCropPreviewPadding * 2), 1)
-        let availH = max(Double(containerSize.height - appliedCropPreviewPadding * 2), 1)
+        let handlePadding = EditCropPreviewFraming.handlePadding(isCropToolActive: false)
+        let availW = max(Double(containerSize.width - handlePadding * 2), 1)
+        let availH = max(Double(containerSize.height - handlePadding * 2), 1)
         let fitScale = min(availW / max(actualW, 1), availH / max(actualH, 1)) * max(Double(editZoomScale), 0.0001)
         guard fitScale > 0 else {
             return EditCropViewport(origin: .zero, size: SIMD2<Float>(1, 1))
@@ -6468,7 +6488,7 @@ struct EditWorkspaceView: View {
                 angleDegrees: displayCropAngle,
                 zoomScale: editZoomScale,
                 offset: editOffset,
-                handlePadding: appliedCropPreviewPadding
+                handlePadding: EditCropPreviewFraming.handlePadding(isCropToolActive: false)
             )
             let viewport = editCropViewport(in: previewPaneFrame.size, imageSize: imageSize)
             metalCoordinator.viewportOrigin = viewport.origin
@@ -6759,7 +6779,8 @@ struct EditWorkspaceView: View {
                 imageSize: imgSize,
                 crop: displayCrop,
                 angleDegrees: displayCropAngle,
-                zoom: editZoomScale
+                zoom: editZoomScale,
+                handlePadding: EditCropPreviewFraming.handlePadding(isCropToolActive: false)
             )
             let cropRect = cropViewRect(crop: displayCrop, angleDegrees: displayCropAngle, imageRect: imageRect)
             scaledWidth = cropRect.width

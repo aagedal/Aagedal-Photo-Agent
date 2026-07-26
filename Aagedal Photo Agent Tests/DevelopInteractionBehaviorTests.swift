@@ -239,6 +239,12 @@ struct DevelopInteractionBehaviorTests {
         #expect(EditZoomBehavior.clampedScale(0.5) == 1)
     }
 
+    @Test("Crop handle padding is limited to the active crop tool")
+    func cropPreviewHandlePadding() {
+        #expect(EditCropPreviewFraming.handlePadding(isCropToolActive: true) == 48)
+        #expect(EditCropPreviewFraming.handlePadding(isCropToolActive: false) == 0)
+    }
+
     @Test("Resetting Global preserves local layers and framing")
     func globalResetPreservesOtherLayers() {
         let mask = MaskAdjustment(name: "Local", exposure: 1)

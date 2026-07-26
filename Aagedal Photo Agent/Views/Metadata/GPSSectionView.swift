@@ -1,5 +1,106 @@
 import SwiftUI
+@preconcurrency import CoreLocation
 @preconcurrency import MapKit
+
+nonisolated struct CurrentLocationCoordinate: Equatable, Sendable {
+    let latitude: Double
+    let longitude: Double
+}
+
+@Observable
+final class CurrentLocationProvider: NSObject, CLLocationManagerDelegate {
+    private let manager = CLLocationManager()
+
+    private(set) var coordinate: CurrentLocationCoordinate?
+    private(set) var isLocating = false
+    private(set) var errorMessage: String?
+
+    override init() {
+        super.init()
+        manager.delegate = self
+        manager.desiredAccuracy = kCLLocationAccuracyBest
+    }
+
+    func requestLocation() {
+        errorMessage = nil
+        coordinate = nil
+
+        guard CLLocationManager.locationServicesEnabled() else {
+            errorMessage = "Location Services are turned off."
+            return
+        }
+
+        isLocating = true
+        switch manager.authorizationStatus {
+        case .notDetermined:
+            manager.requestWhenInUseAuthorization()
+        case .authorizedAlways, .authorizedWhenInUse:
+            manager.requestLocation()
+        case .denied:
+            finish(with: "Location access is denied. Allow it in System Settings → Privacy & Security → Location Services.")
+        case .restricted:
+            finish(with: "Location access is restricted on this Mac.")
+        @unknown default:
+            finish(with: "The current location is unavailable.")
+        }
+    }
+
+    nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        let status = manager.authorizationStatus
+        Task { @MainActor in
+            guard self.isLocating else { return }
+            switch status {
+            case .authorizedAlways, .authorizedWhenInUse:
+                self.manager.requestLocation()
+            case .denied:
+                self.finish(with: "Location access is denied. Allow it in System Settings → Privacy & Security → Location Services.")
+            case .restricted:
+                self.finish(with: "Location access is restricted on this Mac.")
+            case .notDetermined:
+                break
+            @unknown default:
+                self.finish(with: "The current location is unavailable.")
+            }
+        }
+    }
+
+    nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        guard let location = locations.last,
+              location.horizontalAccuracy >= 0 else {
+            Task { @MainActor in
+                self.finish(with: "The current location could not be determined.")
+            }
+            return
+        }
+
+        let coordinate = CurrentLocationCoordinate(
+            latitude: location.coordinate.latitude,
+            longitude: location.coordinate.longitude
+        )
+        Task { @MainActor in
+            self.coordinate = coordinate
+            self.isLocating = false
+            self.errorMessage = nil
+        }
+    }
+
+    nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        let message: String
+        if let locationError = error as? CLError, locationError.code == .denied {
+            message = "Location access is denied. Allow it in System Settings → Privacy & Security → Location Services."
+        } else {
+            message = "Could not get the current location: \(error.localizedDescription)"
+        }
+        Task { @MainActor in
+            self.finish(with: message)
+        }
+    }
+
+    private func finish(with message: String) {
+        isLocating = false
+        errorMessage = message
+    }
+}
 
 struct GPSSectionView: View {
     @Binding var latitude: Double?
@@ -19,6 +120,7 @@ struct GPSSectionView: View {
     @State private var parseError: String?
     @State private var displayFormat: CoordinateFormat = .decimalDegrees
     @State private var mapPosition: MapCameraPosition = .automatic
+    @State private var currentLocationProvider = CurrentLocationProvider()
     @AppStorage("gpsLocationCollapsed") private var isCollapsed = false
 
     // Search state
@@ -95,6 +197,12 @@ struct GPSSectionView: View {
                         .foregroundStyle(.red)
                 }
 
+                if let error = currentLocationProvider.errorMessage {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+
                 if let error = geocodingError {
                     Text(error)
                         .font(.caption)
@@ -104,6 +212,12 @@ struct GPSSectionView: View {
         }
         .onChange(of: latitude) { updateMapPosition() }
         .onChange(of: longitude) { updateMapPosition() }
+        .onChange(of: currentLocationProvider.coordinate) { _, newCoordinate in
+            guard let newCoordinate else { return }
+            latitude = newCoordinate.latitude
+            longitude = newCoordinate.longitude
+            onChanged()
+        }
         .onAppear { updateMapPosition() }
     }
 
@@ -192,6 +306,27 @@ struct GPSSectionView: View {
                                     .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
                             }
                             .buttonStyle(.plain)
+                            .disabled(currentLocationProvider.isLocating)
+
+                            Button {
+                                currentLocationProvider.requestLocation()
+                            } label: {
+                                if currentLocationProvider.isLocating {
+                                    ProgressView()
+                                        .controlSize(.mini)
+                                        .frame(width: 58)
+                                } else {
+                                    Label("Current", systemImage: "location.fill")
+                                        .font(.caption)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 4)
+                                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(currentLocationProvider.isLocating)
+                            .help("Use this Mac's current location")
+
                             Spacer()
                         }
                         .padding(8)

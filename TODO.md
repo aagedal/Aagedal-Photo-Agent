@@ -40,8 +40,11 @@
   proportion consistently from rectangle through ellipse. (2026-07-26)
 - [x] Adjusting the corner radius of an ellipse mask now updates the mask outline
   continuously while the slider is dragged. (2026-07-26)
-- [ ] In the GPS/map area, make a button to quickly select the users current location as the image location.
-- [ ] When a crop is applied, even when the crop UI isn't active the image is zoomed out as to leave space for crop adjustments. This should only be the case when the crop tool is active.
+- [x] In the GPS/map area, add a button to use the Mac's current location as the
+  image location, including permission and error handling. (2026-07-26)
+- [x] When a crop is applied, only leave space around the image for adjustment handles
+  while the crop tool is active. Confirmed crops now use the full Develop preview pane.
+  (2026-07-26)
 - [ ] Add film emulation creative effect sliders:
   - [ ] Film grain
   - [ ] Halation
