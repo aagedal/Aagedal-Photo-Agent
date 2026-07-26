@@ -190,6 +190,15 @@ struct SettingsView: View {
         )
     }
 
+    private func developSliderGroupVisibilityBinding(
+        _ group: DevelopSliderGroup
+    ) -> Binding<Bool> {
+        Binding(
+            get: { settingsViewModel.isDevelopSliderGroupVisible(group) },
+            set: { settingsViewModel.setDevelopSliderGroup(group, visible: $0) }
+        )
+    }
+
     private func iptcMetadataFieldVisibilityBinding(
         _ field: IPTCMetadata.FieldKey
     ) -> Binding<Bool> {
@@ -287,7 +296,7 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
 
                 ForEach(DevelopSliderGroup.allCases) { group in
-                    DisclosureGroup(group.title) {
+                    DisclosureGroup {
                         ForEach(DevelopSlider.allCases.filter { $0.group == group }) { slider in
                             Toggle(
                                 slider.displayName,
@@ -295,6 +304,13 @@ struct SettingsView: View {
                             )
                             .toggleStyle(.checkbox)
                         }
+                    } label: {
+                        Toggle(
+                            group.title,
+                            isOn: developSliderGroupVisibilityBinding(group)
+                        )
+                        .toggleStyle(.checkbox)
+                        .help("Show or hide every optional control in \(group.title)")
                     }
                 }
 

@@ -3404,20 +3404,22 @@ struct EditWorkspaceView: View {
             toneSliderBinding(\.blacks2012).wrappedValue = 0
         })
 
-        // ── Detail ──
-        sectionHeader("Detail", isMuted: $isMutingDetail, hasAdjustments: hasDetailAdjustments, onReset: resetDetailAdjustments)
-            .padding(.top, 2)
-        Divider()
+        if settingsViewModel.isDevelopSliderGroupVisible(.detail) {
+            // ── Detail ──
+            sectionHeader("Detail", isMuted: $isMutingDetail, hasAdjustments: hasDetailAdjustments, onReset: resetDetailAdjustments)
+                .padding(.top, 2)
+            Divider()
 
-        sliderRow("Sharpness", value: toneSliderBinding(\.sharpness), range: 0...150, step: 1, formatter: signedIntString, visibility: .sharpness, settingsMutator: { $0.sharpness = Int($1.rounded()) }, onReset: {
-            toneSliderBinding(\.sharpness).wrappedValue = 0
-        })
-        sliderRow("Clarity", value: toneSliderBinding(\.clarity2012), range: -100...100, step: 1, formatter: signedIntString, visibility: .clarity, settingsMutator: { $0.clarity2012 = Int($1.rounded()) }, onReset: {
-            toneSliderBinding(\.clarity2012).wrappedValue = 0
-        })
-        sliderRow("Dehaze", value: toneSliderBinding(\.dehaze), range: -100...100, step: 1, formatter: signedIntString, visibility: .dehaze, settingsMutator: { $0.dehaze = Int($1.rounded()) }, onReset: {
-            toneSliderBinding(\.dehaze).wrappedValue = 0
-        })
+            sliderRow("Sharpness", value: toneSliderBinding(\.sharpness), range: 0...150, step: 1, formatter: signedIntString, visibility: .sharpness, settingsMutator: { $0.sharpness = Int($1.rounded()) }, onReset: {
+                toneSliderBinding(\.sharpness).wrappedValue = 0
+            })
+            sliderRow("Clarity", value: toneSliderBinding(\.clarity2012), range: -100...100, step: 1, formatter: signedIntString, visibility: .clarity, settingsMutator: { $0.clarity2012 = Int($1.rounded()) }, onReset: {
+                toneSliderBinding(\.clarity2012).wrappedValue = 0
+            })
+            sliderRow("Dehaze", value: toneSliderBinding(\.dehaze), range: -100...100, step: 1, formatter: signedIntString, visibility: .dehaze, settingsMutator: { $0.dehaze = Int($1.rounded()) }, onReset: {
+                toneSliderBinding(\.dehaze).wrappedValue = 0
+            })
+        }
 
         // ── Tone Curve ──
         CurveEditorView(
@@ -3466,121 +3468,125 @@ struct EditWorkspaceView: View {
             }
         )
 
-        // ── Film Emulation ──
-        sectionHeader(
-            "Film Emulation",
-            isMuted: $isMutingFilm,
-            hasAdjustments: hasFilmAdjustments,
-            onReset: resetFilmAdjustments
-        )
-        .padding(.top, 2)
-        Divider()
+        if settingsViewModel.isDevelopSliderGroupVisible(.film) {
+            // ── Film Emulation ──
+            sectionHeader(
+                "Film Emulation",
+                isMuted: $isMutingFilm,
+                hasAdjustments: hasFilmAdjustments,
+                onReset: resetFilmAdjustments
+            )
+            .padding(.top, 2)
+            Divider()
 
-        sliderRow(
-            "Film Grain",
-            value: filmSliderBinding(\.grain),
-            range: 0...100,
-            step: 1,
-            formatter: { "\(Int($0.rounded()))" },
-            visibility: .filmGrain,
-            settingsMutator: { setFilmValue(&$0, keyPath: \.grain, value: $1) },
-            onReset: { filmSliderBinding(\.grain).wrappedValue = 0 }
-        )
-        sliderRow(
-            "Halation",
-            value: filmSliderBinding(\.halation),
-            range: 0...100,
-            step: 1,
-            formatter: { "\(Int($0.rounded()))" },
-            visibility: .halation,
-            settingsMutator: { setFilmValue(&$0, keyPath: \.halation, value: $1) },
-            onReset: { filmSliderBinding(\.halation).wrappedValue = 0 }
-        )
-        sliderRow(
-            "Bloom",
-            value: filmSliderBinding(\.bloom),
-            range: 0...100,
-            step: 1,
-            formatter: { "\(Int($0.rounded()))" },
-            visibility: .bloom,
-            settingsMutator: { setFilmValue(&$0, keyPath: \.bloom, value: $1) },
-            onReset: { filmSliderBinding(\.bloom).wrappedValue = 0 }
-        )
-        sliderRow(
-            "Vignette",
-            value: filmSliderBinding(\.vignette),
-            range: 0...100,
-            step: 1,
-            formatter: { "\(Int($0.rounded()))" },
-            visibility: .vignette,
-            settingsMutator: { setFilmValue(&$0, keyPath: \.vignette, value: $1) },
-            onReset: { filmSliderBinding(\.vignette).wrappedValue = 0 }
-        )
-        sliderRow(
-            "Edge Blur",
-            value: filmSliderBinding(\.edgeBlur),
-            range: 0...100,
-            step: 1,
-            formatter: { "\(Int($0.rounded()))" },
-            visibility: .edgeBlur,
-            settingsMutator: { setFilmValue(&$0, keyPath: \.edgeBlur, value: $1) },
-            onReset: { filmSliderBinding(\.edgeBlur).wrappedValue = 0 }
-        )
-
-        // ── Anonymizer ──
-        HStack(spacing: 6) {
-            Text("Anonymizer")
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(.secondary)
-                .onTapGesture(count: 2) {
-                    if hasAnonymizerAdjustments { resetAnonymizerAdjustments() }
-                }
-            Toggle("Enable anonymizer", isOn: anonymizerEnabledBinding)
-                .labelsHidden()
-                .controlSize(.mini)
-                .help("Enable anonymizer at strength 30")
-            Spacer()
-            Button {
-                resetAnonymizerAdjustments()
-            } label: {
-                Image(systemName: "arrow.counterclockwise")
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .disabled(!hasAnonymizerAdjustments)
-            .help("Reset anonymizer")
+            sliderRow(
+                "Film Grain",
+                value: filmSliderBinding(\.grain),
+                range: 0...100,
+                step: 1,
+                formatter: { "\(Int($0.rounded()))" },
+                visibility: .filmGrain,
+                settingsMutator: { setFilmValue(&$0, keyPath: \.grain, value: $1) },
+                onReset: { filmSliderBinding(\.grain).wrappedValue = 0 }
+            )
+            sliderRow(
+                "Halation",
+                value: filmSliderBinding(\.halation),
+                range: 0...100,
+                step: 1,
+                formatter: { "\(Int($0.rounded()))" },
+                visibility: .halation,
+                settingsMutator: { setFilmValue(&$0, keyPath: \.halation, value: $1) },
+                onReset: { filmSliderBinding(\.halation).wrappedValue = 0 }
+            )
+            sliderRow(
+                "Bloom",
+                value: filmSliderBinding(\.bloom),
+                range: 0...100,
+                step: 1,
+                formatter: { "\(Int($0.rounded()))" },
+                visibility: .bloom,
+                settingsMutator: { setFilmValue(&$0, keyPath: \.bloom, value: $1) },
+                onReset: { filmSliderBinding(\.bloom).wrappedValue = 0 }
+            )
+            sliderRow(
+                "Vignette",
+                value: filmSliderBinding(\.vignette),
+                range: 0...100,
+                step: 1,
+                formatter: { "\(Int($0.rounded()))" },
+                visibility: .vignette,
+                settingsMutator: { setFilmValue(&$0, keyPath: \.vignette, value: $1) },
+                onReset: { filmSliderBinding(\.vignette).wrappedValue = 0 }
+            )
+            sliderRow(
+                "Edge Blur",
+                value: filmSliderBinding(\.edgeBlur),
+                range: 0...100,
+                step: 1,
+                formatter: { "\(Int($0.rounded()))" },
+                visibility: .edgeBlur,
+                settingsMutator: { setFilmValue(&$0, keyPath: \.edgeBlur, value: $1) },
+                onReset: { filmSliderBinding(\.edgeBlur).wrappedValue = 0 }
+            )
         }
-        .padding(.top, 2)
-        Divider()
 
-        sliderRow(
-            "Anonymizer",
-            value: anonymizerAmountBinding,
-            range: 0...100,
-            step: 1,
-            formatter: { "\(Int($0.rounded()))" },
-            visibility: .anonymizer,
-            settingsMutator: { settings, value in
-                let clamped = min(max(value.rounded(), 0), 100)
-                if clamped <= 0 {
-                    settings.anonymizer?.amount = nil
-                    if settings.anonymizer?.isEmpty == true { settings.anonymizer = nil }
-                } else {
-                    if settings.anonymizer == nil { settings.anonymizer = AnonymizerSettings() }
-                    settings.anonymizer?.amount = clamped
+        if settingsViewModel.isDevelopSliderGroupVisible(.privacy) {
+            // ── Anonymizer ──
+            HStack(spacing: 6) {
+                Text("Anonymizer")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .onTapGesture(count: 2) {
+                        if hasAnonymizerAdjustments { resetAnonymizerAdjustments() }
+                    }
+                Toggle("Enable anonymizer", isOn: anonymizerEnabledBinding)
+                    .labelsHidden()
+                    .controlSize(.mini)
+                    .help("Enable anonymizer at strength 30")
+                Spacer()
+                Button {
+                    resetAnonymizerAdjustments()
+                } label: {
+                    Image(systemName: "arrow.counterclockwise")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
                 }
-            },
-            onReset: {
-                anonymizerAmountBinding.wrappedValue = 0
+                .buttonStyle(.plain)
+                .disabled(!hasAnonymizerAdjustments)
+                .help("Reset anonymizer")
             }
-        )
-        .disabled(!anonymizerEnabledBinding.wrappedValue || anonymizerBlackOutBinding.wrappedValue)
+            .padding(.top, 2)
+            Divider()
 
-        Toggle("Black out", isOn: anonymizerBlackOutBinding)
-            .toggleStyle(.checkbox)
-            .disabled(!anonymizerEnabledBinding.wrappedValue)
-            .help("Fully redact this region instead of the mosaic effect")
+            sliderRow(
+                "Anonymizer",
+                value: anonymizerAmountBinding,
+                range: 0...100,
+                step: 1,
+                formatter: { "\(Int($0.rounded()))" },
+                visibility: .anonymizer,
+                settingsMutator: { settings, value in
+                    let clamped = min(max(value.rounded(), 0), 100)
+                    if clamped <= 0 {
+                        settings.anonymizer?.amount = nil
+                        if settings.anonymizer?.isEmpty == true { settings.anonymizer = nil }
+                    } else {
+                        if settings.anonymizer == nil { settings.anonymizer = AnonymizerSettings() }
+                        settings.anonymizer?.amount = clamped
+                    }
+                },
+                onReset: {
+                    anonymizerAmountBinding.wrappedValue = 0
+                }
+            )
+            .disabled(!anonymizerEnabledBinding.wrappedValue || anonymizerBlackOutBinding.wrappedValue)
+
+            Toggle("Black out", isOn: anonymizerBlackOutBinding)
+                .toggleStyle(.checkbox)
+                .disabled(!anonymizerEnabledBinding.wrappedValue)
+                .help("Fully redact this region instead of the mosaic effect")
+        }
     }
 
     // MARK: - Section Headers
@@ -4901,54 +4907,56 @@ struct EditWorkspaceView: View {
                     maskIntBinding(idx, \.vibrance).wrappedValue = 0
                 }
             )
-            // ── Anonymizer ──
-            HStack(spacing: 6) {
-                Text("Anonymizer")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.secondary)
-                Toggle("Enable anonymizer", isOn: maskAnonymizerEnabledBinding(idx))
-                    .labelsHidden()
-                    .controlSize(.mini)
-                    .help("Enable anonymizer at strength 30")
-                Spacer()
-            }
-            .padding(.top, 2)
-            Divider()
-
-            sliderRow(
-                "Anonymizer",
-                value: maskAnonymizerAmountBinding(idx),
-                range: 0...100,
-                step: 1,
-                formatter: { "\(Int($0.rounded()))" },
-                visibility: .anonymizer,
-                settingsMutator: { settings, value in
-                    let clamped = min(max(value.rounded(), 0), 100)
-                    if clamped <= 0 {
-                        settings.localAdjustments?[idx].anonymizer?.amount = nil
-                        if settings.localAdjustments?[idx].anonymizer?.isEmpty == true {
-                            settings.localAdjustments?[idx].anonymizer = nil
-                        }
-                    } else {
-                        if settings.localAdjustments?[idx].anonymizer == nil {
-                            settings.localAdjustments?[idx].anonymizer = AnonymizerSettings()
-                        }
-                        settings.localAdjustments?[idx].anonymizer?.amount = clamped
-                    }
-                },
-                onReset: {
-                    maskAnonymizerAmountBinding(idx).wrappedValue = 0
+            if settingsViewModel.isDevelopSliderGroupVisible(.privacy) {
+                // ── Anonymizer ──
+                HStack(spacing: 6) {
+                    Text("Anonymizer")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    Toggle("Enable anonymizer", isOn: maskAnonymizerEnabledBinding(idx))
+                        .labelsHidden()
+                        .controlSize(.mini)
+                        .help("Enable anonymizer at strength 30")
+                    Spacer()
                 }
-            )
-            .disabled(
-                !maskAnonymizerEnabledBinding(idx).wrappedValue
-                    || maskAnonymizerBlackOutBinding(idx).wrappedValue
-            )
+                .padding(.top, 2)
+                Divider()
 
-            Toggle("Black out", isOn: maskAnonymizerBlackOutBinding(idx))
-                .toggleStyle(.checkbox)
-                .disabled(!maskAnonymizerEnabledBinding(idx).wrappedValue)
-                .help("Fully redact this mask instead of the mosaic effect")
+                sliderRow(
+                    "Anonymizer",
+                    value: maskAnonymizerAmountBinding(idx),
+                    range: 0...100,
+                    step: 1,
+                    formatter: { "\(Int($0.rounded()))" },
+                    visibility: .anonymizer,
+                    settingsMutator: { settings, value in
+                        let clamped = min(max(value.rounded(), 0), 100)
+                        if clamped <= 0 {
+                            settings.localAdjustments?[idx].anonymizer?.amount = nil
+                            if settings.localAdjustments?[idx].anonymizer?.isEmpty == true {
+                                settings.localAdjustments?[idx].anonymizer = nil
+                            }
+                        } else {
+                            if settings.localAdjustments?[idx].anonymizer == nil {
+                                settings.localAdjustments?[idx].anonymizer = AnonymizerSettings()
+                            }
+                            settings.localAdjustments?[idx].anonymizer?.amount = clamped
+                        }
+                    },
+                    onReset: {
+                        maskAnonymizerAmountBinding(idx).wrappedValue = 0
+                    }
+                )
+                .disabled(
+                    !maskAnonymizerEnabledBinding(idx).wrappedValue
+                        || maskAnonymizerBlackOutBinding(idx).wrappedValue
+                )
+
+                Toggle("Black out", isOn: maskAnonymizerBlackOutBinding(idx))
+                    .toggleStyle(.checkbox)
+                    .disabled(!maskAnonymizerEnabledBinding(idx).wrappedValue)
+                    .help("Fully redact this mask instead of the mosaic effect")
+            }
         }
     }
 

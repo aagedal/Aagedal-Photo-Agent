@@ -214,9 +214,28 @@ struct DevelopInteractionBehaviorTests {
     @Test("Every optional Develop slider belongs to one settings group")
     func developSliderGroupsCoverInventory() {
         let grouped = Set(DevelopSliderGroup.allCases.flatMap { group in
-            DevelopSlider.allCases.filter { $0.group == group }
+            group.sliders
         })
         #expect(grouped == Set(DevelopSlider.allCases))
+    }
+
+    @Test("Develop slider groups hide and restore all of their controls")
+    func developSliderGroupVisibilityTogglesWholeSection() {
+        var hidden: Set<DevelopSlider> = [.contrast, .filmGrain]
+
+        DevelopSliderGroup.detail.setVisible(false, hiddenSliders: &hidden)
+
+        #expect(!DevelopSliderGroup.detail.isVisible(hiddenSliders: hidden))
+        #expect(DevelopSliderGroup.detail.sliders.allSatisfy(hidden.contains))
+        #expect(hidden.contains(.contrast))
+        #expect(hidden.contains(.filmGrain))
+
+        DevelopSliderGroup.detail.setVisible(true, hiddenSliders: &hidden)
+
+        #expect(DevelopSliderGroup.detail.isVisible(hiddenSliders: hidden))
+        #expect(DevelopSliderGroup.detail.sliders.allSatisfy { !hidden.contains($0) })
+        #expect(hidden.contains(.contrast))
+        #expect(hidden.contains(.filmGrain))
     }
 
     private struct TrashStub: ImageTrashHandling {

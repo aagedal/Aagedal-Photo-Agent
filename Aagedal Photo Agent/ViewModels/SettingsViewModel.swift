@@ -163,6 +163,22 @@ nonisolated enum DevelopSliderGroup: String, CaseIterable, Identifiable, Sendabl
         case .privacy: return "Privacy"
         }
     }
+
+    var sliders: [DevelopSlider] {
+        DevelopSlider.allCases.filter { $0.group == self }
+    }
+
+    func isVisible(hiddenSliders: Set<DevelopSlider>) -> Bool {
+        sliders.contains { !hiddenSliders.contains($0) }
+    }
+
+    func setVisible(_ visible: Bool, hiddenSliders: inout Set<DevelopSlider>) {
+        if visible {
+            hiddenSliders.subtract(sliders)
+        } else {
+            hiddenSliders.formUnion(sliders)
+        }
+    }
 }
 
 /// Optional Develop controls that users may hide. Exposure, white balance, and Crop are
@@ -298,6 +314,14 @@ final class SettingsViewModel {
         } else {
             hiddenDevelopSliders.insert(slider)
         }
+    }
+
+    func isDevelopSliderGroupVisible(_ group: DevelopSliderGroup) -> Bool {
+        group.isVisible(hiddenSliders: hiddenDevelopSliders)
+    }
+
+    func setDevelopSliderGroup(_ group: DevelopSliderGroup, visible: Bool) {
+        group.setVisible(visible, hiddenSliders: &hiddenDevelopSliders)
     }
 
     var defaultExternalEditor: String {

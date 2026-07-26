@@ -63,7 +63,9 @@
   Keywords, and Copyright always remain available; optional fields default to visible,
   persist across launches, and participate in portable preference sync. Hiding a field
   does not remove its stored metadata. (2026-07-26)
-- [ ] Hiding all sliders within a section doesn't remove the section header. Add a toggle to hide the entire section in one go.
+- [x] Hiding all sliders within a section now removes its otherwise-empty header.
+  Each Develop slider group also has a section-wide visibility toggle while protected
+  core controls remain available. (2026-07-26)
 - [ ] The 
 - [ ] Add support for more IPTC metadata fields.
 - [ ] Improve AI-masks to support Face, not just person.
