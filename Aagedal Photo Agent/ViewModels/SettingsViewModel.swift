@@ -187,11 +187,13 @@ nonisolated enum DevelopSlider: String, CaseIterable, Identifiable, Sendable {
     case saturation
     case vibrance
     case density
+    case hsl
     case contrast
     case highlights
     case shadows
     case whites
     case blacks
+    case toneCurve
     case sharpness
     case clarity
     case dehaze
@@ -209,11 +211,13 @@ nonisolated enum DevelopSlider: String, CaseIterable, Identifiable, Sendable {
         case .saturation: return "Saturation"
         case .vibrance: return "Vibrance"
         case .density: return "Density"
+        case .hsl: return "Hue / Saturation / Density"
         case .contrast: return "Contrast"
         case .highlights: return "Highlights"
         case .shadows: return "Shadows"
         case .whites: return "Whites"
         case .blacks: return "Blacks"
+        case .toneCurve: return "Tone Curve"
         case .sharpness: return "Sharpness"
         case .clarity: return "Clarity"
         case .dehaze: return "Dehaze"
@@ -228,8 +232,8 @@ nonisolated enum DevelopSlider: String, CaseIterable, Identifiable, Sendable {
 
     var group: DevelopSliderGroup {
         switch self {
-        case .saturation, .vibrance, .density: return .color
-        case .contrast, .highlights, .shadows, .whites, .blacks: return .tone
+        case .saturation, .vibrance, .density, .hsl: return .color
+        case .contrast, .highlights, .shadows, .whites, .blacks, .toneCurve: return .tone
         case .sharpness, .clarity, .dehaze: return .detail
         case .filmGrain, .halation, .bloom, .vignette, .edgeBlur: return .film
         case .anonymizer: return .privacy

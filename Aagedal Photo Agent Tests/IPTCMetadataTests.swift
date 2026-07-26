@@ -1683,6 +1683,42 @@ struct ColorTransformLayerTests {
 
 @Suite("Photo Agent AI mask extension")
 struct AIMaskExtensionTests {
+    @Test("Face is a distinct persisted AI-mask target")
+    func faceTargetRoundTrips() throws {
+        let encoded = try JSONEncoder().encode(AIMaskTarget.face)
+        #expect(try JSONDecoder().decode(AIMaskTarget.self, from: encoded) == .face)
+        #expect(AIMaskTarget.face.title == "Face")
+
+        let png = try #require(grayscalePNG([255], width: 1, height: 1))
+        let mask = MaskAdjustment(
+            name: "Face",
+            aiMask: AIMaskGeometry(width: 1, height: 1, pngData: png, target: .face)
+        )
+        let correction = try #require(encodeMaskGroupBasedCorrections([mask]).first)
+        #expect(correction.appPrivateFields.contains {
+            $0.name == "AIMaskTarget" && $0.value == "face"
+        })
+    }
+
+    @Test("Face matte uses top-left raster rows and a soft oval")
+    func faceMatteShapeAndCoordinates() {
+        // Vision box occupies the image's upper-left quadrant (lower-left Vision y = 0.5).
+        let width = 100
+        let height = 100
+        let bytes = AIMaskGenerator.renderFaceMaskBytes(
+            boundingBox: CGRect(x: 0, y: 0.5, width: 0.5, height: 0.5),
+            width: width,
+            height: height
+        )
+        func at(_ x: Int, _ y: Int) -> UInt8 { bytes[y * width + x] }
+
+        #expect(bytes.count == width * height)
+        #expect(at(25, 23) > 245) // face center in the top-left
+        #expect(at(25, 77) == 0)  // vertically opposite point remains background
+        #expect(at(0, 23) > 0 && at(0, 23) < 255) // feathered oval boundary
+        #expect(at(75, 23) == 0)
+    }
+
     @Test("AI masks encode a custom node without an ACR ellipse fallback")
     func encodesWithoutACRFallback() throws {
         let png = try #require(grayscalePNG([255, 0, 255, 0], width: 2, height: 2))

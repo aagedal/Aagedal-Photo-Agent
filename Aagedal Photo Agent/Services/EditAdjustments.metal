@@ -807,6 +807,43 @@ static half3 sampleAnonymized(texture2d<half, access::sample> source,
     return source.sample(mipSampler, sampleUV, level(mipLevel)).rgb;
 }
 
+/// A small, explicitly sampled blur used by the optical edge-softness effect. Sampling a very
+/// coarse mip level directly made strong settings reveal square mip texels, especially on
+/// previews. These concentric taps keep the blur continuous while a modest mip level handles the
+/// fine detail inside each sample footprint.
+static float3 sampleFilmEdgeBlur(
+    texture2d<half, access::sample> source,
+    float2 uv,
+    float2 sourceSize,
+    float strength
+) {
+    constexpr sampler blurSampler(filter::linear, mip_filter::linear, address::clamp_to_edge);
+    float minimumDimension = max(min(sourceSize.x, sourceSize.y), 1.0);
+    float radiusPixels = mix(1.5, minimumDimension * 0.022, strength * strength);
+    float2 radius = radiusPixels / max(sourceSize, float2(1.0));
+    float maxLevel = float(source.get_num_mip_levels() - 1);
+    float lod = clamp(mix(0.5, 2.5, strength), 0.0, maxLevel);
+
+    float3 result = float3(source.sample(blurSampler, uv, level(lod)).rgb) * 0.16;
+    float2 inner = radius * 0.45;
+    result += float3(source.sample(blurSampler, uv + float2( inner.x, 0.0), level(lod)).rgb) * 0.09;
+    result += float3(source.sample(blurSampler, uv + float2(-inner.x, 0.0), level(lod)).rgb) * 0.09;
+    result += float3(source.sample(blurSampler, uv + float2(0.0,  inner.y), level(lod)).rgb) * 0.09;
+    result += float3(source.sample(blurSampler, uv + float2(0.0, -inner.y), level(lod)).rgb) * 0.09;
+
+    float2 diagonal = radius * 0.55;
+    result += float3(source.sample(blurSampler, uv + float2( diagonal.x,  diagonal.y), level(lod)).rgb) * 0.07;
+    result += float3(source.sample(blurSampler, uv + float2(-diagonal.x,  diagonal.y), level(lod)).rgb) * 0.07;
+    result += float3(source.sample(blurSampler, uv + float2( diagonal.x, -diagonal.y), level(lod)).rgb) * 0.07;
+    result += float3(source.sample(blurSampler, uv + float2(-diagonal.x, -diagonal.y), level(lod)).rgb) * 0.07;
+
+    result += float3(source.sample(blurSampler, uv + float2( radius.x, 0.0), level(lod)).rgb) * 0.05;
+    result += float3(source.sample(blurSampler, uv + float2(-radius.x, 0.0), level(lod)).rgb) * 0.05;
+    result += float3(source.sample(blurSampler, uv + float2(0.0,  radius.y), level(lod)).rgb) * 0.05;
+    result += float3(source.sample(blurSampler, uv + float2(0.0, -radius.y), level(lod)).rgb) * 0.05;
+    return result;
+}
+
 /// Film-emulation finishing pass. Spatial effects sample the mipmapped texture containing
 /// the complete upstream layer composite; the render-plan compiler isolates Global whenever
 /// Halation, Bloom, or Edge Blur is active. Grain and vignette remain pointwise.
@@ -822,10 +859,11 @@ static half3 applyFilmEmulation(
     float maxLevel = float(source.get_num_mip_levels() - 1);
 
     if (params.filmEdgeBlur > 0.0) {
-        float mipLevel = clamp(mix(2.0, 6.5, params.filmEdgeBlur), 0.0, maxLevel);
-        float3 blurred = float3(source.sample(mipSampler, inputUV, level(mipLevel)).rgb);
+        float3 blurred = sampleFilmEdgeBlur(
+            source, inputUV, sourceSize, params.filmEdgeBlur
+        );
         float2 edgeCoord = abs(inputUV - 0.5) * 2.0;
-        float edge = smoothstep(mix(0.88, 0.50, params.filmEdgeBlur), 1.0,
+        float edge = smoothstep(mix(0.90, 0.46, params.filmEdgeBlur), 1.0,
                                 max(edgeCoord.x, edgeCoord.y));
         rgb = mix(rgb, blurred, edge * params.filmEdgeBlur);
     }
@@ -849,16 +887,32 @@ static half3 applyFilmEmulation(
     if (params.filmVignette > 0.0) {
         float2 centered = (inputUV - 0.5) * 2.0;
         float radial = length(centered) * 0.70710678;
-        float vignette = smoothstep(mix(0.82, 0.42, params.filmVignette), 1.0, radial);
-        rgb *= 1.0 - vignette * (0.72 * params.filmVignette);
+        float vignette = smoothstep(mix(0.86, 0.28, params.filmVignette), 1.0, radial);
+        float amount = 0.88 * (0.55 * params.filmVignette
+                              + 0.45 * params.filmVignette * params.filmVignette);
+        rgb *= 1.0 - vignette * amount;
     }
 
     if (params.filmGrain > 0.0) {
-        float2 pixel = floor(inputUV * max(sourceSize, float2(1.0)));
-        float noise = anonymizerRand01(int(pixel.x), int(pixel.y), 0xA341316Cu, 0u) * 2.0 - 1.0;
+        // Film density varies in softly clustered, monochrome grains. A single independent
+        // random value per output pixel looked like sensor noise and changed apparent size with
+        // preview resolution, so combine two fine emulsions with a weaker broad clump instead.
+        float2 pixel = inputUV * max(sourceSize, float2(1.0));
+        float grainScale = mix(1.9, 1.25, params.filmGrain);
+        float fineA = anonymizerVNoise(
+            pixel.x / grainScale, pixel.y / grainScale, 0xA341316Cu, 0u
+        ) * 2.0 - 1.0;
+        float fineB = anonymizerVNoise(
+            pixel.x / grainScale + 19.7, pixel.y / grainScale - 7.3, 0xC8013EA4u, 1u
+        ) * 2.0 - 1.0;
+        float clump = anonymizerVNoise(
+            pixel.x / 4.8, pixel.y / 4.8, 0xAD90777Du, 2u
+        ) * 2.0 - 1.0;
+        float noise = fineA * 0.42 + fineB * 0.42 + clump * 0.22;
         float luma = max(dot(rgb, float3(0.2126, 0.7152, 0.0722)), 0.0);
-        float response = mix(1.0, 0.35, smoothstep(0.0, 1.0, luma));
-        rgb += noise * response * (0.075 * params.filmGrain);
+        float midtone = 1.0 - abs(clamp(luma, 0.0, 1.0) * 2.0 - 1.0);
+        float response = mix(0.32, 1.0, midtone);
+        rgb *= exp2(noise * response * (0.18 * params.filmGrain));
     }
 
     return half3(max(rgb, 0.0));

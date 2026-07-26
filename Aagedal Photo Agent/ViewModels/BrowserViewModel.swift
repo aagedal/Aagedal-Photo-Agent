@@ -2131,7 +2131,21 @@ final class BrowserViewModel {
               let decoded = try? JSONDecoder().decode([FavoriteFolder].self, from: data) else {
             return
         }
-        favoriteFolders = decoded
+        var repaired = decoded
+        for index in repaired.indices {
+            guard let bookmark = repaired[index].bookmarkData,
+                  let resolution = BrowserFolderSecurityScopeStore.shared
+                    .resolveAndRetainAccess(bookmark) else { continue }
+            repaired[index] = FavoriteFolder(
+                id: repaired[index].id,
+                url: resolution.url,
+                bookmarkData: resolution.bookmarkData
+            )
+        }
+        favoriteFolders = repaired
+        if repaired != decoded {
+            saveFavorites()
+        }
     }
 
     private func saveFavorites() {
@@ -2373,14 +2387,16 @@ final class BrowserViewModel {
     func addCurrentFolderToFavorites() {
         guard let url = currentFolderURL else { return }
         guard !favoriteFolders.contains(where: { $0.url == url }) else { return }
-        favoriteFolders.append(FavoriteFolder(url: url))
+        let bookmark = BrowserFolderSecurityScopeStore.shared.bookmarkAndRetainAccess(for: url)
+        favoriteFolders.append(FavoriteFolder(url: url, bookmarkData: bookmark))
         saveFavorites()
         loadFavoriteTopLevelSubfolders()
     }
 
     func addFolderToFavorites(_ url: URL) {
         guard !favoriteFolders.contains(where: { $0.url == url }) else { return }
-        favoriteFolders.append(FavoriteFolder(url: url))
+        let bookmark = BrowserFolderSecurityScopeStore.shared.bookmarkAndRetainAccess(for: url)
+        favoriteFolders.append(FavoriteFolder(url: url, bookmarkData: bookmark))
         saveFavorites()
         loadFavoriteTopLevelSubfolders()
     }
@@ -2655,6 +2671,8 @@ final class BrowserViewModel {
         if let favIndex = favoriteFolders.firstIndex(where: { $0.url == sourceURL }) {
             favoriteFolders[favIndex].url = newURL
             favoriteFolders[favIndex].name = newURL.lastPathComponent
+            favoriteFolders[favIndex].bookmarkData = BrowserFolderSecurityScopeStore.shared
+                .bookmarkAndRetainAccess(for: newURL)
             saveFavorites()
         }
 

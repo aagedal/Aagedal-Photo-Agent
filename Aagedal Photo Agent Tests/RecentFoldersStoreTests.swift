@@ -42,6 +42,7 @@ struct RecentFoldersStoreTests {
         )
         var mostRecent = RecentFolder(url: canonical)
         mostRecent.name = "Stale display name"
+        mostRecent.bookmarkData = Data([0xCA, 0xFE])
         let duplicate = RecentFolder(url: URL(
             fileURLWithPath: "/tmp/photo-agent-recents/other/../session",
             isDirectory: false
@@ -64,6 +65,7 @@ struct RecentFoldersStoreTests {
         #expect(store.folders.first?.id == mostRecent.id)
         #expect(store.folders.first?.url == canonical)
         #expect(store.folders.first?.name == "session")
+        #expect(store.folders.first?.bookmarkData == Data([0xCA, 0xFE]))
         #expect(Set(store.folders.map(\.url)).count == store.folders.count)
         #expect(store.folders.last?.name == "older-8")
 
@@ -72,6 +74,22 @@ struct RecentFoldersStoreTests {
         )
         let repaired = try JSONDecoder().decode([RecentFolder].self, from: savedData)
         #expect(repaired == store.folders)
+    }
+
+    @Test("Legacy recent and favorite folders decode without bookmark data")
+    func legacyFolderModelsDecode() throws {
+        let id = UUID()
+        let legacyRecent = """
+        {"id":"\(id.uuidString)","url":"file:///tmp/legacy-recent/","name":"legacy-recent"}
+        """
+        let legacyFavorite = """
+        {"id":"\(id.uuidString)","url":"file:///tmp/legacy-favorite/","name":"legacy-favorite"}
+        """
+
+        let recent = try JSONDecoder().decode(RecentFolder.self, from: Data(legacyRecent.utf8))
+        let favorite = try JSONDecoder().decode(FavoriteFolder.self, from: Data(legacyFavorite.utf8))
+        #expect(recent.bookmarkData == nil)
+        #expect(favorite.bookmarkData == nil)
     }
 
     private func makeDefaults() throws -> (UserDefaults, String) {

@@ -391,12 +391,14 @@ nonisolated struct BrushMaskGeometry: Codable, Sendable, Equatable {
 /// Which specialized Vision instance model should interpret the user's click.
 nonisolated enum AIMaskTarget: String, Codable, CaseIterable, Sendable, Equatable {
     case automatic
+    case face
     case person
     case object
 
     var title: String {
         switch self {
         case .automatic: return "Auto"
+        case .face: return "Face"
         case .person: return "Person"
         case .object: return "Object"
         }

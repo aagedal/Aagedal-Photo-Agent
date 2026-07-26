@@ -631,6 +631,56 @@ inline uint scopeFilmHash(uint x) {
     return x;
 }
 
+inline float scopeFilmRand(int ix, int iy, uint seed, uint channel) {
+    uint h = scopeFilmHash(uint(ix) * 0x9E3779B1u
+                           ^ uint(iy) * 0x85EBCA77u
+                           ^ seed
+                           ^ channel * 0xC2B2AE3Du);
+    return float(h) * (1.0 / 4294967295.0);
+}
+
+inline float scopeFilmValueNoise(float2 point, uint seed, uint channel) {
+    int2 cell = int2(floor(point));
+    float2 fraction = fract(point);
+    float2 smoothFraction = fraction * fraction * (3.0 - 2.0 * fraction);
+    float a = scopeFilmRand(cell.x, cell.y, seed, channel);
+    float b = scopeFilmRand(cell.x + 1, cell.y, seed, channel);
+    float c = scopeFilmRand(cell.x, cell.y + 1, seed, channel);
+    float d = scopeFilmRand(cell.x + 1, cell.y + 1, seed, channel);
+    return mix(mix(a, b, smoothFraction.x), mix(c, d, smoothFraction.x), smoothFraction.y);
+}
+
+inline float3 sampleScopeFilmEdgeBlur(
+    texture2d<half, access::sample> source,
+    float2 uv,
+    float strength
+) {
+    constexpr sampler blurSampler(filter::linear, mip_filter::linear, address::clamp_to_edge);
+    float2 sourceSize = float2(source.get_width(), source.get_height());
+    float minimumDimension = max(min(sourceSize.x, sourceSize.y), 1.0);
+    float radiusPixels = mix(1.5, minimumDimension * 0.022, strength * strength);
+    float2 radius = radiusPixels / max(sourceSize, float2(1.0));
+    float maxLevel = float(source.get_num_mip_levels() - 1);
+    float lod = clamp(mix(0.5, 2.5, strength), 0.0, maxLevel);
+
+    float3 result = float3(source.sample(blurSampler, uv, level(lod)).rgb) * 0.16;
+    float2 inner = radius * 0.45;
+    result += float3(source.sample(blurSampler, uv + float2( inner.x, 0.0), level(lod)).rgb) * 0.09;
+    result += float3(source.sample(blurSampler, uv + float2(-inner.x, 0.0), level(lod)).rgb) * 0.09;
+    result += float3(source.sample(blurSampler, uv + float2(0.0,  inner.y), level(lod)).rgb) * 0.09;
+    result += float3(source.sample(blurSampler, uv + float2(0.0, -inner.y), level(lod)).rgb) * 0.09;
+    float2 diagonal = radius * 0.55;
+    result += float3(source.sample(blurSampler, uv + float2( diagonal.x,  diagonal.y), level(lod)).rgb) * 0.07;
+    result += float3(source.sample(blurSampler, uv + float2(-diagonal.x,  diagonal.y), level(lod)).rgb) * 0.07;
+    result += float3(source.sample(blurSampler, uv + float2( diagonal.x, -diagonal.y), level(lod)).rgb) * 0.07;
+    result += float3(source.sample(blurSampler, uv + float2(-diagonal.x, -diagonal.y), level(lod)).rgb) * 0.07;
+    result += float3(source.sample(blurSampler, uv + float2( radius.x, 0.0), level(lod)).rgb) * 0.05;
+    result += float3(source.sample(blurSampler, uv + float2(-radius.x, 0.0), level(lod)).rgb) * 0.05;
+    result += float3(source.sample(blurSampler, uv + float2(0.0,  radius.y), level(lod)).rgb) * 0.05;
+    result += float3(source.sample(blurSampler, uv + float2(0.0, -radius.y), level(lod)).rgb) * 0.05;
+    return result;
+}
+
 inline float3 applyScopeFilm(
     float3 input,
     float2 uv,
@@ -641,10 +691,9 @@ inline float3 applyScopeFilm(
     constexpr sampler mipSampler(filter::linear, mip_filter::linear, address::clamp_to_edge);
     float maxLevel = float(source.get_num_mip_levels() - 1);
     if (params.filmEdgeBlur > 0.0) {
-        float mipLevel = clamp(mix(2.0, 6.5, params.filmEdgeBlur), 0.0, maxLevel);
-        float3 blurred = float3(source.sample(mipSampler, uv, level(mipLevel)).rgb);
+        float3 blurred = sampleScopeFilmEdgeBlur(source, uv, params.filmEdgeBlur);
         float2 edgeCoord = abs(uv - 0.5) * 2.0;
-        float edge = smoothstep(mix(0.88, 0.50, params.filmEdgeBlur), 1.0,
+        float edge = smoothstep(mix(0.90, 0.46, params.filmEdgeBlur), 1.0,
                                 max(edgeCoord.x, edgeCoord.y));
         rgb = mix(rgb, blurred, edge * params.filmEdgeBlur);
     }
@@ -662,16 +711,28 @@ inline float3 applyScopeFilm(
     }
     if (params.filmVignette > 0.0) {
         float radial = length((uv - 0.5) * 2.0) * 0.70710678;
-        float vignette = smoothstep(mix(0.82, 0.42, params.filmVignette), 1.0, radial);
-        rgb *= 1.0 - vignette * (0.72 * params.filmVignette);
+        float vignette = smoothstep(mix(0.86, 0.28, params.filmVignette), 1.0, radial);
+        float amount = 0.88 * (0.55 * params.filmVignette
+                              + 0.45 * params.filmVignette * params.filmVignette);
+        rgb *= 1.0 - vignette * amount;
     }
     if (params.filmGrain > 0.0) {
-        uint2 pixel = uint2(uv * float2(source.get_width(), source.get_height()));
-        uint hash = scopeFilmHash(pixel.x * 0x9E3779B1u ^ pixel.y * 0x85EBCA77u);
-        float noise = float(hash) * (1.0 / 4294967295.0) * 2.0 - 1.0;
+        float2 pixel = uv * float2(source.get_width(), source.get_height());
+        float grainScale = mix(1.9, 1.25, params.filmGrain);
+        float fineA = scopeFilmValueNoise(
+            pixel / grainScale, 0xA341316Cu, 0u
+        ) * 2.0 - 1.0;
+        float fineB = scopeFilmValueNoise(
+            pixel / grainScale + float2(19.7, -7.3), 0xC8013EA4u, 1u
+        ) * 2.0 - 1.0;
+        float clump = scopeFilmValueNoise(
+            pixel / 4.8, 0xAD90777Du, 2u
+        ) * 2.0 - 1.0;
+        float noise = fineA * 0.42 + fineB * 0.42 + clump * 0.22;
         float luma = max(dot(rgb, float3(0.2126, 0.7152, 0.0722)), 0.0);
-        rgb += noise * mix(1.0, 0.35, smoothstep(0.0, 1.0, luma))
-            * (0.075 * params.filmGrain);
+        float midtone = 1.0 - abs(clamp(luma, 0.0, 1.0) * 2.0 - 1.0);
+        float response = mix(0.32, 1.0, midtone);
+        rgb *= exp2(noise * response * (0.18 * params.filmGrain));
     }
     return max(rgb, 0.0);
 }

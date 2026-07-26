@@ -340,6 +340,22 @@ struct AnonymizerMultiPassRenderingTests {
         return (pixel[0] + pixel[1] + pixel[2]) / 3
     }
 
+    private func sampleLuminance(_ image: CIImage, x: Int, y: Int) -> Float {
+        var pixel = [Float](repeating: 0, count: 4)
+        let context = CIContext(options: [
+            .workingColorSpace: CameraRawApproximation.workingColorSpace
+        ])
+        context.render(
+            image,
+            toBitmap: &pixel,
+            rowBytes: 16,
+            bounds: CGRect(x: x, y: y, width: 1, height: 1),
+            format: .RGBAf,
+            colorSpace: CameraRawApproximation.workingColorSpace
+        )
+        return pixel[0] * 0.2126 + pixel[1] * 0.7152 + pixel[2] * 0.0722
+    }
+
     @Test("render-plan compiler isolates spatial nodes while batching adjacent pointwise layers")
     func renderPlanSegmentsAtAnonymizers() {
         let global = EditRenderPassPlanner.globalOrderSentinel
@@ -421,6 +437,60 @@ struct AnonymizerMultiPassRenderingTests {
                 "Expected \(name) to change rendered pixels; mean difference was \(difference)"
             )
         }
+    }
+
+    @Test("maximum vignette strongly darkens corners while preserving the center")
+    func filmVignetteHasUsefulMaximumStrength() throws {
+        let source = CIImage(color: CIColor(red: 0.8, green: 0.8, blue: 0.8, alpha: 1))
+            .cropped(to: extent)
+        var settings = CameraRawSettings()
+        settings.filmEmulation = FilmEmulationSettings(vignette: 100)
+        let rendered = try #require(MetalEditPipeline.renderOffscreen(
+            source: source, settings: settings
+        ))
+
+        let baselineCenter = sampleLuminance(source, x: 128, y: 128)
+        let center = sampleLuminance(rendered, x: 128, y: 128)
+        let corner = sampleLuminance(rendered, x: 2, y: 2)
+        #expect(
+            abs(center - baselineCenter) < 0.01,
+            "Vignette should leave the image center nearly unchanged"
+        )
+        #expect(corner < center * 0.2, "Maximum vignette should provide a visibly strong corner falloff")
+    }
+
+    @Test("film grain is spatially clustered rather than independent pixel noise")
+    func filmGrainHasAnalogSpatialCorrelation() throws {
+        let source = CIImage(color: CIColor(red: 0.5, green: 0.5, blue: 0.5, alpha: 1))
+            .cropped(to: extent)
+        var settings = CameraRawSettings()
+        settings.filmEmulation = FilmEmulationSettings(grain: 100)
+        let rendered = try #require(MetalEditPipeline.renderOffscreen(
+            source: source, settings: settings
+        ))
+
+        var pixels = [Float](repeating: 0, count: Int(extent.width) * 4)
+        let context = CIContext(options: [
+            .workingColorSpace: CameraRawApproximation.workingColorSpace
+        ])
+        context.render(
+            rendered,
+            toBitmap: &pixels,
+            rowBytes: Int(extent.width) * 4 * MemoryLayout<Float>.size,
+            bounds: CGRect(x: 0, y: 128, width: extent.width, height: 1),
+            format: .RGBAf,
+            colorSpace: CameraRawApproximation.workingColorSpace
+        )
+        let values = stride(from: 0, to: pixels.count, by: 4).map { pixels[$0] }
+        let mean = values.reduce(0, +) / Float(values.count)
+        let deviations = values.map { $0 - mean }
+        let variance = deviations.reduce(0) { $0 + $1 * $1 }
+        let adjacentCovariance = zip(deviations, deviations.dropFirst())
+            .reduce(0) { $0 + $1.0 * $1.1 }
+        let correlation = adjacentCovariance / max(variance, 0.000001)
+
+        #expect(variance > 0.0001, "Grain should remain visible on a flat midtone")
+        #expect(correlation > 0.12, "Neighboring film grains should form soft clumps, not digital salt-and-pepper noise")
     }
 
     /// A high-frequency source makes the order of a nonlinear global tone operation and the

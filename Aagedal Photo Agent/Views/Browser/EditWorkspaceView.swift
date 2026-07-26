@@ -1226,6 +1226,18 @@ struct EditWorkspaceView: View {
                     Spacer()
                     if canEditSingleImage {
                         Button {
+                            saveCurrentRenderedImage()
+                        } label: {
+                            Image(systemName: isSavingRenderedJPEG ? "hourglass" : "square.and.arrow.down")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(selectedImageURL == nil || isSavingRenderedJPEG)
+                        .help(saveButtonLabel)
+                        .accessibilityLabel(saveButtonLabel)
+
+                        Button {
                             editUndoManager.undo()
                         } label: {
                             Image(systemName: "arrow.uturn.backward")
@@ -1407,12 +1419,6 @@ struct EditWorkspaceView: View {
                         }
                     }
 
-                    Divider()
-
-                    Button(saveButtonLabel) {
-                        saveCurrentRenderedImage()
-                    }
-                    .disabled(!canEditSingleImage || selectedImageURL == nil || isSavingRenderedJPEG)
                 } else {
                     Text("Select exactly one image to edit.")
                         .font(.subheadline)
@@ -3421,52 +3427,56 @@ struct EditWorkspaceView: View {
             })
         }
 
-        // ── Tone Curve ──
-        CurveEditorView(
-            toneCurve: toneCurveBinding,
-            isMuted: $isMutingToneCurve,
-            onDragCurveChanged: { dragCurve in
-                if let pipeline = metalPipeline, pipeline.hasSourceTexture {
-                    var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
-                    settings.toneCurve = dragCurve
-                    pipeline.updateParams(settingsForPipeline(settings))
-                    metalCoordinator.requestRedraw()
+        if settingsViewModel.isDevelopSliderVisible(.toneCurve) {
+            // ── Tone Curve ──
+            CurveEditorView(
+                toneCurve: toneCurveBinding,
+                isMuted: $isMutingToneCurve,
+                onDragCurveChanged: { dragCurve in
+                    if let pipeline = metalPipeline, pipeline.hasSourceTexture {
+                        var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
+                        settings.toneCurve = dragCurve
+                        pipeline.updateParams(settingsForPipeline(settings))
+                        metalCoordinator.requestRedraw()
+                    }
+                },
+                onEditingChanged: { editing in
+                    isDraggingEditSlider = editing
+                    if !editing {
+                        commitEditAdjustments()
+                    }
+                },
+                onMuteToggled: {
+                    renderPreview()
                 }
-            },
-            onEditingChanged: { editing in
-                isDraggingEditSlider = editing
-                if !editing {
+            )
+            .padding(.top, 2)
+        }
+
+        if settingsViewModel.isDevelopSliderVisible(.hsl) {
+            // ── Hue / Saturation / Density ──
+            sectionHeader("Hue / Saturation / Density", isMuted: $isMutingHSL, hasAdjustments: hasHSLAdjustments, onReset: resetHSLAdjustments)
+                .padding(.top, 2)
+            Divider()
+
+            HSLAdjustmentView(
+                adjustments: hslAdjustmentsBinding,
+                onEditingChanged: { editing in
+                    isDraggingEditSlider = editing
+                },
+                onDragChanged: { adjustments in
+                    if let pipeline = metalPipeline, pipeline.hasSourceTexture {
+                        var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
+                        settings.hslAdjustments = adjustments.isEmpty ? nil : adjustments
+                        pipeline.updateParams(settingsForPipeline(settings))
+                        metalCoordinator.requestRedraw()
+                    }
+                },
+                onDragEnded: {
                     commitEditAdjustments()
                 }
-            },
-            onMuteToggled: {
-                renderPreview()
-            }
-        )
-        .padding(.top, 2)
-
-        // ── Hue / Saturation / Density ──
-        sectionHeader("Hue / Saturation / Density", isMuted: $isMutingHSL, hasAdjustments: hasHSLAdjustments, onReset: resetHSLAdjustments)
-            .padding(.top, 2)
-        Divider()
-
-        HSLAdjustmentView(
-            adjustments: hslAdjustmentsBinding,
-            onEditingChanged: { editing in
-                isDraggingEditSlider = editing
-            },
-            onDragChanged: { adjustments in
-                if let pipeline = metalPipeline, pipeline.hasSourceTexture {
-                    var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
-                    settings.hslAdjustments = adjustments.isEmpty ? nil : adjustments
-                    pipeline.updateParams(settingsForPipeline(settings))
-                    metalCoordinator.requestRedraw()
-                }
-            },
-            onDragEnded: {
-                commitEditAdjustments()
-            }
-        )
+            )
+        }
 
         if settingsViewModel.isDevelopSliderGroupVisible(.film) {
             // ── Film Emulation ──
@@ -3953,9 +3963,11 @@ struct EditWorkspaceView: View {
 
             Text(aiMaskTarget == .automatic
                  ? "Auto tries the person model first, then the foreground-object model."
-                 : aiMaskTarget == .person
-                    ? "Person uses Vision's dedicated person-instance model."
-                    : "Object uses Vision's general foreground-instance model.")
+                 : aiMaskTarget == .face
+                    ? "Face uses Vision face detection to isolate the clicked face."
+                    : aiMaskTarget == .person
+                        ? "Person uses Vision's dedicated person-instance model."
+                        : "Object uses Vision's general foreground-instance model.")
                 .font(.system(size: 9))
                 .foregroundStyle(.secondary)
         }
@@ -5954,7 +5966,7 @@ struct EditWorkspaceView: View {
             .frame(width: viewSize.width, height: viewSize.height)
             .overlay(alignment: .top) {
                 Label(
-                    isGeneratingAIMask ? "Finding selection…" : "Click a person or object",
+                    isGeneratingAIMask ? "Finding selection…" : "Click a face, person, or object",
                     systemImage: isGeneratingAIMask ? "sparkles" : "viewfinder"
                 )
                 .font(.system(size: 11, weight: .medium))

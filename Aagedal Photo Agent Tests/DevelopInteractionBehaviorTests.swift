@@ -197,6 +197,8 @@ struct DevelopInteractionBehaviorTests {
         let hidden = DevelopSlider.decodeHidden([
             "contrast",
             "filmGrain",
+            "hsl",
+            "toneCurve",
             "exposure",
             "temperature",
             "tint",
@@ -204,7 +206,7 @@ struct DevelopInteractionBehaviorTests {
             "futureControl",
         ])
 
-        #expect(hidden == [.contrast, .filmGrain])
+        #expect(hidden == [.contrast, .filmGrain, .hsl, .toneCurve])
         #expect(!DevelopSlider.allCases.contains { $0.rawValue == "exposure" })
         #expect(!DevelopSlider.allCases.contains { $0.rawValue == "temperature" })
         #expect(!DevelopSlider.allCases.contains { $0.rawValue == "tint" })
