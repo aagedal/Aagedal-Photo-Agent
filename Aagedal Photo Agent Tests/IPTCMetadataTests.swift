@@ -3092,6 +3092,31 @@ struct BrushCompositingTests {
         #expect(rectangleCorner > ellipseCorner + 0.2)
     }
 
+    @Test("rounded-rectangle feather preserves the selected corner proportion")
+    func roundedRectangleFeatherDoesNotFormXPattern() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else { return }
+        var rectangle = MaskAdjustment()
+        rectangle.geometry = EllipseMaskGeometry(centerX: 0.5, centerY: 0.5,
+                                                 radiusX: 0.35, radiusY: 0.35,
+                                                 rotation: 0, feather: 50,
+                                                 cornerRadius: 0.4)
+        rectangle.exposure = 1.0
+        var settings = CameraRawSettings()
+        settings.localAdjustments = [rectangle]
+
+        let result = try #require(
+            MetalEditPipeline.renderOffscreen(source: solidGray(0.4, size: 256), settings: settings)
+        )
+        // These are both approximately 70% of the way from the center to the nominal outline:
+        // one through a straight edge and one through the middle of a rounded corner. Feather
+        // contours must be scaled copies of that outline, so their coverage should match. A
+        // Euclidean SDF makes the diagonal point much stronger and exposes its medial axes as X.
+        let edge = sample(result, x: 191, y: 128)
+        let diagonalCorner = sample(result, x: 183, y: 183)
+
+        #expect(abs(edge - diagonalCorner) < 0.015)
+    }
+
     @Test("a fully feathered ellipse extends a Gaussian tail beyond its nominal outline")
     func ellipseFeatherExtendsBeyondOutline() throws {
         guard MTLCreateSystemDefaultDevice() != nil else { return }

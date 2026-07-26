@@ -507,16 +507,32 @@ static float analyticFeatherCoverage(float dist, float feather)
     return exp2(-3.32192809489 * t * t); // 10^(-t²): 10% at the nominal outline
 }
 
-/// Gauge-like distance for Photo Agent's rounded-rectangle extension in the analytic mask's
-/// normalized local frame. radius=1 is exactly the ACR ellipse (`length(p)`); radius=0 is a
-/// sharp rectangle (`max(abs(p).x, abs(p).y)`). Intermediate values use elliptical corners
-/// because the normalized shape is stretched by the mask's two independent semi-axes.
-static float roundedRectangleDistance(float2 p, float radius)
+/// Exact gauge for Photo Agent's rounded-rectangle extension in the analytic mask's normalized
+/// local frame. Its level sets are scaled copies of the nominal outline, so feathering preserves
+/// the selected corner proportion instead of exposing a Euclidean SDF's diagonal medial axes.
+/// radius=1 is exactly the ACR ellipse (`length(p)`); radius=0 is a sharp rectangle
+/// (`max(abs(p).x, abs(p).y)`). Intermediate values use elliptical corners after the normalized
+/// shape is stretched by the mask's two independent semi-axes.
+static float roundedRectangleGauge(float2 p, float radius)
 {
     float r = clamp(radius, 0.0, 1.0);
-    float2 q = abs(p) - float2(1.0 - r);
-    float signedDistance = length(max(q, float2(0.0))) + min(max(q.x, q.y), 0.0) - r;
-    return signedDistance + 1.0;
+    float straight = 1.0 - r;
+    float2 a = abs(p);
+    float major = max(a.x, a.y);
+    float minor = min(a.x, a.y);
+
+    // Rays near either axis meet a straight side at major=1.
+    if (minor <= straight * major) return major;
+
+    // Corner rays meet the radius-r circle around (straight, straight). Solve that ray/circle
+    // intersection once, then express p as a fraction of the resulting boundary radius.
+    float radial = length(a);
+    float2 direction = a / max(radial, 1e-7);
+    float directionSum = direction.x + direction.y;
+    float discriminant = straight * straight * directionSum * directionSum
+        - (2.0 * straight * straight - r * r);
+    float boundaryRadius = straight * directionSum + sqrt(max(discriminant, 0.0));
+    return radial / max(boundaryRadius, 1e-7);
 }
 
 /// Analytical ellipse/rounded-rectangle coverage at `uv` (0 = outside / no effect). mask.radii
@@ -536,7 +552,7 @@ static float analyticMaskCoverage(constant MaskParams &mask, float2 uv, float2 s
     if (ab.x <= 0.0 || ab.y <= 0.0) return 0.0;   // degenerate — ACR renders nothing
     float2 d = (uv - mask.center) * float2(maskAspect, 1.0);
     float2 local = float2(d.x * cosR + d.y * sinR, -d.x * sinR + d.y * cosR);
-    float dist = roundedRectangleDistance(local / ab, mask.cornerRadius);
+    float dist = roundedRectangleGauge(local / ab, mask.cornerRadius);
     float weight = analyticFeatherCoverage(dist, mask.feather);
     if (mask.inverted > 0.5) weight = 1.0 - weight;
     return weight;

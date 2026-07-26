@@ -81,11 +81,24 @@ kernel void maskOverlay(
     if (corrRadii.x <= 0.0 || corrRadii.y <= 0.0) return;   // degenerate — nothing to draw
     float2 d = (uv - params.center) * float2(aspect, 1.0);
     float2 local = float2(d.x * cosR + d.y * sinR, -d.x * sinR + d.y * cosR);
-    float r = clamp(params.cornerRadius, 0.0, 1.0);
     float2 normalized = local / corrRadii;
-    float2 q = abs(normalized) - float2(1.0 - r);
-    float signedDistance = length(max(q, float2(0.0))) + min(max(q.x, q.y), 0.0) - r;
-    float dist = signedDistance + 1.0;
+    float r = clamp(params.cornerRadius, 0.0, 1.0);
+    float straight = 1.0 - r;
+    float2 a = abs(normalized);
+    float major = max(a.x, a.y);
+    float minor = min(a.x, a.y);
+    float dist;
+    if (minor <= straight * major) {
+        dist = major;
+    } else {
+        float radial = length(a);
+        float2 direction = a / max(radial, 1e-7);
+        float directionSum = direction.x + direction.y;
+        float discriminant = straight * straight * directionSum * directionSum
+            - (2.0 * straight * straight - r * r);
+        float boundaryRadius = straight * directionSum + sqrt(max(discriminant, 0.0));
+        dist = radial / max(boundaryRadius, 1e-7);
+    }
 
     // Accumulate overlay alpha and color
     half4 existing = destination.read(gid);

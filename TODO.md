@@ -35,25 +35,43 @@
 - [x] **Increase Develop preview zoom to 4000%.** (2026-07-26)
   Magnify gestures, scroll-wheel zoom, and the cursor-anchored 100% toggle now share
   the same 4000% upper bound as the full-screen viewer.
-- [ ] Adjusting the corner radius of an ellipse mask to be a square can cause an X-like render pattern where the corners of the rectangle mask seems to expand further/stronger than the edges.
-- [ ] Adjusting the corner radius of an ellipse mask, the mask itself changes instantly, but the mask outline preview only changes after letting go of the slider.
+- [x] Rounded-rectangle masks no longer develop an X-like feather pattern at
+  intermediate corner radii. Feather contours now preserve the selected corner
+  proportion consistently from rectangle through ellipse. (2026-07-26)
+- [x] Adjusting the corner radius of an ellipse mask now updates the mask outline
+  continuously while the slider is dragged. (2026-07-26)
 - [ ] In the GPS/map area, make a button to quickly select the users current location as the image location.
 - [ ] When a crop is applied, even when the crop UI isn't active the image is zoomed out as to leave space for crop adjustments. This should only be the case when the crop tool is active.
 - [ ] Add film emulation creative effect sliders:
   - [ ] Film grain
   - [ ] Halation
   - [ ] Bloom
+  - [ ] Vignette
+  - [ ] Edge blur
 - [ ] Add an app setting to hide specific sliders.
 - [ ] Add an app setting to add/remove IPTC metadata fields.
 - [ ] Add support for more IPTC metadata fields.
+- [ ] Improve AI-masks to support Face, not just person.
+- [ ] Warning in XCode logs: "{CSInlineDonation[async]: "aagedal.Aagedal-Photo-Agent" add-update-items:0 delete-items:1}: Failed to request donation Error Domain=CSIndexErrorDomain Code=-1000 "Failed to request donation" UserInfo={NSDebugDescription=Failed to request donation, NSUnderlyingError=0x786c7b26d0 {Error Domain=NSCocoaErrorDomain Code=4099 "The connection to service named com.apple.SetStoreUpdateService was invalidated from this process." UserInfo={NSDebugDescription=The connection to service named com.apple.SetStoreUpdateService was invalidated from this process.}}}"
 
 
 ## Future version 2.3
 - [ ] Image analysis layout mode
+  - [ ] Two modes
+    - [ ] Pixel analysis (is this manipulated or AI-generated)
+    - [ ] OSINT (where was this image taken and when)
   - [ ] Bigger scopes, on hover detail zoom
-  - [ ] Scope to more easily view compression
+  - [ ] Scope/view to more easily view compression, side by side with real image
+  - [ ] Pixel analysis to detect common AI-generated artifacts
+  - [ ] Suspicious metadata detection (e.g.: real images are rarely png)
+    - [ ] Output non-technical language
+  - [ ] Markup tools for manual verification
+    - [ ] Draw lines
+    - [ ] Meassure (optional pixel to cm conversion)
+    - [ ] Circle or put rectangle objects with labels (color pallet)
+    - [ ] Place images on a satellite map, as a OSINT companion tool.
+      - [ ] The satellite image itself may also need to support the markup tools, as to easily mark the location of objects/buildings with the same color as the markuplabel in the photo.
+  - [ ] Analysis report PDF export
 - [ ] Comparison view, letting the user select two images to view next to each other
   - [ ] Zoom and pan lock, to make it easy to compare details. (should be possible to unlock/offset)
   - [ ] Accessible both in the develop view, the full screen, and clean feed view.
-
-

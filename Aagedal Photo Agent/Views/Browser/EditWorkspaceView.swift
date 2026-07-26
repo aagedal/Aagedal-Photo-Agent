@@ -3209,6 +3209,7 @@ struct EditWorkspaceView: View {
         gradientColors: [Color]? = nil,
         formatter: @escaping (Double) -> String,
         settingsMutator: ((inout CameraRawSettings, Double) -> Void)? = nil,
+        onSliderEditingChanged: ((Bool) -> Void)? = nil,
         onReset: (() -> Void)? = nil,
         showReset: Bool? = nil
     ) -> some View {
@@ -3221,15 +3222,16 @@ struct EditWorkspaceView: View {
             formatter: formatter,
             onEditingChanged: { editing in
                 isDraggingEditSlider = editing
+                onSliderEditingChanged?(editing)
                 if !editing {
                     commitEditAdjustments()
                 }
             },
             onDragValueChanged: settingsMutator.map { mutator in
                 { dragValue in
+                    var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
+                    mutator(&settings, dragValue)
                     if let pipeline = metalPipeline, pipeline.hasSourceTexture {
-                        var settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
-                        mutator(&settings, dragValue)
                         pipeline.updateParams(settingsForPipeline(settings))
                         metalCoordinator.requestRedraw()
                     }
@@ -3994,6 +3996,17 @@ struct EditWorkspaceView: View {
                     let normalized = min(max(value / 100, 0), 1)
                     settings.localAdjustments?[index].geometry.cornerRadius =
                         normalized >= 0.999999 ? nil : normalized
+                    // Like the Metal preview, the AppKit outline intentionally reads a
+                    // transient geometry while a high-frequency slider drag bypasses the
+                    // observed model. Keep both previews on the same live value.
+                    dragMaskGeometry = settings.localAdjustments?[index].geometry
+                },
+                onSliderEditingChanged: { editing in
+                    if !editing {
+                        // EditSlider commits its final value to the binding before sending
+                        // the editing-ended callback, so the model is authoritative again.
+                        dragMaskGeometry = nil
+                    }
                 },
                 onReset: {
                     maskCornerRadiusBinding(index).wrappedValue = 100

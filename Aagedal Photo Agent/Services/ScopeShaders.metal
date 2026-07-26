@@ -398,11 +398,21 @@ inline float analyticFeatherCoverage(float dist, float feather) {
     return exp2(-3.32192809489 * t * t);
 }
 
-inline float roundedRectangleDistance(float2 p, float radius) {
+inline float roundedRectangleGauge(float2 p, float radius) {
     float r = clamp(radius, 0.0, 1.0);
-    float2 q = abs(p) - float2(1.0 - r);
-    float signedDistance = length(max(q, float2(0.0))) + min(max(q.x, q.y), 0.0) - r;
-    return signedDistance + 1.0;
+    float straight = 1.0 - r;
+    float2 a = abs(p);
+    float major = max(a.x, a.y);
+    float minor = min(a.x, a.y);
+    if (minor <= straight * major) return major;
+
+    float radial = length(a);
+    float2 direction = a / max(radial, 1e-7);
+    float directionSum = direction.x + direction.y;
+    float discriminant = straight * straight * directionSum * directionSum
+        - (2.0 * straight * straight - r * r);
+    float boundaryRadius = straight * directionSum + sqrt(max(discriminant, 0.0));
+    return radial / max(boundaryRadius, 1e-7);
 }
 
 // Analytic ellipse/rounded-rectangle coverage weight at `uv` (0 ⇒ no effect). Kept separate
@@ -417,7 +427,7 @@ inline float applyScopeMaskWeight(constant MaskParams &mask, float2 uv, float2 s
     if (ab.x <= 0.0 || ab.y <= 0.0) return 0.0;
     float2 d = (uv - mask.center) * float2(aspect, 1.0);
     float2 local = float2(d.x * cosR + d.y * sinR, -d.x * sinR + d.y * cosR);
-    float dist = roundedRectangleDistance(local / ab, mask.cornerRadius);
+    float dist = roundedRectangleGauge(local / ab, mask.cornerRadius);
     float weight = analyticFeatherCoverage(dist, mask.feather);
     if (mask.inverted > 0.5) weight = 1.0 - weight;
     weight *= mask.amount;
