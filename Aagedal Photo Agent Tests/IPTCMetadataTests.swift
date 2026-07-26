@@ -669,6 +669,31 @@ struct FieldKeyTests {
         #expect(defaults.contains(.creator))
         #expect(defaults.contains(.copyright))
     }
+
+    @Test("editor fields are partitioned into mandatory and optional fields")
+    func editorFieldVisibilityGroupsAreComplete() {
+        let mandatory = IPTCMetadata.FieldKey.alwaysVisibleEditorFields
+        let optional = Set(IPTCMetadata.FieldKey.optionalEditorFields)
+
+        #expect(mandatory == [.title, .description, .keywords, .copyright])
+        #expect(mandatory.isDisjoint(with: optional))
+        #expect(mandatory.union(optional) == Set(IPTCMetadata.FieldKey.editorFields))
+        #expect(!IPTCMetadata.FieldKey.editorFields.contains(.dateCreated))
+    }
+
+    @Test("hidden-field decoding accepts only optional editable fields")
+    func hiddenFieldDecodingSanitizesStoredValues() {
+        let hidden = IPTCMetadata.FieldKey.decodeHidden([
+            "extendedDescription",
+            "creator",
+            "title",
+            "keywords",
+            "dateCreated",
+            "unknownFutureField",
+        ])
+
+        #expect(hidden == [.extendedDescription, .creator])
+    }
 }
 
 /// Regression tests for crashes triggered by malformed numeric metadata fields.

@@ -262,6 +262,32 @@ final class SettingsViewModel {
         }
     }
 
+    var hiddenIPTCMetadataFields: Set<IPTCMetadata.FieldKey> {
+        didSet {
+            UserDefaults.standard.set(
+                hiddenIPTCMetadataFields.map(\.rawValue).sorted(),
+                forKey: UserDefaultsKeys.hiddenIPTCMetadataFields
+            )
+        }
+    }
+
+    func isIPTCMetadataFieldVisible(_ field: IPTCMetadata.FieldKey) -> Bool {
+        IPTCMetadata.FieldKey.alwaysVisibleEditorFields.contains(field)
+            || !hiddenIPTCMetadataFields.contains(field)
+    }
+
+    func setIPTCMetadataField(_ field: IPTCMetadata.FieldKey, visible: Bool) {
+        guard !IPTCMetadata.FieldKey.alwaysVisibleEditorFields.contains(field) else {
+            hiddenIPTCMetadataFields.remove(field)
+            return
+        }
+        if visible {
+            hiddenIPTCMetadataFields.remove(field)
+        } else {
+            hiddenIPTCMetadataFields.insert(field)
+        }
+    }
+
     func isDevelopSliderVisible(_ slider: DevelopSlider) -> Bool {
         !hiddenDevelopSliders.contains(slider)
     }
@@ -755,6 +781,9 @@ final class SettingsViewModel {
         self.showOriginalThumbnails = UserDefaults.standard.bool(forKey: UserDefaultsKeys.showOriginalThumbnails)
         self.hiddenDevelopSliders = DevelopSlider.decodeHidden(
             UserDefaults.standard.stringArray(forKey: UserDefaultsKeys.hiddenDevelopSliders) ?? []
+        )
+        self.hiddenIPTCMetadataFields = IPTCMetadata.FieldKey.decodeHidden(
+            UserDefaults.standard.stringArray(forKey: UserDefaultsKeys.hiddenIPTCMetadataFields) ?? []
         )
 
         self.defaultExternalEditor = UserDefaults.standard.string(forKey: UserDefaultsKeys.defaultExternalEditor) ?? ""

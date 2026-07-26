@@ -59,10 +59,20 @@
   crop tool cannot be hidden. Optional global and matching local-mask sliders are
   organized by category in Settings → General, default to visible, persist across
   launches, and participate in portable preference sync. (2026-07-26)
-- [ ] Add an app setting to add/remove IPTC metadata fields.
+- [x] Add an app setting to add/hide IPTC metadata fields. Headline, Description,
+  Keywords, and Copyright always remain available; optional fields default to visible,
+  persist across launches, and participate in portable preference sync. Hiding a field
+  does not remove its stored metadata. (2026-07-26)
+- [ ] Hiding all sliders within a section doesn't remove the section header. Add a toggle to hide the entire section in one go.
+- [ ] The 
 - [ ] Add support for more IPTC metadata fields.
 - [ ] Improve AI-masks to support Face, not just person.
 - [ ] Warning in XCode logs: "{CSInlineDonation[async]: "aagedal.Aagedal-Photo-Agent" add-update-items:0 delete-items:1}: Failed to request donation Error Domain=CSIndexErrorDomain Code=-1000 "Failed to request donation" UserInfo={NSDebugDescription=Failed to request donation, NSUnderlyingError=0x786c7b26d0 {Error Domain=NSCocoaErrorDomain Code=4099 "The connection to service named com.apple.SetStoreUpdateService was invalidated from this process." UserInfo={NSDebugDescription=The connection to service named com.apple.SetStoreUpdateService was invalidated from this process.}}}"
+- [ ] The app has a tendency to ask for folder permissions on launch that were given during previous app launches.
+- [ ] Improve edge blur quality, can look pixelated/block/box-like
+- [ ] Improve film grain: looks like digital noise
+- [ ] Vignette effect not strong enough
+
 
 
 ## Future version 2.3
@@ -85,3 +95,4 @@
 - [ ] Comparison view, letting the user select two images to view next to each other
   - [ ] Zoom and pan lock, to make it easy to compare details. (should be possible to unlock/offset)
   - [ ] Accessible both in the develop view, the full screen, and clean feed view.
+- [ ] Grading version: the ability for an image to store different edit versions (json only, not XMP)

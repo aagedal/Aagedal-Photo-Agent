@@ -556,6 +556,12 @@ struct MetadataPanel: View {
             }
         }
         .frame(maxWidth: .infinity)
+        .sheet(isPresented: $isShowingVariableReference) {
+            VariableReferenceView(
+                isPresented: $isShowingVariableReference,
+                onInsert: insertVariable
+            )
+        }
         .onKeyPress("m") {
             guard NSEvent.modifierFlags.contains(.option),
                   !viewModel.isBatchEdit,
@@ -788,78 +794,39 @@ struct MetadataPanel: View {
     private var editableMetadataFields: some View {
         let _ = settingsViewModel.quickListVersion
 
-        EditableTextField(
-            label: "Headline",
-            text: Binding(
-                get: { viewModel.editingMetadata.title ?? "" },
-                set: { viewModel.editingMetadata.title = $0.isEmpty ? nil : $0; viewModel.markChanged() }
-            ),
-            placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "title") : "Enter headline",
-            onCommit: { commitEdits() },
-            showsDifference: viewModel.fieldDiffers(\.title),
-            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("title"),
-            onInsertVariable: {
-                openVariableReference(for: .title)
-            },
-            focusKey: "title",
-            focusedField: $focusedField
-        )
-        .id("title")
-
-        VStack(alignment: .leading, spacing: 2) {
-            HStack {
-                Text("Description")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                DifferenceIndicator(differs: viewModel.fieldDiffers(\.description))
-                if viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("description") {
-                    MultipleValuesIndicator()
-                }
-                Spacer()
-                Button {
-                    openVariableReference(for: .description)
-                } label: {
-                    Image(systemName: "curlybraces")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .help("Variable Reference")
-            }
-            if let conflict = viewModel.descriptionConflict {
-                DescriptionConflictBanner(conflict: conflict) { keepXMP in
-                    viewModel.resolveDescriptionConflict(keepXMP: keepXMP)
-                }
-            }
-            BufferedTextField(
-                currentValue: viewModel.editingMetadata.description ?? "",
-                placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "description") : "Enter description",
-                lineLimit: 4...8,
-                focusedField: $focusedField,
-                focusKey: "description",
-                onTextFinished: { newValue in
-                    if newValue != viewModel.editingMetadata.description {
-                        viewModel.editingMetadata.description = newValue
-                        viewModel.markChanged()
-                    }
+        if settingsViewModel.isIPTCMetadataFieldVisible(.title) {
+            EditableTextField(
+                label: "Headline",
+                text: Binding(
+                    get: { viewModel.editingMetadata.title ?? "" },
+                    set: { viewModel.editingMetadata.title = $0.isEmpty ? nil : $0; viewModel.markChanged() }
+                ),
+                placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "title") : "Enter headline",
+                onCommit: { commitEdits() },
+                showsDifference: viewModel.fieldDiffers(\.title),
+                hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("title"),
+                onInsertVariable: {
+                    openVariableReference(for: .title)
                 },
-                onCommit: { commitEdits() }
+                focusKey: "title",
+                focusedField: $focusedField
             )
-        }
-        .id("description")
-        .sheet(isPresented: $isShowingVariableReference) {
-            VariableReferenceView(
-                isPresented: $isShowingVariableReference,
-                onInsert: insertVariable
-            )
+            .id("title")
         }
 
-        DisclosureGroup(isExpanded: $showExtendedDescription) {
+        if settingsViewModel.isIPTCMetadataFieldVisible(.description) {
             VStack(alignment: .leading, spacing: 2) {
                 HStack {
+                    Text("Description")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    DifferenceIndicator(differs: viewModel.fieldDiffers(\.description))
+                    if viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("description") {
+                        MultipleValuesIndicator()
+                    }
                     Spacer()
                     Button {
-                        openVariableReference(for: .extendedDescription)
+                        openVariableReference(for: .description)
                     } label: {
                         Image(systemName: "curlybraces")
                             .font(.caption)
@@ -868,95 +835,142 @@ struct MetadataPanel: View {
                     .buttonStyle(.plain)
                     .help("Variable Reference")
                 }
+                if let conflict = viewModel.descriptionConflict {
+                    DescriptionConflictBanner(conflict: conflict) { keepXMP in
+                        viewModel.resolveDescriptionConflict(keepXMP: keepXMP)
+                    }
+                }
                 BufferedTextField(
-                    currentValue: viewModel.editingMetadata.extendedDescription ?? "",
-                    placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "extendedDescription") : "Enter extended description",
+                    currentValue: viewModel.editingMetadata.description ?? "",
+                    placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "description") : "Enter description",
                     lineLimit: 4...8,
                     focusedField: $focusedField,
-                    focusKey: "extendedDescription",
+                    focusKey: "description",
                     onTextFinished: { newValue in
-                        if newValue != viewModel.editingMetadata.extendedDescription {
-                            viewModel.editingMetadata.extendedDescription = newValue
+                        if newValue != viewModel.editingMetadata.description {
+                            viewModel.editingMetadata.description = newValue
                             viewModel.markChanged()
                         }
                     },
                     onCommit: { commitEdits() }
                 )
             }
-            .padding(.top, 2)
-        } label: {
-            HStack(spacing: 4) {
-                Text("Extended Description")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                DifferenceIndicator(differs: viewModel.fieldDiffers(\.extendedDescription))
-                if viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("extendedDescription") {
-                    MultipleValuesIndicator()
+            .id("description")
+        }
+
+        if settingsViewModel.isIPTCMetadataFieldVisible(.extendedDescription) {
+            DisclosureGroup(isExpanded: $showExtendedDescription) {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack {
+                        Spacer()
+                        Button {
+                            openVariableReference(for: .extendedDescription)
+                        } label: {
+                            Image(systemName: "curlybraces")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Variable Reference")
+                    }
+                    BufferedTextField(
+                        currentValue: viewModel.editingMetadata.extendedDescription ?? "",
+                        placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "extendedDescription") : "Enter extended description",
+                        lineLimit: 4...8,
+                        focusedField: $focusedField,
+                        focusKey: "extendedDescription",
+                        onTextFinished: { newValue in
+                            if newValue != viewModel.editingMetadata.extendedDescription {
+                                viewModel.editingMetadata.extendedDescription = newValue
+                                viewModel.markChanged()
+                            }
+                        },
+                        onCommit: { commitEdits() }
+                    )
+                }
+                .padding(.top, 2)
+            } label: {
+                HStack(spacing: 4) {
+                    Text("Extended Description")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    DifferenceIndicator(differs: viewModel.fieldDiffers(\.extendedDescription))
+                    if viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("extendedDescription") {
+                        MultipleValuesIndicator()
+                    }
                 }
             }
+            .id("extendedDescription")
         }
-        .id("extendedDescription")
 
-        keywordsEditor
-            .id("keywords")
+        if settingsViewModel.isIPTCMetadataFieldVisible(.keywords) {
+            keywordsEditor
+                .id("keywords")
+        }
 
-        personShownEditor
-            .id("personShown")
+        if settingsViewModel.isIPTCMetadataFieldVisible(.personShown) {
+            personShownEditor
+                .id("personShown")
+        }
 
-        EditableTextField(
-            label: "Copyright",
-            text: Binding(
-                get: { viewModel.editingMetadata.copyright ?? "" },
-                set: { viewModel.editingMetadata.copyright = $0.isEmpty ? nil : $0; viewModel.markChanged() }
-            ),
-            placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "copyright") : "Enter copyright",
-            onCommit: { commitEdits() },
-            showsDifference: viewModel.fieldDiffers(\.copyright),
-            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("copyright"),
-            onInsertVariable: {
-                openVariableReference(for: .copyright)
-            },
-            onAddCurrentToQuickList: {
-                addCurrentToQuickList(type: .copyright, value: viewModel.editingMetadata.copyright)
-            },
-            presetList: settingsViewModel.loadCopyrightList(),
-            onChooseListFile: {
-                listFilePickerTarget = .copyright
-                showingListFilePicker = true
-            },
-            focusKey: "copyright",
-            focusedField: $focusedField
-        )
-        .id("copyright")
+        if settingsViewModel.isIPTCMetadataFieldVisible(.copyright) {
+            EditableTextField(
+                label: "Copyright",
+                text: Binding(
+                    get: { viewModel.editingMetadata.copyright ?? "" },
+                    set: { viewModel.editingMetadata.copyright = $0.isEmpty ? nil : $0; viewModel.markChanged() }
+                ),
+                placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "copyright") : "Enter copyright",
+                onCommit: { commitEdits() },
+                showsDifference: viewModel.fieldDiffers(\.copyright),
+                hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("copyright"),
+                onInsertVariable: {
+                    openVariableReference(for: .copyright)
+                },
+                onAddCurrentToQuickList: {
+                    addCurrentToQuickList(type: .copyright, value: viewModel.editingMetadata.copyright)
+                },
+                presetList: settingsViewModel.loadCopyrightList(),
+                onChooseListFile: {
+                    listFilePickerTarget = .copyright
+                    showingListFilePicker = true
+                },
+                focusKey: "copyright",
+                focusedField: $focusedField
+            )
+            .id("copyright")
+        }
 
-        EditableTextField(
-            label: "Job ID",
-            text: Binding(
-                get: { viewModel.editingMetadata.jobId ?? "" },
-                set: { viewModel.editingMetadata.jobId = $0.isEmpty ? nil : $0; viewModel.markChanged() }
-            ),
-            placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "jobId") : "Enter job ID",
-            onCommit: { commitEdits() },
-            showsDifference: viewModel.fieldDiffers(\.jobId),
-            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("jobId"),
-            onInsertVariable: {
-                openVariableReference(for: .jobId)
-            },
-            trailingLabelContent: AnyView(
-                Button {
-                    settingsViewModel.addJobIdToKeywords.toggle()
-                } label: {
-                    Image(systemName: settingsViewModel.addJobIdToKeywords ? "tag.fill" : "tag")
-                        .font(.caption)
-                        .foregroundStyle(settingsViewModel.addJobIdToKeywords ? Color.accentColor : Color.secondary)
-                }
-                .buttonStyle(.plain)
-                .help(settingsViewModel.addJobIdToKeywords ? "Job ID will be added to keywords during variable processing (click to disable). Job IDs are not validated against the approved keywords list." : "Add Job ID to keywords during variable processing")
-            ),
-            focusKey: "jobId",
-            focusedField: $focusedField
-        )
-        .id("jobId")
+        if settingsViewModel.isIPTCMetadataFieldVisible(.jobId) {
+            EditableTextField(
+                label: "Job ID",
+                text: Binding(
+                    get: { viewModel.editingMetadata.jobId ?? "" },
+                    set: { viewModel.editingMetadata.jobId = $0.isEmpty ? nil : $0; viewModel.markChanged() }
+                ),
+                placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "jobId") : "Enter job ID",
+                onCommit: { commitEdits() },
+                showsDifference: viewModel.fieldDiffers(\.jobId),
+                hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("jobId"),
+                onInsertVariable: {
+                    openVariableReference(for: .jobId)
+                },
+                trailingLabelContent: AnyView(
+                    Button {
+                        settingsViewModel.addJobIdToKeywords.toggle()
+                    } label: {
+                        Image(systemName: settingsViewModel.addJobIdToKeywords ? "tag.fill" : "tag")
+                            .font(.caption)
+                            .foregroundStyle(settingsViewModel.addJobIdToKeywords ? Color.accentColor : Color.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help(settingsViewModel.addJobIdToKeywords ? "Job ID will be added to keywords during variable processing (click to disable). Job IDs are not validated against the approved keywords list." : "Add Job ID to keywords during variable processing")
+                ),
+                focusKey: "jobId",
+                focusedField: $focusedField
+            )
+            .id("jobId")
+        }
     }
 
     // MARK: - Classification
@@ -1307,12 +1321,16 @@ struct MetadataPanel: View {
 
     @ViewBuilder
     private var additionalFieldsSection: some View {
-        Section {
-            editableAdditionalFields
-        } header: {
-            Text("Additional Fields")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+        if IPTCMetadata.FieldKey.additionalEditorFields.contains(
+            where: { settingsViewModel.isIPTCMetadataFieldVisible($0) }
+        ) {
+            Section {
+                editableAdditionalFields
+            } header: {
+                Text("Additional Fields")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -1320,131 +1338,145 @@ struct MetadataPanel: View {
     private var editableAdditionalFields: some View {
         let _ = settingsViewModel.quickListVersion
 
-        EditableTextField(
-            label: "Creator",
-            text: Binding(
-                get: { viewModel.editingMetadata.creator ?? "" },
-                set: { viewModel.editingMetadata.creator = $0.isEmpty ? nil : $0; viewModel.markChanged() }
-            ),
-            placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "creator") : "",
-            onCommit: { commitEdits() },
-            showsDifference: viewModel.fieldDiffers(\.creator),
-            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("creator"),
-            onInsertVariable: {
-                openVariableReference(for: .creator)
-            },
-            onAddCurrentToQuickList: {
-                addCurrentToQuickList(type: .creator, value: viewModel.editingMetadata.creator)
-            },
-            presetList: settingsViewModel.loadCreatorList(),
-            onChooseListFile: {
-                listFilePickerTarget = .creator
-                showingListFilePicker = true
-            },
-            focusKey: "creator",
-            focusedField: $focusedField
-        )
-        .id("creator")
-        EditableTextField(
-            label: "Credit",
-            text: Binding(
-                get: { viewModel.editingMetadata.credit ?? "" },
-                set: { viewModel.editingMetadata.credit = $0.isEmpty ? nil : $0; viewModel.markChanged() }
-            ),
-            placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "credit") : "",
-            onCommit: { commitEdits() },
-            showsDifference: viewModel.fieldDiffers(\.credit),
-            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("credit"),
-            onInsertVariable: {
-                openVariableReference(for: .credit)
-            },
-            onAddCurrentToQuickList: {
-                addCurrentToQuickList(type: .credit, value: viewModel.editingMetadata.credit)
-            },
-            presetList: settingsViewModel.loadCreditList(),
-            onChooseListFile: {
-                listFilePickerTarget = .credit
-                showingListFilePicker = true
-            },
-            focusKey: "credit",
-            focusedField: $focusedField
-        )
-        .id("credit")
-        EditableTextField(
-            label: "City",
-            text: Binding(
-                get: { viewModel.editingMetadata.city ?? "" },
-                set: { viewModel.editingMetadata.city = $0.isEmpty ? nil : $0; viewModel.markChanged() }
-            ),
-            placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "city") : "",
-            onCommit: { commitEdits() },
-            showsDifference: viewModel.fieldDiffers(\.city),
-            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("city"),
-            onInsertVariable: {
-                openVariableReference(for: .city)
-            },
-            onAddCurrentToQuickList: {
-                addCurrentToQuickList(type: .city, value: viewModel.editingMetadata.city)
-            },
-            presetList: settingsViewModel.loadCityList(),
-            onChooseListFile: {
-                listFilePickerTarget = .city
-                showingListFilePicker = true
-            },
-            focusKey: "city",
-            focusedField: $focusedField
-        )
-        .id("city")
-        EditableTextField(
-            label: "Country",
-            text: Binding(
-                get: { viewModel.editingMetadata.country ?? "" },
-                set: { viewModel.editingMetadata.country = $0.isEmpty ? nil : $0; viewModel.markChanged() }
-            ),
-            placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "country") : "",
-            onCommit: { commitEdits() },
-            showsDifference: viewModel.fieldDiffers(\.country),
-            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("country"),
-            onInsertVariable: {
-                openVariableReference(for: .country)
-            },
-            onAddCurrentToQuickList: {
-                addCurrentToQuickList(type: .country, value: viewModel.editingMetadata.country)
-            },
-            presetList: settingsViewModel.loadCountryList(),
-            onChooseListFile: {
-                listFilePickerTarget = .country
-                showingListFilePicker = true
-            },
-            focusKey: "country",
-            focusedField: $focusedField
-        )
-        .id("country")
-        EditableTextField(
-            label: "Event",
-            text: Binding(
-                get: { viewModel.editingMetadata.event ?? "" },
-                set: { viewModel.editingMetadata.event = $0.isEmpty ? nil : $0; viewModel.markChanged() }
-            ),
-            placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "event") : "",
-            onCommit: { commitEdits() },
-            showsDifference: viewModel.fieldDiffers(\.event),
-            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("event"),
-            onInsertVariable: {
-                openVariableReference(for: .event)
-            },
-            onAddCurrentToQuickList: {
-                addCurrentToQuickList(type: .event, value: viewModel.editingMetadata.event)
-            },
-            presetList: settingsViewModel.loadEventList(),
-            onChooseListFile: {
-                listFilePickerTarget = .event
-                showingListFilePicker = true
-            },
-            focusKey: "event",
-            focusedField: $focusedField
-        )
-        .id("event")
+        if settingsViewModel.isIPTCMetadataFieldVisible(.creator) {
+            EditableTextField(
+                label: "Creator",
+                text: Binding(
+                    get: { viewModel.editingMetadata.creator ?? "" },
+                    set: { viewModel.editingMetadata.creator = $0.isEmpty ? nil : $0; viewModel.markChanged() }
+                ),
+                placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "creator") : "",
+                onCommit: { commitEdits() },
+                showsDifference: viewModel.fieldDiffers(\.creator),
+                hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("creator"),
+                onInsertVariable: {
+                    openVariableReference(for: .creator)
+                },
+                onAddCurrentToQuickList: {
+                    addCurrentToQuickList(type: .creator, value: viewModel.editingMetadata.creator)
+                },
+                presetList: settingsViewModel.loadCreatorList(),
+                onChooseListFile: {
+                    listFilePickerTarget = .creator
+                    showingListFilePicker = true
+                },
+                focusKey: "creator",
+                focusedField: $focusedField
+            )
+            .id("creator")
+        }
+
+        if settingsViewModel.isIPTCMetadataFieldVisible(.credit) {
+            EditableTextField(
+                label: "Credit",
+                text: Binding(
+                    get: { viewModel.editingMetadata.credit ?? "" },
+                    set: { viewModel.editingMetadata.credit = $0.isEmpty ? nil : $0; viewModel.markChanged() }
+                ),
+                placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "credit") : "",
+                onCommit: { commitEdits() },
+                showsDifference: viewModel.fieldDiffers(\.credit),
+                hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("credit"),
+                onInsertVariable: {
+                    openVariableReference(for: .credit)
+                },
+                onAddCurrentToQuickList: {
+                    addCurrentToQuickList(type: .credit, value: viewModel.editingMetadata.credit)
+                },
+                presetList: settingsViewModel.loadCreditList(),
+                onChooseListFile: {
+                    listFilePickerTarget = .credit
+                    showingListFilePicker = true
+                },
+                focusKey: "credit",
+                focusedField: $focusedField
+            )
+            .id("credit")
+        }
+
+        if settingsViewModel.isIPTCMetadataFieldVisible(.city) {
+            EditableTextField(
+                label: "City",
+                text: Binding(
+                    get: { viewModel.editingMetadata.city ?? "" },
+                    set: { viewModel.editingMetadata.city = $0.isEmpty ? nil : $0; viewModel.markChanged() }
+                ),
+                placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "city") : "",
+                onCommit: { commitEdits() },
+                showsDifference: viewModel.fieldDiffers(\.city),
+                hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("city"),
+                onInsertVariable: {
+                    openVariableReference(for: .city)
+                },
+                onAddCurrentToQuickList: {
+                    addCurrentToQuickList(type: .city, value: viewModel.editingMetadata.city)
+                },
+                presetList: settingsViewModel.loadCityList(),
+                onChooseListFile: {
+                    listFilePickerTarget = .city
+                    showingListFilePicker = true
+                },
+                focusKey: "city",
+                focusedField: $focusedField
+            )
+            .id("city")
+        }
+
+        if settingsViewModel.isIPTCMetadataFieldVisible(.country) {
+            EditableTextField(
+                label: "Country",
+                text: Binding(
+                    get: { viewModel.editingMetadata.country ?? "" },
+                    set: { viewModel.editingMetadata.country = $0.isEmpty ? nil : $0; viewModel.markChanged() }
+                ),
+                placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "country") : "",
+                onCommit: { commitEdits() },
+                showsDifference: viewModel.fieldDiffers(\.country),
+                hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("country"),
+                onInsertVariable: {
+                    openVariableReference(for: .country)
+                },
+                onAddCurrentToQuickList: {
+                    addCurrentToQuickList(type: .country, value: viewModel.editingMetadata.country)
+                },
+                presetList: settingsViewModel.loadCountryList(),
+                onChooseListFile: {
+                    listFilePickerTarget = .country
+                    showingListFilePicker = true
+                },
+                focusKey: "country",
+                focusedField: $focusedField
+            )
+            .id("country")
+        }
+
+        if settingsViewModel.isIPTCMetadataFieldVisible(.event) {
+            EditableTextField(
+                label: "Event",
+                text: Binding(
+                    get: { viewModel.editingMetadata.event ?? "" },
+                    set: { viewModel.editingMetadata.event = $0.isEmpty ? nil : $0; viewModel.markChanged() }
+                ),
+                placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "event") : "",
+                onCommit: { commitEdits() },
+                showsDifference: viewModel.fieldDiffers(\.event),
+                hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("event"),
+                onInsertVariable: {
+                    openVariableReference(for: .event)
+                },
+                onAddCurrentToQuickList: {
+                    addCurrentToQuickList(type: .event, value: viewModel.editingMetadata.event)
+                },
+                presetList: settingsViewModel.loadEventList(),
+                onChooseListFile: {
+                    listFilePickerTarget = .event
+                    showingListFilePicker = true
+                },
+                focusKey: "event",
+                focusedField: $focusedField
+            )
+            .id("event")
+        }
     }
 
     @ViewBuilder

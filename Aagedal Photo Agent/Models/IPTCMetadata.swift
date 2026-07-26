@@ -1831,10 +1831,39 @@ extension IPTCMetadata {
 
         static let defaultCheckedFields: Set<FieldKey> = [.title, .description, .creator, .copyright]
 
+        /// Fields displayed in the main Metadata section of the editor.
+        static let primaryEditorFields: [FieldKey] = [
+            .title, .description, .extendedDescription, .keywords, .personShown,
+            .copyright, .jobId,
+        ]
+
+        /// Fields displayed in the Additional Fields section of the editor.
+        static let additionalEditorFields: [FieldKey] = [
+            .creator, .credit, .city, .country, .event,
+        ]
+
+        /// Every field that can be shown or hidden in the editable metadata panel.
+        /// `dateCreated` has no editor and remains only for decoding older stored preferences.
+        static let editorFields = primaryEditorFields + additionalEditorFields
+
+        /// Core fields that must remain available in the metadata panel.
+        static let alwaysVisibleEditorFields: Set<FieldKey> = [
+            .title, .description, .keywords, .copyright,
+        ]
+
+        /// Fields offered in Settings for panel customization.
+        static let optionalEditorFields = editorFields.filter {
+            !alwaysVisibleEditorFields.contains($0)
+        }
+
         /// Fields offered in the required-metadata settings and the browser's "Missing Field" filter.
-        /// Excludes `dateCreated`, which has no editor in the metadata panel — requiring or filtering
-        /// on it would be meaningless. The case itself is kept so stored prefs still decode.
-        static let userSelectable: [FieldKey] = allCases.filter { $0 != .dateCreated }
+        /// Keeps the established declaration order while excluding the non-editable Date Created case.
+        static let userSelectable = allCases.filter { $0 != .dateCreated }
+
+        static func decodeHidden(_ rawValues: [String]) -> Set<FieldKey> {
+            Set(rawValues.compactMap(FieldKey.init(rawValue:)))
+                .intersection(optionalEditorFields)
+        }
     }
 }
 

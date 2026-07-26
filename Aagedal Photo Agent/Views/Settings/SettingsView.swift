@@ -190,6 +190,15 @@ struct SettingsView: View {
         )
     }
 
+    private func iptcMetadataFieldVisibilityBinding(
+        _ field: IPTCMetadata.FieldKey
+    ) -> Binding<Bool> {
+        Binding(
+            get: { settingsViewModel.isIPTCMetadataFieldVisible(field) },
+            set: { settingsViewModel.setIPTCMetadataField(field, visible: $0) }
+        )
+    }
+
     @ViewBuilder
     private func detailView(for section: SettingsSection) -> some View {
         switch section {
@@ -805,6 +814,28 @@ struct SettingsView: View {
                 Text("Add: new items are merged into each image's existing values. Overwrite: all images get exactly the entered values.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            Section("IPTC Fields") {
+                Text("Choose which optional fields appear in the editable metadata panel. Headline, Description, Keywords, and Copyright always remain available. Hiding a field does not remove its metadata from any image.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                ForEach(IPTCMetadata.FieldKey.optionalEditorFields, id: \.self) { field in
+                    Toggle(
+                        field.displayName,
+                        isOn: iptcMetadataFieldVisibilityBinding(field)
+                    )
+                    .toggleStyle(.checkbox)
+                }
+
+                HStack {
+                    Spacer()
+                    Button("Show All") {
+                        settingsViewModel.hiddenIPTCMetadataFields.removeAll()
+                    }
+                    .disabled(settingsViewModel.hiddenIPTCMetadataFields.isEmpty)
+                }
             }
 
             RequiredMetadataFieldsSection()

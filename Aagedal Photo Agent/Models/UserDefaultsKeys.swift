@@ -75,6 +75,8 @@ nonisolated enum UserDefaultsKeys {
     /// upload checks. Fields absent from the map are `.optional`.
     static let metadataRequirementLevels = "metadataRequirementLevels"
     static let metadataMinimumLengths = "metadataMinimumLengths"
+    /// Raw values of IPTC fields hidden from the editable metadata panel.
+    static let hiddenIPTCMetadataFields = "hiddenIPTCMetadataFields"
 
     // MARK: - Browser
     static let rawRenderAsHDR = "rawRenderAsHDR"
