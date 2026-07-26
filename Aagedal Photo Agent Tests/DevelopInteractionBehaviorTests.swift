@@ -247,6 +247,16 @@ struct DevelopInteractionBehaviorTests {
         #expect(Set(decoded) == Set(DevelopPanelSection.allCases))
     }
 
+    @Test("Develop sections own every optional slider exactly once")
+    func developSectionSliderMappingIsComplete() {
+        let mapped = DevelopPanelSection.allCases.flatMap(\.optionalSliders)
+
+        #expect(mapped.count == Set(mapped).count)
+        #expect(Set(mapped) == Set(DevelopSlider.allCases))
+        #expect(DevelopPanelSection.color.alwaysVisibleControlNames == ["White Balance", "Tint"])
+        #expect(DevelopPanelSection.exposure.alwaysVisibleControlNames == ["Exposure"])
+    }
+
     @Test("Develop slider groups hide and restore all of their controls")
     func developSliderGroupVisibilityTogglesWholeSection() {
         var hidden: Set<DevelopSlider> = [.contrast, .filmGrain]

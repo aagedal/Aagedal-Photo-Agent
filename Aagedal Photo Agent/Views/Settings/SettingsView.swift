@@ -190,12 +190,12 @@ struct SettingsView: View {
         )
     }
 
-    private func developSliderGroupVisibilityBinding(
-        _ group: DevelopSliderGroup
+    private func developPanelSectionVisibilityBinding(
+        _ section: DevelopPanelSection
     ) -> Binding<Bool> {
         Binding(
-            get: { settingsViewModel.isDevelopSliderGroupVisible(group) },
-            set: { settingsViewModel.setDevelopSliderGroup(group, visible: $0) }
+            get: { settingsViewModel.isDevelopPanelSectionVisible(section) },
+            set: { settingsViewModel.setDevelopPanelSection(section, visible: $0) }
         )
     }
 
@@ -291,7 +291,7 @@ struct SettingsView: View {
             }
 
             Section("Develop Controls") {
-                Text("Arrange the major sections in the Global Develop inspector.")
+                Text("Arrange the Global Develop sections and choose which optional controls they contain. Expand a section to edit individual controls. Exposure, white balance, and Crop always remain available.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -299,64 +299,7 @@ struct SettingsView: View {
                     Array(settingsViewModel.developSectionOrder.enumerated()),
                     id: \.element
                 ) { index, section in
-                    HStack {
-                        Text(section.title)
-                        Spacer()
-                        Button {
-                            settingsViewModel.moveDevelopSection(section, by: -1)
-                        } label: {
-                            Image(systemName: "chevron.up")
-                        }
-                        .buttonStyle(.borderless)
-                        .disabled(index == 0)
-                        .help("Move \(section.title) up")
-                        .accessibilityLabel("Move \(section.title) up")
-
-                        Button {
-                            settingsViewModel.moveDevelopSection(section, by: 1)
-                        } label: {
-                            Image(systemName: "chevron.down")
-                        }
-                        .buttonStyle(.borderless)
-                        .disabled(index == settingsViewModel.developSectionOrder.count - 1)
-                        .help("Move \(section.title) down")
-                        .accessibilityLabel("Move \(section.title) down")
-                    }
-                }
-
-                HStack {
-                    Spacer()
-                    Button("Reset Order") {
-                        settingsViewModel.resetDevelopSectionOrder()
-                    }
-                    .disabled(
-                        settingsViewModel.developSectionOrder == DevelopPanelSection.defaultOrder
-                    )
-                }
-
-                Divider()
-
-                Text("Choose which optional sliders appear in Develop. Exposure, white balance, and Crop always remain available.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                ForEach(DevelopSliderGroup.allCases) { group in
-                    DisclosureGroup {
-                        ForEach(DevelopSlider.allCases.filter { $0.group == group }) { slider in
-                            Toggle(
-                                slider.displayName,
-                                isOn: developSliderVisibilityBinding(slider)
-                            )
-                            .toggleStyle(.checkbox)
-                        }
-                    } label: {
-                        Toggle(
-                            group.title,
-                            isOn: developSliderGroupVisibilityBinding(group)
-                        )
-                        .toggleStyle(.checkbox)
-                        .help("Show or hide every optional control in \(group.title)")
-                    }
+                    developControlsRow(section, at: index)
                 }
 
                 HStack {
@@ -365,11 +308,106 @@ struct SettingsView: View {
                         settingsViewModel.hiddenDevelopSliders.removeAll()
                     }
                     .disabled(settingsViewModel.hiddenDevelopSliders.isEmpty)
+
+                    Button("Reset Order") {
+                        settingsViewModel.resetDevelopSectionOrder()
+                    }
+                    .disabled(
+                        settingsViewModel.developSectionOrder == DevelopPanelSection.defaultOrder
+                    )
                 }
             }
         }
         .formStyle(.grouped)
         .padding()
+    }
+
+    @ViewBuilder
+    private func developControlsRow(
+        _ section: DevelopPanelSection,
+        at index: Int
+    ) -> some View {
+        if section.optionalSliders.count > 1 || !section.alwaysVisibleControlNames.isEmpty {
+            DisclosureGroup {
+                if !section.alwaysVisibleControlNames.isEmpty {
+                    Label {
+                        HStack {
+                            Text(section.alwaysVisibleControlNames.joined(separator: ", "))
+                            Spacer()
+                            Text("Always shown")
+                                .foregroundStyle(.secondary)
+                        }
+                    } icon: {
+                        Image(systemName: "lock.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .font(.caption)
+                }
+
+                ForEach(section.optionalSliders) { slider in
+                    Toggle(
+                        slider.displayName,
+                        isOn: developSliderVisibilityBinding(slider)
+                    )
+                    .toggleStyle(.checkbox)
+                }
+            } label: {
+                HStack {
+                    if section.alwaysVisibleControlNames.isEmpty {
+                        Toggle(
+                            section.title,
+                            isOn: developPanelSectionVisibilityBinding(section)
+                        )
+                        .toggleStyle(.checkbox)
+                        .help("Show or hide every control in \(section.title)")
+                    } else {
+                        Label(section.title, systemImage: "lock.fill")
+                            .help("\(section.title) contains controls that are always shown")
+                    }
+
+                    Spacer()
+                    developSectionOrderButtons(section, at: index)
+                }
+            }
+        } else {
+            HStack {
+                Toggle(
+                    section.title,
+                    isOn: developPanelSectionVisibilityBinding(section)
+                )
+                .toggleStyle(.checkbox)
+                .help("Show or hide \(section.title)")
+
+                Spacer()
+                developSectionOrderButtons(section, at: index)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func developSectionOrderButtons(
+        _ section: DevelopPanelSection,
+        at index: Int
+    ) -> some View {
+        Button {
+            settingsViewModel.moveDevelopSection(section, by: -1)
+        } label: {
+            Image(systemName: "chevron.up")
+        }
+        .buttonStyle(.borderless)
+        .disabled(index == 0)
+        .help("Move \(section.title) up")
+        .accessibilityLabel("Move \(section.title) up")
+
+        Button {
+            settingsViewModel.moveDevelopSection(section, by: 1)
+        } label: {
+            Image(systemName: "chevron.down")
+        }
+        .buttonStyle(.borderless)
+        .disabled(index == settingsViewModel.developSectionOrder.count - 1)
+        .help("Move \(section.title) down")
+        .accessibilityLabel("Move \(section.title) down")
     }
 
     // MARK: - RAW Decoding Tab

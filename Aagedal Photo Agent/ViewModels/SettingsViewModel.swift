@@ -217,6 +217,42 @@ nonisolated enum DevelopPanelSection: String, CaseIterable, Identifiable, Sendab
         .filmEmulation,
     ]
 
+    /// Optional controls belonging to this section in the Global Develop inspector.
+    ///
+    /// Keeping this mapping next to the section order lets Settings present ordering and
+    /// visibility as one hierarchy instead of grouping the same controls a second way.
+    var optionalSliders: [DevelopSlider] {
+        switch self {
+        case .color:
+            return [.saturation, .vibrance, .density]
+        case .exposure:
+            return [.contrast, .highlights, .shadows, .whites, .blacks]
+        case .detail:
+            return [.sharpness, .clarity, .dehaze]
+        case .toneCurve:
+            return [.toneCurve]
+        case .hsl:
+            return [.hsl]
+        case .anonymizer:
+            return [.anonymizer]
+        case .filmEmulation:
+            return [.filmGrain, .halation, .bloom, .vignette, .edgeBlur]
+        }
+    }
+
+    /// Controls that keep Color and Exposure present even when all of their optional controls
+    /// are hidden. Crop is also always available, but lives outside this ordered section list.
+    var alwaysVisibleControlNames: [String] {
+        switch self {
+        case .color:
+            return ["White Balance", "Tint"]
+        case .exposure:
+            return ["Exposure"]
+        case .detail, .toneCurve, .hsl, .anonymizer, .filmEmulation:
+            return []
+        }
+    }
+
     /// Preserves every valid stored section once, then appends newly-added or missing sections
     /// in their default relative order. Unknown values are ignored for forward/backward safety.
     static func decodeOrder(_ rawValues: [String]) -> [DevelopPanelSection] {
@@ -388,6 +424,18 @@ final class SettingsViewModel {
 
     func setDevelopSliderGroup(_ group: DevelopSliderGroup, visible: Bool) {
         group.setVisible(visible, hiddenSliders: &hiddenDevelopSliders)
+    }
+
+    func isDevelopPanelSectionVisible(_ section: DevelopPanelSection) -> Bool {
+        section.optionalSliders.contains { !hiddenDevelopSliders.contains($0) }
+    }
+
+    func setDevelopPanelSection(_ section: DevelopPanelSection, visible: Bool) {
+        if visible {
+            hiddenDevelopSliders.subtract(section.optionalSliders)
+        } else {
+            hiddenDevelopSliders.formUnion(section.optionalSliders)
+        }
     }
 
     func moveDevelopSection(_ section: DevelopPanelSection, by offset: Int) {
