@@ -37,7 +37,7 @@ updated conditional-scope decision.
 **Exit gate:** an unchanged source can be identified, persisted records recover from failure, and
 all coordinate round-trips pass.
 
-- [ ] Implement `SourceImageRevision` and cancellable streaming SHA-256.
+- [x] Implement `SourceImageRevision` and cancellable streaming SHA-256.
 - [ ] Add source discovery/reassociation by resource ID and hash.
 - [ ] Implement versioned atomic JSON document storage with bounded backup.
 - [ ] Define unknown/newer schema behavior.

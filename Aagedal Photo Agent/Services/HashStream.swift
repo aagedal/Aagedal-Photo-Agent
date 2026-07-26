@@ -23,6 +23,9 @@ nonisolated struct HashStream: Sendable {
 
     /// Hash an entire file by streaming 1 MB chunks from disk.
     static func hashFile(at url: URL, chunkSize: Int = 1 << 20) async throws -> Data {
+        precondition(chunkSize > 0)
+        try Task.checkCancellation()
+
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
 
@@ -100,5 +103,10 @@ extension Data {
     /// Eight-character hex prefix for compact display in error messages.
     nonisolated var shortHex: String {
         prefix(4).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Stable lowercase encoding used for persisted content hashes.
+    nonisolated var lowercaseHexString: String {
+        map { String(format: "%02x", $0) }.joined()
     }
 }
