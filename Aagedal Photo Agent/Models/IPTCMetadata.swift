@@ -1435,8 +1435,12 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
     var dateCreated: String?
     var captureDate: String?
     var city: String?
+    var sublocation: String?
+    var provinceState: String?
     var country: String?
     var event: String?
+    var instructions: String?
+    var source: String?
 
     // GPS
     var latitude: Double?
@@ -1456,7 +1460,7 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         case title, description, extendedDescription, keywords, personShown
         case digitalSourceType
         case creator, credit, copyright, jobId, dateCreated, captureDate
-        case city, country, event
+        case city, sublocation, provinceState, country, event, instructions, source
         case latitude, longitude
         case rating, label
     }
@@ -1477,8 +1481,12 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         dateCreated: String? = nil,
         captureDate: String? = nil,
         city: String? = nil,
+        sublocation: String? = nil,
+        provinceState: String? = nil,
         country: String? = nil,
         event: String? = nil,
+        instructions: String? = nil,
+        source: String? = nil,
         rating: Int? = nil,
         label: String? = nil,
         cameraRaw: CameraRawSettings? = nil,
@@ -1499,8 +1507,12 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         self.dateCreated = dateCreated
         self.captureDate = captureDate
         self.city = city
+        self.sublocation = sublocation
+        self.provinceState = provinceState
         self.country = country
         self.event = event
+        self.instructions = instructions
+        self.source = source
         self.rating = rating
         self.label = label
         self.cameraRaw = cameraRaw
@@ -1522,8 +1534,12 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
         dateCreated = try container.decodeIfPresent(String.self, forKey: .dateCreated)
         captureDate = try container.decodeIfPresent(String.self, forKey: .captureDate)
         city = try container.decodeIfPresent(String.self, forKey: .city)
+        sublocation = try container.decodeIfPresent(String.self, forKey: .sublocation)
+        provinceState = try container.decodeIfPresent(String.self, forKey: .provinceState)
         country = try container.decodeIfPresent(String.self, forKey: .country)
         event = try container.decodeIfPresent(String.self, forKey: .event)
+        instructions = try container.decodeIfPresent(String.self, forKey: .instructions)
+        source = try container.decodeIfPresent(String.self, forKey: .source)
         latitude = try container.decodeIfPresent(Double.self, forKey: .latitude)
         longitude = try container.decodeIfPresent(Double.self, forKey: .longitude)
         rating = try container.decodeIfPresent(Int.self, forKey: .rating)
@@ -1546,8 +1562,12 @@ extension IPTCMetadata {
             || copyright != other.copyright
             || jobId != other.jobId
             || city != other.city
+            || sublocation != other.sublocation
+            || provinceState != other.provinceState
             || country != other.country
             || event != other.event
+            || instructions != other.instructions
+            || source != other.source
     }
 
     /// Whether any descriptive (editor-managed) field carries a value. The field set
@@ -1568,8 +1588,12 @@ extension IPTCMetadata {
         if let jobId, !jobId.isEmpty { return true }
         if let dateCreated, !dateCreated.isEmpty { return true }
         if let city, !city.isEmpty { return true }
+        if let sublocation, !sublocation.isEmpty { return true }
+        if let provinceState, !provinceState.isEmpty { return true }
         if let country, !country.isEmpty { return true }
         if let event, !event.isEmpty { return true }
+        if let instructions, !instructions.isEmpty { return true }
+        if let source, !source.isEmpty { return true }
         return false
     }
 
@@ -1597,8 +1621,12 @@ extension IPTCMetadata {
         result.jobId = record.jobId
         result.dateCreated = record.dateCreated
         result.city = record.city
+        result.sublocation = record.sublocation
+        result.provinceState = record.provinceState
         result.country = record.country
         result.event = record.event
+        result.instructions = record.instructions
+        result.source = record.source
 
         if let value = record.captureDate, !value.isEmpty { result.captureDate = value }
         if let value = record.latitude { result.latitude = value }
@@ -1635,8 +1663,12 @@ extension IPTCMetadata {
         if let value = override.dateCreated, !value.isEmpty { result.dateCreated = value }
         if let value = override.captureDate, !value.isEmpty { result.captureDate = value }
         if let value = override.city, !value.isEmpty { result.city = value }
+        if let value = override.sublocation, !value.isEmpty { result.sublocation = value }
+        if let value = override.provinceState, !value.isEmpty { result.provinceState = value }
         if let value = override.country, !value.isEmpty { result.country = value }
         if let value = override.event, !value.isEmpty { result.event = value }
+        if let value = override.instructions, !value.isEmpty { result.instructions = value }
+        if let value = override.source, !value.isEmpty { result.source = value }
         if let value = override.latitude { result.latitude = value }
         if let value = override.longitude { result.longitude = value }
         if let value = override.rating { result.rating = value }
@@ -1674,8 +1706,12 @@ extension IPTCMetadata {
         if let v = jobId { fields[.transmissionReference] = v }
         if let v = dateCreated { fields[.dateCreated] = v }
         if let v = city { fields[.city] = v }
+        if let v = sublocation { fields[.sublocation] = v }
+        if let v = provinceState { fields[.provinceState] = v }
         if let v = country { fields[.country] = v }
         if let v = event { fields[.event] = v }
+        if let v = instructions { fields[.instructions] = v }
+        if let v = source { fields[.source] = v }
         if let lat = latitude, let lon = longitude {
             fields[.gpsLatitude] = String(abs(lat))
             fields[.gpsLatitudeRef] = lat >= 0 ? "N" : "S"
@@ -1710,8 +1746,12 @@ extension IPTCMetadata {
         fields[.transmissionReference] = jobId ?? ""
         fields[.dateCreated] = dateCreated ?? ""
         fields[.city] = city ?? ""
+        fields[.sublocation] = sublocation ?? ""
+        fields[.provinceState] = provinceState ?? ""
         fields[.country] = country ?? ""
         fields[.event] = event ?? ""
+        fields[.instructions] = instructions ?? ""
+        fields[.source] = source ?? ""
         if let lat = latitude, let lon = longitude {
             fields[.gpsLatitude] = String(abs(lat))
             fields[.gpsLatitudeRef] = lat >= 0 ? "N" : "S"
@@ -1751,7 +1791,8 @@ nonisolated enum DigitalSourceType: String, Codable, CaseIterable, Sendable {
 extension IPTCMetadata {
     nonisolated enum FieldKey: String, CaseIterable, Codable, Sendable {
         case title, description, extendedDescription, keywords, personShown
-        case creator, credit, copyright, jobId, dateCreated, city, country, event
+        case creator, credit, copyright, jobId, dateCreated
+        case city, sublocation, provinceState, country, event, instructions, source
 
         var displayName: String {
             switch self {
@@ -1766,8 +1807,12 @@ extension IPTCMetadata {
             case .jobId: return "Job ID"
             case .dateCreated: return "Date Created"
             case .city: return "City"
+            case .sublocation: return "Sublocation"
+            case .provinceState: return "State / Province"
             case .country: return "Country"
             case .event: return "Event"
+            case .instructions: return "Instructions"
+            case .source: return "Source"
             }
         }
 
@@ -1784,8 +1829,12 @@ extension IPTCMetadata {
             case .jobId: return metadata.jobId?.isEmpty ?? true
             case .dateCreated: return metadata.dateCreated?.isEmpty ?? true
             case .city: return metadata.city?.isEmpty ?? true
+            case .sublocation: return metadata.sublocation?.isEmpty ?? true
+            case .provinceState: return metadata.provinceState?.isEmpty ?? true
             case .country: return metadata.country?.isEmpty ?? true
             case .event: return metadata.event?.isEmpty ?? true
+            case .instructions: return metadata.instructions?.isEmpty ?? true
+            case .source: return metadata.source?.isEmpty ?? true
             }
         }
 
@@ -1802,8 +1851,12 @@ extension IPTCMetadata {
             case .jobId: return metadata.jobId
             case .dateCreated: return metadata.dateCreated
             case .city: return metadata.city
+            case .sublocation: return metadata.sublocation
+            case .provinceState: return metadata.provinceState
             case .country: return metadata.country
             case .event: return metadata.event
+            case .instructions: return metadata.instructions
+            case .source: return metadata.source
             }
         }
 
@@ -1824,8 +1877,12 @@ extension IPTCMetadata {
             case .jobId: metadata.jobId = scalar
             case .dateCreated: metadata.dateCreated = scalar
             case .city: metadata.city = scalar
+            case .sublocation: metadata.sublocation = scalar
+            case .provinceState: metadata.provinceState = scalar
             case .country: metadata.country = scalar
             case .event: metadata.event = scalar
+            case .instructions: metadata.instructions = scalar
+            case .source: metadata.source = scalar
             }
         }
 
@@ -1839,7 +1896,8 @@ extension IPTCMetadata {
 
         /// Fields displayed in the Additional Fields section of the editor.
         static let additionalEditorFields: [FieldKey] = [
-            .creator, .credit, .city, .country, .event,
+            .creator, .credit, .source, .city, .sublocation, .provinceState, .country, .event,
+            .instructions,
         ]
 
         /// Every field that can be shown or hidden in the editable metadata panel.

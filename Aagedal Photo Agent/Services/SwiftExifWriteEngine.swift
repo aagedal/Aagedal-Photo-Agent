@@ -497,12 +497,44 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, @unchecked Se
                 metadata.iptc.city = value
             }
 
+        case .sublocation:
+            if isEmpty {
+                metadata.iptc.removeAll(for: .sublocation)
+                metadata.xmp?.removeValue(namespace: XMPNamespace.iptcCore, property: "Location")
+            } else {
+                metadata.iptc.sublocation = value
+            }
+
+        case .provinceState:
+            if isEmpty {
+                metadata.iptc.removeAll(for: .provinceState)
+                metadata.xmp?.removeValue(namespace: XMPNamespace.photoshop, property: "State")
+            } else {
+                metadata.iptc.provinceState = value
+            }
+
         case .country:
             if isEmpty {
                 metadata.iptc.removeAll(for: .countryPrimaryLocationName)
                 metadata.xmp?.removeValue(namespace: XMPNamespace.photoshop, property: "Country")
             } else {
                 metadata.iptc.countryName = value
+            }
+
+        case .instructions:
+            if isEmpty {
+                metadata.iptc.removeAll(for: .specialInstructions)
+                metadata.xmp?.removeValue(namespace: XMPNamespace.photoshop, property: "Instructions")
+            } else {
+                metadata.iptc.specialInstructions = value
+            }
+
+        case .source:
+            if isEmpty {
+                metadata.iptc.removeAll(for: .source)
+                metadata.xmp?.removeValue(namespace: XMPNamespace.photoshop, property: "Source")
+            } else {
+                metadata.iptc.source = value
             }
 
         // XMP-only fields

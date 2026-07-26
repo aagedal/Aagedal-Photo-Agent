@@ -73,7 +73,7 @@ Non-destructive RAW development with real-time Metal GPU preview:
 
 ### Metadata Management
 
-- Edit IPTC fields: title, caption, keywords, person shown, creator, credit, copyright, city, country, event, job ID, GPS coordinates
+- Edit IPTC fields: title, caption, keywords, person shown, creator, credit, copyright, source, city, sublocation, state/province, country, event, instructions, job ID, and GPS coordinates
 - Non-destructive editing via JSON sidecar files with explicit save
 - Copy and paste metadata between images
 - Structured keywords — Photo Mechanic-style hierarchical keyword lists with categories and synonyms, with a tree picker in the metadata panel

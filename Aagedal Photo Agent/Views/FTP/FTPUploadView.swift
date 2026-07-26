@@ -748,8 +748,12 @@ struct FTPUploadView: View {
                 resolved.jobId = resolveIfChanged(meta.jobId, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
                 resolved.dateCreated = resolveIfChanged(meta.dateCreated, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
                 resolved.city = resolveIfChanged(meta.city, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
+                resolved.sublocation = resolveIfChanged(meta.sublocation, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
+                resolved.provinceState = resolveIfChanged(meta.provinceState, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
                 resolved.country = resolveIfChanged(meta.country, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
                 resolved.event = resolveIfChanged(meta.event, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
+                resolved.instructions = resolveIfChanged(meta.instructions, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
+                resolved.source = resolveIfChanged(meta.source, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber)
 
                 if changed {
                     var fields: [MetadataFieldKey: String] = [:]
@@ -766,8 +770,12 @@ struct FTPUploadView: View {
                     }
                     if resolved.dateCreated != meta.dateCreated { fields[.dateCreated] = resolved.dateCreated ?? "" }
                     if resolved.city != meta.city { fields[.city] = resolved.city ?? "" }
+                    if resolved.sublocation != meta.sublocation { fields[.sublocation] = resolved.sublocation ?? "" }
+                    if resolved.provinceState != meta.provinceState { fields[.provinceState] = resolved.provinceState ?? "" }
                     if resolved.country != meta.country { fields[.country] = resolved.country ?? "" }
                     if resolved.event != meta.event { fields[.event] = resolved.event ?? "" }
+                    if resolved.instructions != meta.instructions { fields[.instructions] = resolved.instructions ?? "" }
+                    if resolved.source != meta.source { fields[.source] = resolved.source ?? "" }
 
                     if !fields.isEmpty {
                         try await writeEngine.writeFields(fields, to: [url])

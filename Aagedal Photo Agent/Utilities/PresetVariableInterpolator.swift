@@ -54,8 +54,12 @@ struct PresetVariableInterpolator: Sendable {
         result.jobId = replace(result.jobId)
         result.dateCreated = replace(result.dateCreated)
         result.city = replace(result.city)
+        result.sublocation = replace(result.sublocation)
+        result.provinceState = replace(result.provinceState)
         result.country = replace(result.country)
         result.event = replace(result.event)
+        result.instructions = replace(result.instructions)
+        result.source = replace(result.source)
         result.keywords = result.keywords.compactMap { replace($0) }
         result.personShown = result.personShown.compactMap { replace($0) }
         return result
@@ -362,6 +366,8 @@ struct PresetVariableInterpolator: Sendable {
         case "jobid": return metadata.jobId ?? ""
         case "datecreated": return metadata.dateCreated ?? ""
         case "city": return metadata.city ?? ""
+        case "sublocation", "location": return metadata.sublocation ?? ""
+        case "provincestate", "state", "province": return metadata.provinceState ?? ""
         case "country": return metadata.country ?? ""
         case "gps", "gpscoordinates":
             guard let latitude = metadata.latitude, let longitude = metadata.longitude else { return "" }
@@ -371,6 +377,8 @@ struct PresetVariableInterpolator: Sendable {
         case "longitude", "gpslongitude":
             return metadata.longitude.map { String(format: "%.6f", $0) } ?? ""
         case "event": return metadata.event ?? ""
+        case "instructions": return metadata.instructions ?? ""
+        case "source": return metadata.source ?? ""
         case "digitalsourcetype": return metadata.digitalSourceType?.displayName ?? ""
         default: return ""
         }

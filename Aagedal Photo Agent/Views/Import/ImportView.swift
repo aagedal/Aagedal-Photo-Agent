@@ -697,6 +697,14 @@ struct ImportView: View {
                     )
 
                     EditableTextField(
+                        label: "Source",
+                        text: Binding(
+                            get: { viewModel.configuration.metadata.source ?? "" },
+                            set: { viewModel.configuration.metadata.source = $0.isEmpty ? nil : $0 }
+                        )
+                    )
+
+                    EditableTextField(
                         label: "Date Created",
                         text: Binding(
                             get: { viewModel.configuration.metadata.dateCreated ?? "" },
@@ -713,6 +721,22 @@ struct ImportView: View {
                     )
 
                     EditableTextField(
+                        label: "Sublocation",
+                        text: Binding(
+                            get: { viewModel.configuration.metadata.sublocation ?? "" },
+                            set: { viewModel.configuration.metadata.sublocation = $0.isEmpty ? nil : $0 }
+                        )
+                    )
+
+                    EditableTextField(
+                        label: "State / Province",
+                        text: Binding(
+                            get: { viewModel.configuration.metadata.provinceState ?? "" },
+                            set: { viewModel.configuration.metadata.provinceState = $0.isEmpty ? nil : $0 }
+                        )
+                    )
+
+                    EditableTextField(
                         label: "Country",
                         text: Binding(
                             get: { viewModel.configuration.metadata.country ?? "" },
@@ -725,6 +749,14 @@ struct ImportView: View {
                         text: Binding(
                             get: { viewModel.configuration.metadata.event ?? "" },
                             set: { viewModel.configuration.metadata.event = $0.isEmpty ? nil : $0 }
+                        )
+                    )
+
+                    EditableTextField(
+                        label: "Instructions",
+                        text: Binding(
+                            get: { viewModel.configuration.metadata.instructions ?? "" },
+                            set: { viewModel.configuration.metadata.instructions = $0.isEmpty ? nil : $0 }
                         )
                     )
                 }

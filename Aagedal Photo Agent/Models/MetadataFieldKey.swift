@@ -16,8 +16,12 @@ enum MetadataFieldKey: String, Sendable, CaseIterable {
     case transmissionReference
     case dateCreated
     case city
+    case sublocation
+    case provinceState
     case country
     case event
+    case instructions
+    case source
 
     // MARK: - GPS
     case gpsLatitude

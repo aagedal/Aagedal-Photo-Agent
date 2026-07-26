@@ -40,8 +40,12 @@ enum XMPDataBuilder {
         // photoshop:DateCreated (the IPTC date) — distinct from xmp:CreateDate; no convenience setter.
         setSimpleOrRemove(&xmp, m.dateCreated, namespace: XMPNamespace.photoshop, property: "DateCreated")
         xmp.city = nilIfEmpty(m.city)
+        setSimpleOrRemove(&xmp, m.sublocation, namespace: XMPNamespace.iptcCore, property: "Location")
+        xmp.state = nilIfEmpty(m.provinceState)
         xmp.country = nilIfEmpty(m.country)
         xmp.event = nilIfEmpty(m.event)
+        setSimpleOrRemove(&xmp, m.instructions, namespace: XMPNamespace.photoshop, property: "Instructions")
+        xmp.source = nilIfEmpty(m.source)
 
         // GPS is additive/paired: write both as %.6f decimal degrees (the old wire format), or clear both.
         if let lat = m.latitude, let lon = m.longitude {

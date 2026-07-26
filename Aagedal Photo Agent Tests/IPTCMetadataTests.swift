@@ -172,6 +172,35 @@ struct ToWriteFieldsTests {
         #expect(fields[MetadataFieldKey.city] == "Oslo")
     }
 
+    @Test("additional location and editorial fields map to IPTC tags")
+    func additionalFieldsMapToIPTCTags() {
+        let metadata = IPTCMetadata(
+            sublocation: "National Stadium",
+            provinceState: "Oslo",
+            instructions: "Hold until final whistle",
+            source: "Aagedal News"
+        )
+        let fields = metadata.toWriteFields()
+        #expect(fields[.sublocation] == "National Stadium")
+        #expect(fields[.provinceState] == "Oslo")
+        #expect(fields[.instructions] == "Hold until final whistle")
+        #expect(fields[.source] == "Aagedal News")
+    }
+
+    @Test("additional fields decode from canonical IPTC and XMP dictionary names")
+    func additionalFieldsDecodeFromDictionary() {
+        let metadata = iptcMetadataFromDict([
+            MetadataDictKey.location: "National Stadium",
+            MetadataDictKey.state: "Oslo",
+            MetadataDictKey.instructions: "Hold until final whistle",
+            MetadataDictKey.source: "Aagedal News",
+        ])
+        #expect(metadata.sublocation == "National Stadium")
+        #expect(metadata.provinceState == "Oslo")
+        #expect(metadata.instructions == "Hold until final whistle")
+        #expect(metadata.source == "Aagedal News")
+    }
+
     @Test("country maps to country tag")
     func countryMapsToCountry() {
         let metadata = IPTCMetadata(country: "Norway")
@@ -542,8 +571,12 @@ struct IPTCMetadataCodableTests {
             dateCreated: "2026-01-01",
             captureDate: "2026-01-01T12:00:00",
             city: "Oslo",
+            sublocation: "Ullevaal Stadion",
+            provinceState: "Oslo",
             country: "Norway",
             event: "Test Event",
+            instructions: "Editorial use only",
+            source: "Aagedal News",
             rating: 4,
             label: "Red"
         )
@@ -565,8 +598,12 @@ struct IPTCMetadataCodableTests {
         #expect(decoded.dateCreated == "2026-01-01")
         #expect(decoded.captureDate == "2026-01-01T12:00:00")
         #expect(decoded.city == "Oslo")
+        #expect(decoded.sublocation == "Ullevaal Stadion")
+        #expect(decoded.provinceState == "Oslo")
         #expect(decoded.country == "Norway")
         #expect(decoded.event == "Test Event")
+        #expect(decoded.instructions == "Editorial use only")
+        #expect(decoded.source == "Aagedal News")
         #expect(decoded.rating == 4)
         #expect(decoded.label == "Red")
     }
@@ -678,6 +715,7 @@ struct FieldKeyTests {
         #expect(mandatory == [.title, .description, .keywords, .copyright])
         #expect(mandatory.isDisjoint(with: optional))
         #expect(mandatory.union(optional) == Set(IPTCMetadata.FieldKey.editorFields))
+        #expect(optional.isSuperset(of: [.sublocation, .provinceState, .instructions, .source]))
         #expect(!IPTCMetadata.FieldKey.editorFields.contains(.dateCreated))
     }
 

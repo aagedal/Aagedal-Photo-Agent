@@ -65,8 +65,12 @@ struct TemplateField: Codable, Identifiable, Sendable, Hashable {
         ("jobId", "Job ID"),
         ("dateCreated", "Date Created"),
         ("city", "City"),
+        ("sublocation", "Sublocation"),
+        ("provinceState", "State / Province"),
         ("country", "Country"),
         ("event", "Event"),
+        ("instructions", "Instructions"),
+        ("source", "Source"),
     ]
 
     static func label(for key: String) -> String {

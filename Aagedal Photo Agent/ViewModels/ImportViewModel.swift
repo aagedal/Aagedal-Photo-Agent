@@ -437,8 +437,12 @@ final class ImportViewModel {
             case "copyright": configuration.metadata.copyright = value
             case "dateCreated": configuration.metadata.dateCreated = value
             case "city": configuration.metadata.city = value
+            case "sublocation": configuration.metadata.sublocation = value
+            case "provinceState": configuration.metadata.provinceState = value
             case "country": configuration.metadata.country = value
             case "event": configuration.metadata.event = value
+            case "instructions": configuration.metadata.instructions = value
+            case "source": configuration.metadata.source = value
             default: break
             }
         }
@@ -916,8 +920,12 @@ final class ImportViewModel {
         resolved.jobId = Self.resolveField(metadata.jobId, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
         resolved.dateCreated = Self.resolveField(metadata.dateCreated, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
         resolved.city = Self.resolveField(metadata.city, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
+        resolved.sublocation = Self.resolveField(metadata.sublocation, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
+        resolved.provinceState = Self.resolveField(metadata.provinceState, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
         resolved.country = Self.resolveField(metadata.country, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
         resolved.event = Self.resolveField(metadata.event, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
+        resolved.instructions = Self.resolveField(metadata.instructions, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
+        resolved.source = Self.resolveField(metadata.source, filename: filename, ref: reference, interpolator: interpolator, sequenceIndex: sequenceIndex)
 
         return resolved
     }
@@ -943,8 +951,12 @@ final class ImportViewModel {
         if let v = meta.jobId, !v.isEmpty { fields[.transmissionReference] = v }
         if let v = meta.dateCreated, !v.isEmpty { fields[.dateCreated] = v }
         if let v = meta.city, !v.isEmpty { fields[.city] = v }
+        if let v = meta.sublocation, !v.isEmpty { fields[.sublocation] = v }
+        if let v = meta.provinceState, !v.isEmpty { fields[.provinceState] = v }
         if let v = meta.country, !v.isEmpty { fields[.country] = v }
         if let v = meta.event, !v.isEmpty { fields[.event] = v }
+        if let v = meta.instructions, !v.isEmpty { fields[.instructions] = v }
+        if let v = meta.source, !v.isEmpty { fields[.source] = v }
 
         return fields
     }

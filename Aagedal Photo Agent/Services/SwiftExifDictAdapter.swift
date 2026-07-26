@@ -64,7 +64,11 @@ extension ImageMetadata {
         if let v = iptc.copyright { dict[MetadataDictKey.copyrightNotice] = v }
         if let v = iptc.dateCreated { dict[MetadataDictKey.dateCreated] = v }
         if let v = iptc.city { dict[MetadataDictKey.city] = v }
+        if let v = iptc.sublocation { dict[MetadataDictKey.sublocation] = v }
+        if let v = iptc.provinceState { dict[MetadataDictKey.provinceState] = v }
         if let v = iptc.countryName { dict[MetadataDictKey.countryPrimaryLocationName] = v }
+        if let v = iptc.specialInstructions { dict[MetadataDictKey.specialInstructions] = v }
+        if let v = iptc.source { dict[MetadataDictKey.source] = v }
         if let v = iptc.value(for: .originalTransmissionReference) {
             dict[MetadataDictKey.originalTransmissionReference] = v
         }
@@ -85,6 +89,10 @@ extension ImageMetadata {
             if let v = xmp.city, dict[MetadataDictKey.city] == nil {
                 dict[MetadataDictKey.city] = v
             }
+            if let v = xmp.simpleValue(namespace: XMPNamespace.iptcCore, property: "Location") {
+                dict[MetadataDictKey.location] = v
+            }
+            if let v = xmp.state { dict[MetadataDictKey.state] = v }
             if let v = xmp.country { dict[MetadataDictKey.country] = v }
             if let v = xmp.credit, dict[MetadataDictKey.credit] == nil {
                 dict[MetadataDictKey.credit] = v
@@ -98,6 +106,10 @@ extension ImageMetadata {
             }
             if let v = xmp.digitalSourceType { dict[MetadataDictKey.digitalSourceType] = v }
             if let v = xmp.event { dict[MetadataDictKey.event] = v }
+            if let v = xmp.simpleValue(namespace: XMPNamespace.photoshop, property: "Instructions") {
+                dict[MetadataDictKey.instructions] = v
+            }
+            if let v = xmp.source { dict[MetadataDictKey.source] = v }
 
             // MARK: XMP-crs (Adobe Camera Raw)
 

@@ -2752,8 +2752,12 @@ final class BrowserViewModel {
         if edited.creator != original.creator { names.append("Creator") }
         if edited.credit != original.credit { names.append("Credit") }
         if edited.city != original.city { names.append("City") }
+        if edited.sublocation != original.sublocation { names.append("Sublocation") }
+        if edited.provinceState != original.provinceState { names.append("State / Province") }
         if edited.country != original.country { names.append("Country") }
         if edited.event != original.event { names.append("Event") }
+        if edited.instructions != original.instructions { names.append("Instructions") }
+        if edited.source != original.source { names.append("Source") }
         if edited.digitalSourceType != original.digitalSourceType { names.append("Digital Source Type") }
         if edited.exifOrientation != original.exifOrientation { names.append("Orientation") }
         if edited.latitude != original.latitude || edited.longitude != original.longitude { names.append("GPS Coordinates") }

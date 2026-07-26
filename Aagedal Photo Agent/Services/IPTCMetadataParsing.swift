@@ -32,9 +32,16 @@ nonisolated enum MetadataDictKey {
     static let createDate = "CreateDate"
     static let dateTimeOriginal = "DateTimeOriginal"
     static let city = "City"
+    static let sublocation = "Sub-location"
+    static let location = "Location"
+    static let provinceState = "Province-State"
+    static let state = "State"
     static let country = "Country"
     static let countryPrimaryLocationName = "Country-PrimaryLocationName"
     static let event = "Event"
+    static let specialInstructions = "SpecialInstructions"
+    static let instructions = "Instructions"
+    static let source = "Source"
     static let rating = "Rating"
     static let label = "Label"
     static let orientation = "Orientation"
@@ -992,9 +999,16 @@ nonisolated func iptcMetadataFromDict(_ dict: [String: Any]) -> IPTCMetadata {
             ?? dict[MetadataDictKey.createDate] as? String,
         captureDate: dict[MetadataDictKey.dateTimeOriginal] as? String,
         city: dict[MetadataDictKey.city] as? String,
+        sublocation: dict[MetadataDictKey.location] as? String
+            ?? dict[MetadataDictKey.sublocation] as? String,
+        provinceState: dict[MetadataDictKey.state] as? String
+            ?? dict[MetadataDictKey.provinceState] as? String,
         country: dict[MetadataDictKey.country] as? String
             ?? dict[MetadataDictKey.countryPrimaryLocationName] as? String,
         event: dict[MetadataDictKey.event] as? String,
+        instructions: dict[MetadataDictKey.instructions] as? String
+            ?? dict[MetadataDictKey.specialInstructions] as? String,
+        source: dict[MetadataDictKey.source] as? String,
         rating: dict[MetadataDictKey.rating] as? Int,
         label: ColorLabel.canonicalMetadataLabel(dict[MetadataDictKey.label] as? String),
         cameraRaw: (cameraRaw.isEmpty || crsIsAlreadyApplied(in: dict)) ? nil : cameraRaw,

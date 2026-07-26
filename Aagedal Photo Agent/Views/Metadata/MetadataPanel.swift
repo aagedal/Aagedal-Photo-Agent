@@ -49,8 +49,12 @@ struct MetadataPanel: View {
         case jobId
         case dateCreated
         case city
+        case sublocation
+        case provinceState
         case country
         case event
+        case instructions
+        case source
 
         var focusKey: String {
             switch self {
@@ -63,8 +67,12 @@ struct MetadataPanel: View {
             case .jobId: return "jobId"
             case .dateCreated: return "dateCreated"
             case .city: return "city"
+            case .sublocation: return "sublocation"
+            case .provinceState: return "provinceState"
             case .country: return "country"
             case .event: return "event"
+            case .instructions: return "instructions"
+            case .source: return "source"
             }
         }
     }
@@ -387,8 +395,12 @@ struct MetadataPanel: View {
         case "jobId": return .jobId
         case "dateCreated": return .dateCreated
         case "city": return .city
+        case "sublocation": return .sublocation
+        case "provinceState": return .provinceState
         case "country": return .country
         case "event": return .event
+        case "instructions": return .instructions
+        case "source": return .source
         default: return nil
         }
     }
@@ -421,8 +433,12 @@ struct MetadataPanel: View {
         case .jobId: return viewModel.editingMetadata.jobId ?? ""
         case .dateCreated: return viewModel.editingMetadata.dateCreated ?? ""
         case .city: return viewModel.editingMetadata.city ?? ""
+        case .sublocation: return viewModel.editingMetadata.sublocation ?? ""
+        case .provinceState: return viewModel.editingMetadata.provinceState ?? ""
         case .country: return viewModel.editingMetadata.country ?? ""
         case .event: return viewModel.editingMetadata.event ?? ""
+        case .instructions: return viewModel.editingMetadata.instructions ?? ""
+        case .source: return viewModel.editingMetadata.source ?? ""
         }
     }
 
@@ -438,8 +454,12 @@ struct MetadataPanel: View {
         case .jobId: viewModel.editingMetadata.jobId = normalized
         case .dateCreated: viewModel.editingMetadata.dateCreated = normalized
         case .city: viewModel.editingMetadata.city = normalized
+        case .sublocation: viewModel.editingMetadata.sublocation = normalized
+        case .provinceState: viewModel.editingMetadata.provinceState = normalized
         case .country: viewModel.editingMetadata.country = normalized
         case .event: viewModel.editingMetadata.event = normalized
+        case .instructions: viewModel.editingMetadata.instructions = normalized
+        case .source: viewModel.editingMetadata.source = normalized
         }
     }
 
@@ -1394,6 +1414,10 @@ struct MetadataPanel: View {
             .id("credit")
         }
 
+        if settingsViewModel.isIPTCMetadataFieldVisible(.source) {
+            simpleAdditionalField(.source, keyPath: \.source, variableTarget: .source)
+        }
+
         if settingsViewModel.isIPTCMetadataFieldVisible(.city) {
             EditableTextField(
                 label: "City",
@@ -1420,6 +1444,14 @@ struct MetadataPanel: View {
                 focusedField: $focusedField
             )
             .id("city")
+        }
+
+        if settingsViewModel.isIPTCMetadataFieldVisible(.sublocation) {
+            simpleAdditionalField(.sublocation, keyPath: \.sublocation, variableTarget: .sublocation)
+        }
+
+        if settingsViewModel.isIPTCMetadataFieldVisible(.provinceState) {
+            simpleAdditionalField(.provinceState, keyPath: \.provinceState, variableTarget: .provinceState)
         }
 
         if settingsViewModel.isIPTCMetadataFieldVisible(.country) {
@@ -1477,6 +1509,37 @@ struct MetadataPanel: View {
             )
             .id("event")
         }
+
+        if settingsViewModel.isIPTCMetadataFieldVisible(.instructions) {
+            simpleAdditionalField(.instructions, keyPath: \.instructions, variableTarget: .instructions)
+        }
+    }
+
+    private func simpleAdditionalField(
+        _ field: IPTCMetadata.FieldKey,
+        keyPath: WritableKeyPath<IPTCMetadata, String?>,
+        variableTarget: VariableInsertTarget
+    ) -> some View {
+        EditableTextField(
+            label: field.displayName,
+            text: Binding(
+                get: { viewModel.editingMetadata[keyPath: keyPath] ?? "" },
+                set: {
+                    viewModel.editingMetadata[keyPath: keyPath] = $0.isEmpty ? nil : $0
+                    viewModel.markChanged()
+                }
+            ),
+            placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: field.rawValue) : "",
+            onCommit: { commitEdits() },
+            showsDifference: viewModel.fieldDiffers(keyPath),
+            hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues(field.rawValue),
+            onInsertVariable: {
+                openVariableReference(for: variableTarget)
+            },
+            focusKey: field.rawValue,
+            focusedField: $focusedField
+        )
+        .id(field.rawValue)
     }
 
     @ViewBuilder

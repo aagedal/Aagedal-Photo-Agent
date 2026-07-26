@@ -457,8 +457,12 @@ final class MetadataViewModel {
         compareOptionalField(allMetadata, keyPath: \.creator, fieldName: "creator", common: &common, differing: &differing)
         compareOptionalField(allMetadata, keyPath: \.credit, fieldName: "credit", common: &common, differing: &differing)
         compareOptionalField(allMetadata, keyPath: \.city, fieldName: "city", common: &common, differing: &differing)
+        compareOptionalField(allMetadata, keyPath: \.sublocation, fieldName: "sublocation", common: &common, differing: &differing)
+        compareOptionalField(allMetadata, keyPath: \.provinceState, fieldName: "provinceState", common: &common, differing: &differing)
         compareOptionalField(allMetadata, keyPath: \.country, fieldName: "country", common: &common, differing: &differing)
         compareOptionalField(allMetadata, keyPath: \.event, fieldName: "event", common: &common, differing: &differing)
+        compareOptionalField(allMetadata, keyPath: \.instructions, fieldName: "instructions", common: &common, differing: &differing)
+        compareOptionalField(allMetadata, keyPath: \.source, fieldName: "source", common: &common, differing: &differing)
         compareOptionalField(allMetadata, keyPath: \.digitalSourceType, fieldName: "digitalSourceType", common: &common, differing: &differing)
 
         // Array fields — compute intersection (common to all) and partial (some but not all)
@@ -737,8 +741,12 @@ final class MetadataViewModel {
                     if let v = edited.jobId, !v.isEmpty { fields[.transmissionReference] = v }
                     if let v = edited.dateCreated, !v.isEmpty { fields[.dateCreated] = v }
                     if let v = edited.city, !v.isEmpty { fields[.city] = v }
+                    if let v = edited.sublocation, !v.isEmpty { fields[.sublocation] = v }
+                    if let v = edited.provinceState, !v.isEmpty { fields[.provinceState] = v }
                     if let v = edited.country, !v.isEmpty { fields[.country] = v }
                     if let v = edited.event, !v.isEmpty { fields[.event] = v }
+                    if let v = edited.instructions, !v.isEmpty { fields[.instructions] = v }
+                    if let v = edited.source, !v.isEmpty { fields[.source] = v }
                 } else {
                     // Single: write all changed fields
                     if edited.title != original?.title { fields[.headline] = edited.title ?? "" }
@@ -777,8 +785,12 @@ final class MetadataViewModel {
                     }
                     if edited.dateCreated != original?.dateCreated { fields[.dateCreated] = edited.dateCreated ?? "" }
                     if edited.city != original?.city { fields[.city] = edited.city ?? "" }
+                    if edited.sublocation != original?.sublocation { fields[.sublocation] = edited.sublocation ?? "" }
+                    if edited.provinceState != original?.provinceState { fields[.provinceState] = edited.provinceState ?? "" }
                     if edited.country != original?.country { fields[.country] = edited.country ?? "" }
                     if edited.event != original?.event { fields[.event] = edited.event ?? "" }
+                    if edited.instructions != original?.instructions { fields[.instructions] = edited.instructions ?? "" }
+                    if edited.source != original?.source { fields[.source] = edited.source ?? "" }
                 }
 
                 if !fields.isEmpty {
@@ -828,8 +840,12 @@ final class MetadataViewModel {
         if let v = metadata.jobId, !v.isEmpty { fields[.transmissionReference] = v }
         if let v = metadata.dateCreated, !v.isEmpty { fields[.dateCreated] = v }
         if let v = metadata.city, !v.isEmpty { fields[.city] = v }
+        if let v = metadata.sublocation, !v.isEmpty { fields[.sublocation] = v }
+        if let v = metadata.provinceState, !v.isEmpty { fields[.provinceState] = v }
         if let v = metadata.country, !v.isEmpty { fields[.country] = v }
         if let v = metadata.event, !v.isEmpty { fields[.event] = v }
+        if let v = metadata.instructions, !v.isEmpty { fields[.instructions] = v }
+        if let v = metadata.source, !v.isEmpty { fields[.source] = v }
         if let lat = metadata.latitude, let lon = metadata.longitude {
             fields[.gpsLatitude] = String(abs(lat))
             fields[.gpsLatitudeRef] = lat >= 0 ? "N" : "S"
@@ -1034,8 +1050,12 @@ final class MetadataViewModel {
         fields[.transmissionReference] = metadata.jobId ?? ""
         fields[.dateCreated] = metadata.dateCreated ?? ""
         fields[.city] = metadata.city ?? ""
+        fields[.sublocation] = metadata.sublocation ?? ""
+        fields[.provinceState] = metadata.provinceState ?? ""
         fields[.country] = metadata.country ?? ""
         fields[.event] = metadata.event ?? ""
+        fields[.instructions] = metadata.instructions ?? ""
+        fields[.source] = metadata.source ?? ""
 
         if let lat = metadata.latitude, let lon = metadata.longitude {
             fields[.gpsLatitude] = String(abs(lat))
@@ -1288,10 +1308,18 @@ final class MetadataViewModel {
                 editingMetadata.dateCreated = append ? appendString(editingMetadata.dateCreated, value) : value
             case "city":
                 editingMetadata.city = append ? appendString(editingMetadata.city, value) : value
+            case "sublocation":
+                editingMetadata.sublocation = append ? appendString(editingMetadata.sublocation, value) : value
+            case "provinceState":
+                editingMetadata.provinceState = append ? appendString(editingMetadata.provinceState, value) : value
             case "country":
                 editingMetadata.country = append ? appendString(editingMetadata.country, value) : value
             case "event":
                 editingMetadata.event = append ? appendString(editingMetadata.event, value) : value
+            case "instructions":
+                editingMetadata.instructions = append ? appendString(editingMetadata.instructions, value) : value
+            case "source":
+                editingMetadata.source = append ? appendString(editingMetadata.source, value) : value
             default: break
             }
         }
@@ -1377,8 +1405,12 @@ final class MetadataViewModel {
         editingMetadata.jobId = resolveIfPresent(editingMetadata.jobId, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
         editingMetadata.dateCreated = resolveIfPresent(editingMetadata.dateCreated, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
         editingMetadata.city = resolveIfPresent(editingMetadata.city, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
+        editingMetadata.sublocation = resolveIfPresent(editingMetadata.sublocation, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
+        editingMetadata.provinceState = resolveIfPresent(editingMetadata.provinceState, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
         editingMetadata.country = resolveIfPresent(editingMetadata.country, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
         editingMetadata.event = resolveIfPresent(editingMetadata.event, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
+        editingMetadata.instructions = resolveIfPresent(editingMetadata.instructions, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
+        editingMetadata.source = resolveIfPresent(editingMetadata.source, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
 
         editingMetadata.keywords = resolveListField(editingMetadata.keywords, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials, validateField: .keywords)
         editingMetadata.personShown = resolveListField(editingMetadata.personShown, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceIndex, initials: initials)
@@ -1434,8 +1466,12 @@ final class MetadataViewModel {
         }
         if resolved.dateCreated != original.dateCreated { fields[.dateCreated] = resolved.dateCreated ?? "" }
         if resolved.city != original.city { fields[.city] = resolved.city ?? "" }
+        if resolved.sublocation != original.sublocation { fields[.sublocation] = resolved.sublocation ?? "" }
+        if resolved.provinceState != original.provinceState { fields[.provinceState] = resolved.provinceState ?? "" }
         if resolved.country != original.country { fields[.country] = resolved.country ?? "" }
         if resolved.event != original.event { fields[.event] = resolved.event ?? "" }
+        if resolved.instructions != original.instructions { fields[.instructions] = resolved.instructions ?? "" }
+        if resolved.source != original.source { fields[.source] = resolved.source ?? "" }
         if resolved.keywords != original.keywords {
             fields[.subject] = resolved.keywords.joined(separator: ", ")
         }
@@ -1646,8 +1682,12 @@ final class MetadataViewModel {
                 resolvedMeta.jobId = resolveIfChanged(meta.jobId, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
                 resolvedMeta.dateCreated = resolveIfChanged(meta.dateCreated, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
                 resolvedMeta.city = resolveIfChanged(meta.city, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
+                resolvedMeta.sublocation = resolveIfChanged(meta.sublocation, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
+                resolvedMeta.provinceState = resolveIfChanged(meta.provinceState, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
                 resolvedMeta.country = resolveIfChanged(meta.country, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
                 resolvedMeta.event = resolveIfChanged(meta.event, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
+                resolvedMeta.instructions = resolveIfChanged(meta.instructions, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
+                resolvedMeta.source = resolveIfChanged(meta.source, interpolator: interpolator, filename: filename, ref: snapshot, changed: &changed, sequenceIndex: sequenceNumber, initials: initials)
 
                 let newKeywords = resolveListField(meta.keywords, interpolator: interpolator, filename: filename, ref: snapshot, sequenceIndex: sequenceNumber, initials: initials, validateField: .keywords)
                 if newKeywords != meta.keywords { resolvedMeta.keywords = newKeywords; changed = true }
@@ -2142,11 +2182,23 @@ final class MetadataViewModel {
         if let city = batchMeta.city, !city.isEmpty {
             metadata.city = city
         }
+        if let sublocation = batchMeta.sublocation, !sublocation.isEmpty {
+            metadata.sublocation = sublocation
+        }
+        if let provinceState = batchMeta.provinceState, !provinceState.isEmpty {
+            metadata.provinceState = provinceState
+        }
         if let country = batchMeta.country, !country.isEmpty {
             metadata.country = country
         }
         if let event = batchMeta.event, !event.isEmpty {
             metadata.event = event
+        }
+        if let instructions = batchMeta.instructions, !instructions.isEmpty {
+            metadata.instructions = instructions
+        }
+        if let source = batchMeta.source, !source.isEmpty {
+            metadata.source = source
         }
         if batchMeta.digitalSourceType != nil {
             metadata.digitalSourceType = batchMeta.digitalSourceType
@@ -2344,8 +2396,12 @@ final class MetadataViewModel {
         if editingMetadata.creator != original.creator { names.append("Creator") }
         if editingMetadata.credit != original.credit { names.append("Credit") }
         if editingMetadata.city != original.city { names.append("City") }
+        if editingMetadata.sublocation != original.sublocation { names.append("Sublocation") }
+        if editingMetadata.provinceState != original.provinceState { names.append("State / Province") }
         if editingMetadata.country != original.country { names.append("Country") }
         if editingMetadata.event != original.event { names.append("Event") }
+        if editingMetadata.instructions != original.instructions { names.append("Instructions") }
+        if editingMetadata.source != original.source { names.append("Source") }
         if editingMetadata.digitalSourceType != original.digitalSourceType { names.append("Digital Source Type") }
         if editingMetadata.rating != original.rating { names.append("Rating") }
         if editingMetadata.label != original.label { names.append("Label") }
@@ -2511,10 +2567,18 @@ final class MetadataViewModel {
             metadata.credit = entry.newValue
         case "City":
             metadata.city = entry.newValue
+        case "Sublocation":
+            metadata.sublocation = entry.newValue
+        case "State / Province":
+            metadata.provinceState = entry.newValue
         case "Country":
             metadata.country = entry.newValue
         case "Event":
             metadata.event = entry.newValue
+        case "Instructions":
+            metadata.instructions = entry.newValue
+        case "Source":
+            metadata.source = entry.newValue
         case "Digital Source Type":
             metadata.digitalSourceType = entry.newValue.flatMap { DigitalSourceType(rawValue: $0) }
         default:

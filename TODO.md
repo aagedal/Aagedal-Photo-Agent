@@ -66,8 +66,10 @@
 - [x] Hiding all sliders within a section now removes its otherwise-empty header.
   Each Develop slider group also has a section-wide visibility toggle while protected
   core controls remain available. (2026-07-26)
-- [ ] The 
-- [ ] Add support for more IPTC metadata fields.
+- [x] Add support for more IPTC metadata fields. (2026-07-26)
+  Added Sublocation, State / Province, Instructions, and Source across embedded
+  IPTC/XMP, sidecars, templates, import, batch editing, Metadata Review, required
+  field checks, history, and customizable field visibility.
 - [ ] Improve AI-masks to support Face, not just person.
 - [ ] Warning in XCode logs: "{CSInlineDonation[async]: "aagedal.Aagedal-Photo-Agent" add-update-items:0 delete-items:1}: Failed to request donation Error Domain=CSIndexErrorDomain Code=-1000 "Failed to request donation" UserInfo={NSDebugDescription=Failed to request donation, NSUnderlyingError=0x786c7b26d0 {Error Domain=NSCocoaErrorDomain Code=4099 "The connection to service named com.apple.SetStoreUpdateService was invalidated from this process." UserInfo={NSDebugDescription=The connection to service named com.apple.SetStoreUpdateService was invalidated from this process.}}}"
 - [ ] The app has a tendency to ask for folder permissions on launch that were given during previous app launches.
