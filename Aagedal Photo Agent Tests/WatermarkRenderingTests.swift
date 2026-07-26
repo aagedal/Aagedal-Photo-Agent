@@ -291,3 +291,236 @@ struct WatermarkRenderingTests {
         #expect(nearBottom.r < 0.3, "expected green (not red) near the bottom — watermark may be uploaded upside down, got \(nearBottom)")
     }
 }
+
+@Suite("Anonymizer multi-pass rendering", .serialized)
+struct AnonymizerMultiPassRenderingTests {
+    private let extent = CGRect(x: 0, y: 0, width: 256, height: 256)
+
+    private func checkerboard() throws -> CIImage {
+        try #require(CIFilter(
+            name: "CICheckerboardGenerator",
+            parameters: [
+                "inputColor0": CIColor(red: 0.04, green: 0.12, blue: 0.85, alpha: 1),
+                "inputColor1": CIColor(red: 0.95, green: 0.18, blue: 0.04, alpha: 1),
+                "inputWidth": 5.0,
+                "inputSharpness": 1.0,
+            ]
+        )?.outputImage?.cropped(to: extent))
+    }
+
+    private func meanDifference(
+        _ first: CIImage,
+        _ second: CIImage,
+        extent comparisonExtent: CGRect? = nil
+    ) throws -> Float {
+        let comparisonExtent = comparisonExtent ?? extent
+        let difference = first.applyingFilter(
+            "CIDifferenceBlendMode",
+            parameters: [kCIInputBackgroundImageKey: second]
+        )
+        let average = try #require(CIFilter(
+            name: "CIAreaAverage",
+            parameters: [
+                kCIInputImageKey: difference,
+                kCIInputExtentKey: CIVector(cgRect: comparisonExtent),
+            ]
+        )?.outputImage)
+        var pixel = [Float](repeating: 0, count: 4)
+        let context = CIContext(options: [
+            .workingColorSpace: CameraRawApproximation.workingColorSpace
+        ])
+        context.render(
+            average,
+            toBitmap: &pixel,
+            rowBytes: 16,
+            bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+            format: .RGBAf,
+            colorSpace: CameraRawApproximation.workingColorSpace
+        )
+        return (pixel[0] + pixel[1] + pixel[2]) / 3
+    }
+
+    @Test("render-plan compiler isolates spatial nodes while batching adjacent pointwise layers")
+    func renderPlanSegmentsAtAnonymizers() {
+        let global = EditRenderPassPlanner.globalOrderSentinel
+        let watermark = EditRenderPassPlanner.watermarkOrderFlag
+        let plan = EditRenderPassPlanner.makePlan(
+            orderEntries: [0, global, 1, watermark, 2],
+            globalAnonymizerActive: false,
+            anonymizerMaskIndices: [1]
+        )
+
+        #expect(plan == [
+            EditRenderPass(orderOffset: 0, orderCount: 2, requiresMipmappedInput: false),
+            EditRenderPass(orderOffset: 2, orderCount: 1, requiresMipmappedInput: true),
+            EditRenderPass(orderOffset: 3, orderCount: 2, requiresMipmappedInput: false),
+        ])
+    }
+
+    @Test("global and masked anonymizers each receive their own spatial pass")
+    func renderPlanIsolatesMultipleSpatialNodes() {
+        let global = EditRenderPassPlanner.globalOrderSentinel
+        let plan = EditRenderPassPlanner.makePlan(
+            orderEntries: [0, global, 1],
+            globalAnonymizerActive: true,
+            anonymizerMaskIndices: [0, 1]
+        )
+
+        #expect(plan == [
+            EditRenderPass(orderOffset: 0, orderCount: 1, requiresMipmappedInput: true),
+            EditRenderPass(orderOffset: 1, orderCount: 1, requiresMipmappedInput: true),
+            EditRenderPass(orderOffset: 2, orderCount: 1, requiresMipmappedInput: true),
+        ])
+    }
+
+    /// A high-frequency source makes the order of a nonlinear global tone operation and the
+    /// Anonymizer's mip-filtered spatial sampling observably non-commutative. Before multi-pass,
+    /// both orders produced the same pixels because the masked Anonymizer always sampled the
+    /// original source and merely reapplied Global afterward.
+    @Test("an anonymizer samples the nonlinear color result of upstream layers")
+    func anonymizerSamplesUpstreamColorComposite() throws {
+        let checker = try checkerboard()
+
+        var mask = MaskAdjustment()
+        mask.name = "Full-frame anonymizer"
+        mask.geometry.centerX = 0.5
+        mask.geometry.centerY = 0.5
+        mask.geometry.radiusX = 1.0
+        mask.geometry.radiusY = 1.0
+        mask.geometry.feather = 0
+        mask.anonymizer = AnonymizerSettings(amount: 72, blackOut: nil)
+
+        var colorThenAnonymizer = CameraRawSettings()
+        colorThenAnonymizer.contrast2012 = 100
+        colorThenAnonymizer.toneCurve = ToneCurve(master: [
+            ToneCurvePoint(x: 0, y: 0.12),
+            ToneCurvePoint(x: 0.35, y: 0.18),
+            ToneCurvePoint(x: 0.65, y: 0.86),
+            ToneCurvePoint(x: 1, y: 1),
+        ])
+        colorThenAnonymizer.localAdjustments = [mask]
+        colorThenAnonymizer.layerOrder = [.global, .mask(mask.id)]
+
+        var anonymizerThenColor = colorThenAnonymizer
+        anonymizerThenColor.layerOrder = [.mask(mask.id), .global]
+
+        let upstreamColor = try #require(MetalEditPipeline.renderOffscreen(
+            source: checker, settings: colorThenAnonymizer
+        ))
+        let downstreamColor = try #require(MetalEditPipeline.renderOffscreen(
+            source: checker, settings: anonymizerThenColor
+        ))
+
+        let meanDifference = try meanDifference(upstreamColor, downstreamColor)
+        #expect(
+            meanDifference > 0.005,
+            "Expected upstream-vs-downstream color ordering to change anonymized pixels; mean difference was \(meanDifference)"
+        )
+    }
+
+    @Test("the global anonymizer samples local color layers placed before Global")
+    func globalAnonymizerSamplesUpstreamLocalColor() throws {
+        let checker = try checkerboard()
+
+        var colorMask = MaskAdjustment()
+        colorMask.name = "Full-frame color"
+        colorMask.geometry.centerX = 0.5
+        colorMask.geometry.centerY = 0.5
+        colorMask.geometry.radiusX = 1.0
+        colorMask.geometry.radiusY = 1.0
+        colorMask.geometry.feather = 0
+        colorMask.contrast = 100
+        colorMask.saturation = 85
+
+        var localColorThenGlobalAnonymizer = CameraRawSettings()
+        localColorThenGlobalAnonymizer.anonymizer = AnonymizerSettings(
+            amount: 72, blackOut: nil
+        )
+        localColorThenGlobalAnonymizer.localAdjustments = [colorMask]
+        localColorThenGlobalAnonymizer.layerOrder = [
+            .mask(colorMask.id), .global,
+        ]
+
+        var globalAnonymizerThenLocalColor = localColorThenGlobalAnonymizer
+        globalAnonymizerThenLocalColor.layerOrder = [
+            .global, .mask(colorMask.id),
+        ]
+
+        let upstreamColor = try #require(MetalEditPipeline.renderOffscreen(
+            source: checker, settings: localColorThenGlobalAnonymizer
+        ))
+        let downstreamColor = try #require(MetalEditPipeline.renderOffscreen(
+            source: checker, settings: globalAnonymizerThenLocalColor
+        ))
+        let difference = try meanDifference(upstreamColor, downstreamColor)
+        #expect(
+            difference > 0.005,
+            "Expected the global Anonymizer to sample the upstream local-color composite; mean difference was \(difference)"
+        )
+    }
+
+    @Test("global Black Out remains terminal when the global tone curve lifts black")
+    func globalBlackOutCannotBeLiftedByColorAdjustments() throws {
+        var settings = CameraRawSettings()
+        settings.anonymizer = AnonymizerSettings(amount: 72, blackOut: true)
+        settings.toneCurve = ToneCurve(master: [
+            ToneCurvePoint(x: 0, y: 0.5),
+            ToneCurvePoint(x: 1, y: 1),
+        ])
+
+        let result = try #require(MetalEditPipeline.renderOffscreen(
+            source: checkerboard(), settings: settings
+        ))
+        let black = CIImage(color: .black).cropped(to: extent)
+        let difference = try meanDifference(result, black)
+        #expect(
+            difference < 0.0001,
+            "Global Black Out must remain absolute black; mean difference was \(difference)"
+        )
+    }
+
+    @Test("cropped output uses the same upstream-composite Anonymizer semantics")
+    func croppedOutputUsesMultiPassOrdering() throws {
+        let checker = try checkerboard()
+
+        var mask = MaskAdjustment()
+        mask.geometry.centerX = 0.5
+        mask.geometry.centerY = 0.5
+        mask.geometry.radiusX = 1.0
+        mask.geometry.radiusY = 1.0
+        mask.geometry.feather = 0
+        mask.anonymizer = AnonymizerSettings(amount: 72, blackOut: nil)
+
+        var colorThenAnonymizer = CameraRawSettings()
+        colorThenAnonymizer.contrast2012 = 100
+        colorThenAnonymizer.toneCurve = ToneCurve(master: [
+            ToneCurvePoint(x: 0, y: 0.12),
+            ToneCurvePoint(x: 0.35, y: 0.18),
+            ToneCurvePoint(x: 0.65, y: 0.86),
+            ToneCurvePoint(x: 1, y: 1),
+        ])
+        colorThenAnonymizer.crop = CameraRawCrop(
+            top: 0.15, left: 0.2, bottom: 0.85, right: 0.8, angle: 0, hasCrop: true
+        )
+        colorThenAnonymizer.localAdjustments = [mask]
+        colorThenAnonymizer.layerOrder = [.global, .mask(mask.id)]
+
+        var anonymizerThenColor = colorThenAnonymizer
+        anonymizerThenColor.layerOrder = [.mask(mask.id), .global]
+
+        let upstreamColor = try #require(MetalEditPipeline.renderOffscreenCropped(
+            source: checker, settings: colorThenAnonymizer
+        ))
+        let downstreamColor = try #require(MetalEditPipeline.renderOffscreenCropped(
+            source: checker, settings: anonymizerThenColor
+        ))
+        #expect(upstreamColor.extent == downstreamColor.extent)
+
+        let difference = try meanDifference(
+            upstreamColor,
+            downstreamColor,
+            extent: upstreamColor.extent
+        )
+        #expect(difference > 0.005)
+    }
+}

@@ -105,11 +105,17 @@ struct EditParams {
     uint watermarkFrame;      // 0 = source UV, 1 = crop-output UV
     uint useNearestNeighbor;  // shared viewer/editor display-scaling preference
     uint maskOverlayMode;     // 0 = red coverage tint, 1 = black/white matte preview
+
+    uint orderOffset;         // first order-buffer entry for this compute segment
+    uint executionFlags;      // bit0=intermediate, bit1=input in drawable frame,
+                              // bit2=identity/full-source working frame
+    uint _padExecution0;
+    uint _padExecution1;
 };
 
 // ScopeShaders.metal consumes this same buffer through its ScopeEditParams mirror.
 // Keep this assertion in sync with Swift's MemoryLayout<EditParams>.stride.
-static_assert(sizeof(EditParams) == 208,
+static_assert(sizeof(EditParams) == 224,
               "EditParams layout changed; update Swift and ScopeEditParams together");
 
 // ============================================================
@@ -744,22 +750,31 @@ kernel void editAdjustments(
         return;
     }
 
-    // Map drawable pixel through viewport to source UV
+    bool intermediatePass = (params.executionFlags & (1u << 0)) != 0;
+    bool inputInDrawableFrame = (params.executionFlags & (1u << 1)) != 0;
+    bool identitySourceFrame = (params.executionFlags & (1u << 2)) != 0;
+
+    // Map drawable pixel through viewport to source UV. Full-source intermediate passes use
+    // identity coordinates so their textures remain stable across preview zoom/pan changes.
     float2 drawableNorm = float2(gid) / params.drawableSize;
 
     // Crop mask: black out (background) outside the confirmed crop rectangle. The viewport
     // letterbox-fits the crop, so the margin between the crop rect and the drawable edge
     // still samples in-bounds image — this is what actually "cuts" the crop. (0.5,0.5) ⇒
     // no mask (full-image render).
-    float2 cropCentered = drawableNorm - 0.5;
-    if (abs(cropCentered.x) > params.cropHalfExtent.x ||
-        abs(cropCentered.y) > params.cropHalfExtent.y) {
-        destination.write(half4(0.0197, 0.0197, 0.0197, 1), gid);
-        return;
+    if (!identitySourceFrame) {
+        float2 cropCentered = drawableNorm - 0.5;
+        if (abs(cropCentered.x) > params.cropHalfExtent.x ||
+            abs(cropCentered.y) > params.cropHalfExtent.y) {
+            destination.write(half4(0.0197, 0.0197, 0.0197, 1), gid);
+            return;
+        }
     }
 
     float2 uv;
-    if (params.viewportRotation != 0.0) {
+    if (identitySourceFrame) {
+        uv = drawableNorm;
+    } else if (params.viewportRotation != 0.0) {
         // Clean-feed crop straighten: rotate the centered offset around the crop center.
         // Rotation must happen in pixel space (sourceSize) so it isn't skewed by the
         // image's aspect ratio, then convert back to normalized UV.
@@ -779,33 +794,21 @@ kernel void editAdjustments(
         return;
     }
 
-    // Global Anonymizer changes how the base color itself is fetched (a different
-    // sampling strategy, not a per-pixel tone op on an already-sampled color) — so it's
-    // resolved here, before the layer chain runs, rather than as a chain node.
-    bool globalAnonActive = (params.activeFlags & (1u << 5)) != 0;
-    if (globalAnonActive && params.anonymizerBlackOut > 0.5) {
-        destination.write(half4(0.0h, 0.0h, 0.0h, 1.0h), gid);
-        return;
-    }
-    half4 color;
-    half3 rgb;
-    if (globalAnonActive) {
-        AnonymizerShape anonShape = anonymizerShape(params.anonymizerAmount, params.sourceSize);
-        rgb = sampleAnonymized(source, uv, params.sourceSize, anonShape);
-        color = half4(rgb, 1.0h);
-    } else {
-        constexpr sampler bilinear(filter::linear, address::clamp_to_edge);
-        constexpr sampler nearestNeighbor(filter::nearest, address::clamp_to_edge);
-        color = params.useNearestNeighbor != 0u
-            ? source.sample(nearestNeighbor, uv)
-            : source.sample(bilinear, uv);
-        rgb = color.rgb;
-    }
+    // An intermediate rendered in the output/crop frame is sampled by drawable UV. A
+    // full-source intermediate (and the original source) is sampled by source UV.
+    float2 inputUV = inputInDrawableFrame ? drawableNorm : uv;
+    float2 inputTextureSize = float2(source.get_width(), source.get_height());
+    constexpr sampler bilinear(filter::linear, address::clamp_to_edge);
+    constexpr sampler nearestNeighbor(filter::nearest, address::clamp_to_edge);
+    half4 color = params.useNearestNeighbor != 0u
+        ? source.sample(nearestNeighbor, inputUV)
+        : source.sample(bilinear, inputUV);
+    half3 rgb = color.rgb;
 
     // Spatial detail samples the original source. Track any redaction or watermark that has
     // already replaced the running pixel before the global node, so sharpening/clarity cannot
     // reintroduce underlying detail into that protected region.
-    float spatialDetailProtection = globalAnonActive ? 1.0 : 0.0;
+    float spatialDetailProtection = 0.0;
 
     // Layer chain: apply each node in the order given by the order buffer. The global
     // adjustment block (kGlobalOrderSentinel) is reorderable among the masks — every node
@@ -817,18 +820,33 @@ kernel void editAdjustments(
     // (0x80000000) set on anything else = a watermark-layer index (low 31 bits) into
     // `watermarks`; otherwise it's a plain mask index into `masks` (< maskCount). The global
     // sentinel is checked FIRST since it also has the top bit set.
-    bool globalApplied = false;
     for (uint k = 0; k < params.orderCount; k++) {
-        uint entry = order[k];
+        uint entry = order[params.orderOffset + k];
         if (entry == 0xFFFFFFFFu) {
             // Global node: the order buffer uses 0xFFFFFFFF as the global sentinel
-            // (MetalEditPipeline.globalOrderSentinel).
+            // (MetalEditPipeline.globalOrderSentinel). Anonymization belongs to this node:
+            // the render-plan compiler isolates it so `source` is the complete upstream
+            // composite rather than the original image.
+            bool globalAnonActive = (params.activeFlags & (1u << 5)) != 0;
+            if (globalAnonActive) {
+                spatialDetailProtection = 1.0;
+                if (params.anonymizerBlackOut > 0.5) {
+                    // Global Black Out is terminal. Do not let a later tone operation lift
+                    // the protected image away from absolute black.
+                    destination.write(half4(0.0h, 0.0h, 0.0h, 1.0h), gid);
+                    return;
+                } else {
+                    AnonymizerShape anonShape = anonymizerShape(
+                        params.anonymizerAmount, inputTextureSize
+                    );
+                    rgb = sampleAnonymized(source, inputUV, inputTextureSize, anonShape);
+                }
+            }
             rgb = applyGlobal(rgb, params, toneLUT, hslParams);
             if (params.activeFlags & ((1u << 8) | (1u << 9))) {
-                half3 detailed = applySpatialDetail(rgb, params, source, uv);
+                half3 detailed = applySpatialDetail(rgb, params, source, inputUV);
                 rgb = mix(rgb, detailed, half(1.0 - clamp(spatialDetailProtection, 0.0, 1.0)));
             }
-            globalApplied = true;
         } else if (entry & 0x80000000u) {
             uint wIdx = entry & 0x7FFFFFFFu;
             if (wIdx < params.watermarkCount) {
@@ -865,21 +883,18 @@ kernel void editAdjustments(
             half3 adjusted;
             if (mask.activeFlags & (1u << 8)) {
                 spatialDetailProtection = max(spatialDetailProtection, clamp(weight, 0.0, 1.0));
-                // Anonymizer: pixelate first (it re-samples the RAW source, so detail exposure
-                // would reveal is already destroyed), THEN apply the same adjustments the rest of
-                // the image gets so the patch matches — global (if it's already run; a later
-                // global node adjusts this region itself, so skip to avoid doubling) and the
-                // mask's OWN tonal adjustments (exposure/contrast/temp/tint/…). Black Out is a
-                // full redaction, so no adjustments apply to it. The feathered mix below still
-                // softens the mask edges.
+                // The render-plan compiler isolates this node, so the input texture already
+                // contains every upstream global/mask/watermark. Sample that composite, apply
+                // this mask's own tonal controls, then let later passes process the result.
                 if (mask.anonymizerBlackOut > 0.5) {
                     adjusted = half3(0.0h, 0.0h, 0.0h);
                 } else {
-                    AnonymizerShape anonShape = anonymizerShape(mask.anonymizerAmount, params.sourceSize);
-                    adjusted = sampleAnonymized(source, uv, params.sourceSize, anonShape);
-                    if (globalApplied) {
-                        adjusted = applyGlobal(adjusted, params, toneLUT, hslParams);
-                    }
+                    AnonymizerShape anonShape = anonymizerShape(
+                        mask.anonymizerAmount, inputTextureSize
+                    );
+                    adjusted = sampleAnonymized(
+                        source, inputUV, inputTextureSize, anonShape
+                    );
                     adjusted = applyMaskColor(adjusted, mask);
                 }
             } else {
@@ -889,61 +904,63 @@ kernel void editAdjustments(
         }
     }
 
-    // Final SDR output transform for scene-referred sources. It must remain after every layer:
-    // moving this into applyGlobal irreversibly flattens super-whites before local recovery.
-    bool sourceHasHeadroom = (params.activeFlags & (1u << 7)) != 0;
-    bool hdrEditMode = (params.activeFlags & (1u << 4)) != 0;
-    if (sourceHasHeadroom && !hdrEditMode) {
-        float3 rgbF = float3(rgb);
-        rgbF.r = sdrOutputToneMap(rgbF.r);
-        rgbF.g = sdrOutputToneMap(rgbF.g);
-        rgbF.b = sdrOutputToneMap(rgbF.b);
-        rgb = half3(rgbF);
-    }
-
-    // Gamut-clip soft proof: simulate target gamut by clamping out-of-gamut values
-    //    In HDR mode, only clamp negative values (out-of-gamut chromaticity) — values > 1.0
-    //    represent HDR brightness, not out-of-gamut colors, so the upper bound stays unclamped.
-    bool isHDRGamut = (params.activeFlags & (1u << 4)) != 0;
-    half3 gamutHi = isHDRGamut ? half3(65504.0h) : half3(1.0h);
-    float3 gamutHiF = isHDRGamut ? float3(65504.0) : float3(1.0);
-    if (params.gamutClipMode == 1) {
-        // sRGB: clamp (working space IS extended linear sRGB)
-        rgb = clamp(rgb, half3(0), gamutHi);
-    } else if (params.gamutClipMode == 2) {
-        // Display P3: sRGB -> P3, clamp, P3 -> sRGB
-        float3 p3 = sRGBtoP3_edit * float3(rgb);
-        rgb = half3(P3toSRGB_edit * clamp(p3, 0.0, gamutHiF));
-    } else if (params.gamutClipMode == 3) {
-        // Rec.2020: sRGB -> Rec.2020, clamp, Rec.2020 -> sRGB
-        float3 r2020 = sRGBtoRec2020_edit * float3(rgb);
-        rgb = half3(Rec2020toSRGB_edit * clamp(r2020, 0.0, gamutHiF));
-    } else if (params.gamutClipMode == 4) {
-        // Adobe RGB: sRGB -> Adobe RGB, clamp, Adobe RGB -> sRGB
-        float3 aRgb = sRGBtoAdobeRGB_edit * float3(rgb);
-        rgb = half3(AdobeRGBtoSRGB_edit * clamp(aRgb, 0.0, gamutHiF));
-    }
-
-    // Selected-mask visualization. Normal paint mode uses an ACR-style red tint for an otherwise
-    // unadjusted mask; hovering a mask-type icon switches to a black/white coverage matte. The
-    // latter intentionally includes inversion and feather/brush softness while remaining
-    // independent of adjustment opacity, so the fully selected region stays white.
-    if (params.maskOverlayIndex >= 0 && uint(params.maskOverlayIndex) < params.maskCount) {
-        constant MaskParams &om = masks[params.maskOverlayIndex];
-        float ow;
-        if (om.maskType == 1u) {
-            constexpr sampler brushSampler(filter::linear, address::clamp_to_edge);
-            ow = float(brushAlpha.sample(brushSampler, uv, om.brushLayer).r);
-            if (om.inverted > 0.5) ow = 1.0 - ow;
-        } else {
-            ow = params.maskOverlayMode == 1u
-                ? analyticMaskCoverage(om, uv, params.sourceSize)
-                : maskWeight(om, uv, params.sourceSize);
+    if (!intermediatePass) {
+        // Final SDR output transform for scene-referred sources. It must remain after every
+        // layer, so multi-pass execution applies it only in the presentation dispatch.
+        bool sourceHasHeadroom = (params.activeFlags & (1u << 7)) != 0;
+        bool hdrEditMode = (params.activeFlags & (1u << 4)) != 0;
+        if (sourceHasHeadroom && !hdrEditMode) {
+            float3 rgbF = float3(rgb);
+            rgbF.r = sdrOutputToneMap(rgbF.r);
+            rgbF.g = sdrOutputToneMap(rgbF.g);
+            rgbF.b = sdrOutputToneMap(rgbF.b);
+            rgb = half3(rgbF);
         }
-        if (params.maskOverlayMode == 1u) {
-            rgb = half3(clamp(ow, 0.0, 1.0));
-        } else if (om.activeFlags == 0u) {
-            rgb = mix(rgb, half3(0.9h, 0.1h, 0.1h), half(ow * params.maskOverlayOpacity));
+
+        // Gamut-clip soft proof: simulate target gamut by clamping out-of-gamut values.
+        // In HDR mode, only clamp negative values (out-of-gamut chromaticity) — values > 1.0
+        // represent HDR brightness, not out-of-gamut colors, so the upper bound stays unclamped.
+        bool isHDRGamut = (params.activeFlags & (1u << 4)) != 0;
+        half3 gamutHi = isHDRGamut ? half3(65504.0h) : half3(1.0h);
+        float3 gamutHiF = isHDRGamut ? float3(65504.0) : float3(1.0);
+        if (params.gamutClipMode == 1) {
+            // sRGB: clamp (working space IS extended linear sRGB)
+            rgb = clamp(rgb, half3(0), gamutHi);
+        } else if (params.gamutClipMode == 2) {
+            // Display P3: sRGB -> P3, clamp, P3 -> sRGB
+            float3 p3 = sRGBtoP3_edit * float3(rgb);
+            rgb = half3(P3toSRGB_edit * clamp(p3, 0.0, gamutHiF));
+        } else if (params.gamutClipMode == 3) {
+            // Rec.2020: sRGB -> Rec.2020, clamp, Rec.2020 -> sRGB
+            float3 r2020 = sRGBtoRec2020_edit * float3(rgb);
+            rgb = half3(Rec2020toSRGB_edit * clamp(r2020, 0.0, gamutHiF));
+        } else if (params.gamutClipMode == 4) {
+            // Adobe RGB: sRGB -> Adobe RGB, clamp, Adobe RGB -> sRGB
+            float3 aRgb = sRGBtoAdobeRGB_edit * float3(rgb);
+            rgb = half3(AdobeRGBtoSRGB_edit * clamp(aRgb, 0.0, gamutHiF));
+        }
+
+        // Selected-mask visualization. Normal paint mode uses an ACR-style red tint for an
+        // otherwise unadjusted mask; hovering a mask-type icon switches to a black/white coverage
+        // matte. The latter includes inversion and feather/brush softness while remaining
+        // independent of adjustment opacity, so the fully selected region stays white.
+        if (params.maskOverlayIndex >= 0 && uint(params.maskOverlayIndex) < params.maskCount) {
+            constant MaskParams &om = masks[params.maskOverlayIndex];
+            float ow;
+            if (om.maskType == 1u) {
+                constexpr sampler brushSampler(filter::linear, address::clamp_to_edge);
+                ow = float(brushAlpha.sample(brushSampler, uv, om.brushLayer).r);
+                if (om.inverted > 0.5) ow = 1.0 - ow;
+            } else {
+                ow = params.maskOverlayMode == 1u
+                    ? analyticMaskCoverage(om, uv, params.sourceSize)
+                    : maskWeight(om, uv, params.sourceSize);
+            }
+            if (params.maskOverlayMode == 1u) {
+                rgb = half3(clamp(ow, 0.0, 1.0));
+            } else if (om.activeFlags == 0u) {
+                rgb = mix(rgb, half3(0.9h, 0.1h, 0.1h), half(ow * params.maskOverlayOpacity));
+            }
         }
     }
 

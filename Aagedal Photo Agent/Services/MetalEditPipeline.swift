@@ -208,6 +208,74 @@ struct EditParams {
     var watermarkFrame: UInt32 = 0    // 0 = source UV, 1 = crop-output UV
     var useNearestNeighbor: UInt32 = 0
     var maskOverlayMode: UInt32 = 0   // 0 = red coverage tint, 1 = black/white matte
+
+    // Multi-pass execution. `orderOffset` selects the first entry in the shared layer-order
+    // buffer for this dispatch; `orderCount` above is the number of entries in this pass.
+    // executionFlags: bit0=intermediate (skip output transforms/overlays),
+    // bit1=input texture is in drawable/output coordinates,
+    // bit2=render in the full source frame (identity viewport).
+    var orderOffset: UInt32 = 0
+    var executionFlags: UInt32 = 0
+    var _padExecution0: UInt32 = 0
+    var _padExecution1: UInt32 = 0
+}
+
+/// One compute segment in the compiled edit graph. Adjacent pointwise layers share a segment;
+/// an Anonymizer node is isolated because it samples neighboring pixels from the fully-rendered
+/// output of every upstream segment.
+nonisolated struct EditRenderPass: Sendable, Equatable {
+    var orderOffset: Int
+    var orderCount: Int
+    var requiresMipmappedInput: Bool
+}
+
+/// Pure layer-order compiler kept separate from Metal resource management so ordering behavior
+/// can be unit-tested without a GPU. The encoded order grammar matches `uploadLayerOrder`.
+nonisolated enum EditRenderPassPlanner {
+    static let globalOrderSentinel: UInt32 = 0xFFFF_FFFF
+    static let watermarkOrderFlag: UInt32 = 0x8000_0000
+
+    static func makePlan(
+        orderEntries: [UInt32],
+        globalAnonymizerActive: Bool,
+        anonymizerMaskIndices: Set<Int>
+    ) -> [EditRenderPass] {
+        guard !orderEntries.isEmpty else { return [] }
+
+        func isSpatial(_ entry: UInt32) -> Bool {
+            if entry == globalOrderSentinel {
+                return globalAnonymizerActive
+            }
+            guard entry & watermarkOrderFlag == 0 else { return false }
+            return anonymizerMaskIndices.contains(Int(entry))
+        }
+
+        var result: [EditRenderPass] = []
+        var pointwiseStart = 0
+        for (index, entry) in orderEntries.enumerated() where isSpatial(entry) {
+            if pointwiseStart < index {
+                result.append(EditRenderPass(
+                    orderOffset: pointwiseStart,
+                    orderCount: index - pointwiseStart,
+                    requiresMipmappedInput: false
+                ))
+            }
+            result.append(EditRenderPass(
+                orderOffset: index,
+                orderCount: 1,
+                requiresMipmappedInput: true
+            ))
+            pointwiseStart = index + 1
+        }
+        if pointwiseStart < orderEntries.count {
+            result.append(EditRenderPass(
+                orderOffset: pointwiseStart,
+                orderCount: orderEntries.count - pointwiseStart,
+                requiresMipmappedInput: false
+            ))
+        }
+        return result
+    }
 }
 
 /// Manages the Metal compute pipeline for real-time edit preview.
@@ -273,6 +341,10 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// each either `globalOrderSentinel` or a mask index into `maskBuffer`. Populated by
     /// `updateParams` from `CameraRawSettings.resolvedLayerOrder()`.
     nonisolated(unsafe) private(set) var orderBuffer: MTLBuffer?
+    /// Compiled compute segments for the currently uploaded order. A single entry retains the
+    /// historical one-dispatch fast path; two or more entries use ping-pong intermediate
+    /// textures so each spatial node samples the complete upstream composite.
+    nonisolated(unsafe) private var renderPassPlan: [EditRenderPass] = []
 
     /// Gamut clipping mode for soft proof preview. 0=off, 1=sRGB, 2=P3, 3=Rec.2020.
     nonisolated(unsafe) var gamutClipMode: UInt32 = 0 {
@@ -327,11 +399,16 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// Max layer-order entries: every mask, every watermark layer, plus the single global node.
     nonisolated private static let maxOrderEntries = maxMasks + maxWatermarks + 1
     /// Order-buffer entry meaning "run the global adjustment block here".
-    nonisolated private static let globalOrderSentinel: UInt32 = 0xFFFF_FFFF
+    nonisolated private static let globalOrderSentinel =
+        EditRenderPassPlanner.globalOrderSentinel
     /// Order-buffer high bit meaning "the low 31 bits are a watermark-layer index", so a
     /// watermark entry and the global sentinel (which also has this bit set) stay
     /// distinguishable from a plain mask index (always < maxMasks). See EditAdjustments.metal.
-    nonisolated private static let watermarkOrderFlag: UInt32 = 0x8000_0000
+    nonisolated private static let watermarkOrderFlag =
+        EditRenderPassPlanner.watermarkOrderFlag
+    nonisolated private static let executionIntermediate: UInt32 = 1 << 0
+    nonisolated private static let executionInputInDrawableFrame: UInt32 = 1 << 1
+    nonisolated private static let executionIdentitySourceFrame: UInt32 = 1 << 2
 
     // Overlay pipeline (mask overlay rendering)
     private let overlayPipelineState: MTLComputePipelineState?
@@ -768,7 +845,15 @@ final class MetalEditPipeline: @unchecked Sendable {
             refreshBrushAlpha([], size: MTLSize(width: 0, height: 0, depth: 0))
             refreshWatermarkParams([], imageSize: MTLSize(width: 0, height: 0, depth: 0))
             activeDisplayWatermarkLayers = []
-            params.orderCount = uploadLayerOrder([.global], maskIndexByID: [:], watermarkIndexByID: [:])
+            let orderEntries = uploadLayerOrder(
+                [.global], maskIndexByID: [:], watermarkIndexByID: [:]
+            )
+            params.orderCount = UInt32(orderEntries.count)
+            renderPassPlan = EditRenderPassPlanner.makePlan(
+                orderEntries: orderEntries,
+                globalAnonymizerActive: false,
+                anonymizerMaskIndices: []
+            )
             let ptr = buffer.contents().bindMemory(to: EditParams.self, capacity: 1)
             ptr.pointee = params
             ptr.pointee.gamutClipMode = gamutClipMode
@@ -893,6 +978,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         // with the shared alpha array rasterized below.
         var maskIndexByID: [UUID: Int] = [:]
         var enabledMaskIndexByID: [UUID: Int] = [:]
+        var anonymizerMaskIndices = Set<Int>()
         var maskAlphaSources: [MaskAlphaSource] = []
         if maskCount > 0, let maskBuf = maskBuffer {
             let maskPtr = maskBuf.contents().bindMemory(to: MaskParams.self, capacity: Self.maxMasks)
@@ -955,6 +1041,9 @@ final class MetalEditPipeline: @unchecked Sendable {
                     mp.anonymizerAmount = Float(min(max((anon.amount ?? 0) / 100.0, 0.0), 1.0))
                     mp.anonymizerBlackOut = (anon.blackOut == true) ? 1.0 : 0.0
                     maskFlags |= (1 << 8)
+                    if mask.enabled {
+                        anonymizerMaskIndices.insert(i)
+                    }
                 }
                 if let temp = mask.temperature, temp != 0 {
                     mp.temperature = Float(min(max(temp / 100.0, -1.0), 1.0))
@@ -1062,11 +1151,30 @@ final class MetalEditPipeline: @unchecked Sendable {
         // Build the processing order: interleave the global node among the masks and
         // watermark layers per the resolved layer order. Refs to disabled/overflow/missing
         // layers (absent from the index maps) are skipped; the global node is always present.
-        params.orderCount = uploadLayerOrder(
+        let orderEntries = uploadLayerOrder(
             displaySettings.resolvedLayerOrder(),
             maskIndexByID: enabledMaskIndexByID,
             watermarkIndexByID: watermarkIndexByID
         )
+        params.orderCount = UInt32(orderEntries.count)
+        let globalAnonymizerActive = flags & (1 << 5) != 0
+        if globalAnonymizerActive,
+           params.anonymizerBlackOut > 0.5,
+           let globalIndex = orderEntries.firstIndex(of: EditRenderPassPlanner.globalOrderSentinel) {
+            // Preserve the privacy guarantee of global Black Out: it is terminal and cannot
+            // be lifted by a later tone curve, mask, or watermark.
+            renderPassPlan = [EditRenderPass(
+                orderOffset: globalIndex,
+                orderCount: 1,
+                requiresMipmappedInput: false
+            )]
+        } else {
+            renderPassPlan = EditRenderPassPlanner.makePlan(
+                orderEntries: orderEntries,
+                globalAnonymizerActive: globalAnonymizerActive,
+                anonymizerMaskIndices: anonymizerMaskIndices
+            )
+        }
 
         let ptr = buffer.contents().bindMemory(to: EditParams.self, capacity: 1)
         ptr.pointee = params
@@ -1101,26 +1209,27 @@ final class MetalEditPipeline: @unchecked Sendable {
         _ resolved: [LayerRef],
         maskIndexByID: [UUID: Int],
         watermarkIndexByID: [UUID: Int]
-    ) -> UInt32 {
-        guard let orderBuf = orderBuffer else { return 0 }
+    ) -> [UInt32] {
+        guard let orderBuf = orderBuffer else { return [] }
         let ptr = orderBuf.contents().bindMemory(to: UInt32.self, capacity: Self.maxOrderEntries)
-        var count = 0
-        for ref in resolved where count < Self.maxOrderEntries {
+        var entries: [UInt32] = []
+        entries.reserveCapacity(min(resolved.count, Self.maxOrderEntries))
+        for ref in resolved where entries.count < Self.maxOrderEntries {
+            let entry: UInt32
             switch ref {
             case .global:
-                ptr[count] = Self.globalOrderSentinel
-                count += 1
+                entry = Self.globalOrderSentinel
             case .mask(let id):
                 guard let idx = maskIndexByID[id] else { continue }
-                ptr[count] = UInt32(idx)
-                count += 1
+                entry = UInt32(idx)
             case .watermark(let id):
                 guard let idx = watermarkIndexByID[id] else { continue }
-                ptr[count] = Self.watermarkOrderFlag | UInt32(idx)
-                count += 1
+                entry = Self.watermarkOrderFlag | UInt32(idx)
             }
+            ptr[entries.count] = entry
+            entries.append(entry)
         }
-        return UInt32(count)
+        return entries
     }
 
     // MARK: - Overlay
@@ -1650,7 +1759,179 @@ final class MetalEditPipeline: @unchecked Sendable {
 
     // MARK: - Render
 
-    /// Single compute dispatch to drawable. Returns true on success.
+    /// Allocates one transient half-float working texture. Mipmaps are generated only when the
+    /// following pass is spatial, so pointwise-only segments do not pay the blit cost.
+    nonisolated private func makeRenderGraphTexture(width: Int, height: Int) -> MTLTexture? {
+        let desc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba16Float,
+            width: width,
+            height: height,
+            mipmapped: true
+        )
+        desc.usage = [.shaderRead, .shaderWrite]
+        desc.storageMode = .private
+        return device.makeTexture(descriptor: desc)
+    }
+
+    /// Encodes one edit-kernel dispatch using an immutable parameter snapshot. `setBytes` is
+    /// important here: every pass has a different order range/execution mode, while the shared
+    /// `paramsBuffer` remains the canonical state consumed by scopes and future redraws.
+    nonisolated private func encodeEditPass(
+        source: MTLTexture,
+        destination: MTLTexture,
+        params: EditParams,
+        commandBuffer: MTLCommandBuffer
+    ) -> Bool {
+        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return false }
+        var passParams = params
+        encoder.setComputePipelineState(pipelineState)
+        encoder.setTexture(source, index: 0)
+        encoder.setTexture(destination, index: 1)
+        encoder.setTexture(lutTexture, index: 2)
+        encoder.setTexture(brushAlphaTexture ?? emptyBrushAlpha, index: 3)
+        encoder.setTexture(watermarkTexture ?? emptyWatermarkTexture, index: 4)
+        encoder.setBytes(&passParams, length: MemoryLayout<EditParams>.stride, index: 0)
+        if let maskBuffer {
+            encoder.setBuffer(maskBuffer, offset: 0, index: 1)
+        }
+        if let hslBuffer {
+            encoder.setBuffer(hslBuffer, offset: 0, index: 2)
+        }
+        if let orderBuffer {
+            encoder.setBuffer(orderBuffer, offset: 0, index: 3)
+        }
+        if let watermarkParamsBuffer {
+            encoder.setBuffer(watermarkParamsBuffer, offset: 0, index: 4)
+        }
+        encoder.dispatchThreads(
+            MTLSize(
+                width: Int(params.drawableSize.x),
+                height: Int(params.drawableSize.y),
+                depth: 1
+            ),
+            threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1)
+        )
+        encoder.endEncoding()
+        return true
+    }
+
+    /// Encodes either the historical one-dispatch fast path or the compiled multi-pass graph.
+    /// Source-frame graphs render stable full-image intermediates; crop-output graphs retain the
+    /// current drawable mapping so crop-relative watermarks preserve their existing semantics.
+    nonisolated private func encodeRenderGraph(
+        source: MTLTexture,
+        destination: MTLTexture,
+        baseParams: EditParams,
+        workingInOutputFrame: Bool,
+        commandBuffer: MTLCommandBuffer
+    ) -> Bool {
+        guard renderPassPlan.count > 1 else {
+            var params = baseParams
+            params.orderOffset = UInt32(renderPassPlan.first?.orderOffset ?? 0)
+            params.orderCount = UInt32(
+                renderPassPlan.first?.orderCount ?? Int(baseParams.orderCount)
+            )
+            params.executionFlags = 0
+            return encodeEditPass(
+                source: source,
+                destination: destination,
+                params: params,
+                commandBuffer: commandBuffer
+            )
+        }
+
+        let workingWidth = workingInOutputFrame
+            ? Int(baseParams.drawableSize.x)
+            : source.width
+        let workingHeight = workingInOutputFrame
+            ? Int(baseParams.drawableSize.y)
+            : source.height
+        guard workingWidth > 0, workingHeight > 0,
+              let ping = makeRenderGraphTexture(width: workingWidth, height: workingHeight)
+        else { return false }
+        let pong: MTLTexture?
+        if renderPassPlan.count > 2 {
+            pong = makeRenderGraphTexture(width: workingWidth, height: workingHeight)
+            guard pong != nil else { return false }
+        } else {
+            pong = nil
+        }
+
+        var current = source
+        var writeToPing = true
+        for (index, renderPass) in renderPassPlan.enumerated() {
+            let isLast = index == renderPassPlan.count - 1
+            let output: MTLTexture
+            if isLast {
+                output = destination
+            } else if writeToPing {
+                output = ping
+            } else if let pong {
+                output = pong
+            } else {
+                return false
+            }
+            var params = baseParams
+            params.orderOffset = UInt32(renderPass.orderOffset)
+            params.orderCount = UInt32(renderPass.orderCount)
+            if isLast {
+                // The last layer segment also serves as presentation: it maps a source-frame
+                // intermediate through the current viewport (or samples an output-frame
+                // intermediate directly) and applies output transforms exactly once.
+                params.executionFlags = workingInOutputFrame
+                    ? Self.executionInputInDrawableFrame
+                    : 0
+            } else {
+                params.drawableSize = SIMD2<Float>(Float(workingWidth), Float(workingHeight))
+                params.scale = SIMD2<Float>(
+                    Float(workingWidth) / Float(max(source.width, 1)),
+                    Float(workingHeight) / Float(max(source.height, 1))
+                )
+                params.executionFlags = Self.executionIntermediate
+                if workingInOutputFrame {
+                    if index > 0 {
+                        params.executionFlags |= Self.executionInputInDrawableFrame
+                    }
+                } else {
+                    params.viewportOrigin = .zero
+                    params.viewportSize = SIMD2<Float>(1, 1)
+                    params.viewportCenter = SIMD2<Float>(0.5, 0.5)
+                    params.viewportRotation = 0
+                    params.cropHalfExtent = SIMD2<Float>(0.5, 0.5)
+                    params.watermarkFrame = 0
+                    params.executionFlags |= Self.executionIdentitySourceFrame
+                }
+            }
+            if isLast, workingInOutputFrame {
+                // The current texture is already in output coordinates after the first
+                // intermediate segment; preserve the source UV mapping only for mask geometry.
+                if index > 0 {
+                    params.executionFlags |= Self.executionInputInDrawableFrame
+                }
+            }
+
+            guard encodeEditPass(
+                source: current,
+                destination: output,
+                params: params,
+                commandBuffer: commandBuffer
+            ) else { return false }
+            current = output
+            if !isLast {
+                writeToPing.toggle()
+            }
+
+            if index + 1 < renderPassPlan.count,
+               renderPassPlan[index + 1].requiresMipmappedInput {
+                guard let blit = commandBuffer.makeBlitCommandEncoder() else { return false }
+                blit.generateMipmaps(for: current)
+                blit.endEncoding()
+            }
+        }
+        return true
+    }
+
+    /// Renders the compiled graph to a drawable. Returns true on success.
     nonisolated(unsafe) private var lastLoggedWidth: Int = 0
 
     nonisolated func render(
@@ -1660,8 +1941,7 @@ final class MetalEditPipeline: @unchecked Sendable {
     ) -> Bool {
         guard let source = sourceTexture,
               let buffer = paramsBuffer,
-              let commandBuffer = commandQueue.makeCommandBuffer(),
-              let encoder = commandBuffer.makeComputeCommandEncoder() else { return false }
+              let commandBuffer = commandQueue.makeCommandBuffer() else { return false }
 
         let w = Int(drawableSize.width)
         if w != lastLoggedWidth {
@@ -1684,34 +1964,19 @@ final class MetalEditPipeline: @unchecked Sendable {
         ptr.pointee.drawableSize = SIMD2<Float>(dstW, dstH)
         ptr.pointee.useNearestNeighbor = useNearestNeighbor ? 1 : 0
 
-        encoder.setComputePipelineState(pipelineState)
-        encoder.setTexture(source, index: 0)
-        encoder.setTexture(drawable.texture, index: 1)
-        encoder.setTexture(lutTexture, index: 2)
-        encoder.setTexture(brushAlphaTexture ?? emptyBrushAlpha, index: 3)
-        encoder.setTexture(watermarkTexture ?? emptyWatermarkTexture, index: 4)
-        encoder.setBuffer(buffer, offset: 0, index: 0)
-        if let maskBuf = maskBuffer {
-            encoder.setBuffer(maskBuf, offset: 0, index: 1)
-        }
-        if let hslBuf = hslBuffer {
-            encoder.setBuffer(hslBuf, offset: 0, index: 2)
-        }
-        if let orderBuf = orderBuffer {
-            encoder.setBuffer(orderBuf, offset: 0, index: 3)
-        }
-        if let wmBuf = watermarkParamsBuffer {
-            encoder.setBuffer(wmBuf, offset: 0, index: 4)
-        }
-
         let threadgroupSize = MTLSize(width: 16, height: 16, depth: 1)
         let gridSize = MTLSize(
             width: Int(dstW),
             height: Int(dstH),
             depth: 1
         )
-        encoder.dispatchThreads(gridSize, threadsPerThreadgroup: threadgroupSize)
-        encoder.endEncoding()
+        guard encodeRenderGraph(
+            source: source,
+            destination: drawable.texture,
+            baseParams: ptr.pointee,
+            workingInOutputFrame: ptr.pointee.watermarkFrame == 1,
+            commandBuffer: commandBuffer
+        ) else { return false }
 
         // Overlay pass — composites mask overlay shapes onto the drawable
         if let overlayState = overlayPipelineState, let overlayBuf = overlayParamsBuffer {
@@ -2405,10 +2670,9 @@ final class MetalEditPipeline: @unchecked Sendable {
         outDesc.storageMode = .shared
         guard let outTexture = device.makeTexture(descriptor: outDesc) else { return nil }
 
-        // 4. Dispatch compute shader
+        // 4. Dispatch the same compiled render graph used by the live preview.
         guard let paramsBuffer = pipeline.paramsBuffer,
-              let computeCmdBuf = queue.makeCommandBuffer(),
-              let encoder = computeCmdBuf.makeComputeCommandEncoder() else { return nil }
+              let computeCmdBuf = queue.makeCommandBuffer() else { return nil }
 
         let ptr = paramsBuffer.contents().bindMemory(to: EditParams.self, capacity: 1)
         ptr.pointee.scale = SIMD2<Float>(
@@ -2439,35 +2703,13 @@ final class MetalEditPipeline: @unchecked Sendable {
             ptr.pointee.watermarkFrame = 0
         }
 
-        encoder.setComputePipelineState(pipeline.pipelineState)
-        encoder.setTexture(srcTexture, index: 0)
-        encoder.setTexture(outTexture, index: 1)
-
-        // Use active LUT if tonal ops are active, otherwise identity
-        let flags = ptr.pointee.activeFlags
-        let useLUT = (flags & (1 << 0)) != 0
-        encoder.setTexture(useLUT ? pipeline.lutTexture : pipeline.identityLutTexture, index: 2)
-        encoder.setTexture(pipeline.brushAlphaTexture ?? pipeline.emptyBrushAlpha, index: 3)
-        encoder.setTexture(pipeline.watermarkTexture ?? pipeline.emptyWatermarkTexture, index: 4)
-
-        encoder.setBuffer(paramsBuffer, offset: 0, index: 0)
-        if let maskBuf = pipeline.maskBuffer {
-            encoder.setBuffer(maskBuf, offset: 0, index: 1)
-        }
-        if let hslBuf = pipeline.hslBuffer {
-            encoder.setBuffer(hslBuf, offset: 0, index: 2)
-        }
-        if let orderBuf = pipeline.orderBuffer {
-            encoder.setBuffer(orderBuf, offset: 0, index: 3)
-        }
-        if let wmBuf = pipeline.watermarkParamsBuffer {
-            encoder.setBuffer(wmBuf, offset: 0, index: 4)
-        }
-
-        let threadgroupSize = MTLSize(width: 16, height: 16, depth: 1)
-        let gridSize = MTLSize(width: outputWidth, height: outputHeight, depth: 1)
-        encoder.dispatchThreads(gridSize, threadsPerThreadgroup: threadgroupSize)
-        encoder.endEncoding()
+        guard pipeline.encodeRenderGraph(
+            source: srcTexture,
+            destination: outTexture,
+            baseParams: ptr.pointee,
+            workingInOutputFrame: outputCrop != nil,
+            commandBuffer: computeCmdBuf
+        ) else { return nil }
         computeCmdBuf.commit()
         computeCmdBuf.waitUntilCompleted()
 

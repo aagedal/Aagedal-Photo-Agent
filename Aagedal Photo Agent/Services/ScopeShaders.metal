@@ -48,11 +48,15 @@ struct ScopeEditParams {
     uint watermarkFrame;
     uint useNearestNeighbor;
     uint maskOverlayMode;
+    uint orderOffset;         // unused by scopes
+    uint executionFlags;      // unused by scopes
+    uint _padExecution0;
+    uint _padExecution1;
 };
 
 // The scope receives MetalEditPipeline.paramsBuffer directly. A field added to EditParams
 // must be mirrored above or every later value (including the white-balance matrix) is corrupt.
-static_assert(sizeof(ScopeEditParams) == 208,
+static_assert(sizeof(ScopeEditParams) == 224,
               "ScopeEditParams must stay byte-for-byte compatible with EditParams");
 
 // ============================================================
