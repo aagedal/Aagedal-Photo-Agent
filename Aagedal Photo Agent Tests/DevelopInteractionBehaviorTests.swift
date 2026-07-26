@@ -221,6 +221,32 @@ struct DevelopInteractionBehaviorTests {
         #expect(grouped == Set(DevelopSlider.allCases))
     }
 
+    @Test("Default Develop section order places Anonymizer before Film Emulation")
+    func defaultDevelopSectionOrderPrioritizesAnonymizer() throws {
+        let anonymizerIndex = try #require(
+            DevelopPanelSection.defaultOrder.firstIndex(of: .anonymizer)
+        )
+        let filmIndex = try #require(
+            DevelopPanelSection.defaultOrder.firstIndex(of: .filmEmulation)
+        )
+        #expect(anonymizerIndex < filmIndex)
+        #expect(Set(DevelopPanelSection.defaultOrder) == Set(DevelopPanelSection.allCases))
+    }
+
+    @Test("Develop section order preserves valid choices and repairs stored values")
+    func developSectionOrderDecoding() {
+        let decoded = DevelopPanelSection.decodeOrder([
+            "filmEmulation",
+            "color",
+            "filmEmulation",
+            "futureSection",
+        ])
+
+        #expect(decoded.prefix(2) == [.filmEmulation, .color])
+        #expect(decoded.count == DevelopPanelSection.allCases.count)
+        #expect(Set(decoded) == Set(DevelopPanelSection.allCases))
+    }
+
     @Test("Develop slider groups hide and restore all of their controls")
     func developSliderGroupVisibilityTogglesWholeSection() {
         var hidden: Set<DevelopSlider> = [.contrast, .filmGrain]
@@ -289,7 +315,7 @@ struct DevelopInteractionBehaviorTests {
 
     @Test("Crop handle padding is limited to the active crop tool")
     func cropPreviewHandlePadding() {
-        #expect(EditCropPreviewFraming.handlePadding(isCropToolActive: true) == 48)
+        #expect(EditCropPreviewFraming.handlePadding(isCropToolActive: true) == 64)
         #expect(EditCropPreviewFraming.handlePadding(isCropToolActive: false) == 0)
     }
 

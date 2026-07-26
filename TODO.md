@@ -97,7 +97,6 @@
 
 
 
-
 ## Future version 2.3
 - [ ] Image analysis layout mode
   - [ ] Two modes

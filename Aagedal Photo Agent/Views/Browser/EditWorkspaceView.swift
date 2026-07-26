@@ -113,7 +113,8 @@ nonisolated enum EditZoomBehavior {
 /// Crop handles need breathing room around the image while the crop tool is open. Once the
 /// crop is confirmed, the result should use the entire preview pane like any other image.
 nonisolated enum EditCropPreviewFraming {
-    static let cropToolHandlePadding: CGFloat = 48
+    /// Leaves room for both the crop handles and the bottom crop toolbar.
+    static let cropToolHandlePadding: CGFloat = 64
 
     static func handlePadding(isCropToolActive: Bool) -> CGFloat {
         isCropToolActive ? cropToolHandlePadding : 0
@@ -1087,6 +1088,15 @@ struct EditWorkspaceView: View {
                     )
                 }
 
+                if showCropControls, canEditSingleImage {
+                    VStack {
+                        Spacer()
+                        cropPreviewToolbar
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 12)
+                    }
+                }
+
                 // Full-resolution decode indicator for RAW files
                 if isDecodingFullResolution {
                     VStack(spacing: 8) {
@@ -1238,6 +1248,22 @@ struct EditWorkspaceView: View {
                         .accessibilityLabel(saveButtonLabel)
 
                         Button {
+                            toggleCropControls()
+                        } label: {
+                            Image(systemName: "crop")
+                                .font(.system(size: 11, weight: showCropControls ? .semibold : .regular))
+                                .foregroundStyle(showCropControls ? Color.accentColor : Color.secondary)
+                                .padding(4)
+                                .background(
+                                    showCropControls ? Color.accentColor.opacity(0.16) : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: 4)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .help(showCropControls ? "Finish Crop (C)" : "Crop (C)")
+                        .accessibilityLabel(showCropControls ? "Finish Crop" : "Crop")
+
+                        Button {
                             editUndoManager.undo()
                         } label: {
                             Image(systemName: "arrow.uturn.backward")
@@ -1273,149 +1299,47 @@ struct EditWorkspaceView: View {
                 }
 
                 if canEditSingleImage {
-                    // ── Mask Selector ──
-                    maskSelectorBar
-
-                    if isSelectingAIMask {
-                        aiMaskToolbar(id: replacingAIMaskID)
-                    } else if isBrushPainting || selectedMaskIsBrush {
-                        brushToolbar
-                    } else if selectedMaskIsAI, let id = selectedMaskID {
-                        aiMaskToolbar(id: id)
-                    } else if !selectedMaskIsFullFrame,
-                              let idx = selectedMaskIndex, let id = selectedMaskID {
-                        analyticMaskToolbar(index: idx, id: id)
-                    }
-
-                    if selectedColorTransformIndex != nil {
-                        colorTransformLayerControls
-                    } else if selectedMaskIndex != nil {
-                        maskAdjustmentSliders
-                    } else if selectedWatermarkIndex != nil {
-                        watermarkLayerControls
+                    if showCropControls {
+                        cropInspectorControls
                     } else {
-                        globalAdjustmentSliders
-                    }
-
-                    // ── Crop ──
-                    Text("Crop")
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.secondary)
-                        .padding(.top, 2)
-                    Divider()
-
-                    if metadataViewModel.hasEmbeddedCropNotLoaded {
-                        Button {
-                            metadataViewModel.importEmbeddedCrop()
-                            showCropControls = true
-                            commitEditAdjustments()
-                        } label: {
-                            Label("Load Embedded Crop", systemImage: "square.and.arrow.down")
-                                .font(.caption)
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.orange)
-                        .help("Load crop from embedded image metadata")
-                    }
-
-                    HStack {
-                        Picker(selection: $cropAspectRatio) {
-                            ForEach(CropAspectRatio.allCases) { ratio in
-                                Text(ratio.label).tag(ratio)
-                            }
-                        } label: {
-                            Label("Aspect Ratio", systemImage: "crop")
-                                .labelStyle(.iconOnly)
-                        }
-                        .pickerStyle(.menu)
-                        .disabled(!showCropControls)
-                        .onChange(of: cropAspectRatio) { _, newRatio in
-                            applyAspectRatioToCrop(newRatio)
-                        }
-
-                        Spacer()
-
-                        Button {
-                            resetCrop()
-                        } label: {
-                            Image(systemName: "arrow.counterclockwise")
-                                .font(.system(size: 11))
-                                .foregroundStyle(.secondary)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(!isCropEnabled)
-                        .help("Reset Crop")
-                    }
-
-                    if showCropControls {
-
-                        sliderRow(
-                            "Rotation",
-                            value: cropAngleBinding,
-                            range: -45...45,
-                            step: 0.01,
-                            formatter: { signedDoubleString($0, precision: 2) },
-                            settingsMutator: { [self] settings, value in
-                                // Write to @State for immediate visual feedback
-                                // (bypasses @Observable cascade — Metal doesn't handle crop)
-                                let clampedAngle = min(max(value, -45), 45)
-                                let ar = sourceAspectRatio
-                                let orientation = selectedImageOrientation
-                                let sensorCrop = settings.crop ?? CameraRawCrop(top: 0, left: 0, bottom: 1, right: 1, angle: 0, hasCrop: true)
-                                let dCrop = sensorCrop.transformedForDisplay(orientation: orientation)
-                                let region = NormalizedCropRegion(
-                                    top: dCrop.top ?? 0,
-                                    left: dCrop.left ?? 0,
-                                    bottom: dCrop.bottom ?? 1,
-                                    right: dCrop.right ?? 1
-                                )
-                                .centerClampedForRotation(angleDegrees: clampedAngle, aspectRatio: ar)
-                                .fittingRotated(angleDegrees: clampedAngle, aspectRatio: ar)
-                                dragCropAngle = clampedAngle
-                                dragCropRegion = region
-                            },
-                            onReset: {
-                                dragCropAngle = nil
-                                dragCropRegion = nil
-                                cropAngleBinding.wrappedValue = 0
-                            }
-                        )
-                    }
-
-                    if showCropControls {
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack {
-                                Text("Zoom")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                if abs(cropZoomScale - 1.0) > 0.01 {
-                                    Button {
-                                        resetCropZoom()
-                                    } label: {
-                                        Image(systemName: "arrow.counterclockwise")
-                                            .font(.system(size: 9))
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    .buttonStyle(.plain)
-                                    .help("Reset to 100%")
+                        if metadataViewModel.hasEmbeddedCropNotLoaded {
+                            Button {
+                                metadataViewModel.importEmbeddedCrop()
+                                if !showCropControls {
+                                    toggleCropControls()
                                 }
-                                Spacer()
-                                Text("\(Int((cropZoomScale * 100).rounded()))%")
-                                    .font(.caption.monospacedDigit())
-                                    .foregroundStyle(.secondary)
+                                commitEditAdjustments()
+                            } label: {
+                                Label("Load Embedded Crop", systemImage: "square.and.arrow.down")
+                                    .font(.caption)
                             }
-                            EditSlider(
-                                value: cropZoomBinding,
-                                range: 0.25...3.0,
-                                step: 0.01
-                            )
-                            .frame(height: 20)
-                            .onTapGesture(count: 2) {
-                                resetCropZoom()
-                            }
-                            .onChange(of: cropZoomScale) { _, _ in
-                                lastCropZoomScale = cropZoomScale
-                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.orange)
+                            .help("Load crop from embedded image metadata")
+                        }
+
+                        // ── Mask Selector ──
+                        maskSelectorBar
+
+                        if isSelectingAIMask {
+                            aiMaskToolbar(id: replacingAIMaskID)
+                        } else if isBrushPainting || selectedMaskIsBrush {
+                            brushToolbar
+                        } else if selectedMaskIsAI, let id = selectedMaskID {
+                            aiMaskToolbar(id: id)
+                        } else if !selectedMaskIsFullFrame,
+                                  let idx = selectedMaskIndex, let id = selectedMaskID {
+                            analyticMaskToolbar(index: idx, id: id)
+                        }
+
+                        if selectedColorTransformIndex != nil {
+                            colorTransformLayerControls
+                        } else if selectedMaskIndex != nil {
+                            maskAdjustmentSliders
+                        } else if selectedWatermarkIndex != nil {
+                            watermarkLayerControls
+                        } else {
+                            globalAdjustmentSliders
                         }
                     }
 
@@ -1436,6 +1360,193 @@ struct EditWorkspaceView: View {
             .opacity(isDecodingFullResolution ? 0.6 : 1.0)
             .animation(.easeInOut(duration: 0.15), value: isDecodingFullResolution)
         }
+    }
+
+    private var cropInspectorControls: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("Crop", systemImage: "crop")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Button("Done") {
+                    toggleCropControls()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .keyboardShortcut(.return, modifiers: [])
+                .help("Finish Crop (Return or C)")
+            }
+
+            Text("Drag the frame or its handles on the image. Hold Command for a free crop.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Divider()
+
+            HStack {
+                Text("Aspect Ratio")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                cropAspectRatioPicker
+                    .frame(width: 120)
+                    .onChange(of: cropAspectRatio) { _, newRatio in
+                        // Both crop pickers share this selection. Observe it only on the
+                        // always-present inspector so one change creates one undo step.
+                        applyAspectRatioToCrop(newRatio)
+                    }
+            }
+
+            cropRotationSliderRow
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack {
+                    Text("Preview Zoom")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if abs(cropZoomScale - 1.0) > 0.01 {
+                        Button {
+                            resetCropZoom()
+                        } label: {
+                            Image(systemName: "arrow.counterclockwise")
+                                .font(.system(size: 9))
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Reset preview zoom to 100%")
+                    }
+                    Spacer()
+                    Text("\(Int((cropZoomScale * 100).rounded()))%")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                EditSlider(
+                    value: cropZoomBinding,
+                    range: 0.25...3.0,
+                    step: 0.01
+                )
+                .frame(height: 20)
+                .onTapGesture(count: 2) {
+                    resetCropZoom()
+                }
+                .onChange(of: cropZoomScale) { _, _ in
+                    lastCropZoomScale = cropZoomScale
+                }
+            }
+
+            Divider()
+
+            Button(role: .destructive) {
+                resetCrop()
+            } label: {
+                Label("Reset Crop", systemImage: "arrow.counterclockwise")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(!isCropEnabled)
+            .help("Clear the crop and return to the full image")
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var cropPreviewToolbar: some View {
+        HStack(spacing: 10) {
+            Label("Crop", systemImage: "crop")
+                .font(.system(size: 11, weight: .semibold))
+
+            Divider()
+                .frame(height: 22)
+
+            cropAspectRatioPicker
+                .frame(width: 108)
+
+            Image(systemName: "rotate.left")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+
+            EditSlider(
+                value: cropAngleBinding,
+                range: -45...45,
+                step: 0.01,
+                onEditingChanged: { editing in
+                    isDraggingEditSlider = editing
+                    if !editing {
+                        commitEditAdjustments()
+                    }
+                },
+                onDragValueChanged: { value in
+                    updateCropAngleDragPreview(value)
+                },
+                onReset: {
+                    resetCropAngle()
+                    commitEditAdjustments()
+                }
+            )
+            .frame(width: 130, height: 20)
+            .help("Straighten angle. Hold Option for precision; double-click to reset.")
+
+            Text(signedDoubleString(displayCropAngle, precision: 1) + "°")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 43, alignment: .trailing)
+
+            Divider()
+                .frame(height: 22)
+
+            Button {
+                resetCrop()
+            } label: {
+                Label("Reset", systemImage: "arrow.counterclockwise")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(!isCropEnabled)
+
+            Button("Done") {
+                toggleCropControls()
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .help("Finish Crop (Return or C)")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(.white.opacity(0.12), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.25), radius: 8, y: 3)
+    }
+
+    private var cropAspectRatioPicker: some View {
+        Picker("Aspect Ratio", selection: $cropAspectRatio) {
+            ForEach(CropAspectRatio.menuOrder) { ratio in
+                Text(ratio.label).tag(ratio)
+            }
+        }
+        .pickerStyle(.menu)
+        .labelsHidden()
+        .help("Crop aspect ratio")
+        .accessibilityLabel("Crop Aspect Ratio")
+    }
+
+    private var cropRotationSliderRow: some View {
+        sliderRow(
+            "Straighten",
+            value: cropAngleBinding,
+            range: -45...45,
+            step: 0.01,
+            formatter: { signedDoubleString($0, precision: 2) + "°" },
+            settingsMutator: { [self] _, value in
+                updateCropAngleDragPreview(value)
+            },
+            onReset: {
+                resetCropAngle()
+            }
+        )
     }
 
     private var filmstrip: some View {
@@ -3139,6 +3250,30 @@ struct EditWorkspaceView: View {
         )
     }
 
+    /// Crop straightening is rendered by SwiftUI rather than the Metal parameter path.
+    /// Keep the transient angle and fitted crop local while dragging so both crop control
+    /// surfaces remain responsive without writing metadata at pointer-event frequency.
+    private func updateCropAngleDragPreview(_ value: Double) {
+        let clampedAngle = min(max(value, -45), 45)
+        let region = activeCrop
+            .centerClampedForRotation(
+                angleDegrees: clampedAngle,
+                aspectRatio: sourceAspectRatio
+            )
+            .fittingRotated(
+                angleDegrees: clampedAngle,
+                aspectRatio: sourceAspectRatio
+            )
+        dragCropAngle = clampedAngle
+        dragCropRegion = region
+    }
+
+    private func resetCropAngle() {
+        dragCropAngle = nil
+        dragCropRegion = nil
+        cropAngleBinding.wrappedValue = 0
+    }
+
     private func toggleCropControls() {
         showCropControls.toggle()
         if showCropControls {
@@ -3182,6 +3317,9 @@ struct EditWorkspaceView: View {
         resetCropZoom()
         cropAspectRatio = .original
         showCropControls = false
+        dragCropAngle = nil
+        dragCropRegion = nil
+        lockedCropImageRect = nil
         updateCameraRaw { cameraRaw in
             cameraRaw.crop = CameraRawCrop(
                 top: 0,
@@ -3193,6 +3331,9 @@ struct EditWorkspaceView: View {
             )
         }
         commitEditAdjustments()
+        // Reset can be invoked from either crop control surface. Restore the normal
+        // pane-sized Metal viewport immediately, just like finishing crop mode.
+        syncViewportToMetal()
         // Crop cleared — refresh the clean feed back to the full frame.
         syncCleanFeed()
     }
@@ -3318,6 +3459,33 @@ struct EditWorkspaceView: View {
 
     @ViewBuilder
     private var globalAdjustmentSliders: some View {
+        ForEach(settingsViewModel.developSectionOrder) { section in
+            developPanelSection(section)
+        }
+    }
+
+    @ViewBuilder
+    private func developPanelSection(_ section: DevelopPanelSection) -> some View {
+        switch section {
+        case .color:
+            colorDevelopSection
+        case .exposure:
+            exposureDevelopSection
+        case .detail:
+            detailDevelopSection
+        case .toneCurve:
+            toneCurveDevelopSection
+        case .hsl:
+            hslDevelopSection
+        case .anonymizer:
+            anonymizerDevelopSection
+        case .filmEmulation:
+            filmDevelopSection
+        }
+    }
+
+    @ViewBuilder
+    private var colorDevelopSection: some View {
         // ── Color ──
         colorSectionHeader
         Divider()
@@ -3377,7 +3545,10 @@ struct EditWorkspaceView: View {
         sliderRow("Density", value: toneSliderBinding(\.globalDensity), range: -100...100, step: 1, gradientColors: [.white, .black], formatter: signedIntString, visibility: .density, settingsMutator: { $0.globalDensity = Int($1.rounded()) }, onReset: {
             toneSliderBinding(\.globalDensity).wrappedValue = 0
         })
+    }
 
+    @ViewBuilder
+    private var exposureDevelopSection: some View {
         // ── Exposure ──
         exposureSectionHeader
         Divider()
@@ -3409,7 +3580,10 @@ struct EditWorkspaceView: View {
         sliderRow("Blacks", value: toneSliderBinding(\.blacks2012), range: -100...100, step: 1, formatter: signedIntString, visibility: .blacks, settingsMutator: { $0.blacks2012 = Int($1.rounded()) }, onReset: {
             toneSliderBinding(\.blacks2012).wrappedValue = 0
         })
+    }
 
+    @ViewBuilder
+    private var detailDevelopSection: some View {
         if settingsViewModel.isDevelopSliderGroupVisible(.detail) {
             // ── Detail ──
             sectionHeader("Detail", isMuted: $isMutingDetail, hasAdjustments: hasDetailAdjustments, onReset: resetDetailAdjustments)
@@ -3426,7 +3600,10 @@ struct EditWorkspaceView: View {
                 toneSliderBinding(\.dehaze).wrappedValue = 0
             })
         }
+    }
 
+    @ViewBuilder
+    private var toneCurveDevelopSection: some View {
         if settingsViewModel.isDevelopSliderVisible(.toneCurve) {
             // ── Tone Curve ──
             CurveEditorView(
@@ -3452,7 +3629,10 @@ struct EditWorkspaceView: View {
             )
             .padding(.top, 2)
         }
+    }
 
+    @ViewBuilder
+    private var hslDevelopSection: some View {
         if settingsViewModel.isDevelopSliderVisible(.hsl) {
             // ── Hue / Saturation / Density ──
             sectionHeader("Hue / Saturation / Density", isMuted: $isMutingHSL, hasAdjustments: hasHSLAdjustments, onReset: resetHSLAdjustments)
@@ -3477,7 +3657,10 @@ struct EditWorkspaceView: View {
                 }
             )
         }
+    }
 
+    @ViewBuilder
+    private var filmDevelopSection: some View {
         if settingsViewModel.isDevelopSliderGroupVisible(.film) {
             // ── Film Emulation ──
             sectionHeader(
@@ -3540,7 +3723,10 @@ struct EditWorkspaceView: View {
                 onReset: { filmSliderBinding(\.edgeBlur).wrappedValue = 0 }
             )
         }
+    }
 
+    @ViewBuilder
+    private var anonymizerDevelopSection: some View {
         if settingsViewModel.isDevelopSliderGroupVisible(.privacy) {
             // ── Anonymizer ──
             HStack(spacing: 6) {
@@ -6991,6 +7177,10 @@ struct EditWorkspaceView: View {
             guard !isTextFieldActive() else { return event }
             if isSelectingAIMask {
                 cancelAIMaskSelection()
+                return nil
+            }
+            if showCropControls {
+                toggleCropControls()
                 return nil
             }
             onExit()

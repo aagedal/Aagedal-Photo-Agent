@@ -181,6 +181,59 @@ nonisolated enum DevelopSliderGroup: String, CaseIterable, Identifiable, Sendabl
     }
 }
 
+/// Major sections in the Global Develop inspector. This is intentionally separate from
+/// `DevelopSliderGroup`: groups control optional-control visibility, while this enum controls
+/// the presentation order of complete sections (including always-visible Color and Exposure).
+nonisolated enum DevelopPanelSection: String, CaseIterable, Identifiable, Sendable {
+    case color
+    case exposure
+    case detail
+    case toneCurve
+    case hsl
+    case anonymizer
+    case filmEmulation
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .color: return "Color"
+        case .exposure: return "Exposure"
+        case .detail: return "Detail"
+        case .toneCurve: return "Tone Curve"
+        case .hsl: return "Hue / Saturation / Density"
+        case .anonymizer: return "Anonymizer"
+        case .filmEmulation: return "Film Emulation"
+        }
+    }
+
+    static let defaultOrder: [DevelopPanelSection] = [
+        .color,
+        .exposure,
+        .detail,
+        .toneCurve,
+        .hsl,
+        .anonymizer,
+        .filmEmulation,
+    ]
+
+    /// Preserves every valid stored section once, then appends newly-added or missing sections
+    /// in their default relative order. Unknown values are ignored for forward/backward safety.
+    static func decodeOrder(_ rawValues: [String]) -> [DevelopPanelSection] {
+        var seen: Set<DevelopPanelSection> = []
+        var result: [DevelopPanelSection] = []
+        for rawValue in rawValues {
+            guard let section = DevelopPanelSection(rawValue: rawValue),
+                  seen.insert(section).inserted else { continue }
+            result.append(section)
+        }
+        for section in defaultOrder where seen.insert(section).inserted {
+            result.append(section)
+        }
+        return result
+    }
+}
+
 /// Optional Develop controls that users may hide. Exposure, white balance, and Crop are
 /// intentionally absent, making it impossible for persisted preferences or UI code to hide them.
 nonisolated enum DevelopSlider: String, CaseIterable, Identifiable, Sendable {
@@ -282,6 +335,15 @@ final class SettingsViewModel {
         }
     }
 
+    var developSectionOrder: [DevelopPanelSection] {
+        didSet {
+            UserDefaults.standard.set(
+                developSectionOrder.map(\.rawValue),
+                forKey: UserDefaultsKeys.developSectionOrder
+            )
+        }
+    }
+
     var hiddenIPTCMetadataFields: Set<IPTCMetadata.FieldKey> {
         didSet {
             UserDefaults.standard.set(
@@ -326,6 +388,20 @@ final class SettingsViewModel {
 
     func setDevelopSliderGroup(_ group: DevelopSliderGroup, visible: Bool) {
         group.setVisible(visible, hiddenSliders: &hiddenDevelopSliders)
+    }
+
+    func moveDevelopSection(_ section: DevelopPanelSection, by offset: Int) {
+        guard let sourceIndex = developSectionOrder.firstIndex(of: section) else { return }
+        let destinationIndex = min(max(sourceIndex + offset, 0), developSectionOrder.count - 1)
+        guard destinationIndex != sourceIndex else { return }
+        var reordered = developSectionOrder
+        reordered.remove(at: sourceIndex)
+        reordered.insert(section, at: destinationIndex)
+        developSectionOrder = reordered
+    }
+
+    func resetDevelopSectionOrder() {
+        developSectionOrder = DevelopPanelSection.defaultOrder
     }
 
     var defaultExternalEditor: String {
@@ -809,6 +885,9 @@ final class SettingsViewModel {
         self.showOriginalThumbnails = UserDefaults.standard.bool(forKey: UserDefaultsKeys.showOriginalThumbnails)
         self.hiddenDevelopSliders = DevelopSlider.decodeHidden(
             UserDefaults.standard.stringArray(forKey: UserDefaultsKeys.hiddenDevelopSliders) ?? []
+        )
+        self.developSectionOrder = DevelopPanelSection.decodeOrder(
+            UserDefaults.standard.stringArray(forKey: UserDefaultsKeys.developSectionOrder) ?? []
         )
         self.hiddenIPTCMetadataFields = IPTCMetadata.FieldKey.decodeHidden(
             UserDefaults.standard.stringArray(forKey: UserDefaultsKeys.hiddenIPTCMetadataFields) ?? []

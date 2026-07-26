@@ -290,7 +290,52 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section("Develop Sliders") {
+            Section("Develop Controls") {
+                Text("Arrange the major sections in the Global Develop inspector.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                ForEach(
+                    Array(settingsViewModel.developSectionOrder.enumerated()),
+                    id: \.element
+                ) { index, section in
+                    HStack {
+                        Text(section.title)
+                        Spacer()
+                        Button {
+                            settingsViewModel.moveDevelopSection(section, by: -1)
+                        } label: {
+                            Image(systemName: "chevron.up")
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(index == 0)
+                        .help("Move \(section.title) up")
+                        .accessibilityLabel("Move \(section.title) up")
+
+                        Button {
+                            settingsViewModel.moveDevelopSection(section, by: 1)
+                        } label: {
+                            Image(systemName: "chevron.down")
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(index == settingsViewModel.developSectionOrder.count - 1)
+                        .help("Move \(section.title) down")
+                        .accessibilityLabel("Move \(section.title) down")
+                    }
+                }
+
+                HStack {
+                    Spacer()
+                    Button("Reset Order") {
+                        settingsViewModel.resetDevelopSectionOrder()
+                    }
+                    .disabled(
+                        settingsViewModel.developSectionOrder == DevelopPanelSection.defaultOrder
+                    )
+                }
+
+                Divider()
+
                 Text("Choose which optional sliders appear in Develop. Exposure, white balance, and Crop always remain available.")
                     .font(.caption)
                     .foregroundStyle(.secondary)

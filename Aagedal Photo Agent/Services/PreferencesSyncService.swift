@@ -33,6 +33,7 @@ final class PreferencesSyncService {
         UserDefaultsKeys.showOriginalThumbnails,
         UserDefaultsKeys.defaultEditDestination,
         UserDefaultsKeys.hiddenDevelopSliders,
+        UserDefaultsKeys.developSectionOrder,
         UserDefaultsKeys.thumbnailSortOrder,
         UserDefaultsKeys.thumbnailSortReversed,
         UserDefaultsKeys.previewMode,
