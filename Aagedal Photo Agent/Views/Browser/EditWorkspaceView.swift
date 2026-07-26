@@ -173,6 +173,9 @@ struct EditWorkspaceView: View {
     @State private var dropTargetLayer: LayerRef?
     @State private var hoveredLayer: LayerRef?
     @State private var hoveredAddLayerKind: LayerKind?
+    @State private var isShowingLayerRename = false
+    @State private var layerBeingRenamed: LayerRef?
+    @State private var layerNameDraft = ""
     @State private var isDraggingMask = false
     @State private var dragMaskGeometry: EllipseMaskGeometry?
     @State private var dragWatermarkGeometry: WatermarkGeometry?
@@ -4059,25 +4062,25 @@ struct EditWorkspaceView: View {
     private var addLayerButton: some View {
         Grid(horizontalSpacing: 4, verticalSpacing: 4) {
             GridRow {
-                addLayerTile(kind: .ellipseMask, help: "Add ellipse mask") {
+                addLayerTile(kind: .ellipseMask, tint: .blue, help: "Add ellipse mask") {
                     addNewMask()
                 }
-                addGlobalLayerTile()
-                addLayerTile(kind: .aiMask, help: "Select a person or object with AI") {
-                    startAIMaskSelection()
-                }
-            }
-            GridRow {
-                addLayerTile(kind: .brushMask, help: "Add brush mask") {
+                addLayerTile(kind: .brushMask, tint: .blue, help: "Add brush mask") {
                     _ = addNewBrushMask()
                     isBrushPainting = true
                     isPickingWhiteBalance = false
                     syncMaskOverlayTarget()
                 }
-                addLayerTile(kind: .colorTransform, help: "Add LUT or CST layer") {
+                addLayerTile(kind: .aiMask, tint: .blue, help: "Select a person or object with AI") {
+                    startAIMaskSelection()
+                }
+            }
+            GridRow {
+                addGlobalLayerTile()
+                addLayerTile(kind: .colorTransform, tint: .green, help: "Add LUT or CST layer") {
                     addNewColorTransformLayer()
                 }
-                addLayerTile(kind: .watermark, help: "Add watermark layer") {
+                addLayerTile(kind: .watermark, tint: .yellow, help: "Add watermark layer") {
                     addNewWatermarkLayer()
                 }
             }
@@ -4110,6 +4113,19 @@ struct EditWorkspaceView: View {
         } message: {
             Text(colorTransformError ?? "The color transform could not be loaded.")
         }
+        .alert("Rename Layer", isPresented: $isShowingLayerRename) {
+            TextField("Layer name", text: $layerNameDraft)
+            Button("Cancel", role: .cancel) {
+                cancelLayerRename()
+            }
+            Button("Rename") {
+                commitLayerRename()
+            }
+            .keyboardShortcut(.defaultAction)
+            .disabled(layerNameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        } message: {
+            Text("Enter a name for this develop layer.")
+        }
         .fileImporter(
             isPresented: $isShowingLUTImporter,
             allowedContentTypes: [UTType(filenameExtension: "cube") ?? .data],
@@ -4119,9 +4135,14 @@ struct EditWorkspaceView: View {
         }
     }
 
-    /// Six launchers occupy a compact 3×2 slot. Global retains the circular affordance while the
-    /// other dashed cells use the common layer-type icon treatment.
-    private func addLayerTile(kind: LayerKind, help: String, action: @escaping () -> Void) -> some View {
+    /// Six launchers occupy a compact 3×2 slot. Every launcher uses the same dashed-square
+    /// treatment; a quiet background tint groups local, global, and overlay layer types.
+    private func addLayerTile(
+        kind: LayerKind,
+        tint: Color,
+        help: String,
+        action: @escaping () -> Void
+    ) -> some View {
         Button(action: action) {
             Image(systemName: kind.systemImage)
                 .font(.system(size: 11, weight: .semibold))
@@ -4129,7 +4150,7 @@ struct EditWorkspaceView: View {
                 .frame(width: 26, height: 26)
                 .background(
                     RoundedRectangle(cornerRadius: 3)
-                        .fill(.quaternary.opacity(hoveredAddLayerKind == kind ? 0.9 : 0.18))
+                        .fill(tint.opacity(hoveredAddLayerKind == kind ? 0.22 : 0.1))
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 3)
@@ -4148,22 +4169,22 @@ struct EditWorkspaceView: View {
         Button {
             addNewGlobalLayer()
         } label: {
-            Image(systemName: LayerKind.secondaryGlobal.systemImage)
-                .font(.system(size: 9, weight: .semibold))
+            Image(systemName: "plus")
+                .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .frame(width: 26, height: 26)
                 .background(
-                    Circle()
-                        .fill(.quaternary.opacity(
-                            hoveredAddLayerKind == .secondaryGlobal ? 0.95 : 0.45
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(Color.green.opacity(
+                            hoveredAddLayerKind == .secondaryGlobal ? 0.22 : 0.1
                         ))
                 )
                 .overlay(
-                    Circle()
+                    RoundedRectangle(cornerRadius: 3)
                         .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [2]))
                         .foregroundStyle(.secondary)
                 )
-                .contentShape(Circle())
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { hoveredAddLayerKind = $0 ? .secondaryGlobal : nil }
@@ -4233,6 +4254,9 @@ struct EditWorkspaceView: View {
                 .foregroundStyle(isSelected ? Color.primary : Color.secondary)
                 .lineLimit(1)
                 .frame(width: 60)
+                .onTapGesture(count: 2) {
+                    beginLayerRename(ref)
+                }
         }
         .contentShape(Rectangle())
         .opacity(draggingLayer == ref ? 0.4 : 1)
@@ -4256,6 +4280,7 @@ struct EditWorkspaceView: View {
         }
         .contextMenu {
             if let mask {
+                Button("Rename…") { beginLayerRename(ref) }
                 Button(mask.enabled ? "Mute" : "Enable") { toggleMaskEnabled(mask.id) }
                 if !mask.isFullFrame {
                     Button(mask.inverted ? "Normal (inside mask)" : "Invert (outside mask)") {
@@ -4268,6 +4293,7 @@ struct EditWorkspaceView: View {
                     deleteSelectedMask()
                 }
             } else if let watermark {
+                Button("Rename…") { beginLayerRename(ref) }
                 Button(watermark.enabled ? "Mute" : "Enable") { toggleWatermarkEnabled(watermark.id) }
                 Divider()
                 Button("Delete", role: .destructive) {
@@ -4354,6 +4380,51 @@ struct EditWorkspaceView: View {
         case .mask:      return mask?.name ?? "Mask"
         case .watermark: return watermarkFor(ref)?.name ?? "Watermark"
         }
+    }
+
+    private func beginLayerRename(_ ref: LayerRef) {
+        guard ref != .global else { return }
+        guard maskFor(ref) != nil || watermarkFor(ref) != nil else { return }
+        selectedLayer = ref
+        layerBeingRenamed = ref
+        layerNameDraft = layerName(ref, mask: maskFor(ref))
+        isShowingLayerRename = true
+    }
+
+    private func cancelLayerRename() {
+        isShowingLayerRename = false
+        layerBeingRenamed = nil
+        layerNameDraft = ""
+    }
+
+    private func commitLayerRename() {
+        let trimmedName = layerNameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let ref = layerBeingRenamed, !trimmedName.isEmpty else {
+            cancelLayerRename()
+            return
+        }
+        let currentName = layerName(ref, mask: maskFor(ref))
+        guard currentName != trimmedName else {
+            cancelLayerRename()
+            return
+        }
+
+        updateCameraRaw { cameraRaw in
+            switch ref {
+            case .global:
+                break
+            case .mask(let id):
+                guard let index = cameraRaw.localAdjustments?
+                    .firstIndex(where: { $0.id == id }) else { return }
+                cameraRaw.localAdjustments?[index].name = trimmedName
+            case .watermark(let id):
+                guard let index = cameraRaw.watermarkLayers?
+                    .firstIndex(where: { $0.id == id }) else { return }
+                cameraRaw.watermarkLayers?[index].name = trimmedName
+            }
+        }
+        cancelLayerRename()
+        commitEditAdjustments()
     }
 
     private func layerRefString(_ ref: LayerRef) -> String {
