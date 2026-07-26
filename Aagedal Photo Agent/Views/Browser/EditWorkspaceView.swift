@@ -3019,7 +3019,8 @@ struct EditWorkspaceView: View {
     }
 
     private func filmSliderBinding(
-        _ keyPath: WritableKeyPath<FilmEmulationSettings, Double?>
+        _ keyPath: WritableKeyPath<FilmEmulationSettings, Double?>,
+        range: ClosedRange<Double> = 0...100
     ) -> Binding<Double> {
         Binding(
             get: {
@@ -3028,7 +3029,7 @@ struct EditWorkspaceView: View {
             set: { newValue in
                 updateCameraRaw { cameraRaw in
                     var film = cameraRaw.filmEmulation ?? FilmEmulationSettings()
-                    let rounded = min(max(newValue.rounded(), 0), 100)
+                    let rounded = min(max(newValue.rounded(), range.lowerBound), range.upperBound)
                     film[keyPath: keyPath] = rounded == 0 ? nil : rounded
                     cameraRaw.filmEmulation = film.isEmpty ? nil : film
                 }
@@ -3039,10 +3040,11 @@ struct EditWorkspaceView: View {
     private func setFilmValue(
         _ settings: inout CameraRawSettings,
         keyPath: WritableKeyPath<FilmEmulationSettings, Double?>,
-        value: Double
+        value: Double,
+        range: ClosedRange<Double> = 0...100
     ) {
         var film = settings.filmEmulation ?? FilmEmulationSettings()
-        let rounded = min(max(value.rounded(), 0), 100)
+        let rounded = min(max(value.rounded(), range.lowerBound), range.upperBound)
         film[keyPath: keyPath] = rounded == 0 ? nil : rounded
         settings.filmEmulation = film.isEmpty ? nil : film
     }
@@ -3704,13 +3706,13 @@ struct EditWorkspaceView: View {
             )
             sliderRow(
                 "Vignette",
-                value: filmSliderBinding(\.vignette),
-                range: 0...100,
+                value: filmSliderBinding(\.vignette, range: -100...100),
+                range: -100...100,
                 step: 1,
                 formatter: { "\(Int($0.rounded()))" },
                 visibility: .vignette,
-                settingsMutator: { setFilmValue(&$0, keyPath: \.vignette, value: $1) },
-                onReset: { filmSliderBinding(\.vignette).wrappedValue = 0 }
+                settingsMutator: { setFilmValue(&$0, keyPath: \.vignette, value: $1, range: -100...100) },
+                onReset: { filmSliderBinding(\.vignette, range: -100...100).wrappedValue = 0 }
             )
             sliderRow(
                 "Edge Blur",

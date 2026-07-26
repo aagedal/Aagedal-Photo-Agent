@@ -1192,7 +1192,7 @@ final class MetalEditPipeline: @unchecked Sendable {
             params.filmGrain = Float(min(max((film.grain ?? 0) / 100.0, 0.0), 1.0))
             params.filmHalation = Float(min(max((film.halation ?? 0) / 100.0, 0.0), 1.0))
             params.filmBloom = Float(min(max((film.bloom ?? 0) / 100.0, 0.0), 1.0))
-            params.filmVignette = Float(min(max((film.vignette ?? 0) / 100.0, 0.0), 1.0))
+            params.filmVignette = Float(min(max((film.vignette ?? 0) / 100.0, -1.0), 1.0))
             params.filmEdgeBlur = Float(min(max((film.edgeBlur ?? 0) / 100.0, 0.0), 1.0))
         }
 

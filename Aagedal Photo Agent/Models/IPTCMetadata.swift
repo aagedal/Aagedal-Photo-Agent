@@ -916,7 +916,8 @@ nonisolated struct AnonymizerSettings: Codable, Sendable, Equatable {
     }
 }
 
-/// App-native creative film effects. Values use a consistent 0...100 amount scale;
+/// App-native creative film effects. Values use a 0...100 amount scale for grain,
+/// halation, bloom, and edge blur; vignette uses -100 (darken) to +100 (brighten).
 /// nil/zero is neutral. These have no Adobe Camera Raw equivalent and are persisted in
 /// the app-private XMP namespace while remaining part of the primary Global layer.
 nonisolated struct FilmEmulationSettings: Codable, Sendable, Equatable {
@@ -927,11 +928,12 @@ nonisolated struct FilmEmulationSettings: Codable, Sendable, Equatable {
     var edgeBlur: Double?
 
     nonisolated var isEmpty: Bool {
-        (grain ?? 0) <= 0
-            && (halation ?? 0) <= 0
-            && (bloom ?? 0) <= 0
-            && (vignette ?? 0) <= 0
-            && (edgeBlur ?? 0) <= 0
+        (grain ?? 0) != 0
+            || (halation ?? 0) != 0
+            || (bloom ?? 0) != 0
+            || (vignette ?? 0) != 0
+            || (edgeBlur ?? 0) != 0
+            ? false : true
     }
 
     nonisolated var hasSpatialEffects: Bool {

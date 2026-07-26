@@ -709,12 +709,16 @@ inline float3 applyScopeFilm(
                          - dot(rgb, float3(0.2126, 0.7152, 0.0722)) * 0.55 - 0.12, 0.0);
         rgb += float3(1.0, 0.20, 0.035) * halo * (0.55 * params.filmHalation);
     }
-    if (params.filmVignette > 0.0) {
+    if (params.filmVignette != 0.0) {
         float radial = length((uv - 0.5) * 2.0) * 0.70710678;
-        float vignette = smoothstep(mix(0.86, 0.28, params.filmVignette), 1.0, radial);
-        float amount = 0.88 * (0.55 * params.filmVignette
-                              + 0.45 * params.filmVignette * params.filmVignette);
-        rgb *= 1.0 - vignette * amount;
+        float absVal = abs(params.filmVignette);
+        float vignette = smoothstep(mix(0.86, 0.20, absVal), 1.0, radial);
+        float amount = (0.60 * absVal + 0.40 * absVal * absVal);
+        if (params.filmVignette > 0.0) {
+            rgb *= 1.0 + vignette * amount;
+        } else {
+            rgb *= 1.0 - vignette * amount;
+        }
     }
     if (params.filmGrain > 0.0) {
         float2 pixel = uv * float2(source.get_width(), source.get_height());
@@ -732,7 +736,7 @@ inline float3 applyScopeFilm(
         float luma = max(dot(rgb, float3(0.2126, 0.7152, 0.0722)), 0.0);
         float midtone = 1.0 - abs(clamp(luma, 0.0, 1.0) * 2.0 - 1.0);
         float response = mix(0.32, 1.0, midtone);
-        rgb *= exp2(noise * response * (0.18 * params.filmGrain));
+        rgb *= exp2(noise * response * (0.65 * params.filmGrain));
     }
     return max(rgb, 0.0);
 }
