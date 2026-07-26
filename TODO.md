@@ -11,9 +11,9 @@
 
 ## Planned layer types
 
-- [ ] **Secondary global layers.** Add reorderable full-frame adjustment layers while
+- [x] **Secondary global layers.** Add reorderable full-frame adjustment layers while
   retaining the primary Global layer as the XMP-compatible base adjustment block.
-- [ ] **LUT / Color Space Transform layers.** Add reorderable LUT and CST nodes, including
+- [x] **LUT / Color Space Transform layers.** Add reorderable LUT and CST nodes, including
   persistence, import/validation, GPU resources, and consistent preview/export behavior.
 
 ## Known issues / bugs
@@ -26,6 +26,5 @@
 - [ ] Adjusting the corner radius of an ellipse mask to be a square can cause an X-like render pattern where the corners of the rectangle mask seems to expand further/stronger than the edges.
 - [ ] Adjusting the corner radius of an ellipse mask, the mask itself changes instantly, but the mask outline preview only changes after letting go of the slider.
 - [ ] In the GPS/map area, make a button to quickly select the users current location as the image location.
-
 
 
