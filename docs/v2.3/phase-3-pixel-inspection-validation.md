@@ -41,12 +41,18 @@
 - Published the exact method beside the view and kept a visible warning that ordinary detail,
   gradients, resaving, and prior processing can produce bright residuals and that the view does
   not establish manipulation.
+- Added an exact-key, least-recently-used cache for channel, luminance, and compression-residual
+  rasters with a 64 MiB decoded-byte budget and an eight-entry ceiling.
+- Included source representation, orientation, Develop render token, and decoded pixel geometry
+  in cache identity so derived pixels cannot cross representation or render-state boundaries.
+- Propagated SwiftUI task cancellation into detached utility renders and prevented cancelled
+  results from reaching either the UI or cache.
 
 This slice does not claim that the Analysis thumbnail is a true-pixel rendering. The reusable
 true-pixel crop utility currently continues to back Advanced Export; the full Analysis loupe,
-and bounded derived-view cache arrive with the remaining Phase 3 work. The compression residual
-is explicitly a bounded preview; a future report figure must persist its actual pixel dimensions
-alongside the fixed method parameters.
+arrives with the remaining Phase 3 work. The compression residual is explicitly a bounded
+preview; a future report figure must persist its actual pixel dimensions alongside the fixed
+method parameters.
 
 ## Automated validation
 
@@ -122,10 +128,11 @@ Channel/luminance command:
 xcodebuild test \
   -scheme "Aagedal Photo Agent Tests" \
   -destination "platform=macOS" \
-  -only-testing:"Aagedal Photo Agent Tests/AnalysisPixelViewRendererTests"
+  -only-testing:"Aagedal Photo Agent Tests/AnalysisPixelViewRendererTests" \
+  -only-testing:"Aagedal Photo Agent Tests/AnalysisDerivedViewCacheTests"
 ```
 
-Result: 6 tests passed in 1 suite.
+Result: 9 tests passed in 2 suites.
 
 Coverage includes identity-preserving normal output, grayscale channel isolation, alpha
 preservation, Rec. 709 relative-luminance primary ordering, output geometry, and explicit method
@@ -133,8 +140,13 @@ labels. Compression-residual coverage additionally fixes the 0.90 quality, 12× 
 and 50% gray alpha matte; verifies opaque, geometry-preserving output; and confirms that a
 high-frequency color fixture exposes more reconstruction residual than a uniform field.
 
-The full `Aagedal Photo Agent Tests` target passed 709 tests in 99 suites after the final
-integration.
+Derived-view cache coverage additionally verifies exact-key hits, mode isolation, decoded-byte
+LRU eviction, and cancellation propagation into detached renders without publishing or caching
+the cancelled result.
+
+Before this cache slice, the full `Aagedal Photo Agent Tests` target passed 709 tests in 99
+suites. The cache slice compiled the complete test target and ran the two focused suites above;
+the full run remains part of Phase 12 release hardening.
 
 ## Manual validation remaining for the Phase 3 gate
 

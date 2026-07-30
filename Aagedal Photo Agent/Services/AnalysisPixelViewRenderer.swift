@@ -16,6 +16,7 @@ nonisolated enum AnalysisPixelViewRenderer {
         CGColorSpace(name: CGColorSpace.sRGB)
 
     static func render(_ source: CGImage, mode: AnalysisPixelViewMode) -> CGImage? {
+        guard !Task.isCancelled else { return nil }
         guard mode != .normal else { return source }
         guard let linearWorkingColorSpace else { return nil }
 
@@ -62,12 +63,13 @@ nonisolated enum AnalysisPixelViewRenderer {
             .outputColorSpace: outputColorSpace,
             .cacheIntermediates: false
         ])
-        return context.createCGImage(
+        let rendered = context.createCGImage(
             output,
             from: input.extent,
             format: .RGBA8,
             colorSpace: outputColorSpace
         )
+        return Task.isCancelled ? nil : rendered
     }
 
     private static func renderCompressionResidual(
@@ -120,12 +122,13 @@ nonisolated enum AnalysisPixelViewRenderer {
             .outputColorSpace: outputColorSpace,
             .cacheIntermediates: false
         ])
-        return context.createCGImage(
+        let rendered = context.createCGImage(
             amplified,
             from: extent,
             format: .RGBA8,
             colorSpace: outputColorSpace
         )
+        return Task.isCancelled ? nil : rendered
     }
 
     /// Converts all inputs to the same opaque sRGB raster before JPEG encoding. JPEG has no

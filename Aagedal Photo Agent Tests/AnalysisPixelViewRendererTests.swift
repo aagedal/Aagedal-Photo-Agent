@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 import Testing
 @testable import Aagedal_Photo_Agent
 
@@ -246,5 +247,155 @@ struct AnalysisPixelViewRendererTests {
         let green: UInt8
         let blue: UInt8
         let alpha: UInt8
+    }
+}
+
+@Suite("Analysis derived-view cache")
+struct AnalysisDerivedViewCacheTests {
+    @Test("exact keys reuse a render and isolate modes")
+    func exactKeyReuse() async throws {
+        let probe = RenderProbe()
+        let service = AnalysisDerivedViewService(
+            maximumCost: 1_024,
+            renderer: { source, _ in
+                probe.recordRender()
+                return source
+            }
+        )
+        let source = try makeImage(width: 4, height: 4, value: 80)
+        let redKey = AnalysisDerivedViewCacheKey(
+            sourceIdentifier: "source-a",
+            mode: .red,
+            source: source
+        )
+        let blueKey = AnalysisDerivedViewCacheKey(
+            sourceIdentifier: "source-a",
+            mode: .blue,
+            source: source
+        )
+
+        #expect(await service.image(for: redKey, source: source) != nil)
+        #expect(await service.image(for: redKey, source: source) != nil)
+        #expect(probe.renderCount == 1)
+        #expect(await service.image(for: blueKey, source: source) != nil)
+        #expect(probe.renderCount == 2)
+    }
+
+    @Test("least-recently-used entries are evicted within the byte budget")
+    func costBoundedLRUEviction() async throws {
+        let service = AnalysisDerivedViewService(
+            maximumCost: 128,
+            renderer: { source, _ in source }
+        )
+        let firstSource = try makeImage(width: 4, height: 4, value: 32)
+        let secondSource = try makeImage(width: 4, height: 4, value: 224)
+        let firstKey = AnalysisDerivedViewCacheKey(
+            sourceIdentifier: "first",
+            mode: .red,
+            source: firstSource
+        )
+        let secondKey = AnalysisDerivedViewCacheKey(
+            sourceIdentifier: "second",
+            mode: .blue,
+            source: secondSource
+        )
+
+        #expect(await service.image(for: firstKey, source: firstSource) != nil)
+        #expect(await service.image(for: secondKey, source: secondSource) != nil)
+
+        let metrics = await service.cacheMetrics()
+        #expect(metrics.totalCost <= metrics.maximumCost)
+        #expect(metrics.entryCount == 2)
+
+        let thirdSource = try makeImage(width: 4, height: 4, value: 128)
+        let thirdKey = AnalysisDerivedViewCacheKey(
+            sourceIdentifier: "third",
+            mode: .luminance,
+            source: thirdSource
+        )
+        #expect(await service.image(for: thirdKey, source: thirdSource) != nil)
+
+        let boundedMetrics = await service.cacheMetrics()
+        #expect(boundedMetrics.totalCost <= 128)
+        #expect(boundedMetrics.entryCount == 2)
+        #expect(await service.cachedImage(for: firstKey) == nil)
+        #expect(await service.cachedImage(for: secondKey) != nil)
+        #expect(await service.cachedImage(for: thirdKey) != nil)
+    }
+
+    @Test("cancelling a consumer cancels and discards its detached render")
+    func cancellationPropagation() async throws {
+        let probe = RenderProbe()
+        let service = AnalysisDerivedViewService(
+            maximumCost: 1_024,
+            renderer: { source, _ in
+                probe.recordRender()
+                while !Task.isCancelled {
+                    Thread.sleep(forTimeInterval: 0.001)
+                }
+                probe.recordCancellation()
+                return source
+            }
+        )
+        let source = try makeImage(width: 4, height: 4, value: 128)
+        let key = AnalysisDerivedViewCacheKey(
+            sourceIdentifier: "cancelled",
+            mode: .compressionResidual,
+            source: source
+        )
+        let render = Task {
+            await service.image(for: key, source: source)
+        }
+
+        while probe.renderCount == 0 {
+            await Task.yield()
+        }
+        render.cancel()
+
+        #expect(await render.value == nil)
+        #expect(probe.observedCancellation)
+        #expect(await service.cachedImage(for: key) == nil)
+    }
+
+    private func makeImage(width: Int, height: Int, value: UInt8) throws -> CGImage {
+        var bytes = [UInt8](repeating: value, count: width * height * 4)
+        for alphaOffset in stride(from: 3, to: bytes.count, by: 4) {
+            bytes[alphaOffset] = 255
+        }
+        let colorSpace = try #require(CGColorSpace(name: CGColorSpace.sRGB))
+        let context = try #require(
+            CGContext(
+                data: &bytes,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: width * 4,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )
+        )
+        return try #require(context.makeImage())
+    }
+
+    nonisolated private final class RenderProbe: @unchecked Sendable {
+        private let lock = NSLock()
+        private var renders = 0
+        private var cancellation = false
+
+        var renderCount: Int {
+            lock.withLock { renders }
+        }
+
+        var observedCancellation: Bool {
+            lock.withLock { cancellation }
+        }
+
+        func recordRender() {
+            lock.withLock { renders += 1 }
+        }
+
+        func recordCancellation() {
+            lock.withLock { cancellation = true }
+        }
     }
 }

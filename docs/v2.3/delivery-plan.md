@@ -76,7 +76,7 @@ modifies the source.
 - [x] Add selected-region scopes.
 - [x] Add channel/luminance views.
 - [x] Ship the calibrated compression/residual view with method/parameter label.
-- [ ] Add cost-bounded derived-view cache and cancellation.
+- [x] Add cost-bounded derived-view cache and cancellation.
 - [ ] Add HDR/SDR, alpha, orientation, crop, and malformed-source tests.
 - [ ] Manually validate alignment and color behavior on the fixture corpus.
 

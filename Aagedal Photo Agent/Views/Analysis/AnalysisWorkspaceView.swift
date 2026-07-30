@@ -867,9 +867,15 @@ private struct AnalysisSourceThumbnail: View {
             }
             guard !Task.isCancelled else { return }
             let mode = pixelViewMode
-            let rendered = await Task.detached {
-                AnalysisPixelViewRenderer.render(source, mode: mode)
-            }.value
+            let cacheKey = AnalysisDerivedViewCacheKey(
+                sourceIdentifier: sourceIdentity.derivedViewCacheIdentifier,
+                mode: mode,
+                source: source
+            )
+            let rendered = await AnalysisDerivedViewService.shared.image(
+                for: cacheKey,
+                source: source
+            )
             guard !Task.isCancelled, let rendered else { return }
             image = mode == .normal
                 ? loadedImage
@@ -971,6 +977,15 @@ private struct SourcePreviewIdentity: Hashable {
     let representation: AnalysisSourceRepresentation
     let sourceOrientation: Int
     let renderToken: String?
+
+    var derivedViewCacheIdentifier: String {
+        [
+            url.standardizedFileURL.path,
+            representation.rawValue,
+            String(sourceOrientation),
+            renderToken ?? "source"
+        ].joined(separator: "|")
+    }
 }
 
 private struct PixelInspectionCrosshair: View {
