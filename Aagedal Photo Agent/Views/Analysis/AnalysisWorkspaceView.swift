@@ -7,6 +7,7 @@ struct AnalysisWorkspaceView: View {
     let onClose: () -> Void
     @State private var selectedFindingID: String?
     @State private var pixelInspectionSample: ImageInspectionSample?
+    @State private var displayedScopeImage: CGImage?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -24,9 +25,11 @@ struct AnalysisWorkspaceView: View {
         .accessibilityLabel("Image Analysis workspace")
         .onChange(of: model.sourceURL) {
             pixelInspectionSample = nil
+            displayedScopeImage = nil
         }
         .onChange(of: model.displayPreference) {
             pixelInspectionSample = nil
+            displayedScopeImage = nil
         }
     }
 
@@ -136,7 +139,12 @@ struct AnalysisWorkspaceView: View {
         HSplitView {
             caseSidebar
                 .frame(minWidth: 190, idealWidth: 230, maxWidth: 300)
-            sourcePreview
+            VSplitView {
+                sourcePreview
+                    .frame(minHeight: 260)
+                AnalysisScopeWorkspace(sourceImage: displayedScopeImage)
+                    .frame(minHeight: 180, idealHeight: 300)
+            }
                 .frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
             analysisDetail
                 .frame(minWidth: 260, idealWidth: 330, maxWidth: 430)
@@ -264,7 +272,8 @@ struct AnalysisWorkspaceView: View {
                 sourceOrientation: model.sourceOrientation,
                 displayTransform: model.displayTransform,
                 inspectionSample: $pixelInspectionSample,
-                thumbnailService: thumbnailService
+                thumbnailService: thumbnailService,
+                onImageLoaded: { displayedScopeImage = $0 }
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
@@ -579,6 +588,7 @@ private struct AnalysisSourceThumbnail: View {
     let displayTransform: DisplayImageTransform?
     @Binding var inspectionSample: ImageInspectionSample?
     let thumbnailService: ThumbnailService
+    let onImageLoaded: (CGImage?) -> Void
     @State private var image: NSImage?
 
     var body: some View {
@@ -643,16 +653,27 @@ private struct AnalysisSourceThumbnail: View {
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .task(id: PreviewIdentity(url: url, representation: representation)) {
             image = nil
+            onImageLoaded(nil)
             guard let url else { return }
+            let loadedImage: NSImage?
             if representation == .developed, let developSettings {
-                image = await thumbnailService.renderEditedThumbnail(
+                loadedImage = await thumbnailService.renderEditedThumbnail(
                     for: url,
                     settings: developSettings,
                     exifOrientation: sourceOrientation
                 )
             } else {
-                image = await thumbnailService.loadThumbnail(for: url)
+                loadedImage = await thumbnailService.loadThumbnail(for: url)
             }
+            guard !Task.isCancelled else { return }
+            image = loadedImage
+            onImageLoaded(
+                loadedImage?.cgImage(
+                    forProposedRect: nil,
+                    context: nil,
+                    hints: nil
+                )
+            )
         }
     }
 

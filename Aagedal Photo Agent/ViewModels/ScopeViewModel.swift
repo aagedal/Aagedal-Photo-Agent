@@ -4,7 +4,7 @@ import CoreGraphics
 @Observable
 final class ScopeViewModel {
 
-    enum ScopeMode: String, CaseIterable {
+    nonisolated enum ScopeMode: String, CaseIterable, Sendable {
         case waveform
         case parade
         case vectorscope
@@ -14,14 +14,29 @@ final class ScopeViewModel {
     var scopeMode: ScopeMode = .waveform {
         didSet {
             guard scopeMode != oldValue else { return }
-            UserDefaults.standard.set(scopeMode.rawValue, forKey: UserDefaultsKeys.lastScopeMode)
+            if persistsScopeMode {
+                UserDefaults.standard.set(scopeMode.rawValue, forKey: UserDefaultsKeys.lastScopeMode)
+            }
             rerender()
         }
     }
 
-    init() {
-        if let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.lastScopeMode),
-           let mode = ScopeMode(rawValue: raw) {
+    init(
+        scopeMode: ScopeMode? = nil,
+        outputPixelSize: CGSize = ScopeRenderRequest.defaultOutputSize,
+        persistsScopeMode: Bool = true
+    ) {
+        self.persistsScopeMode = persistsScopeMode
+        self.outputPixelSize = ScopeRenderRequest(
+            mode: scopeMode ?? .waveform,
+            outputSize: outputPixelSize
+        ).outputSize
+
+        if let scopeMode {
+            self.scopeMode = scopeMode
+        } else if let raw = UserDefaults.standard.string(
+            forKey: UserDefaultsKeys.lastScopeMode
+        ), let mode = ScopeMode(rawValue: raw) {
             self.scopeMode = mode
         }
     }
@@ -60,6 +75,7 @@ final class ScopeViewModel {
 
     var scopeImage: NSImage?
     var isComputing = false
+    private(set) var outputPixelSize: CGSize
 
     var isDragMode = false
 
@@ -89,6 +105,7 @@ final class ScopeViewModel {
     @ObservationIgnored private var computeTask: Task<Void, Never>?
     @ObservationIgnored private let service = ScopeRenderService()
     @ObservationIgnored private var lastCGImage: CGImage?
+    @ObservationIgnored private let persistsScopeMode: Bool
 
     func updateImage(_ cgImage: CGImage?) {
         // During active drag, Metal handles scope rendering
@@ -105,6 +122,16 @@ final class ScopeViewModel {
         }
 
         render(cgImage)
+    }
+
+    func setOutputPixelSize(_ proposedSize: CGSize) {
+        let boundedSize = ScopeRenderRequest(
+            mode: scopeMode,
+            outputSize: proposedSize
+        ).outputSize
+        guard boundedSize != outputPixelSize else { return }
+        outputPixelSize = boundedSize
+        rerender()
     }
 
     // MARK: - Private
@@ -124,27 +151,28 @@ final class ScopeViewModel {
         let gamut = targetGamut
         let dispGamut = displayGamut
         let svc = service
-        let size: CGFloat = 720
+        let outputSize = outputPixelSize
+        let request = ScopeRenderRequest(
+            mode: mode,
+            outputSize: outputSize,
+            waveformScale: scale,
+            showClippedGamut: clipped,
+            targetGamut: gamut,
+            displayGamut: dispGamut
+        )
 
         computeTask = Task {
             let result = await Task.detached(priority: .utility) { () -> CGImage? in
-                let outputSize = CGSize(width: size, height: size)
-                switch mode {
-                case .waveform:
-                    return svc.renderWaveform(from: cgImage, outputSize: outputSize, scale: scale)
-                case .parade:
-                    return svc.renderParade(from: cgImage, outputSize: outputSize, scale: scale)
-                case .vectorscope:
-                    return svc.renderVectorscope(from: cgImage, outputSize: outputSize)
-                case .chromaticity:
-                    return svc.renderChromaticity(from: cgImage, outputSize: outputSize, clipped: clipped, targetGamut: gamut, displayGamut: dispGamut)
-                }
+                svc.render(request, from: cgImage)
             }.value
 
             guard !Task.isCancelled else { return }
 
             if let result {
-                scopeImage = NSImage(cgImage: result, size: NSSize(width: result.width / 4, height: result.height / 4))
+                scopeImage = NSImage(
+                    cgImage: result,
+                    size: NSSize(width: result.width, height: result.height)
+                )
             } else {
                 scopeImage = nil
             }

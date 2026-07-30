@@ -29,6 +29,101 @@ enum WaveformScale: String, CaseIterable, Sendable {
     }
 }
 
+/// Immutable input for one CPU scope render.
+///
+/// Keeping the requested mode, display options, and raster size together lets the browser
+/// sidebar and Image Analysis use the same rendering path without sharing mutable view state.
+nonisolated struct ScopeRenderRequest: Equatable, Sendable {
+    static let defaultOutputSize = CGSize(width: 720, height: 720)
+    static let minimumDimension: CGFloat = 64
+    static let maximumDimension: CGFloat = 2_048
+
+    let mode: ScopeViewModel.ScopeMode
+    let outputSize: CGSize
+    let waveformScale: WaveformScale
+    let showClippedGamut: Bool
+    let targetGamut: TargetColorGamut
+    let displayGamut: TargetColorGamut
+
+    init(
+        mode: ScopeViewModel.ScopeMode,
+        outputSize: CGSize = defaultOutputSize,
+        waveformScale: WaveformScale = .percentage,
+        showClippedGamut: Bool = false,
+        targetGamut: TargetColorGamut = .sRGB,
+        displayGamut: TargetColorGamut = .sRGB
+    ) {
+        self.mode = mode
+        self.outputSize = Self.boundedOutputSize(outputSize)
+        self.waveformScale = waveformScale
+        self.showClippedGamut = showClippedGamut
+        self.targetGamut = targetGamut
+        self.displayGamut = displayGamut
+    }
+
+    /// Converts a point-sized presentation surface into a bounded backing-pixel request.
+    /// Invalid/zero geometry is ignored so a transient collapsed split view cannot replace a
+    /// useful render with a minimum-sized placeholder.
+    static func outputPixelSize(
+        for presentationSize: CGSize,
+        backingScale: CGFloat
+    ) -> CGSize? {
+        guard presentationSize.width.isFinite,
+              presentationSize.height.isFinite,
+              backingScale.isFinite,
+              presentationSize.width > 0,
+              presentationSize.height > 0,
+              backingScale > 0 else {
+            return nil
+        }
+        return boundedOutputSize(
+            CGSize(
+                width: presentationSize.width * backingScale,
+                height: presentationSize.height * backingScale
+            )
+        )
+    }
+
+    private static func boundedOutputSize(_ proposed: CGSize) -> CGSize {
+        guard proposed.width.isFinite,
+              proposed.height.isFinite,
+              proposed.width > 0,
+              proposed.height > 0 else {
+            return defaultOutputSize
+        }
+        return CGSize(
+            width: min(max(proposed.width.rounded(), minimumDimension), maximumDimension),
+            height: min(max(proposed.height.rounded(), minimumDimension), maximumDimension)
+        )
+    }
+}
+
+/// Presentation geometry shared by the existing sidebar and larger analysis cards.
+nonisolated enum ScopePresentationSizing {
+    static let sidebarHeight: CGFloat = 225
+    static let chromaticityMaximumWidth: CGFloat = 520
+
+    static func contentSize(
+        mode: ScopeViewModel.ScopeMode,
+        availableSize: CGSize
+    ) -> CGSize {
+        let width = max(availableSize.width, 0)
+        let height = max(availableSize.height, 0)
+        switch mode {
+        case .waveform, .parade:
+            return CGSize(width: width, height: height)
+        case .vectorscope:
+            let side = min(width, height)
+            return CGSize(width: side, height: side)
+        case .chromaticity:
+            return CGSize(
+                width: min(width, chromaticityMaximumWidth),
+                height: height
+            )
+        }
+    }
+}
+
 /// Renders waveform, parade, and vectorscope displays from a CGImage.
 /// Thread-safe: all methods operate on local state and CoreGraphics contexts.
 nonisolated struct ScopeRenderService: Sendable {
@@ -43,6 +138,33 @@ nonisolated struct ScopeRenderService: Sendable {
             labelMargin: max(Int(68 * scale), 24),
             verticalMargin: max(Int(16 * scale), 4)
         )
+    }
+
+    func render(_ request: ScopeRenderRequest, from cgImage: CGImage) -> CGImage? {
+        switch request.mode {
+        case .waveform:
+            return renderWaveform(
+                from: cgImage,
+                outputSize: request.outputSize,
+                scale: request.waveformScale
+            )
+        case .parade:
+            return renderParade(
+                from: cgImage,
+                outputSize: request.outputSize,
+                scale: request.waveformScale
+            )
+        case .vectorscope:
+            return renderVectorscope(from: cgImage, outputSize: request.outputSize)
+        case .chromaticity:
+            return renderChromaticity(
+                from: cgImage,
+                outputSize: request.outputSize,
+                clipped: request.showClippedGamut,
+                targetGamut: request.targetGamut,
+                displayGamut: request.displayGamut
+            )
+        }
     }
 
     // MARK: - Colorized Waveform

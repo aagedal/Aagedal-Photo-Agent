@@ -70,8 +70,8 @@ modifies the source.
 **Exit gate:** normal and derived views remain spatially aligned and useful at fit and true pixels.
 
 - [x] Extract reusable true-pixel/normalized hover utilities from Advanced Export.
-- [ ] Generalize scope requests and output sizing without regressing the existing scope sidebar.
-- [ ] Build resizable one/two/four-up scope layouts.
+- [x] Generalize scope requests and output sizing without regressing the existing scope sidebar.
+- [x] Build resizable one/two/four-up scope layouts.
 - [x] Add linked hover sampling and source-pixel readout.
 - [ ] Add selected-region scopes.
 - [ ] Add channel/luminance views.
