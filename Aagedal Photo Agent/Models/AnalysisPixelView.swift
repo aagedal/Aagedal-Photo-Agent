@@ -10,6 +10,7 @@ nonisolated enum AnalysisPixelViewMode: String, CaseIterable, Sendable {
     case green
     case blue
     case luminance
+    case compressionResidual
 
     var displayName: String {
         switch self {
@@ -18,6 +19,7 @@ nonisolated enum AnalysisPixelViewMode: String, CaseIterable, Sendable {
         case .green: "Green"
         case .blue: "Blue"
         case .luminance: "Luminance"
+        case .compressionResidual: "Compression Residual"
         }
     }
 
@@ -28,6 +30,7 @@ nonisolated enum AnalysisPixelViewMode: String, CaseIterable, Sendable {
         case .green: "G"
         case .blue: "B"
         case .luminance: "Luma"
+        case .compressionResidual: "Residual"
         }
     }
 
@@ -43,6 +46,33 @@ nonisolated enum AnalysisPixelViewMode: String, CaseIterable, Sendable {
             "Blue channel · linear RGB · grayscale"
         case .luminance:
             "Relative luminance · linear RGB · Rec. 709 coefficients"
+        case .compressionResidual:
+            "2,048 px max preview · ImageIO JPEG 0.90 · |linear sRGB − re-encode| ×12 · alpha over 50% gray"
         }
     }
+
+    var limitationLabel: String? {
+        switch self {
+        case .compressionResidual:
+            "Visualization only. Detail, gradients, resaving, and prior processing can all create bright residuals; this does not establish manipulation."
+        default:
+            nil
+        }
+    }
+}
+
+/// Fixed, reportable parameters for the baseline compression-residual view.
+///
+/// Keeping these values out of UI state makes screenshots, future report figures, and tests
+/// reproducible. A later adjustable method must persist its parameters with the evidence.
+nonisolated struct AnalysisCompressionResidualConfiguration: Hashable, Sendable {
+    static let standard = AnalysisCompressionResidualConfiguration(
+        jpegQuality: 0.90,
+        differenceGain: 12,
+        alphaMatte: 0.50
+    )
+
+    let jpegQuality: Double
+    let differenceGain: CGFloat
+    let alphaMatte: CGFloat
 }

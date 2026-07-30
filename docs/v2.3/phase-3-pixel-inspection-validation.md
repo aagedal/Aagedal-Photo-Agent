@@ -32,11 +32,21 @@
 - Fed the selected channel/luminance visualization to the existing scope and selected-region
   paths while keeping findings and source facts bound to the selected original/developed
   representation.
+- Added a bounded compression-residual view from an ImageIO JPEG quality-0.90 re-encode,
+  amplified as a 12× absolute linear-sRGB difference after compositing alpha over 50% gray.
+- Displayed the normal reference and compression residual side by side from the same
+  orientation-aware, at-most-2,048-pixel Analysis preview.
+- Linked hover crosshairs and retained scope-selection overlays across both panes, and continued
+  to feed the derived pixels to the existing full-image/selected-region scope path.
+- Published the exact method beside the view and kept a visible warning that ordinary detail,
+  gradients, resaving, and prior processing can produce bright residuals and that the view does
+  not establish manipulation.
 
 This slice does not claim that the Analysis thumbnail is a true-pixel rendering. The reusable
 true-pixel crop utility currently continues to back Advanced Export; the full Analysis loupe,
-compression/residual rendering, and bounded derived-view cache arrive with the remaining Phase 3
-work.
+and bounded derived-view cache arrive with the remaining Phase 3 work. The compression residual
+is explicitly a bounded preview; a future report figure must persist its actual pixel dimensions
+alongside the fixed method parameters.
 
 ## Automated validation
 
@@ -115,19 +125,25 @@ xcodebuild test \
   -only-testing:"Aagedal Photo Agent Tests/AnalysisPixelViewRendererTests"
 ```
 
-Result: 4 tests passed in 1 suite.
+Result: 6 tests passed in 1 suite.
 
 Coverage includes identity-preserving normal output, grayscale channel isolation, alpha
 preservation, Rec. 709 relative-luminance primary ordering, output geometry, and explicit method
-labels.
+labels. Compression-residual coverage additionally fixes the 0.90 quality, 12× difference gain,
+and 50% gray alpha matte; verifies opaque, geometry-preserving output; and confirms that a
+high-frequency color fixture exposes more reconstruction residual than a uniform field.
+
+The full `Aagedal Photo Agent Tests` target passed 709 tests in 99 suites after the final
+integration.
 
 ## Manual validation remaining for the Phase 3 gate
 
 - Inspect hover alignment on the redistributable orientation/crop fixture corpus.
 - Compare HDR and SDR display behavior.
-- Verify alignment once normal and derived views are shown side by side.
-- Switch among Normal, R, G, B, and Luma and confirm every derived view remains aligned with the
-  crosshair, selected region, and scopes.
+- Confirm reference/residual alignment in the new side-by-side view at every supported workspace
+  size.
+- Switch among Normal, R, G, B, Luma, and Residual and confirm every derived view remains aligned
+  with the crosshair, selected region, and scopes.
 - Resize the source/scope divider and every divider in the one/two/four-up layouts.
 - Switch each card among Waveform, RGBY Parade, Vectorscope, and Chromaticity and confirm the
   existing sidebar remains unchanged.

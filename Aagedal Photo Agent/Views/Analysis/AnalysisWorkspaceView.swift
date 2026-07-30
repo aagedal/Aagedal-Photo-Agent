@@ -284,14 +284,22 @@ struct AnalysisWorkspaceView: View {
                 }
             }
             .pickerStyle(.segmented)
-            .frame(maxWidth: 430)
-            .help("Show the normal image, one linear-light channel, or relative luminance")
+            .frame(maxWidth: 540)
+            .help("Show the normal image, a linear-light channel, relative luminance, or a fixed-parameter JPEG compression residual")
 
             Text(pixelViewMode.methodLabel)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .center)
                 .accessibilityLabel("Pixel view method: \(pixelViewMode.methodLabel)")
+
+            if let limitation = pixelViewMode.limitationLabel {
+                Label(limitation, systemImage: "info.circle")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityLabel("Compression residual limitation: \(limitation)")
+            }
 
             AnalysisSourceThumbnail(
                 url: model.sourceURL,
@@ -623,6 +631,9 @@ private struct AnalysisSourceThumbnail: View {
     @Binding var selectedScopeRegion: CGRect?
     let thumbnailService: ThumbnailService
     let onImageLoaded: (CGImage?) -> Void
+    @State private var loadedSourceIdentity: SourcePreviewIdentity?
+    @State private var sourceCGImage: CGImage?
+    @State private var sourceImage: NSImage?
     @State private var image: NSImage?
     @State private var selectionDragStart: CGPoint?
     @State private var selectionDraft: CGRect?
@@ -632,35 +643,62 @@ private struct AnalysisSourceThumbnail: View {
             ZStack {
                 Color.black.opacity(0.92)
                 if let image {
-                    Image(nsImage: image)
-                        .resizable()
-                        .scaledToFit()
-                        .accessibilityLabel(url?.lastPathComponent ?? "Analyzed image")
-
-                    if let inspectionSample,
-                       let inspectionGeometry = inspectionGeometry(
-                           image: image,
-                           containerSize: geometry.size
-                       ) {
-                        PixelInspectionCrosshair(
-                            position: inspectionGeometry.viewPoint(
-                                fromNormalizedDisplay: inspectionSample.normalizedDisplayPoint
-                            ),
-                            imageRect: inspectionGeometry.imageRectInView
+                    if pixelViewMode == .compressionResidual, let sourceImage {
+                        HStack(spacing: 8) {
+                            analysisImagePane(
+                                sourceImage,
+                                label: "Reference"
+                            )
+                            analysisImagePane(
+                                image,
+                                label: "Compression Residual"
+                            )
+                        }
+                    } else {
+                        analysisImagePane(
+                            image,
+                            label: pixelViewMode.displayName,
+                            showsLabel: false
                         )
                     }
 
-                    if let inspectionGeometry = inspectionGeometry(
-                        image: image,
-                        containerSize: geometry.size
-                    ), let region = selectionDraft ?? selectedScopeRegion {
-                        ScopeRegionOverlay(
-                            rect: viewRect(
-                                for: region,
-                                geometry: inspectionGeometry
+                    if let inspectionSample {
+                        ForEach(
+                            Array(
+                                inspectionGeometries(
+                                    image: image,
+                                    containerSize: geometry.size
+                                ).enumerated()
                             ),
-                            isActive: scopeSourceMode == .selectedRegion
-                        )
+                            id: \.offset
+                        ) { _, inspectionGeometry in
+                            PixelInspectionCrosshair(
+                                position: inspectionGeometry.viewPoint(
+                                    fromNormalizedDisplay: inspectionSample.normalizedDisplayPoint
+                                ),
+                                imageRect: inspectionGeometry.imageRectInView
+                            )
+                        }
+                    }
+
+                    if let region = selectionDraft ?? selectedScopeRegion {
+                        ForEach(
+                            Array(
+                                inspectionGeometries(
+                                    image: image,
+                                    containerSize: geometry.size
+                                ).enumerated()
+                            ),
+                            id: \.offset
+                        ) { _, inspectionGeometry in
+                            ScopeRegionOverlay(
+                                rect: viewRect(
+                                    for: region,
+                                    geometry: inspectionGeometry
+                                ),
+                                isActive: scopeSourceMode == .selectedRegion
+                            )
+                        }
                     }
                 } else {
                     ProgressView()
@@ -674,6 +712,7 @@ private struct AnalysisSourceThumbnail: View {
                         guard scopeSourceMode == .selectedRegion,
                               let image,
                               let inspectionGeometry = inspectionGeometry(
+                                  containing: value.startLocation,
                                   image: image,
                                   containerSize: geometry.size
                               ),
@@ -700,6 +739,7 @@ private struct AnalysisSourceThumbnail: View {
                         guard scopeSourceMode == .selectedRegion,
                               let image,
                               let inspectionGeometry = inspectionGeometry(
+                                  containing: value.startLocation,
                                   image: image,
                                   containerSize: geometry.size
                               ),
@@ -721,6 +761,7 @@ private struct AnalysisSourceThumbnail: View {
                     guard let image,
                           let displayTransform,
                           let inspectionGeometry = inspectionGeometry(
+                              containing: location,
                               image: image,
                               containerSize: geometry.size
                           ),
@@ -754,31 +795,77 @@ private struct AnalysisSourceThumbnail: View {
             id: PreviewIdentity(
                 url: url,
                 representation: representation,
-                pixelViewMode: pixelViewMode
+                pixelViewMode: pixelViewMode,
+                sourceOrientation: sourceOrientation,
+                renderToken: FullScreenImageCache.renderToken(
+                    settings: developSettings,
+                    isEdited: representation == .developed
+                )
             )
         ) {
             image = nil
             onImageLoaded(nil)
             guard let url else { return }
-            let loadedImage: NSImage?
-            if representation == .developed, let developSettings {
-                loadedImage = await thumbnailService.renderEditedThumbnail(
-                    for: url,
+            let sourceIdentity = SourcePreviewIdentity(
+                url: url,
+                representation: representation,
+                sourceOrientation: sourceOrientation,
+                renderToken: FullScreenImageCache.renderToken(
                     settings: developSettings,
-                    exifOrientation: sourceOrientation
+                    isEdited: representation == .developed
                 )
+            )
+            let loadedImage: NSImage
+            let source: CGImage
+            if loadedSourceIdentity == sourceIdentity,
+               let cachedSourceImage = sourceImage,
+               let cachedSourceCGImage = sourceCGImage {
+                loadedImage = cachedSourceImage
+                source = cachedSourceCGImage
             } else {
-                loadedImage = await thumbnailService.loadThumbnail(for: url)
+                sourceImage = nil
+                sourceCGImage = nil
+                loadedSourceIdentity = nil
+                let settings = representation == .developed ? developSettings : nil
+                if let decoded = await FullScreenImageCache.decodedEditedPreview(
+                    for: url,
+                    settings: settings,
+                    orientation: sourceOrientation,
+                    screenMaxPx: 2_048
+                ), !Task.isCancelled {
+                    source = decoded
+                    loadedImage = NSImage(
+                        cgImage: decoded,
+                        size: NSSize(width: decoded.width, height: decoded.height)
+                    )
+                } else {
+                    let fallback: NSImage?
+                    if representation == .developed, let developSettings {
+                        fallback = await thumbnailService.renderEditedThumbnail(
+                            for: url,
+                            settings: developSettings,
+                            exifOrientation: sourceOrientation
+                        )
+                    } else {
+                        fallback = await thumbnailService.loadThumbnail(for: url)
+                    }
+                    guard !Task.isCancelled,
+                          let fallback,
+                          let fallbackCGImage = fallback.cgImage(
+                              forProposedRect: nil,
+                              context: nil,
+                              hints: nil
+                          ) else {
+                        return
+                    }
+                    loadedImage = fallback
+                    source = fallbackCGImage
+                }
+                loadedSourceIdentity = sourceIdentity
+                sourceImage = loadedImage
+                sourceCGImage = source
             }
-            guard !Task.isCancelled,
-                  let loadedImage,
-                  let source = loadedImage.cgImage(
-                      forProposedRect: nil,
-                      context: nil,
-                      hints: nil
-                  ) else {
-                return
-            }
+            guard !Task.isCancelled else { return }
             let mode = pixelViewMode
             let rendered = await Task.detached {
                 AnalysisPixelViewRenderer.render(source, mode: mode)
@@ -791,15 +878,69 @@ private struct AnalysisSourceThumbnail: View {
         }
     }
 
+    private func analysisImagePane(
+        _ image: NSImage,
+        label: String,
+        showsLabel: Bool = true
+    ) -> some View {
+        ZStack(alignment: .topLeading) {
+            Image(nsImage: image)
+                .resizable()
+                .scaledToFit()
+                .accessibilityLabel(
+                    "\(label): \(url?.lastPathComponent ?? "analyzed image")"
+                )
+
+            if showsLabel {
+                Text(label)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 4)
+                    .background(.black.opacity(0.72), in: Capsule())
+                    .padding(8)
+                    .accessibilityHidden(true)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func inspectionGeometries(
+        image: NSImage,
+        containerSize: CGSize
+    ) -> [ImageInspectionGeometry] {
+        guard image.size.width > 0, image.size.height > 0 else { return [] }
+        return paneRects(in: containerSize).compactMap {
+            try? ImageInspectionGeometry(
+                imagePixelSize: image.size,
+                containerRect: $0
+            )
+        }
+    }
+
     private func inspectionGeometry(
+        containing point: CGPoint,
         image: NSImage,
         containerSize: CGSize
     ) -> ImageInspectionGeometry? {
-        guard image.size.width > 0, image.size.height > 0 else { return nil }
-        return try? ImageInspectionGeometry(
-            imagePixelSize: image.size,
-            containerRect: CGRect(origin: .zero, size: containerSize)
-        )
+        inspectionGeometries(image: image, containerSize: containerSize)
+            .first { $0.imageRectInView.contains(point) }
+    }
+
+    private func paneRects(in containerSize: CGSize) -> [CGRect] {
+        let bounds = CGRect(origin: .zero, size: containerSize)
+        guard pixelViewMode == .compressionResidual else { return [bounds] }
+        let gap: CGFloat = 8
+        let paneWidth = max(0, (containerSize.width - gap) / 2)
+        return [
+            CGRect(x: 0, y: 0, width: paneWidth, height: containerSize.height),
+            CGRect(
+                x: paneWidth + gap,
+                y: 0,
+                width: paneWidth,
+                height: containerSize.height
+            )
+        ]
     }
 
     private func viewRect(
@@ -821,6 +962,15 @@ private struct PreviewIdentity: Hashable {
     let url: URL?
     let representation: AnalysisSourceRepresentation
     let pixelViewMode: AnalysisPixelViewMode
+    let sourceOrientation: Int
+    let renderToken: String?
+}
+
+private struct SourcePreviewIdentity: Hashable {
+    let url: URL
+    let representation: AnalysisSourceRepresentation
+    let sourceOrientation: Int
+    let renderToken: String?
 }
 
 private struct PixelInspectionCrosshair: View {
