@@ -123,6 +123,29 @@ struct ViewportStateTests {
         expectEqual(clamped.normalizedCenter, CGPoint(x: 0.2, y: 0.5))
     }
 
+    @Test("different aspect ratios retain one logical center and clamp independently")
+    func mismatchedAspectRatioClamping() throws {
+        let shared = ViewportState(
+            mode: .actualPixels,
+            normalizedCenter: CGPoint(x: 0.1, y: 0.9)
+        )
+        let landscape = try shared.clamped(
+            displayedPixelSize: CGSize(width: 1000, height: 200),
+            viewSize: CGSize(width: 300, height: 300),
+            backingScale: 1
+        )
+        let portrait = try shared.clamped(
+            displayedPixelSize: CGSize(width: 200, height: 1000),
+            viewSize: CGSize(width: 300, height: 300),
+            backingScale: 1
+        )
+
+        // The short axis fits and centers. The oversized axis clamps only at its own edge.
+        expectEqual(landscape.normalizedCenter, CGPoint(x: 0.15, y: 0.5))
+        expectEqual(portrait.normalizedCenter, CGPoint(x: 0.5, y: 0.85))
+        #expect(shared.normalizedCenter == CGPoint(x: 0.1, y: 0.9))
+    }
+
     @Test("invalid geometry inputs and custom scales are rejected")
     func rejectsInvalidInput() {
         #expect(throws: ViewportStateError.invalidDisplayedPixelSize(.zero)) {

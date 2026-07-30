@@ -43,7 +43,7 @@ all coordinate round-trips pass.
 - [x] Define unknown/newer schema behavior.
 - [x] Implement normalized display/source pixel transforms for all EXIF orientations.
 - [x] Implement shared viewport state and view/image coordinate mapping.
-- [ ] Add transform fixtures for crop/straighten and different aspect ratios.
+- [x] Add transform fixtures for crop/straighten and different aspect ratios.
 - [ ] Audit security-scoped access and avoid repeat prompts.
 - [ ] Add folder monitor filtering and invalidation for new hidden stores.
 - [ ] Add corruption, read-only, iCloud-offline, rename/move, and source-changed tests.

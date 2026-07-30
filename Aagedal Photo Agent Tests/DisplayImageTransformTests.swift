@@ -127,6 +127,172 @@ struct DisplayImageTransformTests {
         #expect(transform.displayedPixelSize == CGSize(width: 300, height: 400))
     }
 
+    @Test("upright developed crop remaps its edges and pixel dimensions")
+    func developedCropMapping() throws {
+        let crop = try DisplayImageTransform.DevelopedCrop(
+            sourceNormalizedRect: CGRect(x: 0.25, y: 0.2, width: 0.5, height: 0.6)
+        )
+        let transform = try DisplayImageTransform(
+            sourcePixelWidth: 1200,
+            sourcePixelHeight: 800,
+            developedCrop: crop
+        )
+
+        #expect(transform.fullDisplayedPixelSize == CGSize(width: 1200, height: 800))
+        expectEqual(
+            CGPoint(
+                x: transform.displayedPixelSize.width,
+                y: transform.displayedPixelSize.height
+            ),
+            CGPoint(x: 600, y: 480)
+        )
+        expectEqual(
+            transform.displayNormalizedPoint(
+                fromSourceNormalized: CGPoint(x: 0.25, y: 0.2)
+            ),
+            .zero
+        )
+        expectEqual(
+            transform.displayNormalizedPoint(
+                fromSourceNormalized: CGPoint(x: 0.75, y: 0.8)
+            ),
+            CGPoint(x: 1, y: 1)
+        )
+    }
+
+    @Test("straightened crop is pixel-aspect correct for different image shapes", arguments: [
+        (
+            CGSize(width: 1200, height: 600),
+            CGPoint(x: 0.3767949192431123, y: 0.1267949192431123)
+        ),
+        (
+            CGSize(width: 600, height: 1200),
+            CGPoint(x: 0.5267949192431123, y: 0.2767949192431123)
+        ),
+        (
+            CGSize(width: 900, height: 900),
+            CGPoint(x: 0.4267949192431123, y: 0.2267949192431123)
+        )
+    ])
+    func straightenAcrossAspectRatios(
+        _ sourceSize: CGSize,
+        _ expectedSourcePointAtDevelopedTopLeft: CGPoint
+    ) throws {
+        let crop = try DisplayImageTransform.DevelopedCrop(
+            sourceNormalizedRect: CGRect(x: 0.3, y: 0.3, width: 0.4, height: 0.4),
+            straightenAngleDegrees: 30
+        )
+        let transform = try DisplayImageTransform(
+            sourcePixelWidth: Int(sourceSize.width),
+            sourcePixelHeight: Int(sourceSize.height),
+            developedCrop: crop
+        )
+
+        let sourcePoint = transform.sourceNormalizedPoint(
+            fromDisplayNormalized: .zero
+        )
+
+        expectEqual(sourcePoint, expectedSourcePointAtDevelopedTopLeft)
+        expectEqual(
+            transform.displayNormalizedPoint(fromSourceNormalized: sourcePoint),
+            .zero
+        )
+    }
+
+    @Test("EXIF orientation, crop, and straighten compose without losing source coordinates")
+    func orientedStraightenedCrop() throws {
+        // In source storage coordinates this crop becomes x: 0.2...0.7, y: 0.25...0.75
+        // after orientation 6 is applied.
+        let crop = try DisplayImageTransform.DevelopedCrop(
+            sourceNormalizedRect: CGRect(x: 0.25, y: 0.3, width: 0.5, height: 0.5),
+            straightenAngleDegrees: -20
+        )
+        let transform = try DisplayImageTransform(
+            sourcePixelWidth: 800,
+            sourcePixelHeight: 1200,
+            exifOrientation: 6,
+            developedCrop: crop
+        )
+
+        #expect(transform.fullDisplayedPixelSize == CGSize(width: 1200, height: 800))
+        #expect(transform.displayedPixelSize == CGSize(width: 600, height: 400))
+        expectEqual(
+            transform.developedCropRectInFullDisplay ?? .null,
+            CGRect(x: 0.2, y: 0.25, width: 0.5, height: 0.5)
+        )
+
+        let developedPoints = [
+            CGPoint(x: 0, y: 0),
+            CGPoint(x: 0.2, y: 0.8),
+            CGPoint(x: 0.5, y: 0.5),
+            CGPoint(x: 1, y: 1)
+        ]
+        for developedPoint in developedPoints {
+            let sourcePoint = transform.sourceNormalizedPoint(
+                fromDisplayNormalized: developedPoint
+            )
+            expectEqual(
+                transform.displayNormalizedPoint(fromSourceNormalized: sourcePoint),
+                developedPoint
+            )
+        }
+
+        expectEqual(
+            transform.sourcePixelPoint(
+                fromDisplayNormalized: CGPoint(x: 0.5, y: 0.5)
+            ),
+            CGPoint(x: 400, y: 660)
+        )
+    }
+
+    @Test("developed crop point transforms round-trip through every EXIF orientation")
+    func developedCropRoundTripsEveryOrientation() throws {
+        let crop = try DisplayImageTransform.DevelopedCrop(
+            sourceNormalizedRect: CGRect(x: 0.2, y: 0.3, width: 0.5, height: 0.4),
+            straightenAngleDegrees: 17
+        )
+        let developedPoints = [
+            CGPoint(x: 0, y: 0),
+            CGPoint(x: 0.13, y: 0.71),
+            CGPoint(x: 0.5, y: 0.5),
+            CGPoint(x: 1, y: 1)
+        ]
+
+        for orientation in 1...8 {
+            let transform = try DisplayImageTransform(
+                sourcePixelWidth: 1200,
+                sourcePixelHeight: 800,
+                exifOrientation: orientation,
+                developedCrop: crop
+            )
+
+            for developedPoint in developedPoints {
+                let sourcePoint = transform.sourceNormalizedPoint(
+                    fromDisplayNormalized: developedPoint
+                )
+                expectEqual(
+                    transform.displayNormalizedPoint(fromSourceNormalized: sourcePoint),
+                    developedPoint
+                )
+            }
+        }
+    }
+
+    @Test("invalid developed crop geometry is rejected")
+    func rejectsInvalidDevelopedCrop() {
+        let empty = CGRect(x: 0.5, y: 0.5, width: 0, height: 0.2)
+        #expect(throws: DisplayImageTransformError.invalidDevelopedCrop(empty)) {
+            try DisplayImageTransform.DevelopedCrop(sourceNormalizedRect: empty)
+        }
+
+        #expect(throws: DisplayImageTransformError.invalidStraightenAngle(.infinity)) {
+            try DisplayImageTransform.DevelopedCrop(
+                sourceNormalizedRect: CGRect(x: 0, y: 0, width: 1, height: 1),
+                straightenAngleDegrees: .infinity
+            )
+        }
+    }
+
     @Test("missing and unknown orientation values use upright orientation")
     func unknownOrientationDefaultsUpright() throws {
         for orientation in [nil, 0, 9] as [Int?] {
