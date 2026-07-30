@@ -702,31 +702,19 @@ private struct AdvancedExportImagePane: View {
         containerSize: CGSize,
         imageSize: CGSize
     ) -> CGPoint? {
-        let availableWidth = max(0, containerSize.width - 16)
-        let availableHeight = max(0, containerSize.height - 16)
-        guard availableWidth > 0, availableHeight > 0,
-              imageSize.width > 0, imageSize.height > 0 else {
+        let contentRect = CGRect(
+            x: 8,
+            y: 8,
+            width: max(0, containerSize.width - 16),
+            height: max(0, containerSize.height - 16)
+        )
+        guard let inspectionGeometry = try? ImageInspectionGeometry(
+            imagePixelSize: imageSize,
+            containerRect: contentRect
+        ) else {
             return nil
         }
-
-        let scale = min(
-            availableWidth / imageSize.width,
-            availableHeight / imageSize.height
-        )
-        let displayedSize = CGSize(
-            width: imageSize.width * scale,
-            height: imageSize.height * scale
-        )
-        let origin = CGPoint(
-            x: (containerSize.width - displayedSize.width) / 2,
-            y: (containerSize.height - displayedSize.height) / 2
-        )
-        let imageRect = CGRect(origin: origin, size: displayedSize)
-        guard imageRect.contains(location) else { return nil }
-        return CGPoint(
-            x: (location.x - origin.x) / displayedSize.width,
-            y: (location.y - origin.y) / displayedSize.height
-        )
+        return inspectionGeometry.normalizedDisplayPoint(fromViewPoint: location)
     }
 
     private func loupeIndicatorPosition(in containerSize: CGSize) -> CGPoint {

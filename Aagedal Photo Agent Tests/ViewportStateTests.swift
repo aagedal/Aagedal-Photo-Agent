@@ -217,3 +217,134 @@ struct ViewportStateTests {
         )
     }
 }
+
+@Suite("Image inspection geometry")
+struct ImageInspectionGeometryTests {
+    @Test("fit geometry honors an inset container and rejects letterbox hover")
+    func fitHoverGeometry() throws {
+        let geometry = try ImageInspectionGeometry(
+            imagePixelSize: CGSize(width: 400, height: 200),
+            containerRect: CGRect(x: 8, y: 8, width: 284, height: 284)
+        )
+
+        expectEqual(
+            geometry.imageRectInView,
+            CGRect(x: 8, y: 79, width: 284, height: 142)
+        )
+        expectEqual(
+            geometry.normalizedDisplayPoint(
+                fromViewPoint: CGPoint(x: 150, y: 150)
+            ) ?? CGPoint(x: -1, y: -1),
+            CGPoint(x: 0.5, y: 0.5)
+        )
+        #expect(
+            geometry.normalizedDisplayPoint(
+                fromViewPoint: CGPoint(x: 150, y: 40)
+            ) == nil
+        )
+    }
+
+    @Test("source pixel samples remain correct through every EXIF orientation")
+    func sourcePixelAcrossOrientations() throws {
+        let sourcePixelCenter = CGPoint(x: 100.5, y: 60.5)
+
+        for orientation in 1...8 {
+            let transform = try DisplayImageTransform(
+                sourcePixelWidth: 400,
+                sourcePixelHeight: 300,
+                exifOrientation: orientation
+            )
+            let displayPoint = transform.displayNormalizedPoint(
+                fromSourcePixel: sourcePixelCenter
+            )
+            let sample = ImageInspectionSample(
+                normalizedDisplayPoint: displayPoint,
+                transform: transform
+            )
+
+            #expect(sample.sourcePixel == SourcePixelCoordinate(x: 100, y: 60))
+        }
+    }
+
+    @Test("developed hover maps through crop and straighten to source pixels")
+    func developedSourcePixel() throws {
+        let crop = try DisplayImageTransform.DevelopedCrop(
+            sourceNormalizedRect: CGRect(x: 0.25, y: 0.3, width: 0.5, height: 0.5),
+            straightenAngleDegrees: -20
+        )
+        let transform = try DisplayImageTransform(
+            sourcePixelWidth: 800,
+            sourcePixelHeight: 1200,
+            exifOrientation: 6,
+            developedCrop: crop
+        )
+
+        let sample = ImageInspectionSample(
+            normalizedDisplayPoint: CGPoint(x: 0.5, y: 0.5),
+            transform: transform
+        )
+
+        #expect(sample.sourcePixel == SourcePixelCoordinate(x: 400, y: 660))
+    }
+
+    @Test("true-pixel crops clamp at edges and convert the top-left hover origin")
+    func truePixelCrop() {
+        let extent = CGRect(x: 0, y: 0, width: 100, height: 80)
+        let topLeft = ImageInspectionGeometry.centeredPixelCropRect(
+            in: extent,
+            normalizedDisplayPoint: .zero,
+            pixelSize: 20,
+            extentOrigin: .bottomLeft
+        )
+        let bottomRight = ImageInspectionGeometry.centeredPixelCropRect(
+            in: extent,
+            normalizedDisplayPoint: CGPoint(x: 1, y: 1),
+            pixelSize: 20,
+            extentOrigin: .bottomLeft
+        )
+
+        #expect(topLeft == CGRect(x: 0, y: 60, width: 20, height: 20))
+        #expect(bottomRight == CGRect(x: 80, y: 0, width: 20, height: 20))
+        #expect(
+            ImageInspectionGeometry.centeredPixelCropRect(
+                in: .zero,
+                normalizedDisplayPoint: .zero,
+                pixelSize: 20,
+                extentOrigin: .bottomLeft
+            ) == nil
+        )
+    }
+
+    private func expectEqual(
+        _ actual: CGPoint,
+        _ expected: CGPoint,
+        accuracy: CGFloat = 0.000_000_1,
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) {
+        #expect(
+            abs(actual.x - expected.x) <= accuracy
+                && abs(actual.y - expected.y) <= accuracy,
+            sourceLocation: sourceLocation
+        )
+    }
+
+    private func expectEqual(
+        _ actual: CGRect,
+        _ expected: CGRect,
+        accuracy: CGFloat = 0.000_000_1,
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) {
+        expectEqual(
+            actual.origin,
+            expected.origin,
+            accuracy: accuracy,
+            sourceLocation: sourceLocation
+        )
+        expectEqual(
+            CGPoint(x: actual.width, y: actual.height),
+            CGPoint(x: expected.width, y: expected.height),
+            accuracy: accuracy,
+            sourceLocation: sourceLocation
+        )
+    }
+}

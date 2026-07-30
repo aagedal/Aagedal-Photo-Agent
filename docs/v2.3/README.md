@@ -6,10 +6,9 @@
 
 **Target platform:** macOS 26, Apple Silicon
 
-**Implementation status:** Phases 1 and 2 complete; the Image Analysis workspace now includes
-persistent cancellable analyzer runs, exact cache reuse, source facts, namespace-preserving raw
-metadata, separate C2PA validity/trust states, neutral consistency findings, and report inclusion
-controls
+**Implementation status:** Phases 1 and 2 complete; Phase 3 is in progress with shared
+fit/true-pixel hover geometry and orientation/crop-aware source-pixel inspection integrated into
+Image Analysis and Advanced Export
 
 Version 2.3 is a broad investigation and review release. It adds three connected
 capabilities:

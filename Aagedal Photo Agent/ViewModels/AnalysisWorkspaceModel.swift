@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 @Observable
@@ -63,6 +64,49 @@ final class AnalysisWorkspaceModel {
 
     var rawMetadata: [AnalysisRawMetadataEntry] {
         analysisRunner.runs.flatMap { $0.output?.rawMetadata ?? [] }
+    }
+
+    /// Coordinate transform for the representation currently visible in Analysis.
+    ///
+    /// Findings stay bound to the source bytes, so developed hover positions are
+    /// mapped through crop/straighten back to the original source pixel frame.
+    var displayTransform: DisplayImageTransform? {
+        guard let facts = sourceFacts,
+              let width = facts.pixelWidth,
+              let height = facts.pixelHeight else {
+            return nil
+        }
+
+        let developedCrop: DisplayImageTransform.DevelopedCrop?
+        if displayPreference == .developed,
+           let crop = developSettings?.crop,
+           crop.isEffectiveCrop {
+            let left = crop.left ?? 0
+            let top = crop.top ?? 0
+            let right = crop.right ?? 1
+            let bottom = crop.bottom ?? 1
+            guard let resolvedCrop = try? DisplayImageTransform.DevelopedCrop(
+                sourceNormalizedRect: CGRect(
+                    x: left,
+                    y: top,
+                    width: right - left,
+                    height: bottom - top
+                ),
+                straightenAngleDegrees: crop.angle ?? 0
+            ) else {
+                return nil
+            }
+            developedCrop = resolvedCrop
+        } else {
+            developedCrop = nil
+        }
+
+        return try? DisplayImageTransform(
+            sourcePixelWidth: width,
+            sourcePixelHeight: height,
+            exifOrientation: sourceOrientation,
+            developedCrop: developedCrop
+        )
     }
 
     deinit {

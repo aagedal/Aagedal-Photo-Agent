@@ -6,6 +6,7 @@ struct AnalysisWorkspaceView: View {
     let thumbnailService: ThumbnailService
     let onClose: () -> Void
     @State private var selectedFindingID: String?
+    @State private var pixelInspectionSample: ImageInspectionSample?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -21,6 +22,12 @@ struct AnalysisWorkspaceView: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Image Analysis workspace")
+        .onChange(of: model.sourceURL) {
+            pixelInspectionSample = nil
+        }
+        .onChange(of: model.displayPreference) {
+            pixelInspectionSample = nil
+        }
     }
 
     private var workspaceHeader: some View {
@@ -255,9 +262,13 @@ struct AnalysisWorkspaceView: View {
                 representation: model.displayPreference,
                 developSettings: model.developSettings,
                 sourceOrientation: model.sourceOrientation,
+                displayTransform: model.displayTransform,
+                inspectionSample: $pixelInspectionSample,
                 thumbnailService: thumbnailService
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            PixelInspectionReadout(sample: pixelInspectionSample)
         }
         .padding(14)
         .background(Color(nsColor: .windowBackgroundColor))
@@ -565,20 +576,68 @@ private struct AnalysisSourceThumbnail: View {
     let representation: AnalysisSourceRepresentation
     let developSettings: CameraRawSettings?
     let sourceOrientation: Int
+    let displayTransform: DisplayImageTransform?
+    @Binding var inspectionSample: ImageInspectionSample?
     let thumbnailService: ThumbnailService
     @State private var image: NSImage?
 
     var body: some View {
-        ZStack {
-            Color.black.opacity(0.92)
-            if let image {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .accessibilityLabel(url?.lastPathComponent ?? "Analyzed image")
-            } else {
-                ProgressView()
-                    .tint(.white)
+        GeometryReader { geometry in
+            ZStack {
+                Color.black.opacity(0.92)
+                if let image {
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .accessibilityLabel(url?.lastPathComponent ?? "Analyzed image")
+
+                    if let inspectionSample,
+                       let inspectionGeometry = inspectionGeometry(
+                           image: image,
+                           containerSize: geometry.size
+                       ) {
+                        PixelInspectionCrosshair(
+                            position: inspectionGeometry.viewPoint(
+                                fromNormalizedDisplay: inspectionSample.normalizedDisplayPoint
+                            ),
+                            imageRect: inspectionGeometry.imageRectInView
+                        )
+                    }
+                } else {
+                    ProgressView()
+                        .tint(.white)
+                }
+            }
+            .contentShape(Rectangle())
+            .onContinuousHover(coordinateSpace: .local) { phase in
+                switch phase {
+                case .active(let location):
+                    guard let image,
+                          let displayTransform,
+                          let inspectionGeometry = inspectionGeometry(
+                              image: image,
+                              containerSize: geometry.size
+                          ),
+                          let point = inspectionGeometry.normalizedDisplayPoint(
+                              fromViewPoint: location
+                          ) else {
+                        inspectionSample = nil
+                        return
+                    }
+                    inspectionSample = ImageInspectionSample(
+                        normalizedDisplayPoint: point,
+                        transform: displayTransform
+                    )
+                case .ended:
+                    inspectionSample = nil
+                }
+            }
+            .accessibilityAction(named: "Inspect center pixel") {
+                guard let displayTransform else { return }
+                inspectionSample = ImageInspectionSample(
+                    normalizedDisplayPoint: CGPoint(x: 0.5, y: 0.5),
+                    transform: displayTransform
+                )
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 6))
@@ -596,9 +655,98 @@ private struct AnalysisSourceThumbnail: View {
             }
         }
     }
+
+    private func inspectionGeometry(
+        image: NSImage,
+        containerSize: CGSize
+    ) -> ImageInspectionGeometry? {
+        guard image.size.width > 0, image.size.height > 0 else { return nil }
+        return try? ImageInspectionGeometry(
+            imagePixelSize: image.size,
+            containerRect: CGRect(origin: .zero, size: containerSize)
+        )
+    }
 }
 
 private struct PreviewIdentity: Hashable {
     let url: URL?
     let representation: AnalysisSourceRepresentation
+}
+
+private struct PixelInspectionCrosshair: View {
+    let position: CGPoint
+    let imageRect: CGRect
+
+    var body: some View {
+        ZStack {
+            Path { path in
+                path.move(to: CGPoint(x: imageRect.minX, y: position.y))
+                path.addLine(to: CGPoint(x: imageRect.maxX, y: position.y))
+                path.move(to: CGPoint(x: position.x, y: imageRect.minY))
+                path.addLine(to: CGPoint(x: position.x, y: imageRect.maxY))
+            }
+            .stroke(.black.opacity(0.75), lineWidth: 3)
+
+            Path { path in
+                path.move(to: CGPoint(x: imageRect.minX, y: position.y))
+                path.addLine(to: CGPoint(x: imageRect.maxX, y: position.y))
+                path.move(to: CGPoint(x: position.x, y: imageRect.minY))
+                path.addLine(to: CGPoint(x: position.x, y: imageRect.maxY))
+            }
+            .stroke(.yellow, lineWidth: 1)
+
+            Circle()
+                .strokeBorder(.black.opacity(0.8), lineWidth: 3)
+                .overlay {
+                    Circle().strokeBorder(.yellow, lineWidth: 1)
+                }
+                .frame(width: 13, height: 13)
+                .position(position)
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
+private struct PixelInspectionReadout: View {
+    let sample: ImageInspectionSample?
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "scope")
+                .accessibilityHidden(true)
+            if let sample {
+                Text(
+                    "Source pixel x: \(sample.sourcePixel.x), y: \(sample.sourcePixel.y)"
+                )
+                .monospacedDigit()
+                .textSelection(.enabled)
+                Spacer()
+                Text(
+                    String(
+                        format: "Display %.2f%%, %.2f%%",
+                        sample.normalizedDisplayPoint.x * 100,
+                        sample.normalizedDisplayPoint.y * 100
+                    )
+                )
+                .monospacedDigit()
+                .foregroundStyle(.tertiary)
+            } else {
+                Text("Hover over the image to inspect its source-pixel position")
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+        }
+        .font(.caption)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    private var accessibilityLabel: String {
+        guard let sample else {
+            return "Pixel inspector. Hover over the image to inspect a source pixel."
+        }
+        return "Source pixel x \(sample.sourcePixel.x), y \(sample.sourcePixel.y)"
+    }
 }
