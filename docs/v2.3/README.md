@@ -8,7 +8,8 @@
 
 **Implementation status:** Phases 1 and 2 complete; Phase 3 is in progress with shared
 fit/true-pixel hover geometry, orientation/crop-aware source-pixel inspection, generalized
-scope rendering, and resizable one/two/four-up scopes integrated into Image Analysis
+scope rendering, resizable one/two/four-up scopes, and selected-region scope input integrated
+into Image Analysis
 
 Version 2.3 is a broad investigation and review release. It adds three connected
 capabilities:

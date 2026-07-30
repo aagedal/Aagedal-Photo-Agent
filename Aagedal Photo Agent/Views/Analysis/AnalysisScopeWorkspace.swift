@@ -17,6 +17,18 @@ private enum AnalysisScopeLayout: Int, CaseIterable {
     }
 }
 
+enum AnalysisScopeSourceMode: String, CaseIterable {
+    case fullImage
+    case selectedRegion
+
+    var label: String {
+        switch self {
+        case .fullImage: "Full Image"
+        case .selectedRegion: "Selection"
+        }
+    }
+}
+
 /// Larger, resizable scope presentation for Pixel Analysis.
 ///
 /// Each card owns a normal `ScopeViewModel`, so cancellation, request identity, and rendering
@@ -24,6 +36,8 @@ private enum AnalysisScopeLayout: Int, CaseIterable {
 /// selected layout retain the source image or consume render work.
 struct AnalysisScopeWorkspace: View {
     let sourceImage: CGImage?
+    @Binding var sourceMode: AnalysisScopeSourceMode
+    @Binding var selectedRegion: CGRect?
 
     @State private var layout: AnalysisScopeLayout = .two
     @State private var waveform = ScopeViewModel(
@@ -48,6 +62,26 @@ struct AnalysisScopeWorkspace: View {
             HStack {
                 Label("Scopes", systemImage: "waveform.path.ecg")
                     .font(.caption.weight(.semibold))
+                Picker("Scope source", selection: $sourceMode) {
+                    ForEach(AnalysisScopeSourceMode.allCases, id: \.self) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 176)
+                .help("Render scopes from the full displayed image or a selected region")
+
+                if sourceMode == .selectedRegion, selectedRegion != nil {
+                    Button {
+                        selectedRegion = nil
+                    } label: {
+                        Label("Clear Selection", systemImage: "xmark.circle")
+                            .labelStyle(.iconOnly)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Clear the selected scope region")
+                    .accessibilityLabel("Clear scope selection")
+                }
                 Spacer()
                 Picker("Scope layout", selection: $layout) {
                     ForEach(AnalysisScopeLayout.allCases, id: \.self) { layout in
@@ -61,6 +95,19 @@ struct AnalysisScopeWorkspace: View {
                 .help("Show one, two, or four resizable scopes")
             }
 
+            if sourceMode == .selectedRegion, selectedRegion == nil {
+                Label(
+                    "Drag across the displayed image to choose the pixels used by every scope.",
+                    systemImage: "rectangle.dashed"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityLabel(
+                    "No scope region selected. Drag across the displayed image to select one."
+                )
+            }
+
             scopeLayout
         }
         .padding(10)
@@ -71,8 +118,16 @@ struct AnalysisScopeWorkspace: View {
         .onChange(of: layout) {
             updateVisibleModels()
         }
+        .onChange(of: sourceMode) {
+            updateVisibleModels()
+        }
+        .onChange(of: selectedRegion) {
+            updateVisibleModels()
+        }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(layout.accessibilityLabel) for the displayed image representation")
+        .accessibilityLabel(
+            "\(layout.accessibilityLabel) for \(sourceMode.label.lowercased())"
+        )
     }
 
     @ViewBuilder
@@ -120,8 +175,22 @@ struct AnalysisScopeWorkspace: View {
 
     private func updateVisibleModels() {
         let visibleIDs = Set(visibleModels.map(ObjectIdentifier.init))
+        let scopeImage: CGImage?
+        switch sourceMode {
+        case .fullImage:
+            scopeImage = sourceImage
+        case .selectedRegion:
+            if let sourceImage, let selectedRegion {
+                scopeImage = AnalysisScopeSelection.croppedImage(
+                    from: sourceImage,
+                    normalizedRect: selectedRegion
+                )
+            } else {
+                scopeImage = nil
+            }
+        }
         for model in allModels {
-            model.updateImage(visibleIDs.contains(ObjectIdentifier(model)) ? sourceImage : nil)
+            model.updateImage(visibleIDs.contains(ObjectIdentifier(model)) ? scopeImage : nil)
         }
     }
 }

@@ -242,6 +242,12 @@ struct ImageInspectionGeometryTests {
                 fromViewPoint: CGPoint(x: 150, y: 40)
             ) == nil
         )
+        expectEqual(
+            geometry.clampedNormalizedDisplayPoint(
+                fromViewPoint: CGPoint(x: 400, y: 40)
+            ),
+            CGPoint(x: 1, y: 0)
+        )
     }
 
     @Test("source pixel samples remain correct through every EXIF orientation")

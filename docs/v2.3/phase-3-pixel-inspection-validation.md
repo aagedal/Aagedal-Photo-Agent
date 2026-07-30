@@ -20,6 +20,12 @@
   changes.
 - Fed scopes from the representation currently displayed in Image Analysis, including the
   developed preview when selected.
+- Added a Full Image / Selection source control shared by every visible Analysis scope.
+- Added normalized drag selection on the displayed representation with a visible retained
+  overlay, clear action, and accessible center-region action.
+- Committed scope selection only when the drag ends so superseded CPU renders do not accumulate.
+- Converted normalized selection bounds outward to stable integer pixel edges and cropped one
+  shared `CGImage` input for all visible scope cards.
 
 This slice does not claim that the Analysis thumbnail is a true-pixel rendering. The reusable
 true-pixel crop utility currently continues to back Advanced Export; the full Analysis loupe and
@@ -74,6 +80,25 @@ integration.
 A combined regression run of `ScopeRenderRequestTests`, `ChromaticityScopeTests`,
 `ViewportStateTests`, and `DisplayImageTransformTests` passed 28 tests in 4 suites.
 
+Selected-region command:
+
+```sh
+xcodebuild test \
+  -scheme "Aagedal Photo Agent Tests" \
+  -destination "platform=macOS" \
+  -only-testing:"Aagedal Photo Agent Tests/AnalysisScopeSelectionTests" \
+  -only-testing:"Aagedal Photo Agent Tests/ScopeRenderRequestTests"
+```
+
+Result: 8 tests passed in 2 suites.
+
+Coverage includes direction-independent and clamped drag geometry, collapsed/invalid selection
+rejection, stable normalized-to-pixel boundary conversion, cropped input dimensions, and the
+existing scope request/rendering contract.
+
+The final combined run added `ImageInspectionGeometryTests` and passed 12 tests in 3 suites,
+including edge-clamped selection drags that begin over displayed pixels.
+
 ## Manual validation remaining for the Phase 3 gate
 
 - Inspect hover alignment on the redistributable orientation/crop fixture corpus.
@@ -83,4 +108,5 @@ A combined regression run of `ScopeRenderRequestTests`, `ChromaticityScopeTests`
 - Switch each card among Waveform, RGBY Parade, Vectorscope, and Chromaticity and confirm the
   existing sidebar remains unchanged.
 - Confirm Original Source / Developed Preview changes refresh every visible scope.
-- Validate selected-region scopes once that slice is implemented.
+- Drag regions in every direction, including near each image edge, and confirm every visible
+  scope switches between the retained selection and full image without extra renders during drag.

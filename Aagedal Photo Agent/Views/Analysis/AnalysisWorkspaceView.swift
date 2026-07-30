@@ -8,6 +8,8 @@ struct AnalysisWorkspaceView: View {
     @State private var selectedFindingID: String?
     @State private var pixelInspectionSample: ImageInspectionSample?
     @State private var displayedScopeImage: CGImage?
+    @State private var scopeSourceMode: AnalysisScopeSourceMode = .fullImage
+    @State private var selectedScopeRegion: CGRect?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -26,10 +28,13 @@ struct AnalysisWorkspaceView: View {
         .onChange(of: model.sourceURL) {
             pixelInspectionSample = nil
             displayedScopeImage = nil
+            selectedScopeRegion = nil
+            scopeSourceMode = .fullImage
         }
         .onChange(of: model.displayPreference) {
             pixelInspectionSample = nil
             displayedScopeImage = nil
+            selectedScopeRegion = nil
         }
     }
 
@@ -142,7 +147,11 @@ struct AnalysisWorkspaceView: View {
             VSplitView {
                 sourcePreview
                     .frame(minHeight: 260)
-                AnalysisScopeWorkspace(sourceImage: displayedScopeImage)
+                AnalysisScopeWorkspace(
+                    sourceImage: displayedScopeImage,
+                    sourceMode: $scopeSourceMode,
+                    selectedRegion: $selectedScopeRegion
+                )
                     .frame(minHeight: 180, idealHeight: 300)
             }
                 .frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
@@ -272,6 +281,8 @@ struct AnalysisWorkspaceView: View {
                 sourceOrientation: model.sourceOrientation,
                 displayTransform: model.displayTransform,
                 inspectionSample: $pixelInspectionSample,
+                scopeSourceMode: scopeSourceMode,
+                selectedScopeRegion: $selectedScopeRegion,
                 thumbnailService: thumbnailService,
                 onImageLoaded: { displayedScopeImage = $0 }
             )
@@ -587,9 +598,13 @@ private struct AnalysisSourceThumbnail: View {
     let sourceOrientation: Int
     let displayTransform: DisplayImageTransform?
     @Binding var inspectionSample: ImageInspectionSample?
+    let scopeSourceMode: AnalysisScopeSourceMode
+    @Binding var selectedScopeRegion: CGRect?
     let thumbnailService: ThumbnailService
     let onImageLoaded: (CGImage?) -> Void
     @State private var image: NSImage?
+    @State private var selectionDragStart: CGPoint?
+    @State private var selectionDraft: CGRect?
 
     var body: some View {
         GeometryReader { geometry in
@@ -613,12 +628,72 @@ private struct AnalysisSourceThumbnail: View {
                             imageRect: inspectionGeometry.imageRectInView
                         )
                     }
+
+                    if let inspectionGeometry = inspectionGeometry(
+                        image: image,
+                        containerSize: geometry.size
+                    ), let region = selectionDraft ?? selectedScopeRegion {
+                        ScopeRegionOverlay(
+                            rect: viewRect(
+                                for: region,
+                                geometry: inspectionGeometry
+                            ),
+                            isActive: scopeSourceMode == .selectedRegion
+                        )
+                    }
                 } else {
                     ProgressView()
                         .tint(.white)
                 }
             }
             .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0, coordinateSpace: .local)
+                    .onChanged { value in
+                        guard scopeSourceMode == .selectedRegion,
+                              let image,
+                              let inspectionGeometry = inspectionGeometry(
+                                  image: image,
+                                  containerSize: geometry.size
+                              ),
+                              let initial = selectionDragStart
+                                  ?? inspectionGeometry.normalizedDisplayPoint(
+                                      fromViewPoint: value.startLocation
+                                  ) else {
+                            return
+                        }
+                        let current = inspectionGeometry.clampedNormalizedDisplayPoint(
+                            fromViewPoint: value.location
+                        )
+                        selectionDragStart = initial
+                        selectionDraft = AnalysisScopeSelection.normalizedRect(
+                            from: initial,
+                            to: current
+                        )
+                    }
+                    .onEnded { value in
+                        defer {
+                            selectionDragStart = nil
+                            selectionDraft = nil
+                        }
+                        guard scopeSourceMode == .selectedRegion,
+                              let image,
+                              let inspectionGeometry = inspectionGeometry(
+                                  image: image,
+                                  containerSize: geometry.size
+                              ),
+                              let start = selectionDragStart else {
+                            return
+                        }
+                        let end = inspectionGeometry.clampedNormalizedDisplayPoint(
+                            fromViewPoint: value.location
+                        )
+                        selectedScopeRegion = AnalysisScopeSelection.normalizedRect(
+                            from: start,
+                            to: end
+                        )
+                    }
+            )
             .onContinuousHover(coordinateSpace: .local) { phase in
                 switch phase {
                 case .active(let location):
@@ -648,6 +723,9 @@ private struct AnalysisSourceThumbnail: View {
                     normalizedDisplayPoint: CGPoint(x: 0.5, y: 0.5),
                     transform: displayTransform
                 )
+            }
+            .accessibilityAction(named: "Select center region for scopes") {
+                selectedScopeRegion = CGRect(x: 0.25, y: 0.25, width: 0.5, height: 0.5)
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 6))
@@ -685,6 +763,20 @@ private struct AnalysisSourceThumbnail: View {
         return try? ImageInspectionGeometry(
             imagePixelSize: image.size,
             containerRect: CGRect(origin: .zero, size: containerSize)
+        )
+    }
+
+    private func viewRect(
+        for normalizedRect: CGRect,
+        geometry: ImageInspectionGeometry
+    ) -> CGRect {
+        CGRect(
+            x: geometry.imageRectInView.minX
+                + normalizedRect.minX * geometry.imageRectInView.width,
+            y: geometry.imageRectInView.minY
+                + normalizedRect.minY * geometry.imageRectInView.height,
+            width: normalizedRect.width * geometry.imageRectInView.width,
+            height: normalizedRect.height * geometry.imageRectInView.height
         )
     }
 }
@@ -726,6 +818,27 @@ private struct PixelInspectionCrosshair: View {
         }
         .allowsHitTesting(false)
         .accessibilityHidden(true)
+    }
+}
+
+private struct ScopeRegionOverlay: View {
+    let rect: CGRect
+    let isActive: Bool
+
+    var body: some View {
+        Rectangle()
+            .fill(Color.accentColor.opacity(isActive ? 0.12 : 0.06))
+            .overlay {
+                Rectangle()
+                    .strokeBorder(
+                        Color.accentColor.opacity(isActive ? 1 : 0.55),
+                        style: StrokeStyle(lineWidth: 2, dash: [7, 4])
+                    )
+            }
+            .frame(width: rect.width, height: rect.height)
+            .position(x: rect.midX, y: rect.midY)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 }
 

@@ -33,6 +33,13 @@ nonisolated struct ImageInspectionGeometry: Hashable, Sendable {
     /// Returns a normalized image point only while the pointer is over displayed pixels.
     func normalizedDisplayPoint(fromViewPoint point: CGPoint) -> CGPoint? {
         guard imageRectInView.contains(point) else { return nil }
+        return clampedNormalizedDisplayPoint(fromViewPoint: point)
+    }
+
+    /// Maps a point to the nearest normalized image edge. Selection drags use this after
+    /// confirming that the drag began over displayed pixels, so dragging beyond an edge still
+    /// produces an edge-clamped region.
+    func clampedNormalizedDisplayPoint(fromViewPoint point: CGPoint) -> CGPoint {
         return CGPoint(
             x: Self.clampUnit((point.x - imageRectInView.minX) / imageRectInView.width),
             y: Self.clampUnit((point.y - imageRectInView.minY) / imageRectInView.height)

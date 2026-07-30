@@ -73,7 +73,7 @@ modifies the source.
 - [x] Generalize scope requests and output sizing without regressing the existing scope sidebar.
 - [x] Build resizable one/two/four-up scope layouts.
 - [x] Add linked hover sampling and source-pixel readout.
-- [ ] Add selected-region scopes.
+- [x] Add selected-region scopes.
 - [ ] Add channel/luminance views.
 - [ ] Ship the calibrated compression/residual view with method/parameter label.
 - [ ] Add cost-bounded derived-view cache and cancellation.
