@@ -69,6 +69,9 @@ Rules:
 - Store hashes as lowercase hex with an algorithm prefix or separate algorithm field.
 - Hashing is cancellable and streamed; never load a large RAW file into one `Data`.
 - A file move can reassociate automatically only when the hash matches.
+- Discovery checks the recorded path and filesystem resource ID first, but verifies either with the
+  full hash. A unique hash-only candidate can be reassociated; multiple copies require an explicit
+  user choice and a changed file is surfaced as changed rather than silently rebound.
 
 ## Analysis schema sketch
 

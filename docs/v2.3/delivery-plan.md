@@ -38,7 +38,7 @@ updated conditional-scope decision.
 all coordinate round-trips pass.
 
 - [x] Implement `SourceImageRevision` and cancellable streaming SHA-256.
-- [ ] Add source discovery/reassociation by resource ID and hash.
+- [x] Add source discovery/reassociation by resource ID and hash.
 - [x] Implement versioned atomic JSON document storage with bounded backup.
 - [x] Define unknown/newer schema behavior.
 - [ ] Implement normalized display/source pixel transforms for all EXIF orientations.
