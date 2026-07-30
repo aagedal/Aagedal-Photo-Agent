@@ -47,6 +47,11 @@
   in cache identity so derived pixels cannot cross representation or render-state boundaries.
 - Propagated SwiftUI task cancellation into detached utility renders and prevented cancelled
   results from reaching either the UI or cache.
+- Preserved half-float precision for HDR/16-bit channel and luminance views so values above SDR
+  reference white are not silently clipped, and carried the source content-headroom metadata to
+  the derived raster for EDR presentation; ordinary 8-bit SDR inputs retain compact RGBA8 rasters.
+- Kept the compression residual's dynamic-range contract explicit: alpha is flattened over the
+  fixed 50% gray matte and the diagnostic result is opaque 8-bit sRGB.
 
 This slice does not claim that the Analysis thumbnail is a true-pixel rendering. The reusable
 true-pixel crop utility currently continues to back Advanced Export; the full Analysis loupe,
@@ -143,6 +148,27 @@ high-frequency color fixture exposes more reconstruction residual than a uniform
 Derived-view cache coverage additionally verifies exact-key hits, mode isolation, decoded-byte
 LRU eviction, and cancellation propagation into detached renders without publishing or caching
 the cancelled result.
+
+Phase 3 source robustness command:
+
+```sh
+xcodebuild test \
+  -scheme "Aagedal Photo Agent Tests" \
+  -destination "platform=macOS" \
+  -only-testing:"Aagedal Photo Agent Tests/AnalysisPixelViewRendererTests" \
+  -only-testing:"Aagedal Photo Agent Tests/FullScreenImageCacheTests" \
+  -only-testing:"Aagedal Photo Agent Tests/AnalysisScopeSelectionTests" \
+  -only-testing:"Aagedal Photo Agent Tests/DisplayImageTransformTests"
+```
+
+Result: 39 tests passed in 4 suites.
+
+Coverage includes 8-bit SDR and half-float extended-linear inputs, HDR pixel and presentation
+headroom through every channel/luminance view, alpha preservation, the residual's opaque SDR
+matte contract, real
+ImageIO decode geometry for all eight EXIF orientations, crop/straighten plus derived rendering
+for every orientation, stable selected-region pixel crops, and closed failure for a truncated
+malformed JPEG through each Analysis preview loader.
 
 Before this cache slice, the full `Aagedal Photo Agent Tests` target passed 709 tests in 99
 suites. The cache slice compiled the complete test target and ran the two focused suites above;

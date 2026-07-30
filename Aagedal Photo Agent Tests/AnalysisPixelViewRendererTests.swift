@@ -1,4 +1,5 @@
 import CoreGraphics
+import CoreImage
 import Foundation
 import Testing
 @testable import Aagedal_Photo_Agent
@@ -52,6 +53,60 @@ struct AnalysisPixelViewRendererTests {
         expectGrayscale(blue)
         #expect(green.red > red.red)
         #expect(red.red > blue.red)
+    }
+
+    @Test("SDR stays compact while HDR channel views preserve headroom")
+    func dynamicRangeContract() throws {
+        let sdr = try makeSourceImage(red: 0.8, green: 0.4, blue: 0.2)
+        let sdrRed = try #require(
+            AnalysisPixelViewRenderer.render(sdr, mode: .red)
+        )
+        #expect(sdrRed.bitsPerComponent == 8)
+
+        let hdr = try makeHDRSourceImage(
+            red: 2,
+            green: 2,
+            blue: 2,
+            alpha: 1
+        )
+        #expect(hdr.bitsPerComponent == 16)
+        #expect(AnalysisPixelViewRenderer.render(hdr, mode: .normal) === hdr)
+
+        for mode in [AnalysisPixelViewMode.red, .green, .blue, .luminance] {
+            let output = try #require(
+                AnalysisPixelViewRenderer.render(hdr, mode: mode)
+            )
+            let pixel = try readLinearFloatPixel(output)
+
+            #expect(output.width == hdr.width)
+            #expect(output.height == hdr.height)
+            #expect(output.bitsPerComponent == 16)
+            #expect(output.contentHeadroom > 1.9)
+            #expect(pixel.red > 1.9)
+            #expect(abs(pixel.red - pixel.green) < 0.01)
+            #expect(abs(pixel.green - pixel.blue) < 0.01)
+            #expect(abs(pixel.alpha - 1) < 0.01)
+        }
+    }
+
+    @Test("compression residual explicitly flattens HDR alpha to opaque SDR")
+    func compressionResidualDynamicRangeContract() throws {
+        let hdr = try makeHDRSourceImage(
+            red: 1.5,
+            green: 0.75,
+            blue: 0.25,
+            alpha: 0.25,
+            width: 8,
+            height: 6
+        )
+        let residual = try #require(
+            AnalysisPixelViewRenderer.render(hdr, mode: .compressionResidual)
+        )
+
+        #expect(residual.width == 8)
+        #expect(residual.height == 6)
+        #expect(residual.bitsPerComponent == 8)
+        #expect(try minimumAlpha(residual) == 255)
     }
 
     @Test("view modes expose an explicit method label")
@@ -143,6 +198,75 @@ struct AnalysisPixelViewRendererTests {
         context.setFillColor(color)
         context.fill(CGRect(x: 0, y: 0, width: 1, height: 1))
         return try #require(context.makeImage())
+    }
+
+    private func makeHDRSourceImage(
+        red: CGFloat,
+        green: CGFloat,
+        blue: CGFloat,
+        alpha: CGFloat,
+        width: Int = 1,
+        height: Int = 1
+    ) throws -> CGImage {
+        let colorSpace = try #require(
+            CGColorSpace(name: CGColorSpace.extendedLinearSRGB)
+        )
+        let color = try #require(
+            CIColor(
+                red: red,
+                green: green,
+                blue: blue,
+                alpha: alpha,
+                colorSpace: colorSpace
+            )
+        )
+        let ciImage = CIImage(
+            color: color
+        ).cropped(
+            to: CGRect(x: 0, y: 0, width: width, height: height)
+        )
+        let context = CIContext(options: [
+            .workingColorSpace: colorSpace,
+            .outputColorSpace: colorSpace,
+            .cacheIntermediates: false
+        ])
+        let cgImage = try #require(
+            context.createCGImage(
+                ciImage,
+                from: ciImage.extent,
+                format: .RGBAh,
+                colorSpace: colorSpace
+            )
+        )
+        let peak = Float(max(red, green, blue))
+        guard peak > 1 else { return cgImage }
+        return CGImageCreateCopyWithContentHeadroom(peak, cgImage) ?? cgImage
+    }
+
+    private func readLinearFloatPixel(_ image: CGImage) throws -> FloatPixel {
+        let colorSpace = try #require(
+            CGColorSpace(name: CGColorSpace.extendedLinearSRGB)
+        )
+        var components = [Float](repeating: 0, count: 4)
+        let context = CIContext(options: [
+            .workingColorSpace: colorSpace,
+            .outputColorSpace: colorSpace,
+            .cacheIntermediates: false
+        ])
+        context.render(
+            CIImage(cgImage: image),
+            toBitmap: &components,
+            rowBytes: MemoryLayout<Float>.size * 4,
+            bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+            format: .RGBAf,
+            colorSpace: colorSpace
+        )
+        return FloatPixel(
+            red: components[0],
+            green: components[1],
+            blue: components[2],
+            alpha: components[3]
+        )
     }
 
     private func readPixel(_ image: CGImage) throws -> Pixel {
@@ -247,6 +371,13 @@ struct AnalysisPixelViewRendererTests {
         let green: UInt8
         let blue: UInt8
         let alpha: UInt8
+    }
+
+    private struct FloatPixel {
+        let red: Float
+        let green: Float
+        let blue: Float
+        let alpha: Float
     }
 }
 

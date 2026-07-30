@@ -63,13 +63,29 @@ nonisolated enum AnalysisPixelViewRenderer {
             .outputColorSpace: outputColorSpace,
             .cacheIntermediates: false
         ])
-        let rendered = context.createCGImage(
+        // Keep HDR/16-bit preview headroom for channel and luminance inspection. An RGBA8
+        // destination clamps extended-linear values above reference white, which can hide the
+        // very highlight detail these views are intended to expose. Ordinary 8-bit SDR sources
+        // retain the smaller display-ready representation.
+        let renderFormat: CIFormat = source.bitsPerComponent > 8 ? .RGBAh : .RGBA8
+        guard let rendered = context.createCGImage(
             output,
             from: input.extent,
-            format: .RGBA8,
+            format: renderFormat,
             colorSpace: outputColorSpace
-        )
-        return Task.isCancelled ? nil : rendered
+        ) else {
+            return nil
+        }
+        let displayReady: CGImage
+        if #available(macOS 15.0, *), source.contentHeadroom > 1 {
+            displayReady = CGImageCreateCopyWithContentHeadroom(
+                source.contentHeadroom,
+                rendered
+            ) ?? rendered
+        } else {
+            displayReady = rendered
+        }
+        return Task.isCancelled ? nil : displayReady
     }
 
     private static func renderCompressionResidual(

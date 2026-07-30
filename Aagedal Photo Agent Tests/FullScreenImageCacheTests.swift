@@ -68,6 +68,59 @@ struct FullScreenImageCacheTests {
         return url
     }
 
+    /// Writes a non-square TIFF with an EXIF orientation tag so the same ImageIO path used by
+    /// Pixel Analysis can be checked through all eight display transforms.
+    private func makeTempOrientedTIFF(
+        width: Int = 120,
+        height: Int = 80,
+        orientation: Int
+    ) throws -> URL {
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            throw CocoaError(.featureUnsupported)
+        }
+        context.setFillColor(CGColor(red: 0.1, green: 0.2, blue: 0.3, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        context.setFillColor(CGColor(red: 0.9, green: 0.2, blue: 0.1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width / 3, height: height / 2))
+        guard let image = context.makeImage() else {
+            throw CocoaError(.featureUnsupported)
+        }
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fsic-oriented-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        let url = directory.appendingPathComponent("orientation-\(orientation).tiff")
+        guard let destination = CGImageDestinationCreateWithURL(
+            url as CFURL,
+            UTType.tiff.identifier as CFString,
+            1,
+            nil
+        ) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        CGImageDestinationAddImage(
+            destination,
+            image,
+            [kCGImagePropertyOrientation: orientation] as CFDictionary
+        )
+        guard CGImageDestinationFinalize(destination) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        return url
+    }
+
     @Test("Async embedded preview extraction resumes with an image")
     func asyncEmbeddedPreviewExtraction() async throws {
         let url = try makeTempMultiImageTIFF()
@@ -225,6 +278,106 @@ struct FullScreenImageCacheTests {
 
         let result = try #require(image)
         #expect(max(result.width, result.height) >= 250)
+    }
+
+    @Test("Analysis preview decode bakes all EXIF orientations into display geometry")
+    func analysisPreviewOrientationGeometry() throws {
+        for orientation in 1...8 {
+            let url = try makeTempOrientedTIFF(orientation: orientation)
+            defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+            let decoded = try #require(
+                FullScreenImageCache.loadDownsampledWithOrientation(
+                    from: url,
+                    maxPixelSize: 512
+                )
+            )
+            let expectedSize = orientation >= 5
+                ? (width: 80, height: 120)
+                : (width: 120, height: 80)
+
+            #expect(decoded.orientation == orientation)
+            #expect(decoded.image.width == expectedSize.width)
+            #expect(decoded.image.height == expectedSize.height)
+        }
+    }
+
+    @Test("Cropped analysis previews stay renderable through every EXIF orientation")
+    func croppedAnalysisPreviewsAcrossOrientations() async throws {
+        var settings = CameraRawSettings()
+        settings.crop = CameraRawCrop(
+            top: 0.2,
+            left: 0.25,
+            bottom: 0.8,
+            right: 0.75,
+            angle: 3,
+            hasCrop: true
+        )
+
+        for orientation in 1...8 {
+            let url = try makeTempOrientedTIFF(orientation: orientation)
+            defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+            let preview = try #require(
+                await FullScreenImageCache.decodedEditedPreview(
+                    for: url,
+                    settings: settings,
+                    orientation: orientation,
+                    screenMaxPx: 256
+                )
+            )
+            #expect(preview.width > 0)
+            #expect(preview.height > 0)
+
+            for mode in [
+                AnalysisPixelViewMode.red,
+                .luminance,
+                .compressionResidual
+            ] {
+                let derived = try #require(
+                    AnalysisPixelViewRenderer.render(preview, mode: mode)
+                )
+                #expect(derived.width == preview.width)
+                #expect(derived.height == preview.height)
+            }
+        }
+    }
+
+    @Test("Malformed sources fail closed across analysis preview loaders")
+    func malformedAnalysisSourceFailsClosed() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fsic-malformed-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("broken.jpg")
+        try Data([0xFF, 0xD8, 0xFF, 0xE1, 0x00, 0x40, 0x01]).write(
+            to: url,
+            options: .atomic
+        )
+
+        #expect(
+            FullScreenImageCache.loadDownsampled(
+                from: url,
+                maxPixelSize: 256
+            ) == nil
+        )
+        #expect(
+            FullScreenImageCache.loadHDRPreview(
+                from: url,
+                maxPixelSize: 256
+            ) == nil
+        )
+        #expect(
+            await FullScreenImageCache.decodedEditedPreview(
+                for: url,
+                settings: nil,
+                orientation: 1,
+                screenMaxPx: 256
+            ) == nil
+        )
     }
 
     @Test("Thumbnail service source-decodes cropped non-RAW images")
