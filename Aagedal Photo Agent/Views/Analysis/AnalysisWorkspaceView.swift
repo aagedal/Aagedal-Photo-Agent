@@ -10,6 +10,7 @@ struct AnalysisWorkspaceView: View {
     @State private var displayedScopeImage: CGImage?
     @State private var scopeSourceMode: AnalysisScopeSourceMode = .fullImage
     @State private var selectedScopeRegion: CGRect?
+    @State private var pixelViewMode: AnalysisPixelViewMode = .normal
 
     var body: some View {
         VStack(spacing: 0) {
@@ -30,6 +31,7 @@ struct AnalysisWorkspaceView: View {
             displayedScopeImage = nil
             selectedScopeRegion = nil
             scopeSourceMode = .fullImage
+            pixelViewMode = .normal
         }
         .onChange(of: model.displayPreference) {
             pixelInspectionSample = nil
@@ -274,9 +276,27 @@ struct AnalysisWorkspaceView: View {
                 }
             }
 
+            Picker("Pixel View", selection: $pixelViewMode) {
+                ForEach(AnalysisPixelViewMode.allCases, id: \.self) { mode in
+                    Text(mode.compactLabel)
+                        .tag(mode)
+                        .accessibilityLabel(mode.displayName)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(maxWidth: 430)
+            .help("Show the normal image, one linear-light channel, or relative luminance")
+
+            Text(pixelViewMode.methodLabel)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .accessibilityLabel("Pixel view method: \(pixelViewMode.methodLabel)")
+
             AnalysisSourceThumbnail(
                 url: model.sourceURL,
                 representation: model.displayPreference,
+                pixelViewMode: pixelViewMode,
                 developSettings: model.developSettings,
                 sourceOrientation: model.sourceOrientation,
                 displayTransform: model.displayTransform,
@@ -594,6 +614,7 @@ private extension String {
 private struct AnalysisSourceThumbnail: View {
     let url: URL?
     let representation: AnalysisSourceRepresentation
+    let pixelViewMode: AnalysisPixelViewMode
     let developSettings: CameraRawSettings?
     let sourceOrientation: Int
     let displayTransform: DisplayImageTransform?
@@ -729,7 +750,13 @@ private struct AnalysisSourceThumbnail: View {
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 6))
-        .task(id: PreviewIdentity(url: url, representation: representation)) {
+        .task(
+            id: PreviewIdentity(
+                url: url,
+                representation: representation,
+                pixelViewMode: pixelViewMode
+            )
+        ) {
             image = nil
             onImageLoaded(nil)
             guard let url else { return }
@@ -743,15 +770,24 @@ private struct AnalysisSourceThumbnail: View {
             } else {
                 loadedImage = await thumbnailService.loadThumbnail(for: url)
             }
-            guard !Task.isCancelled else { return }
-            image = loadedImage
-            onImageLoaded(
-                loadedImage?.cgImage(
-                    forProposedRect: nil,
-                    context: nil,
-                    hints: nil
-                )
-            )
+            guard !Task.isCancelled,
+                  let loadedImage,
+                  let source = loadedImage.cgImage(
+                      forProposedRect: nil,
+                      context: nil,
+                      hints: nil
+                  ) else {
+                return
+            }
+            let mode = pixelViewMode
+            let rendered = await Task.detached {
+                AnalysisPixelViewRenderer.render(source, mode: mode)
+            }.value
+            guard !Task.isCancelled, let rendered else { return }
+            image = mode == .normal
+                ? loadedImage
+                : NSImage(cgImage: rendered, size: loadedImage.size)
+            onImageLoaded(rendered)
         }
     }
 
@@ -784,6 +820,7 @@ private struct AnalysisSourceThumbnail: View {
 private struct PreviewIdentity: Hashable {
     let url: URL?
     let representation: AnalysisSourceRepresentation
+    let pixelViewMode: AnalysisPixelViewMode
 }
 
 private struct PixelInspectionCrosshair: View {

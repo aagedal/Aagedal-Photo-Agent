@@ -26,10 +26,17 @@
 - Committed scope selection only when the drag ends so superseded CPU renders do not accumulate.
 - Converted normalized selection bounds outward to stable integer pixel edges and cropped one
   shared `CGImage` input for all visible scope cards.
+- Added Normal, Red, Green, Blue, and Luminance view modes above the analysis image.
+- Evaluated the channel matrices in extended-linear sRGB, preserved alpha and image geometry,
+  and labeled the active method in the UI.
+- Fed the selected channel/luminance visualization to the existing scope and selected-region
+  paths while keeping findings and source facts bound to the selected original/developed
+  representation.
 
 This slice does not claim that the Analysis thumbnail is a true-pixel rendering. The reusable
-true-pixel crop utility currently continues to back Advanced Export; the full Analysis loupe and
-derived-view rendering arrive with the remaining Phase 3 views and cache work.
+true-pixel crop utility currently continues to back Advanced Export; the full Analysis loupe,
+compression/residual rendering, and bounded derived-view cache arrive with the remaining Phase 3
+work.
 
 ## Automated validation
 
@@ -99,11 +106,28 @@ existing scope request/rendering contract.
 The final combined run added `ImageInspectionGeometryTests` and passed 12 tests in 3 suites,
 including edge-clamped selection drags that begin over displayed pixels.
 
+Channel/luminance command:
+
+```sh
+xcodebuild test \
+  -scheme "Aagedal Photo Agent Tests" \
+  -destination "platform=macOS" \
+  -only-testing:"Aagedal Photo Agent Tests/AnalysisPixelViewRendererTests"
+```
+
+Result: 4 tests passed in 1 suite.
+
+Coverage includes identity-preserving normal output, grayscale channel isolation, alpha
+preservation, Rec. 709 relative-luminance primary ordering, output geometry, and explicit method
+labels.
+
 ## Manual validation remaining for the Phase 3 gate
 
 - Inspect hover alignment on the redistributable orientation/crop fixture corpus.
 - Compare HDR and SDR display behavior.
 - Verify alignment once normal and derived views are shown side by side.
+- Switch among Normal, R, G, B, and Luma and confirm every derived view remains aligned with the
+  crosshair, selected region, and scopes.
 - Resize the source/scope divider and every divider in the one/two/four-up layouts.
 - Switch each card among Waveform, RGBY Parade, Vectorscope, and Chromaticity and confirm the
   existing sidebar remains unchanged.
