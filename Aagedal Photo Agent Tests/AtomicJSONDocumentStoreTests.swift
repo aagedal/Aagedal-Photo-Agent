@@ -146,6 +146,37 @@ struct AtomicJSONDocumentStoreTests {
         #expect(try fixture.decode(at: fixture.documentURL).value == "replacement")
         #expect(try Data(contentsOf: fixture.backupURL) == backupBefore)
     }
+
+    @Test("a read-only destination preserves the last valid document")
+    func readOnlyDestinationPreservesPrimary() async throws {
+        let fixture = try StoreFixture()
+        defer { fixture.remove() }
+        let store = AtomicJSONDocumentStore<TestDocument>(documentURL: fixture.documentURL)
+        try await store.save(TestDocument(value: "keep me"))
+        let primaryBefore = try Data(contentsOf: fixture.documentURL)
+
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o555],
+            ofItemAtPath: fixture.directoryURL.path
+        )
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o755],
+                ofItemAtPath: fixture.directoryURL.path
+            )
+        }
+
+        await #expect(throws: CocoaError.self) {
+            try await store.save(TestDocument(value: "must fail"))
+        }
+
+        #expect(try Data(contentsOf: fixture.documentURL) == primaryBefore)
+        let siblings = try FileManager.default.contentsOfDirectory(
+            at: fixture.directoryURL,
+            includingPropertiesForKeys: nil
+        )
+        #expect(siblings.filter { $0.lastPathComponent.contains("staging-") }.isEmpty)
+    }
 }
 
 private struct TestDocument: VersionedJSONDocument, Equatable {

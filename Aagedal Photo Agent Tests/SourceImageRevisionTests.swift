@@ -114,6 +114,58 @@ struct SourceImageRevisionTests {
     }
 }
 
+@Suite("File system offline availability")
+struct FileSystemOfflineAvailabilityTests {
+    @Test("an offline iCloud item is deferred and its download is requested")
+    func defersOfflineItem() async throws {
+        let fixture = try OfflineFileFixture()
+        defer { fixture.remove() }
+        let onlineURL = try fixture.write("online.jpg", contents: "online")
+        let offlineURL = try fixture.write("offline.jpg", contents: "offline")
+        let requests = DownloadRequestProbe()
+        let service = FileSystemService(
+            isLocallyAvailable: {
+                $0.standardizedFileURL != offlineURL.standardizedFileURL
+            },
+            requestDownload: { requests.record($0) }
+        )
+
+        let result = try await service.scanFolderWithStatus(at: fixture.directoryURL)
+
+        #expect(result.deferredICloudItemCount == 1)
+        #expect(result.files.count == 2)
+        #expect(
+            result.files.first(where: {
+                $0.url.standardizedFileURL == onlineURL.standardizedFileURL
+            })?.isICloudDownloadPending == false
+        )
+        #expect(
+            result.files.first(where: {
+                $0.url.standardizedFileURL == offlineURL.standardizedFileURL
+            })?.isICloudDownloadPending == true
+        )
+        #expect(requests.urls.map(\.standardizedFileURL) == [offlineURL.standardizedFileURL])
+    }
+
+    @Test("an offline iCloud folder returns a deferred result without enumeration")
+    func defersOfflineRoot() async throws {
+        let fixture = try OfflineFileFixture()
+        defer { fixture.remove() }
+        _ = try fixture.write("unseen.jpg", contents: "unseen")
+        let requests = DownloadRequestProbe()
+        let service = FileSystemService(
+            isLocallyAvailable: { _ in false },
+            requestDownload: { requests.record($0) }
+        )
+
+        let result = try await service.scanFolderWithStatus(at: fixture.directoryURL)
+
+        #expect(result.files.isEmpty)
+        #expect(result.deferredICloudItemCount == 1)
+        #expect(requests.urls == [fixture.directoryURL])
+    }
+}
+
 private struct TemporaryFixture {
     let directoryURL: URL
     let fileURL: URL
@@ -129,6 +181,47 @@ private struct TemporaryFixture {
         try contents.write(to: fileURL)
         self.directoryURL = directoryURL
         self.fileURL = fileURL
+    }
+
+    func remove() {
+        try? FileManager.default.removeItem(at: directoryURL)
+    }
+}
+
+nonisolated private final class DownloadRequestProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recordedURLs: [URL] = []
+
+    var urls: [URL] {
+        lock.withLock { recordedURLs }
+    }
+
+    func record(_ url: URL) {
+        lock.withLock {
+            recordedURLs.append(url)
+        }
+    }
+}
+
+private struct OfflineFileFixture {
+    let directoryURL: URL
+
+    init() throws {
+        let temporaryDirectoryURL = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "apa-offline-files-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: temporaryDirectoryURL,
+            withIntermediateDirectories: false
+        )
+        directoryURL = temporaryDirectoryURL.resolvingSymlinksInPath().standardizedFileURL
+    }
+
+    func write(_ filename: String, contents: String) throws -> URL {
+        let url = directoryURL.appendingPathComponent(filename)
+        try Data(contents.utf8).write(to: url)
+        return url
     }
 
     func remove() {

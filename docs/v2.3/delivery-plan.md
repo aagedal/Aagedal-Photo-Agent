@@ -46,7 +46,7 @@ all coordinate round-trips pass.
 - [x] Add transform fixtures for crop/straighten and different aspect ratios.
 - [x] Audit security-scoped access and avoid repeat prompts.
 - [x] Add folder monitor filtering and invalidation for new hidden stores.
-- [ ] Add corruption, read-only, iCloud-offline, rename/move, and source-changed tests.
+- [x] Add corruption, read-only, iCloud-offline, rename/move, and source-changed tests.
 
 ## Phase 2 — analysis shell and source facts
 

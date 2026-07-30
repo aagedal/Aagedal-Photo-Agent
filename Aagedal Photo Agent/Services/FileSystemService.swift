@@ -8,6 +8,21 @@ struct FileSystemService: Sendable {
         var hasDeferredICloudItems: Bool { deferredICloudItemCount > 0 }
     }
 
+    private let isLocallyAvailable: @Sendable (URL) -> Bool
+    private let requestDownload: @Sendable (URL) -> Void
+
+    init(
+        isLocallyAvailable: @escaping @Sendable (URL) -> Bool = {
+            Self.systemIsLocallyAvailable($0)
+        },
+        requestDownload: @escaping @Sendable (URL) -> Void = {
+            try? FileManager.default.startDownloadingUbiquitousItem(at: $0)
+        }
+    ) {
+        self.isLocallyAvailable = isLocallyAvailable
+        self.requestDownload = requestDownload
+    }
+
     /// Scans a folder for image files. `nonisolated async` so the directory
     /// enumeration plus the per-file `stat` (in `ImageFile.init`) run on the
     /// cooperative pool rather than blocking the MainActor on folder open —
@@ -18,7 +33,7 @@ struct FileSystemService: Sendable {
     }
 
     nonisolated func scanFolderWithStatus(at url: URL, includeAllFiles: Bool = false) async throws -> FolderScanResult {
-        guard Self.isLocallyAvailableForEnumeration(url) else {
+        guard locallyAvailableForEnumeration(url) else {
             return FolderScanResult(files: [], deferredICloudItemCount: 1)
         }
 
@@ -38,7 +53,7 @@ struct FileSystemService: Sendable {
         var files: [ImageFile] = []
         files.reserveCapacity(contents.count)
         for item in contents {
-            if Self.isLocallyAvailableForEnumeration(item) {
+            if locallyAvailableForEnumeration(item) {
                 let isSupported = includeAllFiles
                     ? ((try? item.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true)
                     : SupportedImageFormats.isSupported(url: item)
@@ -57,7 +72,7 @@ struct FileSystemService: Sendable {
     }
 
     nonisolated func listSubfolders(at url: URL) throws -> [URL] {
-        guard Self.isLocallyAvailableForEnumeration(url) else { return [] }
+        guard locallyAvailableForEnumeration(url) else { return [] }
 
         let contents = try FileManager.default.contentsOfDirectory(
             at: url,
@@ -71,7 +86,7 @@ struct FileSystemService: Sendable {
 
         return contents
             .filter { item in
-                guard Self.isLocallyAvailableForEnumeration(item) else { return false }
+                guard locallyAvailableForEnumeration(item) else { return false }
                 let values = try? item.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey])
                 return values?.isDirectory == true && values?.isPackage != true
             }
@@ -81,14 +96,19 @@ struct FileSystemService: Sendable {
     /// Avoid synchronously materializing evicted iCloud files while scanning.
     /// Directory enumeration and basic `stat` calls can block on placeholders;
     /// request the download and skip them until iCloud has created a local copy.
-    nonisolated private static func isLocallyAvailableForEnumeration(_ url: URL) -> Bool {
+    nonisolated private func locallyAvailableForEnumeration(_ url: URL) -> Bool {
+        guard isLocallyAvailable(url) else {
+            requestDownload(url)
+            return false
+        }
+        return true
+    }
+
+    nonisolated private static func systemIsLocallyAvailable(_ url: URL) -> Bool {
         let fileManager = FileManager.default
         guard fileManager.isUbiquitousItem(at: url) else { return true }
 
         let values = try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey])
-        guard values?.ubiquitousItemDownloadingStatus == .notDownloaded else { return true }
-
-        try? fileManager.startDownloadingUbiquitousItem(at: url)
-        return false
+        return values?.ubiquitousItemDownloadingStatus != .notDownloaded
     }
 }
