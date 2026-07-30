@@ -45,7 +45,7 @@ all coordinate round-trips pass.
 - [x] Implement shared viewport state and view/image coordinate mapping.
 - [x] Add transform fixtures for crop/straighten and different aspect ratios.
 - [x] Audit security-scoped access and avoid repeat prompts.
-- [ ] Add folder monitor filtering and invalidation for new hidden stores.
+- [x] Add folder monitor filtering and invalidation for new hidden stores.
 - [ ] Add corruption, read-only, iCloud-offline, rename/move, and source-changed tests.
 
 ## Phase 2 — analysis shell and source facts

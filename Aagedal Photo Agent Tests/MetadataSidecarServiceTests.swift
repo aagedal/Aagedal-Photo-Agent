@@ -379,7 +379,7 @@ struct MetadataSidecarServiceTests {
         defer { try? FileManager.default.removeItem(at: folder) }
 
         let probe = FolderEventProbe()
-        let monitor = try #require(FolderChangeMonitor(url: folder) {
+        let monitor = try #require(FolderChangeMonitor(url: folder) { _ in
             Task { await probe.recordEvent() }
         })
         defer { monitor.cancel() }
@@ -392,6 +392,51 @@ struct MetadataSidecarServiceTests {
         try Data("{}".utf8).write(to: metadataFolder.appendingPathComponent("photo.jpg.meta.json"))
 
         #expect(await probe.waitForEvent())
+    }
+
+    @Test("folder change routing separates hidden 2.3 stores from browser content")
+    func folderChangeRouting() {
+        let root = URL(fileURLWithPath: "/tmp/photo-agent-routing", isDirectory: true)
+        let analysis = root.appendingPathComponent(
+            ".photo_analysis/cases/case.analysis.json"
+        )
+        let versions = root.appendingPathComponent(
+            ".photo_versions/catalogs/source.versions.json"
+        )
+        let metadata = root.appendingPathComponent(
+            ".photo_metadata/photo.jpg.meta.json"
+        )
+        let image = root.appendingPathComponent("photo.jpg")
+        let finderState = root.appendingPathComponent(".DS_Store")
+
+        #expect(impact(paths: [analysis], root: root) == .analysisStore)
+        #expect(impact(paths: [versions], root: root) == .versionStore)
+        #expect(impact(paths: [metadata], root: root) == .browserContent)
+        #expect(impact(paths: [image], root: root) == .browserContent)
+        #expect(impact(paths: [finderState], root: root).isEmpty)
+        #expect(
+            impact(paths: [analysis, versions, image], root: root) == .all
+        )
+    }
+
+    @Test("dropped folder events conservatively invalidate every store")
+    func droppedFolderEventsInvalidateEverything() {
+        let root = URL(fileURLWithPath: "/tmp/photo-agent-routing", isDirectory: true)
+        let batch = FolderChangeBatch(paths: [], requiresFullRescan: true)
+
+        #expect(
+            BrowserFolderChangeImpact.classify(batch, monitoredRoot: root) == .all
+        )
+    }
+
+    private func impact(
+        paths: Set<URL>,
+        root: URL
+    ) -> BrowserFolderChangeImpact {
+        BrowserFolderChangeImpact.classify(
+            FolderChangeBatch(paths: paths, requiresFullRescan: false),
+            monitoredRoot: root
+        )
     }
 
     // MARK: - Unicode / Special Characters

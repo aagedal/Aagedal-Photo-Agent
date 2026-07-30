@@ -316,7 +316,8 @@ Before implementation completes, review:
 - `ContentView` navigation and toolbar branching;
 - `BrowserPanesModel` active-pane ownership;
 - `BrowserViewModel` selection/order and file operations;
-- folder change monitor exclusions/invalidation;
+- folder change monitor exclusions/invalidation (`analysisStoreDidChange` and
+  `versionStoreDidChange` route hidden-store writes without forcing an image-folder diff);
 - recent/favorite/security-scoped folder handling;
 - metadata sidecar reconciliation;
 - XMP read/write and unknown correction preservation;

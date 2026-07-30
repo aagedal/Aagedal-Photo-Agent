@@ -81,9 +81,13 @@ final class BrowserAutoRefreshCoordinator {
 
         for (paneID, folderURL) in desired where monitoredURLs[paneID] != folderURL {
             monitoredURLs[paneID] = folderURL
-            monitors[paneID] = FolderChangeMonitor(url: folderURL) { [weak self] in
+            monitors[paneID] = FolderChangeMonitor(url: folderURL) { [weak self] batch in
                 Task { @MainActor [weak self] in
-                    self?.filesystemDidChange(paneID: paneID, folderURL: folderURL)
+                    self?.filesystemDidChange(
+                        batch,
+                        paneID: paneID,
+                        folderURL: folderURL
+                    )
                 }
             }
             if monitors[paneID] == nil {
@@ -96,9 +100,29 @@ final class BrowserAutoRefreshCoordinator {
         panes.layout.usesSecondPane ? panes.panes : [panes.active]
     }
 
-    private func filesystemDidChange(paneID: ObjectIdentifier, folderURL: URL) {
+    private func filesystemDidChange(
+        _ batch: FolderChangeBatch,
+        paneID: ObjectIdentifier,
+        folderURL: URL
+    ) {
         guard monitoredURLs[paneID] == folderURL else { return }
-        scheduleRefresh(paneID: paneID, folderURL: folderURL, delay: debounceDuration)
+        let impact = BrowserFolderChangeImpact.classify(
+            batch,
+            monitoredRoot: folderURL
+        )
+        let change = HiddenFolderStoreChange(
+            folderURL: folderURL,
+            changedPaths: batch.paths
+        )
+        if impact.contains(.analysisStore) {
+            NotificationCenter.default.post(name: .analysisStoreDidChange, object: change)
+        }
+        if impact.contains(.versionStore) {
+            NotificationCenter.default.post(name: .versionStoreDidChange, object: change)
+        }
+        if impact.contains(.browserContent) {
+            scheduleRefresh(paneID: paneID, folderURL: folderURL, delay: debounceDuration)
+        }
     }
 
     private func scheduleRefresh(
