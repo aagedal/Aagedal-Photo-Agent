@@ -32,6 +32,8 @@
   checkmarks are shown only while the thumbnail browser is active.
 
 ## Other improvements
+- [ ] In full-screen help or loading guidance, suggest turning off edit previews when
+  faster high-resolution loading matters more than previewing the current Develop edits.
 - [x] **Increase Develop preview zoom to 4000%.** (2026-07-26)
   Magnify gestures, scroll-wheel zoom, and the cursor-anchored 100% toggle now share
   the same 4000% upper bound as the full-screen viewer.

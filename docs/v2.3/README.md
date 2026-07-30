@@ -1,12 +1,12 @@
 # Aagedal Photo Agent 2.3 — release plan
 
-**Status:** initial planning baseline
+**Status:** implementation in progress
 
 **Plan date:** 2026-07-26
 
 **Target platform:** macOS 26, Apple Silicon
 
-**Implementation status:** Phase 1 foundation started
+**Implementation status:** Phase 1 source identity and atomic JSON persistence implemented
 
 Version 2.3 is a broad investigation and review release. It adds three connected
 capabilities:
@@ -17,7 +17,7 @@ capabilities:
    representations.
 
 This directory converts the short backlog in `TODO.md` into an implementation-ready
-release plan. It does not change the 2.3 backlog or application code.
+release plan and tracks progress as the application code is built.
 
 ## Product intent
 

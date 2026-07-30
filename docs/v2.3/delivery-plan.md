@@ -39,8 +39,8 @@ all coordinate round-trips pass.
 
 - [x] Implement `SourceImageRevision` and cancellable streaming SHA-256.
 - [ ] Add source discovery/reassociation by resource ID and hash.
-- [ ] Implement versioned atomic JSON document storage with bounded backup.
-- [ ] Define unknown/newer schema behavior.
+- [x] Implement versioned atomic JSON document storage with bounded backup.
+- [x] Define unknown/newer schema behavior.
 - [ ] Implement normalized display/source pixel transforms for all EXIF orientations.
 - [ ] Implement shared viewport state and view/image coordinate mapping.
 - [ ] Add transform fixtures for crop/straighten and different aspect ratios.

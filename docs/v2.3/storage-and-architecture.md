@@ -265,6 +265,11 @@ Never overwrite the only valid case/catalog before the replacement is verified.
 - Every top-level JSON document has a schema version.
 - Migrations are pure and tested from every shipped schema.
 - A newer unsupported schema opens read-only; do not rewrite it with an older schema.
+- The shared store returns the complete bytes of a newer schema for that read-only path and rejects
+  every attempted save until a compatible reader is available.
+- Writers must bump the schema when adding fields that an older build cannot safely round-trip.
+  The default decoder accepts only its current schema; each feature must opt into and test older
+  schema migration explicitly.
 - Preserve the pre-migration file until the migrated file validates.
 - Settings payload migrations are separate from catalog migrations.
 
