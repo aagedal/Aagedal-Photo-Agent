@@ -6,9 +6,10 @@
 
 **Target platform:** macOS 26, Apple Silicon
 
-**Implementation status:** Phase 1 complete; Phase 2 analysis navigation, persistent case owner,
-Pixel Analysis / OSINT shell, source-change validation, and original/developed preview selection
-implemented
+**Implementation status:** Phases 1 and 2 complete; the Image Analysis workspace now includes
+persistent cancellable analyzer runs, exact cache reuse, source facts, namespace-preserving raw
+metadata, separate C2PA validity/trust states, neutral consistency findings, and report inclusion
+controls
 
 Version 2.3 is a broad investigation and review release. It adds three connected
 capabilities:

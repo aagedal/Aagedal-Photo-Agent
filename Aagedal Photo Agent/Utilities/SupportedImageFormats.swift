@@ -45,7 +45,7 @@ enum SupportedImageFormats {
         "dng", "rw2", "orf", "pef", "srw", "raw",
     ]
 
-    static let jpegExtensions: Set<String> = [
+    nonisolated static let jpegExtensions: Set<String> = [
         "jpg", "jpeg",
     ]
 
@@ -68,7 +68,7 @@ enum SupportedImageFormats {
     /// transfer curve used by directly encoded HDR images (PQ or HLG) and the ISO /
     /// legacy Apple auxiliary gain-map channels.
     /// All checks inspect container metadata only; primary image pixels are not decoded.
-    static func isHDR(url: URL) -> Bool {
+    nonisolated static func isHDR(url: URL) -> Bool {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return false }
 
         let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any]
@@ -104,7 +104,7 @@ enum SupportedImageFormats {
     }
 
     /// Quick container-only preflight for Adaptive HDR and legacy Apple gain maps.
-    private static func hasGainMapContainerHint(url: URL) -> Bool {
+    nonisolated private static func hasGainMapContainerHint(url: URL) -> Bool {
         let fileExtension = url.pathExtension.lowercased()
         let isJPEGContainer = jpegExtensions.contains(fileExtension)
         guard isJPEGContainer || fileExtension == "heic" || fileExtension == "heif" else {

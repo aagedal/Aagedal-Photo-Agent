@@ -9,6 +9,12 @@
 - Creating and reopening a case does not change the source bytes or create an XMP sidecar.
 - Multi-selection entry follows the last-clicked supported image.
 - Entry is unavailable without a selected supported image.
+- Analyzer cache identity includes source SHA-256, analyzer ID/version, and sorted parameters.
+- Runner cancellation is published as state rather than as an evidence finding.
+- Existing schema-1 shell cases migrate to schema 2 with an empty analyzer cache.
+- Raw values from conflicting metadata namespaces remain separate evidence entries.
+- C2PA cryptographic validity and signer trust remain separate states.
+- Running source-facts analysis leaves source bytes and the folder's sidecar set unchanged.
 
 ## Manual validation
 
@@ -26,9 +32,18 @@
 7. Use the Close button and Escape key and confirm focus returns to the browser grid.
 8. With VoiceOver enabled, confirm the workspace, mode selector, representation selector, source
    hash, source-change warning, and close action have understandable labels.
+9. Confirm **Source Facts** shows container, dimensions, capture fields, C2PA validity/trust, and
+   raw metadata while analysis is running or complete.
+10. Cancel the analyzer, confirm the cancelled state offers **Run Again**, then rerun it and confirm
+    progress reaches completion.
+11. Select findings of each available severity and confirm the plain-language observation,
+    technical detail, alternatives/limitations, analyzer version, and report-inclusion toggle are
+    understandable.
+12. Reopen the unchanged image and confirm the completed source-facts result appears without rerun.
 
-## Current slice boundary
+## Phase 2 boundary
 
-The source preview, case lifecycle, navigation, and integrity banner are functional. Source facts,
-finding details, analyzer progress/cancellation, provenance, and metadata rules are the next Phase 2
-slice and are intentionally represented by empty-state panels here.
+The source preview, case lifecycle, navigation, integrity banner, fast analyzer runner, source
+facts, raw metadata evidence, C2PA state, metadata consistency findings, and finding detail are
+functional. Pixel-derived views, larger scopes, linked hover inspection, and derived-view caching
+begin in Phase 3.

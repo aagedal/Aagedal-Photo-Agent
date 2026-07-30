@@ -17,11 +17,21 @@ final class AnalysisWorkspaceModel {
     private(set) var hasDevelopedRepresentation = false
     private(set) var developSettings: CameraRawSettings?
     private(set) var sourceOrientation = 1
+    let analysisRunner: AnalysisRunner
 
     @ObservationIgnored private var repository: AnalysisCaseRepository?
     @ObservationIgnored private var openedImage: ImageFile?
     @ObservationIgnored private var loadTask: Task<Void, Never>?
     @ObservationIgnored private var saveTask: Task<Void, Never>?
+    @ObservationIgnored private let analyzers: [any AnalysisAnalyzer]
+
+    init(analyzers: [any AnalysisAnalyzer]? = nil) {
+        analysisRunner = AnalysisRunner()
+        self.analyzers = analyzers ?? [SourceFactsAnalyzer()]
+        analysisRunner.onPersistableRunChanged = { [weak self] run in
+            self?.persistAnalyzerRun(run)
+        }
+    }
 
     var workspaceMode: AnalysisWorkspaceMode {
         analysisCase?.workspaceMode ?? .pixelAnalysis
@@ -30,6 +40,29 @@ final class AnalysisWorkspaceModel {
     var displayPreference: AnalysisSourceRepresentation {
         guard hasDevelopedRepresentation else { return .original }
         return analysisCase?.displayPreference ?? .original
+    }
+
+    var sourceFactsRun: AnalysisAnalyzerRun? {
+        analysisRunner.runs.first { $0.analyzerID == SourceFactsAnalyzer.analyzerIdentifier }
+    }
+
+    var sourceFacts: AnalysisSourceFacts? {
+        sourceFactsRun?.output?.sourceFacts
+    }
+
+    var findings: [AnalysisFinding] {
+        analysisRunner.runs
+            .flatMap { $0.output?.findings ?? [] }
+            .sorted {
+                if $0.severity != $1.severity {
+                    return Self.severityRank($0.severity) > Self.severityRank($1.severity)
+                }
+                return $0.title < $1.title
+            }
+    }
+
+    var rawMetadata: [AnalysisRawMetadataEntry] {
+        analysisRunner.runs.flatMap { $0.output?.rawMetadata ?? [] }
     }
 
     deinit {
@@ -50,6 +83,7 @@ final class AnalysisWorkspaceModel {
         analysisCase = nil
         currentRevision = nil
         sourceChanged = false
+        analysisRunner.configure(existingRuns: [])
 
         let url = image.url
         let orientation = image.exifOrientation
@@ -75,15 +109,18 @@ final class AnalysisWorkspaceModel {
                 case .exact(let existing):
                     self.analysisCase = existing
                     self.sourceChanged = false
+                    self.configureAnalysis(for: existing, autoStart: true)
                 case .sourceChanged(let existing):
                     self.analysisCase = existing
                     self.sourceChanged = true
+                    self.configureAnalysis(for: existing, autoStart: false)
                 case .none:
                     let newCase = AnalysisCase.create(for: revision)
                     try await repository.save(newCase)
                     try Task.checkCancellation()
                     self.analysisCase = newCase
                     self.sourceChanged = false
+                    self.configureAnalysis(for: newCase, autoStart: true)
                 }
                 self.loadState = .ready
             } catch is CancellationError {
@@ -112,12 +149,14 @@ final class AnalysisWorkspaceModel {
         analysisCase = newCase
         sourceChanged = false
         loadState = .loading
+        analysisRunner.configure(existingRuns: [])
 
         saveTask = Task { [weak self] in
             do {
                 try await repository.save(newCase)
                 try Task.checkCancellation()
                 guard let self, self.analysisCase?.id == newCase.id else { return }
+                self.configureAnalysis(for: newCase, autoStart: true)
                 self.loadState = .ready
             } catch is CancellationError {
                 return
@@ -143,6 +182,44 @@ final class AnalysisWorkspaceModel {
         persist(updatedCase)
     }
 
+    func cancelAnalyzer(_ analyzerID: String) {
+        analysisRunner.cancel(analyzerID: analyzerID)
+    }
+
+    func retryAnalyzer(_ analyzerID: String) {
+        guard !sourceChanged,
+              let analyzer = analyzers.first(where: { $0.identifier == analyzerID }),
+              let context = analyzerContext else { return }
+        analysisRunner.start(analyzer, context: context)
+    }
+
+    func setFindingIncluded(_ findingID: String, included: Bool) {
+        analysisRunner.setFindingIncluded(findingID, included: included)
+    }
+
+    private var analyzerContext: AnalysisAnalyzerContext? {
+        guard let sourceURL, let currentRevision else { return nil }
+        return AnalysisAnalyzerContext(
+            sourceURL: sourceURL,
+            sourceRevision: currentRevision
+        )
+    }
+
+    private func configureAnalysis(for analysisCase: AnalysisCase, autoStart: Bool) {
+        analysisRunner.configure(existingRuns: analysisCase.analyzerRuns)
+        guard autoStart, let context = analyzerContext else { return }
+        for analyzer in analyzers where analyzer.cost == .fast {
+            analysisRunner.start(analyzer, context: context)
+        }
+    }
+
+    private func persistAnalyzerRun(_ run: AnalysisAnalyzerRun) {
+        guard var updatedCase = analysisCase,
+              !sourceChanged else { return }
+        updatedCase.setAnalyzerRun(run)
+        persist(updatedCase)
+    }
+
     private func persist(_ updatedCase: AnalysisCase) {
         analysisCase = updatedCase
         guard let repository else { return }
@@ -157,6 +234,14 @@ final class AnalysisWorkspaceModel {
                 guard let self, self.analysisCase?.id == updatedCase.id else { return }
                 self.loadState = .failed(error.localizedDescription)
             }
+        }
+    }
+
+    private static func severityRank(_ severity: AnalysisFindingSeverity) -> Int {
+        switch severity {
+        case .informational: 0
+        case .notable: 1
+        case .caution: 2
         }
     }
 }

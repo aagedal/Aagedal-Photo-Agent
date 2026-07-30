@@ -5,6 +5,7 @@ struct AnalysisWorkspaceView: View {
     @Bindable var model: AnalysisWorkspaceModel
     let thumbnailService: ThumbnailService
     let onClose: () -> Void
+    @State private var selectedFindingID: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -130,8 +131,8 @@ struct AnalysisWorkspaceView: View {
                 .frame(minWidth: 190, idealWidth: 230, maxWidth: 300)
             sourcePreview
                 .frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
-            detailPlaceholder
-                .frame(minWidth: 220, idealWidth: 280, maxWidth: 360)
+            analysisDetail
+                .frame(minWidth: 260, idealWidth: 330, maxWidth: 430)
         }
     }
 
@@ -168,15 +169,57 @@ struct AnalysisWorkspaceView: View {
                     Text(analysisCase.title)
                         .font(.headline)
                         .lineLimit(2)
-                    Label("Source", systemImage: "checkmark.shield")
-                    Label("Provenance", systemImage: "seal")
-                    Label("Metadata", systemImage: "list.bullet.rectangle")
-                    Label("Encoding", systemImage: "shippingbox")
-                    Label("Pixels", systemImage: "square.grid.3x3")
-                    Label("Limitations", systemImage: "info.circle")
                 }
 
                 Divider()
+
+                Button {
+                    selectedFindingID = nil
+                } label: {
+                    HStack {
+                        Label("Source Facts", systemImage: "checkmark.shield")
+                        Spacer()
+                        analyzerStatusAccessory
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .padding(.vertical, 4)
+                .accessibilityLabel("Source Facts")
+
+                if !model.findings.isEmpty {
+                    Text("FINDINGS")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 6)
+
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 3) {
+                            ForEach(model.findings) { finding in
+                                Button {
+                                    selectedFindingID = finding.id
+                                } label: {
+                                    HStack(alignment: .top, spacing: 7) {
+                                        Image(systemName: severityIcon(finding.severity))
+                                            .foregroundStyle(severityColor(finding.severity))
+                                            .frame(width: 14)
+                                        Text(finding.title)
+                                            .lineLimit(2)
+                                            .multilineTextAlignment(.leading)
+                                        Spacer(minLength: 0)
+                                    }
+                                    .contentShape(Rectangle())
+                                    .padding(.vertical, 4)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel(
+                                    "\(finding.severity.rawValue) finding: \(finding.title)"
+                                )
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 260)
+                }
 
                 Text("SHA-256")
                     .font(.caption.weight(.semibold))
@@ -220,13 +263,300 @@ struct AnalysisWorkspaceView: View {
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
-    private var detailPlaceholder: some View {
-        ContentUnavailableView(
-            "No Finding Selected",
-            systemImage: "doc.text.magnifyingglass",
-            description: Text("Source facts and evidence findings arrive in the next analyzer slice.")
-        )
-        .padding()
+    @ViewBuilder
+    private var analysisDetail: some View {
+        if let selectedFindingID,
+           let finding = model.findings.first(where: { $0.id == selectedFindingID }) {
+            FindingDetailView(finding: finding) { included in
+                model.setFindingIncluded(finding.id, included: included)
+            }
+        } else {
+            SourceFactsDetailView(
+                facts: model.sourceFacts,
+                rawMetadata: model.rawMetadata,
+                run: model.sourceFactsRun,
+                onCancel: {
+                    if let id = model.sourceFactsRun?.analyzerID {
+                        model.cancelAnalyzer(id)
+                    }
+                },
+                onRetry: {
+                    if let id = model.sourceFactsRun?.analyzerID {
+                        model.retryAnalyzer(id)
+                    }
+                }
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var analyzerStatusAccessory: some View {
+        if let run = model.sourceFactsRun {
+            switch run.status {
+            case .queued, .running:
+                ProgressView(value: run.progress)
+                    .controlSize(.small)
+                    .frame(width: 42)
+            case .completed:
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            case .cancelled:
+                Image(systemName: "stop.circle")
+                    .foregroundStyle(.secondary)
+            case .failed:
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+            }
+        }
+    }
+
+    private func severityIcon(_ severity: AnalysisFindingSeverity) -> String {
+        switch severity {
+        case .informational: "info.circle"
+        case .notable: "exclamationmark.circle"
+        case .caution: "exclamationmark.triangle.fill"
+        }
+    }
+
+    private func severityColor(_ severity: AnalysisFindingSeverity) -> Color {
+        switch severity {
+        case .informational: .secondary
+        case .notable: .yellow
+        case .caution: .orange
+        }
+    }
+}
+
+private struct SourceFactsDetailView: View {
+    let facts: AnalysisSourceFacts?
+    let rawMetadata: [AnalysisRawMetadataEntry]
+    let run: AnalysisAnalyzerRun?
+    let onCancel: () -> Void
+    let onRetry: () -> Void
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Label("Source Facts", systemImage: "checkmark.shield")
+                    .font(.headline)
+
+                if let run, run.status == .queued || run.status == .running {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ProgressView(value: run.progress)
+                        HStack {
+                            Text("Reading source evidence…")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button("Cancel", action: onCancel)
+                        }
+                    }
+                } else if let run, run.status == .failed || run.status == .cancelled {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(run.errorMessage ?? "Analysis was cancelled.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                        Button("Run Again", action: onRetry)
+                    }
+                }
+
+                if let facts {
+                    factSection("FILE") {
+                        factRow("Name", facts.filename)
+                        factRow("Bytes", ByteCountFormatter.string(
+                            fromByteCount: facts.byteCount,
+                            countStyle: .file
+                        ))
+                        factRow("Container", facts.detectedMIMEType ?? facts.detectedTypeIdentifier ?? "Unknown")
+                        factRow(
+                            "Dimensions",
+                            dimensions(width: facts.pixelWidth, height: facts.pixelHeight)
+                        )
+                        factRow("Bit depth", facts.bitDepth.map(String.init))
+                        factRow("Color", facts.colorProfile)
+                        factRow("Frames", String(facts.frameCount))
+                        factRow("HDR", facts.isHDR ? "Detected" : "Not detected")
+                    }
+
+                    factSection("CAPTURE") {
+                        factRow("Camera", facts.camera)
+                        factRow("Lens", facts.lens)
+                        factRow("Capture time", facts.captureDate)
+                        factRow("Exposure", exposureSummary(facts))
+                        factRow("Software", facts.software)
+                        if let latitude = facts.latitude, let longitude = facts.longitude {
+                            factRow(
+                                "GPS",
+                                String(format: "%.6f, %.6f", latitude, longitude)
+                            )
+                        }
+                    }
+
+                    factSection("PROVENANCE") {
+                        factRow("C2PA present", facts.c2pa.isPresent ? "Yes" : "No")
+                        factRow("C2PA validity", facts.c2pa.validity.rawValue.capitalized)
+                        factRow("Signer trust", displayTrust(facts.c2pa.trust))
+                        factRow("Digital source", facts.digitalSourceType?.displayName)
+                        factRow("XMP sidecar", facts.sidecarPath)
+                    }
+
+                    DisclosureGroup("Raw metadata (\(rawMetadata.count))") {
+                        LazyVStack(alignment: .leading, spacing: 8) {
+                            ForEach(rawMetadata) { entry in
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("\(entry.namespace) · \(entry.key)")
+                                        .font(.caption.weight(.semibold))
+                                    Text(entry.value)
+                                        .font(.system(.caption2, design: .monospaced))
+                                        .foregroundStyle(.secondary)
+                                        .textSelection(.enabled)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                        .padding(.top, 8)
+                    }
+                } else if run == nil {
+                    ContentUnavailableView(
+                        "Source Facts Unavailable",
+                        systemImage: "doc.text.magnifyingglass"
+                    )
+                }
+            }
+            .padding(14)
+        }
+        .accessibilityLabel("Source facts and raw metadata")
+    }
+
+    private func factSection<Content: View>(
+        _ title: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            content()
+        }
+    }
+
+    @ViewBuilder
+    private func factRow(_ label: String, _ value: String?) -> some View {
+        if let value, !value.isEmpty {
+            HStack(alignment: .firstTextBaseline) {
+                Text(label)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 8)
+                Text(value)
+                    .multilineTextAlignment(.trailing)
+                    .textSelection(.enabled)
+            }
+            .font(.caption)
+        }
+    }
+
+    private func dimensions(width: Int?, height: Int?) -> String? {
+        guard let width, let height else { return nil }
+        return "\(width) × \(height)"
+    }
+
+    private func exposureSummary(_ facts: AnalysisSourceFacts) -> String? {
+        let values = [facts.focalLength, facts.aperture, facts.shutterSpeed, facts.iso.map { "ISO \($0)" }]
+            .compactMap { $0 }
+        return values.isEmpty ? nil : values.joined(separator: " · ")
+    }
+
+    private func displayTrust(_ trust: C2PATrustState) -> String {
+        switch trust {
+        case .trusted: "Trusted"
+        case .untrusted: "Not trusted"
+        case .notConfigured: "Trust list unavailable"
+        case .notApplicable: "Not applicable"
+        case .unknown: "Unknown"
+        }
+    }
+}
+
+private struct FindingDetailView: View {
+    let finding: AnalysisFinding
+    let onReportInclusionChanged: (Bool) -> Void
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text(finding.title)
+                    .font(.headline)
+
+                HStack {
+                    Label(finding.severity.rawValue.capitalized, systemImage: "circle.fill")
+                    Text(finding.evidenceClass.rawValue.displayCase)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+                detailSection("WHAT WAS OBSERVED", finding.explanation)
+                detailSection("TECHNICAL DETAIL", finding.technicalDetail, monospaced: true)
+
+                if !finding.alternatives.isEmpty {
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text("ALTERNATIVES AND LIMITATIONS")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        ForEach(finding.alternatives, id: \.self) { alternative in
+                            Label(alternative, systemImage: "arrow.turn.down.right")
+                                .font(.callout)
+                        }
+                    }
+                }
+
+                Divider()
+                Toggle(
+                    "Include in report",
+                    isOn: Binding(
+                        get: { finding.includeInReport },
+                        set: { included in
+                            onReportInclusionChanged(included)
+                        }
+                    )
+                )
+                .help("Controls this finding's inclusion in a future analysis report")
+
+                Text("Analyzer \(finding.analyzerID) v\(finding.analyzerVersion) · \(finding.sourceRepresentation.rawValue.displayCase)")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .textSelection(.enabled)
+            }
+            .padding(14)
+        }
+        .accessibilityLabel("Finding detail: \(finding.title)")
+    }
+
+    private func detailSection(
+        _ title: String,
+        _ value: String,
+        monospaced: Bool = false
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(monospaced ? .system(.callout, design: .monospaced) : .callout)
+                .textSelection(.enabled)
+        }
+    }
+}
+
+private extension String {
+    var displayCase: String {
+        unicodeScalars.reduce(into: "") { result, scalar in
+            if CharacterSet.uppercaseLetters.contains(scalar), !result.isEmpty {
+                result.append(" ")
+            }
+            result.unicodeScalars.append(scalar)
+        }
+        .replacingOccurrences(of: "_", with: " ")
+        .capitalized
     }
 }
 

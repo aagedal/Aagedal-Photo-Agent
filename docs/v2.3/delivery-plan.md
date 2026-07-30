@@ -58,12 +58,12 @@ modifies the source.
 - [x] Add Pixel Analysis / OSINT mode selector.
 - [x] Implement source revision validation and stale-case banner.
 - [x] Add original/developed representation selector with explicit labels.
-- [ ] Implement analyzer runner states, progress, cancellation, and cache keys.
-- [ ] Add source facts and raw metadata/provenance analyzer.
-- [ ] Integrate C2PA validation states without collapsing validity and trust.
-- [ ] Add metadata consistency rule engine and initial rule set.
-- [ ] Add plain-language finding detail, technical detail, alternatives, and report inclusion.
-- [ ] Verify no metadata/source writes with file-system observation tests.
+- [x] Implement analyzer runner states, progress, cancellation, and cache keys.
+- [x] Add source facts and raw metadata/provenance analyzer.
+- [x] Integrate C2PA validation states without collapsing validity and trust.
+- [x] Add metadata consistency rule engine and initial rule set.
+- [x] Add plain-language finding detail, technical detail, alternatives, and report inclusion.
+- [x] Verify no metadata/source writes with file-system observation tests.
 
 ## Phase 3 — pixel views, scopes, and hover inspection
 
