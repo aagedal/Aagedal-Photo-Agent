@@ -8,30 +8,36 @@
         <description>Updates for Aagedal Photo Agent</description>
         <language>en</language>
 
-        <!--
-            Append a new <item> to the top of this channel for every release.
-            Replace placeholders with values from `sign_update <dmg-path>`:
+        <!-- New release items are inserted here by scripts/release.sh. -->
 
         <item>
-            <title>Version X.Y.Z</title>
-            <pubDate>Mon, 01 Jan 2026 12:00:00 +0100</pubDate>
-            <sparkle:version>BUILD_NUMBER</sparkle:version>
-            <sparkle:shortVersionString>X.Y.Z</sparkle:shortVersionString>
+            <title>Version 2.2.0</title>
+            <pubDate>Thu, 30 Jul 2026 20:30:39 +0200</pubDate>
+            <sparkle:version>428</sparkle:version>
+            <sparkle:shortVersionString>2.2.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <description><![CDATA[
                 <ul>
-                    <li>Release notes go here.</li>
+                    <li>Added a Film Emulation section with Grain, Halation, Bloom, Vignette, and Edge Blur, rendered on the GPU and carried through scopes, templates, and export.</li>
+                    <li>Made the Develop inspector configurable: hide individual sliders, reorder whole sections, and manage it all from a dedicated Develop Sliders settings tab.</li>
+                    <li>Made the metadata editor's IPTC field list configurable and added Sublocation, Province/State, Instructions, and Source.</li>
+                    <li>Added an Advanced Export workflow with full-resolution encoded previews and independent SDR and HDR format, quality, gamut, TIFF compression, and destination controls.</li>
+                    <li>Added Adaptive HDR JPEG gain-map export and a dedicated 16-bit Rec. 2020 PQ JPEG XL conversion workflow for RAW files.</li>
+                    <li>Added global Sharpness, Clarity, and Dehaze controls, with consistent Develop preview, scopes, export, XMP, template, and copy/paste support.</li>
+                    <li>Reworked Import around a clearer import name, primary destination, and optional additional copy, with advanced settings collapsed into a concise summary.</li>
+                    <li>Added existing same-date folder suggestions and stronger duplicate detection that checks destination files by name, size, and a quick content checksum.</li>
+                    <li>Face scans now continue in the background while navigating between folders, with live progress, cancellation, and completed-scan history in Activity.</li>
+                    <li>Improved cropped-image sharpness, full-screen and RAW loading responsiveness, file-operation safety, deletion feedback, and CIE chromaticity scope accuracy.</li>
                 </ul>
             ]]></description>
             <enclosure
-                url="https://aagedal.me/apps/Aagedal-Photo-Agent-X.Y.Z.dmg"
-                sparkle:version="BUILD_NUMBER"
-                sparkle:shortVersionString="X.Y.Z"
-                sparkle:edSignature="ED_SIGNATURE_FROM_SIGN_UPDATE"
-                length="LENGTH_FROM_SIGN_UPDATE"
+                url="https://aagedal.me/apps/photoagent/Aagedal-Photo-Agent-2.2.0.dmg"
+                sparkle:version="428"
+                sparkle:shortVersionString="2.2.0"
+                sparkle:edSignature="D34BqYZqYnjYn7hwClNC2NnrXK0moVTGCMyxeYqsT38bTWCgR0u0UkmaJR9VBSL8Gh916cz6C7kU/ZkQ6sjBDw=="
+                length="163589781"
                 type="application/octet-stream" />
         </item>
-        -->
 
         <item>
             <title>Version 2.1.2</title>
@@ -49,7 +55,7 @@
                 </ul>
             ]]></description>
             <enclosure
-                url="https://aagedal.me/apps/Aagedal-Photo-Agent-2.1.2.dmg"
+                url="https://aagedal.me/apps/photoagent/Aagedal-Photo-Agent-2.1.2.dmg"
                 sparkle:version="421"
                 sparkle:shortVersionString="2.1.2"
                 sparkle:edSignature="BGoC28z3ryYivjz1c831Hr6uZ2XtqyaSk568SCfCeVisaer/M23hMaqUQHdzmrmgrXjQP2kmXXfcHi4syQ7NBw=="
@@ -71,7 +77,7 @@
                 </ul>
             ]]></description>
             <enclosure
-                url="https://aagedal.me/apps/Aagedal-Photo-Agent-2.1.1.dmg"
+                url="https://aagedal.me/apps/photoagent/Aagedal-Photo-Agent-2.1.1.dmg"
                 sparkle:version="420"
                 sparkle:shortVersionString="2.1.1"
                 sparkle:edSignature="2mAfyoC83nM18v78U45ixe2G+R+II4lCl3N3ls5soAeA+qR/8OUPjtmlSwDPmg7vCqdFztkBAPvJ5fCgA5e3DQ=="
@@ -96,7 +102,7 @@
                 </ul>
             ]]></description>
             <enclosure
-                url="https://aagedal.me/apps/Aagedal-Photo-Agent-2.1.0.dmg"
+                url="https://aagedal.me/apps/photoagent/Aagedal-Photo-Agent-2.1.0.dmg"
                 sparkle:version="419"
                 sparkle:shortVersionString="2.1.0"
                 sparkle:edSignature="Omzk9tDDpD3S4U3cKLWuYnQDgD6j/qjQdM6kp5y8Bva9UKjF6xrFyKQwFOF9UTQCfH+Rq8/9CQaD5mmwgXlPBg=="
@@ -116,7 +122,7 @@
                 </ul>
             ]]></description>
             <enclosure
-                url="https://aagedal.me/apps/Aagedal-Photo-Agent-2.0.1.dmg"
+                url="https://aagedal.me/apps/photoagent/Aagedal-Photo-Agent-2.0.1.dmg"
                 sparkle:version="380"
                 sparkle:shortVersionString="2.0.1"
                 sparkle:edSignature="vYA3GDBr5nNavzg9ykkWn56gzhaSWVB/mrlkYFpGWYSyk6AnFItn55uq0HHbuNtQSPFW+Fhm1vxzQ747zKbaCg=="
@@ -141,7 +147,7 @@
                 </ul>
             ]]></description>
             <enclosure
-                url="https://aagedal.me/apps/Aagedal-Photo-Agent-2.0.0.dmg"
+                url="https://aagedal.me/apps/photoagent/Aagedal-Photo-Agent-2.0.0.dmg"
                 sparkle:version="378"
                 sparkle:shortVersionString="2.0.0"
                 sparkle:edSignature="Ku0QBuDJ/4kTqLuKTzA1NuhIPGRoDHx8JZgcc+6urea8eou3KGmbyLexPjxvuLL6fTa90YnhXsTcNdQMmTBUAg=="

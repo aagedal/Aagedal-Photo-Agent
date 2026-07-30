@@ -2,7 +2,7 @@
 
 All notable user-visible changes are documented here. Signed, notarized DMGs are self-hosted and delivered as in-app updates via Sparkle.
 
-## 2.2.0 — 2026-07-26
+## 2.2.0 — 2026-07-30
 
 ### Highlights
 
