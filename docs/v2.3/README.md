@@ -6,9 +6,8 @@
 
 **Target platform:** macOS 26, Apple Silicon
 
-**Implementation status:** Phase 1 complete — source identity, reassociation, atomic JSON
-persistence, EXIF and developed crop/straighten coordinate transforms, shared viewport geometry,
-browser-folder security-scope lifecycle, hidden-store change routing, and failure-matrix coverage
+**Implementation status:** Phase 1 complete; Phase 2 analysis navigation, persistent case owner,
+Pixel Analysis / OSINT shell, source-change validation, and original/developed preview selection
 implemented
 
 Version 2.3 is a broad investigation and review release. It adds three connected

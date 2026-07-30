@@ -19,7 +19,7 @@ nonisolated protocol VersionedJSONDocument: Codable, Sendable {
 }
 
 extension VersionedJSONDocument {
-    static func decodeVersion(
+    nonisolated static func decodeVersion(
         from data: Data,
         schemaVersion: Int,
         using decoder: JSONDecoder
@@ -33,7 +33,7 @@ extension VersionedJSONDocument {
         return try decoder.decode(Self.self, from: data)
     }
 
-    func validateForPersistence() throws {}
+    nonisolated func validateForPersistence() throws {}
 }
 
 enum AtomicJSONDocumentSource: Equatable, Sendable {

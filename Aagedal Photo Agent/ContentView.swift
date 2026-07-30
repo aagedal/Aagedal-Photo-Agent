@@ -9,6 +9,7 @@ import UniformTypeIdentifiers
 enum MainViewMode {
     case browser           // Normal photo browsing
     case metadataReview    // Folder-wide metadata comparison list
+    case imageAnalysis     // Source-bound evidence and OSINT workspace
     case editing           // Dedicated image editing workspace
     case faceManagement    // Expanded face management (existing)
     case peopleDatabase    // Known People database view
@@ -145,6 +146,7 @@ struct ContentView: View {
     @State private var isBatchResultExpanded = false
     @State private var scopeViewModel = ScopeViewModel()
     @State private var scopeImageTask: Task<Void, Never>?
+    @State private var analysisWorkspaceModel = AnalysisWorkspaceModel()
 
     // Keyword-list backup recovery (prompts when a list comes back empty at launch).
     @State private var isShowingListRecoveryPrompt = false
@@ -683,6 +685,15 @@ struct ContentView: View {
                 browserAndMetadataPanel
             case .metadataReview:
                 MetadataReviewView(viewModel: browserViewModel)
+            case .imageAnalysis:
+                AnalysisWorkspaceView(
+                    model: analysisWorkspaceModel,
+                    thumbnailService: browserViewModel.thumbnailService,
+                    onClose: {
+                        mainViewMode = .browser
+                        browserViewModel.shouldRestoreGridFocus = true
+                    }
+                )
             case .editing:
                 editingWorkspaceView
             case .faceManagement:
@@ -816,6 +827,20 @@ struct ContentView: View {
         mainViewMode = .editing
     }
 
+    private var selectedAnalysisImage: ImageFile? {
+        AnalysisSelectionResolver.image(
+            images: browserViewModel.images,
+            selectedURLs: browserViewModel.selectedImageIDs,
+            lastClickedURL: browserViewModel.lastClickedImageURL
+        )
+    }
+
+    private func openImageAnalysis() {
+        guard let image = selectedAnalysisImage else { return }
+        analysisWorkspaceModel.open(image)
+        mainViewMode = .imageAnalysis
+    }
+
     @ViewBuilder
     private var browserAndMetadataPanel: some View {
         HStack(spacing: 0) {
@@ -921,6 +946,18 @@ struct ContentView: View {
     private var paneLayoutMenu: some View {
         Menu {
             Button {
+                openImageAnalysis()
+            } label: {
+                Label(
+                    "Image Analysis",
+                    systemImage: mainViewMode == .imageAnalysis
+                        ? "checkmark"
+                        : "waveform.path.ecg.rectangle"
+                )
+            }
+            .disabled(selectedAnalysisImage == nil)
+
+            Button {
                 mainViewMode = .metadataReview
             } label: {
                 Label("Metadata Review", systemImage: mainViewMode == .metadataReview ? "checkmark" : "list.bullet.rectangle")
@@ -931,7 +968,13 @@ struct ContentView: View {
             paneLayoutButton(.splitVertical, "Split Top and Bottom", "rectangle.split.1x2")
             paneLayoutButton(.tabs, "Tabs", "square.on.square")
         } label: {
-            Image(systemName: mainViewMode == .metadataReview ? "list.bullet.rectangle" : paneLayoutIcon)
+            Image(systemName: {
+                switch mainViewMode {
+                case .imageAnalysis: "waveform.path.ecg.rectangle"
+                case .metadataReview: "list.bullet.rectangle"
+                default: paneLayoutIcon
+                }
+            }())
         }
         .help("Switch view or thumbnail area layout")
     }
@@ -1053,7 +1096,9 @@ struct ContentView: View {
         }
 
         ToolbarItem(placement: .automatic) {
-            if mainViewMode == .browser || mainViewMode == .metadataReview {
+            if mainViewMode == .browser
+                || mainViewMode == .metadataReview
+                || mainViewMode == .imageAnalysis {
                 paneLayoutMenu
             }
         }

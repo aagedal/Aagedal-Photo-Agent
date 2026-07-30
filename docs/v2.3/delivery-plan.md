@@ -53,11 +53,11 @@ all coordinate round-trips pass.
 **Exit gate:** one selected image opens a persistent case, fast evidence appears, and analysis never
 modifies the source.
 
-- [ ] Add `MainViewMode.imageAnalysis` and layout-menu entry.
-- [ ] Create `AnalysisCase` owner and workspace navigation.
-- [ ] Add Pixel Analysis / OSINT mode selector.
-- [ ] Implement source revision validation and stale-case banner.
-- [ ] Add original/developed representation selector with explicit labels.
+- [x] Add `MainViewMode.imageAnalysis` and layout-menu entry.
+- [x] Create `AnalysisCase` owner and workspace navigation.
+- [x] Add Pixel Analysis / OSINT mode selector.
+- [x] Implement source revision validation and stale-case banner.
+- [x] Add original/developed representation selector with explicit labels.
 - [ ] Implement analyzer runner states, progress, cancellation, and cache keys.
 - [ ] Add source facts and raw metadata/provenance analyzer.
 - [ ] Integrate C2PA validation states without collapsing validity and trust.
