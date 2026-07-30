@@ -44,7 +44,7 @@ all coordinate round-trips pass.
 - [x] Implement normalized display/source pixel transforms for all EXIF orientations.
 - [x] Implement shared viewport state and view/image coordinate mapping.
 - [x] Add transform fixtures for crop/straighten and different aspect ratios.
-- [ ] Audit security-scoped access and avoid repeat prompts.
+- [x] Audit security-scoped access and avoid repeat prompts.
 - [ ] Add folder monitor filtering and invalidation for new hidden stores.
 - [ ] Add corruption, read-only, iCloud-offline, rename/move, and source-changed tests.
 

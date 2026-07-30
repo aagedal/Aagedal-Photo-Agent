@@ -7,7 +7,8 @@
 **Target platform:** macOS 26, Apple Silicon
 
 **Implementation status:** Phase 1 source identity, reassociation, atomic JSON persistence, EXIF
-and developed crop/straighten coordinate transforms, and shared viewport geometry implemented
+and developed crop/straighten coordinate transforms, shared viewport geometry, and browser-folder
+security-scope lifecycle implemented
 
 Version 2.3 is a broad investigation and review release. It adds three connected
 capabilities:
