@@ -99,7 +99,7 @@
 
 
 
-## Future version 2.3
+## Version 2.3
 - [ ] Image analysis layout mode
   - [ ] Two modes
     - [ ] Pixel analysis (is this manipulated or AI-generated)
@@ -120,3 +120,6 @@
   - [ ] Zoom and pan lock, to make it easy to compare details. (should be possible to unlock/offset)
   - [ ] Accessible both in the develop view, the full screen, and clean feed view.
 - [ ] Grading version: the ability for an image to store different edit versions (json only, not XMP)
+- [ ] Separate the face recognition model file from the app, to minimize update size. The model is rarely updated.
+  - [ ] The model should download in the background on first launch if a model isn't found locally.
+  - [ ] Needs support for model versioning, in case an improved face recognition model is released.
