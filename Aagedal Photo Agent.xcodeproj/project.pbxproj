@@ -49,6 +49,8 @@
 		AB3700000000000000000002 /* SourceImageRevisionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3700000000000000000001 /* SourceImageRevisionTests.swift */; };
 		AB3800000000000000000002 /* AtomicJSONDocumentStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3800000000000000000001 /* AtomicJSONDocumentStoreTests.swift */; };
 		AB3900000000000000000002 /* SourceImageDiscoveryServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3900000000000000000001 /* SourceImageDiscoveryServiceTests.swift */; };
+		AB4000000000000000000002 /* DisplayImageTransformTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB4000000000000000000001 /* DisplayImageTransformTests.swift */; };
+		AB4100000000000000000002 /* ViewportStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB4100000000000000000001 /* ViewportStateTests.swift */; };
 		B71AFE10A1B0E2510C12C200 /* ApprovedListServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A71AFE10A1B0E2510C12C100 /* ApprovedListServiceTests.swift */; };
 		D1C0023217A1B0E2510C12C2 /* MetadataIOCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */; };
 		E957DC81E4AA200C4CD87043 /* MetadataSidecarServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CB424FD4CEB2C23AEFF5DB0 /* MetadataSidecarServiceTests.swift */; };
@@ -111,6 +113,8 @@
 		AB3700000000000000000001 /* SourceImageRevisionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SourceImageRevisionTests.swift; sourceTree = "<group>"; };
 		AB3800000000000000000001 /* AtomicJSONDocumentStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AtomicJSONDocumentStoreTests.swift; sourceTree = "<group>"; };
 		AB3900000000000000000001 /* SourceImageDiscoveryServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SourceImageDiscoveryServiceTests.swift; sourceTree = "<group>"; };
+		AB4000000000000000000001 /* DisplayImageTransformTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DisplayImageTransformTests.swift; sourceTree = "<group>"; };
+		AB4100000000000000000001 /* ViewportStateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ViewportStateTests.swift; sourceTree = "<group>"; };
 		D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataIOCoordinatorTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -201,6 +205,8 @@
 				AB3700000000000000000001 /* SourceImageRevisionTests.swift */,
 				AB3800000000000000000001 /* AtomicJSONDocumentStoreTests.swift */,
 				AB3900000000000000000001 /* SourceImageDiscoveryServiceTests.swift */,
+				AB4000000000000000000001 /* DisplayImageTransformTests.swift */,
+				AB4100000000000000000001 /* ViewportStateTests.swift */,
 			);
 			path = "Aagedal Photo Agent Tests";
 			sourceTree = "<group>";
@@ -392,6 +398,8 @@
 				AB3700000000000000000002 /* SourceImageRevisionTests.swift in Sources */,
 				AB3800000000000000000002 /* AtomicJSONDocumentStoreTests.swift in Sources */,
 				AB3900000000000000000002 /* SourceImageDiscoveryServiceTests.swift in Sources */,
+				AB4000000000000000000002 /* DisplayImageTransformTests.swift in Sources */,
+				AB4100000000000000000002 /* ViewportStateTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

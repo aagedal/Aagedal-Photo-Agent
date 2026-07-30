@@ -6,7 +6,8 @@
 
 **Target platform:** macOS 26, Apple Silicon
 
-**Implementation status:** Phase 1 source identity, reassociation, and atomic JSON persistence implemented
+**Implementation status:** Phase 1 source identity, reassociation, atomic JSON persistence, EXIF
+display/source coordinate transforms, and shared viewport geometry implemented
 
 Version 2.3 is a broad investigation and review release. It adds three connected
 capabilities:

@@ -41,8 +41,8 @@ all coordinate round-trips pass.
 - [x] Add source discovery/reassociation by resource ID and hash.
 - [x] Implement versioned atomic JSON document storage with bounded backup.
 - [x] Define unknown/newer schema behavior.
-- [ ] Implement normalized display/source pixel transforms for all EXIF orientations.
-- [ ] Implement shared viewport state and view/image coordinate mapping.
+- [x] Implement normalized display/source pixel transforms for all EXIF orientations.
+- [x] Implement shared viewport state and view/image coordinate mapping.
 - [ ] Add transform fixtures for crop/straighten and different aspect ratios.
 - [ ] Audit security-scoped access and avoid repeat prompts.
 - [ ] Add folder monitor filtering and invalidation for new hidden stores.
