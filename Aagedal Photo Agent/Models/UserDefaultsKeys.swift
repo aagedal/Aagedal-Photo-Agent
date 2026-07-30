@@ -100,6 +100,8 @@ nonisolated enum UserDefaultsKeys {
     static let imageScalingNearestNeighbor = "imageScalingNearestNeighbor"
     /// Raw values of optional Develop sliders hidden from the adjustment panel.
     static let hiddenDevelopSliders = "hiddenDevelopSliders"
+    /// Ordered raw values of the major Global Develop inspector sections.
+    static let developSectionOrder = "developSectionOrder"
 
     // MARK: - Clean Feed (secondary-display output)
     /// CGDirectDisplayID of the screen the clean-feed window should occupy.

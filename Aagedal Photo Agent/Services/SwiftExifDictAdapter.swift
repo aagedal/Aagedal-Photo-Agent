@@ -206,6 +206,7 @@ extension ImageMetadata {
             }
             for property in [
                 MetadataDictKey.filmGrain,
+                MetadataDictKey.filmGrainCoarseness,
                 MetadataDictKey.filmHalation,
                 MetadataDictKey.filmBloom,
                 MetadataDictKey.filmVignette,

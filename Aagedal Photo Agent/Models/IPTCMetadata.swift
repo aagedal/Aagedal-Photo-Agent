@@ -391,16 +391,23 @@ nonisolated struct BrushMaskGeometry: Codable, Sendable, Equatable {
 /// Which specialized Vision instance model should interpret the user's click.
 nonisolated enum AIMaskTarget: String, Codable, CaseIterable, Sendable, Equatable {
     case automatic
+    case face
     case person
     case object
 
     var title: String {
         switch self {
         case .automatic: return "Auto"
+        case .face: return "Face"
         case .person: return "Person"
         case .object: return "Object"
         }
     }
+
+    /// Targets offered in the Develop UI. `face` is gated off: the Vision face-rectangle oval
+    /// tracks heads too loosely to be useful. The case itself stays so masks already saved with
+    /// it keep decoding and rendering; flip it back in here once the matte is good enough.
+    static var selectableCases: [AIMaskTarget] { [.automatic, .person, .object] }
 }
 
 /// Photo Agent's persisted result from Vision instance selection. The mask PNG is a compact,
@@ -914,23 +921,30 @@ nonisolated struct AnonymizerSettings: Codable, Sendable, Equatable {
     }
 }
 
-/// App-native creative film effects. Values use a consistent 0...100 amount scale;
+/// App-native creative film effects. Values use a 0...100 amount scale for grain,
+/// halation, bloom, and edge blur; vignette uses -100 (darken) to +100 (brighten).
 /// nil/zero is neutral. These have no Adobe Camera Raw equivalent and are persisted in
 /// the app-private XMP namespace while remaining part of the primary Global layer.
 nonisolated struct FilmEmulationSettings: Codable, Sendable, Equatable {
     var grain: Double?
+    /// Grain particle size, 0...100. nil defaults to a fine emulsion (see
+    /// `FilmEmulationSettings.resolvedGrainCoarseness`); has no effect while `grain` is 0.
+    var grainCoarseness: Double?
     var halation: Double?
     var bloom: Double?
     var vignette: Double?
     var edgeBlur: Double?
 
     nonisolated var isEmpty: Bool {
-        (grain ?? 0) <= 0
-            && (halation ?? 0) <= 0
-            && (bloom ?? 0) <= 0
-            && (vignette ?? 0) <= 0
-            && (edgeBlur ?? 0) <= 0
+        (grain ?? 0) != 0
+            || (halation ?? 0) != 0
+            || (bloom ?? 0) != 0
+            || (vignette ?? 0) != 0
+            || (edgeBlur ?? 0) != 0
+            ? false : true
     }
+
+    nonisolated var resolvedGrainCoarseness: Double { grainCoarseness ?? 35 }
 
     nonisolated var hasSpatialEffects: Bool {
         (halation ?? 0) > 0 || (bloom ?? 0) > 0 || (edgeBlur ?? 0) > 0
@@ -1263,6 +1277,7 @@ nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
         fields[.crsVibrance] = vibrance.map(signedInt) ?? ""
         fields[.aaphotoGlobalDensity] = globalDensity.map(signedInt) ?? ""
         fields[.aaphotoFilmGrain] = filmEmulation?.grain.map { signedDouble($0, precision: 1) } ?? ""
+        fields[.aaphotoFilmGrainCoarseness] = filmEmulation?.grainCoarseness.map { signedDouble($0, precision: 1) } ?? ""
         fields[.aaphotoFilmHalation] = filmEmulation?.halation.map { signedDouble($0, precision: 1) } ?? ""
         fields[.aaphotoFilmBloom] = filmEmulation?.bloom.map { signedDouble($0, precision: 1) } ?? ""
         fields[.aaphotoFilmVignette] = filmEmulation?.vignette.map { signedDouble($0, precision: 1) } ?? ""

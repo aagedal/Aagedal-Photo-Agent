@@ -282,4 +282,26 @@ struct NormalizedCropRegionTests {
             #expect(ratio.id == ratio.rawValue)
         }
     }
+
+    @Test("Aspect ratio menu runs from widest landscape to tallest portrait")
+    func aspectRatioMenuOrder() {
+        let menu = CropAspectRatio.menuOrder
+        #expect(menu.prefix(2) == [.free, .original])
+        #expect(menu.dropFirst(2).map(\.label) == [
+            "16:9",
+            "3:2",
+            "7:5",
+            "4:3",
+            "1:1",
+            "3:4",
+            "5:7",
+            "2:3",
+            "9:16",
+        ])
+
+        let fixedValues = menu.dropFirst(2).compactMap(\.value)
+        for pair in zip(fixedValues, fixedValues.dropFirst()) {
+            #expect(pair.0 >= pair.1)
+        }
+    }
 }

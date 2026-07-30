@@ -6,6 +6,8 @@ import Vision
 nonisolated enum AIMaskGeneratorError: LocalizedError {
     case noForegroundInstances
     case noInstanceAtPoint
+    case noFaces
+    case noFaceAtPoint
     case selectionCoversEntireImage
     case couldNotGenerateMask
     case couldNotEncodeMask
@@ -16,6 +18,10 @@ nonisolated enum AIMaskGeneratorError: LocalizedError {
             return "No selectable person or object was found in this image."
         case .noInstanceAtPoint:
             return "No person or object was found where you clicked."
+        case .noFaces:
+            return "No face was found in this image."
+        case .noFaceAtPoint:
+            return "No face was found where you clicked."
         case .selectionCoversEntireImage:
             return "Photo Agent could not separate that person or object from the rest of the image. Try clicking a more distinct subject."
         case .couldNotGenerateMask:
@@ -51,6 +57,14 @@ nonisolated enum AIMaskGenerator {
             x: min(max(displayPoint.x, 0), 1),
             y: min(max(displayPoint.y, 0), 1)
         )
+
+        if target == .face {
+            return try generateFaceMask(
+                from: image,
+                at: point,
+                sourceOrientation: sourceOrientation
+            )
+        }
 
         var sawInstances = false
         var rejectedFullFrame = false
@@ -104,6 +118,102 @@ nonisolated enum AIMaskGenerator {
         if rejectedFullFrame { throw AIMaskGeneratorError.selectionCoversEntireImage }
         if sawInstances { throw AIMaskGeneratorError.noInstanceAtPoint }
         throw AIMaskGeneratorError.noForegroundInstances
+    }
+
+    /// Selects a Vision-detected face at the click and turns its bounds into a softly feathered
+    /// facial matte. Vision provides face detection and landmarks, but no face-segmentation
+    /// request. The oval deliberately stays within the head bounds instead of falling back to
+    /// the person-instance matte, so "Face" never changes the user's target to a full body.
+    private static func generateFaceMask(
+        from image: CIImage,
+        at point: CGPoint,
+        sourceOrientation: Int
+    ) throws -> GeneratedAIMask {
+        let handler = VNImageRequestHandler(ciImage: image, orientation: .up)
+        let request = VNDetectFaceRectanglesRequest()
+        try handler.perform([request])
+        guard let observations = request.results, !observations.isEmpty else {
+            throw AIMaskGeneratorError.noFaces
+        }
+
+        // Vision bounding boxes use a lower-left origin; editor clicks and persisted raster rows
+        // use a top-left origin. Prefer the smallest containing observation in the unlikely case
+        // detector boxes overlap, which makes a click select the most specific face.
+        let visionPoint = CGPoint(x: point.x, y: 1 - point.y)
+        guard let face = observations
+            .filter({ $0.boundingBox.contains(visionPoint) })
+            .min(by: {
+                $0.boundingBox.width * $0.boundingBox.height
+                    < $1.boundingBox.width * $1.boundingBox.height
+            })
+        else {
+            throw AIMaskGeneratorError.noFaceAtPoint
+        }
+
+        let extent = image.extent
+        guard extent.width > 0, extent.height > 0 else {
+            throw AIMaskGeneratorError.couldNotGenerateMask
+        }
+        let scale = min(1, CGFloat(maximumMaskDimension) / max(extent.width, extent.height))
+        let width = max(1, Int((extent.width * scale).rounded()))
+        let height = max(1, Int((extent.height * scale).rounded()))
+        let bytes = renderFaceMaskBytes(
+            boundingBox: face.boundingBox,
+            width: width,
+            height: height
+        )
+        guard let pngData = encodeGrayscalePNG(bytes: bytes, width: width, height: height),
+              pngData.count <= 2_000_000 else {
+            throw AIMaskGeneratorError.couldNotEncodeMask
+        }
+
+        let orientation = min(max(sourceOrientation, 1), 8)
+        return GeneratedAIMask(raster: AIMaskGeometry(
+            width: width,
+            height: height,
+            pngData: pngData,
+            sourceOrientation: orientation,
+            displayOrientation: orientation,
+            target: .face
+        ))
+    }
+
+    /// Builds the top-left-row-order facial oval used by the face target. Internal for focused
+    /// coordinate/shape regression tests. The detector's box is slightly widened and shifted
+    /// upward to include the forehead while avoiding shoulders and most surrounding background.
+    static func renderFaceMaskBytes(
+        boundingBox: CGRect,
+        width: Int,
+        height: Int
+    ) -> [UInt8] {
+        guard width > 0, height > 0 else { return [] }
+        let centerX = boundingBox.midX
+        let centerY = 1 - boundingBox.midY - boundingBox.height * 0.035
+        let radiusX = max(boundingBox.width * 0.56, 1 / CGFloat(width))
+        let radiusY = max(boundingBox.height * 0.58, 1 / CGFloat(height))
+        var bytes = [UInt8](repeating: 0, count: width * height)
+
+        for y in 0..<height {
+            let normalizedY = (CGFloat(y) + 0.5) / CGFloat(height)
+            for x in 0..<width {
+                let normalizedX = (CGFloat(x) + 0.5) / CGFloat(width)
+                let dx = (normalizedX - centerX) / radiusX
+                let dy = (normalizedY - centerY) / radiusY
+                let distance = sqrt(dx * dx + dy * dy)
+                let coverage: CGFloat
+                if distance <= 0.84 {
+                    coverage = 1
+                } else if distance >= 1 {
+                    coverage = 0
+                } else {
+                    let t = (distance - 0.84) / 0.16
+                    let smooth = t * t * (3 - 2 * t)
+                    coverage = 1 - smooth
+                }
+                bytes[y * width + x] = UInt8((coverage * 255).rounded())
+            }
+        }
+        return bytes
     }
 
     private static func generateCandidate(

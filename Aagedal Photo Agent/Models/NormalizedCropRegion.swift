@@ -15,6 +15,15 @@ enum CropAspectRatio: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    /// Menu presentation keeps the two adaptive modes first, followed by every fixed ratio
+    /// from widest landscape to tallest portrait. Deriving the order from `value` prevents a
+    /// newly-added ratio from silently landing in the wrong part of the menu.
+    static var menuOrder: [CropAspectRatio] {
+        [.free, .original] + allCases
+            .filter { $0.value != nil }
+            .sorted { ($0.value ?? 0) > ($1.value ?? 0) }
+    }
+
     /// Width/height ratio, nil for free/original (original handled externally)
     var value: Double? {
         switch self {

@@ -70,12 +70,30 @@
   Added Sublocation, State / Province, Instructions, and Source across embedded
   IPTC/XMP, sidecars, templates, import, batch editing, Metadata Review, required
   field checks, history, and customizable field visibility.
-- [ ] Improve AI-masks to support Face, not just person.
-- [ ] Warning in XCode logs: "{CSInlineDonation[async]: "aagedal.Aagedal-Photo-Agent" add-update-items:0 delete-items:1}: Failed to request donation Error Domain=CSIndexErrorDomain Code=-1000 "Failed to request donation" UserInfo={NSDebugDescription=Failed to request donation, NSUnderlyingError=0x786c7b26d0 {Error Domain=NSCocoaErrorDomain Code=4099 "The connection to service named com.apple.SetStoreUpdateService was invalidated from this process." UserInfo={NSDebugDescription=The connection to service named com.apple.SetStoreUpdateService was invalidated from this process.}}}"
-- [ ] The app has a tendency to ask for folder permissions on launch that were given during previous app launches.
-- [ ] Improve edge blur quality, can look pixelated/block/box-like
-- [ ] Improve film grain: looks like digital noise
-- [ ] Vignette effect not strong enough
+- [x] Improve AI-masks to support Face, not just person. (2026-07-26)
+  Face is now a distinct Auto / Face / Person / Object target. Vision face detection
+  selects the clicked face and authors a soft facial matte without expanding the
+  selection to the person's body. The target persists through sidecars and existing
+  pre-Face masks remain compatible.
+- [x] Triaged the Xcode `CSInlineDonation` / `SetStoreUpdateService` warning.
+  (2026-07-26) The app has no App Intents or Core Spotlight dependency, and Xcode's
+  metadata processor confirms that extraction is skipped. The warning is emitted by
+  the macOS 26 system service when the test host starts and is also reproducible in
+  Apple's own sample apps. No ineffective app-side suppression was added.
+- [x] The app no longer relies on plain paths for previously granted browser folders.
+  (2026-07-26) Recent and favorite folder records now persist security-scoped
+  bookmarks, resolve and refresh them on launch, and retain one balanced access claim
+  for asynchronous thumbnails, metadata, exports, and folder monitoring. Legacy
+  path-only records still decode and acquire a bookmark the next time they are opened.
+- [x] Improve edge blur quality. (2026-07-26)
+  Replaced direct coarse-mip sampling with a smooth multi-tap optical blur in both the
+  main edit/export shader and the scopes shader, removing visible square mip blocks.
+- [x] Improve film grain. (2026-07-26)
+  Grain now uses correlated, multi-scale monochrome density variation with a
+  midtone-weighted film response instead of independent additive per-pixel noise.
+- [x] Increase vignette strength. (2026-07-26)
+  The control now reaches farther into the frame and provides substantially stronger
+  corner falloff while preserving the image center.
 
 
 

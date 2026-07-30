@@ -197,6 +197,8 @@ struct DevelopInteractionBehaviorTests {
         let hidden = DevelopSlider.decodeHidden([
             "contrast",
             "filmGrain",
+            "hsl",
+            "toneCurve",
             "exposure",
             "temperature",
             "tint",
@@ -204,7 +206,7 @@ struct DevelopInteractionBehaviorTests {
             "futureControl",
         ])
 
-        #expect(hidden == [.contrast, .filmGrain])
+        #expect(hidden == [.contrast, .filmGrain, .hsl, .toneCurve])
         #expect(!DevelopSlider.allCases.contains { $0.rawValue == "exposure" })
         #expect(!DevelopSlider.allCases.contains { $0.rawValue == "temperature" })
         #expect(!DevelopSlider.allCases.contains { $0.rawValue == "tint" })
@@ -217,6 +219,42 @@ struct DevelopInteractionBehaviorTests {
             group.sliders
         })
         #expect(grouped == Set(DevelopSlider.allCases))
+    }
+
+    @Test("Default Develop section order places Anonymizer before Film Emulation")
+    func defaultDevelopSectionOrderPrioritizesAnonymizer() throws {
+        let anonymizerIndex = try #require(
+            DevelopPanelSection.defaultOrder.firstIndex(of: .anonymizer)
+        )
+        let filmIndex = try #require(
+            DevelopPanelSection.defaultOrder.firstIndex(of: .filmEmulation)
+        )
+        #expect(anonymizerIndex < filmIndex)
+        #expect(Set(DevelopPanelSection.defaultOrder) == Set(DevelopPanelSection.allCases))
+    }
+
+    @Test("Develop section order preserves valid choices and repairs stored values")
+    func developSectionOrderDecoding() {
+        let decoded = DevelopPanelSection.decodeOrder([
+            "filmEmulation",
+            "color",
+            "filmEmulation",
+            "futureSection",
+        ])
+
+        #expect(decoded.prefix(2) == [.filmEmulation, .color])
+        #expect(decoded.count == DevelopPanelSection.allCases.count)
+        #expect(Set(decoded) == Set(DevelopPanelSection.allCases))
+    }
+
+    @Test("Develop sections own every optional slider exactly once")
+    func developSectionSliderMappingIsComplete() {
+        let mapped = DevelopPanelSection.allCases.flatMap(\.optionalSliders)
+
+        #expect(mapped.count == Set(mapped).count)
+        #expect(Set(mapped) == Set(DevelopSlider.allCases))
+        #expect(DevelopPanelSection.color.alwaysVisibleControlNames == ["White Balance", "Tint"])
+        #expect(DevelopPanelSection.exposure.alwaysVisibleControlNames == ["Exposure"])
     }
 
     @Test("Develop slider groups hide and restore all of their controls")
@@ -287,7 +325,7 @@ struct DevelopInteractionBehaviorTests {
 
     @Test("Crop handle padding is limited to the active crop tool")
     func cropPreviewHandlePadding() {
-        #expect(EditCropPreviewFraming.handlePadding(isCropToolActive: true) == 48)
+        #expect(EditCropPreviewFraming.handlePadding(isCropToolActive: true) == 64)
         #expect(EditCropPreviewFraming.handlePadding(isCropToolActive: false) == 0)
     }
 

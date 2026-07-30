@@ -181,21 +181,113 @@ nonisolated enum DevelopSliderGroup: String, CaseIterable, Identifiable, Sendabl
     }
 }
 
+/// Major sections in the Global Develop inspector. This is intentionally separate from
+/// `DevelopSliderGroup`: groups control optional-control visibility, while this enum controls
+/// the presentation order of complete sections (including always-visible Color and Exposure).
+nonisolated enum DevelopPanelSection: String, CaseIterable, Identifiable, Sendable {
+    case color
+    case exposure
+    case detail
+    case toneCurve
+    case hsl
+    case anonymizer
+    case filmEmulation
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .color: return "Color"
+        case .exposure: return "Exposure"
+        case .detail: return "Detail"
+        case .toneCurve: return "Tone Curve"
+        case .hsl: return "Hue / Saturation / Density"
+        case .anonymizer: return "Anonymizer"
+        case .filmEmulation: return "Film Emulation"
+        }
+    }
+
+    static let defaultOrder: [DevelopPanelSection] = [
+        .color,
+        .exposure,
+        .detail,
+        .toneCurve,
+        .hsl,
+        .anonymizer,
+        .filmEmulation,
+    ]
+
+    /// Optional controls belonging to this section in the Global Develop inspector.
+    ///
+    /// Keeping this mapping next to the section order lets Settings present ordering and
+    /// visibility as one hierarchy instead of grouping the same controls a second way.
+    var optionalSliders: [DevelopSlider] {
+        switch self {
+        case .color:
+            return [.saturation, .vibrance, .density]
+        case .exposure:
+            return [.contrast, .highlights, .shadows, .whites, .blacks]
+        case .detail:
+            return [.sharpness, .clarity, .dehaze]
+        case .toneCurve:
+            return [.toneCurve]
+        case .hsl:
+            return [.hsl]
+        case .anonymizer:
+            return [.anonymizer]
+        case .filmEmulation:
+            return [.filmGrain, .filmGrainCoarseness, .halation, .bloom, .vignette, .edgeBlur]
+        }
+    }
+
+    /// Controls that keep Color and Exposure present even when all of their optional controls
+    /// are hidden. Crop is also always available, but lives outside this ordered section list.
+    var alwaysVisibleControlNames: [String] {
+        switch self {
+        case .color:
+            return ["White Balance", "Tint"]
+        case .exposure:
+            return ["Exposure"]
+        case .detail, .toneCurve, .hsl, .anonymizer, .filmEmulation:
+            return []
+        }
+    }
+
+    /// Preserves every valid stored section once, then appends newly-added or missing sections
+    /// in their default relative order. Unknown values are ignored for forward/backward safety.
+    static func decodeOrder(_ rawValues: [String]) -> [DevelopPanelSection] {
+        var seen: Set<DevelopPanelSection> = []
+        var result: [DevelopPanelSection] = []
+        for rawValue in rawValues {
+            guard let section = DevelopPanelSection(rawValue: rawValue),
+                  seen.insert(section).inserted else { continue }
+            result.append(section)
+        }
+        for section in defaultOrder where seen.insert(section).inserted {
+            result.append(section)
+        }
+        return result
+    }
+}
+
 /// Optional Develop controls that users may hide. Exposure, white balance, and Crop are
 /// intentionally absent, making it impossible for persisted preferences or UI code to hide them.
 nonisolated enum DevelopSlider: String, CaseIterable, Identifiable, Sendable {
     case saturation
     case vibrance
     case density
+    case hsl
     case contrast
     case highlights
     case shadows
     case whites
     case blacks
+    case toneCurve
     case sharpness
     case clarity
     case dehaze
     case filmGrain
+    case filmGrainCoarseness
     case halation
     case bloom
     case vignette
@@ -209,15 +301,18 @@ nonisolated enum DevelopSlider: String, CaseIterable, Identifiable, Sendable {
         case .saturation: return "Saturation"
         case .vibrance: return "Vibrance"
         case .density: return "Density"
+        case .hsl: return "Hue / Saturation / Density"
         case .contrast: return "Contrast"
         case .highlights: return "Highlights"
         case .shadows: return "Shadows"
         case .whites: return "Whites"
         case .blacks: return "Blacks"
+        case .toneCurve: return "Tone Curve"
         case .sharpness: return "Sharpness"
         case .clarity: return "Clarity"
         case .dehaze: return "Dehaze"
         case .filmGrain: return "Film Grain"
+        case .filmGrainCoarseness: return "Grain Size"
         case .halation: return "Halation"
         case .bloom: return "Bloom"
         case .vignette: return "Vignette"
@@ -228,10 +323,10 @@ nonisolated enum DevelopSlider: String, CaseIterable, Identifiable, Sendable {
 
     var group: DevelopSliderGroup {
         switch self {
-        case .saturation, .vibrance, .density: return .color
-        case .contrast, .highlights, .shadows, .whites, .blacks: return .tone
+        case .saturation, .vibrance, .density, .hsl: return .color
+        case .contrast, .highlights, .shadows, .whites, .blacks, .toneCurve: return .tone
         case .sharpness, .clarity, .dehaze: return .detail
-        case .filmGrain, .halation, .bloom, .vignette, .edgeBlur: return .film
+        case .filmGrain, .filmGrainCoarseness, .halation, .bloom, .vignette, .edgeBlur: return .film
         case .anonymizer: return .privacy
         }
     }
@@ -274,6 +369,15 @@ final class SettingsViewModel {
             UserDefaults.standard.set(
                 hiddenDevelopSliders.map(\.rawValue).sorted(),
                 forKey: UserDefaultsKeys.hiddenDevelopSliders
+            )
+        }
+    }
+
+    var developSectionOrder: [DevelopPanelSection] {
+        didSet {
+            UserDefaults.standard.set(
+                developSectionOrder.map(\.rawValue),
+                forKey: UserDefaultsKeys.developSectionOrder
             )
         }
     }
@@ -322,6 +426,32 @@ final class SettingsViewModel {
 
     func setDevelopSliderGroup(_ group: DevelopSliderGroup, visible: Bool) {
         group.setVisible(visible, hiddenSliders: &hiddenDevelopSliders)
+    }
+
+    func isDevelopPanelSectionVisible(_ section: DevelopPanelSection) -> Bool {
+        section.optionalSliders.contains { !hiddenDevelopSliders.contains($0) }
+    }
+
+    func setDevelopPanelSection(_ section: DevelopPanelSection, visible: Bool) {
+        if visible {
+            hiddenDevelopSliders.subtract(section.optionalSliders)
+        } else {
+            hiddenDevelopSliders.formUnion(section.optionalSliders)
+        }
+    }
+
+    func moveDevelopSection(_ section: DevelopPanelSection, by offset: Int) {
+        guard let sourceIndex = developSectionOrder.firstIndex(of: section) else { return }
+        let destinationIndex = min(max(sourceIndex + offset, 0), developSectionOrder.count - 1)
+        guard destinationIndex != sourceIndex else { return }
+        var reordered = developSectionOrder
+        reordered.remove(at: sourceIndex)
+        reordered.insert(section, at: destinationIndex)
+        developSectionOrder = reordered
+    }
+
+    func resetDevelopSectionOrder() {
+        developSectionOrder = DevelopPanelSection.defaultOrder
     }
 
     var defaultExternalEditor: String {
@@ -805,6 +935,9 @@ final class SettingsViewModel {
         self.showOriginalThumbnails = UserDefaults.standard.bool(forKey: UserDefaultsKeys.showOriginalThumbnails)
         self.hiddenDevelopSliders = DevelopSlider.decodeHidden(
             UserDefaults.standard.stringArray(forKey: UserDefaultsKeys.hiddenDevelopSliders) ?? []
+        )
+        self.developSectionOrder = DevelopPanelSection.decodeOrder(
+            UserDefaults.standard.stringArray(forKey: UserDefaultsKeys.developSectionOrder) ?? []
         )
         self.hiddenIPTCMetadataFields = IPTCMetadata.FieldKey.decodeHidden(
             UserDefaults.standard.stringArray(forKey: UserDefaultsKeys.hiddenIPTCMetadataFields) ?? []

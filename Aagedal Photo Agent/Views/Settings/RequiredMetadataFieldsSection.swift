@@ -43,14 +43,22 @@ struct RequiredMetadataFieldsSection: View {
 
 
     private func minimumLengthField(for field: IPTCMetadata.FieldKey) -> some View {
-        TextField("Characters", value: Binding(
-            get: { minimumLengths[field] ?? 0 },
-            set: { value in
-                minimumLengths[field] = max(0, value)
-                MetadataRequirements.saveMinimumLengths(minimumLengths)
-            }
-        ), format: .number)
-        .frame(width: 70)
-        .multilineTextAlignment(.trailing)
+        HStack(spacing: 8) {
+            Text("Characters")
+                .fixedSize(horizontal: true, vertical: false)
+                .foregroundStyle(.secondary)
+
+            TextField("Minimum length", value: Binding(
+                get: { minimumLengths[field] ?? 0 },
+                set: { value in
+                    minimumLengths[field] = max(0, value)
+                    MetadataRequirements.saveMinimumLengths(minimumLengths)
+                }
+            ), format: .number)
+            .labelsHidden()
+            .frame(width: 70)
+            .multilineTextAlignment(.trailing)
+        }
+        .fixedSize(horizontal: true, vertical: false)
     }
 }

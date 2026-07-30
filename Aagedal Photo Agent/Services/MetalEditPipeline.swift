@@ -374,7 +374,7 @@ struct EditParams {
     var filmBloom: Float = 0
     var filmVignette: Float = 0
     var filmEdgeBlur: Float = 0
-    var _padFilm0: Float = 0
+    var filmGrainCoarseness: Float = 0
     var _padFilm1: Float = 0
     var _padFilm2: Float = 0
 }
@@ -1190,9 +1190,10 @@ final class MetalEditPipeline: @unchecked Sendable {
 
         if let film = settings.filmEmulation, !film.isEmpty {
             params.filmGrain = Float(min(max((film.grain ?? 0) / 100.0, 0.0), 1.0))
+            params.filmGrainCoarseness = Float(min(max(film.resolvedGrainCoarseness / 100.0, 0.0), 1.0))
             params.filmHalation = Float(min(max((film.halation ?? 0) / 100.0, 0.0), 1.0))
             params.filmBloom = Float(min(max((film.bloom ?? 0) / 100.0, 0.0), 1.0))
-            params.filmVignette = Float(min(max((film.vignette ?? 0) / 100.0, 0.0), 1.0))
+            params.filmVignette = Float(min(max((film.vignette ?? 0) / 100.0, -1.0), 1.0))
             params.filmEdgeBlur = Float(min(max((film.edgeBlur ?? 0) / 100.0, 0.0), 1.0))
         }
 

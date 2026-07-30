@@ -77,6 +77,7 @@ enum MetadataFieldKey: String, Sendable, CaseIterable {
     case crsToneCurveName2012
     case aaphotoGlobalDensity
     case aaphotoFilmGrain
+    case aaphotoFilmGrainCoarseness
     case aaphotoFilmHalation
     case aaphotoFilmBloom
     case aaphotoFilmVignette
