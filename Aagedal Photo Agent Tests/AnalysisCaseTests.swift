@@ -207,6 +207,7 @@ struct AnalysisCaseTests {
                 lineWidthPoints: 3,
                 fillOpacity: 0
             ),
+            isVisible: false,
             findingIDs: ["metadata.orientation-conflict"],
             now: Date(timeIntervalSince1970: 11)
         )
@@ -221,6 +222,7 @@ struct AnalysisCaseTests {
         }
         #expect(reopened.annotations.first?.id == annotation.id)
         #expect(reopened.annotations.first?.geometry == annotation.geometry)
+        #expect(reopened.annotations.first?.isVisible == false)
         #expect(reopened.annotations.first?.updatedAt == Date(timeIntervalSince1970: 12))
         #expect(reopened.updatedAt == Date(timeIntervalSince1970: 12))
         try reopened.validateForPersistence()

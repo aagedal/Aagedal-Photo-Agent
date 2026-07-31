@@ -30,6 +30,8 @@
 - Added a bounded, photo-surface-owned transaction history for annotation additions, edits, and
   removals, with persistent undo/redo, redo-branch invalidation, toolbar controls, and standard
   Command-Z / Shift-Command-Z shortcuts. Opening or rebinding a case clears the surface history.
+- Added an ordered, keyboard-selectable case-sidebar layer list with per-annotation visibility,
+  grouped Show All / Hide All transactions, Delete-key removal, and accessible state labels.
 
 The annotation coordinates describe the original image's display-oriented frame. Rendering,
 hit-testing, developed-preview placement, source-pixel measurement, and report export must all use
@@ -54,7 +56,7 @@ Coverage includes:
 - version 2 to version 3 migration with analyzer-run preservation;
 - atomic annotation persistence and reopening without source or XMP writes;
 - every planned photo-markup kind and its required normalized geometry;
-- custom color and linked-finding round-trip;
+- custom color, visibility state, and linked-finding round-trip;
 - rejection of mismatched, out-of-range, and duplicate annotations;
 - reverse-drag geometry standardization and collapsed-gesture rejection;
 - persistent-to-developed coordinate round-trips with EXIF orientation, crop, and straighten.
@@ -62,7 +64,6 @@ Coverage includes:
 
 ## Remaining Phase 4 work
 
-- Add annotation list, layer visibility, and keyboard operations.
 - Add source-pixel measurement and user calibration.
 - Add finding-link workflow in the UI.
 - Validate all orientations, representation changes, view sizes, reports, keyboard-only use, and

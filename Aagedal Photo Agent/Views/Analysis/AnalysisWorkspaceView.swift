@@ -283,6 +283,23 @@ struct AnalysisWorkspaceView: View {
                     .frame(maxHeight: 260)
                 }
 
+                if !model.annotations.isEmpty {
+                    Divider()
+
+                    AnalysisAnnotationList(
+                        annotations: model.annotations,
+                        selectedAnnotationID: $selectedAnnotationID,
+                        isReadOnly: model.sourceChanged,
+                        onSetVisible: model.setPhotoAnnotationVisible,
+                        onSetAllVisible: model.setAllPhotoAnnotationsVisible,
+                        onDelete: {
+                            guard let selectedAnnotationID else { return }
+                            model.removeAnnotation(id: selectedAnnotationID)
+                            self.selectedAnnotationID = nil
+                        }
+                    )
+                }
+
                 Text("SHA-256")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
@@ -444,6 +461,120 @@ struct AnalysisWorkspaceView: View {
         case .informational: .secondary
         case .notable: .yellow
         case .caution: .orange
+        }
+    }
+}
+
+private struct AnalysisAnnotationList: View {
+    let annotations: [AnalysisAnnotation]
+    @Binding var selectedAnnotationID: UUID?
+    let isReadOnly: Bool
+    let onSetVisible: (UUID, Bool) -> Void
+    let onSetAllVisible: (Bool) -> Void
+    let onDelete: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("ANNOTATIONS")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Menu {
+                    Button("Show All") { onSetAllVisible(true) }
+                        .disabled(isReadOnly || annotations.allSatisfy(\.isVisible))
+                    Button("Hide All") { onSetAllVisible(false) }
+                        .disabled(isReadOnly || annotations.allSatisfy({ !$0.isVisible }))
+                } label: {
+                    Label("Layer Visibility", systemImage: "eye")
+                        .labelStyle(.iconOnly)
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .disabled(isReadOnly)
+                .help("Show or hide all photo-annotation layers")
+            }
+
+            List(selection: $selectedAnnotationID) {
+                ForEach(Array(annotations.enumerated()), id: \.element.id) { index, annotation in
+                    HStack(spacing: 7) {
+                        Image(systemName: annotation.kind.systemImage)
+                            .frame(width: 14)
+                            .foregroundStyle(annotation.style.color.swiftUIColor)
+                            .accessibilityHidden(true)
+
+                        Text(annotation.listName(index: index))
+                            .lineLimit(1)
+
+                        Spacer(minLength: 2)
+
+                        Button {
+                            onSetVisible(annotation.id, !annotation.isVisible)
+                        } label: {
+                            Image(systemName: annotation.isVisible ? "eye" : "eye.slash")
+                                .foregroundStyle(annotation.isVisible ? .secondary : .tertiary)
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(isReadOnly)
+                        .help(annotation.isVisible ? "Hide annotation" : "Show annotation")
+                        .accessibilityLabel(
+                            annotation.isVisible
+                                ? "Hide \(annotation.listName(index: index))"
+                                : "Show \(annotation.listName(index: index))"
+                        )
+                    }
+                    .tag(annotation.id)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel(
+                        "\(annotation.listName(index: index)), "
+                            + (annotation.isVisible ? "visible" : "hidden")
+                    )
+                }
+            }
+            .listStyle(.inset)
+            .frame(minHeight: 90, idealHeight: 150, maxHeight: 210)
+            .onDeleteCommand {
+                guard !isReadOnly, selectedAnnotationID != nil else { return }
+                onDelete()
+            }
+            .accessibilityLabel("Photo annotation layers")
+        }
+    }
+}
+
+private extension AnalysisAnnotation {
+    func listName(index: Int) -> String {
+        if kind == .label,
+           let text = text?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !text.isEmpty {
+            return text
+        }
+        return "\(kind.displayName) \(index + 1)"
+    }
+}
+
+private extension AnalysisAnnotationKind {
+    var displayName: String {
+        switch self {
+        case .line: "Line"
+        case .arrow: "Arrow"
+        case .distance: "Distance"
+        case .rectangle: "Rectangle"
+        case .ellipse: "Ellipse"
+        case .label: "Label"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .line: "line.diagonal"
+        case .arrow: "arrow.up.right"
+        case .distance: "ruler"
+        case .rectangle: "rectangle"
+        case .ellipse: "circle"
+        case .label: "character.cursor.ibeam"
         }
     }
 }

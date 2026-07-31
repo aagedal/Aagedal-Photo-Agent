@@ -282,6 +282,41 @@ final class AnalysisWorkspaceModel {
     }
 
     func setAnnotation(_ annotation: AnalysisAnnotation) {
+        setAnnotation(annotation, actionName: nil)
+    }
+
+    func setPhotoAnnotationVisible(id: UUID, isVisible: Bool) {
+        guard var annotation = annotations.first(where: { $0.id == id }),
+              annotation.isVisible != isVisible else { return }
+        annotation.isVisible = isVisible
+        setAnnotation(
+            annotation,
+            actionName: isVisible ? "Show Annotation" : "Hide Annotation"
+        )
+    }
+
+    func setAllPhotoAnnotationsVisible(_ isVisible: Bool) {
+        guard var updatedCase = analysisCase, !sourceChanged else { return }
+        let before = updatedCase.annotations
+        let now = Date()
+        var after = before
+        var changed = false
+        for index in after.indices where after[index].isVisible != isVisible {
+            after[index].isVisible = isVisible
+            after[index].markUpdated(now: now)
+            changed = true
+        }
+        guard changed else { return }
+        updatedCase.replaceAnnotations(after, now: now)
+        photoAnnotationHistory.record(
+            before: before,
+            after: after,
+            actionName: isVisible ? "Show All Annotations" : "Hide All Annotations"
+        )
+        persist(updatedCase)
+    }
+
+    private func setAnnotation(_ annotation: AnalysisAnnotation, actionName: String?) {
         guard var updatedCase = analysisCase, !sourceChanged else { return }
         let before = updatedCase.annotations
         let existing = before.first { $0.id == annotation.id }
@@ -290,7 +325,7 @@ final class AnalysisWorkspaceModel {
         photoAnnotationHistory.record(
             before: before,
             after: updatedCase.annotations,
-            actionName: existing == nil ? "Add Annotation" : "Edit Annotation"
+            actionName: actionName ?? (existing == nil ? "Add Annotation" : "Edit Annotation")
         )
         persist(updatedCase)
     }
