@@ -84,7 +84,7 @@ modifies the source.
 
 **Exit gate:** annotations are precise, persistent, accessible, reversible, and stable across zoom.
 
-- [ ] Implement annotation model and migrations.
+- [x] Implement annotation model and migrations.
 - [ ] Build select, line/arrow, distance, rectangle, ellipse, and label tools.
 - [ ] Add fixed accessible palette and custom color.
 - [ ] Add per-surface undo/redo transactions.

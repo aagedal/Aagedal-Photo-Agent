@@ -16,10 +16,11 @@ struct AnalysisCaseTests {
             now: Date(timeIntervalSince1970: 100)
         )
 
-        #expect(analysisCase.schemaVersion == 2)
+        #expect(analysisCase.schemaVersion == 3)
         #expect(analysisCase.source == revision)
         #expect(analysisCase.workspaceMode == .pixelAnalysis)
         #expect(analysisCase.displayPreference == .original)
+        #expect(analysisCase.annotations.isEmpty)
         #expect(analysisCase.createdByAppBuild == "test")
         try analysisCase.validateForPersistence()
     }
@@ -106,7 +107,7 @@ struct AnalysisCaseTests {
         ) == nil)
     }
 
-    @Test("version one shell cases migrate with an empty analyzer cache")
+    @Test("version one shell cases migrate with empty analyzer and annotation collections")
     func migratesVersionOneCase() async throws {
         let fixture = try AnalysisFixture(contents: "legacy source")
         defer { fixture.remove() }
@@ -137,8 +138,145 @@ struct AnalysisCaseTests {
             Issue.record("Expected the version one case to migrate")
             return
         }
-        #expect(migrated.schemaVersion == 2)
+        #expect(migrated.schemaVersion == 3)
         #expect(migrated.analyzerRuns.isEmpty)
+        #expect(migrated.annotations.isEmpty)
+    }
+
+    @Test("version two analyzer cases migrate with an empty annotation collection")
+    func migratesVersionTwoCase() async throws {
+        let fixture = try AnalysisFixture(contents: "version two source")
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        let analysisCase = AnalysisCase.create(for: revision, appBuild: "test")
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        var object = try #require(
+            JSONSerialization.jsonObject(with: encoder.encode(analysisCase)) as? [String: Any]
+        )
+        object["schemaVersion"] = 2
+        object["annotations"] = nil
+
+        let caseDirectory = fixture.directoryURL
+            .appendingPathComponent(".photo_analysis/cases", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: caseDirectory,
+            withIntermediateDirectories: true
+        )
+        let caseURL = caseDirectory.appendingPathComponent(
+            "\(analysisCase.id.uuidString.lowercased()).analysis.json"
+        )
+        try JSONSerialization.data(withJSONObject: object).write(to: caseURL)
+
+        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        let match = await repository.loadMostRelevantCase(for: revision)
+        guard case .exact(let migrated) = match else {
+            Issue.record("Expected the version two case to migrate")
+            return
+        }
+        #expect(migrated.schemaVersion == 3)
+        #expect(migrated.analyzerRuns == analysisCase.analyzerRuns)
+        #expect(migrated.annotations.isEmpty)
+    }
+
+    @Test("normalized photo annotations round-trip in the source-bound case")
+    func annotationRoundTrip() async throws {
+        let fixture = try AnalysisFixture(contents: "annotated source")
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        let repository = AnalysisCaseRepository(sourceFolderURL: fixture.directoryURL)
+        var analysisCase = AnalysisCase.create(
+            for: revision,
+            appBuild: "test",
+            now: Date(timeIntervalSince1970: 10)
+        )
+        let annotation = AnalysisAnnotation(
+            kind: .distance,
+            geometry: .segment(
+                start: AnalysisNormalizedPoint(x: 0.125, y: 0.25),
+                end: AnalysisNormalizedPoint(x: 0.875, y: 0.75)
+            ),
+            style: AnalysisAnnotationStyle(
+                color: .custom(AnalysisAnnotationCustomColor(
+                    red: 0.1,
+                    green: 0.4,
+                    blue: 0.9,
+                    opacity: 0.8
+                )),
+                lineWidthPoints: 3,
+                fillOpacity: 0
+            ),
+            findingIDs: ["metadata.orientation-conflict"],
+            now: Date(timeIntervalSince1970: 11)
+        )
+        analysisCase.setAnnotation(annotation, now: Date(timeIntervalSince1970: 12))
+
+        try await repository.save(analysisCase)
+        let match = await repository.loadMostRelevantCase(for: revision)
+
+        guard case .exact(let reopened) = match else {
+            Issue.record("Expected the annotated case to reopen")
+            return
+        }
+        #expect(reopened.annotations.first?.id == annotation.id)
+        #expect(reopened.annotations.first?.geometry == annotation.geometry)
+        #expect(reopened.annotations.first?.updatedAt == Date(timeIntervalSince1970: 12))
+        #expect(reopened.updatedAt == Date(timeIntervalSince1970: 12))
+        try reopened.validateForPersistence()
+    }
+
+    @Test("annotation validation rejects mismatched, out-of-range, and duplicate geometry")
+    func rejectsInvalidAnnotations() async throws {
+        let fixture = try AnalysisFixture(contents: "invalid annotation source")
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        var analysisCase = AnalysisCase.create(for: revision, appBuild: "test")
+        let id = UUID()
+        let invalid = AnalysisAnnotation(
+            id: id,
+            kind: .rectangle,
+            geometry: .segment(
+                start: AnalysisNormalizedPoint(x: -0.1, y: 0.2),
+                end: AnalysisNormalizedPoint(x: 0.8, y: 0.9)
+            )
+        )
+        analysisCase.setAnnotation(invalid)
+
+        #expect(throws: AnalysisCaseValidationError.invalidAnnotations) {
+            try analysisCase.validateForPersistence()
+        }
+
+        let valid = AnalysisAnnotation(
+            id: id,
+            kind: .label,
+            geometry: .anchor(AnalysisNormalizedPoint(x: 0.5, y: 0.5)),
+            text: "Subject"
+        )
+        analysisCase.setAnnotation(valid)
+        analysisCase.annotations.append(valid)
+        #expect(throws: AnalysisCaseValidationError.invalidAnnotations) {
+            try analysisCase.validateForPersistence()
+        }
+    }
+
+    @Test("every planned photo-markup kind has a valid normalized geometry")
+    func supportsPlannedAnnotationKinds() throws {
+        let start = AnalysisNormalizedPoint(x: 0.1, y: 0.2)
+        let end = AnalysisNormalizedPoint(x: 0.8, y: 0.9)
+        let bounds = AnalysisNormalizedBounds(minimum: start, maximum: end)
+        let annotations = [
+            AnalysisAnnotation(kind: .line, geometry: .segment(start: start, end: end)),
+            AnalysisAnnotation(kind: .arrow, geometry: .segment(start: start, end: end)),
+            AnalysisAnnotation(kind: .distance, geometry: .segment(start: start, end: end)),
+            AnalysisAnnotation(kind: .rectangle, geometry: .bounds(bounds)),
+            AnalysisAnnotation(kind: .ellipse, geometry: .bounds(bounds)),
+            AnalysisAnnotation(kind: .label, geometry: .anchor(start), text: "Detail"),
+        ]
+
+        #expect(annotations.map(\.kind) == AnalysisAnnotationKind.allCases)
+        for annotation in annotations {
+            try annotation.validate()
+        }
     }
 
     @Test("cache keys include source, analyzer version, and sorted parameters")

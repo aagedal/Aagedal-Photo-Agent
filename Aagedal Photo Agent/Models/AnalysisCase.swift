@@ -28,15 +28,18 @@ enum AnalysisCaseValidationError: Error, Equatable, LocalizedError, Sendable {
     case invalidSourceHash
     case invalidTimestamps
     case invalidAnalyzerRuns
+    case invalidAnnotations
 
     var errorDescription: String? {
         switch self {
         case .invalidSourceHash:
             "The analysis case does not contain a valid SHA-256 source hash."
         case .invalidTimestamps:
-            "The analysis case update time is earlier than its creation time."
+            "The analysis case or one of its annotations contains invalid update times."
         case .invalidAnalyzerRuns:
             "The analysis case contains duplicate or invalid analyzer runs."
+        case .invalidAnnotations:
+            "The analysis case contains duplicate or invalid photo annotations."
         }
     }
 }
@@ -44,10 +47,10 @@ enum AnalysisCaseValidationError: Error, Equatable, LocalizedError, Sendable {
 /// The persisted owner document for one image-analysis investigation.
 ///
 /// Analyzer results and report selections share this owner with the workspace preferences.
-/// Annotations and map/report state will join the same source-bound document in later slices,
-/// rather than creating separate Pixel Analysis and OSINT sessions.
+/// Map and report state will join the same source-bound document in later slices rather than
+/// creating separate Pixel Analysis and OSINT sessions.
 nonisolated struct AnalysisCase: VersionedJSONDocument, Equatable, Sendable {
-    static let currentSchemaVersion = 2
+    static let currentSchemaVersion = 3
 
     let schemaVersion: Int
     let id: UUID
@@ -59,6 +62,7 @@ nonisolated struct AnalysisCase: VersionedJSONDocument, Equatable, Sendable {
     var workspaceMode: AnalysisWorkspaceMode
     var displayPreference: AnalysisSourceRepresentation
     var analyzerRuns: [AnalysisAnalyzerRun]
+    var annotations: [AnalysisAnnotation]
 
     static func create(
         for source: SourceImageRevision,
@@ -75,7 +79,8 @@ nonisolated struct AnalysisCase: VersionedJSONDocument, Equatable, Sendable {
             createdByAppBuild: appBuild,
             workspaceMode: .pixelAnalysis,
             displayPreference: .original,
-            analyzerRuns: []
+            analyzerRuns: [],
+            annotations: []
         )
     }
 
@@ -101,6 +106,27 @@ nonisolated struct AnalysisCase: VersionedJSONDocument, Equatable, Sendable {
         updatedAt = max(now, createdAt)
     }
 
+    mutating func setAnnotation(_ annotation: AnalysisAnnotation, now: Date = Date()) {
+        var updatedAnnotation = annotation
+        updatedAnnotation.markUpdated(now: now)
+        if let index = annotations.firstIndex(where: { $0.id == annotation.id }) {
+            annotations[index] = updatedAnnotation
+        } else {
+            annotations.append(updatedAnnotation)
+        }
+        updatedAt = max(max(now, createdAt), updatedAnnotation.updatedAt)
+    }
+
+    @discardableResult
+    mutating func removeAnnotation(id: UUID, now: Date = Date()) -> Bool {
+        guard let index = annotations.firstIndex(where: { $0.id == id }) else {
+            return false
+        }
+        annotations.remove(at: index)
+        updatedAt = max(now, createdAt)
+        return true
+    }
+
     static func decodeVersion(
         from data: Data,
         schemaVersion: Int,
@@ -109,8 +135,8 @@ nonisolated struct AnalysisCase: VersionedJSONDocument, Equatable, Sendable {
         switch schemaVersion {
         case currentSchemaVersion:
             return try decoder.decode(AnalysisCase.self, from: data)
-        case 1:
-            let legacy = try decoder.decode(LegacyAnalysisCase.self, from: data)
+        case 2:
+            let legacy = try decoder.decode(LegacyAnalysisCaseV2.self, from: data)
             return AnalysisCase(
                 schemaVersion: currentSchemaVersion,
                 id: legacy.id,
@@ -121,7 +147,23 @@ nonisolated struct AnalysisCase: VersionedJSONDocument, Equatable, Sendable {
                 createdByAppBuild: legacy.createdByAppBuild,
                 workspaceMode: legacy.workspaceMode,
                 displayPreference: legacy.displayPreference,
-                analyzerRuns: []
+                analyzerRuns: legacy.analyzerRuns,
+                annotations: []
+            )
+        case 1:
+            let legacy = try decoder.decode(LegacyAnalysisCaseV1.self, from: data)
+            return AnalysisCase(
+                schemaVersion: currentSchemaVersion,
+                id: legacy.id,
+                title: legacy.title,
+                source: legacy.source,
+                createdAt: legacy.createdAt,
+                updatedAt: legacy.updatedAt,
+                createdByAppBuild: legacy.createdByAppBuild,
+                workspaceMode: legacy.workspaceMode,
+                displayPreference: legacy.displayPreference,
+                analyzerRuns: [],
+                annotations: []
             )
         default:
             throw AtomicJSONDocumentStoreError.unsupportedOlderSchema(
@@ -137,7 +179,8 @@ nonisolated struct AnalysisCase: VersionedJSONDocument, Equatable, Sendable {
               source.sha256.unicodeScalars.allSatisfy(hexadecimal.contains) else {
             throw AnalysisCaseValidationError.invalidSourceHash
         }
-        guard updatedAt >= createdAt else {
+        guard updatedAt >= createdAt,
+              annotations.allSatisfy({ $0.updatedAt <= updatedAt }) else {
             throw AnalysisCaseValidationError.invalidTimestamps
         }
         guard Set(analyzerRuns.map(\.analyzerID)).count == analyzerRuns.count,
@@ -149,6 +192,10 @@ nonisolated struct AnalysisCase: VersionedJSONDocument, Equatable, Sendable {
               }) else {
             throw AnalysisCaseValidationError.invalidAnalyzerRuns
         }
+        guard Set(annotations.map(\.id)).count == annotations.count,
+              annotations.allSatisfy({ (try? $0.validate()) != nil }) else {
+            throw AnalysisCaseValidationError.invalidAnnotations
+        }
     }
 
     private static var currentAppBuild: String {
@@ -156,7 +203,7 @@ nonisolated struct AnalysisCase: VersionedJSONDocument, Equatable, Sendable {
     }
 }
 
-nonisolated private struct LegacyAnalysisCase: Codable {
+nonisolated private struct LegacyAnalysisCaseV1: Codable {
     let schemaVersion: Int
     let id: UUID
     var title: String
@@ -166,4 +213,17 @@ nonisolated private struct LegacyAnalysisCase: Codable {
     let createdByAppBuild: String
     var workspaceMode: AnalysisWorkspaceMode
     var displayPreference: AnalysisSourceRepresentation
+}
+
+nonisolated private struct LegacyAnalysisCaseV2: Codable {
+    let schemaVersion: Int
+    let id: UUID
+    var title: String
+    let source: SourceImageRevision
+    let createdAt: Date
+    var updatedAt: Date
+    let createdByAppBuild: String
+    var workspaceMode: AnalysisWorkspaceMode
+    var displayPreference: AnalysisSourceRepresentation
+    var analyzerRuns: [AnalysisAnalyzerRun]
 }

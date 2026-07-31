@@ -62,6 +62,10 @@ final class AnalysisWorkspaceModel {
             }
     }
 
+    var annotations: [AnalysisAnnotation] {
+        analysisCase?.annotations ?? []
+    }
+
     var rawMetadata: [AnalysisRawMetadataEntry] {
         analysisRunner.runs.flatMap { $0.output?.rawMetadata ?? [] }
     }
@@ -239,6 +243,18 @@ final class AnalysisWorkspaceModel {
 
     func setFindingIncluded(_ findingID: String, included: Bool) {
         analysisRunner.setFindingIncluded(findingID, included: included)
+    }
+
+    func setAnnotation(_ annotation: AnalysisAnnotation) {
+        guard var updatedCase = analysisCase, !sourceChanged else { return }
+        updatedCase.setAnnotation(annotation)
+        persist(updatedCase)
+    }
+
+    func removeAnnotation(id: UUID) {
+        guard var updatedCase = analysisCase, !sourceChanged,
+              updatedCase.removeAnnotation(id: id) else { return }
+        persist(updatedCase)
     }
 
     private var analyzerContext: AnalysisAnalyzerContext? {
