@@ -60,6 +60,12 @@ struct AnalysisAnnotationToolbar: View {
     @Binding var style: AnalysisAnnotationStyle
     let selectedAnnotationID: UUID?
     let isReadOnly: Bool
+    let canUndo: Bool
+    let canRedo: Bool
+    let undoActionName: String?
+    let redoActionName: String?
+    let onUndo: () -> Void
+    let onRedo: () -> Void
     let onDelete: () -> Void
 
     var body: some View {
@@ -115,6 +121,24 @@ struct AnalysisAnnotationToolbar: View {
             .help("Choose a fixed high-contrast annotation color or a custom color")
 
             Spacer(minLength: 0)
+
+            Button(action: onUndo) {
+                Label("Undo", systemImage: "arrow.uturn.backward")
+                    .labelStyle(.iconOnly)
+            }
+            .buttonStyle(.borderless)
+            .keyboardShortcut("z", modifiers: .command)
+            .disabled(isReadOnly || !canUndo)
+            .help(undoActionName.map { "Undo \($0) (⌘Z)" } ?? "Undo (⌘Z)")
+
+            Button(action: onRedo) {
+                Label("Redo", systemImage: "arrow.uturn.forward")
+                    .labelStyle(.iconOnly)
+            }
+            .buttonStyle(.borderless)
+            .keyboardShortcut("z", modifiers: [.command, .shift])
+            .disabled(isReadOnly || !canRedo)
+            .help(redoActionName.map { "Redo \($0) (⇧⌘Z)" } ?? "Redo (⇧⌘Z)")
 
             Button(role: .destructive, action: onDelete) {
                 Label("Delete Annotation", systemImage: "trash")

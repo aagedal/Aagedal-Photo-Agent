@@ -37,6 +37,9 @@ struct AnalysisWorkspaceView: View {
             pixelViewMode = .normal
             selectedAnnotationID = nil
         }
+        .onChange(of: model.analysisCase?.id) {
+            selectedAnnotationID = nil
+        }
         .onChange(of: model.displayPreference) {
             pixelInspectionSample = nil
             displayedScopeImage = nil
@@ -58,6 +61,18 @@ struct AnalysisWorkspaceView: View {
                   annotation.style != annotationStyle else { return }
             annotation.style = annotationStyle
             model.setAnnotation(annotation)
+        }
+        .onChange(of: model.annotations) {
+            guard let selectedAnnotationID else { return }
+            guard let annotation = model.annotations.first(where: {
+                $0.id == selectedAnnotationID
+            }) else {
+                self.selectedAnnotationID = nil
+                return
+            }
+            if annotationStyle != annotation.style {
+                annotationStyle = annotation.style
+            }
         }
     }
 
@@ -350,6 +365,12 @@ struct AnalysisWorkspaceView: View {
                 style: $annotationStyle,
                 selectedAnnotationID: selectedAnnotationID,
                 isReadOnly: model.sourceChanged,
+                canUndo: model.canUndoPhotoAnnotation,
+                canRedo: model.canRedoPhotoAnnotation,
+                undoActionName: model.photoAnnotationUndoActionName,
+                redoActionName: model.photoAnnotationRedoActionName,
+                onUndo: model.undoPhotoAnnotation,
+                onRedo: model.redoPhotoAnnotation,
                 onDelete: {
                     guard let selectedAnnotationID else { return }
                     model.removeAnnotation(id: selectedAnnotationID)

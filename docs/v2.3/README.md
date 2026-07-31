@@ -13,7 +13,8 @@ channel/relative-luminance views, calibrated compression residuals, and cost-bou
 derived-view rendering integrated into Image Analysis; automated HDR/SDR, alpha, orientation, crop,
 and malformed-source validation is complete, while fixture-corpus visual validation remains open.
 Phase 4 has started with normalized, source-bound annotation persistence and schema migrations for
-line, arrow, distance, rectangle, ellipse, and label markup.
+line, arrow, distance, rectangle, ellipse, and label markup, plus a bounded photo-surface undo/redo
+history with persistent transactions and standard keyboard shortcuts.
 
 Version 2.3 is a broad investigation and review release. It adds three connected
 capabilities:

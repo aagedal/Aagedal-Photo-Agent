@@ -247,6 +247,66 @@ nonisolated enum AnalysisAnnotationGeometryBuilder {
     }
 }
 
+/// A bounded transaction history for the photo-annotation surface.
+///
+/// Transactions retain complete before/after collections so undo restores ordering as well as
+/// content. The map surface will own a separate history when its distinct annotation model is
+/// introduced; photo markup must not share the Develop workspace's global undo stack.
+nonisolated struct AnalysisAnnotationUndoHistory: Sendable {
+    nonisolated struct Transaction: Equatable, Sendable {
+        let before: [AnalysisAnnotation]
+        let after: [AnalysisAnnotation]
+        let actionName: String
+    }
+
+    private let maximumTransactionCount: Int
+    private(set) var undoTransactions: [Transaction] = []
+    private(set) var redoTransactions: [Transaction] = []
+
+    init(maximumTransactionCount: Int = 100) {
+        self.maximumTransactionCount = max(1, maximumTransactionCount)
+    }
+
+    var canUndo: Bool { !undoTransactions.isEmpty }
+    var canRedo: Bool { !redoTransactions.isEmpty }
+    var undoActionName: String? { undoTransactions.last?.actionName }
+    var redoActionName: String? { redoTransactions.last?.actionName }
+
+    mutating func record(
+        before: [AnalysisAnnotation],
+        after: [AnalysisAnnotation],
+        actionName: String
+    ) {
+        guard before != after else { return }
+        undoTransactions.append(Transaction(
+            before: before,
+            after: after,
+            actionName: actionName
+        ))
+        if undoTransactions.count > maximumTransactionCount {
+            undoTransactions.removeFirst(undoTransactions.count - maximumTransactionCount)
+        }
+        redoTransactions.removeAll(keepingCapacity: true)
+    }
+
+    mutating func undo() -> [AnalysisAnnotation]? {
+        guard let transaction = undoTransactions.popLast() else { return nil }
+        redoTransactions.append(transaction)
+        return transaction.before
+    }
+
+    mutating func redo() -> [AnalysisAnnotation]? {
+        guard let transaction = redoTransactions.popLast() else { return nil }
+        undoTransactions.append(transaction)
+        return transaction.after
+    }
+
+    mutating func removeAll() {
+        undoTransactions.removeAll(keepingCapacity: false)
+        redoTransactions.removeAll(keepingCapacity: false)
+    }
+}
+
 private extension AnalysisAnnotationGeometry {
     nonisolated func matches(_ kind: AnalysisAnnotationKind) -> Bool {
         switch (kind, self) {

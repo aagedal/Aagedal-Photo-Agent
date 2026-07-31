@@ -87,7 +87,7 @@ modifies the source.
 - [x] Implement annotation model and migrations.
 - [x] Build select, line/arrow, distance, rectangle, ellipse, and label tools.
 - [x] Add fixed accessible palette and custom color.
-- [ ] Add per-surface undo/redo transactions.
+- [x] Add per-surface undo/redo transactions.
 - [ ] Add annotation list/layer visibility and keyboard operations.
 - [ ] Add source-pixel measurement.
 - [ ] Add user-defined calibration segment and unit conversion.

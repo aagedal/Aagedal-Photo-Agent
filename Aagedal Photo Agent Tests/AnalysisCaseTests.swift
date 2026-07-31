@@ -338,6 +338,97 @@ struct AnalysisCaseTests {
         #expect(abs(Double(displayed.x) - original.x) > 0.01)
     }
 
+    @Test("photo annotation history undoes, redoes, and discards a branched redo")
+    func photoAnnotationUndoRedoTransactions() throws {
+        let first = AnalysisAnnotation(
+            kind: .label,
+            geometry: .anchor(AnalysisNormalizedPoint(x: 0.2, y: 0.3)),
+            text: "First"
+        )
+        let second = AnalysisAnnotation(
+            kind: .label,
+            geometry: .anchor(AnalysisNormalizedPoint(x: 0.7, y: 0.8)),
+            text: "Second"
+        )
+        let replacement = AnalysisAnnotation(
+            kind: .rectangle,
+            geometry: .bounds(AnalysisNormalizedBounds(
+                minimum: AnalysisNormalizedPoint(x: 0.1, y: 0.1),
+                maximum: AnalysisNormalizedPoint(x: 0.4, y: 0.4)
+            ))
+        )
+        var history = AnalysisAnnotationUndoHistory()
+
+        history.record(before: [], after: [first], actionName: "Add Annotation")
+        history.record(
+            before: [first],
+            after: [first, second],
+            actionName: "Add Annotation"
+        )
+
+        #expect(history.undoActionName == "Add Annotation")
+        #expect(history.undo() == [first])
+        #expect(history.canRedo)
+        #expect(history.redo() == [first, second])
+        #expect(history.undo() == [first])
+
+        history.record(
+            before: [first],
+            after: [first, replacement],
+            actionName: "Add Annotation"
+        )
+        #expect(!history.canRedo)
+        #expect(history.redo() == nil)
+        #expect(history.undo() == [first])
+        #expect(history.undo() == [])
+        #expect(!history.canUndo)
+    }
+
+    @Test("photo annotation history keeps only its configured transaction bound")
+    func photoAnnotationUndoBound() {
+        let annotation = AnalysisAnnotation(
+            kind: .label,
+            geometry: .anchor(AnalysisNormalizedPoint(x: 0.5, y: 0.5)),
+            text: "Bound"
+        )
+        var history = AnalysisAnnotationUndoHistory(maximumTransactionCount: 2)
+
+        history.record(before: [], after: [annotation], actionName: "One")
+        history.record(before: [annotation], after: [], actionName: "Two")
+        history.record(before: [], after: [annotation], actionName: "Three")
+
+        #expect(history.undoActionName == "Three")
+        #expect(history.undo() == [])
+        #expect(history.undo() == [annotation])
+        #expect(history.undo() == nil)
+    }
+
+    @Test("restoring an annotation transaction keeps the case persistently valid")
+    func restoredAnnotationCollectionIsValid() async throws {
+        let fixture = try AnalysisFixture(contents: "undo source")
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        var analysisCase = AnalysisCase.create(
+            for: revision,
+            appBuild: "test",
+            now: Date(timeIntervalSince1970: 10)
+        )
+        let annotation = AnalysisAnnotation(
+            kind: .line,
+            geometry: .segment(
+                start: AnalysisNormalizedPoint(x: 0.1, y: 0.2),
+                end: AnalysisNormalizedPoint(x: 0.8, y: 0.9)
+            ),
+            now: Date(timeIntervalSince1970: 20)
+        )
+
+        analysisCase.replaceAnnotations([annotation], now: Date(timeIntervalSince1970: 15))
+
+        #expect(analysisCase.annotations == [annotation])
+        #expect(analysisCase.updatedAt == Date(timeIntervalSince1970: 20))
+        try analysisCase.validateForPersistence()
+    }
+
     @Test("cache keys include source, analyzer version, and sorted parameters")
     func cacheKeysAreExactAndDeterministic() {
         let first = AnalysisCacheKey(

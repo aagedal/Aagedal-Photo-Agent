@@ -27,6 +27,9 @@
   visible over varied image content.
 - Routed creation, rendering, and hit-testing through the original/source/current transform chain,
   preserving source attachment across EXIF orientations and Developed crop/straighten changes.
+- Added a bounded, photo-surface-owned transaction history for annotation additions, edits, and
+  removals, with persistent undo/redo, redo-branch invalidation, toolbar controls, and standard
+  Command-Z / Shift-Command-Z shortcuts. Opening or rebinding a case clears the surface history.
 
 The annotation coordinates describe the original image's display-oriented frame. Rendering,
 hit-testing, developed-preview placement, source-pixel measurement, and report export must all use
@@ -43,7 +46,7 @@ xcodebuild test \
   -only-testing:"Aagedal Photo Agent Tests/AnalysisCaseTests"
 ```
 
-Result: 18 tests passed in 1 suite.
+Result: 21 tests passed in 1 suite.
 
 Coverage includes:
 
@@ -55,10 +58,10 @@ Coverage includes:
 - rejection of mismatched, out-of-range, and duplicate annotations;
 - reverse-drag geometry standardization and collapsed-gesture rejection;
 - persistent-to-developed coordinate round-trips with EXIF orientation, crop, and straighten.
+- bounded undo/redo, redo-branch invalidation, and persistently valid snapshot restoration.
 
 ## Remaining Phase 4 work
 
-- Add per-surface undo/redo transactions.
 - Add annotation list, layer visibility, and keyboard operations.
 - Add source-pixel measurement and user calibration.
 - Add finding-link workflow in the UI.

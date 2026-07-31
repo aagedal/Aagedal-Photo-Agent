@@ -25,6 +25,7 @@ final class AnalysisWorkspaceModel {
     @ObservationIgnored private var loadTask: Task<Void, Never>?
     @ObservationIgnored private var saveTask: Task<Void, Never>?
     @ObservationIgnored private let analyzers: [any AnalysisAnalyzer]
+    private var photoAnnotationHistory = AnalysisAnnotationUndoHistory()
 
     init(analyzers: [any AnalysisAnalyzer]? = nil) {
         analysisRunner = AnalysisRunner()
@@ -64,6 +65,22 @@ final class AnalysisWorkspaceModel {
 
     var annotations: [AnalysisAnnotation] {
         analysisCase?.annotations ?? []
+    }
+
+    var canUndoPhotoAnnotation: Bool {
+        !sourceChanged && photoAnnotationHistory.canUndo
+    }
+
+    var canRedoPhotoAnnotation: Bool {
+        !sourceChanged && photoAnnotationHistory.canRedo
+    }
+
+    var photoAnnotationUndoActionName: String? {
+        photoAnnotationHistory.undoActionName
+    }
+
+    var photoAnnotationRedoActionName: String? {
+        photoAnnotationHistory.redoActionName
     }
 
     var rawMetadata: [AnalysisRawMetadataEntry] {
@@ -148,6 +165,7 @@ final class AnalysisWorkspaceModel {
         analysisCase = nil
         currentRevision = nil
         sourceChanged = false
+        photoAnnotationHistory.removeAll()
         analysisRunner.configure(existingRuns: [])
 
         let url = image.url
@@ -213,6 +231,7 @@ final class AnalysisWorkspaceModel {
         let newCase = AnalysisCase.create(for: currentRevision)
         analysisCase = newCase
         sourceChanged = false
+        photoAnnotationHistory.removeAll()
         loadState = .loading
         analysisRunner.configure(existingRuns: [])
 
@@ -264,13 +283,43 @@ final class AnalysisWorkspaceModel {
 
     func setAnnotation(_ annotation: AnalysisAnnotation) {
         guard var updatedCase = analysisCase, !sourceChanged else { return }
+        let before = updatedCase.annotations
+        let existing = before.first { $0.id == annotation.id }
+        guard existing != annotation else { return }
         updatedCase.setAnnotation(annotation)
+        photoAnnotationHistory.record(
+            before: before,
+            after: updatedCase.annotations,
+            actionName: existing == nil ? "Add Annotation" : "Edit Annotation"
+        )
         persist(updatedCase)
     }
 
     func removeAnnotation(id: UUID) {
-        guard var updatedCase = analysisCase, !sourceChanged,
-              updatedCase.removeAnnotation(id: id) else { return }
+        guard var updatedCase = analysisCase, !sourceChanged else { return }
+        let before = updatedCase.annotations
+        guard updatedCase.removeAnnotation(id: id) else { return }
+        photoAnnotationHistory.record(
+            before: before,
+            after: updatedCase.annotations,
+            actionName: "Delete Annotation"
+        )
+        persist(updatedCase)
+    }
+
+    func undoPhotoAnnotation() {
+        guard !sourceChanged,
+              var updatedCase = analysisCase,
+              let annotations = photoAnnotationHistory.undo() else { return }
+        updatedCase.replaceAnnotations(annotations)
+        persist(updatedCase)
+    }
+
+    func redoPhotoAnnotation() {
+        guard !sourceChanged,
+              var updatedCase = analysisCase,
+              let annotations = photoAnnotationHistory.redo() else { return }
+        updatedCase.replaceAnnotations(annotations)
         persist(updatedCase)
     }
 

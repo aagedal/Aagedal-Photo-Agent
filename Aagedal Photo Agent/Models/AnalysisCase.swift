@@ -127,6 +127,17 @@ nonisolated struct AnalysisCase: VersionedJSONDocument, Equatable, Sendable {
         return true
     }
 
+    mutating func replaceAnnotations(
+        _ replacements: [AnalysisAnnotation],
+        now: Date = Date()
+    ) {
+        annotations = replacements
+        updatedAt = max(
+            max(now, createdAt),
+            replacements.map(\.updatedAt).max() ?? createdAt
+        )
+    }
+
     static func decodeVersion(
         from data: Data,
         schemaVersion: Int,
