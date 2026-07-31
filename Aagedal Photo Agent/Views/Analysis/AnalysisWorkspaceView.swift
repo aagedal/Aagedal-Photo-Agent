@@ -11,6 +11,9 @@ struct AnalysisWorkspaceView: View {
     @State private var scopeSourceMode: AnalysisScopeSourceMode = .fullImage
     @State private var selectedScopeRegion: CGRect?
     @State private var pixelViewMode: AnalysisPixelViewMode = .normal
+    @State private var annotationTool: AnalysisAnnotationTool = .select
+    @State private var annotationStyle = AnalysisAnnotationStyle.default
+    @State private var selectedAnnotationID: UUID?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -32,11 +35,29 @@ struct AnalysisWorkspaceView: View {
             selectedScopeRegion = nil
             scopeSourceMode = .fullImage
             pixelViewMode = .normal
+            selectedAnnotationID = nil
         }
         .onChange(of: model.displayPreference) {
             pixelInspectionSample = nil
             displayedScopeImage = nil
             selectedScopeRegion = nil
+            selectedAnnotationID = nil
+        }
+        .onChange(of: selectedAnnotationID) {
+            guard let selectedAnnotationID,
+                  let annotation = model.annotations.first(where: {
+                      $0.id == selectedAnnotationID
+                  }) else { return }
+            annotationStyle = annotation.style
+        }
+        .onChange(of: annotationStyle) {
+            guard let selectedAnnotationID,
+                  var annotation = model.annotations.first(where: {
+                      $0.id == selectedAnnotationID
+                  }),
+                  annotation.style != annotationStyle else { return }
+            annotation.style = annotationStyle
+            model.setAnnotation(annotation)
         }
     }
 
@@ -308,13 +329,33 @@ struct AnalysisWorkspaceView: View {
                 developSettings: model.developSettings,
                 sourceOrientation: model.sourceOrientation,
                 displayTransform: model.displayTransform,
+                annotationTransform: model.annotationTransform,
                 inspectionSample: $pixelInspectionSample,
                 scopeSourceMode: scopeSourceMode,
                 selectedScopeRegion: $selectedScopeRegion,
+                annotations: model.annotations,
+                annotationTool: annotationTool,
+                annotationStyle: annotationStyle,
+                selectedAnnotationID: $selectedAnnotationID,
+                annotationsAreReadOnly: model.sourceChanged,
                 thumbnailService: thumbnailService,
-                onImageLoaded: { displayedScopeImage = $0 }
+                onImageLoaded: { displayedScopeImage = $0 },
+                onSetAnnotation: model.setAnnotation,
+                onRemoveAnnotation: model.removeAnnotation
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            AnalysisAnnotationToolbar(
+                tool: $annotationTool,
+                style: $annotationStyle,
+                selectedAnnotationID: selectedAnnotationID,
+                isReadOnly: model.sourceChanged,
+                onDelete: {
+                    guard let selectedAnnotationID else { return }
+                    model.removeAnnotation(id: selectedAnnotationID)
+                    self.selectedAnnotationID = nil
+                }
+            )
 
             PixelInspectionReadout(sample: pixelInspectionSample)
         }
@@ -626,17 +667,29 @@ private struct AnalysisSourceThumbnail: View {
     let developSettings: CameraRawSettings?
     let sourceOrientation: Int
     let displayTransform: DisplayImageTransform?
+    let annotationTransform: DisplayImageTransform?
     @Binding var inspectionSample: ImageInspectionSample?
     let scopeSourceMode: AnalysisScopeSourceMode
     @Binding var selectedScopeRegion: CGRect?
+    let annotations: [AnalysisAnnotation]
+    let annotationTool: AnalysisAnnotationTool
+    let annotationStyle: AnalysisAnnotationStyle
+    @Binding var selectedAnnotationID: UUID?
+    let annotationsAreReadOnly: Bool
     let thumbnailService: ThumbnailService
     let onImageLoaded: (CGImage?) -> Void
+    let onSetAnnotation: (AnalysisAnnotation) -> Void
+    let onRemoveAnnotation: (UUID) -> Void
     @State private var loadedSourceIdentity: SourcePreviewIdentity?
     @State private var sourceCGImage: CGImage?
     @State private var sourceImage: NSImage?
     @State private var image: NSImage?
     @State private var selectionDragStart: CGPoint?
     @State private var selectionDraft: CGRect?
+    @State private var annotationDraft: AnalysisAnnotationGestureDraft?
+    @State private var pendingLabelAnchor: AnalysisNormalizedPoint?
+    @State private var labelText = ""
+    @State private var isLabelPromptPresented = false
 
     var body: some View {
         GeometryReader { geometry in
@@ -700,6 +753,26 @@ private struct AnalysisSourceThumbnail: View {
                             )
                         }
                     }
+
+                    if let coordinateMapper {
+                        ForEach(
+                            Array(
+                                inspectionGeometries(
+                                    image: image,
+                                    containerSize: geometry.size
+                                ).enumerated()
+                            ),
+                            id: \.offset
+                        ) { _, inspectionGeometry in
+                            AnalysisAnnotationOverlay(
+                                annotations: visibleAnnotations,
+                                draft: draftAnnotation,
+                                selectedAnnotationID: selectedAnnotationID,
+                                geometry: inspectionGeometry,
+                                coordinateMapper: coordinateMapper
+                            )
+                        }
+                    }
                 } else {
                     ProgressView()
                         .tint(.white)
@@ -709,7 +782,11 @@ private struct AnalysisSourceThumbnail: View {
             .gesture(
                 DragGesture(minimumDistance: 0, coordinateSpace: .local)
                     .onChanged { value in
+                        if handleAnnotationDragChanged(value, image: image, size: geometry.size) {
+                            return
+                        }
                         guard scopeSourceMode == .selectedRegion,
+                              annotationTool == .select,
                               let image,
                               let inspectionGeometry = inspectionGeometry(
                                   containing: value.startLocation,
@@ -736,7 +813,11 @@ private struct AnalysisSourceThumbnail: View {
                             selectionDragStart = nil
                             selectionDraft = nil
                         }
+                        if handleAnnotationDragEnded(value, image: image, size: geometry.size) {
+                            return
+                        }
                         guard scopeSourceMode == .selectedRegion,
+                              annotationTool == .select,
                               let image,
                               let inspectionGeometry = inspectionGeometry(
                                   containing: value.startLocation,
@@ -789,8 +870,27 @@ private struct AnalysisSourceThumbnail: View {
             .accessibilityAction(named: "Select center region for scopes") {
                 selectedScopeRegion = CGRect(x: 0.25, y: 0.25, width: 0.5, height: 0.5)
             }
+            .focusable()
+            .onDeleteCommand {
+                guard !annotationsAreReadOnly, let selectedAnnotationID else { return }
+                onRemoveAnnotation(selectedAnnotationID)
+                self.selectedAnnotationID = nil
+            }
         }
         .clipShape(RoundedRectangle(cornerRadius: 6))
+        .alert("New Label", isPresented: $isLabelPromptPresented) {
+            TextField("Label", text: $labelText)
+            Button("Cancel", role: .cancel) {
+                pendingLabelAnchor = nil
+                labelText = ""
+            }
+            Button("Create") {
+                createPendingLabel()
+            }
+            .disabled(labelText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        } message: {
+            Text("Enter the text to place at this image position.")
+        }
         .task(
             id: PreviewIdentity(
                 url: url,
@@ -961,6 +1061,156 @@ private struct AnalysisSourceThumbnail: View {
             width: normalizedRect.width * geometry.imageRectInView.width,
             height: normalizedRect.height * geometry.imageRectInView.height
         )
+    }
+
+    private var coordinateMapper: AnalysisAnnotationCoordinateMapper? {
+        guard let annotationTransform, let displayTransform else { return nil }
+        return AnalysisAnnotationCoordinateMapper(
+            annotationTransform: annotationTransform,
+            displayTransform: displayTransform
+        )
+    }
+
+    private var visibleAnnotations: [AnalysisAnnotation] {
+        annotations.filter(\.isVisible)
+    }
+
+    private var draftAnnotation: AnalysisAnnotation? {
+        guard let annotationDraft,
+              let geometry = AnalysisAnnotationGeometryBuilder.geometry(
+                  for: annotationDraft.kind,
+                  start: annotationDraft.start,
+                  end: annotationDraft.current
+              ) else {
+            return nil
+        }
+        return AnalysisAnnotation(
+            kind: annotationDraft.kind,
+            geometry: geometry,
+            style: annotationStyle
+        )
+    }
+
+    private func handleAnnotationDragChanged(
+        _ value: DragGesture.Value,
+        image: NSImage?,
+        size: CGSize
+    ) -> Bool {
+        guard !annotationsAreReadOnly,
+              let kind = annotationTool.annotationKind else {
+            return false
+        }
+        guard kind != .label else { return true }
+        guard let image,
+              let coordinateMapper,
+              let geometry = inspectionGeometry(
+                  containing: value.startLocation,
+                  image: image,
+                  containerSize: size
+              ) else {
+            return true
+        }
+        let start = annotationDraft?.start ?? coordinateMapper.annotationPoint(
+            from: geometry.clampedNormalizedDisplayPoint(fromViewPoint: value.startLocation)
+        )
+        let current = coordinateMapper.annotationPoint(
+            from: geometry.clampedNormalizedDisplayPoint(fromViewPoint: value.location)
+        )
+        annotationDraft = AnalysisAnnotationGestureDraft(
+            kind: kind,
+            start: start,
+            current: current
+        )
+        return true
+    }
+
+    private func handleAnnotationDragEnded(
+        _ value: DragGesture.Value,
+        image: NSImage?,
+        size: CGSize
+    ) -> Bool {
+        guard let image,
+              let coordinateMapper,
+              let geometry = inspectionGeometry(
+                  containing: value.startLocation,
+                  image: image,
+                  containerSize: size
+              ) else {
+            annotationDraft = nil
+            return annotationTool != .select
+        }
+
+        if annotationTool == .select {
+            let dragDistance = hypot(
+                value.location.x - value.startLocation.x,
+                value.location.y - value.startLocation.y
+            )
+            if scopeSourceMode == .selectedRegion, dragDistance >= 3 {
+                return false
+            }
+            selectedAnnotationID = AnalysisAnnotationHitTester.annotationID(
+                at: value.location,
+                annotations: visibleAnnotations,
+                geometry: geometry,
+                coordinateMapper: coordinateMapper
+            )
+            return true
+        }
+
+        guard !annotationsAreReadOnly, let kind = annotationTool.annotationKind else {
+            annotationDraft = nil
+            return true
+        }
+
+        if kind == .label {
+            pendingLabelAnchor = coordinateMapper.annotationPoint(
+                from: geometry.clampedNormalizedDisplayPoint(fromViewPoint: value.location)
+            )
+            labelText = ""
+            isLabelPromptPresented = true
+            return true
+        }
+
+        defer { annotationDraft = nil }
+        guard let annotationDraft,
+              hypot(
+                  value.location.x - value.startLocation.x,
+                  value.location.y - value.startLocation.y
+              ) >= 3,
+              let completedGeometry = AnalysisAnnotationGeometryBuilder.geometry(
+                  for: kind,
+                  start: annotationDraft.start,
+                  end: annotationDraft.current
+              ) else {
+            return true
+        }
+        let annotation = AnalysisAnnotation(
+            kind: kind,
+            geometry: completedGeometry,
+            style: annotationStyle
+        )
+        onSetAnnotation(annotation)
+        selectedAnnotationID = annotation.id
+        return true
+    }
+
+    private func createPendingLabel() {
+        defer {
+            pendingLabelAnchor = nil
+            labelText = ""
+        }
+        let text = labelText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !annotationsAreReadOnly,
+              !text.isEmpty,
+              let pendingLabelAnchor else { return }
+        let annotation = AnalysisAnnotation(
+            kind: .label,
+            geometry: .anchor(pendingLabelAnchor),
+            text: text,
+            style: annotationStyle
+        )
+        onSetAnnotation(annotation)
+        selectedAnnotationID = annotation.id
     }
 }
 

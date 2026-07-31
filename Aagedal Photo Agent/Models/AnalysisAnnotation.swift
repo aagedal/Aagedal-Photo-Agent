@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 nonisolated enum AnalysisAnnotationKind: String, Codable, CaseIterable, Sendable {
@@ -182,6 +183,66 @@ nonisolated struct AnalysisAnnotation: Identifiable, Codable, Equatable, Sendabl
                   !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
               }) else {
             throw AnalysisAnnotationValidationError.invalidFindingReferences
+        }
+    }
+}
+
+/// Converts between the case's stable full-image annotation frame and the representation that is
+/// currently visible. The two transforms deliberately meet in source-pixel normalized space.
+nonisolated struct AnalysisAnnotationCoordinateMapper: Sendable {
+    let annotationTransform: DisplayImageTransform
+    let displayTransform: DisplayImageTransform
+
+    func displayPoint(from annotationPoint: AnalysisNormalizedPoint) -> CGPoint {
+        let sourcePoint = annotationTransform.sourceNormalizedPoint(
+            fromDisplayNormalized: CGPoint(x: annotationPoint.x, y: annotationPoint.y)
+        )
+        return displayTransform.displayNormalizedPoint(fromSourceNormalized: sourcePoint)
+    }
+
+    func annotationPoint(from displayPoint: CGPoint) -> AnalysisNormalizedPoint {
+        let sourcePoint = displayTransform.sourceNormalizedPoint(
+            fromDisplayNormalized: displayPoint
+        )
+        let annotationPoint = annotationTransform.displayNormalizedPoint(
+            fromSourceNormalized: sourcePoint
+        )
+        return AnalysisNormalizedPoint(
+            x: Self.clampUnit(annotationPoint.x),
+            y: Self.clampUnit(annotationPoint.y)
+        )
+    }
+
+    private static func clampUnit(_ value: CGFloat) -> Double {
+        Double(min(1, max(0, value)))
+    }
+}
+
+nonisolated enum AnalysisAnnotationGeometryBuilder {
+    static func geometry(
+        for kind: AnalysisAnnotationKind,
+        start: AnalysisNormalizedPoint,
+        end: AnalysisNormalizedPoint
+    ) -> AnalysisAnnotationGeometry? {
+        switch kind {
+        case .line, .arrow, .distance:
+            guard start != end else { return nil }
+            return .segment(start: start, end: end)
+        case .rectangle, .ellipse:
+            let bounds = AnalysisNormalizedBounds(
+                minimum: AnalysisNormalizedPoint(
+                    x: min(start.x, end.x),
+                    y: min(start.y, end.y)
+                ),
+                maximum: AnalysisNormalizedPoint(
+                    x: max(start.x, end.x),
+                    y: max(start.y, end.y)
+                )
+            )
+            guard bounds.isValid else { return nil }
+            return .bounds(bounds)
+        case .label:
+            return .anchor(start)
         }
     }
 }

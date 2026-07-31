@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import Testing
 @testable import Aagedal_Photo_Agent
@@ -277,6 +278,64 @@ struct AnalysisCaseTests {
         for annotation in annotations {
             try annotation.validate()
         }
+    }
+
+    @Test("annotation gesture geometry standardizes reverse drags and rejects collapsed shapes")
+    func buildsAnnotationGestureGeometry() throws {
+        let start = AnalysisNormalizedPoint(x: 0.8, y: 0.9)
+        let end = AnalysisNormalizedPoint(x: 0.2, y: 0.3)
+
+        let rectangle = try #require(
+            AnalysisAnnotationGeometryBuilder.geometry(
+                for: .rectangle,
+                start: start,
+                end: end
+            )
+        )
+        #expect(rectangle == .bounds(AnalysisNormalizedBounds(
+            minimum: AnalysisNormalizedPoint(x: 0.2, y: 0.3),
+            maximum: AnalysisNormalizedPoint(x: 0.8, y: 0.9)
+        )))
+        #expect(AnalysisAnnotationGeometryBuilder.geometry(
+            for: .line,
+            start: start,
+            end: start
+        ) == nil)
+        #expect(AnalysisAnnotationGeometryBuilder.geometry(
+            for: .ellipse,
+            start: start,
+            end: start
+        ) == nil)
+    }
+
+    @Test("annotation coordinates survive developed crop and straighten round-trips")
+    func annotationCoordinateRoundTrip() throws {
+        let annotationTransform = try DisplayImageTransform(
+            sourcePixelWidth: 6_000,
+            sourcePixelHeight: 4_000,
+            exifOrientation: 6
+        )
+        let displayTransform = try DisplayImageTransform(
+            sourcePixelWidth: 6_000,
+            sourcePixelHeight: 4_000,
+            exifOrientation: 6,
+            developedCrop: DisplayImageTransform.DevelopedCrop(
+                sourceNormalizedRect: CGRect(x: 0.1, y: 0.15, width: 0.75, height: 0.7),
+                straightenAngleDegrees: 4.5
+            )
+        )
+        let mapper = AnalysisAnnotationCoordinateMapper(
+            annotationTransform: annotationTransform,
+            displayTransform: displayTransform
+        )
+        let original = AnalysisNormalizedPoint(x: 0.42, y: 0.61)
+
+        let displayed = mapper.displayPoint(from: original)
+        let roundTrip = mapper.annotationPoint(from: displayed)
+
+        #expect(abs(roundTrip.x - original.x) < 1e-9)
+        #expect(abs(roundTrip.y - original.y) < 1e-9)
+        #expect(abs(Double(displayed.x) - original.x) > 0.01)
     }
 
     @Test("cache keys include source, analyzer version, and sorted parameters")

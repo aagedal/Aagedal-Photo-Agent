@@ -16,6 +16,17 @@
   and duplicate or empty finding references before persistence.
 - Exposed case annotations and guarded mutations through `AnalysisWorkspaceModel`; stale
   source-changed cases remain read-only.
+- Added a segmented select/line/arrow/distance/rectangle/ellipse/label toolbar over the Analysis
+  image, with live creation previews and a text prompt for labels.
+- Rendered persistent annotations over normal and derived image panes, including linked duplicate
+  overlays in the compression-residual comparison.
+- Added selection hit-testing, visible selection handles, toolbar and Delete-key removal, and
+  color editing for the selected annotation.
+- Added a fixed high-contrast yellow/blue/orange/purple/white/black palette plus an RGBA custom
+  color picker. Every stroke receives an adaptive contrast outline so black and light colors stay
+  visible over varied image content.
+- Routed creation, rendering, and hit-testing through the original/source/current transform chain,
+  preserving source attachment across EXIF orientations and Developed crop/straighten changes.
 
 The annotation coordinates describe the original image's display-oriented frame. Rendering,
 hit-testing, developed-preview placement, source-pixel measurement, and report export must all use
@@ -32,7 +43,7 @@ xcodebuild test \
   -only-testing:"Aagedal Photo Agent Tests/AnalysisCaseTests"
 ```
 
-Result: 16 tests passed in 1 suite.
+Result: 18 tests passed in 1 suite.
 
 Coverage includes:
 
@@ -41,12 +52,12 @@ Coverage includes:
 - atomic annotation persistence and reopening without source or XMP writes;
 - every planned photo-markup kind and its required normalized geometry;
 - custom color and linked-finding round-trip;
-- rejection of mismatched, out-of-range, and duplicate annotations.
+- rejection of mismatched, out-of-range, and duplicate annotations;
+- reverse-drag geometry standardization and collapsed-gesture rejection;
+- persistent-to-developed coordinate round-trips with EXIF orientation, crop, and straighten.
 
 ## Remaining Phase 4 work
 
-- Build selection and creation tools over the Analysis image.
-- Render the fixed accessible palette and custom-color picker.
 - Add per-surface undo/redo transactions.
 - Add annotation list, layer visibility, and keyboard operations.
 - Add source-pixel measurement and user calibration.

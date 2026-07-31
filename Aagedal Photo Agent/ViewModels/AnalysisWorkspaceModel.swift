@@ -113,6 +113,23 @@ final class AnalysisWorkspaceModel {
         )
     }
 
+    /// Coordinate transform for the persistent annotation frame: the full upright original.
+    ///
+    /// Pairing this with `displayTransform` keeps annotations attached to source pixels when a
+    /// developed crop or straighten transform is visible.
+    var annotationTransform: DisplayImageTransform? {
+        guard let facts = sourceFacts,
+              let width = facts.pixelWidth,
+              let height = facts.pixelHeight else {
+            return nil
+        }
+        return try? DisplayImageTransform(
+            sourcePixelWidth: width,
+            sourcePixelHeight: height,
+            exifOrientation: sourceOrientation
+        )
+    }
+
     deinit {
         loadTask?.cancel()
         saveTask?.cancel()
